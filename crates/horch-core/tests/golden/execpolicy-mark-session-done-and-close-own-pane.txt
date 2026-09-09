@@ -1,0 +1,5 @@
+prefix_rule(
+    pattern = ["horch", "done"],
+    decision = "allow",
+    justification = "herdr-fleet: mark session done and close own pane",
+)

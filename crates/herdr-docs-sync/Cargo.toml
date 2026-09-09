@@ -1,0 +1,21 @@
+[package]
+name = "herdr-docs-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "herdr-docs-sync"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+scraper = "0.21"
+ego-tree = "0.9"
+htmd = "0.1"
+quick-xml = "0.37"
+
+[dev-dependencies]
+tempfile = "3"

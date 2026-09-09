@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/horch-core",
+    "crates/horch",
+    "crates/herdr-install",
+    "crates/herdr-docs-sync",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[workspace.dependencies]
+horch-core = { path = "crates/horch-core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+[profile.release]
+strip = true
