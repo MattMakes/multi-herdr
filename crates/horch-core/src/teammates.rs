@@ -32,10 +32,32 @@ include!(concat!(env!("OUT_DIR"), "/builtin_teammates.rs"));
 // used both to scaffold new teammates and to hold the documented field list to
 // the struct in a test.
 
-/// The orchestrator's model. Reserved: a fleet has exactly one Fable session,
-/// the orchestrator, and `horch spawn` refuses to start a worker on it. The
-/// orchestrator writes every brief for an Opus/Codex-Sol reader instead.
-pub const ORCHESTRATOR_MODEL: &str = "fable";
+/// The model tiers reserved for the orchestrator, and the teammate to reach for
+/// instead of each.
+///
+/// A fleet has exactly one top-tier session: the orchestrator, running either
+/// Claude on Fable or Codex on Astra. `horch spawn` refuses to start a worker on
+/// EITHER tier, whichever flavor is orchestrating - so a Fable orchestrator
+/// cannot start an Astra, an Astra cannot start a Fable, and neither can clone
+/// itself. The orchestrator writes every brief for an Opus/Codex-Sol reader
+/// instead.
+pub const ORCHESTRATOR_TIERS: [(&str, &str); 2] = [("fable", "opus"), ("astra", "codex-sol")];
+
+/// The reserved tier a model belongs to, if any.
+///
+/// Matched on the model's name segments rather than the whole slug, because the
+/// two agents name their models differently and both keep moving: `fable`,
+/// `claude-fable-5-1` and `gpt-6-astra` are all reserved, while `opus` and
+/// `gpt-5.6-sol` are not. A version bump stays reserved without an edit here.
+pub fn reserved_tier(model: &str) -> Option<(&'static str, &'static str)> {
+    model
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .find_map(|segment| {
+            ORCHESTRATOR_TIERS
+                .into_iter()
+                .find(|(tier, _)| segment.eq_ignore_ascii_case(tier))
+        })
+}
 
 /// Longest a `brief_description` may be. Every non-hidden teammate's
 /// description is concatenated into the orchestrator's briefing on every run,
@@ -416,9 +438,20 @@ impl Roster {
             .join("\n")
     }
 
-    /// The execpolicy rules every codex agent needs installed before launch.
+    /// The execpolicy rules a codex WORKER needs installed before launch.
     pub fn exec_rules(&self) -> &[ExecRule] {
-        match self.bases.get("codex-execpolicy") {
+        self.rules_of("codex-execpolicy")
+    }
+
+    /// The execpolicy rules a codex ORCHESTRATOR needs instead: it never runs
+    /// `horch note` or `horch done`, and the worker set allows it nothing it
+    /// needs to build a fleet with.
+    pub fn orchestrator_exec_rules(&self) -> &[ExecRule] {
+        self.rules_of("codex-orchestrator-execpolicy")
+    }
+
+    fn rules_of(&self, base: &str) -> &[ExecRule] {
+        match self.bases.get(base) {
             Some(b) => &b.rules,
             None => &[],
         }
@@ -426,13 +459,23 @@ impl Roster {
 
     /// Whether this teammate may be started by `horch spawn`. Orchestrators
     /// are launched by `pane-launch`, never spawned, so this is where the
-    /// single-Fable rule bites.
+    /// one-top-tier-session rule bites.
     pub fn is_spawnable(t: &Teammate) -> Result<()> {
-        if t.model.as_deref() == Some(ORCHESTRATOR_MODEL) {
+        Roster::model_is_spawnable(t.model.as_deref().unwrap_or_default(), &t.name)
+    }
+
+    /// The same rule, applied to the model a spawn is actually about to launch.
+    ///
+    /// `horch spawn --resume` takes its model from the ledger record rather than
+    /// from the teammate file, so checking the file alone would leave a stale or
+    /// hand-edited record able to start a second top-tier session behind an
+    /// innocent-looking tier name.
+    pub fn model_is_spawnable(model: &str, who: &str) -> Result<()> {
+        if let Some((tier, instead)) = reserved_tier(model) {
             bail!(
-                "teammate '{}' runs on {ORCHESTRATOR_MODEL}, which is reserved for the \
-                 orchestrator; the fleet has exactly one {ORCHESTRATOR_MODEL} session. Use opus.",
-                t.name
+                "'{who}' runs on {model}, and the {tier} tier is reserved for the \
+                 orchestrator; the fleet has exactly one top-tier session, whichever \
+                 agent is orchestrating. Use {instead}."
             );
         }
         Ok(())
@@ -607,23 +650,20 @@ impl Roster {
                 }
             }
         }
-        // Every command a worker is told to run must be allowed for codex.
-        if let Some(worker_base) = self.bases.get("fleet-worker") {
-            let told = format!("{}{}", worker_base.body, worker_base.task_idle);
-            for rule in self.exec_rules() {
-                let cmd: Vec<&str> = rule
-                    .pattern
-                    .split(',')
-                    .map(|p| p.trim().trim_matches('"'))
-                    .collect();
-                let joined = cmd.join(" ");
-                if !told.contains(&joined) {
-                    problems.push(format!(
-                        "codex-execpolicy allows '{joined}', which _base/fleet-worker.md \
-                         never tells a worker to run"
-                    ));
-                }
-            }
+        // Every command an agent is told to run must be allowed for codex, and
+        // nothing more: a rule with no command behind it is standing permission
+        // nobody asked for.
+        if let Some(worker) = self.bases.get("fleet-worker") {
+            let told = format!("{}{}", worker.body, worker.task_idle);
+            problems.extend(unused_rules(self.exec_rules(), &told, "worker", "fleet-worker"));
+        }
+        if let Some(orchestrator) = self.bases.get("fleet-orchestrator") {
+            problems.extend(unused_rules(
+                self.orchestrator_exec_rules(),
+                &orchestrator.body,
+                "an orchestrator",
+                "fleet-orchestrator",
+            ));
         }
         problems
     }
@@ -657,6 +697,27 @@ pub fn operator_enabled_plugins() -> Vec<String> {
             .collect(),
         None => Vec::new(),
     }
+}
+
+/// Execpolicy rules allowing a command the briefing never asks for.
+fn unused_rules(rules: &[ExecRule], told: &str, who: &str, base: &str) -> Vec<String> {
+    rules
+        .iter()
+        .filter_map(|rule| {
+            let joined = rule
+                .pattern
+                .split(',')
+                .map(|p| p.trim().trim_matches('"'))
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!told.contains(&joined)).then(|| {
+                format!(
+                    "codex execpolicy allows '{joined}', which _base/{base}.md never \
+                     tells {who} to run"
+                )
+            })
+        })
+        .collect()
 }
 
 fn operator_settings() -> Option<serde_json::Value> {
@@ -731,29 +792,63 @@ fn split_frontmatter(text: &str) -> Result<(&str, &str)> {
 mod spawnable_tests {
     use super::*;
 
-    /// The fleet has exactly one Fable: the orchestrator. Even a file that
-    /// asks for it is refused at spawn, so a stray teammate cannot make a
-    /// second one.
+    /// The fleet has exactly one top-tier session: the orchestrator. Even a
+    /// file that asks for one is refused at spawn, so a stray teammate cannot
+    /// make a second - and the rule does not care which flavor is orchestrating,
+    /// so a Fable cannot start an Astra either.
     #[test]
-    fn a_fable_worker_is_refused_at_spawn() {
+    fn a_top_tier_worker_is_refused_at_spawn_whichever_tier_it_names() {
         let r = Roster::builtin().unwrap();
-        let mut t = r.require("opus").unwrap().clone();
-        t.model = Some(ORCHESTRATOR_MODEL.into());
-        let err = Roster::is_spawnable(&t).unwrap_err().to_string();
-        assert!(err.contains("reserved for the orchestrator"), "{err}");
-        assert!(Roster::is_spawnable(r.require("opus").unwrap()).is_ok());
+        for (model, instead) in [
+            ("fable", "opus"),
+            ("claude-fable-5-1", "opus"),
+            ("gpt-6-astra", "codex-sol"),
+            ("GPT-7-Astra", "codex-sol"),
+        ] {
+            let mut t = r.require("opus").unwrap().clone();
+            t.model = Some(model.into());
+            let err = Roster::is_spawnable(&t).unwrap_err().to_string();
+            assert!(err.contains("reserved for the orchestrator"), "{model}: {err}");
+            assert!(err.contains(instead), "{model} should point at {instead}: {err}");
+        }
+        for ok in ["opus", "sonnet", "gpt-5.6-sol", "gpt-5.6-terra"] {
+            assert!(
+                Roster::model_is_spawnable(ok, "t").is_ok(),
+                "{ok} must stay spawnable"
+            );
+        }
     }
 
-    /// And nothing the orchestrator is offered runs on its own model.
+    /// The ledger, not the teammate file, decides what `--resume` launches, so
+    /// the rule has to hold on a bare model string too. `horch spawn` applies it
+    /// to the resolved model as its last gate before the pane starts.
     #[test]
-    fn nothing_offered_runs_on_fable() {
+    fn the_rule_holds_on_a_bare_model_string_from_a_ledger_record() {
+        let err = Roster::model_is_spawnable("gpt-6-astra", "opus-3")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("opus-3"), "{err}");
+        assert!(err.contains("astra"), "{err}");
+    }
+
+    /// And nothing the orchestrator is offered runs on a reserved tier.
+    #[test]
+    fn nothing_offered_runs_on_a_reserved_tier() {
         let r = Roster::builtin().unwrap();
         for t in r.offered() {
-            assert_ne!(t.model.as_deref(), Some(ORCHESTRATOR_MODEL), "{}", t.name);
+            assert!(
+                reserved_tier(t.model.as_deref().unwrap_or_default()).is_none(),
+                "{} is offered but runs on a reserved tier",
+                t.name
+            );
         }
         // The orchestrators themselves still do, and are hidden.
-        assert_eq!(r.require("orchestrator").unwrap().model.as_deref(), Some("fable"));
-        assert!(r.require("orchestrator").unwrap().hidden);
+        for (name, model) in [("orchestrator", "fable"), ("orchestrator-codex", "gpt-6-astra")] {
+            let t = r.require(name).unwrap();
+            assert_eq!(t.model.as_deref(), Some(model));
+            assert!(t.hidden, "{name} must never appear in the roster");
+            assert!(Roster::is_spawnable(t).is_err(), "{name} must not be spawnable");
+        }
     }
 }
 

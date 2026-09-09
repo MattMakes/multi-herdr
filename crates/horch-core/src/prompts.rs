@@ -109,12 +109,22 @@ pub fn worker_prompt(
     Ok(out)
 }
 
-/// Briefing for a teammate whose body is the entire prompt - an orchestrator,
-/// or a worker in the fixed `orchestration` recipe.
+/// Briefing for a teammate that is not a fleet worker - an orchestrator, or a
+/// worker in the fixed `orchestration` recipe.
+///
+/// With no `base` the file's body IS the whole prompt. With one, the base body
+/// is the prompt and the file's body is substituted in at `{persona}` - which
+/// is how the two orchestrator flavors share one briefing and differ only in
+/// the paragraph naming the model they are the only session of.
 pub fn agent_prompt(roster: &Roster, teammate: &Teammate, role: &str) -> Result<String> {
     let roster_lines = roster.roster_lines();
-    let vars = BTreeMap::from([("role", role), ("roster", roster_lines.as_str())]);
-    render(&teammate.persona, &vars)
+    let mut vars = BTreeMap::from([("role", role), ("roster", roster_lines.as_str())]);
+    let Some(base_name) = teammate.base.as_deref() else {
+        return render(&teammate.persona, &vars);
+    };
+    let base = roster.require_base(base_name)?;
+    vars.insert("persona", teammate.persona.as_str());
+    render(&base.body, &vars)
 }
 
 /// Render one execpolicy `prefix_rule` block for `~/.codex/execpolicy`.

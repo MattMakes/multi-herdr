@@ -107,9 +107,13 @@ fn launch_agent(
     prompt: &str,
 ) -> Result<ExitCode> {
     launch::apply_env(teammate);
-    if teammate.agent == Agent::Codex {
-        codex::ensure_rules(&agent::home_dir(), roster)?;
-    }
+    // Held across the launch: it points codex at a private CODEX_HOME holding
+    // only this worker's rules, and is finished once the CLI has exited.
+    let rules = if teammate.agent == Agent::Codex {
+        Some(codex::Rules::install(&agent::home_dir(), &brief.role, roster.exec_rules())?)
+    } else {
+        None
+    };
 
     let session = if brief.resume {
         Session::Resume(&brief.session_id)
@@ -120,7 +124,10 @@ fn launch_agent(
         Session::Unmanaged
     };
 
-    let cmd = launch::command(teammate, session, prompt, None)?;
+    let mut cmd = launch::command(teammate, session, prompt, None)?;
+    if let Some(rules) = &rules {
+        rules.apply(&mut cmd);
+    }
     let name = format!("{:?}", cmd.get_program());
 
     // Harvest runs only for a fresh codex session, in the background, while
@@ -134,6 +141,9 @@ fn launch_agent(
     // The harvest is best-effort: a finished agent needs no session id captured.
     if let Some(h) = harvest {
         h.stop();
+    }
+    if let Some(rules) = rules {
+        rules.finish();
     }
     code
 }

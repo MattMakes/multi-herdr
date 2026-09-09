@@ -61,7 +61,9 @@ pub fn list(json: bool) -> Result<()> {
         .filter(|t| t.hidden)
         .collect();
     if !hidden.is_empty() {
-        out.push_str("\nHIDDEN (spawnable by name, never in the orchestrator's context)\n");
+        // Not "spawnable by name": the orchestrators are hidden AND reserved,
+        // launched into a pane by `horch fleet` rather than spawned into one.
+        out.push_str("\nHIDDEN (never in the orchestrator's context)\n");
         for t in hidden {
             out.push_str(&format!("    {:<width$}  {}\n", t.name, t.brief_description, width = width));
         }

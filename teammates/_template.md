@@ -36,10 +36,12 @@ base: fleet-worker
 #   codex  -> codex mints its own id, horch harvests it from the rollout file
 agent: claude
 
-# claude: a family alias (sonnet | opus) so it tracks the latest. Not fable:
-# Fable is the orchestrator's model and `horch spawn` refuses to start a
-# worker on it. The orchestrator is the only Fable in the fleet.
+# claude: a family alias (sonnet | opus) so it tracks the latest.
 # codex:  a literal slug (gpt-5.6-sol | gpt-5.6-terra); no alias mechanism.
+# Not fable, and not gpt-6-astra: both top tiers are reserved for whichever
+# orchestrator is running, and `horch spawn` refuses to start a worker on
+# either. A fleet has exactly one top-tier session. Reach for opus or
+# codex-sol instead.
 model: opus
 
 # claude -> `--effort <level>`   (low | medium | high | xhigh)

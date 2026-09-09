@@ -271,6 +271,26 @@ mod tests {
         assert!(a.windows(2).any(|w| w == ["-a", "on-request"]), "{a:?}");
     }
 
+    /// The codex orchestrator is the one pane that launches codex with a model,
+    /// an effort and a sandbox all at once. The prompt must still land last: a
+    /// briefing swallowed by an earlier flag is an orchestrator that comes up
+    /// with no instructions and no error.
+    #[test]
+    fn the_codex_orchestrator_launches_with_astra_and_keeps_its_prompt_last() {
+        let r = Roster::builtin().unwrap();
+        let t = r.require("orchestrator-codex").unwrap();
+        let cmd = command(t, Session::Unmanaged, "BRIEFING", None).unwrap();
+        let a = argv(&cmd);
+        assert!(a.contains(&r#"model="gpt-6-astra""#.to_string()), "{a:?}");
+        assert!(
+            a.contains(&r#"model_reasoning_effort="xhigh""#.to_string()),
+            "{a:?}"
+        );
+        assert!(a.windows(2).any(|w| w == ["-s", "workspace-write"]), "{a:?}");
+        assert_eq!(a.last().unwrap(), "BRIEFING");
+        assert_ne!(a[0], "resume", "a fresh orchestrator is not a resume");
+    }
+
     fn fake_home(settings_json: &str) -> (tempfile::TempDir, HomeGuard) {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join(".claude")).unwrap();

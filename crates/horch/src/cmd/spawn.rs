@@ -118,6 +118,13 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
         }
     };
 
+    // The last gate before launch, and the only one that sees what will ACTUALLY
+    // start: `is_spawnable` above reads the teammate FILE's model, but a resume
+    // takes its model from the ledger record, so a stale or hand-edited record
+    // could otherwise start a second top-tier session behind an ordinary tier
+    // name. Both branches pass through here.
+    Roster::model_is_spawnable(&plan.model, &plan.teammate.name)?;
+
     // Auto role name: <teammate>-<n> from a per-teammate, per-workspace counter.
     let role = match args.role {
         Some(role) => role,

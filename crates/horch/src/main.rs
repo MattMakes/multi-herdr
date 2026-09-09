@@ -30,9 +30,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Launch the herdr-fleet workspace: an orchestrator plus a 2x2 grid of idle
-    /// workers, with a persistent per-project session ledger.
+    /// Launch the herdr-fleet workspace: ONE orchestrator pane, which spawns
+    /// exactly the workers the work needs, with a per-project session ledger.
     Fleet {
+        /// Who orchestrates: `cc` for Claude Code on Fable (the default), or
+        /// `codex` for Codex on Astra. Only the orchestrator pane changes; both
+        /// spawn workers from the same roster.
+        #[arg(value_name = "FLAVOR", default_value = "cc")]
+        flavor: cmd::recipes::FleetFlavor,
         /// Project directory the fleet works in. Defaults to the current directory.
         #[arg(long)]
         cwd: Option<String>,
@@ -217,7 +222,7 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<std::process::ExitCode> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Fleet { cwd } => cmd::recipes::fleet(cwd.as_deref())?,
+        Command::Fleet { cwd, flavor } => cmd::recipes::fleet(cwd.as_deref(), flavor)?,
         Command::Orchestration { cwd } => cmd::recipes::orchestration(cwd.as_deref())?,
         Command::Tell { role, message } => cmd::messaging::tell(&role, &joined(&message))?,
         Command::Inbox => cmd::messaging::inbox()?,

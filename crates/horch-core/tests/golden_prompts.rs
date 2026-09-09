@@ -11,6 +11,11 @@
 //! hand-maintained list of five tiers became the `{roster}` placeholder, the
 //! fleet no longer pre-spawns four idle workers for it to inherit, and it is
 //! told it is the only Fable and must write for Opus/Codex-Sol readers.
+//!
+//! The worker briefing has one, in
+//! `every_worker_briefing_differs_only_where_sanctioned`: the orchestrator is
+//! described to workers as a separate *agent* session rather than a separate
+//! Claude one, because the pane it sits in is no longer always Claude.
 
 use horch_core::prompts;
 use horch_core::teammates::Roster;
@@ -28,8 +33,18 @@ fn roster() -> Roster {
     Roster::builtin().expect("built-in roster parses")
 }
 
+/// The worker briefing differs in exactly one place, and this pins it: the
+/// orchestrator is no longer described to workers as a Claude session.
+///
+/// `horch fleet codex` puts a Codex orchestrator in that pane, and OpenCode and
+/// pi are coming, so naming any one CLI there is a briefing that is wrong for
+/// most of the fleets that read it. A worker only needs to know the orchestrator
+/// is a SEPARATE session whose typed lines are instructions - which agent is
+/// behind it changes nothing it does. The fixed `orchestration` recipe still
+/// says "Claude ... running Fable" in `orchestration-worker.md`, because there
+/// the orchestrator really is pinned to one agent and one model.
 #[test]
-fn every_worker_briefing_is_unchanged() {
+fn every_worker_briefing_differs_only_where_sanctioned() {
     let r = roster();
     let mut checked = 0;
     // No `fable` here: the generic Fable worker was removed when Fable became
@@ -42,10 +57,18 @@ fn every_worker_briefing_is_unchanged() {
             ("resume", "Continue where you left off", true),
         ] {
             let got = prompts::worker_prompt(&r, t, "r-1", task, resume).unwrap();
+            let was = golden(&format!("worker-{name}-{label}"));
+            let old_agent = "orchestrator (a separate Claude session) runs in another pane";
+            let new_agent = "orchestrator (a separate agent session) runs in another pane";
             assert_eq!(
+                was.matches(old_agent).count(),
+                1,
+                "worker-{name}-{label} should name the orchestrator's agent exactly once"
+            );
+            assert_eq!(
+                was.replace(old_agent, new_agent),
                 got,
-                golden(&format!("worker-{name}-{label}")),
-                "worker-{name}-{label} drifted"
+                "worker-{name}-{label} drifted outside the one sanctioned block"
             );
             checked += 1;
         }
@@ -138,4 +161,31 @@ fn execpolicy_blocks_are_unchanged() {
         assert_eq!(prompts::codex_rule_block(rule), golden(&name), "{name} drifted");
     }
     assert_eq!(r.exec_rules().len(), 3);
+}
+
+/// The Codex flavor shares the whole orchestrator briefing and differs only in
+/// the block naming the tier it is the only session of. This is not a golden -
+/// there is no prior behaviour to capture - so it pins the relationship
+/// instead: same briefing, one substituted paragraph, fully rendered.
+#[test]
+fn the_codex_orchestrator_differs_from_the_claude_one_only_in_its_tier_block() {
+    let r = roster();
+    let claude = prompts::agent_prompt(&r, r.require("orchestrator").unwrap(), "orchestrator")
+        .unwrap();
+    let codex = prompts::agent_prompt(&r, r.require("orchestrator-codex").unwrap(), "orchestrator")
+        .unwrap();
+
+    assert!(codex.contains("== You are the only Astra =="), "{codex}");
+    assert!(!codex.contains("== You are the only Fable =="), "{codex}");
+    // No placeholder may survive into a live pane - not {roster}, not {persona}.
+    assert!(!codex.contains('{'), "unsubstituted placeholder in:\n{codex}");
+    assert!(codex.contains("codex-terra"), "the roster must reach it: {codex}");
+
+    // Everything outside the tier block is byte-identical to the Claude flavor.
+    let strip = |text: &str| {
+        let start = text.find("== You are the only ").expect("a tier block");
+        let end = text.find("== Worker lifecycle ==").expect("the lifecycle section");
+        format!("{}{}", &text[..start], &text[end..])
+    };
+    assert_eq!(strip(&claude), strip(&codex));
 }

@@ -42,12 +42,32 @@ the scratch workspace open when they fail, so you can look at it.
 
 ```bash
 cd ~/your-project
-horch fleet
+horch fleet            # Claude Code on Fable orchestrates (the default)
+horch fleet cc         # the same, said out loud
+horch fleet codex      # Codex on Astra orchestrates instead
 ```
 
 You get one orchestrator pane and nothing else. It reads the roster, breaks the
 work down, and spawns exactly the workers each piece needs - then shuts them down
 as they finish. No worker is started before there is a job for it.
+
+The flavor picks who orchestrates and nothing else. Both read the same roster
+and spawn the same workers, so a Codex orchestrator still reaches for `opus`
+when a task wants Claude, and a Claude one still reaches for `codex-sol`.
+
+### One top-tier session per fleet
+
+Fable and Astra are reserved for the orchestrator. `horch spawn` refuses to
+start a worker on either tier, whichever flavor is orchestrating - so a Fable
+orchestrator cannot start an Astra, an Astra cannot start a Fable, and neither
+can clone itself. The rule is matched on the tier name rather than an exact
+model slug, so a version bump stays reserved without an edit.
+
+That is why every briefing is written for an Opus or Codex-Sol reader: the
+orchestrator does the reasoning that needs the top tier, writes the result to a
+file, and hands the execution down. `horch teammates --check` fails any teammate
+in the roster that asks for a reserved tier, so the rule cannot be broken by
+adding a file.
 
 Everything needs a running herdr server: launch the herdr app, or run
 `herdr server` headless.
@@ -101,9 +121,13 @@ registry to update.
 | `qa-engineer`          | Claude | Sonnet | Tests, e2e harnesses, bug reproduction       |
 | `sonnet` `opus` `codex-sol` `codex-terra` | | | Generic fallbacks |
 
+The two orchestrators are teammate files too, and hidden from the roster:
+`orchestrator` (Claude, Fable) and `orchestrator-codex` (Codex, Astra). They
+share one briefing in `teammates/_base/fleet-orchestrator.md`, and each file
+holds only the paragraph naming the tier it is the only session of.
+
 The last row are the *generic fallbacks*, used when no specialist matches. The
-orchestrator's own briefing is a teammate file too (`teammates/orchestrator.md`),
-as are the two prompts the `orchestration` recipe uses.
+two prompts the `orchestration` recipe uses are teammate files as well.
 
 ### Starting agents clean
 
@@ -132,6 +156,35 @@ tokens per turn for skills it must never invoke.
 instrument: it drops the operator's tuning along with the plugins and usually
 costs more context than it saves. `horch` keeps the status line alive through it
 regardless, since a pane without one is blind on context and cost.
+
+### Starting codex panes clean
+
+Codex has no `--tools` or `--settings`; what it can reach outside its sandbox is
+decided by execpolicy `prefix_rule`s, and it refuses any command its rules do not
+name. So a codex worker needs `horch note` and `horch done` allowed, and a codex
+orchestrator needs `horch spawn`, `assign`, `tell`, `inbox`, `sessions` and
+`layout` - different sets, and neither should get the other's.
+
+Those rules load from `$CODEX_HOME/rules/*.rules`, and codex has no flag or
+config key that points one launch at a different set. Appending to the shared
+`~/.codex/rules/default.rules` would therefore grant every codex session on the
+machine whatever any fleet ever needed, permanently - the file accumulates and
+nothing ever prunes it.
+
+So each codex pane gets a **private `CODEX_HOME`** instead: a directory that
+symlinks every entry of the real one except `rules/`, and whose `rules/` holds
+that launch's rules and nothing else. Auth, config, skills, plugins and
+`sessions/` all resolve through the symlinks, so the operator's setup is intact
+and a rollout still lands where the ledger's harvest looks for it. The directory
+is rebuilt per launch and removed when the pane exits, so two panes in one fleet
+can hold different rules and neither leaks to the other - or to the operator's
+own codex sessions.
+
+If codex creates something at the top level of that private home that was not
+there at launch, the directory is kept and named rather than deleted, so state
+is never silently thrown away. On Windows the rules go to the shared file
+instead, and the pane says so: symlinks there need Developer Mode or an elevated
+process.
 
 ### The session ledger
 
@@ -192,6 +245,7 @@ junction, so an update never overwrites a running `herdr.exe`.
 | `HORCH_STATE_DIR`    | Where ledgers live                                             |
 | `HORCH_PROJECT_DIR`  | Which project a ledger belongs to. Defaults to the cwd         |
 | `HORCH_WORKSPACE_ID` | Target workspace, when not running inside a herdr pane         |
+| `CODEX_HOME`         | The codex home a private one is mirrored from. Defaults to `~/.codex` |
 | `HERDR_INSTALL_DIR`  | Where `herdr-install` puts herdr                               |
 
 ## Layout

@@ -42,8 +42,14 @@ herdr-orchestration: require-herdr
 # ledger by task complexity/continuity); workers record progress with
 # `horch note` and shut their own pane down with `horch done` when truly
 # finished. Run `just teammates` to see who it can pick from.
-herdr-fleet: require-herdr
-    {{horch}} fleet --cwd "{{cwd}}"
+#
+# FLAVOR picks who orchestrates, and nothing else - the roster of workers
+# is the same either way:
+#   herdr-fleet        Claude Code on Fable (the default)
+#   herdr-fleet cc     the same, said out loud
+#   herdr-fleet codex  Codex on Astra
+herdr-fleet FLAVOR="cc": require-herdr
+    {{horch}} fleet {{FLAVOR}} --cwd "{{cwd}}"
 
 # Self-verifying check of the fleet machinery (spawn -> brief -> register
 # -> ledger add/note/done -> tell -> pane self-close) using a token-free

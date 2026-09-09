@@ -3,8 +3,8 @@
 //!
 //! Both build a herdr workspace, lay out panes, and start an agent in each. The
 //! difference is lifecycle: `orchestration` is a fixed 5-pane workspace, while
-//! `fleet` starts four idle workers whose orchestrator then grows and shrinks the
-//! fleet itself through the session ledger.
+//! `fleet` starts one orchestrator alone, which then grows and shrinks the fleet
+//! itself through the session ledger.
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -26,6 +26,7 @@ use super::doctor;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneKind {
     FleetOrchestrator,
+    FleetCodexOrchestrator,
     OrchestrationOrchestrator,
     OrchestrationClaude,
     OrchestrationCodex,
@@ -35,6 +36,7 @@ impl PaneKind {
     pub fn as_str(self) -> &'static str {
         match self {
             PaneKind::FleetOrchestrator => "fleet-orchestrator",
+            PaneKind::FleetCodexOrchestrator => "fleet-codex-orchestrator",
             PaneKind::OrchestrationOrchestrator => "orchestration-orchestrator",
             PaneKind::OrchestrationClaude => "orchestration-claude",
             PaneKind::OrchestrationCodex => "orchestration-codex",
@@ -48,11 +50,75 @@ impl std::str::FromStr for PaneKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "fleet-orchestrator" => Ok(PaneKind::FleetOrchestrator),
+            "fleet-codex-orchestrator" => Ok(PaneKind::FleetCodexOrchestrator),
             "orchestration-orchestrator" => Ok(PaneKind::OrchestrationOrchestrator),
             "orchestration-claude" => Ok(PaneKind::OrchestrationClaude),
             "orchestration-codex" => Ok(PaneKind::OrchestrationCodex),
             other => Err(format!("unknown pane kind '{other}'")),
         }
+    }
+}
+
+/// Which agent orchestrates a fleet.
+///
+/// Only the ORCHESTRATOR pane differs. The roster it spawns workers from is the
+/// same either way, so a Codex orchestrator still reaches for `opus` when a task
+/// wants Claude, and a Claude one still reaches for `codex-sol`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FleetFlavor {
+    /// Claude Code, on Fable.
+    #[default]
+    Claude,
+    /// Codex, on Astra.
+    Codex,
+}
+
+impl FleetFlavor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FleetFlavor::Claude => "cc",
+            FleetFlavor::Codex => "codex",
+        }
+    }
+
+    /// What to print while the pane comes up. The tier is the useful half: it
+    /// is what the fleet has exactly one of.
+    fn label(self) -> &'static str {
+        match self {
+            FleetFlavor::Claude => "Claude Code on Fable",
+            FleetFlavor::Codex => "Codex on Astra",
+        }
+    }
+
+    /// The teammate file this flavor's orchestrator pane is briefed from.
+    fn pane_kind(self) -> PaneKind {
+        match self {
+            FleetFlavor::Claude => PaneKind::FleetOrchestrator,
+            FleetFlavor::Codex => PaneKind::FleetCodexOrchestrator,
+        }
+    }
+}
+
+impl std::str::FromStr for FleetFlavor {
+    type Err = String;
+
+    /// The model names are accepted alongside the CLI names, because that is
+    /// how the choice is actually discussed: "the Fable one" or "the Astra one".
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "cc" | "claude" | "fable" => Ok(FleetFlavor::Claude),
+            "codex" | "astra" => Ok(FleetFlavor::Codex),
+            other => Err(format!(
+                "unknown fleet flavor '{other}' (expected cc for Claude Code on Fable, \
+                 or codex for Codex on Astra)"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for FleetFlavor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -100,7 +166,7 @@ fn pane_command(role: &str, kind: PaneKind, model: Option<&str>) -> Result<Strin
 /// Earlier versions pre-spawned a fixed 2x2 grid of idle workers. That decided
 /// the shape of the team before anyone knew what the work was, and burned four
 /// agent sessions holding a greeting.
-pub fn fleet(cwd: Option<&str>) -> Result<()> {
+pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
     doctor::check()?;
     let herdr = Herdr::new();
     let cwd = resolve_cwd(cwd)?;
@@ -112,11 +178,9 @@ pub fn fleet(cwd: Option<&str>) -> Result<()> {
     std::env::set_var("HORCH_WORKSPACE_ID", &ws.workspace_id);
     std::env::set_var("HORCH_PROJECT_DIR", &cwd);
 
-    println!("Launching orchestrator...");
-    herdr.pane_run(
-        &ws.root_pane_id,
-        &pane_command("orchestrator", PaneKind::FleetOrchestrator, None)?,
-    )?;
+    let kind = flavor.pane_kind();
+    println!("Launching orchestrator ({})...", flavor.label());
+    herdr.pane_run(&ws.root_pane_id, &pane_command("orchestrator", kind, None)?)?;
 
     println!("\nDone. Fleet workspace {} is live with one orchestrator pane.", ws.workspace_id);
     println!("Session ledger: {}", Ledger::open()?.path().display());
@@ -217,6 +281,7 @@ pub fn pane_launch(
     let roster = Roster::load_with(teammates_dir)?;
     let name = match kind {
         PaneKind::FleetOrchestrator => "orchestrator",
+        PaneKind::FleetCodexOrchestrator => "orchestrator-codex",
         PaneKind::OrchestrationOrchestrator => "orchestration-orchestrator",
         PaneKind::OrchestrationClaude | PaneKind::OrchestrationCodex => "orchestration-worker",
     };
@@ -236,12 +301,29 @@ pub fn pane_launch(
 
     let prompt = prompts::agent_prompt(&roster, &teammate, role)?;
     launch::apply_env(&teammate);
-    if teammate.agent == Agent::Codex {
-        codex::ensure_rules(&agent::home_dir(), &roster)?;
+    let rules = if teammate.agent == Agent::Codex {
+        // An orchestrator runs a different set of commands than a worker, and
+        // codex refuses anything its execpolicy does not name. Install the set
+        // this pane actually needs, not both.
+        let needed = match kind {
+            PaneKind::FleetCodexOrchestrator => roster.orchestrator_exec_rules(),
+            _ => roster.exec_rules(),
+        };
+        Some(codex::Rules::install(&agent::home_dir(), role, needed)?)
+    } else {
+        None
+    };
+
+    let mut cmd = launch::command(&teammate, Session::Unmanaged, &prompt, model)?;
+    if let Some(rules) = &rules {
+        rules.apply(&mut cmd);
     }
-    let cmd = launch::command(&teammate, Session::Unmanaged, &prompt, model)?;
     let name = format!("{:?}", cmd.get_program());
-    run(cmd, name.trim_matches('"'))
+    let code = run(cmd, name.trim_matches('"'));
+    if let Some(rules) = rules {
+        rules.finish();
+    }
+    code
 }
 
 fn run(mut cmd: Command, name: &str) -> Result<ExitCode> {
@@ -270,6 +352,7 @@ mod tests {
     fn pane_kinds_round_trip() {
         for kind in [
             PaneKind::FleetOrchestrator,
+            PaneKind::FleetCodexOrchestrator,
             PaneKind::OrchestrationOrchestrator,
             PaneKind::OrchestrationClaude,
             PaneKind::OrchestrationCodex,
@@ -277,6 +360,47 @@ mod tests {
             assert_eq!(kind.as_str().parse::<PaneKind>().unwrap(), kind);
         }
         assert!("nonsense".parse::<PaneKind>().is_err());
+    }
+
+    /// `herdr-fleet` picks the Claude/Fable orchestrator, `herdr-fleet codex`
+    /// the Codex/Astra one, and a typo is refused rather than quietly defaulted.
+    #[test]
+    fn fleet_flavors_parse_from_what_a_user_types() {
+        for word in ["cc", "claude", "fable", "CC", "Claude"] {
+            assert_eq!(word.parse::<FleetFlavor>().unwrap(), FleetFlavor::Claude, "{word}");
+        }
+        for word in ["codex", "astra", "CODEX"] {
+            assert_eq!(word.parse::<FleetFlavor>().unwrap(), FleetFlavor::Codex, "{word}");
+        }
+        assert_eq!(FleetFlavor::default(), FleetFlavor::Claude, "a bare `fleet` is Fable");
+        let err = "opus".parse::<FleetFlavor>().unwrap_err();
+        assert!(err.contains("unknown fleet flavor 'opus'"), "{err}");
+    }
+
+    /// Each flavor must reach its own teammate file, or `horch fleet codex`
+    /// silently launches the Claude orchestrator.
+    #[test]
+    fn each_flavor_launches_its_own_orchestrator_pane() {
+        assert_eq!(FleetFlavor::Claude.pane_kind(), PaneKind::FleetOrchestrator);
+        assert_eq!(FleetFlavor::Codex.pane_kind(), PaneKind::FleetCodexOrchestrator);
+
+        let cmd = pane_command("orchestrator", FleetFlavor::Codex.pane_kind(), None).unwrap();
+        assert!(cmd.contains("fleet-codex-orchestrator"), "{cmd}");
+    }
+
+    /// The teammate each pane kind names must actually exist, or the pane comes
+    /// up, fails to resolve its briefing, and dies where nobody is watching.
+    #[test]
+    fn every_pane_kind_names_a_teammate_that_exists() {
+        let roster = Roster::builtin().unwrap();
+        for (kind, name) in [
+            (PaneKind::FleetOrchestrator, "orchestrator"),
+            (PaneKind::FleetCodexOrchestrator, "orchestrator-codex"),
+            (PaneKind::OrchestrationOrchestrator, "orchestration-orchestrator"),
+            (PaneKind::OrchestrationClaude, "orchestration-worker"),
+        ] {
+            assert!(roster.get(name).is_some(), "{kind:?} names a missing '{name}'");
+        }
     }
 
     #[test]
