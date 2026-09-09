@@ -52,8 +52,129 @@ pub fn command(
     match teammate.agent {
         Agent::Claude => claude_command(teammate, session, prompt, model_override),
         Agent::Codex => codex_command(teammate, session, prompt, model_override),
+        Agent::Opencode => opencode_command(teammate, session, prompt, model_override),
+        // pi and Prime Agent share a CLI surface - Prime is a fork of pi - but
+        // they have drifted where it matters most: pi can be told its session
+        // id, Prime cannot, and Prime runs a daemon. One builder, two dialects.
+        Agent::Pi => pi_family_command(agent::pi_bin(), teammate, session, prompt, model_override),
+        Agent::Prime => {
+            pi_family_command(agent::prime_bin(), teammate, session, prompt, model_override)
+        }
         Agent::None => bail!("teammate '{}' has agent: none and cannot be launched", teammate.name),
     }
+}
+
+/// OpenCode: `opencode --model provider/model --prompt "..."`.
+///
+/// The prompt is a FLAG here, not a trailing positional, so it cannot be eaten
+/// by a variadic - but `args` still goes before it, to keep every builder in
+/// this file ordered the same way.
+fn opencode_command(
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+) -> Result<Command> {
+    let mut cmd = Command::new(agent::opencode_bin());
+    cmd.arg("--model").arg(model_for(teammate, model_override)?);
+
+    // OpenCode calls reasoning effort a model "variant", and passes it straight
+    // through to the provider, so the teammate's `effort` needs no translation.
+    if let Some(effort) = &teammate.effort {
+        cmd.arg("--variant").arg(effort);
+    }
+    if let Some(mode) = teammate.permission_mode {
+        match mode.opencode_args() {
+            Some(args) => {
+                cmd.args(args);
+            }
+            None => bail!(
+                "teammate '{}' sets permission_mode '{}', which has no opencode equivalent",
+                teammate.name,
+                mode.as_str()
+            ),
+        }
+    }
+    // `--pure` drops external plugins while leaving the operator's providers and
+    // credentials alone - the same intent as `inherit_plugins: false` on claude.
+    if !teammate.inherit_plugins {
+        cmd.arg("--pure");
+    }
+    // Resume only. OpenCode mints its own `ses_...` ids, so a fresh session is
+    // started by saying nothing and harvested afterwards.
+    if let Session::Resume(id) = session {
+        cmd.arg("--session").arg(id);
+    }
+    cmd.args(&teammate.args);
+    cmd.arg("--prompt").arg(prompt);
+    Ok(cmd)
+}
+
+/// pi and Prime Agent: `<bin> --model <pattern> --thinking <level> -- "<prompt>"`.
+///
+/// Neither has an approval gate to bypass: their tools run, which is what makes
+/// them usable in a pane nobody is watching. `permission_mode` therefore has
+/// nothing to map onto, and the roster check rejects it rather than pretending.
+fn pi_family_command(
+    bin: std::path::PathBuf,
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+) -> Result<Command> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("--model").arg(model_for(teammate, model_override)?);
+
+    if let Some(effort) = &teammate.effort {
+        cmd.arg("--thinking").arg(effort);
+    }
+    if let Some(tools) = &teammate.tools {
+        // `Some([])` means "no tools at all", which is its own flag here rather
+        // than an empty list.
+        if tools.is_empty() {
+            cmd.arg("--no-tools");
+        } else {
+            cmd.arg("--tools").arg(tools.join(","));
+        }
+    }
+    // `--exclude-tools` is pi's; Prime 0.9.4 has no denylist, and the roster
+    // check rejects `disallowed_tools` on a Prime teammate rather than dropping
+    // it here, so this only ever fires for pi.
+    if !teammate.disallowed_tools.is_empty() && teammate.agent.takes_tool_denylist() {
+        cmd.arg("--exclude-tools").arg(teammate.disallowed_tools.join(","));
+    }
+    // Discovery of everything the repo or the operator might have lying around.
+    // Nothing here is on by default in a fleet: a worker with one narrow job
+    // should not inherit a project's extensions or the operator's skills.
+    if !teammate.inherit_plugins {
+        cmd.arg("--no-extensions")
+            .arg("--no-skills")
+            .arg("--no-prompt-templates")
+            .arg("--no-themes");
+    }
+
+    match session {
+        // pi's `--session-id` creates the session if it does not exist, so a
+        // fresh launch and a resume are the same flag with a different id.
+        // Prime has no such flag: `horch worker` gives it a `--session-dir` it
+        // owns instead, and reads back whatever session appears there.
+        Session::Fresh(id) if teammate.agent.mints_session_id() => {
+            cmd.arg("--session-id").arg(id);
+        }
+        Session::Resume(id) => {
+            if teammate.agent.mints_session_id() {
+                cmd.arg("--session-id").arg(id);
+            } else {
+                cmd.arg("--resume").arg(id);
+            }
+        }
+        Session::Fresh(_) | Session::Unmanaged => {}
+    }
+    cmd.args(&teammate.args);
+    // `--` ends option parsing: without it a prompt beginning with a dash would
+    // be read as a flag.
+    cmd.arg("--").arg(prompt);
+    Ok(cmd)
 }
 
 fn model_for<'a>(teammate: &'a Teammate, override_: Option<&'a str>) -> Result<&'a str> {
@@ -289,6 +410,84 @@ mod tests {
         assert!(a.windows(2).any(|w| w == ["-s", "workspace-write"]), "{a:?}");
         assert_eq!(a.last().unwrap(), "BRIEFING");
         assert_ne!(a[0], "resume", "a fresh orchestrator is not a resume");
+    }
+
+    /// OpenCode takes its prompt as a FLAG, and its reasoning effort is a
+    /// provider "variant". A worker also needs `--auto`, or it stops on the
+    /// first permission prompt in a pane nobody is watching.
+    #[test]
+    fn opencode_passes_the_prompt_as_a_flag_and_auto_approves() {
+        let r = Roster::builtin().unwrap();
+        let cmd = command(
+            r.require("opencode-pickle").unwrap(),
+            Session::Unmanaged,
+            "BRIEFING",
+            None,
+        )
+        .unwrap();
+        let a = argv(&cmd);
+        assert!(a.windows(2).any(|w| w == ["--model", "opencode/big-pickle"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["--variant", "high"]), "{a:?}");
+        assert!(a.contains(&"--auto".to_string()), "{a:?}");
+        assert!(a.contains(&"--pure".to_string()), "inherit_plugins: false: {a:?}");
+        assert_eq!(a[a.len() - 2], "--prompt");
+        assert_eq!(a.last().unwrap(), "BRIEFING");
+    }
+
+    /// OpenCode mints its own `ses_...` ids, so a fresh launch says nothing
+    /// about sessions and a resume passes the harvested one back.
+    #[test]
+    fn opencode_only_names_a_session_when_resuming() {
+        let r = Roster::builtin().unwrap();
+        let t = r.require("opencode-ultra").unwrap();
+        let fresh = argv(&command(t, Session::Fresh("ignored"), "p", None).unwrap());
+        assert!(!fresh.contains(&"--session".to_string()), "{fresh:?}");
+        let resumed = argv(&command(t, Session::Resume("ses_abc"), "p", None).unwrap());
+        assert!(resumed.windows(2).any(|w| w == ["--session", "ses_abc"]), "{resumed:?}");
+    }
+
+    /// pi CAN be told its session id, so the ledger knows the resume handle
+    /// before the pane starts - the same deal claude gives. `--` fences the
+    /// prompt off from option parsing.
+    #[test]
+    fn pi_takes_a_caller_minted_session_and_fences_its_prompt() {
+        let r = Roster::builtin().unwrap();
+        let cmd = command(r.require("pi").unwrap(), Session::Fresh("sid-1"), "-x BRIEF", None)
+            .unwrap();
+        let a = argv(&cmd);
+        assert!(a.windows(2).any(|w| w == ["--model", "ollama/qwen3.8"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["--thinking", "high"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["--session-id", "sid-1"]), "{a:?}");
+        assert!(a.contains(&"--no-extensions".to_string()), "{a:?}");
+        assert_eq!(a[a.len() - 2], "--", "a prompt starting with - must not parse as a flag");
+        assert_eq!(a.last().unwrap(), "-x BRIEF");
+    }
+
+    /// Prime has no `--session-id` (verified against 0.9.4), so a fresh launch
+    /// must not invent one - `horch worker` owns its session directory instead.
+    #[test]
+    fn prime_never_claims_to_set_a_session_id() {
+        let r = Roster::builtin().unwrap();
+        let t = r.require("prime").unwrap();
+        let fresh = argv(&command(t, Session::Fresh("sid-1"), "p", None).unwrap());
+        assert!(!fresh.contains(&"--session-id".to_string()), "{fresh:?}");
+        assert!(!fresh.contains(&"sid-1".to_string()), "{fresh:?}");
+        let resumed = argv(&command(t, Session::Resume("/state/s.jsonl"), "p", None).unwrap());
+        assert!(
+            resumed.windows(2).any(|w| w == ["--resume", "/state/s.jsonl"]),
+            "{resumed:?}"
+        );
+    }
+
+    /// A permission_mode with no counterpart must stop the launch rather than
+    /// quietly running more permissively than the file asked for.
+    #[test]
+    fn a_mode_the_agent_cannot_express_is_refused() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("opencode-pickle").unwrap().clone();
+        t.permission_mode = Some(crate::teammates::PermissionMode::Plan);
+        let err = command(&t, Session::Unmanaged, "p", None).unwrap_err().to_string();
+        assert!(err.contains("no opencode equivalent"), "{err}");
     }
 
     fn fake_home(settings_json: &str) -> (tempfile::TempDir, HomeGuard) {

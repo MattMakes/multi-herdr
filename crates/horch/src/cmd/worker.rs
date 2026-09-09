@@ -22,6 +22,7 @@ use horch_core::herdr::Herdr;
 use horch_core::ledger::Ledger;
 use horch_core::launch::{self, Session};
 use horch_core::mailbox::{Brief, Mailbox};
+use horch_core::opencode;
 use horch_core::prompts;
 use horch_core::teammates::{Agent, Roster, Teammate};
 
@@ -109,7 +110,7 @@ fn launch_agent(
     launch::apply_env(teammate);
     // Held across the launch: it points codex at a private CODEX_HOME holding
     // only this worker's rules, and is finished once the CLI has exited.
-    let rules = if teammate.agent == Agent::Codex {
+    let rules = if teammate.agent.uses_execpolicy() {
         Some(codex::Rules::install(&agent::home_dir(), &brief.role, roster.exec_rules())?)
     } else {
         None
@@ -117,23 +118,39 @@ fn launch_agent(
 
     let session = if brief.resume {
         Session::Resume(&brief.session_id)
-    } else if teammate.agent == Agent::Claude {
+    } else if teammate.agent.mints_session_id() {
         Session::Fresh(&brief.session_id)
     } else {
-        // A fresh codex session mints its id itself.
+        // A fresh codex or opencode session mints its id itself.
         Session::Unmanaged
+    };
+
+    // Prime Agent supervises its own sessions, so it gets a socket and a session
+    // directory that belong to this pane alone - otherwise `horch done` would
+    // leave its daemon running and the fleet would accumulate one per spawn.
+    let daemon = if teammate.agent.runs_a_daemon() {
+        Some(horch_core::prime::Daemon::install(
+            &horch_core::ledger::state_root(),
+            &brief.role,
+        )?)
+    } else {
+        None
     };
 
     let mut cmd = launch::command(teammate, session, prompt, None)?;
     if let Some(rules) = &rules {
         rules.apply(&mut cmd);
     }
+    if let Some(daemon) = &daemon {
+        cmd.arg("--daemon-socket").arg(daemon.socket());
+        cmd.arg("--session-dir").arg(daemon.sessions_dir());
+    }
     let name = format!("{:?}", cmd.get_program());
 
     // Harvest runs only for a fresh codex session, in the background, while
     // codex holds the foreground.
-    let harvest = if teammate.agent == Agent::Codex && !brief.resume {
-        Some(start_harvest(mailbox, brief)?)
+    let harvest = if teammate.agent.harvests_session_id() && !brief.resume {
+        Some(start_harvest(mailbox, brief, teammate.agent, daemon.clone())?)
     } else {
         None
     };
@@ -144,6 +161,11 @@ fn launch_agent(
     }
     if let Some(rules) = rules {
         rules.finish();
+    }
+    // After the CLI has exited, not before: stopping the daemon early would take
+    // the session it is still writing with it.
+    if let Some(daemon) = daemon {
+        daemon.finish();
     }
     code
 }
@@ -163,7 +185,12 @@ impl Harvest {
 ///
 /// Prefers herdr's native `agent_session` (available when the codex integration is
 /// installed), falling back to the newest rollout file for this project dir.
-fn start_harvest(mailbox: &Mailbox, brief: &Brief) -> Result<Harvest> {
+fn start_harvest(
+    mailbox: &Mailbox,
+    brief: &Brief,
+    agent: Agent,
+    daemon: Option<horch_core::prime::Daemon>,
+) -> Result<Harvest> {
     let marker = mailbox.launch_marker(&brief.role);
     std::fs::write(&marker, b"")
         .with_context(|| format!("writing launch marker {}", marker.display()))?;
@@ -195,11 +222,31 @@ fn start_harvest(mailbox: &Mailbox, brief: &Brief) -> Result<Harvest> {
                 .and_then(|p| p.agent_session_id());
 
             if session_id.is_none() {
-                session_id = codex::find_rollouts(&sessions_dir, &project_dir, since)
+                // Newest first, and skipping ids already claimed by a
+                // concurrently spawned worker. Codex records sessions as
+                // rollout files; OpenCode answers `session list`.
+                let candidates: Vec<String> = match agent {
+                    Agent::Opencode => opencode::find_sessions(&project_dir, since)
+                        .into_iter()
+                        .map(|c| c.session_id)
+                        .collect(),
+                    // Prime writes into a directory this pane owns, so the
+                    // session there is unambiguously this worker's. The resume
+                    // handle is the file path, which is what `--resume` takes.
+                    Agent::Prime => daemon
+                        .as_ref()
+                        .and_then(|d| horch_core::prime::find_session(d.sessions_dir()))
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .into_iter()
+                        .collect(),
+                    _ => codex::find_rollouts(&sessions_dir, &project_dir, since)
+                        .into_iter()
+                        .map(|c| c.session_id)
+                        .collect(),
+                };
+                session_id = candidates
                     .into_iter()
-                    // Skip ids already claimed by a concurrently spawned worker.
-                    .find(|c| !ledger.has_session(&c.session_id).unwrap_or(false))
-                    .map(|c| c.session_id);
+                    .find(|id| !ledger.has_session(id).unwrap_or(false));
             }
 
             if let Some(session_id) = session_id {
@@ -218,7 +265,7 @@ fn start_harvest(mailbox: &Mailbox, brief: &Brief) -> Result<Harvest> {
         {
             let _ = writeln!(
                 file,
-                "horch worker[{role}]: could not capture codex session id \
+                "horch worker[{role}]: could not capture the {agent} session id \
                  (resume disabled for this session)"
             );
         }

@@ -29,6 +29,21 @@ pub fn codex_bin() -> PathBuf {
     env_path("HORCH_CODEX_BIN").unwrap_or_else(|| PathBuf::from("codex"))
 }
 
+/// Which OpenCode CLI to launch. `$HORCH_OPENCODE_BIN` overrides.
+pub fn opencode_bin() -> PathBuf {
+    env_path("HORCH_OPENCODE_BIN").unwrap_or_else(|| PathBuf::from("opencode"))
+}
+
+/// Which pi CLI to launch. `$HORCH_PI_BIN` overrides.
+pub fn pi_bin() -> PathBuf {
+    env_path("HORCH_PI_BIN").unwrap_or_else(|| PathBuf::from("pi"))
+}
+
+/// Which Prime Agent CLI to launch. `$HORCH_PRIME_BIN` overrides.
+pub fn prime_bin() -> PathBuf {
+    env_path("HORCH_PRIME_BIN").unwrap_or_else(|| PathBuf::from("prime-agent"))
+}
+
 fn env_path(key: &str) -> Option<PathBuf> {
     std::env::var_os(key)
         .filter(|v| !v.is_empty())

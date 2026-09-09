@@ -10,7 +10,7 @@ use horch_core::herdr::{Direction, Herdr};
 use horch_core::ledger::{Ledger, STATUS_WORKING};
 use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::paneshell::PaneShell;
-use horch_core::teammates::{Agent, Roster, Teammate};
+use horch_core::teammates::{Roster, Teammate};
 
 pub struct SpawnArgs {
     pub teammate: Option<String>,
@@ -103,11 +103,11 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
             Plan {
                 model: teammate.model.clone().unwrap_or_default(),
                 record_id: horch_core::mint_uuid(),
-                // Claude accepts a caller-minted session id, so the ledger knows
-                // the resume handle before the agent even starts. Codex only
-                // reveals its id after launch; `horch worker` harvests it into
-                // the ledger asynchronously.
-                session_id: if teammate.agent == Agent::Claude {
+                // Claude, pi and Prime accept a caller-minted session id, so
+                // the ledger knows the resume handle before the agent even
+                // starts. Codex and OpenCode reveal theirs only after launch;
+                // `horch worker` harvests those into the ledger asynchronously.
+                session_id: if teammate.agent.mints_session_id() {
                     horch_core::mint_uuid()
                 } else {
                     String::new()

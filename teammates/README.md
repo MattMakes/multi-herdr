@@ -68,12 +68,68 @@ every path exists before a fleet tries to use it.
 
 ## The generics
 
-`sonnet`, `opus`, `codex-sol`, `codex-terra` are the fallbacks: what
-the orchestrator spawns when no specialist's `brief_description` matches the
-work. They are named after the current tiers on purpose, so `horch spawn opus`,
-the ledger's `tier` field, and the tier table in the orchestrator briefing all
-keep meaning the same thing. There is no `fable` and no `astra` generic: those
-tiers belong to the orchestrator.
+`sonnet`, `opus`, `codex-sol`, `codex-terra`, `opencode-ultra`,
+`opencode-pickle`, `opencode-lightning`, `pi` and `prime` are the fallbacks:
+what the orchestrator spawns when no specialist's `brief_description` matches
+the work. They are named after the tier or the harness on purpose, so
+`horch spawn opus`, the ledger's `tier` field, and the roster in the
+orchestrator briefing all keep meaning the same thing. There is no `fable` and
+no `astra` generic: those tiers belong to the orchestrator.
+
+They are not one ladder but three, and the orchestrator is choosing on cost and
+confidentiality as much as on capability:
+
+| | pays with | send it |
+|---|---|---|
+| `sonnet` `opus` `codex-*` `prime` | money | anything the project already trusts these providers with |
+| `opencode-*` | **your prompts** | public and open-source work only |
+| `pi` | your own GPU | anything, including what must not leave the machine |
+
+## Free tiers and `trains_on_input`
+
+The `opencode-*` teammates run on OpenCode's free models. Free means the
+provider trains on what it is sent, so every one of them sets
+`trains_on_input: true`. That appends the shared block from
+`_base/fleet-worker.md` to the worker's briefing: treat the pane as public,
+work only with public or open-source code, and report `BLOCKED` rather than
+read anything proprietary into it.
+
+Set the flag on any teammate whose provider trains on input, and say so in
+`brief_description` too - the flag reaches the worker, the description reaches
+the orchestrator deciding who gets the task, and the decision needs both ends.
+Leave it off for paid, local and self-hosted models: a warning that appears
+everywhere stops being read anywhere.
+
+## Running `pi` on local models
+
+`pi` needs an Ollama provider before `ollama/qwen3.8` resolves. Add
+`~/.pi/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434/v1",
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "models": [
+        {
+          "id": "qwen3.8",
+          "name": "Qwen3.8 27B (local)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 32000,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}
+```
+
+`pi --list-models | grep ollama` confirms it. The `id` must match the Ollama tag
+(`ollama list`), and `pi.md`'s `model:` must match `ollama/<id>`.
 
 ## The two orchestrators
 

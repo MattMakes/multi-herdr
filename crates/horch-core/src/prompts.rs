@@ -101,6 +101,20 @@ pub fn worker_prompt(
         out.push_str(&render(&base.skills_instruction, &skill_vars)?);
     }
 
+    // Last of the shared blocks, so it sits closest to the task: a worker that
+    // reads one more thing before starting should read this one.
+    if teammate.trains_on_input {
+        if base.trains_on_input.trim().is_empty() {
+            bail!(
+                "teammate '{}' sets trains_on_input but base '{base_name}' has no \
+                 trains_on_input block to render it into",
+                teammate.name
+            );
+        }
+        out.push_str("\n\n");
+        out.push_str(&render(&base.trains_on_input, &vars)?);
+    }
+
     if let Some(first) = &teammate.first_instruction {
         let first = render(first, &vars)?;
         out.push_str("\n\n");
@@ -223,6 +237,51 @@ mod tests {
         let out = worker_prompt(&r, &with_skills, "s-1", "t", false).unwrap();
         assert!(out.contains("herdr-worker, code-review"), "{out}");
         assert!(out.len() > plain.len());
+    }
+
+    /// A free tier's constraint has to reach the WORKER, not just the roster
+    /// line the orchestrator reads. A worker that never learns its provider
+    /// trains on input will happily read a private repo into it.
+    #[test]
+    fn a_free_tier_worker_is_told_what_it_is_running_on() {
+        let r = roster();
+        for name in ["opencode-ultra", "opencode-pickle", "opencode-lightning"] {
+            let t = r.require(name).unwrap();
+            assert!(t.trains_on_input, "{name} must declare it");
+            let out = worker_prompt(&r, t, "oc-1", "do a thing", false).unwrap();
+            assert!(out.contains("trains on what it is sent"), "{name}:\n{out}");
+            // And it must know what to do about it, by name, not just be warned.
+            assert!(out.contains(r#"horch tell orchestrator "[oc-1] BLOCKED"#), "{name}");
+        }
+        // Paid and local workers are not warned: the block is opt-in, and a
+        // warning that appears everywhere stops being read anywhere.
+        for quiet in ["opus", "sonnet", "codex-sol", "pi", "prime"] {
+            let t = r.require(quiet).unwrap();
+            assert!(!t.trains_on_input, "{quiet} must not declare it");
+            let out = worker_prompt(&r, t, "w-1", "t", false).unwrap();
+            assert!(!out.contains("trains on what it is sent"), "{quiet} was warned:\n{out}");
+        }
+    }
+
+    /// The orchestrator picks from `brief_description` alone, so the constraint
+    /// has to be visible there too - it decides what a free worker is sent.
+    #[test]
+    fn the_orchestrator_sees_which_teammates_train_on_input() {
+        let r = roster();
+        let lines = r.roster_lines();
+        for t in r.offered() {
+            if t.trains_on_input {
+                let line = lines
+                    .lines()
+                    .find(|l| l.trim_start().starts_with(&t.name))
+                    .unwrap_or_else(|| panic!("{} missing from the roster", t.name));
+                assert!(
+                    line.contains("TRAINS ON YOUR INPUT") || line.contains("TRAINS ON INPUT"),
+                    "{} is offered without warning the orchestrator: {line}",
+                    t.name
+                );
+            }
+        }
     }
 
     #[test]

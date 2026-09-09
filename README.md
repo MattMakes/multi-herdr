@@ -120,6 +120,9 @@ registry to update.
 | `backend-developer`    | Claude | Opus   | JS/TS, Python, Go, C#, Rust services and APIs |
 | `qa-engineer`          | Claude | Sonnet | Tests, e2e harnesses, bug reproduction       |
 | `sonnet` `opus` `codex-sol` `codex-terra` | | | Generic fallbacks |
+| `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | Free workers, for public/OSS work |
+| `pi`                   | pi     | local  | Runs on your own hardware; nothing leaves the machine |
+| `prime`                | Prime Agent | Opus | One persistent Python kernel; long, exploratory runs |
 
 The two orchestrators are teammate files too, and hidden from the roster:
 `orchestrator` (Claude, Fable) and `orchestrator-codex` (Codex, Astra). They
@@ -156,6 +159,58 @@ tokens per turn for skills it must never invoke.
 instrument: it drops the operator's tuning along with the plugins and usually
 costs more context than it saves. `horch` keeps the status line alive through it
 regardless, since a pane without one is blind on context and cost.
+
+### Five harnesses, one roster
+
+A teammate's `agent:` picks which CLI its pane runs. They differ in almost
+everything - how a prompt is passed, whether horch can name the session before
+launch, what "run unattended" means - so `launch.rs` has one builder per agent
+and `Agent` answers the rest as capabilities rather than as `if agent == ...`
+scattered through the code.
+
+| agent | prompt | model | effort | session |
+|---|---|---|---|---|
+| `claude`   | trailing positional | `--model` alias | `--effort` | horch mints `--session-id` |
+| `codex`    | trailing positional | `-c model="..."` | `-c model_reasoning_effort` | harvested from rollout files |
+| `opencode` | `--prompt` flag | `-m provider/model` | `--variant` | harvested from `opencode session list --format json` |
+| `pi`       | after `--` | `--model provider/id` | `--thinking` | horch mints `--session-id` |
+| `prime`    | after `--` | `--model provider/id` | `--thinking` | horch owns the `--session-dir` and reads it back |
+
+Two of those need more than flags:
+
+**OpenCode** needs `--auto`, or a worker stops at the first permission prompt in
+a pane nobody is watching. `permission_mode: plan` has no OpenCode equivalent at
+all, so it is refused rather than quietly downgraded.
+
+**Prime Agent supervises its own sessions.** Verified on 0.9.4: even a `--print`
+run that failed authentication left a background service alive after the process
+exited. herdr already treats a pane as an agent's lifetime, so left alone
+`horch done` would close the pane and leave the daemon running - one per spawn,
+forever. Every Prime pane therefore gets its own `--daemon-socket`, and horch
+stops exactly that service when the CLI exits. `prime-agent shutdown` is not
+usable here: it stops every agent on the machine, including other panes in the
+same fleet.
+
+pi and Prime have no approval gate at all - their tools simply run, which is what
+makes them usable unattended. `permission_mode` is refused on both, because
+setting it would imply a restraint that does not exist.
+
+### Free models are paid for with your prompts
+
+The `opencode-*` tiers cost nothing because the provider trains on what it is
+sent. That is a fine trade for public and open-source work and a bad one for
+anything else, so it is written down in two places rather than assumed:
+
+- their `brief_description` says `TRAINS ON YOUR INPUT`, which is the line the
+  **orchestrator** reads when it decides who gets a task;
+- `trains_on_input: true` in the teammate file appends a block from
+  `_base/fleet-worker.md` to the **worker's own** briefing, telling it to treat
+  the pane as public and to report `BLOCKED` rather than read anything
+  proprietary into it.
+
+One field, one copy of the prose, and both ends of the decision covered. Set it
+on any teammate whose provider trains on input; leave it off for paid, local and
+self-hosted models, because a warning that appears everywhere stops being read.
 
 ### Starting codex panes clean
 
@@ -242,6 +297,9 @@ junction, so an update never overwrites a running `herdr.exe`.
 |----------------------|---------------------------------------------------------------|
 | `HORCH_CLAUDE_BIN`   | Which Claude CLI to launch. Defaults to `cpx` if on PATH, else `claude` |
 | `HORCH_CODEX_BIN`    | Which Codex CLI to launch. Defaults to `codex`                 |
+| `HORCH_OPENCODE_BIN` | Which OpenCode CLI to launch. Defaults to `opencode`           |
+| `HORCH_PI_BIN`       | Which pi CLI to launch. Defaults to `pi`                       |
+| `HORCH_PRIME_BIN`    | Which Prime Agent CLI to launch. Defaults to `prime-agent`     |
 | `HORCH_STATE_DIR`    | Where ledgers live                                             |
 | `HORCH_PROJECT_DIR`  | Which project a ledger belongs to. Defaults to the cwd         |
 | `HORCH_WORKSPACE_ID` | Target workspace, when not running inside a herdr pane         |
