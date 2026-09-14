@@ -12,5 +12,12 @@ serde_yaml.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
 
+# Only for SIGTERM to a Prime Agent daemon this process started. Spawning
+# `kill(1)` would work too, but a process spawn to stop a process - on a path
+# that runs every time a worker pane exits - is worse than one already-compiled
+# crate.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"

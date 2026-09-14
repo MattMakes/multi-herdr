@@ -30,22 +30,32 @@ hidden: false
 base: fleet-worker
 
 # ─── which CLI, which model ──────────────────────────────────────────────────
-# agent: claude | codex | none   ("none" = the smoke fake, spends no tokens)
+# agent: claude | codex | opencode | pi | prime | none
+#   ("none" = the smoke fake, spends no tokens)
 # Session handling is DERIVED from agent and is not configurable here:
-#   claude -> horch mints the session id, passes --session-id / --resume
-#   codex  -> codex mints its own id, horch harvests it from the rollout file
+#   claude   -> horch mints the session id, passes --session-id / --resume
+#   pi       -> same, via pi's --session-id ("create it if missing")
+#   codex    -> codex mints its own id, horch harvests it from the rollout file
+#   opencode -> harvested from `opencode session list --format json`
+#   prime    -> no --session-id at all; horch gives it a --session-dir it owns
+#               and reads back the session that appears there
 agent: claude
 
-# claude: a family alias (sonnet | opus) so it tracks the latest.
-# codex:  a literal slug (gpt-5.6-sol | gpt-5.6-terra); no alias mechanism.
+# claude:   a family alias (sonnet | opus) so it tracks the latest.
+# codex:    a literal slug (gpt-5.6-sol | gpt-5.6-terra); no alias mechanism.
+# opencode: provider/model, e.g. opencode/big-pickle. `opencode models` lists
+#           them; the `opencode/...` provider is the free tier.
+# pi/prime: provider/model too, e.g. ollama/qwen3.8 or anthropic/claude-opus-5.
 # Not fable, and not gpt-6-astra: both top tiers are reserved for whichever
 # orchestrator is running, and `horch spawn` refuses to start a worker on
 # either. A fleet has exactly one top-tier session. Reach for opus or
 # codex-sol instead.
 model: opus
 
-# claude -> `--effort <level>`   (low | medium | high | xhigh)
-# codex  -> `-c model_reasoning_effort="<level>"`
+# claude   -> `--effort <level>`   (low | medium | high | xhigh)
+# codex    -> `-c model_reasoning_effort="<level>"`
+# opencode -> `--variant <level>`  (minimal | high | max)
+# pi/prime -> `--thinking <level>` (off | minimal | low | medium | high | xhigh | max)
 # Same field, different mechanism per agent. Omit to take the agent's default.
 effort: xhigh
 
@@ -164,6 +174,13 @@ env: {}
 # Optional. Rendered as the very last line the teammate reads, after the task.
 # Use it for a mandatory first move. Placeholders: {role} {task} {model}
 # {session} {project_dir} {record_id} {plan_file}
+# Does this teammate's provider train on what it is sent? True for the free
+# tiers, where the prompts are the payment. It appends the shared warning block
+# from `_base/fleet-worker.md` to the briefing, so the constraint reaches the
+# WORKER as an instruction - `brief_description` only reaches the orchestrator.
+# Leave false for anything paid, local, or self-hosted.
+trains_on_input: false
+
 first_instruction:
 ---
 

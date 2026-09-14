@@ -23,7 +23,9 @@ pub mod launch;
 pub mod layout;
 pub mod ledger;
 pub mod mailbox;
+pub mod opencode;
 pub mod paneshell;
+pub mod prime;
 pub mod prompts;
 pub mod teammates;
 

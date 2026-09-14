@@ -301,7 +301,7 @@ pub fn pane_launch(
 
     let prompt = prompts::agent_prompt(&roster, &teammate, role)?;
     launch::apply_env(&teammate);
-    let rules = if teammate.agent == Agent::Codex {
+    let rules = if teammate.agent.uses_execpolicy() {
         // An orchestrator runs a different set of commands than a worker, and
         // codex refuses anything its execpolicy does not name. Install the set
         // this pane actually needs, not both.

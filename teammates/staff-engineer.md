@@ -12,7 +12,7 @@ subagent_model: haiku
 # plugins are switched off so only the two that matter here are loaded.
 inherit_plugins: false
 plugin_dirs:
-  - ~/projects/public-skills/plugins/ddd
+  - ~/projects/matts-robot-skills/plugins/ddd
   - ~/projects/public-skills/plugins/dev
 skills: [ddd-workflow, create-plan, breakdown]
 mcp_servers: {}
