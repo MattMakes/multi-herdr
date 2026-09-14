@@ -12,7 +12,7 @@ permission_mode: acceptEdits
 inherit_plugins: false
 disallowed_tools: [Edit, Write, NotebookEdit]
 plugin_dirs:
-  - ~/projects/public-skills/plugins/ddd
+  - ~/projects/matts-robot-skills/plugins/ddd
   - ~/projects/public-skills/plugins/tools
 skills: [code-review-excellence, api-design-principles]
 mcp_servers: {}
