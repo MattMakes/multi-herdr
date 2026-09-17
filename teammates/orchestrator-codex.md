@@ -4,9 +4,10 @@ brief_description: The fleet orchestrator, Codex flavor. Never spawned as a work
 hidden: true
 base: fleet-orchestrator
 agent: codex
+phase: plan
 model: gpt-6-astra
 effort: xhigh
-permission_mode: acceptEdits
+permission_mode: auto
 
 # No inherit_plugins, mcp_servers or setting_sources here: those are claude-only
 # levers, and `horch teammates --check` rejects them on a codex teammate. Codex

@@ -27,6 +27,7 @@ pub mod opencode;
 pub mod paneshell;
 pub mod prime;
 pub mod prompts;
+pub mod skills;
 pub mod teammates;
 
 /// Mint a session or record id.

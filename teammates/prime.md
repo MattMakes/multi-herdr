@@ -4,6 +4,7 @@ brief_description: Prime Agent worker. One persistent Python kernel as its only 
 generic: true
 base: fleet-worker
 agent: prime
+phase: implementation
 model: anthropic/claude-opus-5
 effort: high
 

@@ -19,8 +19,8 @@ use anyhow::{bail, Context, Result};
 use horch_core::agent;
 use horch_core::codex;
 use horch_core::herdr::Herdr;
-use horch_core::ledger::Ledger;
 use horch_core::launch::{self, Session};
+use horch_core::ledger::Ledger;
 use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::opencode;
 use horch_core::prompts;
@@ -108,10 +108,15 @@ fn launch_agent(
     prompt: &str,
 ) -> Result<ExitCode> {
     launch::apply_env(teammate);
+    let skills = horch_core::skills::Bundle::install(&horch_core::ledger::state_root(), teammate)?;
     // Held across the launch: it points codex at a private CODEX_HOME holding
     // only this worker's rules, and is finished once the CLI has exited.
     let rules = if teammate.agent.uses_execpolicy() {
-        Some(codex::Rules::install(&agent::home_dir(), &brief.role, roster.exec_rules())?)
+        Some(codex::Rules::install(
+            &agent::home_dir(),
+            &brief.role,
+            roster.exec_rules(),
+        )?)
     } else {
         None
     };
@@ -137,20 +142,36 @@ fn launch_agent(
         None
     };
 
-    let mut cmd = launch::command(teammate, session, prompt, None)?;
-    if let Some(rules) = &rules {
-        rules.apply(&mut cmd);
-    }
+    let mut launch_teammate = teammate.clone();
     if let Some(daemon) = &daemon {
-        cmd.arg("--daemon-socket").arg(daemon.socket());
-        cmd.arg("--session-dir").arg(daemon.sessions_dir());
+        // pi-family builders append `--` before the prompt. Daemon flags must
+        // be added before that delimiter or Prime treats them as prompt text.
+        launch_teammate.args.extend([
+            "--daemon-socket".into(),
+            daemon.socket().to_string_lossy().into_owned(),
+            "--session-dir".into(),
+            daemon.sessions_dir().to_string_lossy().into_owned(),
+        ]);
+    }
+    let mut cmd =
+        launch::command_with_skills(&launch_teammate, session, prompt, None, skills.as_ref())?;
+    if let Some(rules) = &rules {
+        if let Some(skills) = &skills {
+            rules.attach_skills(&skills.skills_dir())?;
+        }
+        rules.apply(&mut cmd);
     }
     let name = format!("{:?}", cmd.get_program());
 
     // Harvest runs only for a fresh codex session, in the background, while
     // codex holds the foreground.
     let harvest = if teammate.agent.harvests_session_id() && !brief.resume {
-        Some(start_harvest(mailbox, brief, teammate.agent, daemon.clone())?)
+        Some(start_harvest(
+            mailbox,
+            brief,
+            teammate.agent,
+            daemon.clone(),
+        )?)
     } else {
         None
     };
@@ -282,7 +303,10 @@ fn start_harvest(
 /// `horch` is reachable on the PATH the briefings promise. Calling the library
 /// functions directly would pass even when no agent could find the binary.
 fn run_smoke() -> Result<ExitCode> {
-    run_horch(&["note", "smoke: worker launched, brief read, ledger reachable"])?;
+    run_horch(&[
+        "note",
+        "smoke: worker launched, brief read, ledger reachable",
+    ])?;
     std::thread::sleep(Duration::from_secs(1));
     // `done` closes this pane, which kills this process tree; nothing after it runs.
     run_horch(&["done", "smoke: machinery verified end to end"])?;

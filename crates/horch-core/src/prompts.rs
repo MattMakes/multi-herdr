@@ -82,10 +82,8 @@ pub fn worker_prompt(
 
     let mut out = render(&base.body, &vars)?;
 
-    // Skills are not a launch flag: there is no `claude --skill`. They are
-    // discovered from plugin directories and invoked as /name, so the only way
-    // to make a teammate use one is to tell it to. The wording lives in the
-    // base file's `skills_instruction`, not here.
+    // Explicit additions are named here; native discovery and phase routing
+    // are installed by the launch bundle. Bodies load only when relevant.
     if !teammate.skills.is_empty() {
         if base.skills_instruction.trim().is_empty() {
             bail!(
@@ -200,7 +198,10 @@ mod tests {
                 "horch-assign",
                 "horch-sessions",
             ] {
-                assert!(!text.contains(stale), "stale command {stale} in briefing:\n{text}");
+                assert!(
+                    !text.contains(stale),
+                    "stale command {stale} in briefing:\n{text}"
+                );
             }
         }
     }
@@ -220,7 +221,10 @@ mod tests {
     fn idle_worker_is_told_to_announce_readiness() {
         let r = roster();
         let p = worker_prompt(&r, r.require("opus").unwrap(), "opus-1", "", false).unwrap();
-        assert!(p.contains(r#"horch tell orchestrator "[opus-1] ready""#), "{p}");
+        assert!(
+            p.contains(r#"horch tell orchestrator "[opus-1] ready""#),
+            "{p}"
+        );
     }
 
     /// `skills` has to reach the prompt, or a teammate that declares one
@@ -251,7 +255,10 @@ mod tests {
             let out = worker_prompt(&r, t, "oc-1", "do a thing", false).unwrap();
             assert!(out.contains("trains on what it is sent"), "{name}:\n{out}");
             // And it must know what to do about it, by name, not just be warned.
-            assert!(out.contains(r#"horch tell orchestrator "[oc-1] BLOCKED"#), "{name}");
+            assert!(
+                out.contains(r#"horch tell orchestrator "[oc-1] BLOCKED"#),
+                "{name}"
+            );
         }
         // Paid and local workers are not warned: the block is opt-in, and a
         // warning that appears everywhere stops being read anywhere.
@@ -259,7 +266,10 @@ mod tests {
             let t = r.require(quiet).unwrap();
             assert!(!t.trains_on_input, "{quiet} must not declare it");
             let out = worker_prompt(&r, t, "w-1", "t", false).unwrap();
-            assert!(!out.contains("trains on what it is sent"), "{quiet} was warned:\n{out}");
+            assert!(
+                !out.contains("trains on what it is sent"),
+                "{quiet} was warned:\n{out}"
+            );
         }
     }
 
@@ -291,7 +301,10 @@ mod tests {
         t.skills = vec!["planning".into()];
         t.first_instruction = Some("Read {role}'s plan file first.".into());
         let out = worker_prompt(&r, &t, "opus-1", "task", false).unwrap();
-        assert!(out.trim_end().ends_with("Read opus-1's plan file first."), "{out}");
+        assert!(
+            out.trim_end().ends_with("Read opus-1's plan file first."),
+            "{out}"
+        );
     }
 
     #[test]

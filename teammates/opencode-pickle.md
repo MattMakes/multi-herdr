@@ -4,6 +4,7 @@ brief_description: Free tier, balanced. TRAINS ON YOUR INPUT - public/OSS work o
 generic: true
 base: fleet-worker
 agent: opencode
+phase: implementation
 model: opencode/big-pickle
 effort: high
 permission_mode: acceptEdits

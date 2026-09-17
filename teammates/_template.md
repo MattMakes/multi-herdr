@@ -65,18 +65,12 @@ effort: xhigh
 subagent_model:
 
 # ─── skills ──────────────────────────────────────────────────────────────────
-# There is no `claude --skill <name>` flag: skills are DISCOVERED from plugin
-# directories and INVOKED as /skill-name. So this is two separate things.
-#
-# plugin_dirs -> `--plugin-dir <path>` (repeatable). Makes skills available.
-#                Omit for skills already installed in the user's ~/.claude.
-# skills      -> rendered into the prompt as an instruction to invoke them
-#                before starting. NOT a flag. Codex has no skills; setting
-#                this for an agent: codex teammate is a load-time error.
-#
-# Beware: an installed skill (e.g. herdr-worker) may fire on its own and
-# contradict the persona below. The skill wins, because it arrives as an
-# instruction. Keep personas to identity and scope; leave protocol to the base.
+# phase selects a portable repo-owned catalog on all five agent harnesses.
+# Values: research | plan | implementation | validation. null means no catalog.
+# `horch spawn --phase` overrides this; resume keeps its recorded phase.
+# skills adds named bundled skills to the phase catalog. Bodies load on demand.
+# plugin_dirs is a separate Claude-only extension for custom operator plugins.
+phase: null
 plugin_dirs: []
 skills: []
 
@@ -133,7 +127,7 @@ disallowed_tools: []
 # disable_skills -> --disable-slash-commands. Despite the help text ("Disable
 #   all skills") this is the whole slash-command dispatcher: it also removes
 #   the BUILT-IN /context, /config, /help, and there is no allowlist. Nothing
-#   shipped sets it. Never set it together with plugin_dirs; `--check` rejects
+#   shipped sets it. Never combine it with phase, skills, or plugin_dirs; `--check` rejects
 #   that combination.
 inherit_plugins: true
 disable_skills: false

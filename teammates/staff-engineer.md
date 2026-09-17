@@ -3,18 +3,16 @@ name: staff-engineer
 brief_description: Senior Staff/Systems Engineer. Writes deep implementation plans a junior can execute step by step.
 base: fleet-worker
 agent: claude
+phase: plan
 model: opus
 effort: xhigh
-permission_mode: acceptEdits
+permission_mode: auto
 subagent_model: haiku
 
 # Plans, not code: it reads widely and writes one file. The operator's global
-# plugins are switched off so only the two that matter here are loaded.
+# plugins are switched off; the portable plan skills are supplied by horch.
 inherit_plugins: false
-plugin_dirs:
-  - ~/projects/matts-robot-skills/plugins/ddd
-  - ~/projects/public-skills/plugins/dev
-skills: [ddd-workflow, create-plan, breakdown]
+skills: [create-plan, pre-flight]
 mcp_servers: {}
 first_instruction: |-
   Write the plan to a file under ai_docs/ and reply with the file path. Do not

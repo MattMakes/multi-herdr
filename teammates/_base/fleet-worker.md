@@ -6,7 +6,8 @@ description: >
   {task_briefing} is one of the three blocks below, chosen by whether the
   spawn carried a task and whether it is a resume.
 skills_instruction: |-
-  Before you start, load these skills and follow them: {skills}
+  Available task skills: {skills}. Read only the matching SKILL.md when its
+  description fits the current task; keep unrelated skill bodies out of context.
 trains_on_input: |-
   == What you are running on ==
   Your model is free because the prompts are the payment: this provider

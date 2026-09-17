@@ -3,6 +3,8 @@ name: orchestration-worker
 brief_description: Worker for the fixed 5-pane `horch orchestration` recipe. Model comes from the pane, not here.
 hidden: true
 agent: claude
+phase: implementation
+permission_mode: auto
 effort: xhigh
 ---
 You are worker '{role}' in a herdr multi-agent coding workspace. An

@@ -80,8 +80,12 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
 fn the_orchestration_recipe_briefings_are_unchanged() {
     let r = roster();
     assert_eq!(
-        prompts::agent_prompt(&r, r.require("orchestration-orchestrator").unwrap(), "orchestrator")
-            .unwrap(),
+        prompts::agent_prompt(
+            &r,
+            r.require("orchestration-orchestrator").unwrap(),
+            "orchestrator"
+        )
+        .unwrap(),
         golden("orchestration-orchestrator")
     );
     assert_eq!(
@@ -95,7 +99,8 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     let r = roster();
-    let got = prompts::agent_prompt(&r, r.require("orchestrator").unwrap(), "orchestrator").unwrap();
+    let got =
+        prompts::agent_prompt(&r, r.require("orchestrator").unwrap(), "orchestrator").unwrap();
     let was = golden("fleet-orchestrator");
 
     let old_block = "Pick the tier by complexity:\n  sonnet       clear, easy, \
@@ -115,7 +120,8 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
                      beside you - sonnet-1, sonnet-2 (Claude Sonnet), opus-1 (Claude Opus),\n\
                      codex-sol-1 (Codex, gpt-5.6-sol) - and you grow or shrink the fleet yourself\n\
                      as the work demands.";
-    let new_fleet = "in your current directory. You start ALONE - there are no workers yet. Break\n\
+    let new_fleet =
+        "in your current directory. You start ALONE - there are no workers yet. Break\n\
                      the work down, then spawn exactly the workers each piece needs and shut them\n\
                      down as they finish. Never spawn a worker before you know what it is for.";
 
@@ -141,13 +147,26 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         opus. Never delegate the thinking itself downward and hope.\n\n";
     assert_eq!(was.matches(lifecycle).count(), 1);
 
+    let old_spawning = "  horch spawn <tier> \"<task>\"                            new session\n  horch spawn --resume <session-or-record-id> \"<task>\"   resume old session\n";
+    let new_spawning = "  horch spawn <tier> [--phase <phase>] \"<task>\"            new session\n\
+        \x20 horch spawn --resume <session-or-record-id> [--phase <phase>] \"<task>\"\n\
+        \x20                                                      resume old session\n\n\
+        Choose research, plan, implementation, or validation with --phase when the\n\
+        assignment differs from the teammate's default. Each phase exposes a small\n\
+        portable skill catalog; workers read only matching skill bodies as needed.\n\
+        Resume keeps the recorded phase unless --phase overrides it. At phase handoff,\n\
+        pass the findings, plan, changed files, and validation evidence by file path;\n\
+        start or resume a worker with the next phase instead of asking it to preload\n\
+        every phase's instructions.\n\n";
+    assert_eq!(was.matches(old_spawning).count(), 1);
     let expected = was
         .replace(old_block, &new_block)
         .replace(old_fleet, new_fleet)
+        .replace(old_spawning, new_spawning)
         .replace(lifecycle, &format!("{only_fable}{lifecycle}"));
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the three sanctioned blocks"
+        "the orchestrator briefing changed outside the four sanctioned blocks"
     );
 }
 
@@ -158,7 +177,11 @@ fn execpolicy_blocks_are_unchanged() {
     let r = roster();
     for rule in r.exec_rules() {
         let name = format!("execpolicy-{}", rule.justification.replace(' ', "-"));
-        assert_eq!(prompts::codex_rule_block(rule), golden(&name), "{name} drifted");
+        assert_eq!(
+            prompts::codex_rule_block(rule),
+            golden(&name),
+            "{name} drifted"
+        );
     }
     assert_eq!(r.exec_rules().len(), 3);
 }
@@ -170,21 +193,29 @@ fn execpolicy_blocks_are_unchanged() {
 #[test]
 fn the_codex_orchestrator_differs_from_the_claude_one_only_in_its_tier_block() {
     let r = roster();
-    let claude = prompts::agent_prompt(&r, r.require("orchestrator").unwrap(), "orchestrator")
-        .unwrap();
+    let claude =
+        prompts::agent_prompt(&r, r.require("orchestrator").unwrap(), "orchestrator").unwrap();
     let codex = prompts::agent_prompt(&r, r.require("orchestrator-codex").unwrap(), "orchestrator")
         .unwrap();
 
     assert!(codex.contains("== You are the only Astra =="), "{codex}");
     assert!(!codex.contains("== You are the only Fable =="), "{codex}");
     // No placeholder may survive into a live pane - not {roster}, not {persona}.
-    assert!(!codex.contains('{'), "unsubstituted placeholder in:\n{codex}");
-    assert!(codex.contains("codex-terra"), "the roster must reach it: {codex}");
+    assert!(
+        !codex.contains('{'),
+        "unsubstituted placeholder in:\n{codex}"
+    );
+    assert!(
+        codex.contains("codex-terra"),
+        "the roster must reach it: {codex}"
+    );
 
     // Everything outside the tier block is byte-identical to the Claude flavor.
     let strip = |text: &str| {
         let start = text.find("== You are the only ").expect("a tier block");
-        let end = text.find("== Worker lifecycle ==").expect("the lifecycle section");
+        let end = text
+            .find("== Worker lifecycle ==")
+            .expect("the lifecycle section");
         format!("{}{}", &text[..start], &text[end..])
     };
     assert_eq!(strip(&claude), strip(&codex));

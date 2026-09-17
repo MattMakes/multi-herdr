@@ -49,8 +49,7 @@ pub fn codex_home(home: &Path) -> PathBuf {
 /// One codex launch's execpolicy rules.
 ///
 /// Built before the CLI starts, applied to its [`Command`], and finished after
-/// it exits. Hold it across the launch - dropping it early does nothing, but
-/// [`Rules::finish`] is what removes the private home again.
+/// it exits. Hold it across the launch; dropping it also cleans up on errors.
 #[derive(Debug)]
 pub enum Rules {
     /// A private `CODEX_HOME` whose `rules/` holds only this launch's rules.
@@ -79,6 +78,25 @@ impl Rules {
         }
     }
 
+    /// Replace only the private home's skills link. Never follow it into the
+    /// operator's skills directory. Codex discovers these files natively.
+    pub fn attach_skills(&self, skills_dir: &Path) -> Result<()> {
+        #[cfg(not(windows))]
+        if let Rules::Private { dir } = self {
+            let target = dir.join("skills");
+            match std::fs::symlink_metadata(&target) {
+                Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(&target)?,
+                Ok(_) => anyhow::bail!("refusing to replace non-symlink {}", target.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            std::os::unix::fs::symlink(skills_dir, &target)?;
+            return Ok(());
+        }
+        let _ = skills_dir;
+        anyhow::bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows")
+    }
+
     /// Clean up after the agent has exited.
     ///
     /// A private home is removed - unless codex created something at its top
@@ -86,10 +104,14 @@ impl Rules {
     /// directory nobody will look in again, so the directory is kept and named
     /// rather than silently deleted.
     pub fn finish(self) {
+        // Drop handles both normal completion and early-return error paths.
+    }
+
+    fn cleanup(&self) {
         let Rules::Private { dir } = self else {
             return;
         };
-        let stranded = stranded_entries(&dir);
+        let stranded = stranded_entries(dir);
         if !stranded.is_empty() {
             eprintln!(
                 "horch: codex wrote {} into its private CODEX_HOME, which was not linked \
@@ -103,7 +125,13 @@ impl Rules {
         }
         // Every other entry is a symlink, and remove_dir_all removes the links
         // rather than following them - the real codex home is untouched.
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+impl Drop for Rules {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }
 
@@ -157,7 +185,13 @@ fn install_rules(home: &Path, role: &str, rules: &[ExecRule]) -> Result<Rules> {
 fn build_private_home(source: &Path, state_root: &Path, role: &str) -> Result<PathBuf> {
     let slug: String = role
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let dir = state_root
         .join("codex-home")
@@ -174,7 +208,10 @@ fn build_private_home(source: &Path, state_root: &Path, role: &str) -> Result<Pa
             }
             let link = dir.join(entry.file_name());
             std::os::unix::fs::symlink(entry.path(), &link).with_context(|| {
-                format!("linking {} into the private codex home", entry.path().display())
+                format!(
+                    "linking {} into the private codex home",
+                    entry.path().display()
+                )
             })?;
         }
     }
@@ -239,9 +276,7 @@ pub fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
 /// anything that does not end in a well-formed uuid, which is what stops a
 /// partially written or unrelated file from being recorded as a session.
 pub fn session_id_from_rollout(file_name: &str) -> Option<&str> {
-    let stem = file_name
-        .strip_prefix("rollout-")?
-        .strip_suffix(".jsonl")?;
+    let stem = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
     // The uuid is the trailing 36 characters, preceded by the separating dash.
     let candidate = stem.get(stem.len().checked_sub(36)?..)?;
     if stem.len() > 36 && !stem[..stem.len() - 36].ends_with('-') {
@@ -255,10 +290,11 @@ fn is_uuid(s: &str) -> bool {
     if groups.len() != 5 {
         return false;
     }
-    [8, 4, 4, 4, 12]
-        .iter()
-        .zip(&groups)
-        .all(|(len, g)| g.len() == *len && g.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+    [8, 4, 4, 4, 12].iter().zip(&groups).all(|(len, g)| {
+        g.len() == *len
+            && g.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    })
 }
 
 /// A rollout file that could belong to this worker.
@@ -287,12 +323,7 @@ pub fn find_rollouts(
     found
 }
 
-fn collect_rollouts(
-    dir: &Path,
-    since: SystemTime,
-    needle: &str,
-    out: &mut Vec<RolloutCandidate>,
-) {
+fn collect_rollouts(dir: &Path, since: SystemTime, needle: &str, out: &mut Vec<RolloutCandidate>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -306,7 +337,9 @@ fn collect_rollouts(
         if !meta.is_file() {
             continue;
         }
-        let Ok(modified) = meta.modified() else { continue };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
         if modified <= since {
             continue;
         }
@@ -346,6 +379,35 @@ mod tests {
     use super::*;
     use crate::teammates::Roster;
     use std::time::Duration;
+
+    #[cfg(unix)]
+    #[test]
+    fn phase_skills_replace_only_the_private_link_and_cleanup_on_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("user-codex");
+        std::fs::create_dir_all(source.join("skills/personal")).unwrap();
+        std::fs::write(source.join("skills/personal/SKILL.md"), "personal").unwrap();
+        let t = crate::teammates::Teammate {
+            phase: Some(crate::teammates::Phase::Plan),
+            ..Default::default()
+        };
+        let bundle = crate::skills::Bundle::install(tmp.path(), &t)
+            .unwrap()
+            .unwrap();
+        let dir = build_private_home(&source, tmp.path(), "worker").unwrap();
+        let rules = Rules::Private { dir: dir.clone() };
+        rules.attach_skills(&bundle.skills_dir()).unwrap();
+        assert!(dir.join("skills/create-plan/SKILL.md").exists());
+        assert!(!dir.join("skills/personal").exists());
+        assert_eq!(
+            std::fs::read_to_string(source.join("skills/personal/SKILL.md")).unwrap(),
+            "personal"
+        );
+        drop(rules); // Same cleanup as an early-return launch error.
+        assert!(!dir.exists());
+        assert!(bundle.skills_dir().join("create-plan/SKILL.md").exists());
+        assert!(source.join("skills/personal/SKILL.md").exists());
+    }
 
     #[test]
     fn extracts_session_ids_from_rollout_filenames() {
@@ -395,8 +457,16 @@ mod tests {
         let sessions = tmp.path().join("sessions");
         let since = SystemTime::now() - Duration::from_secs(60);
 
-        write_rollout(&sessions.join("2026/08"), "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", "/proj/mine");
-        write_rollout(&sessions.join("2026/08"), "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb", "/proj/other");
+        write_rollout(
+            &sessions.join("2026/08"),
+            "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+            "/proj/mine",
+        );
+        write_rollout(
+            &sessions.join("2026/08"),
+            "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+            "/proj/other",
+        );
 
         let found = find_rollouts(&sessions, "/proj/mine", since);
         assert_eq!(found.len(), 1, "{found:#?}");
@@ -408,7 +478,11 @@ mod tests {
     fn ignores_rollouts_older_than_the_launch_marker() {
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().join("sessions");
-        write_rollout(&sessions, "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", "/proj/mine");
+        write_rollout(
+            &sessions,
+            "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+            "/proj/mine",
+        );
 
         let future = SystemTime::now() + Duration::from_secs(3600);
         assert!(find_rollouts(&sessions, "/proj/mine", future).is_empty());
@@ -452,20 +526,32 @@ mod tests {
     fn a_private_home_shares_everything_but_the_rules() {
         let home = fake_codex_home();
         let state = tempfile::tempdir().unwrap();
-        let dir = build_private_home(&home.path().join(".codex"), state.path(), "codex-sol-1").unwrap();
+        let dir =
+            build_private_home(&home.path().join(".codex"), state.path(), "codex-sol-1").unwrap();
 
         for shared in ["config.toml", "auth.json", "sessions"] {
             assert!(
-                dir.join(shared).symlink_metadata().unwrap().file_type().is_symlink(),
+                dir.join(shared)
+                    .symlink_metadata()
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
                 "{shared} must be a symlink to the real codex home"
             );
         }
         assert!(dir.join("rules").is_dir());
         assert!(
-            !dir.join("rules").symlink_metadata().unwrap().file_type().is_symlink(),
+            !dir.join("rules")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "rules must be this launch's own directory, not the shared one"
         );
-        assert!(!dir.join("rules/default.rules").exists(), "the user's rules must not load");
+        assert!(
+            !dir.join("rules/default.rules").exists(),
+            "the user's rules must not load"
+        );
         // Reading through the link reaches the real file.
         assert_eq!(
             std::fs::read_to_string(dir.join("config.toml")).unwrap(),
@@ -481,7 +567,8 @@ mod tests {
         let roster = Roster::builtin().unwrap();
 
         let make = |rules: &[ExecRule]| {
-            let dir = build_private_home(&home.path().join(".codex"), state.path(), "codex-sol-1").unwrap();
+            let dir = build_private_home(&home.path().join(".codex"), state.path(), "codex-sol-1")
+                .unwrap();
             std::fs::write(dir.join("rules/horch.rules"), render(rules)).unwrap();
             dir
         };
@@ -516,9 +603,15 @@ mod tests {
         Rules::Private { dir: dir.clone() }.finish();
 
         assert!(!dir.exists(), "the private home should be gone");
-        assert!(real.join("config.toml").is_file(), "the real config survived");
+        assert!(
+            real.join("config.toml").is_file(),
+            "the real config survived"
+        );
         assert!(real.join("auth.json").is_file(), "the real auth survived");
-        assert!(real.join("sessions").is_dir(), "the real sessions dir survived");
+        assert!(
+            real.join("sessions").is_dir(),
+            "the real sessions dir survived"
+        );
         assert_eq!(
             std::fs::read_to_string(real.join("rules/default.rules")).unwrap(),
             "# the user's own\n"
@@ -531,14 +624,21 @@ mod tests {
     fn state_codex_invented_is_kept_rather_than_deleted() {
         let home = fake_codex_home();
         let state = tempfile::tempdir().unwrap();
-        let dir = build_private_home(&home.path().join(".codex"), state.path(), "codex-sol-1").unwrap();
-        assert!(stranded_entries(&dir).is_empty(), "a fresh overlay strands nothing");
+        let dir =
+            build_private_home(&home.path().join(".codex"), state.path(), "codex-sol-1").unwrap();
+        assert!(
+            stranded_entries(&dir).is_empty(),
+            "a fresh overlay strands nothing"
+        );
 
         std::fs::write(dir.join("brand_new.sqlite"), b"x").unwrap();
         assert_eq!(stranded_entries(&dir), vec!["brand_new.sqlite".to_string()]);
 
         Rules::Private { dir: dir.clone() }.finish();
-        assert!(dir.join("brand_new.sqlite").is_file(), "stranded state must survive");
+        assert!(
+            dir.join("brand_new.sqlite").is_file(),
+            "stranded state must survive"
+        );
     }
 
     /// A machine that has never run codex has no home to mirror. That is not an
@@ -546,7 +646,12 @@ mod tests {
     #[test]
     fn a_missing_codex_home_still_yields_rules() {
         let state = tempfile::tempdir().unwrap();
-        let dir = build_private_home(Path::new("/nonexistent/.codex"), state.path(), "codex-sol-1").unwrap();
+        let dir = build_private_home(
+            Path::new("/nonexistent/.codex"),
+            state.path(),
+            "codex-sol-1",
+        )
+        .unwrap();
         assert!(dir.join("rules").is_dir());
     }
 }

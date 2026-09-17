@@ -4,6 +4,7 @@ brief_description: Free tier, deepest. TRAINS ON YOUR INPUT - public/OSS work on
 generic: true
 base: fleet-worker
 agent: opencode
+phase: implementation
 model: opencode/nemotron-3-ultra-free
 effort: high
 permission_mode: acceptEdits

@@ -57,14 +57,24 @@ choose from** — there is no registry to update and nothing to recompile.
 
 `product-lead`, `researcher`, `staff-engineer`, `designer`,
 `architect-reviewer`, `frontend-developer`, `backend-developer` and
-`qa-engineer` are the specialists. Each loads only the plugins, skills and MCP
-servers its job needs, and nothing else: they set `inherit_plugins: false`,
-which switches the operator's globally-enabled plugins off by name for that
-session while leaving every other setting exactly as tuned.
+`qa-engineer` are the specialists. Their `phase` selects a small portable
+skill catalog embedded in horch; `skills` adds named bundled skills for that
+role. Skills are discovered by each harness and read only when relevant.
+Claude specialists set `inherit_plugins: false` to switch off globally enabled
+plugins while preserving other operator settings and their declared MCP tools.
 
-Plugin paths are written with a leading `~/` and expanded at launch, so these
-files are not bound to one home directory. `horch teammates --check` verifies
-every path exists before a fleet tries to use it.
+Researcher, product-lead and designer default to `research`; staff-engineer and
+orchestrators to `plan`; reviewers and QA to `validation`; other workers to
+`implementation`. Override a task with `horch spawn opus --phase research`.
+Resume preserves the recorded phase unless `--phase` overrides it; old records
+without a phase use the current teammate default. A phase selects guidance,
+not permission mode or tool access.
+
+Inspect catalogs and context estimates with `horch skills --phase validation`.
+The built-in roster requires no local plugin paths. Custom Claude teammates can
+still declare `plugin_dirs` (`~/` expands at launch); `horch teammates --check`
+verifies those paths exist. `disable_skills` conflicts with phase, skills, or
+plugin directories.
 
 ## The generics
 

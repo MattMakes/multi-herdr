@@ -4,6 +4,7 @@ brief_description: Free tier, fastest, huge output. TRAINS ON YOUR INPUT - publi
 generic: true
 base: fleet-worker
 agent: opencode
+phase: implementation
 model: opencode/nemotron-3.5-lightning-free
 effort: minimal
 permission_mode: acceptEdits

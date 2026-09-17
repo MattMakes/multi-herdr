@@ -13,11 +13,11 @@ use anyhow::{Context, Result};
 use horch_core::agent;
 use horch_core::codex;
 use horch_core::herdr::{Direction, Herdr};
+use horch_core::launch::{self, Session};
 use horch_core::ledger::Ledger;
 use horch_core::mailbox::Mailbox;
 use horch_core::paneshell::PaneShell;
 use horch_core::prompts;
-use horch_core::launch::{self, Session};
 use horch_core::teammates::{Agent, Roster};
 
 use super::doctor;
@@ -182,7 +182,10 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
     println!("Launching orchestrator ({})...", flavor.label());
     herdr.pane_run(&ws.root_pane_id, &pane_command("orchestrator", kind, None)?)?;
 
-    println!("\nDone. Fleet workspace {} is live with one orchestrator pane.", ws.workspace_id);
+    println!(
+        "\nDone. Fleet workspace {} is live with one orchestrator pane.",
+        ws.workspace_id
+    );
     println!("Session ledger: {}", Ledger::open()?.path().display());
     println!("Orchestrator commands: horch sessions | horch assign | horch spawn [--resume]");
     println!("Workers are spawned on demand: horch spawn <teammate> \"task\"");
@@ -228,10 +231,30 @@ pub fn orchestration(cwd: Option<&str>) -> Result<()> {
 
     // (pane, role, kind, model)
     let panes = [
-        (&ws.root_pane_id, "orchestrator", PaneKind::OrchestrationOrchestrator, None),
-        (&top_left, "sonnet-1", PaneKind::OrchestrationClaude, Some("sonnet")),
-        (&top_right, "sonnet-2", PaneKind::OrchestrationClaude, Some("sonnet")),
-        (&bottom_left, "opus-1", PaneKind::OrchestrationClaude, Some("opus")),
+        (
+            &ws.root_pane_id,
+            "orchestrator",
+            PaneKind::OrchestrationOrchestrator,
+            None,
+        ),
+        (
+            &top_left,
+            "sonnet-1",
+            PaneKind::OrchestrationClaude,
+            Some("sonnet"),
+        ),
+        (
+            &top_right,
+            "sonnet-2",
+            PaneKind::OrchestrationClaude,
+            Some("sonnet"),
+        ),
+        (
+            &bottom_left,
+            "opus-1",
+            PaneKind::OrchestrationClaude,
+            Some("opus"),
+        ),
         (&bottom_right, "codex-1", PaneKind::OrchestrationCodex, None),
     ];
     for (pane, role, kind, model) in panes {
@@ -239,7 +262,10 @@ pub fn orchestration(cwd: Option<&str>) -> Result<()> {
         herdr.pane_run(pane, &pane_command(role, kind, model)?)?;
     }
 
-    println!("\nDone. Workspace {} is live with 5 panes.", ws.workspace_id);
+    println!(
+        "\nDone. Workspace {} is live with 5 panes.",
+        ws.workspace_id
+    );
     println!(
         "From the orchestrator pane: horch tell <role> \"message\"  \
          (roles: sonnet-1, sonnet-2, opus-1, codex-1)"
@@ -301,6 +327,7 @@ pub fn pane_launch(
 
     let prompt = prompts::agent_prompt(&roster, &teammate, role)?;
     launch::apply_env(&teammate);
+    let skills = horch_core::skills::Bundle::install(&horch_core::ledger::state_root(), &teammate)?;
     let rules = if teammate.agent.uses_execpolicy() {
         // An orchestrator runs a different set of commands than a worker, and
         // codex refuses anything its execpolicy does not name. Install the set
@@ -314,8 +341,17 @@ pub fn pane_launch(
         None
     };
 
-    let mut cmd = launch::command(&teammate, Session::Unmanaged, &prompt, model)?;
+    let mut cmd = launch::command_with_skills(
+        &teammate,
+        Session::Unmanaged,
+        &prompt,
+        model,
+        skills.as_ref(),
+    )?;
     if let Some(rules) = &rules {
+        if let Some(skills) = &skills {
+            rules.attach_skills(&skills.skills_dir())?;
+        }
         rules.apply(&mut cmd);
     }
     let name = format!("{:?}", cmd.get_program());
@@ -367,12 +403,24 @@ mod tests {
     #[test]
     fn fleet_flavors_parse_from_what_a_user_types() {
         for word in ["cc", "claude", "fable", "CC", "Claude"] {
-            assert_eq!(word.parse::<FleetFlavor>().unwrap(), FleetFlavor::Claude, "{word}");
+            assert_eq!(
+                word.parse::<FleetFlavor>().unwrap(),
+                FleetFlavor::Claude,
+                "{word}"
+            );
         }
         for word in ["codex", "astra", "CODEX"] {
-            assert_eq!(word.parse::<FleetFlavor>().unwrap(), FleetFlavor::Codex, "{word}");
+            assert_eq!(
+                word.parse::<FleetFlavor>().unwrap(),
+                FleetFlavor::Codex,
+                "{word}"
+            );
         }
-        assert_eq!(FleetFlavor::default(), FleetFlavor::Claude, "a bare `fleet` is Fable");
+        assert_eq!(
+            FleetFlavor::default(),
+            FleetFlavor::Claude,
+            "a bare `fleet` is Fable"
+        );
         let err = "opus".parse::<FleetFlavor>().unwrap_err();
         assert!(err.contains("unknown fleet flavor 'opus'"), "{err}");
     }
@@ -382,7 +430,10 @@ mod tests {
     #[test]
     fn each_flavor_launches_its_own_orchestrator_pane() {
         assert_eq!(FleetFlavor::Claude.pane_kind(), PaneKind::FleetOrchestrator);
-        assert_eq!(FleetFlavor::Codex.pane_kind(), PaneKind::FleetCodexOrchestrator);
+        assert_eq!(
+            FleetFlavor::Codex.pane_kind(),
+            PaneKind::FleetCodexOrchestrator
+        );
 
         let cmd = pane_command("orchestrator", FleetFlavor::Codex.pane_kind(), None).unwrap();
         assert!(cmd.contains("fleet-codex-orchestrator"), "{cmd}");
@@ -396,10 +447,16 @@ mod tests {
         for (kind, name) in [
             (PaneKind::FleetOrchestrator, "orchestrator"),
             (PaneKind::FleetCodexOrchestrator, "orchestrator-codex"),
-            (PaneKind::OrchestrationOrchestrator, "orchestration-orchestrator"),
+            (
+                PaneKind::OrchestrationOrchestrator,
+                "orchestration-orchestrator",
+            ),
             (PaneKind::OrchestrationClaude, "orchestration-worker"),
         ] {
-            assert!(roster.get(name).is_some(), "{kind:?} names a missing '{name}'");
+            assert!(
+                roster.get(name).is_some(),
+                "{kind:?} names a missing '{name}'"
+            );
         }
     }
 
