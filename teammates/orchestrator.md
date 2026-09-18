@@ -4,6 +4,7 @@ brief_description: The fleet orchestrator, Claude flavor. Never spawned as a wor
 hidden: true
 base: fleet-orchestrator
 agent: claude
+phase: plan
 model: fable
 effort: xhigh
 permission_mode: acceptEdits

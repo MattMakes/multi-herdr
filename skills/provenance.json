@@ -1,0 +1,91 @@
+{
+  "source_repository": "https://github.com/MattMakes/skill-marketplace",
+  "source_revision": "d47670328c59a3311a9b4149bc5f8f33f0a92754",
+  "format": "Curated adaptations; source_sha256 hashes the full original SKILL.md bytes.",
+  "skills": [
+    {
+      "name": "brainstorm",
+      "source_path": "plugins/dev/skills/brainstorm/SKILL.md",
+      "source_sha256": "56c53d04fa2e2ee15a092a9a237a696f5f678edd8b4accca08a66e1ee96bdaa0",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "research-codebase",
+      "source_path": "plugins/dev/skills/research-codebase/SKILL.md",
+      "source_sha256": "092deb05eee4a2a30c0c750b0db6979db636bff39fd6cdbaec46a2e6864c6739",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "trace",
+      "source_path": "plugins/dev/skills/trace/SKILL.md",
+      "source_sha256": "607ff0e84ba435363e53287081b0f1979bdcfc7f01d24d69ab0f61a2339e0da0",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "create-plan",
+      "source_path": "plugins/dev/skills/create-plan/SKILL.md",
+      "source_sha256": "c2bbdd681afa98a41ef43f298494cb448e2b8219978715ab40135e1f38357c51",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "pre-flight",
+      "source_path": "plugins/tools/skills/pre-flight/SKILL.md",
+      "source_sha256": "2784572438d971643bb00755c49147839a736f7a27888777776ba8f65b1bf209",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "execute",
+      "source_path": "plugins/dev/skills/execute-plan/SKILL.md",
+      "source_sha256": "5f153f9ef33f67644afb0633188af04a9bc4faac592a06d1d3a36a7f74f5f258",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "tdd",
+      "source_path": "plugins/dev/skills/tdd/SKILL.md",
+      "source_sha256": "3e75572a66b7619b7557f82d3cb7ffac9d406970d2abb3c371426d9789060084",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "debug",
+      "source_path": "plugins/dev/skills/debug/SKILL.md",
+      "source_sha256": "7ecb31c6eb1c48a14eca6db85f4b4abf0d3b8b4455247478924b4b8a6a3300be",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "check",
+      "source_path": "plugins/dev/skills/check-implementation/SKILL.md",
+      "source_sha256": "004ecef7d46f865854783bb689c1282cf1ccea01fb08ccec5613dbef13d260be",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "code-analysis",
+      "source_path": "plugins/code/skills/complexity-sweep/SKILL.md",
+      "source_sha256": "1518af1001a596f50e96c7a7438b3ecbed9fd1ea1317d4448bbd2b3869f92d18",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "code-review",
+      "source_path": "plugins/dev/skills/review-git-changes/SKILL.md",
+      "source_sha256": "9af6722a59f2fab1fd9eab74496d8b196aa89aaba50ebfae9cfc9710e11da952",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "security-review",
+      "source_path": "plugins/code/skills/security-sweep/SKILL.md",
+      "source_sha256": "0657c72feacf53b91c407c3d8656425935d5ac7f582baf29a7de04ffcf7d57f5",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "handoff",
+      "source_path": "plugins/dev/skills/whats-next/SKILL.md",
+      "source_sha256": "7fdb41074e2868707e89c41d1f415f3422d6ce8718180d3076ba95b55e940814",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "document",
+      "source_path": "plugins/dev/skills/document-project/SKILL.md",
+      "source_sha256": "3b9a94ea7b7d48b52475236973399e555d61d3d181350604cc926e1f1d9f7849",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    }
+  ]
+}

@@ -95,7 +95,9 @@ fn messaging() -> Result<ExitCode> {
     herdr.send_line(&target, arithmetic_echo(shell))?;
 
     if herdr.wait_output(&b, "SMOKE_TEST_42", 15_000)? {
-        println!("PASS: send-text + send-keys enter delivered and executed the message end to end.");
+        println!(
+            "PASS: send-text + send-keys enter delivered and executed the message end to end."
+        );
         herdr.workspace_close(&ws.workspace_id)?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -123,8 +125,12 @@ fn fleet() -> Result<ExitCode> {
     let shell = PaneShell::host();
 
     // Isolated state so the check never touches a real project ledger.
-    let state_dir = tempfile::Builder::new().prefix("horch-smoke-state").tempdir()?;
-    let project_dir = tempfile::Builder::new().prefix("horch-smoke-proj").tempdir()?;
+    let state_dir = tempfile::Builder::new()
+        .prefix("horch-smoke-state")
+        .tempdir()?;
+    let project_dir = tempfile::Builder::new()
+        .prefix("horch-smoke-proj")
+        .tempdir()?;
     let project = project_dir.path().to_string_lossy().into_owned();
     std::env::set_var("HORCH_STATE_DIR", state_dir.path());
     std::env::set_var("HORCH_PROJECT_DIR", &project);
@@ -152,6 +158,7 @@ fn fleet() -> Result<ExitCode> {
     println!("Spawning smoke worker...");
     let pane = spawn(SpawnArgs {
         teammate: Some("smoke".to_string()),
+        phase: None,
         task: "verify fleet machinery".to_string(),
         resume: None,
         role: None,
@@ -220,7 +227,10 @@ mod tests {
     fn arithmetic_echo_is_unevaluated_and_shell_appropriate() {
         for shell in [PaneShell::Posix, PaneShell::PowerShell] {
             let cmd = arithmetic_echo(shell);
-            assert!(!cmd.contains("SMOKE_TEST_42"), "{cmd} must not be pre-evaluated");
+            assert!(
+                !cmd.contains("SMOKE_TEST_42"),
+                "{cmd} must not be pre-evaluated"
+            );
             assert!(cmd.contains("40+2"), "{cmd}");
         }
         assert!(arithmetic_echo(PaneShell::Posix).starts_with("echo "));

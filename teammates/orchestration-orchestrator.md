@@ -3,6 +3,7 @@ name: orchestration-orchestrator
 brief_description: Orchestrator for the fixed 5-pane `horch orchestration` recipe. No ledger, no spawning.
 hidden: true
 agent: claude
+phase: plan
 model: fable
 effort: xhigh
 ---

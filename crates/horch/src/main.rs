@@ -117,6 +117,9 @@ enum Command {
         /// Resume a previous session by session or record id.
         #[arg(long, value_name = "ID")]
         resume: Option<String>,
+        /// Select research, plan, implementation, or validation skills.
+        #[arg(long)]
+        phase: Option<horch_core::teammates::Phase>,
         /// Override the auto role name (<teammate>-<n>).
         #[arg(long, value_name = "NAME")]
         role: Option<String>,
@@ -160,6 +163,15 @@ enum Command {
     Ledger {
         #[command(subcommand)]
         command: cmd::ledgercmd::LedgerCommand,
+    },
+
+    /// Inspect the integrated skill catalog and estimated context cost.
+    Skills {
+        #[arg(long)]
+        phase: Option<horch_core::teammates::Phase>,
+        /// Emit machine-readable JSON (also the default catalog format).
+        #[arg(long)]
+        json: bool,
     },
 
     /// Check that herdr is installed and its server is reachable.
@@ -230,9 +242,32 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Note { text } => cmd::messaging::note(&joined(&text))?,
         Command::Done { summary } => cmd::messaging::done(&joined(&summary))?,
         Command::Sessions { json } => cmd::ledgercmd::sessions(json)?,
+        Command::Skills { phase, json } => {
+            let catalog = horch_core::skills::describe(phase)?;
+            if json {
+                output::println(&serde_json::to_string_pretty(&catalog)?);
+            } else {
+                output::println(&format!(
+                    "Phase: {}",
+                    phase.map(|p| p.to_string()).unwrap_or_else(|| "all".into())
+                ));
+                for skill in catalog["skills"].as_array().expect("catalog skills array") {
+                    output::println(&format!(
+                        "  {:<18} {}",
+                        skill["name"].as_str().unwrap(),
+                        skill["description"].as_str().unwrap()
+                    ));
+                }
+                output::println(&format!(
+                    "Metadata: {} bytes (~{} tokens, estimate only); workflows load on demand.",
+                    catalog["metadata_bytes"], catalog["metadata_tokens_estimate"]
+                ));
+            }
+        }
         Command::Spawn {
             args,
             resume,
+            phase,
             role,
             from_pane,
             direction,
@@ -242,13 +277,19 @@ fn run() -> Result<std::process::ExitCode> {
                 teammate,
                 task,
                 resume,
+                phase,
                 role,
                 from_pane,
                 direction,
             })?;
             output::println(&pane);
         }
-        Command::Teammates { json, check, new, dir } => {
+        Command::Teammates {
+            json,
+            check,
+            new,
+            dir,
+        } => {
             if let Some(name) = new {
                 cmd::teammatescmd::new(&name, dir.as_deref())?;
             } else if check {
@@ -265,18 +306,18 @@ fn run() -> Result<std::process::ExitCode> {
             workspace,
             dry_run,
             settle_ms,
-        } => cmd::balancecmd::balance(
-            pane.as_deref(),
-            workspace.as_deref(),
-            dry_run,
-            settle_ms,
-        )?,
+        } => cmd::balancecmd::balance(pane.as_deref(), workspace.as_deref(), dry_run, settle_ms)?,
         Command::Ledger { command } => return cmd::ledgercmd::run(command),
         Command::Doctor => cmd::doctor::doctor()?,
         Command::Install { dir } => cmd::install::install(dir.as_deref())?,
         Command::Smoke { command } => return cmd::smoke::run(command),
         Command::Worker { role } => return cmd::worker::worker(&role),
-        Command::PaneLaunch { role, kind, model, teammates_dir } => {
+        Command::PaneLaunch {
+            role,
+            kind,
+            model,
+            teammates_dir,
+        } => {
             return cmd::recipes::pane_launch(
                 &role,
                 kind,
@@ -300,6 +341,22 @@ mod tests {
     }
 
     /// `horch tell sonnet-1 fix the bug` must behave like the old
+    #[test]
+    fn spawn_accepts_phase_for_fresh_and_resumed_workers() {
+        for argv in [
+            vec!["horch", "spawn", "codex-sol", "--phase", "research"],
+            vec!["horch", "spawn", "--resume", "r1", "--phase", "research"],
+        ] {
+            match Cli::try_parse_from(argv).unwrap().command {
+                Command::Spawn { phase, .. } => {
+                    assert_eq!(phase, Some(horch_core::teammates::Phase::Research))
+                }
+                _ => panic!("wrong command"),
+            }
+        }
+        assert!(Cli::try_parse_from(["horch", "spawn", "opus", "--phase", "invalid"]).is_err());
+    }
+
     /// `herdr-tell sonnet-1 fix the bug`, which joined "$*".
     #[test]
     fn tell_joins_its_trailing_words() {
@@ -332,9 +389,14 @@ mod tests {
     fn parse_spawn(argv: &[&str]) -> (Option<String>, String, Option<String>, Direction) {
         let cli = Cli::try_parse_from(argv).expect("should parse");
         match cli.command {
-            Command::Spawn { args, resume, direction, .. } => {
-                let (teammate, task) =
-                    cmd::spawn::resolve_positionals(&args, resume.as_deref()).expect("should resolve");
+            Command::Spawn {
+                args,
+                resume,
+                direction,
+                ..
+            } => {
+                let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())
+                    .expect("should resolve");
                 (teammate, task, resume, direction)
             }
             _ => panic!("wrong subcommand"),
@@ -370,12 +432,17 @@ mod tests {
         let cli = Cli::try_parse_from(["horch", "spawn", "haiku"]).unwrap();
         match cli.command {
             Command::Spawn { args, resume, .. } => {
-                let (name, _) =
-                    cmd::spawn::resolve_positionals(&args, resume.as_deref()).unwrap();
+                let (name, _) = cmd::spawn::resolve_positionals(&args, resume.as_deref()).unwrap();
                 let roster = horch_core::teammates::Roster::builtin().unwrap();
-                let err = roster.require(name.as_deref().unwrap()).unwrap_err().to_string();
+                let err = roster
+                    .require(name.as_deref().unwrap())
+                    .unwrap_err()
+                    .to_string();
                 assert!(err.contains("unknown teammate 'haiku'"), "{err}");
-                assert!(err.contains("sonnet"), "error should list what is available: {err}");
+                assert!(
+                    err.contains("sonnet"),
+                    "error should list what is available: {err}"
+                );
             }
             _ => panic!("wrong subcommand"),
         }
@@ -383,9 +450,7 @@ mod tests {
 
     #[test]
     fn spawn_rejects_an_unknown_direction() {
-        assert!(
-            Cli::try_parse_from(["horch", "spawn", "sonnet", "--direction", "left"]).is_err()
-        );
+        assert!(Cli::try_parse_from(["horch", "spawn", "sonnet", "--direction", "left"]).is_err());
     }
 
     #[test]

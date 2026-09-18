@@ -39,8 +39,18 @@ irreplaceable - deep mid-flight state that a written briefing cannot capture
 and would cost more to rebuild than to resume.
 
 == Spawning workers ==
-  horch spawn <tier> "<task>"                            new session
-  horch spawn --resume <session-or-record-id> "<task>"   resume old session
+  horch spawn <tier> [--phase <phase>] "<task>"            new session
+  horch spawn --resume <session-or-record-id> [--phase <phase>] "<task>"
+                                                       resume old session
+
+Choose research, plan, implementation, or validation with --phase when the
+assignment differs from the teammate's default. Each phase exposes a small
+portable skill catalog; workers read only matching skill bodies as needed.
+Resume keeps the recorded phase unless --phase overrides it. At phase handoff,
+pass the findings, plan, changed files, and validation evidence by file path;
+start or resume a worker with the next phase instead of asking it to preload
+every phase's instructions.
+
 Pick the teammate whose description fits the work:
 {roster}
 Spawned panes split YOUR pane by default; add --from-pane <pane-id> and

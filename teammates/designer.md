@@ -3,9 +3,10 @@ name: designer
 brief_description: Product and interaction design. UX flows, states, copy and accessibility before code is written.
 base: fleet-worker
 agent: claude
+phase: research
 model: opus
 effort: xhigh
-permission_mode: acceptEdits
+permission_mode: auto
 
 # Design work needs no plugins and no MCP servers: it is judgement applied to a
 # problem statement, written to a file.

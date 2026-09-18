@@ -6,7 +6,21 @@ description: >
   {task_briefing} is one of the three blocks below, chosen by whether the
   spawn carried a task and whether it is a resume.
 skills_instruction: |-
-  Before you start, load these skills and follow them: {skills}
+  Available task skills: {skills}. Read only the matching SKILL.md when its
+  description fits the current task; keep unrelated skill bodies out of context.
+trains_on_input: |-
+  == What you are running on ==
+  Your model is free because the prompts are the payment: this provider
+  trains on what it is sent. Everything that reaches your context - the task,
+  the files you open, the code you write back - may end up in someone else's
+  model. Treat this pane as public.
+  Work only with code and information that is already public or open source.
+  If the task turns out to need proprietary source, credentials, customer or
+  personal data, unreleased plans, or anything under an agreement, STOP: do
+  not read it, do not paste it, do not describe it. Send
+  horch tell orchestrator "[{role}] BLOCKED: this needs a paid tier, not a
+  free one - <what it needs and why>" and wait. Being reassigned costs the
+  fleet one respawn; leaking costs it the thing that cannot be taken back.
 task_fresh: |-
   Your first assigned task:
 

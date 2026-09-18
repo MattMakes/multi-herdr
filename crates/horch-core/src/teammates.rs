@@ -64,12 +64,57 @@ pub fn reserved_tier(model: &str) -> Option<(&'static str, &'static str)> {
 /// so this is a direct, permanent tax on the orchestrator's context.
 pub const BRIEF_DESCRIPTION_MAX: usize = 120;
 
+/// Work phase selecting the portable skill catalog for a worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Research,
+    Plan,
+    Implementation,
+    Validation,
+}
+
+impl Phase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Research => "research",
+            Self::Plan => "plan",
+            Self::Implementation => "implementation",
+            Self::Validation => "validation",
+        }
+    }
+}
+
+impl fmt::Display for Phase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Phase {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "research" => Ok(Self::Research),
+            "plan" => Ok(Self::Plan),
+            "implementation" => Ok(Self::Implementation),
+            "validation" => Ok(Self::Validation),
+            _ => Err(format!(
+                "unknown phase '{s}' (research, plan, implementation, validation)"
+            )),
+        }
+    }
+}
+
 /// Which CLI a teammate launches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Agent {
     Claude,
     Codex,
+    Opencode,
+    Pi,
+    Prime,
     /// No real agent: the smoke teammate exercises the machinery only.
     None,
 }
@@ -79,8 +124,105 @@ impl Agent {
         match self {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
+            Agent::Opencode => "opencode",
+            Agent::Pi => "pi",
+            Agent::Prime => "prime",
             Agent::None => "none",
         }
+    }
+
+    /// Whether horch can choose this agent's session id before it launches.
+    ///
+    /// Claude takes `--session-id`, and pi takes `--session-id` with "create it
+    /// if missing" semantics, so the ledger knows the resume handle before the
+    /// pane even starts. Codex, OpenCode and Prime Agent mint their own and only
+    /// reveal it afterwards - verified against `prime-agent --help` 0.9.4, which
+    /// has `--session-dir` but no `--session-id`.
+    pub fn mints_session_id(self) -> bool {
+        matches!(self, Agent::Claude | Agent::Pi)
+    }
+
+    /// Whether the session id has to be recovered after launch, by watching
+    /// wherever this agent records its sessions.
+    pub fn harvests_session_id(self) -> bool {
+        matches!(self, Agent::Codex | Agent::Opencode | Agent::Prime)
+    }
+
+    /// Whether this agent supervises its own sessions in a background service.
+    ///
+    /// Only Prime Agent does, and it is why a Prime pane gets its own daemon
+    /// socket: herdr already treats a pane as an agent's lifetime, so an
+    /// unscoped daemon would outlive `horch done` and accumulate one per spawn.
+    pub fn runs_a_daemon(self) -> bool {
+        self == Agent::Prime
+    }
+
+    /// Whether this agent's capability comes from an execpolicy allowlist rather
+    /// than from flags. Only codex works that way, and it is why a codex pane
+    /// gets a private `CODEX_HOME`.
+    pub fn uses_execpolicy(self) -> bool {
+        self == Agent::Codex
+    }
+
+    /// Whether this agent takes `tools` / `allowed_tools` / `disallowed_tools`.
+    ///
+    /// Claude has `--tools` and the two `--*allowedTools` lists; pi and Prime
+    /// Agent have `--tools`, and pi alone adds `--exclude-tools`. Codex and
+    /// OpenCode have neither.
+    pub fn takes_tool_lists(self) -> bool {
+        matches!(self, Agent::Claude | Agent::Pi | Agent::Prime)
+    }
+
+    /// Whether a denylist of tool names has anywhere to go. Prime Agent 0.9.4
+    /// has `--tools` and `--no-tools` but no `--exclude-tools`.
+    pub fn takes_tool_denylist(self) -> bool {
+        matches!(self, Agent::Claude | Agent::Pi)
+    }
+
+    /// Claude-shaped teammate fields this agent has no way to express.
+    ///
+    /// Setting one of these is asking for isolation or capability that would
+    /// silently not happen, so the roster check rejects it by name rather than
+    /// launching a worker whose author believes it is constrained.
+    pub fn unsupported_fields(self, t: &Teammate) -> Vec<&'static str> {
+        if self == Agent::Claude || self == Agent::None {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if t.tools.is_some() && !self.takes_tool_lists() {
+            out.push("tools");
+        }
+        if !t.disallowed_tools.is_empty() && !self.takes_tool_denylist() {
+            out.push("disallowed_tools");
+        }
+        // Claude's "permit this without asking" list. pi has an allowlist and a
+        // denylist but nothing that grants a tool permission, so there is
+        // nowhere for this to go on any other agent.
+        if !t.allowed_tools.is_empty() {
+            out.push("allowed_tools");
+        }
+        // Codex skills are installed into its private home; it cannot disable
+        // all other operator extensions with a CLI switch.
+        if self == Agent::Codex && !t.inherit_plugins {
+            out.push("inherit_plugins");
+        }
+        // Claude-shaped configuration with no counterpart anywhere else.
+        for (field, set) in [
+            ("plugin_dirs", !t.plugin_dirs.is_empty()),
+            ("settings", t.settings.is_some()),
+            ("subagent_model", t.subagent_model.is_some()),
+            ("setting_sources", t.setting_sources.is_some()),
+            ("disable_skills", t.disable_skills),
+            ("mcp_servers", t.mcp_servers.is_some()),
+            ("mcp_config_files", !t.mcp_config_files.is_empty()),
+        ] {
+            if set {
+                out.push(field);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 }
 
@@ -97,8 +239,13 @@ impl FromStr for Agent {
         match s {
             "claude" => Ok(Agent::Claude),
             "codex" => Ok(Agent::Codex),
+            "opencode" => Ok(Agent::Opencode),
+            "pi" => Ok(Agent::Pi),
+            "prime" => Ok(Agent::Prime),
             "none" => Ok(Agent::None),
-            other => Err(format!("unknown agent '{other}' (claude, codex, none)")),
+            other => Err(format!(
+                "unknown agent '{other}' (claude, codex, opencode, pi, prime, none)"
+            )),
         }
     }
 }
@@ -132,6 +279,25 @@ impl PermissionMode {
             PermissionMode::Manual => "manual",
             PermissionMode::DontAsk => "dontAsk",
             PermissionMode::Plan => "plan",
+        }
+    }
+
+    /// OpenCode's single approval flag for this mode.
+    ///
+    /// OpenCode has one lever - `--auto`, "auto-approve permissions that are not
+    /// explicitly denied" - so the modes collapse into "pass it" or "do not".
+    /// `Plan` and the two ask-shaped modes have no analogue at all: there is no
+    /// read-only mode to put it in, and a worker left to prompt in a pane nobody
+    /// is watching stalls forever. Returning `None` makes that an error.
+    pub fn opencode_args(self) -> Option<Vec<String>> {
+        match self {
+            PermissionMode::Auto | PermissionMode::BypassPermissions => {
+                Some(vec!["--auto".to_string()])
+            }
+            // OpenCode still asks about anything explicitly denied, which is the
+            // closest thing it has to "accept edits, ask for the rest".
+            PermissionMode::AcceptEdits => Some(vec!["--auto".to_string()]),
+            PermissionMode::Plan | PermissionMode::Manual | PermissionMode::DontAsk => None,
         }
     }
 
@@ -187,6 +353,9 @@ pub struct Teammate {
     pub plugin_dirs: Vec<String>,
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Default work phase; spawn --phase overrides it.
+    #[serde(default)]
+    pub phase: Option<Phase>,
     #[serde(default)]
     pub permission_mode: Option<PermissionMode>,
     /// `--tools`. `None` omits the flag; `Some([])` passes `""` (no tools).
@@ -229,6 +398,14 @@ pub struct Teammate {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Whether this teammate's provider trains on what it is sent.
+    ///
+    /// True for the free tiers: the model costs nothing because the prompts are
+    /// the payment. It appends the base's `trains_on_input` block to the
+    /// briefing, so the constraint reaches the worker as an instruction rather
+    /// than living only in a `brief_description` the worker never sees.
+    #[serde(default)]
+    pub trains_on_input: bool,
     #[serde(default)]
     pub first_instruction: Option<String>,
     /// The file body. Its meaning depends on `base`: a persona when `base` is
@@ -252,6 +429,7 @@ impl Default for Teammate {
             inherit_plugins: true,
             plugin_dirs: Vec::new(),
             skills: Vec::new(),
+            phase: None,
             permission_mode: None,
             tools: None,
             allowed_tools: Vec::new(),
@@ -263,6 +441,7 @@ impl Default for Teammate {
             mcp_config_files: Vec::new(),
             args: Vec::new(),
             env: BTreeMap::new(),
+            trains_on_input: false,
             first_instruction: None,
             persona: String::new(),
         }
@@ -292,6 +471,10 @@ pub struct Base {
     /// here rather than in Rust; `{skills}` is the comma-joined list.
     #[serde(default)]
     pub skills_instruction: String,
+    /// Appended when a teammate sets `trains_on_input`. One copy, here, rather
+    /// than the same paragraph pasted into every free-tier teammate file.
+    #[serde(default)]
+    pub trains_on_input: String,
     /// Closing paragraph when the spawn carried a task.
     #[serde(default)]
     pub task_fresh: String,
@@ -322,16 +505,17 @@ impl Roster {
     pub fn builtin() -> Result<Roster> {
         let mut r = Roster::default();
         for (name, text) in BUILTIN_BASES {
-            r.bases
-                .insert(name.to_string(), parse_base(name, text).with_context(|| {
-                    format!("compiled-in base '{name}'")
-                })?);
+            r.bases.insert(
+                name.to_string(),
+                parse_base(name, text).with_context(|| format!("compiled-in base '{name}'"))?,
+            );
         }
         for (name, text) in BUILTIN_TEAMMATES {
-            r.teammates
-                .insert(name.to_string(), parse_teammate(name, text).with_context(|| {
-                    format!("compiled-in teammate '{name}'")
-                })?);
+            r.teammates.insert(
+                name.to_string(),
+                parse_teammate(name, text)
+                    .with_context(|| format!("compiled-in teammate '{name}'"))?,
+            );
         }
         Ok(r)
     }
@@ -371,8 +555,8 @@ impl Roster {
             for (stem, path) in md_files(&base_dir)? {
                 let text = std::fs::read_to_string(&path)
                     .with_context(|| format!("reading {}", path.display()))?;
-                let base = parse_base(&stem, &text)
-                    .with_context(|| format!("in {}", path.display()))?;
+                let base =
+                    parse_base(&stem, &text).with_context(|| format!("in {}", path.display()))?;
                 self.bases.insert(stem, base);
             }
         }
@@ -382,8 +566,8 @@ impl Roster {
             }
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            let t = parse_teammate(&stem, &text)
-                .with_context(|| format!("in {}", path.display()))?;
+            let t =
+                parse_teammate(&stem, &text).with_context(|| format!("in {}", path.display()))?;
             self.teammates.insert(stem, t);
         }
         Ok(())
@@ -409,9 +593,9 @@ impl Roster {
     }
 
     pub fn require_base(&self, name: &str) -> Result<&Base> {
-        self.bases
-            .get(name)
-            .with_context(|| format!("teammate names base '{name}', which does not exist in _base/"))
+        self.bases.get(name).with_context(|| {
+            format!("teammate names base '{name}', which does not exist in _base/")
+        })
     }
 
     /// All names, including hidden ones. Spawnable by name.
@@ -433,7 +617,14 @@ impl Roster {
         let width = offered.iter().map(|t| t.name.len()).max().unwrap_or(0);
         offered
             .iter()
-            .map(|t| format!("  {:<width$}  {}", t.name, t.brief_description, width = width))
+            .map(|t| {
+                format!(
+                    "  {:<width$}  {}",
+                    t.name,
+                    t.brief_description,
+                    width = width
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -487,6 +678,9 @@ impl Roster {
         let mut problems = Vec::new();
         for t in self.teammates.values() {
             let who = &t.name;
+            if let Err(error) = crate::skills::selected(t) {
+                problems.push(format!("{error:#}"));
+            }
             if t.brief_description.trim().is_empty() {
                 problems.push(format!("{who}: brief_description is empty"));
             }
@@ -511,44 +705,31 @@ impl Roster {
             if t.agent != Agent::None && t.model.is_none() && t.name != "orchestration-worker" {
                 problems.push(format!("{who}: agent is {} but no model is set", t.agent));
             }
-            if t.agent == Agent::Codex {
-                for (field, empty) in [
-                    ("tools", t.tools.is_none()),
-                    ("allowed_tools", t.allowed_tools.is_empty()),
-                    ("disallowed_tools", t.disallowed_tools.is_empty()),
-                    ("skills", t.skills.is_empty()),
-                    ("plugin_dirs", t.plugin_dirs.is_empty()),
-                    ("settings", t.settings.is_none()),
-                    ("subagent_model", t.subagent_model.is_none()),
-                ] {
-                    if !empty {
-                        problems.push(format!(
-                            "{who}: '{field}' is claude-only; codex controls capability \
-                             through its sandbox. Use args."
-                        ));
-                    }
-                }
-                if t.setting_sources.is_some() {
-                    problems.push(format!("{who}: setting_sources is claude-only"));
-                }
-                if t.disable_skills {
-                    problems.push(format!("{who}: disable_skills is claude-only"));
-                }
-                if !t.inherit_plugins {
-                    problems.push(format!("{who}: inherit_plugins is claude-only"));
-                }
-                if t.mcp_servers.is_some() || !t.mcp_config_files.is_empty() {
+            // Every claude-shaped field this agent cannot express. Naming the
+            // field beats a generic "unsupported": the author set it on purpose.
+            for field in t.agent.unsupported_fields(t) {
+                problems.push(format!(
+                    "{who}: '{field}' is not something {} can express; \
+                     use args, or move this work to a claude teammate",
+                    t.agent
+                ));
+            }
+            if let Some(mode) = t.permission_mode {
+                let ok = match t.agent {
+                    Agent::Codex => mode.codex_args().is_some(),
+                    Agent::Opencode => mode.opencode_args().is_some(),
+                    // pi and Prime run their tools without asking, so there is
+                    // no gate for a mode to set. Saying nothing is correct;
+                    // saying `acceptEdits` implies a restraint that is absent.
+                    Agent::Pi | Agent::Prime => false,
+                    Agent::Claude | Agent::None => true,
+                };
+                if !ok {
                     problems.push(format!(
-                        "{who}: MCP configuration is claude-only; codex uses `codex mcp`"
+                        "{who}: permission_mode '{}' has no {} equivalent",
+                        mode.as_str(),
+                        t.agent
                     ));
-                }
-                if let Some(mode) = t.permission_mode {
-                    if mode.codex_args().is_none() {
-                        problems.push(format!(
-                            "{who}: permission_mode '{}' has no codex equivalent",
-                            mode.as_str()
-                        ));
-                    }
                 }
             }
             // A plan-mode worker that cannot leave plan mode stalls in a pane
@@ -586,9 +767,14 @@ impl Roster {
             }
             // Dropping the operator's settings also drops `disableBundledSkills`,
             // so "clean" can silently mean "more skills than before".
-            if t.setting_sources.as_ref().map(|v| v.is_empty()).unwrap_or(false)
+            if t.setting_sources
+                .as_ref()
+                .map(|v| v.is_empty())
+                .unwrap_or(false)
                 && !t.disable_skills
                 && t.plugin_dirs.is_empty()
+                && t.skills.is_empty()
+                && t.phase.is_none()
             {
                 problems.push(format!(
                     "{who}: setting_sources is empty but disable_skills is false and no \
@@ -602,15 +788,38 @@ impl Roster {
                      plugin_dirs loads - the plugins would be dead weight"
                 ));
             }
-            if !t.skills.is_empty() && t.disable_skills {
-                problems.push(format!("{who}: declares skills but also disable_skills"));
+            if t.trains_on_input {
+                let renders = t
+                    .base
+                    .as_ref()
+                    .and_then(|b| self.bases.get(b))
+                    .map(|b| !b.trains_on_input.trim().is_empty())
+                    .unwrap_or(false);
+                if !renders {
+                    problems.push(format!(
+                        "{who}: trains_on_input is set but its base has no \
+                         trains_on_input block to render, so the worker would never \
+                         be told"
+                    ));
+                }
+            }
+            if (!t.skills.is_empty() || t.phase.is_some()) && t.disable_skills {
+                problems.push(format!(
+                    "{who}: declares skills or phase but also disable_skills"
+                ));
             }
             // `args` is emitted immediately before the prompt. These flags are
             // variadic and would take the prompt as one more value.
             if let Some(last) = t.args.last() {
-                if ["--mcp-config", "--tools", "--allowedTools", "--allowed-tools",
-                    "--disallowedTools", "--disallowed-tools"]
-                    .contains(&last.as_str())
+                if [
+                    "--mcp-config",
+                    "--tools",
+                    "--allowedTools",
+                    "--allowed-tools",
+                    "--disallowedTools",
+                    "--disallowed-tools",
+                ]
+                .contains(&last.as_str())
                 {
                     problems.push(format!(
                         "{who}: args ends with '{last}', a variadic flag that would swallow \
@@ -646,7 +855,9 @@ impl Roster {
             }
             for file in &t.mcp_config_files {
                 if !expand_home(file).is_file() {
-                    problems.push(format!("{who}: mcp_config_files entry '{file}' does not exist"));
+                    problems.push(format!(
+                        "{who}: mcp_config_files entry '{file}' does not exist"
+                    ));
                 }
             }
         }
@@ -655,7 +866,12 @@ impl Roster {
         // nobody asked for.
         if let Some(worker) = self.bases.get("fleet-worker") {
             let told = format!("{}{}", worker.body, worker.task_idle);
-            problems.extend(unused_rules(self.exec_rules(), &told, "worker", "fleet-worker"));
+            problems.extend(unused_rules(
+                self.exec_rules(),
+                &told,
+                "worker",
+                "fleet-worker",
+            ));
         }
         if let Some(orchestrator) = self.bases.get("fleet-orchestrator") {
             problems.extend(unused_rules(
@@ -792,6 +1008,80 @@ fn split_frontmatter(text: &str) -> Result<(&str, &str)> {
 mod spawnable_tests {
     use super::*;
 
+    #[test]
+    fn phases_round_trip_and_legacy_teammates_have_no_phase() {
+        for (name, phase) in [
+            ("research", Phase::Research),
+            ("plan", Phase::Plan),
+            ("implementation", Phase::Implementation),
+            ("validation", Phase::Validation),
+        ] {
+            assert_eq!(name.parse::<Phase>().unwrap(), phase);
+            assert_eq!(phase.to_string(), name);
+            assert_eq!(
+                serde_json::to_string(&phase).unwrap(),
+                format!("\"{name}\"")
+            );
+        }
+        assert!("unknown".parse::<Phase>().is_err());
+        let t = parse_teammate(
+            "legacy",
+            "---\nname: legacy\nbrief_description: Legacy\nagent: codex\n---\nbody",
+        )
+        .unwrap();
+        assert_eq!(t.phase, None);
+    }
+
+    #[test]
+    fn builtin_phase_defaults_are_portable_and_disabling_conflicts() {
+        let mut r = Roster::builtin().unwrap();
+        for t in r.teammates.values() {
+            assert!(
+                t.plugin_dirs.is_empty(),
+                "{} has machine-local plugins",
+                t.name
+            );
+            let expected = match t.name.as_str() {
+                "smoke" => None,
+                "researcher" | "product-lead" | "designer" => Some(Phase::Research),
+                "staff-engineer"
+                | "orchestrator"
+                | "orchestrator-codex"
+                | "orchestration-orchestrator" => Some(Phase::Plan),
+                "architect-reviewer" | "qa-engineer" => Some(Phase::Validation),
+                _ => Some(Phase::Implementation),
+            };
+            assert_eq!(t.phase, expected, "{}", t.name);
+        }
+        assert!(r.check().is_empty(), "{:?}", r.check());
+        r.teammates.get_mut("opus").unwrap().disable_skills = true;
+        assert!(r
+            .check()
+            .iter()
+            .any(|p| p.contains("opus: declares skills or phase")));
+    }
+
+    #[test]
+    fn roster_check_rejects_unknown_bundle_selection() {
+        let mut r = Roster::builtin().unwrap();
+        r.teammates.get_mut("opus").unwrap().skills = vec!["missing-bundle".into()];
+        assert!(r
+            .check()
+            .iter()
+            .any(|p| p.contains("unknown bundled skill 'missing-bundle'")));
+    }
+
+    #[test]
+    fn codex_can_use_integrated_skills() {
+        let mut t = Roster::builtin()
+            .unwrap()
+            .require("codex-sol")
+            .unwrap()
+            .clone();
+        t.skills = vec!["tdd".into()];
+        assert!(!t.agent.unsupported_fields(&t).contains(&"skills"));
+    }
+
     /// The fleet has exactly one top-tier session: the orchestrator. Even a
     /// file that asks for one is refused at spawn, so a stray teammate cannot
     /// make a second - and the rule does not care which flavor is orchestrating,
@@ -808,8 +1098,14 @@ mod spawnable_tests {
             let mut t = r.require("opus").unwrap().clone();
             t.model = Some(model.into());
             let err = Roster::is_spawnable(&t).unwrap_err().to_string();
-            assert!(err.contains("reserved for the orchestrator"), "{model}: {err}");
-            assert!(err.contains(instead), "{model} should point at {instead}: {err}");
+            assert!(
+                err.contains("reserved for the orchestrator"),
+                "{model}: {err}"
+            );
+            assert!(
+                err.contains(instead),
+                "{model} should point at {instead}: {err}"
+            );
         }
         for ok in ["opus", "sonnet", "gpt-5.6-sol", "gpt-5.6-terra"] {
             assert!(
@@ -843,11 +1139,17 @@ mod spawnable_tests {
             );
         }
         // The orchestrators themselves still do, and are hidden.
-        for (name, model) in [("orchestrator", "fable"), ("orchestrator-codex", "gpt-6-astra")] {
+        for (name, model) in [
+            ("orchestrator", "fable"),
+            ("orchestrator-codex", "gpt-6-astra"),
+        ] {
             let t = r.require(name).unwrap();
             assert_eq!(t.model.as_deref(), Some(model));
             assert!(t.hidden, "{name} must never appear in the roster");
-            assert!(Roster::is_spawnable(t).is_err(), "{name} must not be spawnable");
+            assert!(
+                Roster::is_spawnable(t).is_err(),
+                "{name} must not be spawnable"
+            );
         }
     }
 }

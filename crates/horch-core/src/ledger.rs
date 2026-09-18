@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::teammates::Phase;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +43,8 @@ pub struct Record {
     /// tier ids as their names precisely so those records still resolve.
     pub tier: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
     pub role: String,
     pub status: String,
     pub task: String,
@@ -139,9 +142,7 @@ impl Ledger {
     /// The ledger for an explicit state root and project path.
     pub fn for_project(state_root: impl AsRef<Path>, project: &str) -> Self {
         Self {
-            path: state_root
-                .as_ref()
-                .join(format!("{}.json", slug(project))),
+            path: state_root.as_ref().join(format!("{}.json", slug(project))),
         }
     }
 
@@ -198,7 +199,9 @@ impl Ledger {
     /// Write via temp file + rename, so a killed process cannot leave a
     /// half-written ledger.
     fn write(&self, records: &[Record]) -> Result<()> {
-        let tmp = self.path.with_extension(format!("json.tmp.{}", std::process::id()));
+        let tmp = self
+            .path
+            .with_extension(format!("json.tmp.{}", std::process::id()));
         let json = serde_json::to_string_pretty(records)?;
         std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, &self.path)
@@ -233,6 +236,22 @@ impl Ledger {
         session_id: Option<&str>,
         task: &str,
     ) -> Result<()> {
+        self.add_with_phase(record_id, agent, tier, model, role, session_id, task, None)
+    }
+
+    /// Record a fresh session with its resolved work phase.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_with_phase(
+        &self,
+        record_id: &str,
+        agent: &str,
+        tier: &str,
+        model: &str,
+        role: &str,
+        session_id: Option<&str>,
+        task: &str,
+        phase: Option<Phase>,
+    ) -> Result<()> {
         let at = now();
         let record = Record {
             record_id: record_id.to_string(),
@@ -240,6 +259,7 @@ impl Ledger {
             agent: agent.to_string(),
             tier: tier.to_string(),
             model: model.to_string(),
+            phase,
             role: role.to_string(),
             status: STATUS_WORKING.to_string(),
             task: if task.is_empty() {
@@ -289,10 +309,22 @@ impl Ledger {
 
     /// Re-open a finished session under `role`.
     pub fn resume(&self, key: &str, role: &str, task: &str) -> Result<()> {
+        self.resume_with_phase(key, role, task, None)
+    }
+
+    /// Resume, preserving the phase unless an override is supplied.
+    pub fn resume_with_phase(
+        &self,
+        key: &str,
+        role: &str,
+        task: &str,
+        phase: Option<Phase>,
+    ) -> Result<()> {
         let at = now();
         self.update(|records| {
             Self::require_key(records, key, &self.path)?;
             for r in records.iter_mut().filter(|r| r.matches(key)) {
+                r.phase = phase.or(r.phase);
                 r.status = STATUS_WORKING.to_string();
                 r.role = role.to_string();
                 r.updated_at = at.clone();
@@ -412,6 +444,9 @@ impl Ledger {
                 "  agent={} model={}  updated={}\n",
                 r.agent, r.model, r.updated_at
             ));
+            if let Some(phase) = r.phase {
+                out.push_str(&format!("  phase={phase}\n"));
+            }
             out.push_str(&format!("  task: {}\n", r.task));
             let notable: Vec<&HistoryEntry> = r
                 .history
@@ -437,6 +472,27 @@ mod tests {
         (tmp, l)
     }
 
+    #[test]
+    fn phase_persists_and_resume_can_override_it() {
+        let (_t, l) = ledger();
+        l.add_with_phase(
+            "r1",
+            "codex",
+            "codex-sol",
+            "sol",
+            "worker",
+            Some("s1"),
+            "task",
+            Some(Phase::Research),
+        )
+        .unwrap();
+        l.resume("r1", "worker-2", "").unwrap();
+        assert_eq!(l.get("r1").unwrap().phase, Some(Phase::Research));
+        l.resume_with_phase("r1", "worker-3", "implement", Some(Phase::Implementation))
+            .unwrap();
+        assert_eq!(l.get("s1").unwrap().phase, Some(Phase::Implementation));
+    }
+
     /// The slug rule decides which file an existing ledger lives in. Changing it
     /// would orphan every recorded session.
     #[test]
@@ -452,14 +508,25 @@ mod tests {
     fn absent_ledger_reads_empty_and_renders_a_hint() {
         let (_t, l) = ledger();
         assert!(l.read().unwrap().is_empty());
-        assert_eq!(l.render().unwrap(), "no sessions recorded for this project yet\n");
+        assert_eq!(
+            l.render().unwrap(),
+            "no sessions recorded for this project yet\n"
+        );
     }
 
     #[test]
     fn add_then_get_round_trips() {
         let (_t, l) = ledger();
-        l.add("r1", "claude", "sonnet", "sonnet", "sonnet-1", Some("s1"), "fix auth")
-            .unwrap();
+        l.add(
+            "r1",
+            "claude",
+            "sonnet",
+            "sonnet",
+            "sonnet-1",
+            Some("s1"),
+            "fix auth",
+        )
+        .unwrap();
 
         // Addressable by record id and by session id.
         for key in ["r1", "s1"] {
@@ -476,7 +543,8 @@ mod tests {
     #[test]
     fn idle_spawn_gets_the_placeholder_task() {
         let (_t, l) = ledger();
-        l.add("r1", "claude", "opus", "opus", "opus-1", None, "").unwrap();
+        l.add("r1", "claude", "opus", "opus", "opus-1", None, "")
+            .unwrap();
         let r = l.get("r1").unwrap();
         assert_eq!(r.task, "(idle - awaiting assignment)");
         assert_eq!(r.history[0].text, "spawned idle as opus-1");
@@ -488,8 +556,16 @@ mod tests {
     #[test]
     fn empty_session_id_becomes_null() {
         let (_t, l) = ledger();
-        l.add("r1", "codex", "codex-sol", "gpt-5.6-sol", "codex-sol-1", Some(""), "")
-            .unwrap();
+        l.add(
+            "r1",
+            "codex",
+            "codex-sol",
+            "gpt-5.6-sol",
+            "codex-sol-1",
+            Some(""),
+            "",
+        )
+        .unwrap();
         assert_eq!(l.get("r1").unwrap().session_id, None);
         assert!(!l.has_session("").unwrap());
     }
@@ -497,8 +573,16 @@ mod tests {
     #[test]
     fn set_session_then_has_session() {
         let (_t, l) = ledger();
-        l.add("r1", "codex", "codex-sol", "gpt-5.6-sol", "codex-sol-1", None, "")
-            .unwrap();
+        l.add(
+            "r1",
+            "codex",
+            "codex-sol",
+            "gpt-5.6-sol",
+            "codex-sol-1",
+            None,
+            "",
+        )
+        .unwrap();
         assert!(!l.has_session("s9").unwrap());
         l.set_session("r1", "s9").unwrap();
         assert!(l.has_session("s9").unwrap());
@@ -508,8 +592,16 @@ mod tests {
     #[test]
     fn note_and_done_build_history_and_flip_status() {
         let (_t, l) = ledger();
-        l.add("r1", "claude", "sonnet", "sonnet", "sonnet-1", Some("s1"), "t")
-            .unwrap();
+        l.add(
+            "r1",
+            "claude",
+            "sonnet",
+            "sonnet",
+            "sonnet-1",
+            Some("s1"),
+            "t",
+        )
+        .unwrap();
         l.note("r1", "halfway").unwrap();
         l.done("s1", "all finished").unwrap();
 
@@ -522,11 +614,27 @@ mod tests {
     #[test]
     fn assign_targets_the_latest_working_record_for_the_role() {
         let (_t, l) = ledger();
-        l.add("old", "claude", "sonnet", "sonnet", "sonnet-1", Some("s1"), "first")
-            .unwrap();
+        l.add(
+            "old",
+            "claude",
+            "sonnet",
+            "sonnet",
+            "sonnet-1",
+            Some("s1"),
+            "first",
+        )
+        .unwrap();
         l.done("old", "finished").unwrap();
-        l.add("live", "claude", "sonnet", "sonnet", "sonnet-1", Some("s2"), "second")
-            .unwrap();
+        l.add(
+            "live",
+            "claude",
+            "sonnet",
+            "sonnet",
+            "sonnet-1",
+            Some("s2"),
+            "second",
+        )
+        .unwrap();
 
         l.assign("sonnet-1", "third").unwrap();
         assert_eq!(l.get("live").unwrap().task, "third");
@@ -544,8 +652,16 @@ mod tests {
     #[test]
     fn resume_reopens_under_a_new_role_and_keeps_the_old_task_when_none_given() {
         let (_t, l) = ledger();
-        l.add("r1", "claude", "opus", "opus", "opus-1", Some("s1"), "original")
-            .unwrap();
+        l.add(
+            "r1",
+            "claude",
+            "opus",
+            "opus",
+            "opus-1",
+            Some("s1"),
+            "original",
+        )
+        .unwrap();
         l.done("r1", "done for now").unwrap();
 
         l.resume("s1", "opus-7", "").unwrap();
@@ -577,13 +693,29 @@ mod tests {
     #[test]
     fn render_lists_newest_first_and_caps_history_at_three_entries() {
         let (_t, l) = ledger();
-        l.add("r1", "claude", "sonnet", "sonnet", "sonnet-1", Some("s1"), "first")
-            .unwrap();
+        l.add(
+            "r1",
+            "claude",
+            "sonnet",
+            "sonnet",
+            "sonnet-1",
+            Some("s1"),
+            "first",
+        )
+        .unwrap();
         for n in 1..=4 {
             l.note("r1", &format!("note {n}")).unwrap();
         }
-        l.add("r2", "codex", "codex-sol", "gpt-5.6-sol", "codex-sol-1", None, "")
-            .unwrap();
+        l.add(
+            "r2",
+            "codex",
+            "codex-sol",
+            "gpt-5.6-sol",
+            "codex-sol-1",
+            None,
+            "",
+        )
+        .unwrap();
 
         let out = l.render().unwrap();
         let r2_at = out.find("record=r2").unwrap();
@@ -596,7 +728,10 @@ mod tests {
         // Only the last three note/done entries are shown.
         assert!(!out.contains("note 1"));
         for n in 2..=4 {
-            assert!(out.contains(&format!("note {n}")), "missing note {n}:\n{out}");
+            assert!(
+                out.contains(&format!("note {n}")),
+                "missing note {n}:\n{out}"
+            );
         }
     }
 
@@ -609,8 +744,16 @@ mod tests {
         std::fs::create_dir(l.path().with_extension("json.lock")).unwrap();
 
         let started = std::time::Instant::now();
-        l.add("r1", "claude", "sonnet", "sonnet", "sonnet-1", Some("s1"), "t")
-            .unwrap();
+        l.add(
+            "r1",
+            "claude",
+            "sonnet",
+            "sonnet",
+            "sonnet-1",
+            Some("s1"),
+            "t",
+        )
+        .unwrap();
         assert!(l.get("r1").is_ok());
         // ~15s of spinning before the break, then success.
         assert!(started.elapsed() < Duration::from_secs(45));
@@ -637,6 +780,7 @@ mod tests {
 
         let r = l.get("3f2b").unwrap();
         assert_eq!(r.role, "codex-sol-1");
+        assert_eq!(r.phase, None);
         assert_eq!(r.session_id, None);
         // And it stays writable.
         l.note("3f2b", "still going").unwrap();

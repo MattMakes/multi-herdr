@@ -3,14 +3,12 @@ name: backend-developer
 brief_description: Backend implementation in JS/TS, Python, Go, C# and Rust. APIs, data access, services, migrations.
 base: fleet-worker
 agent: claude
+phase: implementation
 model: opus
 effort: xhigh
-permission_mode: acceptEdits
+permission_mode: auto
 inherit_plugins: false
-plugin_dirs:
-  - ~/projects/public-skills/plugins/dev
-  - ~/projects/public-skills/plugins/tools
-skills: [tdd, error-handling-patterns, api-design-principles]
+skills: [tdd, security-review]
 
 # context7 for current library and framework documentation. No browser servers:
 # this teammate has no page to look at.

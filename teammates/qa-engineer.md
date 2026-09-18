@@ -3,14 +3,12 @@ name: qa-engineer
 brief_description: QA. Writes and runs tests, builds e2e harnesses, and reproduces bugs before anyone fixes them.
 base: fleet-worker
 agent: claude
+phase: validation
 model: sonnet
 effort: xhigh
-permission_mode: acceptEdits
+permission_mode: auto
 inherit_plugins: false
-plugin_dirs:
-  - ~/projects/public-skills/plugins/tools
-  - ~/projects/public-skills/plugins/code
-skills: [test-driven-development, e2e-harness, systematic-debugging]
+skills: [check, debug, tdd]
 mcp_servers:
   playwright: {"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}
 ---

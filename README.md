@@ -3,7 +3,8 @@
 "horch" multi-agent orchestration layouts for [herdr](https://herdr.dev), in Rust.
 
 Three binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
-Node required - the same commands work on macOS and Windows. A `justfile` at
+Node required by horch itself. It runs on macOS, Linux and Windows; Codex phase
+skills currently require macOS/Linux or WSL. A `justfile` at
 the repo root wraps the common ones for people who like typing `just
 herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 
@@ -120,6 +121,9 @@ registry to update.
 | `backend-developer`    | Claude | Opus   | JS/TS, Python, Go, C#, Rust services and APIs |
 | `qa-engineer`          | Claude | Sonnet | Tests, e2e harnesses, bug reproduction       |
 | `sonnet` `opus` `codex-sol` `codex-terra` | | | Generic fallbacks |
+| `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | Free workers, for public/OSS work |
+| `pi`                   | pi     | local  | Runs on your own hardware; nothing leaves the machine |
+| `prime`                | Prime Agent | Opus | One persistent Python kernel; long, exploratory runs |
 
 The two orchestrators are teammate files too, and hidden from the roster:
 `orchestrator` (Claude, Fable) and `orchestrator-codex` (Codex, Astra). They
@@ -147,17 +151,102 @@ fleet worker has no use for.
 | `mcp_servers: {}` | exactly zero MCP servers | `--mcp-config '{"mcpServers":{}}' --strict-mcp-config` |
 | `disable_skills: true` | no slash commands at all - including the built-in `/context` and `/config`, so nothing shipped uses it | `--disable-slash-commands` |
 
-`plugin_dirs` then adds back only what a teammate needs. Measured on this
-machine with `claude plugin details`: `ddd` is ~3.2k tokens always-on, `herdr`
-~485, `code` ~450 - so an orchestrator that inherited all three would pay ~4k
-tokens per turn for skills it must never invoke.
+Bundled teammates now use a repo-owned skill catalog instead of machine-local
+plugin paths. Each launch gets a small skills-only plugin; bundled Claude skills
+and Workflows are disabled by default for these launches. Custom `plugin_dirs`
+remain supported. Permission denials, provider settings and the status line are
+preserved. See [phase skills and context measurement](docs/phase-skills.md).
 
 `setting_sources: []` (`--setting-sources ""`) also exists, and is the blunt
 instrument: it drops the operator's tuning along with the plugins and usually
 costs more context than it saves. `horch` keeps the status line alive through it
 regardless, since a pane without one is blind on context and cost.
 
+### Skills for each phase
+
+```sh
+horch skills --phase research --json
+horch spawn codex-sol --phase research "Investigate the migration"
+horch spawn sonnet --phase implementation "Implement the accepted plan"
+horch spawn --resume RECORD_ID --phase validation "Check the final diff"
+```
+
+Research, plan, implementation and validation select portable native skill
+catalogs across all five harnesses. Role defaults and explicit `skills` live in
+teammate YAML; resumes preserve the phase. Full workflows load on demand.
+See [the phase catalog, adapters and context measurements](docs/phase-skills.md).
+
+### Five harnesses, one roster
+
+A teammate's `agent:` picks which CLI its pane runs. They differ in almost
+everything - how a prompt is passed, whether horch can name the session before
+launch, what "run unattended" means - so `launch.rs` has one builder per agent
+and `Agent` answers the rest as capabilities rather than as `if agent == ...`
+scattered through the code.
+
+| agent | prompt | model | effort | session |
+|---|---|---|---|---|
+| `claude`   | trailing positional | `--model` alias | `--effort` | horch mints `--session-id` |
+| `codex`    | trailing positional | `-c model="..."` | `-c model_reasoning_effort` | harvested from rollout files |
+| `opencode` | `--prompt` flag | `-m provider/model` | `--variant` | harvested from `opencode session list --format json` |
+| `pi`       | after `--` | `--model provider/id` | `--thinking` | horch mints `--session-id` |
+| `prime`    | after `--` | `--model provider/id` | `--thinking` | horch owns the `--session-dir` and reads it back |
+
+Two of those need more than flags:
+
+**OpenCode** needs `--auto`, or a worker stops at the first permission prompt in
+a pane nobody is watching. `permission_mode: plan` has no OpenCode equivalent at
+all, so it is refused rather than quietly downgraded.
+
+**Prime Agent supervises its own sessions.** Verified on 0.9.4: even a `--print`
+run that failed authentication left a background service alive after the process
+exited. herdr already treats a pane as an agent's lifetime, so left alone
+`horch done` would close the pane and leave the daemon running - one per spawn,
+forever. Every Prime pane therefore gets its own `--daemon-socket`, and horch
+stops exactly that service when the CLI exits. `prime-agent shutdown` is not
+usable here: it stops every agent on the machine, including other panes in the
+same fleet.
+
+pi and Prime have no approval gate at all - their tools simply run, which is what
+makes them usable unattended. `permission_mode` is refused on both, because
+setting it would imply a restraint that does not exist.
+
+### Free models are paid for with your prompts
+
+The `opencode-*` tiers cost nothing because the provider trains on what it is
+sent. That is a fine trade for public and open-source work and a bad one for
+anything else, so it is written down in two places rather than assumed:
+
+- their `brief_description` says `TRAINS ON YOUR INPUT`, which is the line the
+  **orchestrator** reads when it decides who gets a task;
+- `trains_on_input: true` in the teammate file appends a block from
+  `_base/fleet-worker.md` to the **worker's own** briefing, telling it to treat
+  the pane as public and to report `BLOCKED` rather than read anything
+  proprietary into it.
+
+One field, one copy of the prose, and both ends of the decision covered. Set it
+on any teammate whose provider trains on input; leave it off for paid, local and
+self-hosted models, because a warning that appears everywhere stops being read.
+
 ### Starting codex panes clean
+
+Every Codex launch disables startup update checks with
+`-c check_for_update_on_startup=false`, selects the current fleet directory on
+resume with `-c 'tui.resume_cwd="current"'`, and passes
+`--dangerously-bypass-hook-trust`. That last flag runs enabled hooks without a
+trust dialog, so use hooks whose sources you have vetted; it does not grant
+shell commands extra permissions. These are per-launch settings, not edits to
+your global Codex configuration. Verified with Codex CLI 0.154.0; see the
+[official CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+The bundled Codex workers and orchestrator use `permission_mode: auto`, mapped
+to `-s workspace-write -a never`. Commands allowed by the sandbox or explicit
+rules can run; actions needing approval fail back to the agent instead of
+waiting for a person. This preserves sandbox restrictions. It does not use
+`--dangerously-bypass-approvals-and-sandbox`. Custom teammates can still choose
+an interactive permission mode. Authentication and any required first-run
+setup must already be complete before launching unattended panes.
 
 Codex has no `--tools` or `--settings`; what it can reach outside its sandbox is
 decided by execpolicy `prefix_rule`s, and it refuses any command its rules do not
@@ -173,9 +262,10 @@ nothing ever prunes it.
 
 So each codex pane gets a **private `CODEX_HOME`** instead: a directory that
 symlinks every entry of the real one except `rules/`, and whose `rules/` holds
-that launch's rules and nothing else. Auth, config, skills, plugins and
-`sessions/` all resolve through the symlinks, so the operator's setup is intact
-and a rollout still lands where the ledger's harvest looks for it. The directory
+that launch's rules and nothing else. Auth, config, plugins and
+`sessions/` resolve through the symlinks; the skills link points to the selected
+fleet bundle. Other native skill discovery roots can still contribute skills.
+Rollouts still land where the ledger's harvest looks for them. The directory
 is rebuilt per launch and removed when the pane exits, so two panes in one fleet
 can hold different rules and neither leaks to the other - or to the operator's
 own codex sessions.
@@ -183,8 +273,9 @@ own codex sessions.
 If codex creates something at the top level of that private home that was not
 there at launch, the directory is kept and named rather than deleted, so state
 is never silently thrown away. On Windows the rules go to the shared file
-instead, and the pane says so: symlinks there need Developer Mode or an elevated
-process.
+instead for custom teammates without phase skills. Phase-enabled Codex requires
+WSL on Windows and fails before shared rules are written; see the compatibility
+notes in [phase skills](docs/phase-skills.md).
 
 ### The session ledger
 
@@ -242,6 +333,9 @@ junction, so an update never overwrites a running `herdr.exe`.
 |----------------------|---------------------------------------------------------------|
 | `HORCH_CLAUDE_BIN`   | Which Claude CLI to launch. Defaults to `cpx` if on PATH, else `claude` |
 | `HORCH_CODEX_BIN`    | Which Codex CLI to launch. Defaults to `codex`                 |
+| `HORCH_OPENCODE_BIN` | Which OpenCode CLI to launch. Defaults to `opencode`           |
+| `HORCH_PI_BIN`       | Which pi CLI to launch. Defaults to `pi`                       |
+| `HORCH_PRIME_BIN`    | Which Prime Agent CLI to launch. Defaults to `prime-agent`     |
 | `HORCH_STATE_DIR`    | Where ledgers live                                             |
 | `HORCH_PROJECT_DIR`  | Which project a ledger belongs to. Defaults to the cwd         |
 | `HORCH_WORKSPACE_ID` | Target workspace, when not running inside a herdr pane         |

@@ -10,12 +10,13 @@ use horch_core::herdr::{Direction, Herdr};
 use horch_core::ledger::{Ledger, STATUS_WORKING};
 use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::paneshell::PaneShell;
-use horch_core::teammates::{Agent, Roster, Teammate};
+use horch_core::teammates::{Phase, Roster, Teammate};
 
 pub struct SpawnArgs {
     pub teammate: Option<String>,
     pub task: String,
     pub resume: Option<String>,
+    pub phase: Option<Phase>,
     pub role: Option<String>,
     pub from_pane: Option<String>,
     pub direction: Direction,
@@ -56,9 +57,8 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     let roster = Roster::load_with(env_override("HORCH_TEAMMATES_DIR").as_deref())?;
 
     let herdr = Herdr::new();
-    let mailbox = Mailbox::resolve(&herdr).context(
-        "horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane",
-    )?;
+    let mailbox = Mailbox::resolve(&herdr)
+        .context("horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane")?;
     std::fs::create_dir_all(mailbox.dir())?;
 
     // Pin the project dir so the ledger this process writes and the ledger the
@@ -86,7 +86,8 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
                      refusing to resume"
                 );
             }
-            let teammate = roster.require(&record.tier)?.clone();
+            let mut teammate = roster.require(&record.tier)?.clone();
+            teammate.phase = resolve_phase(args.phase, record.phase, teammate.phase);
             Roster::is_spawnable(&teammate)?;
             Plan {
                 teammate,
@@ -98,16 +99,17 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
         }
         None => {
             let name = args.teammate.clone().expect("checked above");
-            let teammate = roster.require(&name)?.clone();
+            let mut teammate = roster.require(&name)?.clone();
+            teammate.phase = resolve_phase(args.phase, None, teammate.phase);
             Roster::is_spawnable(&teammate)?;
             Plan {
                 model: teammate.model.clone().unwrap_or_default(),
                 record_id: horch_core::mint_uuid(),
-                // Claude accepts a caller-minted session id, so the ledger knows
-                // the resume handle before the agent even starts. Codex only
-                // reveals its id after launch; `horch worker` harvests it into
-                // the ledger asynchronously.
-                session_id: if teammate.agent == Agent::Claude {
+                // Claude, pi and Prime accept a caller-minted session id, so
+                // the ledger knows the resume handle before the agent even
+                // starts. Codex and OpenCode reveal theirs only after launch;
+                // `horch worker` harvests those into the ledger asynchronously.
+                session_id: if teammate.agent.mints_session_id() {
                     horch_core::mint_uuid()
                 } else {
                     String::new()
@@ -124,6 +126,8 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     // could otherwise start a second top-tier session behind an ordinary tier
     // name. Both branches pass through here.
     Roster::model_is_spawnable(&plan.model, &plan.teammate.name)?;
+    // Reject unusable catalogs before allocating a role or recording a live session.
+    validate_selection(&plan.teammate)?;
 
     // Auto role name: <teammate>-<n> from a per-teammate, per-workspace counter.
     let role = match args.role {
@@ -140,9 +144,9 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
 
     // Ledger first, brief second, pane last: the worker can assume both exist.
     if plan.resume {
-        ledger.resume(&plan.record_id, &role, &args.task)?;
+        ledger.resume_with_phase(&plan.record_id, &role, &args.task, plan.teammate.phase)?;
     } else {
-        ledger.add(
+        ledger.add_with_phase(
             &plan.record_id,
             plan.teammate.agent.as_str(),
             plan.teammate.name.as_str(),
@@ -150,6 +154,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
             &role,
             Some(plan.session_id.as_str()),
             &args.task,
+            plan.teammate.phase,
         )?;
     }
 
@@ -163,7 +168,9 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
         resume: plan.resume,
         task: args.task.clone(),
         project_dir,
-        state_dir: std::env::var("HORCH_STATE_DIR").ok().filter(|s| !s.is_empty()),
+        state_dir: std::env::var("HORCH_STATE_DIR")
+            .ok()
+            .filter(|s| !s.is_empty()),
         claude_bin: env_override("HORCH_CLAUDE_BIN"),
         codex_bin: env_override("HORCH_CODEX_BIN"),
         resolved: Some(plan.teammate.clone()),
@@ -215,6 +222,20 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     Ok(new_pane)
 }
 
+/// Validate the resolved selection before allocating persistent spawn state.
+fn validate_selection(teammate: &Teammate) -> Result<()> {
+    horch_core::skills::ensure_supported(teammate)
+}
+
+/// Explicit task selection wins over the recorded phase and roster default.
+fn resolve_phase(
+    explicit: Option<Phase>,
+    recorded: Option<Phase>,
+    default: Option<Phase>,
+) -> Option<Phase> {
+    explicit.or(recorded).or(default)
+}
+
 /// A non-empty environment override, to carry into the worker's brief.
 ///
 /// A spawned pane is a fresh shell started by the herdr server, so it inherits
@@ -238,6 +259,40 @@ struct Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_selection_is_refused_before_spawn_side_effects() {
+        let mut t = Roster::builtin().unwrap().require("opus").unwrap().clone();
+        t.skills = vec!["missing-bundle".into()];
+        assert!(validate_selection(&t)
+            .unwrap_err()
+            .to_string()
+            .contains("missing-bundle"));
+        t.skills.clear();
+        t.disable_skills = true;
+        assert!(validate_selection(&t).is_err());
+    }
+
+    #[test]
+    fn phase_override_wins_and_resume_keeps_recorded_selection() {
+        assert_eq!(
+            resolve_phase(
+                Some(Phase::Validation),
+                Some(Phase::Research),
+                Some(Phase::Plan)
+            ),
+            Some(Phase::Validation)
+        );
+        assert_eq!(
+            resolve_phase(None, Some(Phase::Research), Some(Phase::Plan)),
+            Some(Phase::Research)
+        );
+        assert_eq!(
+            resolve_phase(None, None, Some(Phase::Plan)),
+            Some(Phase::Plan)
+        );
+        assert_eq!(resolve_phase(None, None, None), None);
+    }
 
     #[test]
     fn a_bare_teammate_spawns_an_idle_worker() {
@@ -295,11 +350,9 @@ mod tests {
 
     #[test]
     fn extra_positionals_are_rejected_rather_than_silently_dropped() {
-        assert!(resolve_positionals(
-            &["sonnet".into(), "task".into(), "extra".into()],
-            None
-        )
-        .is_err());
+        assert!(
+            resolve_positionals(&["sonnet".into(), "task".into(), "extra".into()], None).is_err()
+        );
         assert!(resolve_positionals(&["task".into(), "extra".into()], Some("s-1")).is_err());
     }
 }

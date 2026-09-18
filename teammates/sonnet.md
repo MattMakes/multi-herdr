@@ -4,9 +4,10 @@ brief_description: Generic worker. Clear, well-specified junior/grunt work that 
 generic: true
 base: fleet-worker
 agent: claude
+phase: implementation
 model: sonnet
 effort: xhigh
-permission_mode: acceptEdits
+permission_mode: auto
 ---
 Your tier: SONNET - clear, well-specified junior-engineer work.
 Execute the instructions exactly, keep changes minimal, and surface anything

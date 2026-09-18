@@ -17,7 +17,10 @@ fn main() {
     let teammates = root.join("teammates");
 
     println!("cargo:rerun-if-changed={}", teammates.display());
-    println!("cargo:rerun-if-changed={}", teammates.join("_base").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        teammates.join("_base").display()
+    );
     println!("cargo:rerun-if-changed=build.rs");
 
     let mut out = String::new();
@@ -26,7 +29,9 @@ fn main() {
     emit(&mut out, "BUILTIN_TEAMMATES", &teammates, |name| {
         !name.starts_with('_')
     });
-    emit(&mut out, "BUILTIN_BASES", &teammates.join("_base"), |_| true);
+    emit(&mut out, "BUILTIN_BASES", &teammates.join("_base"), |_| {
+        true
+    });
 
     let template = teammates.join("_template.md");
     println!("cargo:rerun-if-changed={}", template.display());
@@ -39,6 +44,46 @@ fn main() {
 
     let dest = Path::new(&std::env::var("OUT_DIR").unwrap()).join("builtin_teammates.rs");
     std::fs::write(dest, out).unwrap();
+
+    let skills = root.join("skills");
+    println!("cargo:rerun-if-changed={}", skills.display());
+    let mut files = Vec::new();
+    if skills.exists() {
+        collect_skill_files(&skills, &skills, &mut files);
+    }
+    files.sort();
+    let mut bundled = String::from("pub static BUNDLED_SKILL_FILES: &[(&str, &[u8])] = &[\n");
+    for (relative, absolute) in files {
+        writeln!(bundled, "    ({relative:?}, include_bytes!({absolute:?})),").unwrap();
+    }
+    bundled.push_str("];\n");
+    std::fs::write(
+        Path::new(&std::env::var("OUT_DIR").unwrap()).join("bundled_skills.rs"),
+        bundled,
+    )
+    .unwrap();
+}
+
+fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let kind = entry.file_type().unwrap();
+        assert!(
+            !kind.is_symlink(),
+            "bundled skills must not depend on symlinks"
+        );
+        let path = entry.path();
+        if kind.is_dir() {
+            collect_skill_files(root, &path, files);
+        } else if kind.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.push((relative, path.to_string_lossy().into_owned()));
+        }
+    }
 }
 
 /// Emit one `&[(name, contents)]` table for every `*.md` in `dir` passing `keep`.

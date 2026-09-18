@@ -32,6 +32,17 @@ pub fn list(json: bool) -> Result<()> {
     // Width spans every printed name, hidden ones included, so the two
     // sections stay in one column.
     let width = roster.names().iter().map(|n| n.len()).max().unwrap_or(0).max(4);
+    // Agent and model names vary a lot across five harnesses - `claude`/`opus`
+    // next to `opencode`/`opencode/nemotron-3.5-lightning-free` - so both
+    // columns are measured rather than guessed, or the descriptions stop
+    // lining up exactly when the roster gets interesting.
+    let agent_width = offered.iter().map(|t| t.agent.as_str().len()).max().unwrap_or(0).max(5);
+    let model_width = offered
+        .iter()
+        .map(|t| t.model.as_deref().unwrap_or("-").len())
+        .max()
+        .unwrap_or(0)
+        .max(5);
     out.push_str("OFFERED TO THE ORCHESTRATOR\n");
     let (specialists, generics): (Vec<_>, Vec<_>) =
         offered.iter().partition(|t| !t.generic);
@@ -44,12 +55,14 @@ pub fn list(json: bool) -> Result<()> {
         out.push_str(&format!("  {label}:\n"));
         for t in group {
             out.push_str(&format!(
-                "    {:<width$}  {:<6} {:<14} {}\n",
+                "    {:<width$}  {:<agent_width$}  {:<model_width$}  {}\n",
                 t.name,
                 t.agent.as_str(),
                 t.model.as_deref().unwrap_or("-"),
                 t.brief_description,
-                width = width
+                width = width,
+                agent_width = agent_width,
+                model_width = model_width
             ));
         }
     }

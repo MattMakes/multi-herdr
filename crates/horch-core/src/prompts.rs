@@ -82,10 +82,8 @@ pub fn worker_prompt(
 
     let mut out = render(&base.body, &vars)?;
 
-    // Skills are not a launch flag: there is no `claude --skill`. They are
-    // discovered from plugin directories and invoked as /name, so the only way
-    // to make a teammate use one is to tell it to. The wording lives in the
-    // base file's `skills_instruction`, not here.
+    // Explicit additions are named here; native discovery and phase routing
+    // are installed by the launch bundle. Bodies load only when relevant.
     if !teammate.skills.is_empty() {
         if base.skills_instruction.trim().is_empty() {
             bail!(
@@ -99,6 +97,20 @@ pub fn worker_prompt(
         skill_vars.insert("skills", joined.as_str());
         out.push_str("\n\n");
         out.push_str(&render(&base.skills_instruction, &skill_vars)?);
+    }
+
+    // Last of the shared blocks, so it sits closest to the task: a worker that
+    // reads one more thing before starting should read this one.
+    if teammate.trains_on_input {
+        if base.trains_on_input.trim().is_empty() {
+            bail!(
+                "teammate '{}' sets trains_on_input but base '{base_name}' has no \
+                 trains_on_input block to render it into",
+                teammate.name
+            );
+        }
+        out.push_str("\n\n");
+        out.push_str(&render(&base.trains_on_input, &vars)?);
     }
 
     if let Some(first) = &teammate.first_instruction {
@@ -186,7 +198,10 @@ mod tests {
                 "horch-assign",
                 "horch-sessions",
             ] {
-                assert!(!text.contains(stale), "stale command {stale} in briefing:\n{text}");
+                assert!(
+                    !text.contains(stale),
+                    "stale command {stale} in briefing:\n{text}"
+                );
             }
         }
     }
@@ -206,7 +221,10 @@ mod tests {
     fn idle_worker_is_told_to_announce_readiness() {
         let r = roster();
         let p = worker_prompt(&r, r.require("opus").unwrap(), "opus-1", "", false).unwrap();
-        assert!(p.contains(r#"horch tell orchestrator "[opus-1] ready""#), "{p}");
+        assert!(
+            p.contains(r#"horch tell orchestrator "[opus-1] ready""#),
+            "{p}"
+        );
     }
 
     /// `skills` has to reach the prompt, or a teammate that declares one
@@ -225,6 +243,57 @@ mod tests {
         assert!(out.len() > plain.len());
     }
 
+    /// A free tier's constraint has to reach the WORKER, not just the roster
+    /// line the orchestrator reads. A worker that never learns its provider
+    /// trains on input will happily read a private repo into it.
+    #[test]
+    fn a_free_tier_worker_is_told_what_it_is_running_on() {
+        let r = roster();
+        for name in ["opencode-ultra", "opencode-pickle", "opencode-lightning"] {
+            let t = r.require(name).unwrap();
+            assert!(t.trains_on_input, "{name} must declare it");
+            let out = worker_prompt(&r, t, "oc-1", "do a thing", false).unwrap();
+            assert!(out.contains("trains on what it is sent"), "{name}:\n{out}");
+            // And it must know what to do about it, by name, not just be warned.
+            assert!(
+                out.contains(r#"horch tell orchestrator "[oc-1] BLOCKED"#),
+                "{name}"
+            );
+        }
+        // Paid and local workers are not warned: the block is opt-in, and a
+        // warning that appears everywhere stops being read anywhere.
+        for quiet in ["opus", "sonnet", "codex-sol", "pi", "prime"] {
+            let t = r.require(quiet).unwrap();
+            assert!(!t.trains_on_input, "{quiet} must not declare it");
+            let out = worker_prompt(&r, t, "w-1", "t", false).unwrap();
+            assert!(
+                !out.contains("trains on what it is sent"),
+                "{quiet} was warned:\n{out}"
+            );
+        }
+    }
+
+    /// The orchestrator picks from `brief_description` alone, so the constraint
+    /// has to be visible there too - it decides what a free worker is sent.
+    #[test]
+    fn the_orchestrator_sees_which_teammates_train_on_input() {
+        let r = roster();
+        let lines = r.roster_lines();
+        for t in r.offered() {
+            if t.trains_on_input {
+                let line = lines
+                    .lines()
+                    .find(|l| l.trim_start().starts_with(&t.name))
+                    .unwrap_or_else(|| panic!("{} missing from the roster", t.name));
+                assert!(
+                    line.contains("TRAINS ON YOUR INPUT") || line.contains("TRAINS ON INPUT"),
+                    "{} is offered without warning the orchestrator: {line}",
+                    t.name
+                );
+            }
+        }
+    }
+
     #[test]
     fn first_instruction_is_the_last_thing_a_worker_reads() {
         let r = roster();
@@ -232,7 +301,10 @@ mod tests {
         t.skills = vec!["planning".into()];
         t.first_instruction = Some("Read {role}'s plan file first.".into());
         let out = worker_prompt(&r, &t, "opus-1", "task", false).unwrap();
-        assert!(out.trim_end().ends_with("Read opus-1's plan file first."), "{out}");
+        assert!(
+            out.trim_end().ends_with("Read opus-1's plan file first."),
+            "{out}"
+        );
     }
 
     #[test]

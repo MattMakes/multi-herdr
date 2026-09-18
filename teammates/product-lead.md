@@ -3,12 +3,11 @@ name: product-lead
 brief_description: Product direction. Turns a vague goal into scoped, prioritised, testable requirements. No code.
 base: fleet-worker
 agent: claude
+phase: research
 model: opus
 effort: xhigh
-permission_mode: acceptEdits
+permission_mode: auto
 inherit_plugins: false
-plugin_dirs:
-  - ~/projects/public-skills/plugins/dev
 skills: [brainstorm]
 mcp_servers: {}
 ---

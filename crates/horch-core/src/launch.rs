@@ -52,14 +52,168 @@ pub fn command(
     match teammate.agent {
         Agent::Claude => claude_command(teammate, session, prompt, model_override),
         Agent::Codex => codex_command(teammate, session, prompt, model_override),
-        Agent::None => bail!("teammate '{}' has agent: none and cannot be launched", teammate.name),
+        Agent::Opencode => opencode_command(teammate, session, prompt, model_override),
+        // pi and Prime Agent share a CLI surface - Prime is a fork of pi - but
+        // they have drifted where it matters most: pi can be told its session
+        // id, Prime cannot, and Prime runs a daemon. One builder, two dialects.
+        Agent::Pi => pi_family_command(agent::pi_bin(), teammate, session, prompt, model_override),
+        Agent::Prime => pi_family_command(
+            agent::prime_bin(),
+            teammate,
+            session,
+            prompt,
+            model_override,
+        ),
+        Agent::None => bail!(
+            "teammate '{}' has agent: none and cannot be launched",
+            teammate.name
+        ),
     }
+}
+
+/// Native skill discovery plus a short routing instruction. The caller holds
+/// the bundle until the child exits so lazy reads remain valid throughout.
+pub fn command_with_skills(
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+    bundle: Option<&crate::skills::Bundle>,
+) -> Result<Command> {
+    let Some(bundle) = bundle else {
+        return command(teammate, session, prompt, model_override);
+    };
+    let adjusted = bundle.configure(teammate)?;
+    let prompt = format!(
+        "{}\n{prompt}",
+        bundle.briefing(teammate.agent, teammate.phase)
+    );
+    let mut cmd = command(&adjusted, session, &prompt, model_override)?;
+    bundle.apply_env(&mut cmd, teammate)?;
+    Ok(cmd)
+}
+
+/// OpenCode: `opencode --model provider/model --prompt "..."`.
+///
+/// The prompt is a FLAG here, not a trailing positional, so it cannot be eaten
+/// by a variadic - but `args` still goes before it, to keep every builder in
+/// this file ordered the same way.
+fn opencode_command(
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+) -> Result<Command> {
+    let mut cmd = Command::new(agent::opencode_bin());
+    cmd.arg("--model").arg(model_for(teammate, model_override)?);
+
+    // OpenCode calls reasoning effort a model "variant", and passes it straight
+    // through to the provider, so the teammate's `effort` needs no translation.
+    if let Some(effort) = &teammate.effort {
+        cmd.arg("--variant").arg(effort);
+    }
+    if let Some(mode) = teammate.permission_mode {
+        match mode.opencode_args() {
+            Some(args) => {
+                cmd.args(args);
+            }
+            None => bail!(
+                "teammate '{}' sets permission_mode '{}', which has no opencode equivalent",
+                teammate.name,
+                mode.as_str()
+            ),
+        }
+    }
+    // `--pure` drops external plugins while leaving the operator's providers and
+    // credentials alone - the same intent as `inherit_plugins: false` on claude.
+    if !teammate.inherit_plugins {
+        cmd.arg("--pure");
+    }
+    // Resume only. OpenCode mints its own `ses_...` ids, so a fresh session is
+    // started by saying nothing and harvested afterwards.
+    if let Session::Resume(id) = session {
+        cmd.arg("--session").arg(id);
+    }
+    cmd.args(&teammate.args);
+    cmd.arg("--prompt").arg(prompt);
+    Ok(cmd)
+}
+
+/// pi and Prime Agent: `<bin> --model <pattern> --thinking <level> -- "<prompt>"`.
+///
+/// Neither has an approval gate to bypass: their tools run, which is what makes
+/// them usable in a pane nobody is watching. `permission_mode` therefore has
+/// nothing to map onto, and the roster check rejects it rather than pretending.
+fn pi_family_command(
+    bin: std::path::PathBuf,
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+) -> Result<Command> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("--model").arg(model_for(teammate, model_override)?);
+
+    if let Some(effort) = &teammate.effort {
+        cmd.arg("--thinking").arg(effort);
+    }
+    if let Some(tools) = &teammate.tools {
+        // `Some([])` means "no tools at all", which is its own flag here rather
+        // than an empty list.
+        if tools.is_empty() {
+            cmd.arg("--no-tools");
+        } else {
+            cmd.arg("--tools").arg(tools.join(","));
+        }
+    }
+    // `--exclude-tools` is pi's; Prime 0.9.4 has no denylist, and the roster
+    // check rejects `disallowed_tools` on a Prime teammate rather than dropping
+    // it here, so this only ever fires for pi.
+    if !teammate.disallowed_tools.is_empty() && teammate.agent.takes_tool_denylist() {
+        cmd.arg("--exclude-tools")
+            .arg(teammate.disallowed_tools.join(","));
+    }
+    // Discovery of everything the repo or the operator might have lying around.
+    // Nothing here is on by default in a fleet: a worker with one narrow job
+    // should not inherit a project's extensions or the operator's skills.
+    if !teammate.inherit_plugins {
+        cmd.arg("--no-extensions")
+            .arg("--no-skills")
+            .arg("--no-prompt-templates")
+            .arg("--no-themes");
+    }
+
+    match session {
+        // pi's `--session-id` creates the session if it does not exist, so a
+        // fresh launch and a resume are the same flag with a different id.
+        // Prime has no such flag: `horch worker` gives it a `--session-dir` it
+        // owns instead, and reads back whatever session appears there.
+        Session::Fresh(id) if teammate.agent.mints_session_id() => {
+            cmd.arg("--session-id").arg(id);
+        }
+        Session::Resume(id) => {
+            if teammate.agent.mints_session_id() {
+                cmd.arg("--session-id").arg(id);
+            } else {
+                cmd.arg("--resume").arg(id);
+            }
+        }
+        Session::Fresh(_) | Session::Unmanaged => {}
+    }
+    cmd.args(&teammate.args);
+    // `--` ends option parsing: without it a prompt beginning with a dash would
+    // be read as a flag.
+    cmd.arg("--").arg(prompt);
+    Ok(cmd)
 }
 
 fn model_for<'a>(teammate: &'a Teammate, override_: Option<&'a str>) -> Result<&'a str> {
     match override_.or(teammate.model.as_deref()) {
         Some(m) => Ok(m),
-        None => bail!("teammate '{}' has no model and none was supplied", teammate.name),
+        None => bail!(
+            "teammate '{}' has no model and none was supplied",
+            teammate.name
+        ),
     }
 }
 
@@ -100,7 +254,8 @@ fn claude_command(
         cmd.arg("--tools").arg(tools.join(","));
     }
     if !teammate.allowed_tools.is_empty() {
-        cmd.arg("--allowedTools").arg(teammate.allowed_tools.join(","));
+        cmd.arg("--allowedTools")
+            .arg(teammate.allowed_tools.join(","));
     }
     if !teammate.disallowed_tools.is_empty() {
         cmd.arg("--disallowedTools")
@@ -158,7 +313,8 @@ fn claude_command(
             }
         }
         if !overlay.is_empty() {
-            cmd.arg("--settings").arg(serde_json::Value::Object(overlay).to_string());
+            cmd.arg("--settings")
+                .arg(serde_json::Value::Object(overlay).to_string());
         }
     }
 
@@ -193,6 +349,17 @@ fn codex_command(
         cmd.arg("resume");
     }
     cmd.arg("-c").arg(&model);
+    // Fleet panes must reach their briefing without startup dialogs. Keep
+    // sandbox/command approval policy separate from trust for enabled hooks.
+    cmd.args(["-c", "check_for_update_on_startup=false"]);
+    cmd.args(["-c", "tui.resume_cwd=\"current\""]);
+    if !teammate
+        .args
+        .iter()
+        .any(|arg| arg == "--dangerously-bypass-hook-trust")
+    {
+        cmd.arg("--dangerously-bypass-hook-trust");
+    }
 
     if let Some(mode) = teammate.permission_mode {
         match mode.codex_args() {
@@ -207,7 +374,8 @@ fn codex_command(
         }
     }
     if let Some(effort) = &teammate.effort {
-        cmd.arg("-c").arg(format!("model_reasoning_effort=\"{effort}\""));
+        cmd.arg("-c")
+            .arg(format!("model_reasoning_effort=\"{effort}\""));
     }
     cmd.args(&teammate.args);
     if let Session::Resume(id) = session {
@@ -223,7 +391,62 @@ mod tests {
     use crate::teammates::Roster;
 
     fn argv(cmd: &Command) -> Vec<String> {
-        cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn phase_skills_are_native_on_all_harnesses_and_resume_keeps_prompt_last() {
+        use crate::teammates::Phase;
+        let r = Roster::builtin().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["sonnet", "codex-sol", "opencode-pickle", "pi", "prime"] {
+            let mut t = r.require(name).unwrap().clone();
+            t.phase = Some(Phase::Research);
+            if cfg!(windows) && t.agent == Agent::Codex {
+                assert!(crate::skills::Bundle::install(tmp.path(), &t).is_err());
+                continue;
+            }
+            let bundle = crate::skills::Bundle::install(tmp.path(), &t)
+                .unwrap()
+                .unwrap();
+            for session in [Session::Unmanaged, Session::Resume("sid")] {
+                let cmd =
+                    command_with_skills(&t, session, "BRIEFING", None, Some(&bundle)).unwrap();
+                let args = argv(&cmd);
+                assert!(
+                    args.last().unwrap().ends_with("BRIEFING"),
+                    "{name}: {args:?}"
+                );
+                assert!(args.last().unwrap().contains("Fleet skill phase: research"));
+                match t.agent {
+                    Agent::Claude => assert!(args.contains(&"--plugin-dir".into())),
+                    Agent::Pi | Agent::Prime => {
+                        let flag = args.iter().position(|s| s == "--skill").unwrap();
+                        assert!(std::path::Path::new(&args[flag + 1])
+                            .join("brainstorm/SKILL.md")
+                            .exists());
+                        assert!(flag < args.iter().position(|s| s == "--").unwrap());
+                    }
+                    Agent::Opencode => {
+                        let (_, config) = cmd
+                            .get_envs()
+                            .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
+                            .unwrap();
+                        let value: serde_json::Value =
+                            serde_json::from_str(config.unwrap().to_str().unwrap()).unwrap();
+                        assert!(value["skills"]["paths"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|p| p == &serde_json::json!(bundle.skills_dir())));
+                    }
+                    Agent::Codex => assert!(!args.contains(&"--skill".into())),
+                    Agent::None => unreachable!(),
+                }
+            }
+        }
     }
 
     #[test]
@@ -234,8 +457,15 @@ mod tests {
         assert_eq!(
             a,
             vec![
-                "--model", "opus", "--effort", "xhigh", "--permission-mode", "acceptEdits",
-                "--session-id", "sid", "p"
+                "--model",
+                "opus",
+                "--effort",
+                "xhigh",
+                "--permission-mode",
+                "auto",
+                "--session-id",
+                "sid",
+                "p"
             ]
         );
     }
@@ -243,7 +473,13 @@ mod tests {
     #[test]
     fn claude_resume_swaps_the_session_flag() {
         let r = Roster::builtin().unwrap();
-        let cmd = command(r.require("sonnet").unwrap(), Session::Resume("old"), "p", None).unwrap();
+        let cmd = command(
+            r.require("sonnet").unwrap(),
+            Session::Resume("old"),
+            "p",
+            None,
+        )
+        .unwrap();
         assert!(argv(&cmd).contains(&"--resume".to_string()));
         assert!(!argv(&cmd).contains(&"--session-id".to_string()));
     }
@@ -251,8 +487,13 @@ mod tests {
     #[test]
     fn codex_resume_leads_with_the_subcommand() {
         let r = Roster::builtin().unwrap();
-        let cmd =
-            command(r.require("codex-sol").unwrap(), Session::Resume("rid"), "p", None).unwrap();
+        let cmd = command(
+            r.require("codex-sol").unwrap(),
+            Session::Resume("rid"),
+            "p",
+            None,
+        )
+        .unwrap();
         let a = argv(&cmd);
         assert_eq!(a[0], "resume");
         assert_eq!(a[1], "-c");
@@ -264,11 +505,90 @@ mod tests {
     #[test]
     fn codex_permission_mode_becomes_sandbox_and_approval() {
         let r = Roster::builtin().unwrap();
-        let cmd =
-            command(r.require("codex-terra").unwrap(), Session::Unmanaged, "p", None).unwrap();
+        let cmd = command(
+            r.require("codex-terra").unwrap(),
+            Session::Unmanaged,
+            "p",
+            None,
+        )
+        .unwrap();
         let a = argv(&cmd);
-        assert!(a.windows(2).any(|w| w == ["-s", "workspace-write"]), "{a:?}");
-        assert!(a.windows(2).any(|w| w == ["-a", "on-request"]), "{a:?}");
+        assert!(
+            a.windows(2).any(|w| w == ["-s", "workspace-write"]),
+            "{a:?}"
+        );
+        assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{a:?}");
+    }
+
+    #[test]
+    fn fixed_recipe_codex_worker_keeps_noninteractive_permissions() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("orchestration-worker").unwrap().clone();
+        t.agent = Agent::Codex;
+        t.effort = None;
+        let a = argv(&command(&t, Session::Unmanaged, "p", Some("gpt-5.6-sol")).unwrap());
+        assert!(a.windows(2).any(|w| w == ["-s", "workspace-write"]));
+        assert!(a.windows(2).any(|w| w == ["-a", "never"]));
+    }
+
+    #[test]
+    fn prime_daemon_flags_and_skills_precede_the_prompt_delimiter() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("prime").unwrap().clone();
+        t.args.extend([
+            "--daemon-socket".into(),
+            "/tmp/socket".into(),
+            "--session-dir".into(),
+            "/tmp/sessions".into(),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = crate::skills::Bundle::install(tmp.path(), &t)
+            .unwrap()
+            .unwrap();
+        let a =
+            argv(&command_with_skills(&t, Session::Unmanaged, "p", None, Some(&bundle)).unwrap());
+        let delimiter = a.iter().position(|s| s == "--").unwrap();
+        for flag in ["--daemon-socket", "--session-dir", "--skill"] {
+            assert!(a.iter().position(|s| s == flag).unwrap() < delimiter);
+        }
+    }
+
+    #[test]
+    fn codex_panes_start_and_resume_without_interactive_setup() {
+        let r = Roster::builtin().unwrap();
+        for name in ["codex-sol", "codex-terra", "orchestrator-codex"] {
+            for session in [Session::Unmanaged, Session::Resume("rid")] {
+                let a =
+                    argv(&command(r.require(name).unwrap(), session, "BRIEFING", None).unwrap());
+                assert!(
+                    a.windows(2)
+                        .any(|w| w == ["-c", "check_for_update_on_startup=false"]),
+                    "{name}: {a:?}"
+                );
+                assert!(
+                    a.windows(2)
+                        .any(|w| w == ["-c", "tui.resume_cwd=\"current\""]),
+                    "{name}: {a:?}"
+                );
+                assert_eq!(
+                    a.iter()
+                        .filter(|arg| *arg == "--dangerously-bypass-hook-trust")
+                        .count(),
+                    1,
+                    "{name}: {a:?}"
+                );
+                assert!(
+                    a.windows(2).any(|w| w == ["-s", "workspace-write"]),
+                    "{name}: {a:?}"
+                );
+                assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{name}: {a:?}");
+                assert!(!a.iter().any(|arg| {
+                    arg == "--dangerously-bypass-approvals-and-sandbox"
+                        || arg == "danger-full-access"
+                }));
+                assert_eq!(a.last().unwrap(), "BRIEFING");
+            }
+        }
     }
 
     /// The codex orchestrator is the one pane that launches codex with a model,
@@ -286,9 +606,119 @@ mod tests {
             a.contains(&r#"model_reasoning_effort="xhigh""#.to_string()),
             "{a:?}"
         );
-        assert!(a.windows(2).any(|w| w == ["-s", "workspace-write"]), "{a:?}");
+        assert!(
+            a.windows(2).any(|w| w == ["-s", "workspace-write"]),
+            "{a:?}"
+        );
         assert_eq!(a.last().unwrap(), "BRIEFING");
         assert_ne!(a[0], "resume", "a fresh orchestrator is not a resume");
+    }
+
+    /// OpenCode takes its prompt as a FLAG, and its reasoning effort is a
+    /// provider "variant". A worker also needs `--auto`, or it stops on the
+    /// first permission prompt in a pane nobody is watching.
+    #[test]
+    fn opencode_passes_the_prompt_as_a_flag_and_auto_approves() {
+        let r = Roster::builtin().unwrap();
+        let cmd = command(
+            r.require("opencode-pickle").unwrap(),
+            Session::Unmanaged,
+            "BRIEFING",
+            None,
+        )
+        .unwrap();
+        let a = argv(&cmd);
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["--model", "opencode/big-pickle"]),
+            "{a:?}"
+        );
+        assert!(a.windows(2).any(|w| w == ["--variant", "high"]), "{a:?}");
+        assert!(a.contains(&"--auto".to_string()), "{a:?}");
+        assert!(
+            a.contains(&"--pure".to_string()),
+            "inherit_plugins: false: {a:?}"
+        );
+        assert_eq!(a[a.len() - 2], "--prompt");
+        assert_eq!(a.last().unwrap(), "BRIEFING");
+    }
+
+    /// OpenCode mints its own `ses_...` ids, so a fresh launch says nothing
+    /// about sessions and a resume passes the harvested one back.
+    #[test]
+    fn opencode_only_names_a_session_when_resuming() {
+        let r = Roster::builtin().unwrap();
+        let t = r.require("opencode-ultra").unwrap();
+        let fresh = argv(&command(t, Session::Fresh("ignored"), "p", None).unwrap());
+        assert!(!fresh.contains(&"--session".to_string()), "{fresh:?}");
+        let resumed = argv(&command(t, Session::Resume("ses_abc"), "p", None).unwrap());
+        assert!(
+            resumed.windows(2).any(|w| w == ["--session", "ses_abc"]),
+            "{resumed:?}"
+        );
+    }
+
+    /// pi CAN be told its session id, so the ledger knows the resume handle
+    /// before the pane starts - the same deal claude gives. `--` fences the
+    /// prompt off from option parsing.
+    #[test]
+    fn pi_takes_a_caller_minted_session_and_fences_its_prompt() {
+        let r = Roster::builtin().unwrap();
+        let cmd = command(
+            r.require("pi").unwrap(),
+            Session::Fresh("sid-1"),
+            "-x BRIEF",
+            None,
+        )
+        .unwrap();
+        let a = argv(&cmd);
+        assert!(
+            a.windows(2).any(|w| w == ["--model", "ollama/qwen3.8"]),
+            "{a:?}"
+        );
+        assert!(a.windows(2).any(|w| w == ["--thinking", "high"]), "{a:?}");
+        assert!(
+            a.windows(2).any(|w| w == ["--session-id", "sid-1"]),
+            "{a:?}"
+        );
+        assert!(a.contains(&"--no-extensions".to_string()), "{a:?}");
+        assert_eq!(
+            a[a.len() - 2],
+            "--",
+            "a prompt starting with - must not parse as a flag"
+        );
+        assert_eq!(a.last().unwrap(), "-x BRIEF");
+    }
+
+    /// Prime has no `--session-id` (verified against 0.9.4), so a fresh launch
+    /// must not invent one - `horch worker` owns its session directory instead.
+    #[test]
+    fn prime_never_claims_to_set_a_session_id() {
+        let r = Roster::builtin().unwrap();
+        let t = r.require("prime").unwrap();
+        let fresh = argv(&command(t, Session::Fresh("sid-1"), "p", None).unwrap());
+        assert!(!fresh.contains(&"--session-id".to_string()), "{fresh:?}");
+        assert!(!fresh.contains(&"sid-1".to_string()), "{fresh:?}");
+        let resumed = argv(&command(t, Session::Resume("/state/s.jsonl"), "p", None).unwrap());
+        assert!(
+            resumed
+                .windows(2)
+                .any(|w| w == ["--resume", "/state/s.jsonl"]),
+            "{resumed:?}"
+        );
+    }
+
+    /// A permission_mode with no counterpart must stop the launch rather than
+    /// quietly running more permissively than the file asked for.
+    #[test]
+    fn a_mode_the_agent_cannot_express_is_refused() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("opencode-pickle").unwrap().clone();
+        t.permission_mode = Some(crate::teammates::PermissionMode::Plan);
+        let err = command(&t, Session::Unmanaged, "p", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no opencode equivalent"), "{err}");
     }
 
     fn fake_home(settings_json: &str) -> (tempfile::TempDir, HomeGuard) {
@@ -318,10 +748,18 @@ mod tests {
     fn the_orchestrator_sheds_plugins_and_mcp_but_keeps_settings_and_builtins() {
         let (_home, _g) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
-        let cmd =
-            command(r.require("orchestrator").unwrap(), Session::Unmanaged, "p", None).unwrap();
+        let cmd = command(
+            r.require("orchestrator").unwrap(),
+            Session::Unmanaged,
+            "p",
+            None,
+        )
+        .unwrap();
         let a = argv(&cmd);
-        assert!(!a.contains(&"--setting-sources".to_string()), "settings must be inherited: {a:?}");
+        assert!(
+            !a.contains(&"--setting-sources".to_string()),
+            "settings must be inherited: {a:?}"
+        );
         assert!(
             !a.contains(&"--disable-slash-commands".to_string()),
             "would remove the built-in /context and /config: {a:?}"
@@ -334,7 +772,10 @@ mod tests {
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(overlay["enabledPlugins"]["herdr@m"], false);
         assert_eq!(overlay["enabledPlugins"]["ddd@m"], false);
-        assert!(overlay["enabledPlugins"].get("old@m").is_none(), "{overlay}");
+        assert!(
+            overlay["enabledPlugins"].get("old@m").is_none(),
+            "{overlay}"
+        );
         // And nothing else rides along - no statusLine override, no tuning.
         assert!(overlay.get("statusLine").is_none(), "{overlay}");
         assert!(overlay.get("disableWorkflows").is_none(), "{overlay}");
@@ -361,7 +802,10 @@ mod tests {
             assert!(json.contains(server), "{server} missing from {json}");
         }
         assert!(a.contains(&"--strict-mcp-config".to_string()), "{a:?}");
-        assert_eq!(a.iter().filter(|x| *x == "--plugin-dir").count(), 2, "{a:?}");
+        assert!(
+            !a.iter().any(|x| x == "--plugin-dir"),
+            "legacy local plugins: {a:?}"
+        );
     }
 
     /// `--mcp-config`, `--tools`, `--allowedTools`, `--disallowedTools` are
@@ -381,10 +825,18 @@ mod tests {
         let cmd = command(&t, Session::Unmanaged, "PROMPT", None).unwrap();
         let a = argv(&cmd);
         let model_at = a.iter().position(|x| x == "--model").unwrap();
-        for flag in ["--mcp-config", "--tools", "--allowedTools", "--disallowedTools"] {
+        for flag in [
+            "--mcp-config",
+            "--tools",
+            "--allowedTools",
+            "--disallowedTools",
+        ] {
             for (i, x) in a.iter().enumerate() {
                 if x == flag {
-                    assert!(i < model_at, "{flag} at {i} is after --model at {model_at}: {a:?}");
+                    assert!(
+                        i < model_at,
+                        "{flag} at {i} is after --model at {model_at}: {a:?}"
+                    );
                 }
             }
         }
@@ -396,8 +848,13 @@ mod tests {
     #[test]
     fn plugin_paths_are_expanded_before_launch() {
         let r = Roster::builtin().unwrap();
-        let cmd =
-            command(r.require("staff-engineer").unwrap(), Session::Unmanaged, "p", None).unwrap();
+        let cmd = command(
+            r.require("staff-engineer").unwrap(),
+            Session::Unmanaged,
+            "p",
+            None,
+        )
+        .unwrap();
         assert!(
             argv(&cmd).iter().all(|a| !a.starts_with('~')),
             "a literal ~ reached the command line"
@@ -436,7 +893,10 @@ mod tests {
         t.disable_skills = true;
         let cmd = command(&t, Session::Unmanaged, "p", None).unwrap();
         let a = argv(&cmd);
-        assert!(a.windows(2).any(|w| w == ["--setting-sources", ""]), "{a:?}");
+        assert!(
+            a.windows(2).any(|w| w == ["--setting-sources", ""]),
+            "{a:?}"
+        );
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(overlay["statusLine"]["command"], "bash sl.sh");
     }
