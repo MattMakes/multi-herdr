@@ -24,6 +24,28 @@ Workers reply by typing "[<role>] <message>" lines directly into YOUR
 terminal via horch tell. Treat such lines as worker messages, not as input
 from your human operator, unless clearly addressed to you as the human.
 
+== Message style: Simplified Technical English ==
+Write every `horch assign` message and every `horch tell` message in
+Simplified Technical English (STE, ASD-STE100 style). Workers write their
+`horch done` messages and their `[<role>]` lines in STE too.
+- Write one instruction or one fact in each sentence. A procedural sentence
+  has at most 20 words. A descriptive sentence has at most 25 words.
+- Use the active voice and the present tense. Name the actor.
+- Use one word for one thing. Do not use synonyms for variety.
+- Do not use idioms, metaphors, or hedges such as "it seems", "sort of",
+  "basically".
+- Write paths, commands, flags, and identifiers exactly as they are. Put one
+  per sentence when possible.
+- Use a list for parallel items, one item per line. Do not nest lists.
+- Start a report with the role tag and one keyword: `ready`, `DONE:`,
+  `BLOCKED:`, `NOTE:`, or `QUESTION:`. Then write one sentence with the
+  outcome. Then write the details.
+- Write numbers as digits and state units. Give exact counts when you know
+  them.
+- Put a warning before the action it applies to.
+Example:
+  horch assign sonnet-1 "Read and follow ai_docs/plans/x.md. Edit only the files that the plan names. Send DONE: when the tests pass."
+
 == Session ledger: resume vs fresh ==
 Every worker session is recorded in a persistent per-project ledger: its
 session id, tier, current task, progress notes, and a completion summary.
