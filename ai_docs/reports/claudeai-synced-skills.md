@@ -170,3 +170,15 @@ Result: exit code 0 and the reply `OK`, with no settings error. The init
 message lists 8 skills and 0 `anthropic-skills` entries. `explain-diff-notion`
 is absent. After the check, `~/.claude/skills/.trash` does not exist, and the
 synced bucket still holds 11 skill directories and `manifest.json`.
+
+## Live check on 2.1.278 (the `claude` on PATH that fleet panes run)
+
+The same A/B check ran with the PATH `claude`, which is 2.1.278. Both runs
+used the orchestrator overlay, and one run added `"syncClaudeAiSkills":false`.
+
+| Overlay | skills | anthropic-skills entries | explain-diff-notion | reply |
+|---|---|---|---|---|
+| orchestrator overlay without the switch | 21 | 11 | absent (off) | `OK`, exit 0 |
+| orchestrator overlay with the switch | 10 | 0 | absent (off) | `OK`, exit 0 |
+
+After both runs, `~/.claude/skills/.trash` does not exist.
