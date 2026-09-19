@@ -7,7 +7,7 @@ Date: 2026-09-18. Author: orchestrator (Fable 5.1), synthesizing four researcher
 - `ai_docs/reports/env-research/pi-ollama-prime.md` (pi 0.85.1, Ollama 0.32.15, Prime Agent 0.9.4)
 - `ai_docs/reports/env-research/compaction-benchmarks.md` (MRCR v2, GraphWalks, RULER evidence per model; harness compaction defaults)
 
-Every item below was verified against the installed binary, the official docs for that version, or `--help` by the researcher. Items they could not verify are listed in the reports' "unverified" sections and are not recommended here. Nothing has been applied yet; this is the plan.
+Every item below was verified against the installed binary, the official docs for that version, or `--help` by the researcher. Items they could not verify are listed in the reports' "unverified" sections and are not recommended here. Items marked "applied" in section 1 have shipped on the `fleet-efficiency-plan` branch; everything else is the plan.
 
 Ground rule (from the operator's standing guidance): measure, then cut narrowly. Never drop the operator's tuned settings wholesale. Every change lands per teammate, in `teammates/*.md`, never in the operator's shell profile, `~/.claude/settings.json`, `~/.codex/config.toml`, or the global OpenCode config.
 
@@ -18,8 +18,9 @@ Ground rule (from the operator's standing guidance): measure, then cut narrowly.
 3. **Fix six correctness bugs before tuning anything.** They cost tokens or accuracy today regardless of thresholds (section 4). Two are blockers: pi cannot start, and OpenCode silently ignores the effort horch passes.
 4. **Cap tool output inline.** Today's JS-bundle dump into the orchestrator's context was a settings gap, not an env var gap: the Bash inline cap is `bashOutputMaxChars`, which needs horch's settings overlay to learn one new key.
 5. **Turn off background model calls nobody reads in a pane.** Section 3.6 inventories 39 of them across the five harnesses with a verified switch or a verified "none exists" for each. The ones on today: Claude Code's prompt-suggestion fork (full context, pane's own model, every turn), Claude's session title (sends the horch briefing to Haiku with no caching), Claude's subagent progress summaries (forks each background subagent every 30 seconds), Codex's auto recap, OpenCode's title call on your paid Bedrock model, and Prime's auto-refine, which sends up to 80k characters to Opus 5 and can rewrite the global Prime harness dir from inside a worker session. Three cannot be turned off: the Codex thread title, Claude's agent classifier while the agents view is open, and Prime's daemon recap, which is dormant without a Prime credential.
-7. **Agent-to-agent messages use Simplified Technical English.** Section 3.7. Applied to both base prompts on 2026-09-18.
 6. **Strip inherited tool surface from the non-Claude harnesses.** Measured on Codex: four flags cut input tokens per request by about 35%. On OpenCode free workers, the operator's Playwright MCP server adds about 5k tokens of schema to every request and is sent to endpoints that train on input.
+7. **Agent-to-agent messages use Simplified Technical English.** Section 3.7. Applied to both base prompts on 2026-09-18.
+8. **claude.ai-synced skills are off in every fleet Claude pane.** Section 3.1 row 11. Applied in horch on 2026-09-19 via `syncClaudeAiSkills: false` in the settings overlay; a live check dropped the orchestrator's skill list from 21 entries to 10.
 
 ## 2. Compaction thresholds, with the evidence
 
