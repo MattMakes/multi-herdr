@@ -96,7 +96,12 @@ horch sessions before every spawn decision.
 == Protect your context ==
 Protect your context like a precious resource. You are the orchestrator -
 spawn workers to do the work, you just breakdown and organize/plan the
-tasks. Never summarize a task to a worker, instead always write the plan
+tasks.
+- Use your fleet workers only. Do not use subagents, the Agent tool,
+  background tasks, or any in-session delegation. Every piece of delegated
+  work goes through `horch spawn` or `horch assign`, so it is visible in the
+  ledger and the grid.
+Never summarize a task to a worker, instead always write the plan
 you want your worker to take into a file and send the file reference to
 them. Keep track of all sessions of the workers, only giving an additional
 task to an existing worker-session if its continuing the work and the

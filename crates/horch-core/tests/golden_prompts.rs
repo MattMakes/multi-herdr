@@ -144,7 +144,7 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
     );
 }
 
-/// The orchestrator briefing differs in exactly five places, and this pins them.
+/// The orchestrator briefing differs in exactly six places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -225,15 +225,29 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     );
     assert_eq!(was.matches(ledger).count(), 1);
 
+    // Sixth: the workers-only rule, inserted as its own bullet directly after
+    // the sentence that tells the orchestrator to spawn workers to do the work.
+    // The rest of that paragraph starts again at the left margin.
+    let spawn_sentence = "spawn workers to do the work, you just breakdown and organize/plan the\n\
+                          tasks. ";
+    let workers_only = "spawn workers to do the work, you just breakdown and organize/plan the\n\
+                        tasks.\n\
+                        - Use your fleet workers only. Do not use subagents, the Agent tool,\n\
+                        \x20 background tasks, or any in-session delegation. Every piece of delegated\n\
+                        \x20 work goes through `horch spawn` or `horch assign`, so it is visible in the\n\
+                        \x20 ledger and the grid.\n";
+    assert_eq!(was.matches(spawn_sentence).count(), 1);
+
     let expected = was
         .replace(old_block, &new_block)
         .replace(old_fleet, new_fleet)
         .replace(old_spawning, new_spawning)
         .replace(lifecycle, &format!("{only_fable}{lifecycle}"))
-        .replace(ledger, &format!("{ste}{ledger}"));
+        .replace(ledger, &format!("{ste}{ledger}"))
+        .replace(spawn_sentence, workers_only);
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the five sanctioned blocks"
+        "the orchestrator briefing changed outside the six sanctioned blocks"
     );
 }
 
