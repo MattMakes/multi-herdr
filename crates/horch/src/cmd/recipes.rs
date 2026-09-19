@@ -6,7 +6,7 @@
 //! `fleet` starts one orchestrator alone, which then grows and shrinks the fleet
 //! itself through the session ledger.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context, Result};
@@ -174,7 +174,7 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
     warn_about_missing_integrations(&herdr);
 
     println!("Creating fleet workspace rooted at {cwd}...");
-    let ws = herdr.workspace_create("Herdr Fleet", Some(&cwd), true)?;
+    let ws = herdr.workspace_create(&workspace_label(Path::new(&cwd)), Some(&cwd), true)?;
     std::env::set_var("HORCH_WORKSPACE_ID", &ws.workspace_id);
     std::env::set_var("HORCH_PROJECT_DIR", &cwd);
 
@@ -190,6 +190,15 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
     println!("Orchestrator commands: horch sessions | horch assign | horch spawn [--resume]");
     println!("Workers are spawned on demand: horch spawn <teammate> \"task\"");
     Ok(())
+}
+
+/// The fleet workspace is named after the project folder; a path with no final
+/// component (such as `/`) keeps the old fixed label.
+fn workspace_label(cwd: &Path) -> String {
+    cwd.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Herdr Fleet".to_string())
 }
 
 /// Native herdr agent-status reporting is optional but nice: it lets the
@@ -468,5 +477,27 @@ mod tests {
 
         let without = pane_command("codex-1", PaneKind::OrchestrationCodex, None).unwrap();
         assert!(!without.contains("--model"), "{without}");
+    }
+
+    #[test]
+    fn workspace_label_is_the_project_folder_name() {
+        assert_eq!(
+            workspace_label(Path::new("/Users/me/projects/multi-herdr")),
+            "multi-herdr"
+        );
+    }
+
+    #[test]
+    fn workspace_label_ignores_a_trailing_slash() {
+        assert_eq!(
+            workspace_label(Path::new("/Users/me/projects/multi-herdr/")),
+            "multi-herdr"
+        );
+    }
+
+    #[test]
+    fn workspace_label_falls_back_when_the_path_has_no_folder_name() {
+        assert_eq!(workspace_label(Path::new("/")), "Herdr Fleet");
+        assert_eq!(workspace_label(Path::new("")), "Herdr Fleet");
     }
 }
