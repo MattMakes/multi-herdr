@@ -1,12 +1,24 @@
 ## Summary
 
-Planning and prompt work from a research fleet run on 2026-09-18. Two commits: one changes the base teammate prompts, the other adds the plan, spec, briefs, and research reports. No Rust behaviour changes; the only Rust edit is a golden-test pin.
+Planning and prompt work from a research fleet run on 2026-09-18 and 2026-09-19, plus three small behaviour changes to `horch`. Eight commits.
 
-### Applied: Simplified Technical English for agent-to-agent messages
+### Applied: Simplified Technical English for agent-to-agent messages (317f8e7)
 
 `teammates/_base/fleet-worker.md` and `fleet-orchestrator.md` gain a "Message style" section. Every `horch tell`, `horch assign`, `horch done`, and `[role]` line now follows STE: one fact per sentence, 20-word cap, active voice, one word per thing, no idioms or hedges, verbatim identifiers, flat lists, a fixed opening keyword (`ready`, `DONE:`, `BLOCKED:`, `NOTE:`, `QUESTION:`), digits with units, warnings before actions. Each file has a role-tagged example. The golden prompt test pins the section.
 
-### Planned: `ai_docs/plans_to_improve.md`
+### Applied: orchestrator delegates through fleet workers only (741ddea)
+
+The orchestrator base prompt's "Protect your context" section now says: use fleet workers only, no subagents, Agent tool, background tasks, or in-session delegation. Every delegated piece of work goes through `horch spawn` or `horch assign` so the ledger and the grid show it. Both orchestrator flavours inherit it.
+
+### Applied: claude.ai-synced skills are off in every fleet Claude pane (d4710ef, 179a36d)
+
+The 11 `anthropic-skills:*` entries synced from claude.ai cost about 2,300 tokens of listing per pane and none serves a fleet worker or the orchestrator. Claude Code 2.1.276 has a single setting, `syncClaudeAiSkills: false`, that hides them for a launch without moving files. `horch` now emits it in its per-launch settings overlay for every Claude pane unless the teammate sets `inherit_claudeai_skills: true`. A new per-teammate `disabled_skills` list renders into `skillOverrides`, merged per key with the operator's own overrides (the existing `explain-diff-notion: off` was verified to survive). Live check on the orchestrator overlay: 21 skills listed before, 10 after. Documented in `teammates/_template.md`; research in `ai_docs/reports/claudeai-synced-skills.md`.
+
+### Applied: fleet workspace named after the project folder (3debb5b, be4d135)
+
+`horch fleet` labelled every workspace "Herdr Fleet". It now uses the final component of the working directory, resolving relative paths such as `.` and `..` first, and falls back to the old label only for a root or empty path. The fixed 5-pane orchestration recipe keeps its label. Note: the resolver follows symlinks, so a symlinked project dir gets its target's name.
+
+### Planned: `ai_docs/plans_to_improve.md` (c99f5c1, 1166917)
 
 Top-10 env vars and settings per harness (Claude Code 2.1.276, Codex 0.154.0, OpenCode 1.18.2, pi 0.85.1 with Ollama 0.32.15, Prime Agent 0.9.4), each verified against the installed binary, that version's docs, or `--help`. Highlights:
 
@@ -18,13 +30,16 @@ Top-10 env vars and settings per harness (Claude Code 2.1.276, Codex 0.154.0, Op
 - **Skipped options** grouped by reason: quality policy, drops tuned settings, or not a real saving.
 - A measured rollout order and eight open questions for the operator.
 
-### Specced: `ai_docs/plans/tiling-manager-spec.md`
+### Specced: `ai_docs/plans/tiling-manager-spec.md` (c99f5c1)
 
 A tree-driven pane placer for `horch spawn`: orchestrator always leftmost, workers fill top then bottom then next column, tab 1 holds 2x2 beside the orchestrator, overflow tabs hold 2x3, freed slots are reused, broken tabs get a repair that moves panes. Grounded in `ai_docs/reports/layout-survey.md`.
 
 ## Test plan
 
-- [x] `cargo test -p horch-core` passes (138 tests)
-- [x] `horch teammates --check` exits 0
-- [x] No credentials in `ai_docs/` (grep for key and token patterns)
+- [x] `cargo test -p horch-core` passes (133 unit + 5 golden)
+- [x] `cargo test -p horch` passes (40)
+- [x] `cargo build` with 0 warnings; `rustfmt --check` clean on every touched Rust file
+- [x] `horch teammates --check` exits 0 (22 teammates)
+- [x] Live launch with the new overlay: settings parse, synced skills absent, operator's own `skillOverrides` intact
+- [x] No credentials in `ai_docs/`
 - [ ] Reviewer reads sections 2.3 and 7 of the plan and answers the open questions
