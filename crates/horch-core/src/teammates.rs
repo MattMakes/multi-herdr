@@ -213,6 +213,8 @@ impl Agent {
             ("subagent_model", t.subagent_model.is_some()),
             ("setting_sources", t.setting_sources.is_some()),
             ("disable_skills", t.disable_skills),
+            ("inherit_claudeai_skills", t.inherit_claudeai_skills),
+            ("disabled_skills", !t.disabled_skills.is_empty()),
             ("mcp_servers", t.mcp_servers.is_some()),
             ("mcp_config_files", !t.mcp_config_files.is_empty()),
         ] {
@@ -379,6 +381,16 @@ pub struct Teammate {
     /// `plugin_dirs` entry brings in. Never set this alongside plugins.
     #[serde(default)]
     pub disable_skills: bool,
+    /// Whether the skills the operator synced from claude.ai (listed as
+    /// `anthropic-skills:<name>`) load. `false`, the default, puts
+    /// `syncClaudeAiSkills: false` in the `--settings` overlay: they are hidden
+    /// for this session only, and nothing on disk moves.
+    #[serde(default)]
+    pub inherit_claudeai_skills: bool,
+    /// Further skills to switch off by name, as `skillOverrides` entries set to
+    /// `"off"`. Settings merge per key, so the operator's own overrides stay.
+    #[serde(default)]
+    pub disabled_skills: Vec<String>,
     #[serde(default)]
     pub settings: Option<String>,
     /// Inline MCP server definitions. `None` leaves the operator's MCP
@@ -436,6 +448,8 @@ impl Default for Teammate {
             disallowed_tools: Vec::new(),
             setting_sources: None,
             disable_skills: false,
+            inherit_claudeai_skills: false,
+            disabled_skills: Vec::new(),
             settings: None,
             mcp_servers: None,
             mcp_config_files: Vec::new(),
@@ -788,6 +802,25 @@ impl Roster {
                      plugin_dirs loads - the plugins would be dead weight"
                 ));
             }
+            if t.disable_skills && !t.disabled_skills.is_empty() {
+                problems.push(format!(
+                    "{who}: disable_skills already turns off ALL skills, so the \
+                     disabled_skills list does nothing"
+                ));
+            }
+            for name in &t.disabled_skills {
+                if name.trim().is_empty() {
+                    problems.push(format!("{who}: disabled_skills has a blank entry"));
+                } else if t
+                    .skills
+                    .iter()
+                    .any(|s| *name == *s || *name == format!("horch:{s}"))
+                {
+                    problems.push(format!(
+                        "{who}: '{name}' is both in skills and in disabled_skills"
+                    ));
+                }
+            }
             if t.trains_on_input {
                 let renders = t
                     .base
@@ -1069,6 +1102,36 @@ mod spawnable_tests {
             .check()
             .iter()
             .any(|p| p.contains("unknown bundled skill 'missing-bundle'")));
+    }
+
+    /// A skill switched off that the same file also asks for is a
+    /// contradiction, and a blank name switches off nothing.
+    #[test]
+    fn roster_check_rejects_contradictory_disabled_skills() {
+        let mut r = Roster::builtin().unwrap();
+        let opus = r.teammates.get_mut("opus").unwrap();
+        opus.skills = vec!["tdd".into()];
+        opus.disabled_skills = vec!["horch:tdd".into(), " ".into()];
+        let problems = r.check();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("'horch:tdd' is both in skills and in disabled_skills")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("disabled_skills has a blank entry")),
+            "{problems:?}"
+        );
+
+        let mut t = r.require("codex-sol").unwrap().clone();
+        t.disabled_skills = vec!["pdf".into()];
+        t.inherit_claudeai_skills = true;
+        let fields = t.agent.unsupported_fields(&t);
+        assert!(fields.contains(&"disabled_skills"), "{fields:?}");
+        assert!(fields.contains(&"inherit_claudeai_skills"), "{fields:?}");
     }
 
     #[test]

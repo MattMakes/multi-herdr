@@ -8,7 +8,7 @@
 
 use std::process::Command;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::agent;
 use crate::teammates::{
@@ -305,6 +305,9 @@ fn claude_command(
                 overlay.insert("enabledPlugins".into(), serde_json::Value::Object(off));
             }
         }
+        // Whatever inherit_plugins says: the generic tiers inherit plugins, but
+        // no pane has a use for the operator's claude.ai skills.
+        overlay_skill_switches(teammate, &mut overlay)?;
         // Restricting settings would take the status line with it. Every pane
         // in a fleet keeps the operator's, so a worker reads like any session.
         if teammate.setting_sources.is_some() {
@@ -332,6 +335,39 @@ fn claude_command(
     cmd.args(&teammate.args);
     cmd.arg(prompt);
     Ok(cmd)
+}
+
+/// Add the skill switches every Claude launch overlays on the operator's
+/// settings. Shared by the plain overlay above and the skill-bundle one in
+/// `skills.rs`, which is the path fleet panes take.
+///
+/// The skills synced from claude.ai (`anthropic-skills:<name>`) go off unless
+/// the teammate opts back in. `syncClaudeAiSkills: false` given through
+/// `--settings` hides them for this session only and moves nothing on disk;
+/// the same value in the operator's settings.json would trash the cache.
+/// Each `disabled_skills` entry goes off by name. Settings merge per key, so
+/// the operator's own `skillOverrides` still apply - verified against a live
+/// launch (Claude Code 2.1.276, ai_docs/reports/claudeai-synced-skills.md).
+pub(crate) fn overlay_skill_switches(
+    teammate: &Teammate,
+    overlay: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    if !teammate.inherit_claudeai_skills {
+        overlay
+            .entry("syncClaudeAiSkills")
+            .or_insert(serde_json::Value::Bool(false));
+    }
+    if !teammate.disabled_skills.is_empty() {
+        let overrides = overlay
+            .entry("skillOverrides")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .context("skillOverrides must be an object")?;
+        for name in &teammate.disabled_skills {
+            overrides.insert(name.clone(), "off".into());
+        }
+    }
+    Ok(())
 }
 
 fn codex_command(
@@ -463,6 +499,8 @@ mod tests {
                 "xhigh",
                 "--permission-mode",
                 "auto",
+                "--settings",
+                r#"{"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -732,6 +770,7 @@ mod tests {
     const OPERATOR: &str = r#"{
         "statusLine": {"type":"command","command":"bash sl.sh"},
         "enabledPlugins": {"herdr@m": true, "ddd@m": true, "old@m": false},
+        "skillOverrides": {"explain-diff-notion": "off"},
         "disableWorkflows": true
     }"#;
 
@@ -776,9 +815,13 @@ mod tests {
             overlay["enabledPlugins"].get("old@m").is_none(),
             "{overlay}"
         );
-        // And nothing else rides along - no statusLine override, no tuning.
+        // The claude.ai-synced skills go off too.
+        assert_eq!(overlay["syncClaudeAiSkills"], false, "{overlay}");
+        // And nothing else rides along - no statusLine override, no tuning, and
+        // no copy of the operator's skillOverrides: Claude merges those itself.
         assert!(overlay.get("statusLine").is_none(), "{overlay}");
         assert!(overlay.get("disableWorkflows").is_none(), "{overlay}");
+        assert!(overlay.get("skillOverrides").is_none(), "{overlay}");
     }
 
     /// `--strict-mcp-config` is what makes an `--mcp-config` subtractive. Without
@@ -862,12 +905,16 @@ mod tests {
     }
 
     /// A teammate that leaves these unset must not gain flags it never asked
-    /// for - the generics deliberately inherit the operator's environment.
+    /// for - the generics deliberately inherit the operator's environment. The
+    /// one exception is the claude.ai-synced skills, which are off in every
+    /// pane, plugins inherited or not.
     #[test]
     fn unset_isolation_fields_add_no_flags() {
         let (_home, _g) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
-        let cmd = command(r.require("sonnet").unwrap(), Session::Unmanaged, "p", None).unwrap();
+        let sonnet = r.require("sonnet").unwrap();
+        assert!(sonnet.inherit_plugins);
+        let cmd = command(sonnet, Session::Unmanaged, "p", None).unwrap();
         let a = argv(&cmd);
         for flag in [
             "--setting-sources",
@@ -875,10 +922,70 @@ mod tests {
             "--mcp-config",
             "--strict-mcp-config",
             "--plugin-dir",
-            "--settings",
         ] {
             assert!(!a.contains(&flag.to_string()), "{flag} appeared: {a:?}");
         }
+        let overlay = settings_overlay(&a).expect("a --settings overlay");
+        assert_eq!(overlay, serde_json::json!({"syncClaudeAiSkills": false}));
+    }
+
+    /// `inherit_claudeai_skills: true` leaves the switch out. With nothing else
+    /// to overlay, no `--settings` flag is passed at all.
+    #[test]
+    fn opting_in_to_claudeai_skills_leaves_the_switch_out() {
+        let (_home, _g) = fake_home(OPERATOR);
+        let r = Roster::builtin().unwrap();
+        let mut sonnet = r.require("sonnet").unwrap().clone();
+        sonnet.inherit_claudeai_skills = true;
+        let a = argv(&command(&sonnet, Session::Unmanaged, "p", None).unwrap());
+        assert!(!a.contains(&"--settings".to_string()), "{a:?}");
+
+        // Opting in touches only this switch: the plugin off-map stays.
+        let mut orch = r.require("orchestrator").unwrap().clone();
+        orch.inherit_claudeai_skills = true;
+        let a = argv(&command(&orch, Session::Unmanaged, "p", None).unwrap());
+        let overlay = settings_overlay(&a).expect("a --settings overlay");
+        assert!(overlay.get("syncClaudeAiSkills").is_none(), "{overlay}");
+        assert_eq!(overlay["enabledPlugins"]["herdr@m"], false);
+    }
+
+    /// Each `disabled_skills` entry is switched off by name, next to the
+    /// synced-skills switch. The operator's own overrides are not restated:
+    /// Claude merges settings per key, so they still apply.
+    #[test]
+    fn disabled_skills_become_skill_overrides() {
+        let (_home, _g) = fake_home(OPERATOR);
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("sonnet").unwrap().clone();
+        t.disabled_skills = vec!["dev-prime".into(), "code:core".into()];
+        let a = argv(&command(&t, Session::Unmanaged, "p", None).unwrap());
+        let overlay = settings_overlay(&a).expect("a --settings overlay");
+        assert_eq!(
+            overlay,
+            serde_json::json!({
+                "syncClaudeAiSkills": false,
+                "skillOverrides": {"dev-prime": "off", "code:core": "off"}
+            })
+        );
+    }
+
+    /// A teammate's own `settings:` file replaces the plain overlay whole, so
+    /// that file has to carry the skill switches itself. (The skill-bundle
+    /// path in `skills.rs` merges into the file instead.)
+    #[test]
+    fn a_teammate_settings_file_replaces_the_plain_overlay() {
+        let (_home, _g) = fake_home(OPERATOR);
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("sonnet").unwrap().clone();
+        t.settings = Some("/tmp/worker-settings.json".into());
+        t.disabled_skills = vec!["dev-prime".into()];
+        let a = argv(&command(&t, Session::Unmanaged, "p", None).unwrap());
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["--settings", "/tmp/worker-settings.json"]),
+            "{a:?}"
+        );
+        assert!(settings_overlay(&a).is_none(), "{a:?}");
     }
 
     /// The blunt instrument still keeps the status line: every pane in the
