@@ -6,7 +6,7 @@
 //! `fleet` starts one orchestrator alone, which then grows and shrinks the fleet
 //! itself through the session ledger.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context, Result};
@@ -193,12 +193,39 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
 }
 
 /// The fleet workspace is named after the project folder; a path with no final
-/// component (such as `/`) keeps the old fixed label.
+/// component (such as `/`) keeps the old fixed label. The path is resolved
+/// first, because `.` and `..` have no final component of their own.
 fn workspace_label(cwd: &Path) -> String {
-    cwd.file_name()
+    resolved_path(cwd)
+        .as_deref()
+        .and_then(Path::file_name)
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Herdr Fleet".to_string())
+}
+
+/// `path` as an absolute path with no `.` or `..` in it: `canonicalize` when the
+/// path exists, otherwise the current directory joined with it and normalised by
+/// hand. An empty path resolves to nothing rather than to the current directory.
+fn resolved_path(path: &Path) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return Some(resolved);
+    }
+    let absolute = std::env::current_dir().ok()?.join(path);
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            other => resolved.push(other.as_os_str()),
+        }
+    }
+    Some(resolved)
 }
 
 /// Native herdr agent-status reporting is optional but nice: it lets the
@@ -499,5 +526,55 @@ mod tests {
     fn workspace_label_falls_back_when_the_path_has_no_folder_name() {
         assert_eq!(workspace_label(Path::new("/")), "Herdr Fleet");
         assert_eq!(workspace_label(Path::new("")), "Herdr Fleet");
+    }
+
+    fn folder_name(path: &Path) -> String {
+        path.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    fn current_dir() -> PathBuf {
+        std::env::current_dir().unwrap().canonicalize().unwrap()
+    }
+
+    /// `horch fleet --cwd .` is how people start a fleet, and `.` has no final
+    /// component until it is resolved against the current directory.
+    #[test]
+    fn workspace_label_resolves_dot_to_the_current_directory_name() {
+        assert_eq!(workspace_label(Path::new(".")), folder_name(&current_dir()));
+    }
+
+    #[test]
+    fn workspace_label_resolves_dot_dot_to_the_parent_directory_name() {
+        let parent = current_dir().parent().unwrap().to_path_buf();
+        assert_eq!(workspace_label(Path::new("..")), folder_name(&parent));
+    }
+
+    /// These paths do not exist, so `canonicalize` fails and the label helper
+    /// has to normalise `.` and `..` itself.
+    #[test]
+    fn workspace_label_normalises_a_path_that_does_not_exist() {
+        assert_eq!(workspace_label(Path::new("some/dir/.")), "dir");
+        assert_eq!(
+            workspace_label(Path::new("no-such-dir/..")),
+            folder_name(&current_dir())
+        );
+        assert_eq!(
+            workspace_label(Path::new("/Users/me/projects/multi-herdr/../other")),
+            "other"
+        );
+    }
+
+    #[test]
+    fn workspace_label_names_a_real_directory_however_it_is_spelled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("my-project");
+        std::fs::create_dir_all(project.join("sub")).unwrap();
+
+        assert_eq!(workspace_label(&project), "my-project");
+        assert_eq!(workspace_label(&project.join(".")), "my-project");
+        assert_eq!(
+            workspace_label(&project.join("sub").join("..")),
+            "my-project"
+        );
     }
 }
