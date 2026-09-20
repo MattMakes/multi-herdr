@@ -399,6 +399,32 @@ fn grid_complaints(
     Ok(bad)
 }
 
+/// Where the operator is looking: the viewed tab, and the pane that tab hands
+/// the keyboard to.
+///
+/// The pair `horch tile` has to leave alone. Before the focus restore landed,
+/// tiling handed the keyboard to the orchestrator pane every time, because the
+/// park phase moves the focused pane out with `--no-focus` and herdr then picks
+/// a pane that stayed (`ai_docs/reports/horch-tile-focus.md`).
+fn viewed(herdr: &Herdr, workspace_id: &str) -> Result<(String, String)> {
+    let tab = herdr
+        .workspace_list()?
+        .into_iter()
+        .find(|w| w.workspace_id == workspace_id)
+        .and_then(|w| w.active_tab_id)
+        .context("herdr did not say which tab the workspace is showing")?;
+    let probe = herdr
+        .pane_list(workspace_id)?
+        .into_iter()
+        .find(|p| p.tab_id.as_deref() == Some(tab.as_str()))
+        .context("the viewed tab has no panes")?;
+    let pane = herdr
+        .pane_layout(Some(&probe.pane_id))?
+        .focused_pane_id
+        .context("herdr did not say which pane has the focus")?;
+    Ok((tab, pane))
+}
+
 fn fail(workspace_id: &str, what: &str, complaints: &[String]) -> ExitCode {
     eprintln!("FAIL: {what}");
     for c in complaints {
@@ -484,8 +510,37 @@ fn tile() -> Result<ExitCode> {
     }
     let before: Vec<u64> = workers.iter().map(|(_, c)| ticks(c).unwrap()).collect();
 
+    // Watch a WORKER, not the orchestrator: the orchestrator is the pane the
+    // tiler used to hand the keyboard to, so focusing it would pass either way.
+    // The topmost worker of the single column sorts first, so it lands in slot 1
+    // of tab 1 and is still there afterwards.
+    let tab1 = herdr.pane_layout(Some(&orchestrator))?.tab_id;
+    let watched = workers[0].0.clone();
+    if !herdr.pane_focus_walk(&tab1, &watched)? {
+        return Ok(fail(
+            &ws.workspace_id,
+            "could not put the focus on a worker pane before tiling",
+            &[format!("wanted {watched} on {tab1}")],
+        ));
+    }
+    let (tab_before, pane_before) = viewed(&herdr, &ws.workspace_id)?;
+
     println!("Tiling...");
     super::tilecmd::tile(None, Some(&ws.workspace_id), false, 0)?;
+
+    // The watched pane stayed on tab 1, so the viewed tab AND the focused pane
+    // must both be the ones the operator had.
+    let (tab_after, pane_after) = viewed(&herdr, &ws.workspace_id)?;
+    if tab_after != tab_before || pane_after != pane_before {
+        return Ok(fail(
+            &ws.workspace_id,
+            "tiling moved the operator's view",
+            &[
+                format!("viewed tab {tab_before} -> {tab_after}"),
+                format!("focused pane {pane_before} -> {pane_after}"),
+            ],
+        ));
+    }
 
     // 7 workers is tab 1 with 4 in 2x2, then 3 on tab 2: column 1 top, column 1
     // bottom, column 2 top - so its bottom row is one pane spanning both columns.
@@ -531,6 +586,7 @@ fn tile() -> Result<ExitCode> {
         ));
     }
     println!("PASS: a bad shape became the canonical grid over 2 tabs, all 7 panes still running.");
+    println!("PASS: focus stayed on {tab_after} {pane_after}.");
 
     // Part 2: `horch spawn` with no placement flags must lay the grid out itself.
     // Break the shape first, so a canonical grid afterwards can only be the
@@ -541,6 +597,18 @@ fn tile() -> Result<ExitCode> {
     let counter = counters.path().join("w8");
     herdr.pane_run(&scrambled, &ticker(shell, &counter))?;
     workers.push((scrambled, counter));
+
+    // Focus a worker again, so the spawn's own tiling has a view to put back.
+    // The split above passed `--no-focus`, so this is only here to be explicit
+    // about what the check is watching.
+    if !herdr.pane_focus_walk(&tab1, &watched)? {
+        return Ok(fail(
+            &ws.workspace_id,
+            "could not put the focus on a worker pane before spawning",
+            &[format!("wanted {watched} on {tab1}")],
+        ));
+    }
+
     let spawned = spawn(SpawnArgs {
         teammate: Some("smoke".to_string()),
         phase: None,
@@ -573,6 +641,24 @@ fn tile() -> Result<ExitCode> {
         ));
     }
     println!("PASS: horch spawn tiled the workspace with no placement flags and no tokens.");
+
+    // The `smoke` teammate closes its own pane, and `horch done` starts a
+    // detached tiler for the hole that leaves. Either tiling must end with the
+    // same pane focused, so poll rather than race the detached one.
+    let kept = poll(20, Duration::from_millis(500), || {
+        viewed(&herdr, &ws.workspace_id).is_ok_and(|(_, pane)| pane == watched)
+    });
+    if !kept {
+        let now = viewed(&herdr, &ws.workspace_id)
+            .map(|(tab, pane)| format!("{tab} {pane}"))
+            .unwrap_or_else(|e| format!("unreadable ({e:#})"));
+        return Ok(fail(
+            &ws.workspace_id,
+            "horch spawn moved the operator's view",
+            &[format!("focus was {watched}, is now {now}")],
+        ));
+    }
+    println!("PASS: horch spawn left focus on {watched}.");
 
     // Part 3: a worker leaving frees a slot, and the workers on the overflow tab
     // move down into it. `horch done` starts a detached child that does this, and

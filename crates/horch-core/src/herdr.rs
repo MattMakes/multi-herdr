@@ -171,6 +171,28 @@ pub struct Move {
     pub target_layout: Option<Layout>,
 }
 
+/// What `herdr pane focus --direction` reports back.
+///
+/// The reply carries the whole post-move layout, so a walk that takes several
+/// steps needs no `pane layout` call between them.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Focus {
+    /// False when herdr left the focus alone. `reason` says why: `no_neighbor`
+    /// when nothing sits on that side of the origin pane. That is the loop
+    /// breaker for any walk.
+    pub changed: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub focused_pane_id: Option<String>,
+    pub layout: Layout,
+}
+
+#[derive(Debug, Deserialize)]
+struct FocusResult {
+    focus: Focus,
+}
+
 #[derive(Debug, Deserialize)]
 struct MoveResult {
     move_result: Move,
@@ -233,6 +255,38 @@ impl std::str::FromStr for Direction {
 }
 
 impl std::fmt::Display for Direction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Which way `pane focus` steps to a NEIGHBOUR pane.
+///
+/// Deliberately separate from [`Direction`]: that one is split geometry, where
+/// `left` and `up` are not words herdr accepts, and its `FromStr` rejects them
+/// on purpose. herdr 0.8.2 has no focus-by-id for an ordinary pane
+/// (`herdr plugin pane focus` answers `plugin_pane_not_found`), so stepping is
+/// the only way to put a named pane back in focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusDir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl FocusDir {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FocusDir::Left => "left",
+            FocusDir::Right => "right",
+            FocusDir::Up => "up",
+            FocusDir::Down => "down",
+        }
+    }
+}
+
+impl std::fmt::Display for FocusDir {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
@@ -418,6 +472,75 @@ impl Herdr {
     pub fn tab_focus(&self, tab_id: &str) -> Result<()> {
         self.output(&["tab", "focus", tab_id])?;
         Ok(())
+    }
+
+    /// `herdr pane focus --direction <d> --pane <origin>`.
+    ///
+    /// One step to a neighbour. herdr answers with exit 0 and `changed: false,
+    /// reason: "no_neighbor"` when nothing sits on that side, so a caller learns
+    /// it has run out of room without an error.
+    pub fn pane_focus(&self, origin: &str, direction: FocusDir) -> Result<Focus> {
+        let r: FocusResult = self.json(&[
+            "pane",
+            "focus",
+            "--direction",
+            direction.as_str(),
+            "--pane",
+            origin,
+        ])?;
+        Ok(r.focus)
+    }
+
+    /// Walk the focus of `tab` to `target`, one neighbour at a time.
+    ///
+    /// Returns false rather than erroring when the focus cannot be placed: the
+    /// caller is restoring a view, and a view that cannot be restored must never
+    /// fail the operation that moved it.
+    ///
+    /// WARNING: like `tab focus`, this pulls the whole workspace into view.
+    ///
+    /// The step budget is the pane count, which is more than any walk needs: each
+    /// step closes the larger of the two axis gaps, so the focus reaches any pane
+    /// of a two-row grid in at most two moves. The budget only has to stop a walk
+    /// that oscillates because herdr picked a different neighbour than the
+    /// geometry suggested.
+    pub fn pane_focus_walk(&self, tab: &str, target: &str) -> Result<bool> {
+        // `pane layout` reports the whole tab that holds the pane it is asked
+        // about, so the target doubles as the probe for its own tab.
+        let mut layout = self.pane_layout(Some(target))?;
+        if layout.tab_id != tab {
+            return Ok(false);
+        }
+        let budget = layout.panes.len();
+        for _ in 0..budget {
+            let Some(focused) = layout.focused_pane_id.clone() else {
+                return Ok(false);
+            };
+            if focused == target {
+                return Ok(true);
+            }
+            let rect = |id: &str| {
+                layout
+                    .panes
+                    .iter()
+                    .find(|p| p.pane_id == id)
+                    .map(|p| p.rect)
+            };
+            let (Some(from), Some(to)) = (rect(&focused), rect(target)) else {
+                return Ok(false);
+            };
+            let Some(direction) = crate::tile::step_toward(&from, &to) else {
+                return Ok(false);
+            };
+            let step = self.pane_focus(&focused, direction)?;
+            // `no_neighbor`, or a step that landed back where it started: either
+            // way the walk is not converging, so stop instead of spinning.
+            if !step.changed || step.focused_pane_id.as_deref() == Some(focused.as_str()) {
+                return Ok(false);
+            }
+            layout = step.layout;
+        }
+        Ok(layout.focused_pane_id.as_deref() == Some(target))
     }
 
     /// `herdr pane move <pane> --tab <tab> --split <d> [--target-pane <target>]
