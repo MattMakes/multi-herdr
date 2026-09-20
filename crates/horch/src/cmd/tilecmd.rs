@@ -314,13 +314,21 @@ fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
 ///
 /// Best effort throughout. A view that cannot be restored must never fail a
 /// tiling that has already moved the panes.
-fn restore_focus(herdr: &Herdr, after: &Snapshot, before: Option<&FocusState>) -> Option<String> {
+fn restore_focus(
+    herdr: &Herdr,
+    after: &Snapshot,
+    before: Option<&FocusState>,
+    before_tab: Option<&str>,
+) -> Option<String> {
     let Some(before) = before else {
         // herdr never told us which pane had the keyboard, so this is the old
-        // behaviour: the viewed tab if it survived, else the orchestrator's.
-        let tab = after.active_tab.clone()?;
+        // behaviour: the tab the operator WAS viewing if it survived, else the
+        // orchestrator's. `before_tab` has to come from the snapshot taken
+        // BEFORE the rebuild; the one taken after it would only name the tab
+        // herdr happened to land on, which is the thing being corrected.
+        let tab = before_tab?;
         let _ = herdr.tab_focus(if after.tabs.iter().any(|t| t.tab_id == tab) {
-            &tab
+            tab
         } else {
             &after.orchestrator_tab
         });
@@ -496,8 +504,11 @@ fn run(
     let already = tile::is_canonical(&snapshot.shapes(), &snapshot.orchestrator, workers);
     let mut moved = 0;
     // Read where the operator is looking BEFORE anything moves. Both values are
-    // already in the snapshot, so this costs no herdr call.
+    // already in the snapshot, so this costs no herdr call. The tab is kept
+    // separately because the fallback below still needs it on a herdr too old
+    // to report which pane holds the focus.
     let was = snapshot.focus_state();
+    let was_tab = snapshot.active_tab.clone();
     let snapshot = if already {
         snapshot
     } else {
@@ -515,7 +526,7 @@ fn run(
     let focus = if already {
         None
     } else {
-        restore_focus(herdr, &snapshot, was.as_ref())
+        restore_focus(herdr, &snapshot, was.as_ref(), was_tab.as_deref())
     };
     let mut out = format!(
         "{} worker(s) over {} tab(s): {} pane move(s), {} resize(s)\n",

@@ -659,15 +659,21 @@ pub fn focus_target(
         });
     }
     let orchestrator_here = orchestrator_tab.as_deref() == Some(tab.as_str());
+    // The viewed tab won over the viewed pane, so say which of the two ways
+    // the pane left it: a worker that moved to an overflow tab is still alive
+    // and still watchable, and a worker that closed is not.
+    let reason = if !reason.is_empty() {
+        reason
+    } else if holder(&before.pane).is_some() {
+        "the focused pane moved to another tab"
+    } else {
+        "the focused pane is gone"
+    };
     Some(FocusTarget {
         pane: orchestrator_here.then(|| orchestrator.to_string()),
         tab,
         kept: false,
-        reason: if reason.is_empty() {
-            "the focused pane is gone"
-        } else {
-            reason
-        },
+        reason,
     })
 }
 
@@ -1416,6 +1422,37 @@ mod tests {
         assert_eq!(on_overflow.tab, "t8");
         assert_eq!(on_overflow.pane, None, "herdr's choice stands");
         assert!(!on_overflow.kept);
+    }
+
+    /// The viewed tab wins over the viewed pane, and the reason says which way
+    /// the pane left: a worker pushed onto an overflow tab is still alive, a
+    /// worker that closed is not.
+    #[test]
+    fn focus_target_says_whether_the_pane_moved_or_closed() {
+        let after = [tab1_2x2(), overflow_tab("t8", &["p5", "p6"])];
+        let moved = focus_target(
+            &FocusState {
+                tab: "t1".into(),
+                pane: "p5".into(),
+            },
+            &after,
+            "orch",
+        )
+        .unwrap();
+        assert_eq!(moved.tab, "t1", "the viewed tab wins");
+        assert_eq!(moved.pane.as_deref(), Some("orch"));
+        assert_eq!(moved.reason, "the focused pane moved to another tab");
+
+        let closed = focus_target(
+            &FocusState {
+                tab: "t1".into(),
+                pane: "gone".into(),
+            },
+            &after,
+            "orch",
+        )
+        .unwrap();
+        assert_eq!(closed.reason, "the focused pane is gone");
     }
 
     /// Nothing to aim at means no target at all, rather than a guess.

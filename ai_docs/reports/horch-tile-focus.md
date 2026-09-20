@@ -255,8 +255,8 @@ focus: kept w1X:t1 w1X:p2
 PASS: spawn, brief, register, ledger add/note/done, tell, and pane self-close all verified.
 ```
 
-`cargo test --workspace`: 311 tests pass, 0 fail. 8 of them are new, all in
-`crates/horch-core/src/tile.rs`.
+`cargo test --workspace`: 314 tests pass, 0 fail. 11 of them are new: 9 in
+`crates/horch-core/src/tile.rs` and 2 in `crates/horch-core/src/herdr.rs`.
 
 `target/release/horch tile --plan` on the live fleet workspace `w1Q` is
 read-only and reports the grid is already laid out.

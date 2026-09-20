@@ -792,6 +792,41 @@ mod tests {
         assert!(r.result.layout.zoomed);
     }
 
+    /// The real 0.8.2 `pane focus --direction` reply, trimmed. The walk reads
+    /// three things from it: whether the focus moved, where it moved to, and
+    /// the layout, which saves a `pane layout` call between steps.
+    #[test]
+    fn parses_a_pane_focus_reply_with_its_layout() {
+        let raw = r#"{"result":{"type":"pane_focus_direction","focus":{
+            "changed":true,"focused_pane_id":"w1R:p2","source_pane_id":"w1R:p1",
+            "layout":{"workspace_id":"w1R","tab_id":"w1R:t1",
+              "area":{"x":26,"y":1,"width":184,"height":53},
+              "focused_pane_id":"w1R:p2",
+              "panes":[{"focused":false,"pane_id":"w1R:p1",
+                        "rect":{"x":26,"y":1,"width":92,"height":53}},
+                       {"focused":true,"pane_id":"w1R:p2",
+                        "rect":{"x":118,"y":1,"width":92,"height":27}}],
+              "splits":[]}}}}"#;
+        let r: Envelope<FocusResult> = serde_json::from_str(raw).unwrap();
+        assert!(r.result.focus.changed);
+        assert_eq!(r.result.focus.focused_pane_id.as_deref(), Some("w1R:p2"));
+        assert_eq!(r.result.focus.layout.panes.len(), 2);
+        assert!(r.result.focus.reason.is_none());
+    }
+
+    /// At the edge of a tab herdr declines with exit 0 rather than failing, so
+    /// `reason` is the only way the walk learns it has run out of room.
+    #[test]
+    fn parses_a_declined_pane_focus_at_the_edge_of_a_tab() {
+        let raw = r#"{"result":{"focus":{"changed":false,"reason":"no_neighbor",
+            "focused_pane_id":"w1R:p1",
+            "layout":{"workspace_id":"w1R","tab_id":"w1R:t1",
+              "area":{"x":26,"y":1,"width":184,"height":53},"panes":[]}}}}"#;
+        let r: Envelope<FocusResult> = serde_json::from_str(raw).unwrap();
+        assert!(!r.result.focus.changed);
+        assert_eq!(r.result.focus.reason.as_deref(), Some("no_neighbor"));
+    }
+
     /// Older herdr omits both, and the wrapper still has to parse the reply.
     #[test]
     fn a_layout_without_focus_or_zoom_still_parses() {
