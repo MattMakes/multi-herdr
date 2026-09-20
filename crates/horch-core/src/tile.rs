@@ -42,6 +42,8 @@
 //! column `c-1`'s top pane and once against its bottom pane, which is the order
 //! `crates/horch/src/cmd/recipes.rs` has always used by hand.
 
+use std::collections::HashMap;
+
 use crate::balance::{ResizeDir, ResizeOp};
 use crate::herdr::{Direction, Layout, Rect};
 
@@ -448,6 +450,122 @@ pub fn plan(fleet: &Fleet) -> Plan {
             .collect(),
         created_tabs,
     }
+}
+
+impl TabRef {
+    /// How a plan names the tab before the run has created it.
+    pub fn describe(&self) -> String {
+        match self {
+            TabRef::Existing(id) => id.clone(),
+            TabRef::Created(0) => "<scratch tab>".to_string(),
+            TabRef::Created(i) => format!("<new tab {}>", i + 1),
+        }
+    }
+}
+
+/// The herdr command an op runs, for `horch tile --plan`.
+///
+/// Printed exactly as the driver would run it, so an operator can read the plan
+/// as the commands it stands for - and run one by hand if they want to.
+pub fn command_line(op: &Op) -> String {
+    match op {
+        Op::NewTab { pane, label, .. } => {
+            format!("herdr pane move {pane} --new-tab --label \"{label}\" --no-focus")
+        }
+        Op::Move {
+            pane,
+            tab,
+            split,
+            target,
+            ratio,
+        } => {
+            let ratio = match ratio {
+                Some(r) => format!(" --ratio {r:.4}"),
+                None => String::new(),
+            };
+            format!(
+                "herdr pane move {pane} --tab {} --split {} --target-pane {target}{ratio} --no-focus",
+                tab.describe(),
+                split.as_str()
+            )
+        }
+        Op::FocusTab { tab } => format!("herdr tab focus {}", tab.describe()),
+    }
+}
+
+/// The grid a plan ends with: one block per tab, every slot named.
+pub fn render_target(plan: &Plan, orchestrator: &str, roles: &HashMap<String, String>) -> String {
+    let label = |id: &str| match roles.get(id) {
+        Some(role) => format!("{role}({id})"),
+        None => id.to_string(),
+    };
+    let n = plan.placement.len();
+    if n == 0 {
+        return format!(
+            "after: tab 1 holds {} alone; no workers to place\n",
+            label(orchestrator)
+        );
+    }
+
+    let mut out = String::new();
+    for tab_index in 1..=tab_count(n) {
+        let on_tab: Vec<&(String, Slot)> = plan
+            .placement
+            .iter()
+            .filter(|(_, s)| s.tab_index == tab_index)
+            .collect();
+        if on_tab.is_empty() {
+            continue;
+        }
+        let used = columns_used(on_tab.len());
+        let at = |column: usize, row: Row| -> String {
+            on_tab
+                .iter()
+                .find(|(_, s)| s.column == column && s.row == row)
+                .map(|(p, _)| label(p))
+                .unwrap_or_else(|| "-".to_string())
+        };
+        if tab_index == 1 {
+            out.push_str(&format!(
+                "after: tab 1  orchestrator {} (1/{} of the tab)  {} worker(s), {} column(s)\n",
+                label(orchestrator),
+                used + 1,
+                on_tab.len(),
+                used
+            ));
+        } else {
+            out.push_str(&format!(
+                "       tab {tab_index}  {} worker(s), {used} column(s)\n",
+                on_tab.len()
+            ));
+        }
+        let cells: Vec<(String, String, String)> = (1..=used)
+            .map(|c| (format!("c{c}"), at(c, Row::Top), at(c, Row::Bottom)))
+            .collect();
+        let widths: Vec<usize> = cells
+            .iter()
+            .map(|(h, t, b)| {
+                h.chars()
+                    .count()
+                    .max(t.chars().count())
+                    .max(b.chars().count())
+            })
+            .collect();
+        for (prefix, pick) in [("         ", 0usize), ("  top    ", 1), ("  bottom ", 2)] {
+            out.push_str(prefix);
+            for (i, cell) in cells.iter().enumerate() {
+                let text = match pick {
+                    0 => &cell.0,
+                    1 => &cell.1,
+                    _ => &cell.2,
+                };
+                let w = widths[i];
+                out.push_str(&format!("{text:<w$}  "));
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// One tab's live geometry, reduced to what the checks and the balance need.
@@ -1141,6 +1259,54 @@ mod tests {
             !is_canonical(&[tab1_2x2(), tab1_2x2()], "orch", 4),
             "one tab too many"
         );
+    }
+
+    #[test]
+    fn a_plan_prints_as_the_herdr_commands_it_stands_for() {
+        let plan = plan(&fleet(5));
+        let lines: Vec<String> = plan.ops().map(command_line).collect();
+        assert_eq!(
+            lines[0],
+            "herdr pane move p1 --new-tab --label \"horch-tile-scratch\" --no-focus"
+        );
+        assert!(
+            lines.iter().any(|l| l
+                == "herdr pane move p1 --tab t1 --split right --target-pane orch --ratio 0.3333 --no-focus"),
+            "{lines:#?}"
+        );
+        assert_eq!(
+            lines.last().unwrap(),
+            "herdr pane move p5 --new-tab --label \"workers 2\" --no-focus"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("--tab <scratch tab>")),
+            "a tab the plan creates is named by its place in the plan: {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn the_target_grid_names_every_slot_and_marks_the_free_ones() {
+        let mut roles = HashMap::new();
+        roles.insert("orch".to_string(), "orchestrator".to_string());
+        roles.insert("p1".to_string(), "sonnet-1".to_string());
+        let out = render_target(&plan(&fleet(7)), "orch", &roles);
+        assert!(out.contains("orchestrator(orch) (1/3 of the tab)"), "{out}");
+        assert!(out.contains("sonnet-1(p1)"), "{out}");
+        assert!(out.contains("tab 2  3 worker(s), 2 column(s)"), "{out}");
+        // Tab 2 holds p5, p6, p7: column 2's bottom slot is free.
+        let bottom = out
+            .lines()
+            .filter(|l| l.starts_with("  bottom"))
+            .next_back()
+            .unwrap();
+        assert!(bottom.contains("p6"), "{bottom}");
+        assert!(bottom.trim_end().ends_with('-'), "{bottom}");
+    }
+
+    #[test]
+    fn an_empty_fleet_renders_as_the_orchestrator_alone() {
+        let out = render_target(&plan(&fleet(0)), "orch", &HashMap::new());
+        assert_eq!(out, "after: tab 1 holds orch alone; no workers to place\n");
     }
 
     #[test]

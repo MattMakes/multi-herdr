@@ -70,43 +70,6 @@ pub fn equalize_quietly(herdr: &Herdr, layout: Layout) {
     }
 }
 
-/// Even out the grid once this pane has finished closing.
-///
-/// `herdr pane close` takes down the calling pane's whole process tree, so a
-/// worker shutting itself down cannot do this in-process - by the time the
-/// geometry it wants to fix exists, it has been killed. This hands the job to a
-/// detached child that outlives the pane.
-///
-/// Best effort by design: a worker's shutdown must not fail because the grid
-/// could not be tidied.
-pub fn equalize_after_close(workspace_id: &str) {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(["balance", "--workspace", workspace_id, "--settle-ms", "600"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    // A new SESSION, not merely a new process group. Measured against herdr
-    // 0.7.4: closing a pane tears down its whole session, so a child that only
-    // left the process group is killed along with it, while one that called
-    // `setsid` survives.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: runs in the forked child between fork and exec. `setsid` is
-        // async-signal-safe and touches no state this process shares.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
-    let _ = cmd.spawn();
-}
-
 pub fn balance(
     pane: Option<&str>,
     workspace: Option<&str>,

@@ -164,6 +164,8 @@ fn fleet() -> Result<ExitCode> {
         role: None,
         from_pane: Some(ws.root_pane_id.clone()),
         direction: Direction::Right,
+        // Tiling on, so this check covers the hook `horch spawn` now runs.
+        no_tile: false,
     })?;
 
     let ledger = Ledger::open()?;

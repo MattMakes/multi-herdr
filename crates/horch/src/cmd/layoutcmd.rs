@@ -1,42 +1,63 @@
 //! `horch layout` - the port of `bin/horch-layout`.
 //!
-//! Reports the fleet's worker grid and the next split that keeps it 2 rows tall by
-//! N columns wide.
+//! Reports the fleet's worker grid, one block per tab. A fleet outgrows one tab
+//! at the fifth worker, so a report about a single tab would describe part of the
+//! grid and call it the grid.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
 use horch_core::herdr::Herdr;
-use horch_core::layout;
+use horch_core::layout::{self, Orchestrator};
 use horch_core::mailbox::Mailbox;
 
 use crate::output;
 
-pub fn layout(pane: Option<&str>, workspace: Option<&str>) -> Result<()> {
-    let herdr = Herdr::new();
+/// The whole workspace's grid, one block per tab in tab-strip order.
+///
+/// The orchestrator is only sought on the tab that actually holds it. On the
+/// others every pane is a worker, and the positional guess - leftmost full-height
+/// pane - would quietly drop a worker column from the report.
+pub fn report(herdr: &Herdr, workspace_id: &str) -> Result<String> {
+    let tabs = herdr.tab_list(workspace_id)?;
+    let panes = herdr.pane_list(workspace_id)?;
 
-    // Resolve a pane to ask about. HERDR_PANE_ID is an internal id (p_2), so
-    // round-trip it through `pane get` for the public one.
-    let target: Option<String> = match (pane, workspace) {
-        (Some(p), _) => Some(p.to_string()),
-        (None, Some(ws)) => herdr.pane_list(ws)?.first().map(|p| p.pane_id.clone()),
-        (None, None) => match std::env::var("HERDR_PANE_ID") {
-            Ok(internal) if !internal.is_empty() => Some(herdr.pane_get(&internal)?.pane_id),
-            _ => None,
-        },
-    };
-
-    let layout_data = herdr.pane_layout(target.as_deref())?;
-
-    // The fleet records pane ids by role; use them for labels when present.
-    let mailbox = Mailbox::new(&layout_data.workspace_id);
-    let roles: HashMap<String, String> = mailbox.panes_to_roles().into_iter().collect();
-    let orchestrator = roles
+    let roles: HashMap<String, String> = Mailbox::new(workspace_id)
+        .panes_to_roles()
+        .into_iter()
+        .collect();
+    let registered = roles
         .iter()
         .find(|(_, role)| role.as_str() == "orchestrator")
         .map(|(pane_id, _)| pane_id.clone());
 
-    let analysis = layout::analyze(&layout_data, orchestrator.as_deref());
-    output::print(&layout::render(&analysis, &roles));
+    let mut analyses = Vec::new();
+    for (i, tab) in tabs.iter().enumerate() {
+        let Some(probe) = panes
+            .iter()
+            .find(|p| p.tab_id.as_deref() == Some(tab.tab_id.as_str()))
+        else {
+            continue;
+        };
+        let layout_data = herdr.pane_layout(Some(&probe.pane_id))?;
+        let holds_registered = registered
+            .as_deref()
+            .is_some_and(|orch| layout_data.panes.iter().any(|p| p.pane_id == orch));
+        let who = match (&registered, holds_registered, i) {
+            (Some(orch), true, _) => Orchestrator::Pane(orch),
+            // Nothing registered: the first tab is the orchestrator's by the same
+            // rule `horch layout` has always used, and no other tab has one.
+            (None, _, 0) => Orchestrator::Infer,
+            _ => Orchestrator::Absent,
+        };
+        analyses.push(layout::analyze_with(&layout_data, who));
+    }
+    Ok(layout::render_all(&analyses, &roles))
+}
+
+pub fn layout(pane: Option<&str>, workspace: Option<&str>) -> Result<()> {
+    let herdr = Herdr::new();
+    let workspace_id = crate::cmd::tilecmd::workspace_of(&herdr, pane, workspace)?;
+    output::print(&report(&herdr, &workspace_id)?);
     Ok(())
 }
