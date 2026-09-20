@@ -299,7 +299,16 @@ pub fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analysis {
 ///
 /// The same per-tab renderer as [`render`]; what is new is that a fleet is no
 /// longer assumed to fit in one tab.
-pub fn render_all(analyses: &[Analysis], roles: &HashMap<String, String>) -> String {
+///
+/// `notes` is one line per tab, appended to its header. The states this renderer
+/// prints describe one tab of a 2xN grid on its own, so an overflow tab whose last
+/// bottom slot is still free reads as `ragged-bottom` when it is in fact exactly
+/// right; the note is where `horch tile`'s verdict on the tab goes.
+pub fn render_all(
+    analyses: &[Analysis],
+    notes: &[String],
+    roles: &HashMap<String, String>,
+) -> String {
     if analyses.is_empty() {
         return "no tabs in this workspace\n".to_string();
     }
@@ -307,7 +316,17 @@ pub fn render_all(analyses: &[Analysis], roles: &HashMap<String, String>) -> Str
     analyses
         .iter()
         .enumerate()
-        .map(|(i, a)| format!("=== tab {} of {total} ===\n{}", i + 1, render(a, roles)))
+        .map(|(i, a)| {
+            let note = match notes.get(i) {
+                Some(n) if !n.is_empty() => format!("  {n}"),
+                _ => String::new(),
+            };
+            format!(
+                "=== tab {} of {total}{note} ===\n{}",
+                i + 1,
+                render(a, roles)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -675,7 +694,7 @@ mod tests {
             ]),
             Orchestrator::Absent,
         );
-        let out = render_all(&[tab1.clone(), tab2.clone()], &roles);
+        let out = render_all(&[tab1.clone(), tab2.clone()], &[], &roles);
         assert!(out.starts_with("=== tab 1 of 2 ===\n"), "{out}");
         assert!(out.contains("=== tab 2 of 2 ===\n"), "{out}");
         assert!(
@@ -686,7 +705,22 @@ mod tests {
             out.contains(&render(&tab2, &roles)),
             "the same renderer per tab"
         );
-        assert_eq!(render_all(&[], &roles), "no tabs in this workspace\n");
+        assert_eq!(render_all(&[], &[], &roles), "no tabs in this workspace\n");
+
+        // A note per tab rides on the header rather than changing the block.
+        let noted = render_all(
+            &[tab1, tab2],
+            &["matches the fleet grid".to_string(), String::new()],
+            &roles,
+        );
+        assert!(
+            noted.starts_with("=== tab 1 of 2  matches the fleet grid ===\n"),
+            "{noted}"
+        );
+        assert!(
+            noted.contains("=== tab 2 of 2 ===\n"),
+            "an empty note adds nothing"
+        );
     }
 
     #[test]
