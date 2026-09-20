@@ -387,6 +387,8 @@ mod tests {
                     rect: Rect { x: *x, y: *y, width: *w, height: *h },
                 })
                 .collect(),
+            focused_pane_id: None,
+            zoomed: false,
         }
     }
 

@@ -269,6 +269,8 @@ mod tests {
                 height: h,
             },
             panes,
+            focused_pane_id: None,
+            zoomed: false,
         }
     }
 
