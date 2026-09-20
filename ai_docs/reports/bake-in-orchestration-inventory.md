@@ -30,7 +30,7 @@ Step 1 rule: a `_base` file gets only what a pane needs on every run, at most
 | `teammates/_base/fleet-orchestrator.md` | 6023 |
 | `teammates/_base/fleet-worker.md` | 4077 |
 
-The after numbers are in [Measurements (Step 6)](#measurements-step-6): 7041 and 4836.
+The after numbers are in [Measurements (Step 6)](#measurements-step-6): 7228 and 4836.
 
 ## Table 1. `~/.claude/skills/herdr-orchestrator/SKILL.md`
 
@@ -393,7 +393,7 @@ so. All 5 tests in `golden_prompts.rs` pass.
 
 | file | before | after | change |
 |---|---|---|---|
-| `teammates/_base/fleet-orchestrator.md` | 6023 | 7041 | +1018 |
+| `teammates/_base/fleet-orchestrator.md` | 6023 | 7228 | +1205 |
 | `teammates/_base/fleet-worker.md` | 4077 | 4836 | +759 |
 | `crates/horch-core/tests/golden/fleet-orchestrator.txt` | 3978 | 3978 | 0 |
 | `crates/horch-core/tests/golden/worker-opus-task.txt` | 1453 | 1453 | 0 |
@@ -437,8 +437,34 @@ Net: every Claude worker pane sheds 1245 metadata bytes (~312 tokens) and can
 no longer load 29253 bytes of wrong instructions. The two orchestrator panes
 trade those 1245 bytes for 143 (~36 tokens), a reduction of 1102 bytes
 (~276 tokens), and their on-demand body drops from 29253 bytes across 4 files
-to 6427 bytes in 1 file. The briefings grew 1777 bytes in exchange, and that
+to 6427 bytes in 1 file. The briefings grew 1964 bytes in exchange, and that
 text is correct and always present rather than external and stale.
+
+
+## launch.rs test assertions (Step 8)
+
+Step 5 puts `disabled_skills` on `opus`, `sonnet` and `orchestrator`. Four
+tests in `crates/horch-core/src/launch.rs` pin the exact `--settings` overlay
+for those teammates, so all four failed on stale expected values. The plan
+marks `launch.rs` do-not-touch; this was raised as `BLOCKED:` and the
+orchestrator approved editing the four assertion literals.
+
+Every edit is between lines 503 and 960. `#[cfg(test)]` starts at line 424, so
+no code outside the test module changed.
+
+| test | was | now |
+|---|---|---|
+| `claude_fresh_carries_session_and_mode` | `--settings {"syncClaudeAiSkills":false}` | plus `skillOverrides` with the 4 `opus` names |
+| `the_orchestrator_sheds_plugins_and_mcp_but_keeps_settings_and_builtins` | `overlay.get("skillOverrides").is_none()` | `overlay["skillOverrides"]` equals the 2 `orchestrator` names |
+| `unset_isolation_fields_add_no_flags` | `{"syncClaudeAiSkills": false}` | plus `skillOverrides` with the 4 `sonnet` names |
+| `opting_in_to_claudeai_skills_leaves_the_switch_out` | no `--settings` flag at all | `--settings` present, exactly the 4 `sonnet` names, no `syncClaudeAiSkills` key |
+
+The second test still proves what it was written to prove: the operator's own
+`explain-diff-notion` override is not copied into the overlay, because Claude
+merges settings per key. The third and fourth carried doc comments that the
+change made false; both were corrected.
+
+`cargo test --workspace` then passes 304 tests with 0 failures.
 
 
 ## Verified against the CLI
