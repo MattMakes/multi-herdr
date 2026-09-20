@@ -6,11 +6,13 @@
 //! fail - which is the point: prompt text is a deliberate change, not a
 //! side effect of touching code.
 //!
-//! The orchestrator briefing has three sanctioned differences, all spelled out
-//! in `the_orchestrator_briefing_differs_only_where_sanctioned`: a
+//! The orchestrator briefing's sanctioned differences are all spelled out in
+//! `the_orchestrator_briefing_differs_only_where_sanctioned`: a
 //! hand-maintained list of five tiers became the `{roster}` placeholder, the
-//! fleet no longer pre-spawns four idle workers for it to inherit, and it is
-//! told it is the only Fable and must write for Opus/Codex-Sol readers.
+//! fleet no longer pre-spawns four idle workers for it to inherit, it is
+//! told it is the only Fable and must write for Opus/Codex-Sol readers, and
+//! `horch` now places panes itself so the orchestrator is no longer told how to
+//! choose one.
 //!
 //! The worker briefing has one, in
 //! `every_worker_briefing_differs_only_where_sanctioned`: the orchestrator is
@@ -144,7 +146,7 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
     );
 }
 
-/// The orchestrator briefing differs in exactly six places, and this pins them.
+/// The orchestrator briefing differs in exactly seven places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -238,16 +240,31 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
                         \x20 ledger and the grid.\n";
     assert_eq!(was.matches(spawn_sentence).count(), 1);
 
+    // Seventh: `horch spawn` places the pane itself and tiles the workspace after
+    // every spawn and every worker close, so the paragraph telling the
+    // orchestrator how to choose a pane and a direction is gone. The flags still
+    // work on the CLI as a manual escape hatch; the orchestrator is simply not
+    // asked to think about layout.
+    let old_placement = "Spawned panes split YOUR pane by default; add --from-pane <pane-id> and\n\
+        --direction right|down to control layout (pane ids come from herdr pane list,\n\
+        and horch spawn prints the new pane's id on stdout). `horch layout` reports\n\
+        the current worker grid and the next split that keeps it 2 rows by N columns.";
+    let new_placement = "`horch spawn` lays the grid out for you after each spawn, and again when a\n\
+        worker closes. You never pass --from-pane or --direction. Run `horch layout`\n\
+        to see the grid, and `horch tile` only if it looks wrong.";
+    assert_eq!(was.matches(old_placement).count(), 1);
+
     let expected = was
         .replace(old_block, &new_block)
         .replace(old_fleet, new_fleet)
         .replace(old_spawning, new_spawning)
         .replace(lifecycle, &format!("{only_fable}{lifecycle}"))
         .replace(ledger, &format!("{ste}{ledger}"))
-        .replace(spawn_sentence, workers_only);
+        .replace(spawn_sentence, workers_only)
+        .replace(old_placement, new_placement);
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the six sanctioned blocks"
+        "the orchestrator briefing changed outside the seven sanctioned blocks"
     );
 }
 

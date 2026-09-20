@@ -58,6 +58,13 @@ herdr-fleet FLAVOR="cc": require-herdr
 herdr-fleet-smoke: require-herdr
     {{horch}} smoke fleet
 
+# Self-verifying check of `horch tile`: a deliberately bad shape becomes the
+# canonical grid across two tabs with every pane and its process alive, a
+# spawn lays the grid out by itself, and a worker leaving frees its slot.
+# Token-free: the panes are shells counting into a file.
+horch-tile-smoke: require-herdr
+    {{horch}} smoke tile
+
 # Cheap, self-verifying 2-pane check of the herdr messaging primitives
 # (send-text + send-keys enter, and horch's pane registry) without
 # booting any agents. Run this first if you haven't verified horch
