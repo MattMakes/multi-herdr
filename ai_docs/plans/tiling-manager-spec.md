@@ -111,7 +111,10 @@ the balance step and for rendering.
 ### 4.4 Free slot and next split
 `next_slot(grids: &[TabGrid]) -> Placement` returns the first of, in order over
 tabs 1..N:
-1. A column whose `bottom` is `None` -> `Placement::SplitDown { from: column.top }`.
+1. A column whose `bottom` is `None`:
+   - column 1, whose top pane is full height -> `Placement::SplitDown { from: column.top }`.
+   - column `c >= 2`, whose top pane is HALF height ->
+     `Placement::SplitRight { from: column (c-1)'s BOTTOM pane }`.
 2. `columns.len() < capacity` -> `Placement::SplitRight { from: last column's top pane, ratio }`
    where `ratio` makes the new column equal width after balance (s.5.3) - the
    split itself may use the equal-share ratio `k/(k+1)` for the parent, then
@@ -124,6 +127,15 @@ tabs 1..N:
 
 Rule 1 before rule 2 is what makes "top and bottom, then next column" hold even
 after a bottom worker exits mid-run.
+
+CORRECTED 2026-09-20, after the rule was run against herdr 0.8.2: a right split
+subdivides only the rect of the pane it targets, so rule 2 opens column `c >= 2`
+in the TOP ROW ONLY, and a DOWN split from that new half-height top pane makes
+two quarter-height panes - the shape `ai_docs/reports/layout-survey.md` section 6
+documents as unrecoverable. A column past the first is therefore filled from the
+row below it, against column `c-1`'s bottom pane. Measurements are in
+`ai_docs/reports/horch-tile-herdr-surface.md` section 4, finding 7; the rule as
+implemented is in `crates/horch-core/src/tile.rs`.
 
 ## 5. Behaviour
 
@@ -270,11 +282,16 @@ Pure tests in `tile.rs` over synthetic trees (builders: `pane(id)`,
 1. Spawn sequence 1..11 from an empty tab 1: assert the slot and the exact
    placement (from-pane, direction) at each step. Expected:
    1 RIGHT from orch -> t1c1T; 2 DOWN from c1T -> t1c1B; 3 RIGHT from c1T -> t1c2T;
-   4 DOWN from c2T -> t1c2B (rule 4.4/1, fill the open column's bottom, precedes
-   opening a column); 5 NewTab t2c1T; 6 D t2c1B; 7 R t2c2T; 8 D t2c2B; 9 R t2c3T; 10 D t2c3B; 11 NewTab t3c1T.
-   (Note the difference from the old recipe order `right(top_left) -> right(bottom_left)`:
-   the tree-driven rule fills a column by splitting its own top pane DOWN, which
-   never touches the neighbouring column and cannot produce the quarter-height bug.)
+   4 RIGHT from c1B -> t1c2B (rule 4.4/1, fill the open column's bottom, precedes
+   opening a column); 5 NewTab t2c1T; 6 D from c1T -> t2c1B; 7 R from c1T -> t2c2T;
+   8 R from c1B -> t2c2B; 9 R from c2T -> t2c3T; 10 R from c2B -> t2c3B; 11 NewTab t3c1T.
+   (CORRECTED 2026-09-20: steps 4, 8 and 10 said DOWN from the new column's own
+   top pane, which halves a half and produces the quarter-height bug, because a
+   right split subdivides only the rect it targets. Only column 1's top pane is
+   full height, so only column 1 is filled with a DOWN split; every later column
+   is filled against the bottom pane of the column to its left, which is the order
+   `crates/horch/src/cmd/recipes.rs:227-230` has always used by hand. Verified
+   against herdr 0.8.2 - see `ai_docs/reports/horch-tile-herdr-surface.md`.)
 2. Close then spawn: with t1 full, close t1c1B -> herdr collapses c1 to one pane
    -> next spawn is D from that pane into t1c1B. Close t1c2T and t1c2B -> chain
    shortens -> next spawn is R into t1c2T. Close all of t2 -> `settle` closes t2.

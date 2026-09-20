@@ -92,18 +92,27 @@ pane's terminal and submitted, as if you switched panes and typed it by hand.
 | `horch spawn <teammate> "<task>"`  | orchestrator | New pane, new agent session           |
 | `horch spawn --resume <id> "<task>"` | orchestrator | New pane, resuming an old session   |
 | `horch sessions`                   | orchestrator | Read the project session ledger       |
-| `horch layout`                     | orchestrator | Report the grid and the next split    |
+| `horch layout`                     | orchestrator | Report the grid of every tab          |
+| `horch tile`                       | orchestrator | Rearrange every pane into the grid    |
 | `horch balance`                    | orchestrator | Make every worker column the same width |
 | `horch note "<update>"`            | worker       | Record progress on its ledger record  |
 | `horch done "<summary>"`           | worker       | Record a summary, report, close its pane |
 
-`horch spawn` and `horch done` even the worker columns out on their own, so
-`horch balance` is only needed after you drag a border yourself. It is not
-cosmetic: `horch layout` works out whether the grid is ragged by comparing the
-top and bottom rows' exact pane edges, and a split halves its parent while a
-departing worker hands its width to one neighbour. Left alone, the two rows stop
-agreeing on where the columns are, and `horch layout` starts reporting phantom
-columns and suggesting splits that push the grid further out of shape.
+`horch tile` puts every pane where it belongs: the orchestrator full height down
+the left of tab 1, four workers beside it in a 2x2, and six per overflow tab in a
+2x3, filling a column top then bottom before opening the next one. `horch spawn`
+and `horch done` run it themselves, so the grid lays itself out after every spawn
+and every worker that finishes, and neither you nor the orchestrator ever chooses
+a pane or a direction; `horch tile --plan` shows what it would move without
+moving anything, and `HORCH_TILE=0` (or `horch spawn --no-tile`) switches the
+automatic part off.
+
+Panes are moved, never recreated: `herdr pane move` keeps the pane id and the
+process, so an agent mid-task is only resized. Tiling also evens the columns out,
+which is what `horch balance` does on its own - needed by hand only after you
+drag a border yourself when the automatic tiling is off. It is not cosmetic: a
+split halves its parent while a departing worker hands its width to one
+neighbour, so left alone the two rows stop agreeing on where the columns are.
 
 ### Teammates
 
@@ -363,6 +372,7 @@ herdr-docs/           The mirrored documentation
 cargo test              # unit tests, no herdr server needed
 horch smoke messaging   # against a live herdr server
 horch smoke fleet
+horch smoke tile
 ```
 
 The smoke checks are the acceptance tests: they exercise the real herdr socket

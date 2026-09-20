@@ -29,6 +29,7 @@ pub mod prime;
 pub mod prompts;
 pub mod skills;
 pub mod teammates;
+pub mod tile;
 
 /// Mint a session or record id.
 pub fn mint_uuid() -> String {

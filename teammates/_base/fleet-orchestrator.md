@@ -75,10 +75,9 @@ every phase's instructions.
 
 Pick the teammate whose description fits the work:
 {roster}
-Spawned panes split YOUR pane by default; add --from-pane <pane-id> and
---direction right|down to control layout (pane ids come from herdr pane list,
-and horch spawn prints the new pane's id on stdout). `horch layout` reports
-the current worker grid and the next split that keeps it 2 rows by N columns.
+`horch spawn` lays the grid out for you after each spawn, and again when a
+worker closes. You never pass --from-pane or --direction. Run `horch layout`
+to see the grid, and `horch tile` only if it looks wrong.
 
 {persona}
 

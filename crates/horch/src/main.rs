@@ -129,14 +129,37 @@ enum Command {
         /// Which way to split.
         #[arg(long, default_value = "right")]
         direction: Direction,
+        /// Leave the grid alone after spawning. Same as HORCH_TILE=0.
+        #[arg(long)]
+        no_tile: bool,
     },
 
-    /// Report the worker grid and the next split that keeps it 2 rows by N.
+    /// Report the worker grid of every tab in the workspace.
     Layout {
         #[arg(long, value_name = "ID")]
         pane: Option<String>,
         #[arg(long, value_name = "ID")]
         workspace: Option<String>,
+    },
+
+    /// Rearrange every pane into the fleet grid: the orchestrator full height on
+    /// the left of tab 1, 4 workers beside it in 2x2, 6 per overflow tab in 2x3.
+    ///
+    /// `horch spawn` and `horch done` do this themselves, so run it by hand only
+    /// after you have moved panes around or if the grid looks wrong.
+    Tile {
+        /// Print the moves it would make and the grid they produce, and change
+        /// nothing.
+        #[arg(long)]
+        plan: bool,
+        #[arg(long, value_name = "ID")]
+        pane: Option<String>,
+        #[arg(long, value_name = "ID")]
+        workspace: Option<String>,
+        /// Wait this long before reading the workspace. `horch done` uses it to
+        /// let its own pane finish closing before the grid is measured.
+        #[arg(long, value_name = "MS", default_value_t = 0, hide = true)]
+        settle_ms: u64,
     },
 
     /// Make every worker column the same width.
@@ -271,6 +294,7 @@ fn run() -> Result<std::process::ExitCode> {
             role,
             from_pane,
             direction,
+            no_tile,
         } => {
             let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())?;
             let pane = cmd::spawn::spawn(cmd::spawn::SpawnArgs {
@@ -281,6 +305,7 @@ fn run() -> Result<std::process::ExitCode> {
                 role,
                 from_pane,
                 direction,
+                no_tile,
             })?;
             output::println(&pane);
         }
@@ -301,6 +326,12 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Layout { pane, workspace } => {
             cmd::layoutcmd::layout(pane.as_deref(), workspace.as_deref())?
         }
+        Command::Tile {
+            plan,
+            pane,
+            workspace,
+            settle_ms,
+        } => cmd::tilecmd::tile(pane.as_deref(), workspace.as_deref(), plan, settle_ms)?,
         Command::Balance {
             pane,
             workspace,

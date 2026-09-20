@@ -1,9 +1,13 @@
 //! Typed wrapper around the `herdr` CLI, replacing the shell's `herdr ... | jq`
 //! pipelines.
 //!
-//! Verified against herdr 0.6.1 and re-checked against 0.8.0. Deliberately
-//! limited to the surface 0.6.1 advertises: no `pane current`, and no `--env` or
-//! `--ratio` on `pane split`.
+//! Verified against herdr 0.6.1 and re-checked against 0.8.0. The splitting and
+//! messaging surface is deliberately limited to what 0.6.1 advertises: no `pane
+//! current`, and no `--env` or `--ratio` on `pane split`.
+//!
+//! The tab and `pane move` calls that `horch tile` needs arrived later and are
+//! verified against 0.8.2 (`ai_docs/reports/horch-tile-herdr-surface.md`). They
+//! are additions, so a caller that never tiles still only needs 0.6.1.
 
 use std::ffi::OsStr;
 use std::process::Command;
@@ -25,6 +29,10 @@ pub struct Pane {
     pub pane_id: String,
     #[serde(default)]
     pub workspace_id: Option<String>,
+    /// Which tab holds the pane. `pane list` reports it for every pane, which is
+    /// how a caller covers a whole workspace with one call.
+    #[serde(default)]
+    pub tab_id: Option<String>,
     /// Present when herdr's claude/codex integration is installed. Either a bare
     /// string or an object carrying the id under one of several keys, hence
     /// `Value`; use [`Pane::agent_session_id`] to read it.
@@ -65,11 +73,36 @@ pub struct Layout {
     /// The whole tab region the panes are packed into.
     pub area: Rect,
     pub panes: Vec<LayoutPane>,
+    /// Which pane this tab hands the keyboard to. Absent on older herdr.
+    #[serde(default)]
+    pub focused_pane_id: Option<String>,
+    /// True while one pane fills the tab. herdr refuses to move panes into or
+    /// out of a zoomed tab (`changed: false`, `reason: "zoomed_tab"`), so a
+    /// caller that rearranges panes has to check this first.
+    #[serde(default)]
+    pub zoomed: bool,
+}
+
+/// One tab of a workspace, as `herdr tab list` reports it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Tab {
+    pub tab_id: String,
+    pub workspace_id: String,
+    /// 1-based position in the workspace, which is the order the tab strip shows.
+    pub number: i64,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub pane_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Workspace {
     pub workspace_id: String,
+    /// The tab the workspace shows now. Used to put focus back after a
+    /// rearrangement.
+    #[serde(default)]
+    pub active_tab_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +140,56 @@ struct ResizeResult {
 }
 
 #[derive(Debug, Deserialize)]
+struct TabListResult {
+    tabs: Vec<Tab>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceListResult {
+    workspaces: Vec<Workspace>,
+}
+
+/// What `herdr pane move` reports back.
+///
+/// `source_layout` is absent when the move emptied the source tab: herdr closes
+/// a tab that loses its last pane, so there is no layout left to report.
+/// `created_tab` is present only for the `--new-tab` form.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Move {
+    /// False when herdr declined the move. `reason` says why: `same_tab` for a
+    /// move into the tab the pane is already in, `zoomed_tab` when either tab is
+    /// zoomed.
+    pub changed: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    pub pane: Pane,
+    #[serde(default)]
+    pub created_tab: Option<Tab>,
+    #[serde(default)]
+    pub source_layout: Option<Layout>,
+    #[serde(default)]
+    pub target_layout: Option<Layout>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MoveResult {
+    move_result: Move,
+}
+
+#[derive(Debug, Deserialize)]
+struct TabCreateResult {
+    tab: Tab,
+    root_pane: Pane,
+}
+
+/// A freshly created tab and the shell pane herdr starts it with.
+#[derive(Debug, Clone)]
+pub struct NewTab {
+    pub tab_id: String,
+    pub root_pane_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct WorkspaceCreateResult {
     workspace: Workspace,
     root_pane: Pane,
@@ -117,6 +200,8 @@ struct WorkspaceCreateResult {
 pub struct NewWorkspace {
     pub workspace_id: String,
     pub root_pane_id: String,
+    /// The tab the root pane landed in, which is the workspace's first tab.
+    pub tab_id: Option<String>,
 }
 
 /// Which way `pane split` grows.
@@ -268,6 +353,126 @@ impl Herdr {
         Ok(r.layout)
     }
 
+    /// Which pane the tab holding `pane` hands the keyboard to.
+    ///
+    /// `pane layout` reports the focused pane of the whole tab, not of the pane
+    /// asked about, which is what a caller wants before it rearranges the tab.
+    pub fn focused_pane(&self, pane: Option<&str>) -> Result<Option<String>> {
+        Ok(self.pane_layout(pane)?.focused_pane_id)
+    }
+
+    /// `herdr tab list --workspace <ws>`, in tab-strip order.
+    ///
+    /// Always scoped to a workspace: without `--workspace` herdr returns the tabs
+    /// of every workspace it has open.
+    pub fn tab_list(&self, workspace_id: &str) -> Result<Vec<Tab>> {
+        let r: TabListResult = self.json(&["tab", "list", "--workspace", workspace_id])?;
+        let mut tabs = r.tabs;
+        tabs.sort_by_key(|t| t.number);
+        Ok(tabs)
+    }
+
+    /// `herdr workspace list`.
+    pub fn workspace_list(&self) -> Result<Vec<Workspace>> {
+        let r: WorkspaceListResult = self.json(&["workspace", "list"])?;
+        Ok(r.workspaces)
+    }
+
+    /// `herdr tab create`.
+    ///
+    /// Note that herdr starts the new tab with a shell pane, whose id comes back
+    /// as `root_pane_id`. A caller that wanted an empty tab has to close it - so
+    /// a caller moving an existing pane somewhere new is better served by
+    /// [`Self::pane_move_new_tab`], which creates the tab around that pane and
+    /// adds no shell.
+    pub fn tab_create(&self, workspace_id: &str, label: &str, focus: bool) -> Result<NewTab> {
+        let mut args: Vec<&str> = vec![
+            "tab",
+            "create",
+            "--workspace",
+            workspace_id,
+            "--label",
+            label,
+        ];
+        args.push(if focus { "--focus" } else { "--no-focus" });
+        let r: TabCreateResult = self.json(&args)?;
+        Ok(NewTab {
+            tab_id: r.tab.tab_id,
+            root_pane_id: r.root_pane.pane_id,
+        })
+    }
+
+    /// `herdr tab close <tab>`.
+    ///
+    /// DESTRUCTIVE: this closes every pane in the tab, killing whatever runs in
+    /// them, and closing a workspace's last tab closes the workspace. It is not
+    /// how an emptied tab is disposed of - herdr closes a tab that loses its last
+    /// pane on its own - so `horch tile` never calls this.
+    pub fn tab_close(&self, tab_id: &str) -> Result<()> {
+        self.output(&["tab", "close", tab_id])?;
+        Ok(())
+    }
+
+    /// `herdr tab focus <tab>`. The only way to focus a specific pane's tab:
+    /// `pane focus` moves to a NEIGHBOUR, not to an id.
+    pub fn tab_focus(&self, tab_id: &str) -> Result<()> {
+        self.output(&["tab", "focus", tab_id])?;
+        Ok(())
+    }
+
+    /// `herdr pane move <pane> --tab <tab> --split <d> [--target-pane <target>]
+    /// [--ratio <r>] --no-focus`.
+    ///
+    /// Keeps the pane id and the running process (verified against herdr 0.8.2;
+    /// see `ai_docs/reports/horch-tile-herdr-surface.md`). `ratio` is the share
+    /// the TARGET pane keeps, so the moved pane gets `1 - ratio`.
+    ///
+    /// A move into the tab the pane already occupies is refused with
+    /// `changed: false, reason: "same_tab"`: repositioning a pane inside its own
+    /// tab means moving it out and back.
+    pub fn pane_move(
+        &self,
+        pane: &str,
+        tab: &str,
+        direction: Direction,
+        target: Option<&str>,
+        ratio: Option<f64>,
+    ) -> Result<Move> {
+        let mut args: Vec<String> = vec![
+            "pane".into(),
+            "move".into(),
+            pane.into(),
+            "--tab".into(),
+            tab.into(),
+            "--split".into(),
+            direction.as_str().into(),
+        ];
+        if let Some(target) = target {
+            args.push("--target-pane".into());
+            args.push(target.into());
+        }
+        if let Some(ratio) = ratio {
+            args.push("--ratio".into());
+            // Match herdr's own four-decimal storage of split ratios.
+            args.push(format!("{ratio:.4}"));
+        }
+        args.push("--no-focus".into());
+        let r: MoveResult = self.json(&args)?;
+        Ok(r.move_result)
+    }
+
+    /// `herdr pane move <pane> --new-tab --label <label> --no-focus`.
+    ///
+    /// The new tab holds only the moved pane, and its id comes back as
+    /// `created_tab`. This form takes neither `--split` nor `--ratio`; the label
+    /// flag is `--label`, not `--tab-label`.
+    pub fn pane_move_new_tab(&self, pane: &str, label: &str) -> Result<Move> {
+        let r: MoveResult = self.json(&[
+            "pane", "move", pane, "--new-tab", "--label", label, "--no-focus",
+        ])?;
+        Ok(r.move_result)
+    }
+
     /// Move the divider on `direction` side of `pane` by `amount`, a fraction of
     /// the split container that owns it.
     ///
@@ -310,6 +515,7 @@ impl Herdr {
         let r: WorkspaceCreateResult = self.json(&args)?;
         Ok(NewWorkspace {
             workspace_id: r.workspace.workspace_id,
+            tab_id: r.root_pane.tab_id.clone(),
             root_pane_id: r.root_pane.pane_id,
         })
     }
@@ -401,6 +607,76 @@ mod tests {
             .unwrap();
             assert_eq!(pane.agent_session_id().as_deref(), expected, "for {json}");
         }
+    }
+
+    /// The real 0.8.2 reply, trimmed. Two fields are conditional and must not be
+    /// required: `source_layout` is absent when the move emptied and so closed the
+    /// source tab, and `created_tab` is present only for `--new-tab`.
+    #[test]
+    fn parses_a_pane_move_that_closed_its_source_tab() {
+        let raw = r#"{"result":{"type":"pane_move","move_result":{
+            "changed":true,
+            "pane":{"pane_id":"w19:p3","tab_id":"w19:t3","workspace_id":"w19"},
+            "previous_pane_id":"w19:p3","previous_tab_id":"w19:t1",
+            "created_tab":{"tab_id":"w19:t3","workspace_id":"w19","label":"workers 2",
+                           "number":3,"pane_count":1},
+            "focused_pane_id":"w19:p3"}}}"#;
+        let r: Envelope<MoveResult> = serde_json::from_str(raw).unwrap();
+        let m = r.result.move_result;
+        assert!(m.changed);
+        assert_eq!(m.pane.tab_id.as_deref(), Some("w19:t3"));
+        assert_eq!(m.created_tab.unwrap().tab_id, "w19:t3");
+        assert!(m.source_layout.is_none(), "the source tab was closed");
+        assert!(m.reason.is_none());
+    }
+
+    /// herdr declines a move rather than failing the call, so the reason is the
+    /// only way a caller learns that nothing happened.
+    #[test]
+    fn parses_a_declined_pane_move_with_its_reason() {
+        let raw = r#"{"result":{"move_result":{"changed":false,"reason":"same_tab",
+            "pane":{"pane_id":"w1:p2"}}}}"#;
+        let r: Envelope<MoveResult> = serde_json::from_str(raw).unwrap();
+        assert!(!r.result.move_result.changed);
+        assert_eq!(r.result.move_result.reason.as_deref(), Some("same_tab"));
+    }
+
+    #[test]
+    fn parses_a_tab_list_and_keeps_tab_strip_order() {
+        let raw = r#"{"result":{"type":"tab_list","tabs":[
+            {"tab_id":"w0:t2","workspace_id":"w0","label":"workers 2","number":2,"pane_count":6},
+            {"tab_id":"w0:t1","workspace_id":"w0","label":"1","number":1,"pane_count":5}]}}"#;
+        let r: Envelope<TabListResult> = serde_json::from_str(raw).unwrap();
+        let mut tabs = r.result.tabs;
+        tabs.sort_by_key(|t| t.number);
+        assert_eq!(
+            tabs.iter().map(|t| t.tab_id.as_str()).collect::<Vec<_>>(),
+            ["w0:t1", "w0:t2"]
+        );
+    }
+
+    /// A tiler has to know the focused pane to hand focus back, and the zoom
+    /// state because herdr refuses to move panes in a zoomed tab.
+    #[test]
+    fn a_layout_reports_the_focused_pane_and_the_zoom_state() {
+        let raw = r#"{"result":{"layout":{"workspace_id":"w0","tab_id":"w0:t1",
+            "area":{"x":26,"y":1,"width":184,"height":53},
+            "focused_pane_id":"w0:p1","zoomed":true,
+            "panes":[{"pane_id":"w0:p1","rect":{"x":26,"y":1,"width":184,"height":53}}],
+            "splits":[]}}}"#;
+        let r: Envelope<LayoutResult> = serde_json::from_str(raw).unwrap();
+        assert_eq!(r.result.layout.focused_pane_id.as_deref(), Some("w0:p1"));
+        assert!(r.result.layout.zoomed);
+    }
+
+    /// Older herdr omits both, and the wrapper still has to parse the reply.
+    #[test]
+    fn a_layout_without_focus_or_zoom_still_parses() {
+        let raw = r#"{"result":{"layout":{"workspace_id":"w0","tab_id":"w0:t1",
+            "area":{"x":0,"y":0,"width":80,"height":24},"panes":[]}}}"#;
+        let r: Envelope<LayoutResult> = serde_json::from_str(raw).unwrap();
+        assert_eq!(r.result.layout.focused_pane_id, None);
+        assert!(!r.result.layout.zoomed);
     }
 
     #[test]

@@ -104,14 +104,13 @@ pub fn done(summary: &str) -> Result<()> {
 
     Mailbox::new(&workspace).unregister(&role);
 
-    // A departing worker hands its width to whichever neighbour happens to be its
-    // split sibling, which lumps the grid rather than spreading it. Hand the tidy
-    // to a detached child: the close below kills this process tree, so by the time
-    // the geometry worth fixing exists, this process is gone. It no-ops while a
-    // column is only half drained, because the rows have different column counts
-    // then and evening one row alone would move it off the other row's integers -
-    // exactly what makes `horch layout` see phantom raggedness.
-    crate::cmd::balancecmd::equalize_after_close(&workspace);
+    // A departing worker leaves a hole and hands its width to whichever neighbour
+    // happens to be its split sibling, which lumps the grid rather than spreading
+    // it. Hand the tidy to a detached child: the close below kills this process
+    // tree, so by the time the hole exists, this process is gone. The child pulls
+    // the last worker into the free slot, and an overflow tab that lost its last
+    // worker closes itself.
+    crate::cmd::tilecmd::settle_after_close(&workspace);
 
     herdr.pane_close(&pane.pane_id)
 }

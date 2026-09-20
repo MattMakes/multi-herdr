@@ -8,4 +8,5 @@ pub mod recipes;
 pub mod smoke;
 pub mod spawn;
 pub mod teammatescmd;
+pub mod tilecmd;
 pub mod worker;

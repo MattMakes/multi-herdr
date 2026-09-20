@@ -79,9 +79,7 @@ impl GridState {
     /// The one-line explanation printed under the grid summary.
     fn explanation(self) -> Option<&'static str> {
         match self {
-            GridState::Complete => {
-                Some("every column is 2 tall - this is the shape you want.")
-            }
+            GridState::Complete => Some("every column is 2 tall - this is the shape you want."),
             GridState::Unpaired => Some("a worker column is 1 tall."),
             GridState::RaggedBottom | GridState::RaggedTop | GridState::Ragged => {
                 Some("one row is subdivided further than the other.")
@@ -119,11 +117,39 @@ pub struct Analysis {
     pub next: Option<NextSplit>,
 }
 
+/// Who the orchestrator is on the tab being analysed.
+///
+/// A fleet spreads over several tabs and only one of them holds the
+/// orchestrator. On the others every pane is a worker, and a lone full-height
+/// pane there is a worker column - so those tabs must be analysed with
+/// [`Orchestrator::Absent`] rather than with the positional guess, which would
+/// silently drop a worker from the grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orchestrator<'a> {
+    /// The pane id the mailbox registered for the role.
+    Pane(&'a str),
+    /// Guess: the leftmost full-height pane.
+    Infer,
+    /// This tab has none. Every pane is a worker.
+    Absent,
+}
+
 /// Analyse a tab layout into a worker grid.
 ///
 /// `orchestrator` is the pane id the mailbox registered for the orchestrator role.
 /// When absent, the leftmost full-height pane is assumed to be it.
 pub fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
+    analyze_with(
+        layout,
+        match orchestrator.filter(|s| !s.is_empty()) {
+            Some(id) => Orchestrator::Pane(id),
+            None => Orchestrator::Infer,
+        },
+    )
+}
+
+/// Analyse a tab layout, saying explicitly whether the orchestrator is on it.
+pub fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analysis {
     let area = layout.area;
     let height = area.height;
     let all: Vec<Slot> = layout
@@ -142,13 +168,14 @@ pub fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
     // two stacked rows. The 1-cell tolerance absorbs border rows.
     let is_full = |s: &Slot| s.h >= height - 1;
 
-    let orch_id: Option<String> = match orchestrator.filter(|s| !s.is_empty()) {
-        Some(id) => Some(id.to_string()),
-        None => {
+    let orch_id: Option<String> = match orchestrator {
+        Orchestrator::Pane(id) if !id.is_empty() => Some(id.to_string()),
+        Orchestrator::Pane(_) | Orchestrator::Infer => {
             let mut full: Vec<&Slot> = all.iter().filter(|s| is_full(s)).collect();
             full.sort_by_key(|s| s.x);
             full.first().map(|s| s.id.clone())
         }
+        Orchestrator::Absent => None,
     };
 
     let workers: Vec<&Slot> = all
@@ -177,7 +204,10 @@ pub fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
                 x0,
                 x1,
                 top: top.iter().find(|s| s.covers(x0, x1)).map(|s| s.id.clone()),
-                bottom: bottom.iter().find(|s| s.covers(x0, x1)).map(|s| s.id.clone()),
+                bottom: bottom
+                    .iter()
+                    .find(|s| s.covers(x0, x1))
+                    .map(|s| s.id.clone()),
                 depth: half.iter().filter(|s| s.covers(x0, x1)).count(),
             }
         })
@@ -198,9 +228,8 @@ pub fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
     let top_ragged = ragged_in(&top);
     let bottom_ragged = ragged_in(&bottom);
 
-    let rightmost = |row: &[&Slot]| -> Option<String> {
-        row.iter().max_by_key(|s| s.x).map(|s| s.id.clone())
-    };
+    let rightmost =
+        |row: &[&Slot]| -> Option<String> { row.iter().max_by_key(|s| s.x).map(|s| s.id.clone()) };
 
     let state = if offgrid {
         GridState::Offgrid
@@ -266,6 +295,42 @@ pub fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
     }
 }
 
+/// Render every tab of a workspace, one block per tab in tab-strip order.
+///
+/// The same per-tab renderer as [`render`]; what is new is that a fleet is no
+/// longer assumed to fit in one tab.
+///
+/// `notes` is one line per tab, appended to its header. The states this renderer
+/// prints describe one tab of a 2xN grid on its own, so an overflow tab whose last
+/// bottom slot is still free reads as `ragged-bottom` when it is in fact exactly
+/// right; the note is where `horch tile`'s verdict on the tab goes.
+pub fn render_all(
+    analyses: &[Analysis],
+    notes: &[String],
+    roles: &HashMap<String, String>,
+) -> String {
+    if analyses.is_empty() {
+        return "no tabs in this workspace\n".to_string();
+    }
+    let total = analyses.len();
+    analyses
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let note = match notes.get(i) {
+                Some(n) if !n.is_empty() => format!("  {n}"),
+                _ => String::new(),
+            };
+            format!(
+                "=== tab {} of {total}{note} ===\n{}",
+                i + 1,
+                render(a, roles)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Render an analysis the way `horch-layout` printed it.
 pub fn render(analysis: &Analysis, roles: &HashMap<String, String>) -> String {
     let label = |id: Option<&str>| -> String {
@@ -315,7 +380,11 @@ pub fn render(analysis: &Analysis, roles: &HashMap<String, String>) -> String {
                 spans = true;
             }
             let head = format!("{}-{}", cell.x0, cell.x1);
-            let w = tl.chars().count().max(bl.chars().count()).max(head.chars().count());
+            let w = tl
+                .chars()
+                .count()
+                .max(bl.chars().count())
+                .max(head.chars().count());
             hdr.push_str(&format!("{head:<w$}  "));
             top_line.push_str(&format!("{tl:<w$}  "));
             bot_line.push_str(&format!("{bl:<w$}  "));
@@ -379,14 +448,26 @@ mod tests {
         Layout {
             workspace_id: "w1".into(),
             tab_id: "t1".into(),
-            area: Rect { x: 0, y: 0, width: 200, height: 50 },
+            area: Rect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 50,
+            },
             panes: panes
                 .iter()
                 .map(|(id, x, y, w, h)| LayoutPane {
                     pane_id: (*id).into(),
-                    rect: Rect { x: *x, y: *y, width: *w, height: *h },
+                    rect: Rect {
+                        x: *x,
+                        y: *y,
+                        width: *w,
+                        height: *h,
+                    },
                 })
                 .collect(),
+            focused_pane_id: None,
+            zoomed: false,
         }
     }
 
@@ -485,10 +566,7 @@ mod tests {
     /// to be it - and is excluded from the grid.
     #[test]
     fn orchestrator_is_inferred_as_the_leftmost_full_height_pane() {
-        let l = layout(&[
-            ("right-full", 100, 0, 100, 50),
-            ("orch", 0, 0, 100, 50),
-        ]);
+        let l = layout(&[("right-full", 100, 0, 100, 50), ("orch", 0, 0, 100, 50)]);
         let a = analyze(&l, None);
         assert_eq!(a.orchestrator.as_deref(), Some("orch"));
         assert_eq!(a.state, GridState::Unpaired);
@@ -499,10 +577,7 @@ mod tests {
     /// when it is not leftmost.
     #[test]
     fn registered_orchestrator_overrides_the_positional_guess() {
-        let l = layout(&[
-            ("orch", 100, 0, 100, 50),
-            ("worker", 0, 0, 100, 50),
-        ]);
+        let l = layout(&[("orch", 100, 0, 100, 50), ("worker", 0, 0, 100, 50)]);
         let a = analyze(&l, Some("orch"));
         assert_eq!(a.orchestrator.as_deref(), Some("orch"));
         assert_eq!(a.next.unwrap().from, "worker");
@@ -561,6 +636,91 @@ mod tests {
         assert!(out.contains("next split: HORIZONTAL (right) from tr"));
         assert!(out.contains("then, to finish the new column (2 splits per column):"));
         assert!(out.contains("--from-pane br --direction right"));
+    }
+
+    /// An overflow tab holds no orchestrator, so a lone full-height pane there is
+    /// a worker column. Inferring an orchestrator would drop it from the grid and
+    /// report an empty tab.
+    #[test]
+    fn a_worker_tab_keeps_its_lone_full_height_pane_as_a_worker() {
+        let l = layout(&[("w", 0, 0, 200, 50)]);
+        let inferred = analyze_with(&l, Orchestrator::Infer);
+        assert_eq!(inferred.orchestrator.as_deref(), Some("w"));
+        assert_eq!(inferred.state, GridState::Empty);
+
+        let a = analyze_with(&l, Orchestrator::Absent);
+        assert_eq!(a.orchestrator, None);
+        assert_eq!(a.state, GridState::Unpaired, "it is a worker column");
+        assert_eq!(a.columns, 1);
+    }
+
+    /// `analyze` keeps its old contract: a registered id wins, and no id means
+    /// guess.
+    #[test]
+    fn analyze_still_means_infer_when_no_orchestrator_is_registered() {
+        let l = layout(&[
+            ("orch", 0, 0, 50, 50),
+            ("a", 50, 0, 150, 25),
+            ("b", 50, 25, 150, 25),
+        ]);
+        assert_eq!(
+            analyze(&l, None).orchestrator.as_deref(),
+            analyze_with(&l, Orchestrator::Infer)
+                .orchestrator
+                .as_deref()
+        );
+        assert_eq!(analyze(&l, Some("a")).orchestrator.as_deref(), Some("a"));
+        assert_eq!(
+            analyze(&l, Some("")).orchestrator.as_deref(),
+            Some("orch"),
+            "an empty registration falls back to the guess"
+        );
+    }
+
+    /// One block per tab, in order, each one the block a single tab printed
+    /// before.
+    #[test]
+    fn render_all_prints_one_block_per_tab_in_order() {
+        let roles = HashMap::new();
+        let tab1 = analyze(
+            &layout(&[("orch", 0, 0, 50, 50), ("a", 50, 0, 150, 50)]),
+            Some("orch"),
+        );
+        let tab2 = analyze_with(
+            &layout(&[
+                ("b", 0, 0, 100, 25),
+                ("c", 100, 0, 100, 25),
+                ("d", 0, 25, 200, 25),
+            ]),
+            Orchestrator::Absent,
+        );
+        let out = render_all(&[tab1.clone(), tab2.clone()], &[], &roles);
+        assert!(out.starts_with("=== tab 1 of 2 ===\n"), "{out}");
+        assert!(out.contains("=== tab 2 of 2 ===\n"), "{out}");
+        assert!(
+            out.contains(&render(&tab1, &roles)),
+            "the same renderer per tab"
+        );
+        assert!(
+            out.contains(&render(&tab2, &roles)),
+            "the same renderer per tab"
+        );
+        assert_eq!(render_all(&[], &[], &roles), "no tabs in this workspace\n");
+
+        // A note per tab rides on the header rather than changing the block.
+        let noted = render_all(
+            &[tab1, tab2],
+            &["matches the fleet grid".to_string(), String::new()],
+            &roles,
+        );
+        assert!(
+            noted.starts_with("=== tab 1 of 2  matches the fleet grid ===\n"),
+            "{noted}"
+        );
+        assert!(
+            noted.contains("=== tab 2 of 2 ===\n"),
+            "an empty note adds nothing"
+        );
     }
 
     #[test]

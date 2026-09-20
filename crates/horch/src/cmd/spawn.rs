@@ -20,6 +20,8 @@ pub struct SpawnArgs {
     pub role: Option<String>,
     pub from_pane: Option<String>,
     pub direction: Direction,
+    /// Leave the grid alone. `HORCH_TILE=0` says the same thing for every spawn.
+    pub no_tile: bool,
 }
 
 /// Split `horch spawn`'s positional arguments into a teammate and a task.
@@ -193,14 +195,21 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     let command = PaneShell::host().command_line(&exe, &["worker", role.as_str()]);
     herdr.pane_run(&new_pane, &command)?;
 
-    // A split halves its parent, so growing the fleet leaves the columns at
-    // 1/2, 1/4, 1/8... Even them out now: `horch layout` reads raggedness off the
-    // two rows' exact pane edges, so drifted columns make it advise a split that
-    // pushes the grid further out of shape. This no-ops on the intermediate state
-    // where one row is a column ahead of the other, and evens the grid once the
-    // second split completes the column.
-    if let Ok(layout) = herdr.pane_layout(Some(&new_pane)) {
-        crate::cmd::balancecmd::equalize_quietly(&herdr, layout);
+    // Lay the grid out, which is also what puts this pane where it belongs: a
+    // split halves its parent, so a fresh worker starts full height beside
+    // whichever pane was split and the columns come out 1/2, 1/4, 1/8... The
+    // tiler moves it into the next free slot and evens every column. It is
+    // deterministic Rust, so the orchestrator spends no tokens on layout and
+    // never passes --from-pane or --direction.
+    //
+    // Best effort: a grid that will not lay out must not fail a spawn whose
+    // worker is already running.
+    if args.no_tile {
+        if let Ok(layout) = herdr.pane_layout(Some(&new_pane)) {
+            crate::cmd::balancecmd::equalize_quietly(&herdr, layout);
+        }
+    } else {
+        crate::cmd::tilecmd::after_change(&herdr, mailbox.workspace_id(), Some(&new_pane));
     }
 
     if plan.resume {
