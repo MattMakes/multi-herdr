@@ -1,0 +1,51 @@
+#!/bin/sh
+# Remove the old `herdr-fleet() { ... }` shell function from a shell startup
+# file. A function shadows any `herdr-fleet` program on PATH, so it must go for
+# the launcher that `just install` installs to be found.
+# Usage: remove-zsh-fleet-function <path>      (for example ~/.zshrc)
+# Deletes only lines that start with `herdr-fleet() {`, after writing a backup
+# to <path>.bak-horch-<YYYYMMDD-HHMMSS>. Exits 0 when there is nothing to remove
+# or the file does not exist.
+
+if [ $# -ne 1 ]; then
+    echo "usage: remove-zsh-fleet-function <path>" >&2
+    exit 2
+fi
+path=$1
+
+if [ ! -f "$path" ] || ! grep -q '^herdr-fleet() {' "$path"; then
+    echo "no herdr-fleet shell function in $path"
+    exit 0
+fi
+
+# Deleting the first line of a function that spans several lines would leave a
+# broken startup file, so only a function that closes on its own line is removed.
+if grep '^herdr-fleet() {' "$path" | grep -qv '}[[:space:]]*$'; then
+    echo "not changed: a herdr-fleet function in $path does not end with } on its first line." >&2
+    echo "Remove it by hand." >&2
+    exit 1
+fi
+
+bak="$path.bak-horch-$(date +%Y%m%d-%H%M%S)"
+cp -p "$path" "$bak" || exit 1
+
+# Copy first so the temp file keeps the mode of the original; write it in the
+# same directory so the mv below is a rename. Do not use `sed -i`: it differs
+# between macOS and GNU.
+tmp="$path.tmp.$$"
+cp -p "$path" "$tmp" || exit 1
+grep -v '^herdr-fleet() {' "$path" > "$tmp"
+if [ $? -gt 1 ]; then
+    rm -f "$tmp"
+    echo "could not rewrite $path; it is unchanged, backup at $bak" >&2
+    exit 1
+fi
+
+if [ -L "$path" ]; then
+    # mv would replace the symlink with a regular file; write through it.
+    cat "$tmp" > "$path" && rm -f "$tmp" || exit 1
+else
+    mv "$tmp" "$path" || exit 1
+fi
+
+echo "removed the herdr-fleet shell function from $path; backup at $bak"

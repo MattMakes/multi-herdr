@@ -39,6 +39,9 @@ horch smoke fleet       # full spawn -> ledger -> report -> self-close check
 Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.
 
+Day to day: `just install` once, then `herdr-fleet` from any project.
+`just update` pulls and reinstalls.
+
 ## Running a fleet
 
 ```bash
