@@ -11,7 +11,8 @@ effort: xhigh
 # ExitPlanMode asks a human to approve, and there is no human at this pane.
 permission_mode: auto
 inherit_plugins: false
-disallowed_tools: [Edit, Write, NotebookEdit]
+# Fleet rule: no subagents. Ask the orchestrator for more workers.
+disallowed_tools: [Agent, Edit, Write, NotebookEdit]
 skills: [code-review, code-analysis]
 mcp_servers: {}
 # Stale external copies of the fleet briefing; the repo carries the real one.

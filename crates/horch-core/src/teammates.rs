@@ -367,6 +367,17 @@ pub struct Teammate {
     pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub disallowed_tools: Vec<String>,
+    /// Whether this pane may start a subagent of its own.
+    ///
+    /// A fleet pane must not: a subagent's work never reaches the ledger or the
+    /// grid, and deciding to split the work belongs to the orchestrator. A
+    /// worker that needs more hands sends `QUESTION:` instead. `check` enforces
+    /// this on every claude teammate the orchestrator can spawn, and on the
+    /// orchestrator itself, by insisting on `disallowed_tools: [Agent]`.
+    ///
+    /// `true` waives the rule for one teammate. No shipped teammate sets it.
+    #[serde(default)]
+    pub allow_subagents: bool,
     /// `--setting-sources`. `None` omits the flag, so the operator's user,
     /// project and local settings apply as usual. `Some([])` renders
     /// `--setting-sources ""`, which loads none of them - no `enabledPlugins`,
@@ -446,6 +457,7 @@ impl Default for Teammate {
             tools: None,
             allowed_tools: Vec::new(),
             disallowed_tools: Vec::new(),
+            allow_subagents: false,
             setting_sources: None,
             disable_skills: false,
             inherit_claudeai_skills: false,
@@ -726,6 +738,24 @@ impl Roster {
                     "{who}: '{field}' is not something {} can express; \
                      use args, or move this work to a claude teammate",
                     t.agent
+                ));
+            }
+            // A fleet pane must not spawn subagents. The prose rule in
+            // `_base/fleet-worker.md` was not enough on its own, so the switch
+            // carries it: `--disallowedTools Agent` takes the tool out of the
+            // session's tool set on claude 2.1.278. The hidden orchestration-*
+            // teammates run a fixed recipe, not fleet panes, so only a
+            // spawnable teammate and the orchestrator itself are covered.
+            // Codex, OpenCode, pi and Prime are elsewhere; see
+            // `ai_docs/reports/no-subagents.md`.
+            if t.agent == Agent::Claude
+                && (!t.hidden || t.name == "orchestrator")
+                && !t.allow_subagents
+                && !t.disallowed_tools.iter().any(|x| x == "Agent")
+            {
+                problems.push(format!(
+                    "{who}: a fleet pane must not spawn subagents; add \
+                     disallowed_tools: [Agent] or set allow_subagents: true"
                 ));
             }
             if let Some(mode) = t.permission_mode {
@@ -1092,6 +1122,97 @@ mod spawnable_tests {
             .check()
             .iter()
             .any(|p| p.contains("opus: declares skills or phase")));
+    }
+
+    /// A fleet pane must not spawn subagents. The deny is the proof, and
+    /// `allow_subagents` is the only way out.
+    #[test]
+    fn roster_check_demands_the_subagent_deny_on_every_claude_fleet_pane() {
+        const MESSAGE: &str = "a fleet pane must not spawn subagents";
+
+        // The shipped roster already carries it, on the 10 spawnable claude
+        // teammates and on the orchestrator.
+        let mut r = Roster::builtin().unwrap();
+        assert!(r.check().is_empty(), "{:?}", r.check());
+        let covered = r
+            .teammates
+            .values()
+            .filter(|t| t.agent == Agent::Claude && (!t.hidden || t.name == "orchestrator"))
+            .count();
+        assert_eq!(covered, 11, "the rule should cover 11 claude teammates");
+
+        // Take the deny away from a worker and the check fails by name.
+        r.teammates.get_mut("opus").unwrap().disallowed_tools = Vec::new();
+        assert!(
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("opus: ") && p.contains(MESSAGE)),
+            "{:?}",
+            r.check()
+        );
+
+        // `allow_subagents` waives it without restoring the deny.
+        r.teammates.get_mut("opus").unwrap().allow_subagents = true;
+        assert!(
+            !r.check().iter().any(|p| p.contains(MESSAGE)),
+            "{:?}",
+            r.check()
+        );
+
+        // The deny itself passes, with or without other denied tools.
+        let opus = r.teammates.get_mut("opus").unwrap();
+        opus.allow_subagents = false;
+        opus.disallowed_tools = vec!["Agent".into(), "Write".into()];
+        assert!(
+            !r.check().iter().any(|p| p.contains(MESSAGE)),
+            "{:?}",
+            r.check()
+        );
+
+        // A codex teammate is not affected: it cannot express the field at all,
+        // and its switch is `-c features.multi_agent=false` in `args`.
+        let sol = r.teammates.get_mut("codex-sol").unwrap();
+        assert!(sol.disallowed_tools.is_empty());
+        assert!(!sol.allow_subagents);
+        assert!(
+            !r.check().iter().any(|p| p.contains(MESSAGE)),
+            "{:?}",
+            r.check()
+        );
+
+        // Nor are the hidden orchestration-* panes, which run a fixed recipe.
+        let worker = r.teammates.get_mut("orchestration-worker").unwrap();
+        assert_eq!(worker.agent, Agent::Claude);
+        assert!(worker.hidden);
+        assert!(worker.disallowed_tools.is_empty());
+        assert!(
+            !r.check().iter().any(|p| p.contains(MESSAGE)),
+            "{:?}",
+            r.check()
+        );
+
+        // The orchestrator is hidden but is still a fleet pane.
+        r.teammates
+            .get_mut("orchestrator")
+            .unwrap()
+            .disallowed_tools = Vec::new();
+        assert!(
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("orchestrator: ") && p.contains(MESSAGE)),
+            "{:?}",
+            r.check()
+        );
+    }
+
+    /// `allow_subagents` is off unless the frontmatter says otherwise.
+    #[test]
+    fn allow_subagents_parses_from_frontmatter_and_defaults_to_false() {
+        let head = "---\nname: x\nbrief_description: X\nagent: claude\nmodel: opus\n";
+        let t = parse_teammate("x", &format!("{head}---\nbody")).unwrap();
+        assert!(!t.allow_subagents);
+        let t = parse_teammate("x", &format!("{head}allow_subagents: true\n---\nbody")).unwrap();
+        assert!(t.allow_subagents);
     }
 
     #[test]
