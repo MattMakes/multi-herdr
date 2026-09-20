@@ -74,6 +74,16 @@ phase: null
 plugin_dirs: []
 skills: []
 
+# claude only. claude.ai-synced skills are off in every fleet pane; set
+# `inherit_claudeai_skills: true` to keep them. (horch puts
+# syncClaudeAiSkills: false in its --settings overlay; that hides the
+# anthropic-skills:<name> entries for this session only and moves nothing.)
+# disabled_skills switches further skills off by name, e.g. ["dev-prime"],
+# as skillOverrides "off" entries. Settings merge per key, so the operator's
+# own skillOverrides still apply.
+inherit_claudeai_skills: false
+disabled_skills: []
+
 # ─── startup mode ────────────────────────────────────────────────────────────
 # How much the teammate may do without asking. Unset = inherit the operator's
 # settings, which for a worker in an unwatched pane usually means it stops on
@@ -141,8 +151,10 @@ disable_skills: false
 setting_sources:
 
 # settings -> --settings <path>. Your own settings file. Replaces horch's
-# --settings overlay entirely (the plugin switch-off and the statusLine
-# passthrough), so it has to carry those itself; --check insists on statusLine.
+# --settings overlay entirely (the plugin switch-off, the skill switches and
+# the statusLine passthrough), so it has to carry those itself; --check
+# insists on statusLine. A teammate with a phase or skills is the exception:
+# the skill bundle merges horch's switches into this file.
 settings:
 
 # mcp_servers -> --mcp-config '{"mcpServers": {...}}' --strict-mcp-config

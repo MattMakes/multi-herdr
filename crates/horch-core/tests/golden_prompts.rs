@@ -16,6 +16,9 @@
 //! `every_worker_briefing_differs_only_where_sanctioned`: the orchestrator is
 //! described to workers as a separate *agent* session rather than a separate
 //! Claude one, because the pane it sits in is no longer always Claude.
+//!
+//! Both base briefings also gained the Simplified Technical English section
+//! (`ste_section`), inserted whole and pinned in those same two tests.
 
 use horch_core::prompts;
 use horch_core::teammates::Roster;
@@ -33,8 +36,37 @@ fn roster() -> Roster {
     Roster::builtin().expect("built-in roster parses")
 }
 
-/// The worker briefing differs in exactly one place, and this pins it: the
-/// orchestrator is no longer described to workers as a Claude session.
+/// The `== Message style: Simplified Technical English ==` section that both
+/// base briefings gained, as it renders: the rules are word for word the same
+/// in `fleet-worker.md` and `fleet-orchestrator.md`, and only the lead-in (who
+/// writes which messages) and the one example differ.
+fn ste_section(lead: &[&str], example: &str) -> String {
+    let rules = [
+        "- Write one instruction or one fact in each sentence. A procedural sentence",
+        "  has at most 20 words. A descriptive sentence has at most 25 words.",
+        "- Use the active voice and the present tense. Name the actor.",
+        "- Use one word for one thing. Do not use synonyms for variety.",
+        "- Do not use idioms, metaphors, or hedges such as \"it seems\", \"sort of\",",
+        "  \"basically\".",
+        "- Write paths, commands, flags, and identifiers exactly as they are. Put one",
+        "  per sentence when possible.",
+        "- Use a list for parallel items, one item per line. Do not nest lists.",
+        "- Start a report with the role tag and one keyword: `ready`, `DONE:`,",
+        "  `BLOCKED:`, `NOTE:`, or `QUESTION:`. Then write one sentence with the",
+        "  outcome. Then write the details.",
+        "- Write numbers as digits and state units. Give exact counts when you know",
+        "  them.",
+        "- Put a warning before the action it applies to.",
+    ];
+    format!(
+        "== Message style: Simplified Technical English ==\n{}\n{}\nExample:\n  {example}\n\n",
+        lead.join("\n"),
+        rules.join("\n"),
+    )
+}
+
+/// The worker briefing differs in exactly two places, and this pins them. The
+/// first: the orchestrator is no longer described to workers as a Claude session.
 ///
 /// `horch fleet codex` puts a Codex orchestrator in that pane, and OpenCode and
 /// pi are coming, so naming any one CLI there is a briefing that is wrong for
@@ -47,6 +79,18 @@ fn roster() -> Roster {
 fn every_worker_briefing_differs_only_where_sanctioned() {
     let r = roster();
     let mut checked = 0;
+    // Second sanctioned change: the Simplified Technical English rule, inserted
+    // whole at the end of the "Communication and lifecycle" block. Every worker
+    // in these goldens has the role "r-1", so that is the tag the example shows.
+    let lifecycle_end = "gotchas, current state.\n\n";
+    let ste = ste_section(
+        &[
+            "Write every `horch tell` message, every `horch done` message, and every",
+            "`[r-1]` line in Simplified Technical English (STE, ASD-STE100 style).",
+        ],
+        "[r-1] DONE: The report is at ai_docs/reports/x.md. I changed 2 files. \
+         Tests pass: 14 of 14. Nothing is uncommitted.",
+    );
     // No `fable` here: the generic Fable worker was removed when Fable became
     // the orchestrator's reserved model. Its goldens went with it.
     for name in ["sonnet", "opus", "codex-sol", "codex-terra", "smoke"] {
@@ -66,9 +110,15 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
                 "worker-{name}-{label} should name the orchestrator's agent exactly once"
             );
             assert_eq!(
-                was.replace(old_agent, new_agent),
+                was.matches(lifecycle_end).count(),
+                1,
+                "worker-{name}-{label} should end its lifecycle block exactly once"
+            );
+            assert_eq!(
+                was.replace(old_agent, new_agent)
+                    .replace(lifecycle_end, &format!("{lifecycle_end}{ste}")),
                 got,
-                "worker-{name}-{label} drifted outside the one sanctioned block"
+                "worker-{name}-{label} drifted outside the two sanctioned blocks"
             );
             checked += 1;
         }
@@ -94,7 +144,7 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
     );
 }
 
-/// The orchestrator briefing differs in exactly three places, and this pins them.
+/// The orchestrator briefing differs in exactly six places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -159,14 +209,45 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         start or resume a worker with the next phase instead of asking it to preload\n\
         every phase's instructions.\n\n";
     assert_eq!(was.matches(old_spawning).count(), 1);
+
+    // Fifth: the Simplified Technical English rule, inserted whole between the
+    // channel section, which introduces `horch assign` and `horch tell`, and
+    // the ledger section.
+    let ledger = "== Session ledger: resume vs fresh ==";
+    let ste = ste_section(
+        &[
+            "Write every `horch assign` message and every `horch tell` message in",
+            "Simplified Technical English (STE, ASD-STE100 style). Workers write their",
+            "`horch done` messages and their `[<role>]` lines in STE too.",
+        ],
+        "horch assign sonnet-1 \"Read and follow ai_docs/plans/x.md. Edit only the \
+         files that the plan names. Send DONE: when the tests pass.\"",
+    );
+    assert_eq!(was.matches(ledger).count(), 1);
+
+    // Sixth: the workers-only rule, inserted as its own bullet directly after
+    // the sentence that tells the orchestrator to spawn workers to do the work.
+    // The rest of that paragraph starts again at the left margin.
+    let spawn_sentence = "spawn workers to do the work, you just breakdown and organize/plan the\n\
+                          tasks. ";
+    let workers_only = "spawn workers to do the work, you just breakdown and organize/plan the\n\
+                        tasks.\n\
+                        - Use your fleet workers only. Do not use subagents, the Agent tool,\n\
+                        \x20 background tasks, or any in-session delegation. Every piece of delegated\n\
+                        \x20 work goes through `horch spawn` or `horch assign`, so it is visible in the\n\
+                        \x20 ledger and the grid.\n";
+    assert_eq!(was.matches(spawn_sentence).count(), 1);
+
     let expected = was
         .replace(old_block, &new_block)
         .replace(old_fleet, new_fleet)
         .replace(old_spawning, new_spawning)
-        .replace(lifecycle, &format!("{only_fable}{lifecycle}"));
+        .replace(lifecycle, &format!("{only_fable}{lifecycle}"))
+        .replace(ledger, &format!("{ste}{ledger}"))
+        .replace(spawn_sentence, workers_only);
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the four sanctioned blocks"
+        "the orchestrator briefing changed outside the six sanctioned blocks"
     );
 }
 

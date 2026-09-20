@@ -52,6 +52,8 @@ choose from** — there is no registry to update and nothing to recompile.
   `orchestrator-codex.md` are personas in exactly this sense: each is only the
   paragraph naming the tier it is the only session of, substituted into the one
   shared briefing at `{persona}`.
+- **Agent-to-agent messages use Simplified Technical English (STE).** The rule
+  lives in `_base/fleet-worker.md` and `_base/fleet-orchestrator.md`.
 
 ## The team
 

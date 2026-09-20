@@ -209,6 +209,7 @@ impl Bundle {
             .context("teammate settings must be a JSON object")?;
         obj.entry("disableBundledSkills").or_insert(json!(true));
         obj.entry("disableWorkflows").or_insert(json!(true));
+        crate::launch::overlay_skill_switches(teammate, obj)?;
         if !teammate.inherit_plugins {
             let plugins = obj
                 .entry("enabledPlugins")
@@ -426,5 +427,46 @@ mod tests {
         assert_eq!(value["statusLine"]["command"], "keep");
         assert_eq!(value["disableBundledSkills"], true);
         assert_eq!(value["disableWorkflows"], true);
+        assert_eq!(value["syncClaudeAiSkills"], false);
+    }
+
+    /// Fleet panes take this path, not the plain overlay in `launch.rs`, so the
+    /// skill switches have to land here too: into the teammate's own
+    /// `skillOverrides`, and out entirely on opt-in.
+    #[test]
+    fn skills_claude_overlay_carries_the_skill_switches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = Teammate {
+            phase: Some(Phase::Plan),
+            settings: Some(r#"{"skillOverrides":{"keep":"name-only"}}"#.into()),
+            disabled_skills: vec!["dev-prime".into()],
+            ..Teammate::default()
+        };
+        assert!(t.inherit_plugins, "the switch must not depend on plugins");
+        let bundle = Bundle::install(tmp.path(), &t).unwrap().unwrap();
+        let value: Value =
+            serde_json::from_str(bundle.configure(&t).unwrap().settings.as_ref().unwrap()).unwrap();
+        assert_eq!(value["syncClaudeAiSkills"], false);
+        assert_eq!(
+            value["skillOverrides"],
+            json!({"keep": "name-only", "dev-prime": "off"})
+        );
+
+        let opted_in = Teammate {
+            inherit_claudeai_skills: true,
+            disabled_skills: Vec::new(),
+            ..t
+        };
+        let value: Value = serde_json::from_str(
+            bundle
+                .configure(&opted_in)
+                .unwrap()
+                .settings
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(value.get("syncClaudeAiSkills").is_none(), "{value}");
+        assert_eq!(value["skillOverrides"], json!({"keep": "name-only"}));
     }
 }
