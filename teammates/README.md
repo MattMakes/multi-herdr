@@ -151,6 +151,17 @@ briefing — `_base/fleet-orchestrator.md` — and each file is only the paragra
 naming the tier it is the only session of. Change how orchestration works in
 the base; change how one flavor talks about its own model in the file.
 
+Both also carry `skills: [orchestrate]`. That is the fleet playbook — how to
+decompose work, the plan-file template, how to choose a teammate, how to verify
+a `DONE:`, how to wrap up. It is attached **by name, not by phase**: adding it
+to the `plan` catalog in `crates/horch-core/src/skills.rs` would hand it to
+`staff-engineer` and to anything else spawned with `--phase plan`, none of
+which directs a fleet. A skill that arrives where it does not apply is context
+spent to no effect, and an instruction a worker may act on. `orchestrate` has
+no upstream; it was reconciled from the retired external `herdr-orchestrator`
+and `herdr-worker` skills against the real CLI, and every command in it is one
+`horch --help` prints.
+
 The Codex one also needs `_base/codex-orchestrator-execpolicy.md`. Codex refuses
 any command outside its sandbox that its rules file does not name, and the
 worker rules allow `note` and `done` — nothing an orchestrator runs. Without the

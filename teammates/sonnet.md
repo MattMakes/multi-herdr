@@ -8,6 +8,9 @@ phase: implementation
 model: sonnet
 effort: xhigh
 permission_mode: auto
+# Stale external copies of the fleet briefing; the repo carries the real one.
+disabled_skills: [herdr-orchestrator, herdr-worker,
+                  "herdr:herdr-orchestrator", "herdr:herdr-worker"]
 ---
 Your tier: SONNET - clear, well-specified junior-engineer work.
 Execute the instructions exactly, keep changes minimal, and surface anything

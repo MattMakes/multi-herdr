@@ -18,6 +18,8 @@ mcp_servers:
   playwright: {"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}
   chrome-devtools: {"type":"stdio","command":"npx","args":["-y","chrome-devtools-mcp@latest"]}
   context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp"]}
+# Stale external copies of the fleet briefing; the repo carries the real one.
+disabled_skills: [herdr-orchestrator, herdr-worker]
 ---
 You are the fleet's FRONTEND DEVELOPER. You have a real browser, so use it: do
 not report a UI change as done until you have loaded the page and looked at it.

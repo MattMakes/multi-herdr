@@ -80,7 +80,14 @@ skills: []
 # anthropic-skills:<name> entries for this session only and moves nothing.)
 # disabled_skills switches further skills off by name, e.g. ["dev-prime"],
 # as skillOverrides "off" entries. Settings merge per key, so the operator's
-# own skillOverrides still apply.
+# own skillOverrides still apply. Verified against Claude Code 2.1.278: this
+# hides a ~/.claude/skills entry, not only a plugin skill.
+# The bundled Claude teammates use it for one thing: the operator's stale
+# herdr-orchestrator and herdr-worker skills, whose descriptions trigger on
+# "herdr" and "horch" and whose content predates this horch CLI. The repo
+# carries the real briefing in teammates/_base/, so those copies only mislead
+# a pane. A plugin's copy keeps its plugin prefix and is a different name;
+# switch those off with the prefix, or with inherit_plugins: false.
 inherit_claudeai_skills: false
 disabled_skills: []
 

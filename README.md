@@ -174,6 +174,35 @@ instrument: it drops the operator's tuning along with the plugins and usually
 costs more context than it saves. `horch` keeps the status line alive through it
 regardless, since a pane without one is blind on context and cost.
 
+#### Booting without external plugins
+
+A fleet boots from this repository alone. The orchestrator briefing, the worker
+briefing and the orchestration playbook all ship here: the two briefings in
+[`teammates/_base/`](teammates/), the playbook as the bundled
+[`orchestrate`](skills/orchestrate/SKILL.md) skill, attached to
+`orchestrator` and `orchestrator-codex` by name. No `~/.claude/skills` entry
+and no plugin is required or consulted at boot, and an installed `horch` works
+with no checkout because both are compiled in.
+
+That matters because a stale copy of a briefing is worse than none. The
+`herdr-orchestrator` and `herdr-worker` skills describe an older `horch` -
+`horch status`, `horch board`, `horch retire`, a `--brief` flag, a `--effort`
+flag - none of which this CLI has. Their descriptions trigger on "herdr",
+"horch" and "orchestrator", so a pane loads one and then runs a command that
+does not exist.
+
+The operator may delete the `herdr-orchestrator` and `herdr-worker` symlinks
+from `~/.claude/skills`. If they stay, every Claude teammate switches them off
+by name with `disabled_skills`, which becomes a `skillOverrides: off` entry in
+the settings overlay; this is verified against Claude Code 2.1.278 to hide a
+`~/.claude/skills` entry and not only a plugin skill. `opus` and `sonnet` also
+name the `herdr` plugin's own copies, `herdr:herdr-orchestrator` and
+`herdr:herdr-worker`, because unlike the orchestrator and the eight Claude
+specialists they do not set `inherit_plugins: false`. The orchestrator briefing
+carries the same instruction in prose, for a pane whose settings horch does not
+control. Evidence and the full reconciliation are in
+[`ai_docs/reports/bake-in-orchestration-inventory.md`](ai_docs/reports/bake-in-orchestration-inventory.md).
+
 ### Skills for each phase
 
 ```sh

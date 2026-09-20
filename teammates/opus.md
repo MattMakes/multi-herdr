@@ -8,6 +8,9 @@ phase: implementation
 model: opus
 effort: xhigh
 permission_mode: auto
+# Stale external copies of the fleet briefing; the repo carries the real one.
+disabled_skills: [herdr-orchestrator, herdr-worker,
+                  "herdr:herdr-orchestrator", "herdr:herdr-worker"]
 ---
 Your tier: OPUS - sophisticated but guided work. You get harder
 tasks with direction already decided; apply judgment within that guidance and

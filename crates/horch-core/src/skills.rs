@@ -349,7 +349,26 @@ mod tests {
     #[test]
     fn skills_catalog_is_portable_and_every_phase_resolves() {
         let catalog = catalog().unwrap();
-        assert_eq!(catalog.len(), 14);
+        assert_eq!(catalog.len(), 15);
+        // `orchestrate` is attached by name, on the two orchestrators only, and
+        // belongs to no phase catalog. Adding it to `Phase::Plan` would hand the
+        // fleet's playbook to `staff-engineer` and every other plan-phase
+        // teammate, which is the opposite of what it is for.
+        let phased: BTreeSet<&str> = [
+            Phase::Research,
+            Phase::Plan,
+            Phase::Implementation,
+            Phase::Validation,
+        ]
+        .into_iter()
+        .flat_map(|p| phase_skills(p).iter().copied())
+        .collect();
+        let by_name_only: Vec<&str> = catalog
+            .keys()
+            .map(String::as_str)
+            .filter(|n| !phased.contains(n))
+            .collect();
+        assert_eq!(by_name_only, ["orchestrate"]);
         for phase in [
             Phase::Research,
             Phase::Plan,
@@ -428,6 +447,27 @@ mod tests {
         assert_eq!(value["disableBundledSkills"], true);
         assert_eq!(value["disableWorkflows"], true);
         assert_eq!(value["syncClaudeAiSkills"], false);
+    }
+
+    /// The orchestrator's playbook reaches the orchestrator and nobody else.
+    /// Both teammates sit on `phase: plan`, so the only difference between
+    /// these two lists is the `skills: [orchestrate]` line in
+    /// `teammates/orchestrator.md`.
+    #[test]
+    fn skills_orchestrate_is_attached_by_name_to_the_orchestrator_only() {
+        let roster = crate::teammates::Roster::builtin().unwrap();
+        assert_eq!(
+            selected(roster.require("orchestrator").unwrap()).unwrap(),
+            ["create-plan", "handoff", "orchestrate", "pre-flight"]
+        );
+        assert_eq!(
+            selected(roster.require("orchestrator-codex").unwrap()).unwrap(),
+            ["create-plan", "handoff", "orchestrate", "pre-flight"]
+        );
+        assert_eq!(
+            selected(roster.require("staff-engineer").unwrap()).unwrap(),
+            ["create-plan", "handoff", "pre-flight"]
+        );
     }
 
     /// Fleet panes take this path, not the plain overlay in `launch.rs`, so the

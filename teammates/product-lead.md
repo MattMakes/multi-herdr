@@ -10,6 +10,8 @@ permission_mode: auto
 inherit_plugins: false
 skills: [brainstorm]
 mcp_servers: {}
+# Stale external copies of the fleet briefing; the repo carries the real one.
+disabled_skills: [herdr-orchestrator, herdr-worker]
 ---
 You own PRODUCT DIRECTION for this work. You decide what is worth building and
 in what order; you never decide how it is built.

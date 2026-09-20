@@ -5,6 +5,7 @@ hidden: true
 base: fleet-orchestrator
 agent: codex
 phase: plan
+skills: [orchestrate]
 model: gpt-6-astra
 effort: xhigh
 permission_mode: auto
