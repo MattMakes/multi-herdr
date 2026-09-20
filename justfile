@@ -2,10 +2,13 @@
 # (https://herdr.dev).
 #
 # horch (crates/horch) is the actual implementation now - a single Rust
-# binary, no bash/jq/node required. These recipes are a thin, optional
-# `just` front end over it for people who like typing `just herdr-fleet`;
-# they build horch on demand via `cargo run`, so they always run the
-# current source tree, never a stale installed copy.
+# binary, no bash/jq/node required. For day-to-day use run `just install`
+# once: it puts the release build on your PATH as `horch`, plus a
+# `herdr-fleet` launcher you can run from any project. `just update` pulls
+# and reinstalls. The other recipes are a thin, optional `just` front end
+# over horch for people who like typing `just herdr-fleet`; they build horch
+# on demand via `cargo run`, so they always run the current source tree,
+# never a stale installed copy - useful for development.
 #
 # All recipes need a running herdr server (launch the herdr app, or
 # `herdr server` headless), and work from ANY terminal - herdr's socket has
@@ -23,6 +26,22 @@ export HORCH_TEAMMATES_DIR := justfile_directory() / "teammates"
 # List available recipes.
 default:
     @just --list
+
+# Build the release binary, install it as ~/.local/bin/horch, install the
+# herdr-fleet launcher next to it, and remove the old herdr-fleet shell
+# function from ~/.zshrc (a backup is written first).
+install:
+    cargo build --release --bin horch
+    ./target/release/horch install
+    sed "s|__TEAMMATES_DIR__|{{justfile_directory()}}/teammates|" scripts/herdr-fleet > ~/.local/bin/herdr-fleet
+    chmod 755 ~/.local/bin/herdr-fleet
+    ./scripts/remove-zsh-fleet-function ~/.zshrc
+    @echo "Installed: $(~/.local/bin/horch --version). Open a new shell, then run: herdr-fleet"
+
+# Pull main and reinstall.
+update:
+    git pull --ff-only
+    just install
 
 # Fail fast with a clear message if herdr is missing or unreachable.
 require-herdr:
