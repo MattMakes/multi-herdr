@@ -493,6 +493,10 @@ mod tests {
         assert_eq!(
             a,
             vec![
+                // The fleet rule: opus, like every claude fleet pane, denies
+                // the subagent tool. See `ai_docs/reports/no-subagents.md`.
+                "--disallowedTools",
+                "Agent",
                 "--model",
                 "opus",
                 "--effort",
@@ -500,7 +504,7 @@ mod tests {
                 "--permission-mode",
                 "auto",
                 "--settings",
-                r#"{"syncClaudeAiSkills":false}"#,
+                r#"{"skillOverrides":{"herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -817,11 +821,17 @@ mod tests {
         );
         // The claude.ai-synced skills go off too.
         assert_eq!(overlay["syncClaudeAiSkills"], false, "{overlay}");
-        // And nothing else rides along - no statusLine override, no tuning, and
-        // no copy of the operator's skillOverrides: Claude merges those itself.
+        // And nothing else rides along - no statusLine override and no tuning.
         assert!(overlay.get("statusLine").is_none(), "{overlay}");
         assert!(overlay.get("disableWorkflows").is_none(), "{overlay}");
-        assert!(overlay.get("skillOverrides").is_none(), "{overlay}");
+        // skillOverrides carries this teammate's own two entries and nothing
+        // else. The operator's `explain-diff-notion` override is not copied in:
+        // Claude merges settings per key, so it still applies by itself.
+        assert_eq!(
+            overlay["skillOverrides"],
+            serde_json::json!({"herdr-orchestrator": "off", "herdr-worker": "off"}),
+            "{overlay}"
+        );
     }
 
     /// `--strict-mcp-config` is what makes an `--mcp-config` subtractive. Without
@@ -905,9 +915,10 @@ mod tests {
     }
 
     /// A teammate that leaves these unset must not gain flags it never asked
-    /// for - the generics deliberately inherit the operator's environment. The
-    /// one exception is the claude.ai-synced skills, which are off in every
-    /// pane, plugins inherited or not.
+    /// for - the generics deliberately inherit the operator's environment. Two
+    /// things still ride in the overlay: the claude.ai-synced skills, off in
+    /// every pane whether plugins are inherited or not, and this teammate's own
+    /// `disabled_skills`, which name the stale external herdr briefings.
     #[test]
     fn unset_isolation_fields_add_no_flags() {
         let (_home, _g) = fake_home(OPERATOR);
@@ -926,11 +937,23 @@ mod tests {
             assert!(!a.contains(&flag.to_string()), "{flag} appeared: {a:?}");
         }
         let overlay = settings_overlay(&a).expect("a --settings overlay");
-        assert_eq!(overlay, serde_json::json!({"syncClaudeAiSkills": false}));
+        assert_eq!(
+            overlay,
+            serde_json::json!({
+                "syncClaudeAiSkills": false,
+                "skillOverrides": {
+                    "herdr-orchestrator": "off",
+                    "herdr-worker": "off",
+                    "herdr:herdr-orchestrator": "off",
+                    "herdr:herdr-worker": "off"
+                }
+            })
+        );
     }
 
-    /// `inherit_claudeai_skills: true` leaves the switch out. With nothing else
-    /// to overlay, no `--settings` flag is passed at all.
+    /// `inherit_claudeai_skills: true` leaves the switch out. `sonnet` still
+    /// gets a `--settings` overlay, because its `disabled_skills` go in the same
+    /// place; what must be absent is the `syncClaudeAiSkills` key itself.
     #[test]
     fn opting_in_to_claudeai_skills_leaves_the_switch_out() {
         let (_home, _g) = fake_home(OPERATOR);
@@ -938,7 +961,17 @@ mod tests {
         let mut sonnet = r.require("sonnet").unwrap().clone();
         sonnet.inherit_claudeai_skills = true;
         let a = argv(&command(&sonnet, Session::Unmanaged, "p", None).unwrap());
-        assert!(!a.contains(&"--settings".to_string()), "{a:?}");
+        let overlay = settings_overlay(&a).expect("a --settings overlay");
+        assert_eq!(
+            overlay,
+            serde_json::json!({"skillOverrides": {
+                "herdr-orchestrator": "off",
+                "herdr-worker": "off",
+                "herdr:herdr-orchestrator": "off",
+                "herdr:herdr-worker": "off"
+            }}),
+            "the synced-skills switch must be the only thing opting out removes"
+        );
 
         // Opting in touches only this switch: the plugin off-map stays.
         let mut orch = r.require("orchestrator").unwrap().clone();

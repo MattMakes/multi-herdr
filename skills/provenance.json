@@ -86,6 +86,12 @@
       "source_path": "plugins/dev/skills/document-project/SKILL.md",
       "source_sha256": "3b9a94ea7b7d48b52475236973399e555d61d3d181350604cc926e1f1d9f7849",
       "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "orchestrate",
+      "source_path": null,
+      "source_sha256": null,
+      "adaptation": "Original to this repository. Reconciled from the retired external herdr-orchestrator and herdr-worker skills against the horch CLI."
     }
   ]
 }

@@ -80,7 +80,14 @@ skills: []
 # anthropic-skills:<name> entries for this session only and moves nothing.)
 # disabled_skills switches further skills off by name, e.g. ["dev-prime"],
 # as skillOverrides "off" entries. Settings merge per key, so the operator's
-# own skillOverrides still apply.
+# own skillOverrides still apply. Verified against Claude Code 2.1.278: this
+# hides a ~/.claude/skills entry, not only a plugin skill.
+# The bundled Claude teammates use it for one thing: the operator's stale
+# herdr-orchestrator and herdr-worker skills, whose descriptions trigger on
+# "herdr" and "horch" and whose content predates this horch CLI. The repo
+# carries the real briefing in teammates/_base/, so those copies only mislead
+# a pane. A plugin's copy keeps its plugin prefix and is a different name;
+# switch those off with the prefix, or with inherit_plugins: false.
 inherit_claudeai_skills: false
 disabled_skills: []
 
@@ -110,10 +117,29 @@ permission_mode: acceptEdits
 #                      ["Read","Bash"]= exactly those
 # allowed_tools     -> --allowedTools: pre-approved, no permission prompt.
 #                      Supports patterns: "Bash(git *)".
-# disallowed_tools  -> --disallowedTools: denied outright.
+# disallowed_tools  -> --disallowedTools: denied outright. On claude 2.1.278
+#                      this takes the tool out of the session's tool set; it is
+#                      not a permission prompt.
+#
+# FLEET RULE: no pane spawns subagents. A subagent's work never reaches the
+# ledger or the grid, and splitting the work is the orchestrator's decision. A
+# worker that needs more hands sends `QUESTION:` to the orchestrator instead.
+# So every `agent: claude` teammate the orchestrator can spawn, and the
+# orchestrator itself, carries `disallowed_tools: [Agent]`, and
+# `horch teammates --check` fails one that does not. `Agent` is the only
+# subagent tool name on this version; `Task` does not exist.
+#
+# allow_subagents -> true waives that check for this one teammate. Nothing
+#   shipped sets it. It denies nothing by itself: it only stops `--check`
+#   asking for the deny, so a waived teammate really can spawn subagents.
+#
+# Other harnesses carry the same rule through their own switch. Codex uses
+# `args: ["-c", "features.multi_agent=false"]`. See
+# `ai_docs/reports/no-subagents.md` for the evidence per harness.
 tools:
 allowed_tools: []
-disallowed_tools: []
+disallowed_tools: [Agent]
+allow_subagents: false
 
 # ─── starting clean: plugins, skills, MCP ────────────────────────────────────
 # A fresh `claude` inherits everything the operator has installed globally:

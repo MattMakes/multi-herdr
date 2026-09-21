@@ -1,6 +1,6 @@
 # Phase-scoped skills
 
-The fourteen skills in [skills/](../skills/README.md) are repo-owned adaptations of `public-skills`, with source revision and hashes recorded in [provenance.json](../skills/provenance.json). They are compiled into `horch`; an installed binary works without either source checkout. No skill download or global installation happens when a worker starts.
+The fifteen skills in [skills/](../skills/README.md) are repo-owned: fourteen are adaptations of `public-skills`, with source revision and hashes recorded in [provenance.json](../skills/provenance.json), and `orchestrate` is original to this repository with a null source. They are compiled into `horch`; an installed binary works without either source checkout. No skill download or global installation happens when a worker starts.
 
 | Phase | Fleet catalog |
 |---|---|
@@ -8,6 +8,8 @@ The fourteen skills in [skills/](../skills/README.md) are repo-owned adaptations
 | plan | create-plan, pre-flight, handoff |
 | implementation | execute, tdd, debug, check, handoff |
 | validation | check, code-analysis, code-review, security-review, document, handoff |
+
+`orchestrate` is attached to the two orchestrators by name and belongs to no phase. It is the fleet playbook — decomposition, the plan-file template, choosing a teammate, verifying a `DONE:`, wrapping up — so a plan-phase teammate such as `staff-engineer` must not receive it. Attaching by name is what keeps it out of the plan catalog.
 
 A teammate's `phase` selects its default catalog; `skills` adds specific bundled names, deduplicated. Additional names are available, not an instruction to load them eagerly. Unknown names and conflicting settings fail before a pane or working ledger entry is created.
 
@@ -40,7 +42,7 @@ Native discovery and controls are documented by [Claude Code](https://code.claud
 
 `horch skills --phase PHASE --json` reports catalog bytes, an explicitly approximate metadata token count (bytes / 4), and the size of each deferred skill file. These are fleet catalog costs, not whole-request token measurements: native wrappers, paths, ambient skills, tools, repository instructions and conversation history add context.
 
-Measured from this bundle: research 415 metadata bytes (~104 tokens), plan 329 (~83), implementation 468 (~117), validation 661 (~166). Extra teammate skills add to these figures. These estimates do not include deferred workflow bodies.
+Measured from this bundle: research 415 metadata bytes (~104 tokens), plan 329 (~83), implementation 468 (~117), validation 661 (~166). Extra teammate skills add to these figures: `orchestrate` adds 143 bytes (~36 tokens) to the two orchestrators, which stay on the plan catalog's 329 bytes for everything else. These estimates do not include deferred workflow bodies.
 
 The linked [Claude context article](https://www.aihero.dev/how-to-kill-the-bloat-in-claude-codes-system-prompt) recommends measuring before removing features. Use Claude's `/context` before and after a representative launch; inspect `/skills` for duplicates. For Codex inspect `/skills` or app-server `skills/list`; OpenCode's `debug skill` lists actual native discovery; pi/Prime's native skill catalog and session usage expose their selected resources. None of these catalog listings proves a model invoked the skill. Keep MCP servers and tools that the task needs; do not disable tool families blindly to reduce a token count.
 

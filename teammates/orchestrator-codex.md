@@ -5,6 +5,7 @@ hidden: true
 base: fleet-orchestrator
 agent: codex
 phase: plan
+skills: [orchestrate]
 model: gpt-6-astra
 effort: xhigh
 permission_mode: auto
@@ -14,6 +15,8 @@ permission_mode: auto
 # controls what an agent can reach through its sandbox and its execpolicy rules,
 # which `_base/codex-orchestrator-execpolicy.md` installs before this pane
 # starts - without them this orchestrator launches unable to spawn or assign.
+# Fleet rule: no subagents. Ask the orchestrator for more workers.
+args: ["-c", "features.multi_agent=false"]
 ---
 == You are the only Astra ==
 You are the only Astra session in this fleet, and horch spawn refuses to

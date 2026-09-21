@@ -377,18 +377,19 @@ reference it fails the same load-time check as any other unbound placeholder.
 - **Teammate inheritance.** `extends: sonnet` is tempting and cheap to
   add, but two-level merge (built-in → user → project → extends) gets confusing
   fast. Recommend deferring until someone actually asks.
-- **Overlap with the Claude Code herdr skills.** This machine already has
-  `herdr-orchestrator`, `herdr-worker`, and `herdr-atomic` skills
-  (`~/.claude/plugins/marketplaces/matts-robot-skills/plugins/herdr/skills/`)
-  that fire on the same triggers and brief the same two roles. A teammate's
-  `persona` and `briefing` land *inside* an agent that may have already loaded
-  one of those skills, so the two can contradict each other — and the skill
-  wins, because it arrives as an instruction rather than as pane text. The plan
-  needs a stated owner before phase 3 ships. Recommended split: the skill owns
-  *protocol* (which `horch` subcommands to call, how to report, when to stop),
-  a teammate owns *identity and task* (persona, model, task, plan file), and
-  personas must not restate protocol. Otherwise the honest option is
-  for `horch` to emit the skill files itself so there is one source.
+- **Overlap with the Claude Code herdr skills.** *(Settled. See
+  `ai_docs/reports/bake-in-orchestration-inventory.md`.)* This machine has
+  `herdr-orchestrator`, `herdr-worker`, and `herdr-atomic` skills that fire on
+  the same triggers and brief the same two roles. A teammate's `persona` and
+  `briefing` land *inside* an agent that may have already loaded one of those
+  skills, so the two can contradict each other — and the skill wins, because it
+  arrives as an instruction rather than as pane text. The resolution is the
+  last option listed here: this repository owns the source. The protocol lives
+  in `teammates/_base/fleet-orchestrator.md` and `teammates/_base/fleet-worker.md`,
+  the longer playbook in `skills/orchestrate/SKILL.md`, and a teammate still
+  owns only identity and task. None of them is needed at boot from outside the
+  repository, and the external copies are switched off by name through
+  `disabled_skills` on every Claude teammate.
 
 - **Ledger schema.** Adding `teammate` alongside `tier` means two fields that
   usually agree, which invites drift. The alternative — reusing `tier` to hold

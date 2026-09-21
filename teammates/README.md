@@ -52,6 +52,16 @@ choose from** — there is no registry to update and nothing to recompile.
   `orchestrator-codex.md` are personas in exactly this sense: each is only the
   paragraph naming the tier it is the only session of, substituted into the one
   shared briefing at `{persona}`.
+- **No fleet pane spawns subagents.** A subagent's work never reaches the
+  ledger or the grid, and splitting the work is the orchestrator's decision,
+  not a worker's. A worker that needs more hands sends `QUESTION:` to the
+  orchestrator. Prose alone did not hold this, so the switch carries it: every
+  `agent: claude` teammate the orchestrator can spawn, and the orchestrator
+  itself, sets `disallowed_tools: [Agent]`, and `horch teammates --check` fails
+  one that does not. `allow_subagents: true` waives the check for one teammate
+  and denies nothing by itself; nothing shipped sets it. The Codex teammates
+  carry the same rule as `args: ["-c", "features.multi_agent=false"]`.
+  `ai_docs/reports/no-subagents.md` has the evidence per harness.
 - **Agent-to-agent messages use Simplified Technical English (STE).** The rule
   lives in `_base/fleet-worker.md` and `_base/fleet-orchestrator.md`.
 
@@ -150,6 +160,17 @@ Astra) are what `horch fleet` and `horch fleet codex` launch. They share one
 briefing — `_base/fleet-orchestrator.md` — and each file is only the paragraph
 naming the tier it is the only session of. Change how orchestration works in
 the base; change how one flavor talks about its own model in the file.
+
+Both also carry `skills: [orchestrate]`. That is the fleet playbook — how to
+decompose work, the plan-file template, how to choose a teammate, how to verify
+a `DONE:`, how to wrap up. It is attached **by name, not by phase**: adding it
+to the `plan` catalog in `crates/horch-core/src/skills.rs` would hand it to
+`staff-engineer` and to anything else spawned with `--phase plan`, none of
+which directs a fleet. A skill that arrives where it does not apply is context
+spent to no effect, and an instruction a worker may act on. `orchestrate` has
+no upstream; it was reconciled from the retired external `herdr-orchestrator`
+and `herdr-worker` skills against the real CLI, and every command in it is one
+`horch --help` prints.
 
 The Codex one also needs `_base/codex-orchestrator-execpolicy.md`. Codex refuses
 any command outside its sandbox that its rules file does not name, and the
