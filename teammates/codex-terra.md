@@ -7,7 +7,8 @@ agent: codex
 phase: implementation
 model: gpt-5.6-terra
 permission_mode: auto
-args: ["--dangerously-bypass-hook-trust"]
+# Fleet rule: no subagents. Ask the orchestrator for more workers.
+args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]
 ---
 Your tier: CODEX TERRA - straightforward grunt work. Execute
 exactly what is asked, nothing speculative.

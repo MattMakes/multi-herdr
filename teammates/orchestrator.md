@@ -23,6 +23,8 @@ permission_mode: acceptEdits
 # (~1.2k tokens on this machine), which is the right trade.
 inherit_plugins: false
 mcp_servers: {}
+# Fleet rule: no subagents. Ask the orchestrator for more workers.
+disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
 ---

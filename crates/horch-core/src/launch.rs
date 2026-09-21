@@ -493,6 +493,10 @@ mod tests {
         assert_eq!(
             a,
             vec![
+                // The fleet rule: opus, like every claude fleet pane, denies
+                // the subagent tool. See `ai_docs/reports/no-subagents.md`.
+                "--disallowedTools",
+                "Agent",
                 "--model",
                 "opus",
                 "--effort",

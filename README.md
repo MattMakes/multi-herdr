@@ -174,6 +174,31 @@ instrument: it drops the operator's tuning along with the plugins and usually
 costs more context than it saves. `horch` keeps the status line alive through it
 regardless, since a pane without one is blind on context and cost.
 
+### No fleet pane spawns subagents
+
+A pane that starts its own subagent hides that work from the ledger and from
+the grid, and it takes a decision - how to split the work - that belongs to the
+orchestrator. A worker that needs more hands sends `QUESTION:` to the
+orchestrator instead, and the orchestrator spawns a real pane. The briefings in
+`teammates/_base/` say so in prose; prose alone did not hold, so each harness
+now carries the rule as a switch.
+
+| harness | feature | switch | where it lives |
+|---|---|---|---|
+| Claude 2.1.278 | the `Agent` tool | `--disallowedTools Agent` | `disallowed_tools: [Agent]` on all 11 Claude fleet teammates |
+| Codex 0.155.1 | feature `multi_agent`, on by default | `-c features.multi_agent=false` | `args:` on the 3 Codex teammates |
+| OpenCode 1.18.2 | subagents `explore` and `general`, via the `task` tool | config-file key only | not applied - `horch` forwards no OpenCode config file |
+| pi | none - its tools are `bash`, `edit`, `read`, `write` | n/a | n/a |
+| Prime | unverified, not installed on this machine | unknown | not applied |
+
+On Claude the flag removes the tool from the session's tool set rather than
+prompting for it, and `Agent` is the only subagent tool name on that version -
+`Task` does not exist. `horch teammates --check` fails any `agent: claude`
+teammate that the orchestrator can spawn, or the orchestrator itself, if the
+deny is missing; `allow_subagents: true` waives that check for one teammate and
+nothing shipped sets it. `ai_docs/reports/no-subagents.md` records the command
+output behind every row.
+
 #### Booting without external plugins
 
 A fleet boots from this repository alone. The orchestrator briefing, the worker

@@ -11,6 +11,8 @@ subagent_model: haiku
 inherit_plugins: false
 skills: [research-codebase, trace]
 mcp_servers: {}
+# Fleet rule: no subagents. Ask the orchestrator for more workers.
+disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
 ---
