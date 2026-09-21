@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use horch_core::herdr::{Herdr, Layout};
 use horch_core::mailbox::Mailbox;
-use horch_core::tile::{self, Fleet, Op, Plan, TabRef, TabShape, Worker};
+use horch_core::tile::{self, Fleet, FocusState, Op, Plan, TabRef, TabShape, Worker};
 
 use crate::output;
 
@@ -80,6 +80,22 @@ impl Snapshot {
             workers: self.workers(),
             newcomer: newcomer.map(str::to_owned),
         }
+    }
+
+    /// Where the operator is looking: the viewed tab and the pane that tab hands
+    /// the keyboard to. `None` when herdr reported neither, which is the case on
+    /// a herdr too old to report `focused_pane_id`; the caller then keeps the
+    /// old tab-only restore.
+    fn focus_state(&self) -> Option<FocusState> {
+        let tab = self.active_tab.clone()?;
+        let pane = self
+            .tabs
+            .iter()
+            .find(|t| t.tab_id == tab)?
+            .layout
+            .focused_pane_id
+            .clone()?;
+        Some(FocusState { tab, pane })
     }
 
     /// The tab that is zoomed, if any. herdr refuses to move panes into or out of
@@ -285,6 +301,64 @@ fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
     Ok(applied)
 }
 
+/// Put the operator's view back where it was, and say what happened.
+///
+/// Why this is needed at all: the park phase moves every worker out of its tab
+/// with `--no-focus`, so herdr hands that tab's focus to a pane that stayed -
+/// on tab 1 always the orchestrator - and nothing gives it back, because every
+/// move that follows also passes `--no-focus`. Restoring the tab alone is not
+/// enough, and restoring the tab BY ID is not enough either: an overflow tab
+/// loses its last pane to the park phase and is rebuilt under a new id, so the
+/// view has to follow the pane. `ai_docs/reports/horch-tile-focus.md` measures
+/// both.
+///
+/// Best effort throughout. A view that cannot be restored must never fail a
+/// tiling that has already moved the panes.
+fn restore_focus(
+    herdr: &Herdr,
+    after: &Snapshot,
+    before: Option<&FocusState>,
+    before_tab: Option<&str>,
+) -> Option<String> {
+    let Some(before) = before else {
+        // herdr never told us which pane had the keyboard, so this is the old
+        // behaviour: the tab the operator WAS viewing if it survived, else the
+        // orchestrator's. `before_tab` has to come from the snapshot taken
+        // BEFORE the rebuild; the one taken after it would only name the tab
+        // herdr happened to land on, which is the thing being corrected.
+        let tab = before_tab?;
+        let _ = herdr.tab_focus(if after.tabs.iter().any(|t| t.tab_id == tab) {
+            tab
+        } else {
+            &after.orchestrator_tab
+        });
+        return None;
+    };
+    let target = tile::focus_target(before, &after.shapes(), &after.orchestrator)?;
+    let _ = herdr.tab_focus(&target.tab);
+    let (pane, landed) = match target.pane.as_deref() {
+        Some(pane) => (
+            pane.to_string(),
+            herdr.pane_focus_walk(&target.tab, pane).unwrap_or(false),
+        ),
+        // Nothing to aim at, so herdr's own choice is the answer, not a failure.
+        None => ("herdr's own choice".to_string(), true),
+    };
+    Some(if !landed {
+        format!(
+            "focus: {} {} is out of reach; herdr keeps its own choice\n",
+            target.tab, pane
+        )
+    } else if target.kept {
+        format!("focus: kept {} {}\n", target.tab, pane)
+    } else {
+        format!(
+            "focus: moved to {} {} ({})\n",
+            target.tab, pane, target.reason
+        )
+    })
+}
+
 /// A workspace-wide lock, so two tilers never interleave their moves.
 ///
 /// `horch balance` needs no lock: its target is absolute, so two passes aim at
@@ -429,24 +503,31 @@ fn run(
     // what keeps `horch spawn` from rebuilding a grid that was already right.
     let already = tile::is_canonical(&snapshot.shapes(), &snapshot.orchestrator, workers);
     let mut moved = 0;
+    // Read where the operator is looking BEFORE anything moves. Both values are
+    // already in the snapshot, so this costs no herdr call. The tab is kept
+    // separately because the fallback below still needs it on a herdr too old
+    // to report which pane holds the focus.
+    let was = snapshot.focus_state();
+    let was_tab = snapshot.active_tab.clone();
     let snapshot = if already {
         snapshot
     } else {
         moved = apply(herdr, &plan)?;
         // Tabs have appeared and disappeared; read it all again for the balance
         // and the report.
-        let after = gather(herdr, workspace_id)?;
-        if let Some(active) = snapshot.active_tab.as_deref() {
-            if after.tabs.iter().any(|t| t.tab_id == active) {
-                let _ = herdr.tab_focus(active);
-            } else {
-                let _ = herdr.tab_focus(&after.orchestrator_tab);
-            }
-        }
-        after
+        gather(herdr, workspace_id)?
     };
 
     let resized = balance_all(herdr, &snapshot)?;
+    // After the balance, not before it: the view should settle once, on the
+    // finished grid. The fast path moved nothing, so there is nothing to put
+    // back - and a focus call herdr does not need would pull the workspace into
+    // view for no reason.
+    let focus = if already {
+        None
+    } else {
+        restore_focus(herdr, &snapshot, was.as_ref(), was_tab.as_deref())
+    };
     let mut out = format!(
         "{} worker(s) over {} tab(s): {} pane move(s), {} resize(s)\n",
         workers,
@@ -454,6 +535,9 @@ fn run(
         moved,
         resized
     );
+    if let Some(line) = focus {
+        out.push_str(&line);
+    }
     if already && moved == 0 {
         out.push_str("the grid was already laid out; only the columns needed evening\n");
     }

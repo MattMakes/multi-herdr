@@ -45,7 +45,7 @@
 use std::collections::HashMap;
 
 use crate::balance::{ResizeDir, ResizeOp};
-use crate::herdr::{Direction, Layout, Rect};
+use crate::herdr::{Direction, FocusDir, Layout, Rect};
 
 /// Label of the tab workers are parked in while the grid is rebuilt. It exists
 /// for at most one run; a run that dies leaves it, and the next run gathers the
@@ -566,6 +566,165 @@ pub fn render_target(plan: &Plan, orchestrator: &str, roles: &HashMap<String, St
         }
     }
     out
+}
+
+/// Where the operator was looking before a rebuild.
+///
+/// Both values come from one gather: the tab from the workspace's
+/// `active_tab_id`, the pane from that tab's `focused_pane_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusState {
+    pub tab: String,
+    pub pane: String,
+}
+
+/// Where the operator should be looking after a rebuild.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusTarget {
+    pub tab: String,
+    /// `None` means leave herdr's choice alone, which is the rule on an overflow
+    /// tab whose remembered pane is gone: there is no pane there worth
+    /// preferring over the one herdr already picked.
+    pub pane: Option<String>,
+    /// True when both the tab and the pane are the ones the operator had.
+    pub kept: bool,
+    /// Why the view moved, for the one line the command prints. Empty when
+    /// nothing moved.
+    pub reason: &'static str,
+}
+
+/// Where to put the view back after tiling, given where it was.
+///
+/// The rule, in this priority:
+///
+/// 1. The viewed tab stays the viewed tab if it still exists. Otherwise it
+///    becomes the tab that now holds the previously focused pane. Otherwise the
+///    orchestrator's tab.
+/// 2. The focused pane stays focused if it is on the viewed tab. Otherwise the
+///    orchestrator pane when the viewed tab is the orchestrator's, and herdr's
+///    own choice on any other tab.
+///
+/// Rule 1's middle case is not a corner case: an overflow tab loses its last
+/// pane to the park phase, so herdr closes it and the tiler creates a fresh one
+/// with a NEW id. Matching the old tab id alone would therefore fail for every
+/// overflow tab, which is exactly what
+/// `ai_docs/reports/horch-tile-focus.md` case C measured.
+///
+/// Pure: `after` is the snapshot the command already built, and nothing here
+/// calls herdr.
+pub fn focus_target(
+    before: &FocusState,
+    after: &[TabShape],
+    orchestrator: &str,
+) -> Option<FocusTarget> {
+    let holder = |pane: &str| {
+        after
+            .iter()
+            .find(|t| t.panes.iter().any(|(id, _)| id == pane))
+            .map(|t| t.tab_id.clone())
+    };
+    let orchestrator_tab = holder(orchestrator);
+
+    let (tab, tab_kept, reason) = if after.iter().any(|t| t.tab_id == before.tab) {
+        (before.tab.clone(), true, "")
+    } else if let Some(tab) = holder(&before.pane) {
+        (
+            tab,
+            false,
+            "the viewed tab closed, so the view follows the pane",
+        )
+    } else {
+        let tab = orchestrator_tab
+            .clone()
+            .or_else(|| after.first().map(|t| t.tab_id.clone()))?;
+        (
+            tab,
+            false,
+            "the viewed tab and the focused pane are both gone",
+        )
+    };
+
+    let on_tab = |pane: &str| {
+        after
+            .iter()
+            .find(|t| t.tab_id == tab)
+            .is_some_and(|t| t.panes.iter().any(|(id, _)| id == pane))
+    };
+    if on_tab(&before.pane) {
+        return Some(FocusTarget {
+            tab,
+            pane: Some(before.pane.clone()),
+            kept: tab_kept,
+            reason,
+        });
+    }
+    let orchestrator_here = orchestrator_tab.as_deref() == Some(tab.as_str());
+    // The viewed tab won over the viewed pane, so say which of the two ways
+    // the pane left it: a worker that moved to an overflow tab is still alive
+    // and still watchable, and a worker that closed is not.
+    let reason = if !reason.is_empty() {
+        reason
+    } else if holder(&before.pane).is_some() {
+        "the focused pane moved to another tab"
+    } else {
+        "the focused pane is gone"
+    };
+    Some(FocusTarget {
+        pane: orchestrator_here.then(|| orchestrator.to_string()),
+        tab,
+        kept: false,
+        reason,
+    })
+}
+
+/// One neighbour step from `from` toward `to`, or `None` when they overlap.
+///
+/// herdr has no focus-by-id for an ordinary pane, so this is what
+/// [`crate::herdr::Herdr::pane_focus_walk`] steers by.
+///
+/// The axis the two rects are SEPARATED on decides the direction; the centre
+/// distance only breaks the tie when they are separated on both, which is a
+/// diagonal neighbour. Centre distance alone is not enough, and the case that
+/// proves it is the ragged bottom row the grid ends with whenever a tab is not
+/// full: the bottom pane spans two columns, so its centre sits LEFT of the
+/// top-right pane above it even though it is directly below. A rule that only
+/// compared centres sent the walk left, then right, then left again, and the
+/// focus never arrived (`ai_docs/reports/horch-tile-focus.md`, step 3).
+///
+/// `None` for two rects that overlap on both axes, which means they are the same
+/// pane: no direction leads anywhere.
+pub fn step_toward(from: &Rect, to: &Rect) -> Option<FocusDir> {
+    let spans = |a0: i64, a1: i64, b0: i64, b1: i64| a0 < b1 && b0 < a1;
+    let overlaps_x = spans(from.x, from.x + from.width, to.x, to.x + to.width);
+    let overlaps_y = spans(from.y, from.y + from.height, to.y, to.y + to.height);
+    // Twice the centre, so an odd width needs no rounding rule.
+    let dx = (to.x * 2 + to.width) - (from.x * 2 + from.width);
+    let dy = (to.y * 2 + to.height) - (from.y * 2 + from.height);
+    let horizontal = |dx: i64| match dx {
+        0 => None,
+        d if d > 0 => Some(FocusDir::Right),
+        _ => Some(FocusDir::Left),
+    };
+    let vertical = |dy: i64| match dy {
+        0 => None,
+        d if d > 0 => Some(FocusDir::Down),
+        _ => Some(FocusDir::Up),
+    };
+    match (overlaps_x, overlaps_y) {
+        (true, true) => None,
+        // Side by side in one row, or stacked in one column: only one axis
+        // separates them, and that is the way to step.
+        (false, true) => horizontal(dx),
+        (true, false) => vertical(dy),
+        // Diagonal. Close the wider gap first; the next step closes the other.
+        (false, false) => {
+            if dx.abs() >= dy.abs() {
+                horizontal(dx)
+            } else {
+                vertical(dy)
+            }
+        }
+    }
 }
 
 /// One tab's live geometry, reduced to what the checks and the balance need.
@@ -1156,6 +1315,210 @@ mod tests {
             ],
             zoomed: false,
         }
+    }
+
+    /// The overflow tab of a 7-worker grid, which the tiler rebuilds under a new
+    /// id every time it runs.
+    fn overflow_tab(id: &str, panes: &[&str]) -> TabShape {
+        let slots = [
+            rect(26, 1, 61, 27),
+            rect(87, 1, 62, 27),
+            rect(149, 1, 61, 27),
+            rect(26, 28, 61, 26),
+            rect(87, 28, 62, 26),
+            rect(149, 28, 61, 26),
+        ];
+        TabShape {
+            tab_id: id.into(),
+            area: rect(26, 1, 184, 53),
+            panes: panes
+                .iter()
+                .zip(slots)
+                .map(|(id, r)| ((*id).to_string(), r))
+                .collect(),
+            zoomed: false,
+        }
+    }
+
+    /// The common case: the operator watched a worker on tab 1, and tab 1 and
+    /// that worker both came through the rebuild.
+    #[test]
+    fn focus_target_keeps_a_tab_and_pane_that_both_survived() {
+        let after = [tab1_2x2()];
+        let before = FocusState {
+            tab: "t1".into(),
+            pane: "p2".into(),
+        };
+        let target = focus_target(&before, &after, "orch").unwrap();
+        assert_eq!(target.tab, "t1");
+        assert_eq!(target.pane.as_deref(), Some("p2"));
+        assert!(target.kept);
+        assert_eq!(target.reason, "");
+    }
+
+    /// The regression this function exists for. The park phase empties the
+    /// overflow tab, herdr closes it, and the tiler builds a new one with a new
+    /// id - so the view has to follow the PANE, not the tab id.
+    #[test]
+    fn focus_target_follows_the_pane_when_its_tab_was_rebuilt() {
+        let after = [tab1_2x2(), overflow_tab("t8", &["p5", "p6", "p7"])];
+        let before = FocusState {
+            tab: "t6".into(),
+            pane: "p5".into(),
+        };
+        let target = focus_target(&before, &after, "orch").unwrap();
+        assert_eq!(target.tab, "t8", "the pane's new tab, not the old id");
+        assert_eq!(target.pane.as_deref(), Some("p5"));
+        assert!(!target.kept);
+        assert!(
+            target.reason.contains("follows the pane"),
+            "{}",
+            target.reason
+        );
+    }
+
+    /// A worker that closed takes its tab with it. Nothing of the old view is
+    /// left, so the orchestrator's tab and pane are the fallback.
+    #[test]
+    fn focus_target_falls_back_to_the_orchestrator_when_both_are_gone() {
+        let after = [tab1_2x2()];
+        let before = FocusState {
+            tab: "t6".into(),
+            pane: "gone".into(),
+        };
+        let target = focus_target(&before, &after, "orch").unwrap();
+        assert_eq!(target.tab, "t1");
+        assert_eq!(target.pane.as_deref(), Some("orch"));
+        assert!(!target.kept);
+    }
+
+    /// The tab survived but the pane in it did not. On the orchestrator's tab
+    /// the orchestrator is the answer; on an overflow tab there is no pane worth
+    /// preferring over herdr's own choice.
+    #[test]
+    fn focus_target_leaves_herdrs_choice_on_an_overflow_tab() {
+        let after = [tab1_2x2(), overflow_tab("t8", &["p5", "p6"])];
+        let on_tab1 = focus_target(
+            &FocusState {
+                tab: "t1".into(),
+                pane: "gone".into(),
+            },
+            &after,
+            "orch",
+        )
+        .unwrap();
+        assert_eq!(on_tab1.tab, "t1");
+        assert_eq!(on_tab1.pane.as_deref(), Some("orch"));
+
+        let on_overflow = focus_target(
+            &FocusState {
+                tab: "t8".into(),
+                pane: "gone".into(),
+            },
+            &after,
+            "orch",
+        )
+        .unwrap();
+        assert_eq!(on_overflow.tab, "t8");
+        assert_eq!(on_overflow.pane, None, "herdr's choice stands");
+        assert!(!on_overflow.kept);
+    }
+
+    /// The viewed tab wins over the viewed pane, and the reason says which way
+    /// the pane left: a worker pushed onto an overflow tab is still alive, a
+    /// worker that closed is not.
+    #[test]
+    fn focus_target_says_whether_the_pane_moved_or_closed() {
+        let after = [tab1_2x2(), overflow_tab("t8", &["p5", "p6"])];
+        let moved = focus_target(
+            &FocusState {
+                tab: "t1".into(),
+                pane: "p5".into(),
+            },
+            &after,
+            "orch",
+        )
+        .unwrap();
+        assert_eq!(moved.tab, "t1", "the viewed tab wins");
+        assert_eq!(moved.pane.as_deref(), Some("orch"));
+        assert_eq!(moved.reason, "the focused pane moved to another tab");
+
+        let closed = focus_target(
+            &FocusState {
+                tab: "t1".into(),
+                pane: "gone".into(),
+            },
+            &after,
+            "orch",
+        )
+        .unwrap();
+        assert_eq!(closed.reason, "the focused pane is gone");
+    }
+
+    /// Nothing to aim at means no target at all, rather than a guess.
+    #[test]
+    fn focus_target_of_an_empty_workspace_is_none() {
+        let before = FocusState {
+            tab: "t1".into(),
+            pane: "p2".into(),
+        };
+        assert!(focus_target(&before, &[], "orch").is_none());
+    }
+
+    #[test]
+    fn step_toward_picks_the_axis_with_the_larger_gap() {
+        let here = rect(87, 28, 62, 26);
+        assert_eq!(
+            step_toward(&here, &rect(149, 28, 61, 26)),
+            Some(FocusDir::Right)
+        );
+        assert_eq!(
+            step_toward(&here, &rect(26, 1, 61, 53)),
+            Some(FocusDir::Left)
+        );
+        assert_eq!(step_toward(&here, &rect(87, 1, 62, 27)), Some(FocusDir::Up));
+        assert_eq!(
+            step_toward(&rect(87, 1, 62, 27), &here),
+            Some(FocusDir::Down)
+        );
+        assert_eq!(step_toward(&here, &here), None, "the same pane");
+    }
+
+    /// The ragged bottom row: the bottom pane spans both columns, so its centre
+    /// is LEFT of the top-right pane that sits directly above it. The step must
+    /// still be DOWN, or the walk oscillates between the two top panes and the
+    /// focus never lands.
+    #[test]
+    fn step_toward_goes_down_to_a_pane_that_spans_the_columns_above_it() {
+        let spanning = rect(87, 28, 123, 26);
+        assert_eq!(
+            step_toward(&rect(149, 1, 61, 27), &spanning),
+            Some(FocusDir::Down),
+            "from the top-right pane"
+        );
+        assert_eq!(
+            step_toward(&rect(87, 1, 62, 27), &spanning),
+            Some(FocusDir::Down),
+            "from the top-left pane"
+        );
+        // And the orchestrator, which is beside the grid and not above it.
+        assert_eq!(
+            step_toward(&rect(26, 1, 61, 53), &spanning),
+            Some(FocusDir::Right)
+        );
+    }
+
+    /// A diagonal neighbour is reached in two steps, and the first one is across
+    /// the columns because that gap is the wider of the two.
+    #[test]
+    fn step_toward_crosses_the_columns_before_the_rows() {
+        let from = rect(26, 1, 61, 53);
+        let to = rect(149, 28, 61, 26);
+        assert_eq!(step_toward(&from, &to), Some(FocusDir::Right));
+        assert_eq!(
+            step_toward(&rect(149, 1, 61, 27), &to),
+            Some(FocusDir::Down)
+        );
     }
 
     fn rect(x: i64, y: i64, width: i64, height: i64) -> Rect {
