@@ -131,20 +131,26 @@ frontmatter - agent, model, effort, permission mode, tools - and its body is the
 prompt. **Adding a file adds someone the orchestrator can pick**; there is no
 registry to update.
 
-| teammate               | agent  | model  | for                                          |
-|------------------------|--------|--------|----------------------------------------------|
-| `product-lead`         | Claude | Opus   | Scope, priorities, acceptance criteria       |
-| `researcher`           | Claude | Opus   | R&D; investigating unfamiliar code and prior art |
-| `staff-engineer`       | Claude | Opus   | Deep implementation plans a junior can execute |
-| `designer`             | Claude | Opus   | UX flows, states, copy, accessibility        |
-| `architect-reviewer`   | Claude | Opus   | Boundaries, contracts, coupling. Read-only   |
-| `frontend-developer`   | Claude | Opus   | UI work, with a real browser to check it in  |
-| `backend-developer`    | Claude | Opus   | JS/TS, Python, Go, C#, Rust services and APIs |
-| `qa-engineer`          | Claude | Sonnet | Tests, e2e harnesses, bug reproduction       |
-| `sonnet` `opus` `codex-sol` `codex-terra` | | | Generic fallbacks |
-| `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | Free workers, for public/OSS work |
-| `pi`                   | pi     | local  | Runs on your own hardware; nothing leaves the machine |
-| `prime`                | Prime Agent | Opus | One persistent Python kernel; long, exploratory runs |
+| teammate               | agent  | model  | effort | for                                          |
+|------------------------|--------|--------|--------|----------------------------------------------|
+| `product-lead`         | Claude | Opus   | high   | Scope, priorities, acceptance criteria       |
+| `researcher`           | Claude | Opus   | medium | R&D; investigating unfamiliar code and prior art |
+| `staff-engineer`       | Claude | Opus   | high   | Deep implementation plans a junior can execute |
+| `designer`             | Claude | Opus   | medium | UX flows, states, copy, accessibility        |
+| `architect-reviewer`   | Claude | Opus   | high   | Boundaries, contracts, coupling. Read-only   |
+| `frontend-developer`   | Claude | Opus   | medium | UI work, with a real browser to check it in  |
+| `backend-developer`    | Claude | Opus   | medium | JS/TS, Python, Go, C#, Rust services and APIs |
+| `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
+| `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
+| `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
+| `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
+| `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
+| `pi`                   | pi     | local  | low    | Runs on your own hardware; nothing leaves the machine |
+| `prime`                | Prime Agent | Opus 5.5 | medium | One persistent Python kernel; long, exploratory runs |
+
+Why each runs at that level is in
+[ai_docs/reports/model-guide-2026-09.md](ai_docs/reports/model-guide-2026-09.md);
+see [Models and effort](#models-and-effort) below.
 
 The two orchestrators are teammate files too, and hidden from the roster:
 `orchestrator` (Claude; Opus or Fable) and `orchestrator-codex` (Codex; Astra
@@ -252,6 +258,29 @@ catalogs across all five harnesses. Role defaults and explicit `skills` live in
 teammate YAML; resumes preserve the phase. Full workflows load on demand.
 See [the phase catalog, adapters and context measurements](docs/phase-skills.md).
 
+**Expected skills.** A teammate's own `skills:` are the ones it is expected to
+use, and its briefing says so:
+- each expected skill is named with its description, so the worker knows when
+  its step has come;
+- the rest of the phase catalog is listed by name only.
+
+**Plugin skills.** `plugin_skills` does the same for a Claude plugin:
+
+```yaml
+plugin_skills:
+  code: [review-git-changes]
+```
+
+- The named skills join the briefing with their descriptions.
+- Every other skill in that plugin is switched off for the session.
+- A plugin that ships twenty skills exposes only the ones this role should
+  use.
+- The plugin is found in `plugin_dirs` first, then in the operator's
+  installed plugins. An installed plugin stays enabled even under
+  `inherit_plugins: false`.
+
+`horch cost` then reports which expected skills each worker actually loaded.
+
 ### Five harnesses, one roster
 
 A teammate's `agent:` picks which CLI its pane runs. They differ in almost
@@ -264,7 +293,7 @@ scattered through the code.
 |---|---|---|---|---|
 | `claude`   | trailing positional | `--model` alias | `--effort` | horch mints `--session-id` |
 | `codex`    | trailing positional | `-c model="..."` | `-c model_reasoning_effort` | harvested from rollout files |
-| `opencode` | `--prompt` flag | `-m provider/model` | `--variant` | harvested from `opencode session list --format json` |
+| `opencode` | `--prompt` flag | `--model provider/model` | build agent `variant` via `OPENCODE_CONFIG_CONTENT` | harvested from `opencode session list --format json` |
 | `pi`       | after `--` | `--model provider/id` | `--thinking` | horch mints `--session-id` |
 | `prime`    | after `--` | `--model provider/id` | `--thinking` | horch owns the `--session-dir` and reads it back |
 
@@ -286,6 +315,77 @@ same fleet.
 pi and Prime have no approval gate at all - their tools simply run, which is what
 makes them usable unattended. `permission_mode` is refused on both, because
 setting it would imply a restraint that does not exist.
+
+### Models and effort
+
+Every teammate states its model and effort in its file, and `horch teammates
+--check` validates the effort against what that agent's CLI takes:
+
+| agent | model | effort levels | notes |
+|---|---|---|---|
+| `claude` | alias: `fable` `opus` `sonnet` `haiku` | `low` `medium` `high` `xhigh` `max` | Not on `haiku`: Haiku 4.5 has no effort setting |
+| `codex` | literal slug, e.g. `gpt-5.6-sol` | `none` `low` `medium` `high` `xhigh` `max` | Required on an offered teammate. Never `minimal` (API error) or `ultra` (multiplies spend) |
+| `opencode` | `provider/model` | the model's variants | The free `opencode/*` models have none, so no effort |
+| `pi` `prime` | `provider/id` | `off` `minimal` `low` `medium` `high` `xhigh` `max` | |
+
+Effort follows the role, as in
+[ImCesar/cezaar#40](https://github.com/ImCesar/cezaar/issues/40):
+- builders run at medium, because the thinking belongs in their brief;
+- reviewers and planners run at high, because a missed finding costs a whole
+  review round;
+- the orchestrator runs at xhigh.
+
+`horch spawn <teammate> --effort <level>` overrides the level for one spawn,
+and the ledger records the level each session actually ran at. Levels are not
+comparable across vendors: codex "high" is not claude "high".
+
+**Where effort gets overridden behind your back:**
+- **Claude:** resolves `CLAUDE_CODE_EFFORT_LEVEL` > `--effort` > settings >
+  the model default. That env var, set in your shell or in the `env` block of
+  `~/.claude/settings.json`, therefore overrides every pane at once, and
+  `maxEffortLevel` caps them all.
+- **Codex:** a pane with no effort takes `model_reasoning_effort` from
+  `~/.codex/config.toml`.
+- **`horch doctor` warns about all of these.**
+
+**Pinning what an alias means:** set `ANTHROPIC_DEFAULT_OPUS_MODEL` (and the
+`_SONNET_` and `_HAIKU_` variants) to pin what a Claude alias resolves to
+without editing any teammate. When an alias moves to a new model, re-check
+the effort levels too; the tune-fleet skill walks through it.
+
+`horch teammates --matrix` prints the whole roster as a tuning table:
+harness, model, effective effort, phase, expected skills and price.
+
+### Measuring a run
+
+```bash
+horch cost                              # this project's ledger, every session
+horch cost --since 2026-09-24           # one run
+horch cost --reprice claude-sonnet-5    # what-if: the same tokens on Sonnet
+horch cost --session claude:<id>        # add the orchestrator's own session
+horch cost --json                       # for the tune-fleet skill
+```
+
+`horch cost` reads each worker's transcript by the session id the ledger
+already holds, so attribution is exact, never a guess from timestamps:
+- Claude: `~/.claude/projects/*/<id>.jsonl`;
+- Codex: rollout files;
+- pi and Prime: session JSONL files.
+
+It prices the tokens with a dated per-MTok table; `--pricing <file.json>`
+overrides any row. It reports:
+- **each worker's cost**;
+- **roll-ups** per role family, harness and teammate, including the
+  cache-read share. cezaar#40 found cache reads were 60-70% of spend.
+- **a skills table**: what each worker actually loaded, and which of its
+  expected skills it never touched.
+
+**Never counted as $0:** OpenCode sessions (stored in SQLite, not read),
+sessions without a transcript, and models the table does not know. These are
+listed separately instead.
+
+To retune the roster from these numbers, use the `tune-fleet` skill
+(`.claude/skills/tune-fleet/SKILL.md`) from a session in this repo.
 
 ### Free models are paid for with your prompts
 
