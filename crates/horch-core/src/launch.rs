@@ -569,7 +569,7 @@ mod tests {
                 "--model",
                 "opus",
                 "--effort",
-                "xhigh",
+                "medium",
                 "--permission-mode",
                 "auto",
                 "--settings",

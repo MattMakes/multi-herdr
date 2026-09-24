@@ -833,6 +833,16 @@ impl Roster {
                 if let Err(e) = crate::plugins::resolve_all(t) {
                     problems.push(format!("{who}: {e:#}"));
                 }
+                // The kept skills are named in the skill-bundle briefing, and
+                // the bundle path is the one that merges the switch-offs into
+                // a teammate's own `settings:` file. No phase and no skills
+                // means no bundle: the briefing would never name them.
+                if t.phase.is_none() && t.skills.is_empty() {
+                    problems.push(format!(
+                        "{who}: plugin_skills needs a phase or skills, so the briefing \
+                         can name them"
+                    ));
+                }
             }
             // A codex worker with no effort silently takes whatever the
             // operator's ~/.codex/config.toml says (the pane's private
@@ -1426,6 +1436,16 @@ mod spawnable_tests {
             r.check()
                 .iter()
                 .any(|p| p.starts_with("opus: plugin 'no-such-plugin-anywhere' is neither")),
+            "{:?}",
+            r.check()
+        );
+        let bare = r.teammates.get_mut("opus").unwrap();
+        bare.phase = None;
+        bare.skills.clear();
+        assert!(
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("opus: plugin_skills needs a phase or skills")),
             "{:?}",
             r.check()
         );

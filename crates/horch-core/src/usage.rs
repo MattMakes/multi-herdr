@@ -342,7 +342,8 @@ fn skill_reads(text: &str) -> Vec<String> {
     out
 }
 
-/// The last object under `key`, searched depth-first through `v`.
+/// The first value under `key`, searched depth-first through `v`. A record
+/// carries at most one running total, so first and last are the same.
 fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     match v {
         Value::Object(map) => map
@@ -361,8 +362,9 @@ fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
 /// added again. Newer rollouts nest the same fields elsewhere
 /// (getagentseal/codeburn#1380), hence the key search. Usage from
 /// auto-compaction is missing from the totals (openai/codex#47003), so a
-/// compacted session reads low. Skill loads are shell or tool calls that read
-/// a `skills/<name>/SKILL.md`.
+/// compacted session reads low. A session that switched models is priced
+/// entirely as its last model; the totals are not split per turn. Skill loads
+/// are shell or tool calls that read a `skills/<name>/SKILL.md`.
 pub fn read_codex(text: &str) -> Usage {
     let mut total: Option<Value> = None;
     let mut model = String::new();

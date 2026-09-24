@@ -380,7 +380,8 @@ pub fn pane_launch(
     };
     let mut teammate = roster.require(name)?.clone();
     // A fleet flavor passes the orchestrator's model; carry it on the teammate
-    // too, so the briefing's {model} and the model actually launched agree.
+    // too, so everything that reads the resolved teammate sees the model
+    // actually launched, not the file's fallback.
     if matches!(
         kind,
         PaneKind::FleetOrchestrator | PaneKind::FleetCodexOrchestrator

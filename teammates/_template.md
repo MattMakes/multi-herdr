@@ -115,7 +115,8 @@ disabled_skills: []
 # - The plugin is found in plugin_dirs first, then in the operator's
 #   ~/.claude/plugins/installed_plugins.json. An installed one stays enabled
 #   even with inherit_plugins: false.
-# `horch teammates --check` fails on an unknown plugin or skill.
+# `horch teammates --check` fails on an unknown plugin or skill, and when the
+# teammate has neither a phase nor skills (the briefing could not name them).
 plugin_skills: {}
 
 # ─── startup mode ────────────────────────────────────────────────────────────
