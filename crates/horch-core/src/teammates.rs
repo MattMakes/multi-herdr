@@ -1284,7 +1284,9 @@ mod spawnable_tests {
                 | "orchestrator"
                 | "orchestrator-codex"
                 | "orchestration-orchestrator" => Some(Phase::Plan),
-                "architect-reviewer" | "qa-engineer" => Some(Phase::Validation),
+                "architect-reviewer" | "qa-engineer" | "codex-reviewer" => {
+                    Some(Phase::Validation)
+                }
                 _ => Some(Phase::Implementation),
             };
             assert_eq!(t.phase, expected, "{}", t.name);

@@ -5,7 +5,9 @@ base: fleet-worker
 agent: claude
 phase: plan
 model: opus
-effort: xhigh
+# high: plans and product calls are where a wrong turn is expensive, but
+# the orchestrator above already runs at xhigh. (ai_docs/reports/model-guide-2026-09.md)
+effort: high
 permission_mode: auto
 subagent_model: haiku
 

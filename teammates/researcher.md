@@ -5,7 +5,9 @@ base: fleet-worker
 agent: claude
 phase: research
 model: opus
-effort: xhigh
+# medium: exploration without maximum rigor; long reads multiply every
+# thinking token (cezaar#40 researchers). (ai_docs/reports/model-guide-2026-09.md)
+effort: medium
 permission_mode: auto
 subagent_model: haiku
 inherit_plugins: false

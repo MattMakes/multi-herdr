@@ -10,7 +10,8 @@
 //! `the_orchestrator_briefing_differs_only_where_sanctioned`: a
 //! hand-maintained list of five tiers became the `{roster}` placeholder, the
 //! fleet no longer pre-spawns four idle workers for it to inherit, it is
-//! told it is the only Fable and must write for Opus/Codex-Sol readers, and
+//! told workers never run on Fable or Astra and to write for Opus/Codex-Sol
+//! readers, and
 //! `horch` now places panes itself so the orchestrator is no longer told how to
 //! choose one.
 //!
@@ -212,14 +213,16 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
                      the work down, then spawn exactly the workers each piece needs and shut them\n\
                      down as they finish. Never spawn a worker before you know what it is for.";
 
-    // Third: Fable is reserved for the orchestrator, so it is told so and told
-    // how to write for the models its workers actually run on. Inserted whole,
-    // immediately before the lifecycle section.
+    // Third: the orchestrator is told which tiers workers can never run on,
+    // and how to write for the models they actually run on. Inserted whole,
+    // immediately before the lifecycle section. It names no model of its own:
+    // one file backs both the Opus (default) and the Fable fleet flavors.
     let lifecycle = "== Worker lifecycle ==";
-    let only_fable = "== You are the only Fable ==\n\
-        You are the only Fable session in this fleet, and horch spawn refuses to\n\
-        start another. Every worker reads your instructions on Opus or Codex Sol at\n\
-        best, often on something cheaper. Write every task for that reader:\n\
+    let only_fable = "== You are the fleet's only orchestrator ==\n\
+        You run on whichever model `horch fleet` was started with (fable, opus,\n\
+        astra or sol). horch spawn never starts a worker on Fable or Astra, so every\n\
+        worker reads your instructions on Opus or Codex Sol at best, often on something\n\
+        cheaper. Write every task for that reader:\n\
         - State the goal and what \"done\" looks like, explicitly. Do not leave the\n\
         \x20 acceptance criteria to be inferred.\n\
         - Name the files, functions and commands involved. \"The auth layer\" is a\n\
@@ -228,7 +231,7 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         \x20 is not obvious to the worker.\n\
         - Say what is out of scope. Unstated boundaries get crossed.\n\
         A brief you would find slightly over-specified is about right for them.\n\
-        When a piece of work needs Fable-level reasoning - a design with real\n\
+        When a piece of work needs orchestrator-level reasoning - a design with real\n\
         tradeoffs, a plan across many moving parts, a judgement call - that reasoning\n\
         is yours. Do it here, write the result to a file, and hand the execution to\n\
         opus. Never delegate the thinking itself downward and hope.\n\n";
@@ -362,8 +365,10 @@ fn the_codex_orchestrator_differs_from_the_claude_one_only_in_its_tier_block() {
     let codex = prompts::agent_prompt(&r, r.require("orchestrator-codex").unwrap(), "orchestrator")
         .unwrap();
 
-    assert!(codex.contains("== You are the only Astra =="), "{codex}");
-    assert!(!codex.contains("== You are the only Fable =="), "{codex}");
+    // The same heading, a different reader ladder and hand-off teammate.
+    assert!(codex.contains("on Codex Sol or Opus at best"), "{codex}");
+    assert!(claude.contains("on Opus or Codex Sol at best"), "{claude}");
+    assert!(codex.contains("hand the execution to\ncodex-sol."), "{codex}");
     // No placeholder may survive into a live pane - not {roster}, not {persona}.
     assert!(
         !codex.contains('{'),
@@ -376,7 +381,9 @@ fn the_codex_orchestrator_differs_from_the_claude_one_only_in_its_tier_block() {
 
     // Everything outside the tier block is byte-identical to the Claude flavor.
     let strip = |text: &str| {
-        let start = text.find("== You are the only ").expect("a tier block");
+        let start = text
+            .find("== You are the fleet's only orchestrator ==")
+            .expect("a tier block");
         let end = text
             .find("== Worker lifecycle ==")
             .expect("the lifecycle section");
