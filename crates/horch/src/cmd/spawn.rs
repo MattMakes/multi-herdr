@@ -10,13 +10,15 @@ use horch_core::herdr::{Direction, Herdr};
 use horch_core::ledger::{Ledger, STATUS_WORKING};
 use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::paneshell::PaneShell;
-use horch_core::teammates::{Phase, Roster, Teammate};
+use horch_core::teammates::{effort_problem, Phase, Roster, Teammate};
 
 pub struct SpawnArgs {
     pub teammate: Option<String>,
     pub task: String,
     pub resume: Option<String>,
     pub phase: Option<Phase>,
+    /// Effort for this spawn only, over the teammate file's (or the record's).
+    pub effort: Option<String>,
     pub role: Option<String>,
     pub from_pane: Option<String>,
     pub direction: Direction,
@@ -70,7 +72,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     std::env::set_var("HORCH_PROJECT_DIR", &project_dir);
 
     let ledger = Ledger::open()?;
-    let plan = match &args.resume {
+    let mut plan = match &args.resume {
         // Resuming: teammate, model and session all come from the record.
         Some(key) => {
             let record = ledger.get(key)?;
@@ -90,6 +92,10 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
             }
             let mut teammate = roster.require(&record.tier)?.clone();
             teammate.phase = resolve_phase(args.phase, record.phase, teammate.phase);
+            // A resume keeps the level it ran at, as it keeps its model.
+            if record.effort.is_some() {
+                teammate.effort = record.effort.clone();
+            }
             Roster::is_spawnable(&teammate)?;
             Plan {
                 teammate,
@@ -128,6 +134,16 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     // could otherwise start a second top-tier session behind an ordinary tier
     // name. Both branches pass through here.
     Roster::model_is_spawnable(&plan.model, &plan.teammate.name)?;
+    if let Some(effort) = &args.effort {
+        plan.teammate.effort = Some(effort.clone());
+    }
+    // Checked against what will launch, so a `--effort` typo or a level this
+    // agent/model cannot take fails here rather than in an unwatched pane.
+    if let Some(effort) = &plan.teammate.effort {
+        if let Some(why) = effort_problem(plan.teammate.agent, Some(&plan.model), effort) {
+            bail!("{}: {why}", plan.teammate.name);
+        }
+    }
     // Reject unusable catalogs before allocating a role or recording a live session.
     validate_selection(&plan.teammate)?;
 
@@ -159,6 +175,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
             plan.teammate.phase,
         )?;
     }
+    ledger.set_effort(&plan.record_id, plan.teammate.effort.as_deref())?;
 
     mailbox.write_brief(&Brief {
         role: role.clone(),

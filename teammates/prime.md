@@ -5,8 +5,11 @@ generic: true
 base: fleet-worker
 agent: prime
 phase: implementation
-model: anthropic/claude-opus-5
-effort: high
+# Opus 5.5: cheaper than Opus 5 ($4/$20 vs $5/$25, cache reads $0.20 vs
+# $0.50) and better on the published benchmarks (cezaar#41). medium, because
+# long exploratory runs multiply every thinking token (cezaar#40 researchers).
+model: anthropic/claude-opus-5-5
+effort: medium
 
 # Prime Agent gives the model a single tool - a persistent IPython kernel - and
 # lets it rewrite its own prompts, skills and sub-agents mid-run. That suits work

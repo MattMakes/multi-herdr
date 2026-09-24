@@ -107,10 +107,20 @@ fn opencode_command(
     let mut cmd = Command::new(agent::opencode_bin());
     cmd.arg("--model").arg(model_for(teammate, model_override)?);
 
-    // OpenCode calls reasoning effort a model "variant", and passes it straight
-    // through to the provider, so the teammate's `effort` needs no translation.
+    // OpenCode calls reasoning effort a model "variant". The TUI horch
+    // launches has no `--variant` flag - 1.18.2 swallows it silently
+    // (ai_docs/reports/env-research/codex-opencode.md) - so the level goes
+    // through the config overlay instead, as the default agent's `variant`.
     if let Some(effort) = &teammate.effort {
-        cmd.arg("--variant").arg(effort);
+        let inherited = teammate
+            .env
+            .get("OPENCODE_CONFIG_CONTENT")
+            .cloned()
+            .or_else(|| std::env::var("OPENCODE_CONFIG_CONTENT").ok());
+        cmd.env(
+            "OPENCODE_CONFIG_CONTENT",
+            opencode_variant_config(inherited.as_deref(), effort)?,
+        );
     }
     if let Some(mode) = teammate.permission_mode {
         match mode.opencode_args() {
@@ -137,6 +147,29 @@ fn opencode_command(
     cmd.args(&teammate.args);
     cmd.arg("--prompt").arg(prompt);
     Ok(cmd)
+}
+
+/// Merge `agent.build.variant` into an OpenCode config overlay. `build` is
+/// the primary agent the TUI starts in, and a variant set there applies to
+/// that agent's model, which is the one horch passes with `--model`.
+pub(crate) fn opencode_variant_config(inherited: Option<&str>, effort: &str) -> Result<String> {
+    let mut value: serde_json::Value = match inherited {
+        Some(s) => serde_json::from_str(s).context("invalid OPENCODE_CONFIG_CONTENT JSON")?,
+        None => serde_json::json!({}),
+    };
+    let build = value
+        .as_object_mut()
+        .context("OPENCODE_CONFIG_CONTENT must be an object")?
+        .entry("agent")
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+        .context("agent config must be an object")?
+        .entry("build")
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+        .context("agent.build config must be an object")?;
+    build.insert("variant".into(), serde_json::json!(effort));
+    Ok(value.to_string())
 }
 
 /// pi and Prime Agent: `<bin> --model <pattern> --thinking <level> -- "<prompt>"`.
@@ -262,10 +295,15 @@ fn claude_command(
             .arg(teammate.disallowed_tools.join(","));
     }
 
-    cmd.arg("--model").arg(model_for(teammate, model_override)?);
+    let model = model_for(teammate, model_override)?;
+    cmd.arg("--model").arg(model);
 
+    // Haiku 4.5 has no effort setting, and a `--model haiku` override can land
+    // on a teammate whose file sets one; drop it rather than fail the launch.
     if let Some(effort) = &teammate.effort {
-        cmd.arg("--effort").arg(effort);
+        if crate::teammates::model_takes_effort(Agent::Claude, model) {
+            cmd.arg("--effort").arg(effort);
+        }
     }
     if let Some(mode) = teammate.permission_mode {
         cmd.arg("--permission-mode").arg(mode.as_str());
@@ -675,7 +713,7 @@ mod tests {
                 .any(|w| w == ["--model", "opencode/big-pickle"]),
             "{a:?}"
         );
-        assert!(a.windows(2).any(|w| w == ["--variant", "high"]), "{a:?}");
+        assert!(!a.contains(&"--variant".to_string()), "{a:?}");
         assert!(a.contains(&"--auto".to_string()), "{a:?}");
         assert!(
             a.contains(&"--pure".to_string()),
@@ -683,6 +721,62 @@ mod tests {
         );
         assert_eq!(a[a.len() - 2], "--prompt");
         assert_eq!(a.last().unwrap(), "BRIEFING");
+    }
+
+    /// Haiku has no effort setting: an override onto it drops `--effort`
+    /// instead of launching a claude that refuses the flag.
+    #[test]
+    fn a_haiku_override_launches_without_effort() {
+        let r = Roster::builtin().unwrap();
+        let t = r.require("opus").unwrap();
+        assert!(t.effort.is_some());
+        let a = argv(&command(t, Session::Unmanaged, "p", Some("haiku")).unwrap());
+        assert!(a.windows(2).any(|w| w == ["--model", "haiku"]), "{a:?}");
+        assert!(!a.contains(&"--effort".to_string()), "{a:?}");
+        let a = argv(&command(t, Session::Unmanaged, "p", None).unwrap());
+        assert!(a.contains(&"--effort".to_string()), "{a:?}");
+    }
+
+    /// A paid OpenCode model's effort reaches it as the build agent's
+    /// `variant` in the config overlay - never as `--variant`, which the TUI
+    /// swallows - and survives the skill bundle adding its own paths.
+    #[test]
+    fn opencode_effort_rides_the_config_overlay_alongside_skills() {
+        fn overlay(cmd: &Command) -> serde_json::Value {
+            let raw = cmd
+                .get_envs()
+                .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
+                .and_then(|(_, v)| v)
+                .expect("OPENCODE_CONFIG_CONTENT is set");
+            serde_json::from_str(&raw.to_string_lossy()).unwrap()
+        }
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("opencode-pickle").unwrap().clone();
+        t.model = Some("anthropic/claude-sonnet-5".into());
+        t.effort = Some("high".into());
+        t.env.insert(
+            "OPENCODE_CONFIG_CONTENT".into(),
+            r#"{"mcp":{"playwright":{"enabled":false}}}"#.into(),
+        );
+
+        let cmd = command(&t, Session::Unmanaged, "p", None).unwrap();
+        assert!(!argv(&cmd).contains(&"--variant".to_string()));
+        let v = overlay(&cmd);
+        assert_eq!(v["agent"]["build"]["variant"], "high", "{v}");
+        assert_eq!(v["mcp"]["playwright"]["enabled"], false, "the teammate's own overlay stays: {v}");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = crate::skills::Bundle::install(tmp.path(), &t).unwrap().unwrap();
+        let cmd = command_with_skills(&t, Session::Unmanaged, "p", None, Some(&bundle)).unwrap();
+        let v = overlay(&cmd);
+        assert_eq!(v["agent"]["build"]["variant"], "high", "{v}");
+        assert!(v["skills"]["paths"].as_array().unwrap().len() == 1, "{v}");
+
+        // No effort, no overlay from the builder.
+        t.effort = None;
+        t.env.clear();
+        let cmd = command(&t, Session::Unmanaged, "p", None).unwrap();
+        assert!(cmd.get_envs().all(|(k, _)| k != "OPENCODE_CONFIG_CONTENT"));
     }
 
     /// OpenCode mints its own `ses_...` ids, so a fresh launch says nothing
@@ -718,7 +812,7 @@ mod tests {
             a.windows(2).any(|w| w == ["--model", "ollama/qwen3.8"]),
             "{a:?}"
         );
-        assert!(a.windows(2).any(|w| w == ["--thinking", "high"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["--thinking", "low"]), "{a:?}");
         assert!(
             a.windows(2).any(|w| w == ["--session-id", "sid-1"]),
             "{a:?}"

@@ -121,6 +121,11 @@ enum Command {
         /// Select research, plan, implementation, or validation skills.
         #[arg(long)]
         phase: Option<horch_core::teammates::Phase>,
+        /// Override the teammate's effort for this one spawn (claude: low..max;
+        /// codex: none..max; pi/prime: off..max). Validated per agent. A resume
+        /// keeps the level it ran at unless this is given.
+        #[arg(long, value_name = "LEVEL")]
+        effort: Option<String>,
         /// Override the auto role name (<teammate>-<n>).
         #[arg(long, value_name = "NAME")]
         role: Option<String>,
@@ -292,6 +297,7 @@ fn run() -> Result<std::process::ExitCode> {
             args,
             resume,
             phase,
+            effort,
             role,
             from_pane,
             direction,
@@ -303,6 +309,7 @@ fn run() -> Result<std::process::ExitCode> {
                 task,
                 resume,
                 phase,
+                effort,
                 role,
                 from_pane,
                 direction,

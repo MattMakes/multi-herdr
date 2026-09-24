@@ -60,6 +60,83 @@ pub fn reserved_tier(model: &str) -> Option<(&'static str, &'static str)> {
         })
 }
 
+/// The effort levels each agent's CLI accepts, by name.
+///
+/// Same field, different mechanism per agent (see `_template.md`), and the
+/// sets differ: codex has `none` but rejects `minimal`, pi has `off`, claude
+/// tops out at `max`. Checked at `--check` and at `horch spawn --effort`, so a
+/// typo fails before a pane starts rather than inside one nobody watches.
+pub fn valid_efforts(agent: Agent) -> &'static [&'static str] {
+    match agent {
+        Agent::Claude => &["low", "medium", "high", "xhigh", "max"],
+        Agent::Codex => &["none", "low", "medium", "high", "xhigh", "max"],
+        Agent::Opencode => &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        Agent::Pi | Agent::Prime => &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        Agent::None => &[],
+    }
+}
+
+/// Whether `model` has any effort setting at all on `agent`.
+///
+/// Claude's Haiku 4.5 has none, so claude rejects `--effort` for it. The
+/// OpenCode free-tier models report `variants: {}` (`opencode models
+/// --verbose`, ai_docs/reports/env-research/codex-opencode.md), so an effort
+/// there is silently a no-op - worse than an error, because the file then
+/// claims a setting that is not happening.
+pub fn model_takes_effort(agent: Agent, model: &str) -> bool {
+    match agent {
+        Agent::Claude => !model
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|seg| seg.eq_ignore_ascii_case("haiku")),
+        Agent::Opencode => !(model.starts_with("opencode/")
+            && (model.ends_with("-free") || model == "opencode/big-pickle")),
+        Agent::None => false,
+        _ => true,
+    }
+}
+
+/// Why `effort` cannot be used with this agent and model, or `None` if it can.
+pub fn effort_problem(agent: Agent, model: Option<&str>, effort: &str) -> Option<String> {
+    let model = model.unwrap_or_default();
+    if !model.is_empty() && !model_takes_effort(agent, model) {
+        return Some(format!(
+            "{model} has no effort setting on {agent}; remove effort (it would be \
+             ignored, or refused)"
+        ));
+    }
+    if agent == Agent::Codex {
+        // Both are accepted by some codex clients and both are traps.
+        match effort {
+            "minimal" => {
+                return Some(
+                    "codex effort 'minimal' is an API error on the gpt-5.6 models; use low"
+                        .into(),
+                )
+            }
+            "ultra" => {
+                return Some(
+                    "codex effort 'ultra' fans out to parallel client-side agents and \
+                     multiplies spend; use max"
+                        .into(),
+                )
+            }
+            "none" if reserved_tier(model).is_some() => {
+                return Some(format!("{model} does not accept effort 'none'; use low"))
+            }
+            _ => {}
+        }
+    }
+    let valid = valid_efforts(agent);
+    if valid.contains(&effort) {
+        None
+    } else {
+        Some(format!(
+            "effort '{effort}' is not a {agent} level (expected one of: {})",
+            valid.join(", ")
+        ))
+    }
+}
+
 /// Longest a `brief_description` may be. Every non-hidden teammate's
 /// description is concatenated into the orchestrator's briefing on every run,
 /// so this is a direct, permanent tax on the orchestrator's context.
@@ -732,6 +809,21 @@ impl Roster {
             if t.agent != Agent::None && t.model.is_none() && t.name != "orchestration-worker" {
                 problems.push(format!("{who}: agent is {} but no model is set", t.agent));
             }
+            if let Some(effort) = &t.effort {
+                if let Some(why) = effort_problem(t.agent, t.model.as_deref(), effort) {
+                    problems.push(format!("{who}: {why}"));
+                }
+            }
+            // A codex worker with no effort silently takes whatever the
+            // operator's ~/.codex/config.toml says (the pane's private
+            // CODEX_HOME links it). That made two workers run at "medium"
+            // nobody chose, so every offered codex teammate states its own.
+            if t.agent == Agent::Codex && !t.hidden && t.effort.is_none() {
+                problems.push(format!(
+                    "{who}: a codex teammate must set effort; without it the pane \
+                     inherits model_reasoning_effort from ~/.codex/config.toml"
+                ));
+            }
             // Every claude-shaped field this agent cannot express. Naming the
             // field beats a generic "unsupported": the author set it on purpose.
             for field in t.agent.unsupported_fields(t) {
@@ -1000,6 +1092,86 @@ fn unused_rules(rules: &[ExecRule], told: &str, who: &str, base: &str) -> Vec<St
         .collect()
 }
 
+/// Operator settings that silently override a teammate's `effort`, as
+/// warning lines for `horch doctor`. Empty when nothing overrides.
+pub fn operator_effort_warnings() -> Vec<String> {
+    let codex_config = std::fs::read_to_string(
+        crate::codex::codex_home(&crate::agent::home_dir()).join("config.toml"),
+    )
+    .ok();
+    effort_override_warnings(
+        std::env::var("CLAUDE_CODE_EFFORT_LEVEL").ok().as_deref(),
+        operator_settings().as_ref(),
+        codex_config.as_deref(),
+    )
+}
+
+/// The pure half of [`operator_effort_warnings`].
+///
+/// Claude Code resolves effort as: env `CLAUDE_CODE_EFFORT_LEVEL` > `--effort`
+/// > settings > model default (cezaar#41). horch passes `--effort`, so only
+/// the env var - set in the shell, or in the `env` block of
+/// ~/.claude/settings.json, which Claude Code exports into its own process -
+/// beats it, and it beats it for every pane at once. `maxEffortLevel` caps
+/// every level above it. A codex pane with no effort takes
+/// `model_reasoning_effort` from the operator's config.toml.
+pub fn effort_override_warnings(
+    env_level: Option<&str>,
+    settings: Option<&serde_json::Value>,
+    codex_config: Option<&str>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(level) = env_level.filter(|l| !l.is_empty()) {
+        out.push(format!(
+            "CLAUDE_CODE_EFFORT_LEVEL={level} is set in this shell: it beats --effort, so \
+             every claude pane runs at {level} whatever its teammate file says"
+        ));
+    }
+    if let Some(settings) = settings {
+        if let Some(level) = settings
+            .pointer("/env/CLAUDE_CODE_EFFORT_LEVEL")
+            .and_then(|v| v.as_str())
+        {
+            out.push(format!(
+                "~/.claude/settings.json sets env.CLAUDE_CODE_EFFORT_LEVEL={level}: it beats \
+                 --effort, so every claude pane runs at {level}"
+            ));
+        }
+        if let Some(cap) = settings.get("maxEffortLevel").and_then(|v| v.as_str()) {
+            out.push(format!(
+                "~/.claude/settings.json caps effort at maxEffortLevel={cap}; teammates set \
+                 above it run at {cap}"
+            ));
+        }
+    }
+    if let Some(level) = codex_config.and_then(codex_default_effort) {
+        out.push(format!(
+            "~/.codex/config.toml sets model_reasoning_effort=\"{level}\": any codex pane \
+             with no effort (the orchestration recipe's) runs at {level}"
+        ));
+    }
+    out
+}
+
+/// The top-level `model_reasoning_effort` in a codex config.toml, if any.
+/// A line scan rather than a TOML parser: only the root table counts, so the
+/// scan stops at the first `[section]`.
+fn codex_default_effort(toml: &str) -> Option<String> {
+    for line in toml.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            return None;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == "model_reasoning_effort" {
+                let value = value.split('#').next().unwrap_or_default().trim();
+                return Some(value.trim_matches(|c| c == '"' || c == '\'').to_string());
+            }
+        }
+    }
+    None
+}
+
 fn operator_settings() -> Option<serde_json::Value> {
     let home = std::env::var_os("HOME")?;
     let path = PathBuf::from(home).join(".claude/settings.json");
@@ -1123,6 +1295,101 @@ mod spawnable_tests {
             .check()
             .iter()
             .any(|p| p.contains("opus: declares skills or phase")));
+    }
+
+    /// Every agent names its effort levels differently, and a level the CLI
+    /// does not take fails at `--check`, not in a pane nobody is watching.
+    #[test]
+    fn effort_is_checked_against_each_agents_own_levels() {
+        // Valid on its own agent.
+        for (agent, model, effort) in [
+            (Agent::Claude, "opus", "medium"),
+            (Agent::Claude, "sonnet", "max"),
+            (Agent::Codex, "gpt-5.6-sol", "none"),
+            (Agent::Codex, "gpt-6-astra", "xhigh"),
+            (Agent::Opencode, "anthropic/claude-sonnet-5", "high"),
+            (Agent::Pi, "ollama/qwen3.8", "off"),
+            (Agent::Prime, "anthropic/claude-opus-5-5", "minimal"),
+        ] {
+            assert_eq!(effort_problem(agent, Some(model), effort), None, "{agent} {effort}");
+        }
+        // Refused, each with a reason that names the fix.
+        for (agent, model, effort, says) in [
+            (Agent::Claude, "opus", "minimal", "expected one of: low, medium"),
+            (Agent::Claude, "haiku", "low", "no effort setting"),
+            (Agent::Claude, "claude-haiku-4-5-20251001", "low", "no effort setting"),
+            (Agent::Codex, "gpt-5.6-sol", "minimal", "API error"),
+            (Agent::Codex, "gpt-5.6-sol", "ultra", "multiplies spend"),
+            (Agent::Codex, "gpt-6-astra", "none", "use low"),
+            (Agent::Opencode, "opencode/big-pickle", "high", "no effort setting"),
+            (Agent::Opencode, "opencode/nemotron-3-ultra-free", "high", "no effort setting"),
+            (Agent::Pi, "ollama/qwen3.8", "ultra", "not a pi level"),
+            (Agent::Prime, "anthropic/claude-opus-5-5", "none", "not a prime level"),
+        ] {
+            let why = effort_problem(agent, Some(model), effort)
+                .unwrap_or_else(|| panic!("{agent} {model} {effort} should be refused"));
+            assert!(why.contains(says), "{agent} {model} {effort}: {why}");
+        }
+    }
+
+    #[test]
+    fn roster_check_names_a_bad_effort_and_an_unstated_codex_effort() {
+        let mut r = Roster::builtin().unwrap();
+        assert!(r.check().is_empty(), "{:?}", r.check());
+
+        r.teammates.get_mut("opus").unwrap().effort = Some("extreme".into());
+        assert!(
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("opus: effort 'extreme' is not a claude level")),
+            "{:?}",
+            r.check()
+        );
+        r.teammates.get_mut("opus").unwrap().effort = Some("medium".into());
+
+        r.teammates.get_mut("sonnet").unwrap().model = Some("haiku".into());
+        assert!(
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("sonnet: haiku has no effort setting")),
+            "{:?}",
+            r.check()
+        );
+        r.teammates.get_mut("sonnet").unwrap().model = Some("sonnet".into());
+
+        r.teammates.get_mut("codex-sol").unwrap().effort = None;
+        assert!(
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("codex-sol: a codex teammate must set effort")),
+            "{:?}",
+            r.check()
+        );
+    }
+
+    #[test]
+    fn doctor_warns_about_every_effort_override_and_is_silent_without_one() {
+        assert!(effort_override_warnings(None, None, None).is_empty());
+        assert!(effort_override_warnings(
+            Some(""),
+            Some(&serde_json::json!({"effortLevel": "high"})),
+            Some("model = \"gpt-5.6-sol\"\n[profiles.x]\nmodel_reasoning_effort = \"low\"\n"),
+        )
+        .is_empty(), "effortLevel loses to --effort, and a profile's key is not the default");
+
+        let w = effort_override_warnings(
+            Some("low"),
+            Some(&serde_json::json!({
+                "env": {"CLAUDE_CODE_EFFORT_LEVEL": "medium"},
+                "maxEffortLevel": "high"
+            })),
+            Some("# comment\nmodel_reasoning_effort = \"medium\" # why\n[tui]\n"),
+        );
+        assert_eq!(w.len(), 4, "{w:?}");
+        assert!(w[0].starts_with("CLAUDE_CODE_EFFORT_LEVEL=low"), "{w:?}");
+        assert!(w[1].contains("env.CLAUDE_CODE_EFFORT_LEVEL=medium"), "{w:?}");
+        assert!(w[2].contains("maxEffortLevel=high"), "{w:?}");
+        assert!(w[3].contains("model_reasoning_effort=\"medium\""), "{w:?}");
     }
 
     /// A fleet pane must not spawn subagents. The deny is the proof, and

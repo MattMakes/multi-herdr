@@ -163,6 +163,7 @@ fn fleet() -> Result<ExitCode> {
     let pane = spawn(SpawnArgs {
         teammate: Some("smoke".to_string()),
         phase: None,
+        effort: None,
         task: "verify fleet machinery".to_string(),
         resume: None,
         role: None,
@@ -612,6 +613,7 @@ fn tile() -> Result<ExitCode> {
     let spawned = spawn(SpawnArgs {
         teammate: Some("smoke".to_string()),
         phase: None,
+        effort: None,
         task: "verify the spawn hook tiles".to_string(),
         resume: None,
         role: None,

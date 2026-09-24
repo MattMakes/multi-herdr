@@ -43,6 +43,12 @@ pub struct Record {
     /// tier ids as their names precisely so those records still resolve.
     pub tier: String,
     pub model: String,
+    /// The effort level actually passed to the agent CLI, if any. Recorded so
+    /// a cost report can say what a session was tuned to, and so a resume
+    /// keeps the level it ran at. Absent in ledgers written before effort was
+    /// recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,
     pub role: String,
@@ -259,6 +265,7 @@ impl Ledger {
             agent: agent.to_string(),
             tier: tier.to_string(),
             model: model.to_string(),
+            effort: None,
             phase,
             role: role.to_string(),
             status: STATUS_WORKING.to_string(),
@@ -293,6 +300,18 @@ impl Ledger {
             for r in records.iter_mut().filter(|r| r.matches(key)) {
                 r.session_id = Some(session_id.to_string());
                 r.updated_at = at.clone();
+            }
+            Ok(())
+        })
+    }
+
+    /// Record the effort level a session was launched with. `None` clears it:
+    /// the agent then ran at its own default (or the operator's config).
+    pub fn set_effort(&self, key: &str, effort: Option<&str>) -> Result<()> {
+        self.update(|records| {
+            Self::require_key(records, key, &self.path)?;
+            for r in records.iter_mut().filter(|r| r.matches(key)) {
+                r.effort = effort.map(str::to_owned);
             }
             Ok(())
         })
@@ -440,8 +459,13 @@ impl Ledger {
                 "[{}] {} ({})  session={}  record={}\n",
                 r.status, r.tier, r.role, session, r.record_id
             ));
+            let effort = r
+                .effort
+                .as_deref()
+                .map(|e| format!(" effort={e}"))
+                .unwrap_or_default();
             out.push_str(&format!(
-                "  agent={} model={}  updated={}\n",
+                "  agent={} model={}{effort}  updated={}\n",
                 r.agent, r.model, r.updated_at
             ));
             if let Some(phase) = r.phase {
@@ -470,6 +494,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let l = Ledger::for_project(tmp.path(), "/Users/a/proj");
         (tmp, l)
+    }
+
+    #[test]
+    fn effort_is_recorded_rendered_and_optional_on_disk() {
+        let (_t, l) = ledger();
+        l.add("r1", "claude", "opus", "opus", "opus-1", Some("s1"), "t")
+            .unwrap();
+        assert_eq!(l.get("r1").unwrap().effort, None);
+        assert!(!std::fs::read_to_string(l.path()).unwrap().contains("effort"));
+        l.set_effort("s1", Some("medium")).unwrap();
+        assert_eq!(l.get("r1").unwrap().effort.as_deref(), Some("medium"));
+        assert!(l.render().unwrap().contains("model=opus effort=medium"));
+        l.set_effort("r1", None).unwrap();
+        assert_eq!(l.get("r1").unwrap().effort, None);
+        assert!(l.set_effort("missing", Some("low")).is_err());
     }
 
     #[test]

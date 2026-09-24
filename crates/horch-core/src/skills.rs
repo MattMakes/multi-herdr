@@ -230,10 +230,13 @@ impl Bundle {
 
     pub fn apply_env(&self, cmd: &mut std::process::Command, teammate: &Teammate) -> Result<()> {
         if teammate.agent == Agent::Opencode {
-            let inherited = teammate
-                .env
-                .get("OPENCODE_CONFIG_CONTENT")
-                .cloned()
+            // The builder may already have set it (the effort variant); build
+            // on that rather than on the teammate's or the operator's value.
+            let inherited = cmd
+                .get_envs()
+                .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
+                .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+                .or_else(|| teammate.env.get("OPENCODE_CONFIG_CONTENT").cloned())
                 .or_else(|| std::env::var("OPENCODE_CONFIG_CONTENT").ok());
             cmd.env(
                 "OPENCODE_CONFIG_CONTENT",
