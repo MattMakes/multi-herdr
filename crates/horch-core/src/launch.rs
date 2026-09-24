@@ -86,7 +86,7 @@ pub fn command_with_skills(
     let adjusted = bundle.configure(teammate)?;
     let prompt = format!(
         "{}\n{prompt}",
-        bundle.briefing(teammate.agent, teammate.phase)
+        bundle.briefing(teammate)
     );
     let mut cmd = command(&adjusted, session, &prompt, model_override)?;
     bundle.apply_env(&mut cmd, teammate)?;
@@ -405,6 +405,37 @@ pub(crate) fn overlay_skill_switches(
             overrides.insert(name.clone(), "off".into());
         }
     }
+    overlay_plugin_skills(teammate, overlay)
+}
+
+/// Narrow each `plugin_skills` plugin to the skills the teammate names: its
+/// other skills go off as `"<plugin>:<skill>": "off"`, and an installed
+/// plugin is kept enabled even where `inherit_plugins: false` switched the
+/// operator's plugins off. Must run after that switch-off, so it wins.
+fn overlay_plugin_skills(
+    teammate: &Teammate,
+    overlay: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    for (plugin, wanted) in crate::plugins::resolve_all(teammate)? {
+        if let Some(key) = &plugin.installed_key {
+            overlay
+                .entry("enabledPlugins")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .context("enabledPlugins must be an object")?
+                .insert(key.clone(), serde_json::Value::Bool(true));
+        }
+        let overrides = overlay
+            .entry("skillOverrides")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .context("skillOverrides must be an object")?;
+        for (skill, _) in &plugin.skills {
+            if !wanted.contains(skill) {
+                overrides.insert(format!("{}:{skill}", plugin.name), "off".into());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -721,6 +752,47 @@ mod tests {
         );
         assert_eq!(a[a.len() - 2], "--prompt");
         assert_eq!(a.last().unwrap(), "BRIEFING");
+    }
+
+    /// `plugin_skills` narrows a plugin to the skills a teammate names: the
+    /// others go off by their plugin-qualified name, the named ones stay on,
+    /// and a `--check` catches a name the plugin does not ship.
+    #[test]
+    fn plugin_skills_switch_off_the_rest_of_the_plugin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("code");
+        for skill in ["review", "lint", "format"] {
+            let dir = root.join("skills").join(skill);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {skill}\ndescription: Does {skill}.\n---\n"),
+            )
+            .unwrap();
+        }
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("opus").unwrap().clone();
+        t.plugin_dirs = vec![root.to_string_lossy().into_owned()];
+        t.plugin_skills.insert("code".into(), vec!["review".into()]);
+
+        let a = argv(&command(&t, Session::Unmanaged, "p", None).unwrap());
+        let at = a.iter().position(|x| x == "--settings").unwrap();
+        let overlay: serde_json::Value = serde_json::from_str(&a[at + 1]).unwrap();
+        let overrides = &overlay["skillOverrides"];
+        assert_eq!(overrides["code:lint"], "off", "{overlay}");
+        assert_eq!(overrides["code:format"], "off", "{overlay}");
+        assert!(overrides.get("code:review").is_none(), "{overlay}");
+
+        // The briefing names the reinforced one with its description.
+        let bundle = crate::skills::Bundle::install(tmp.path(), &t).unwrap().unwrap();
+        let brief = bundle.briefing(&t);
+        assert!(brief.contains("- code:review: Does review."), "{brief}");
+        assert!(!brief.contains("code:lint"), "{brief}");
+
+        // A skill the plugin does not ship fails the launch and the check.
+        t.plugin_skills.insert("code".into(), vec!["deploy".into()]);
+        let err = command(&t, Session::Unmanaged, "p", None).unwrap_err().to_string();
+        assert!(err.contains("no skill 'deploy'"), "{err}");
     }
 
     /// Haiku has no effort setting: an override onto it drops `--effort`

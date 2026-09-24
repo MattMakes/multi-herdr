@@ -293,6 +293,7 @@ impl Agent {
             ("disable_skills", t.disable_skills),
             ("inherit_claudeai_skills", t.inherit_claudeai_skills),
             ("disabled_skills", !t.disabled_skills.is_empty()),
+            ("plugin_skills", !t.plugin_skills.is_empty()),
             ("mcp_servers", t.mcp_servers.is_some()),
             ("mcp_config_files", !t.mcp_config_files.is_empty()),
         ] {
@@ -480,6 +481,12 @@ pub struct Teammate {
     /// `"off"`. Settings merge per key, so the operator's own overrides stay.
     #[serde(default)]
     pub disabled_skills: Vec<String>,
+    /// Claude plugins whose named skills this teammate is expected to use.
+    /// The named skills are rendered, with descriptions, into the briefing;
+    /// the plugin's other skills are switched off for the session. See
+    /// `plugins.rs`.
+    #[serde(default)]
+    pub plugin_skills: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub settings: Option<String>,
     /// Inline MCP server definitions. `None` leaves the operator's MCP
@@ -540,6 +547,7 @@ impl Default for Teammate {
             disable_skills: false,
             inherit_claudeai_skills: false,
             disabled_skills: Vec::new(),
+            plugin_skills: BTreeMap::new(),
             settings: None,
             mcp_servers: None,
             mcp_config_files: Vec::new(),
@@ -812,6 +820,18 @@ impl Roster {
             if let Some(effort) = &t.effort {
                 if let Some(why) = effort_problem(t.agent, t.model.as_deref(), effort) {
                     problems.push(format!("{who}: {why}"));
+                }
+            }
+            // Reinforced plugin skills must exist, or the briefing promises a
+            // skill the pane cannot load.
+            if t.agent == Agent::Claude && !t.plugin_skills.is_empty() {
+                if t.disable_skills {
+                    problems.push(format!(
+                        "{who}: plugin_skills cannot load with disable_skills: true"
+                    ));
+                }
+                if let Err(e) = crate::plugins::resolve_all(t) {
+                    problems.push(format!("{who}: {e:#}"));
                 }
             }
             // A codex worker with no effort silently takes whatever the
@@ -1392,6 +1412,35 @@ mod spawnable_tests {
         assert!(w[1].contains("env.CLAUDE_CODE_EFFORT_LEVEL=medium"), "{w:?}");
         assert!(w[2].contains("maxEffortLevel=high"), "{w:?}");
         assert!(w[3].contains("model_reasoning_effort=\"medium\""), "{w:?}");
+    }
+
+    #[test]
+    fn roster_check_rejects_plugin_skills_it_cannot_honour() {
+        let mut r = Roster::builtin().unwrap();
+        r.teammates
+            .get_mut("opus")
+            .unwrap()
+            .plugin_skills
+            .insert("no-such-plugin-anywhere".into(), vec!["x".into()]);
+        assert!(
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("opus: plugin 'no-such-plugin-anywhere' is neither")),
+            "{:?}",
+            r.check()
+        );
+        r.teammates
+            .get_mut("codex-sol")
+            .unwrap()
+            .plugin_skills
+            .insert("code".into(), vec!["review".into()]);
+        assert!(
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("codex-sol: 'plugin_skills' is not something codex")),
+            "{:?}",
+            r.check()
+        );
     }
 
     /// A fleet pane must not spawn subagents. The deny is the proof, and
