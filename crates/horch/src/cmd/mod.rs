@@ -1,4 +1,5 @@
 pub mod balancecmd;
+pub mod cost;
 pub mod doctor;
 pub mod install;
 pub mod layoutcmd;

@@ -30,6 +30,7 @@ pub mod prime;
 pub mod prompts;
 pub mod skills;
 pub mod teammates;
+pub mod usage;
 pub mod tile;
 
 /// Mint a session or record id.

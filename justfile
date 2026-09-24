@@ -96,6 +96,17 @@ horch1-smoke: require-herdr
 teammates:
     {{horch}} teammates
 
+# The roster as a tuning table: harness, model, effort, phase, expected
+# skills, price. Pair with `just cost` when retuning (see the tune-fleet skill).
+teammates-matrix:
+    {{horch}} teammates --matrix
+
+# What the fleet run in the directory you called this from cost, per worker,
+# from each harness's transcripts. Extra flags pass through, e.g.
+# `just cost --since 2026-09-24 --reprice sonnet`.
+cost *ARGS:
+    HORCH_PROJECT_DIR="{{cwd}}" {{horch}} cost {{ARGS}}
+
 # Validate every file in teammates/ before a fleet reads them for real.
 teammates-check:
     {{horch}} teammates --check

@@ -98,12 +98,45 @@ enum Command {
         /// Validate instead of listing. Exits non-zero when something is wrong.
         #[arg(long)]
         check: bool,
+        /// One row per teammate: harness, model, effort, phase, expected
+        /// skills, price. The "what is configured" half of retuning; `horch
+        /// cost` is the "what it cost" half. Combine with --json.
+        #[arg(long)]
+        matrix: bool,
         /// Scaffold `<NAME>.md` from `_template.md`.
         #[arg(long, value_name = "NAME")]
         new: Option<String>,
         /// Directory for --new. Defaults to $HORCH_TEAMMATES_DIR.
         #[arg(long, value_name = "DIR")]
         dir: Option<String>,
+    },
+
+    /// What this project's fleet cost, per worker, read from each harness's
+    /// transcripts; plus which expected skills each worker never loaded.
+    ///
+    /// Prices every ledger session (claude, codex, pi, prime) at the built-in
+    /// per-MTok table. Sessions that cannot be priced are listed, never zeroed.
+    Cost {
+        /// Machine-readable report.
+        #[arg(long)]
+        json: bool,
+        /// Add a what-if column: the same tokens at this model's prices.
+        #[arg(long, value_name = "MODEL")]
+        reprice: Option<String>,
+        /// JSON file of per-MTok prices to use over the built-in table:
+        /// {"<model>": {"input": 4, "output": 20, "cache_read": 0.2}}.
+        #[arg(long, value_name = "FILE")]
+        pricing: Option<String>,
+        /// Only sessions created at or after this UTC time (e.g. 2026-09-24).
+        #[arg(long, value_name = "TIMESTAMP")]
+        since: Option<String>,
+        /// Only this record or session id. Repeatable.
+        #[arg(long = "record", value_name = "ID")]
+        records: Vec<String>,
+        /// Also price a session outside the ledger, e.g. the orchestrator's:
+        /// `claude:<session-id>`. Repeatable.
+        #[arg(long = "session", value_name = "AGENT:ID")]
+        sessions: Vec<String>,
     },
 
     /// Create a pane running a worker agent, fresh or resuming a ledger session.
@@ -317,14 +350,32 @@ fn run() -> Result<std::process::ExitCode> {
             })?;
             output::println(&pane);
         }
+        Command::Cost {
+            json,
+            reprice,
+            pricing,
+            since,
+            records,
+            sessions,
+        } => cmd::cost::cost(cmd::cost::CostArgs {
+            json,
+            reprice,
+            pricing,
+            since,
+            records,
+            sessions,
+        })?,
         Command::Teammates {
             json,
             check,
+            matrix,
             new,
             dir,
         } => {
             if let Some(name) = new {
                 cmd::teammatescmd::new(&name, dir.as_deref())?;
+            } else if matrix {
+                cmd::teammatescmd::matrix(json)?;
             } else if check {
                 return Ok(cmd::teammatescmd::check()?);
             } else {
