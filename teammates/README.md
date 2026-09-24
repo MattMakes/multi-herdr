@@ -31,8 +31,8 @@ choose from** — there is no registry to update and nothing to recompile.
   two orchestrators use it because they are launched into a pane, never spawned
   into one.
 - **The top tier is reserved for the orchestrator.** `fable` and `gpt-6-astra`
-  are refused by `horch spawn`, whichever of them is orchestrating: a fleet has
-  exactly one top-tier session. The rule is matched on the tier name, so a
+  are refused by `horch spawn`, whichever flavor is orchestrating: a fleet has
+  at most one top-tier session (none under `horch fleet opus` or `sol`). The rule is matched on the tier name, so a
   version bump stays reserved. `horch teammates --check` fails any offered
   teammate that asks for one.
 - **`brief_description` is the only field the orchestrator reads** to decide
@@ -155,11 +155,14 @@ everywhere stops being read anywhere.
 
 ## The two orchestrators
 
-`orchestrator.md` (Claude Code on Fable) and `orchestrator-codex.md` (Codex on
-Astra) are what `horch fleet` and `horch fleet codex` launch. They share one
-briefing — `_base/fleet-orchestrator.md` — and each file is only the paragraph
-naming the tier it is the only session of. Change how orchestration works in
-the base; change how one flavor talks about its own model in the file.
+`orchestrator.md` (Claude Code) and `orchestrator-codex.md` (Codex) back the
+four fleet flavors: `horch fleet opus` (the default) and `fable` launch the
+first, `astra` and `sol` the second. The flavor passes the model as the pane's
+`--model`, which wins over the file's own `model:`; the file's value is only
+the fallback. They share one briefing — `_base/fleet-orchestrator.md` — and
+each file is only the paragraph about writing for the workers below it. Change
+how orchestration works in the base; change how one agent's orchestrator talks
+in its file.
 
 Both also carry `skills: [orchestrate]`. That is the fleet playbook — how to
 decompose work, the plan-file template, how to choose a teammate, how to verify

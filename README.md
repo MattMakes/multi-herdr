@@ -46,29 +46,38 @@ Day to day: `just install` once, then `herdr-fleet` from any project.
 
 ```bash
 cd ~/your-project
-horch fleet            # Claude Code on Fable orchestrates (the default)
-horch fleet cc         # the same, said out loud
-horch fleet codex      # Codex on Astra orchestrates instead
+horch fleet            # Claude Code on Opus orchestrates (the default)
+horch fleet fable      # Claude Code on Fable, for work that needs the top tier
+horch fleet astra      # Codex on Astra (`codex` says the same)
+horch fleet sol        # Codex on Sol
 ```
+
+`cc` and `claude` still work and mean `opus`. The launcher takes the same words:
+`herdr-fleet sol`.
 
 You get one orchestrator pane and nothing else. It reads the roster, breaks the
 work down, and spawns exactly the workers each piece needs - then shuts them down
 as they finish. No worker is started before there is a job for it.
 
-The flavor picks who orchestrates and nothing else. Both read the same roster
-and spawn the same workers, so a Codex orchestrator still reaches for `opus`
-when a task wants Claude, and a Claude one still reaches for `codex-sol`.
+The flavor picks who orchestrates and nothing else. All four read the same
+roster and spawn the same workers, so a Codex orchestrator still reaches for
+`opus` when a task wants Claude, and a Claude one still reaches for `codex-sol`.
+Opus is the default because it orchestrates well at well under half Fable's
+price (Opus 5.5 is $4/$20 per MTok against Fable 5.1's $10/$50; see
+[the model guide](ai_docs/reports/model-guide-2026-09.md)).
 
-### One top-tier session per fleet
+### At most one top-tier session per fleet
 
 Fable and Astra are reserved for the orchestrator. `horch spawn` refuses to
 start a worker on either tier, whichever flavor is orchestrating - so a Fable
 orchestrator cannot start an Astra, an Astra cannot start a Fable, and neither
 can clone itself. The rule is matched on the tier name rather than an exact
-model slug, so a version bump stays reserved without an edit.
+model slug, so a version bump stays reserved without an edit. An Opus or Sol
+orchestrator holds no reserved tier, so its workers may run on the same model
+it does.
 
 That is why every briefing is written for an Opus or Codex-Sol reader: the
-orchestrator does the reasoning that needs the top tier, writes the result to a
+orchestrator does the reasoning that needs its tier, writes the result to a
 file, and hands the execution down. `horch teammates --check` fails any teammate
 in the roster that asks for a reserved tier, so the rule cannot be broken by
 adding a file.
@@ -138,9 +147,10 @@ registry to update.
 | `prime`                | Prime Agent | Opus | One persistent Python kernel; long, exploratory runs |
 
 The two orchestrators are teammate files too, and hidden from the roster:
-`orchestrator` (Claude, Fable) and `orchestrator-codex` (Codex, Astra). They
-share one briefing in `teammates/_base/fleet-orchestrator.md`, and each file
-holds only the paragraph naming the tier it is the only session of.
+`orchestrator` (Claude; Opus or Fable) and `orchestrator-codex` (Codex; Astra
+or Sol). The fleet flavor picks the file and passes the model. They share one
+briefing in `teammates/_base/fleet-orchestrator.md`, and each file holds only
+the paragraph about writing for the workers below it.
 
 The last row are the *generic fallbacks*, used when no specialist matches. The
 two prompts the `orchestration` recipe uses are teammate files as well.

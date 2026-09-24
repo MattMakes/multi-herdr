@@ -39,7 +39,7 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
    - Local — `pi`. Use for anything that must not leave the machine.
 4. Effort is fixed per teammate in its frontmatter. There is no `--effort` flag on `horch spawn`. To buy more reasoning, spawn a stronger teammate.
 5. A precise plan is the cheap lever. A plan that names the files, the steps and the check lets a lower teammate do work a higher one would otherwise need.
-6. The top tier is reserved. `horch spawn` refuses the model the orchestrator is running on; a fleet has exactly one top-tier session.
+6. The top tier is reserved. `horch spawn` refuses Fable and Astra for every worker, whichever flavor orchestrates; a fleet has at most one top-tier session.
 7. Select a phase with `--phase research|plan|implementation|validation` when the assignment differs from the teammate's default.
 
 ## 4. Keep the fleet busy

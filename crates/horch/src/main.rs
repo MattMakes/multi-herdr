@@ -33,10 +33,11 @@ enum Command {
     /// Launch the herdr-fleet workspace: ONE orchestrator pane, which spawns
     /// exactly the workers the work needs, with a per-project session ledger.
     Fleet {
-        /// Who orchestrates: `cc` for Claude Code on Fable (the default), or
-        /// `codex` for Codex on Astra. Only the orchestrator pane changes; both
-        /// spawn workers from the same roster.
-        #[arg(value_name = "FLAVOR", default_value = "cc")]
+        /// Who orchestrates, by model: `opus` (the default; also `cc`/`claude`)
+        /// or `fable` for Claude Code, `astra` (also `codex`) or `sol` for
+        /// Codex. Only the orchestrator pane changes; all four spawn workers
+        /// from the same roster.
+        #[arg(value_name = "FLAVOR", default_value = "opus")]
         flavor: cmd::recipes::FleetFlavor,
         /// Project directory the fleet works in. Defaults to the current directory.
         #[arg(long)]

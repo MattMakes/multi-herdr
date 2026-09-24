@@ -64,10 +64,11 @@ herdr-orchestration: require-herdr
 #
 # FLAVOR picks who orchestrates, and nothing else - the roster of workers
 # is the same either way:
-#   herdr-fleet        Claude Code on Fable (the default)
-#   herdr-fleet cc     the same, said out loud
-#   herdr-fleet codex  Codex on Astra
-herdr-fleet FLAVOR="cc": require-herdr
+#   herdr-fleet        Claude Code on Opus (the default; also cc, claude)
+#   herdr-fleet fable  Claude Code on Fable
+#   herdr-fleet astra  Codex on Astra (also codex)
+#   herdr-fleet sol    Codex on Sol
+herdr-fleet FLAVOR="opus": require-herdr
     {{horch}} fleet {{FLAVOR}} --cwd "{{cwd}}"
 
 # Self-verifying check of the fleet machinery (spawn -> brief -> register

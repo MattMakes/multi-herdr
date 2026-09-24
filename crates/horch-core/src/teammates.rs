@@ -35,12 +35,13 @@ include!(concat!(env!("OUT_DIR"), "/builtin_teammates.rs"));
 /// The model tiers reserved for the orchestrator, and the teammate to reach for
 /// instead of each.
 ///
-/// A fleet has exactly one top-tier session: the orchestrator, running either
-/// Claude on Fable or Codex on Astra. `horch spawn` refuses to start a worker on
-/// EITHER tier, whichever flavor is orchestrating - so a Fable orchestrator
-/// cannot start an Astra, an Astra cannot start a Fable, and neither can clone
-/// itself. The orchestrator writes every brief for an Opus/Codex-Sol reader
-/// instead.
+/// A fleet has at most one top-tier session: the orchestrator, when it runs on
+/// Fable or Astra. `horch spawn` refuses to start a worker on EITHER tier,
+/// whichever flavor is orchestrating - so a Fable orchestrator cannot start an
+/// Astra, an Astra cannot start a Fable, and neither can clone itself. The
+/// Opus and Sol flavors (`horch fleet opus|sol`) hold no reserved tier, so the
+/// fleet then has none; their workers may share the orchestrator's model. The
+/// orchestrator writes every brief for an Opus/Codex-Sol reader either way.
 pub const ORCHESTRATOR_TIERS: [(&str, &str); 2] = [("fable", "opus"), ("astra", "codex-sol")];
 
 /// The reserved tier a model belongs to, if any.
@@ -691,7 +692,7 @@ impl Roster {
         if let Some((tier, instead)) = reserved_tier(model) {
             bail!(
                 "'{who}' runs on {model}, and the {tier} tier is reserved for the \
-                 orchestrator; the fleet has exactly one top-tier session, whichever \
+                 orchestrator; the fleet has at most one top-tier session, whichever \
                  agent is orchestrating. Use {instead}."
             );
         }

@@ -59,42 +59,67 @@ impl std::str::FromStr for PaneKind {
     }
 }
 
-/// Which agent orchestrates a fleet.
+/// Which agent, on which model, orchestrates a fleet.
 ///
 /// Only the ORCHESTRATOR pane differs. The roster it spawns workers from is the
 /// same either way, so a Codex orchestrator still reaches for `opus` when a task
 /// wants Claude, and a Claude one still reaches for `codex-sol`.
+///
+/// Two teammate files back four flavors: the flavor picks the file (Claude or
+/// Codex) and passes its model as the pane's `--model`, which wins over the
+/// file's own `model:`. Opus is the default because it is the cheapest model
+/// that orchestrates well (cezaar#40 measured Opus 5.5 at $4/$20 against
+/// Fable's $10/$50); Fable and Astra stay one word away for work that needs
+/// the top tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FleetFlavor {
-    /// Claude Code, on Fable.
+    /// Claude Code, on the latest Opus.
     #[default]
-    Claude,
+    Opus,
+    /// Claude Code, on Fable.
+    Fable,
     /// Codex, on Astra.
-    Codex,
+    Astra,
+    /// Codex, on Sol.
+    Sol,
 }
 
 impl FleetFlavor {
     pub fn as_str(self) -> &'static str {
         match self {
-            FleetFlavor::Claude => "cc",
-            FleetFlavor::Codex => "codex",
+            FleetFlavor::Opus => "opus",
+            FleetFlavor::Fable => "fable",
+            FleetFlavor::Astra => "astra",
+            FleetFlavor::Sol => "sol",
         }
     }
 
-    /// What to print while the pane comes up. The tier is the useful half: it
-    /// is what the fleet has exactly one of.
+    /// What to print while the pane comes up.
     fn label(self) -> &'static str {
         match self {
-            FleetFlavor::Claude => "Claude Code on Fable",
-            FleetFlavor::Codex => "Codex on Astra",
+            FleetFlavor::Opus => "Claude Code on Opus",
+            FleetFlavor::Fable => "Claude Code on Fable",
+            FleetFlavor::Astra => "Codex on Astra",
+            FleetFlavor::Sol => "Codex on Sol",
+        }
+    }
+
+    /// The model the orchestrator pane runs on. A Claude alias tracks the
+    /// latest release; codex has no alias mechanism, so its slugs are literal.
+    pub fn model(self) -> &'static str {
+        match self {
+            FleetFlavor::Opus => "opus",
+            FleetFlavor::Fable => "fable",
+            FleetFlavor::Astra => "gpt-6-astra",
+            FleetFlavor::Sol => "gpt-5.6-sol",
         }
     }
 
     /// The teammate file this flavor's orchestrator pane is briefed from.
     fn pane_kind(self) -> PaneKind {
         match self {
-            FleetFlavor::Claude => PaneKind::FleetOrchestrator,
-            FleetFlavor::Codex => PaneKind::FleetCodexOrchestrator,
+            FleetFlavor::Opus | FleetFlavor::Fable => PaneKind::FleetOrchestrator,
+            FleetFlavor::Astra | FleetFlavor::Sol => PaneKind::FleetCodexOrchestrator,
         }
     }
 }
@@ -102,15 +127,18 @@ impl FleetFlavor {
 impl std::str::FromStr for FleetFlavor {
     type Err = String;
 
-    /// The model names are accepted alongside the CLI names, because that is
-    /// how the choice is actually discussed: "the Fable one" or "the Astra one".
+    /// The model names are how the choice is actually discussed ("the Fable
+    /// one"). `cc`/`claude` mean the default Claude flavor, Opus; `codex` keeps
+    /// meaning Astra, which is what it meant before Sol was offered.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            "cc" | "claude" | "fable" => Ok(FleetFlavor::Claude),
-            "codex" | "astra" => Ok(FleetFlavor::Codex),
+            "opus" | "cc" | "claude" => Ok(FleetFlavor::Opus),
+            "fable" => Ok(FleetFlavor::Fable),
+            "astra" | "codex" => Ok(FleetFlavor::Astra),
+            "sol" => Ok(FleetFlavor::Sol),
             other => Err(format!(
-                "unknown fleet flavor '{other}' (expected cc for Claude Code on Fable, \
-                 or codex for Codex on Astra)"
+                "unknown fleet flavor '{other}' (expected opus, fable, astra or sol; \
+                 cc/claude mean opus, codex means astra)"
             )),
         }
     }
@@ -180,7 +208,10 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
 
     let kind = flavor.pane_kind();
     println!("Launching orchestrator ({})...", flavor.label());
-    herdr.pane_run(&ws.root_pane_id, &pane_command("orchestrator", kind, None)?)?;
+    herdr.pane_run(
+        &ws.root_pane_id,
+        &pane_command("orchestrator", kind, Some(flavor.model()))?,
+    )?;
 
     println!(
         "\nDone. Fleet workspace {} is live with one orchestrator pane.",
@@ -348,6 +379,16 @@ pub fn pane_launch(
         PaneKind::OrchestrationClaude | PaneKind::OrchestrationCodex => "orchestration-worker",
     };
     let mut teammate = roster.require(name)?.clone();
+    // A fleet flavor passes the orchestrator's model; carry it on the teammate
+    // too, so the briefing's {model} and the model actually launched agree.
+    if matches!(
+        kind,
+        PaneKind::FleetOrchestrator | PaneKind::FleetCodexOrchestrator
+    ) {
+        if let Some(model) = model {
+            teammate.model = Some(model.to_string());
+        }
+    }
     // The fixed 5-pane recipe assigns agent and model per pane, not per file.
     if kind == PaneKind::OrchestrationCodex {
         teammate.agent = Agent::Codex;
@@ -434,45 +475,67 @@ mod tests {
         assert!("nonsense".parse::<PaneKind>().is_err());
     }
 
-    /// `herdr-fleet` picks the Claude/Fable orchestrator, `herdr-fleet codex`
-    /// the Codex/Astra one, and a typo is refused rather than quietly defaulted.
+    /// `herdr-fleet` takes the model name or the CLI name, and a typo is
+    /// refused rather than quietly defaulted.
     #[test]
     fn fleet_flavors_parse_from_what_a_user_types() {
-        for word in ["cc", "claude", "fable", "CC", "Claude"] {
-            assert_eq!(
-                word.parse::<FleetFlavor>().unwrap(),
-                FleetFlavor::Claude,
-                "{word}"
-            );
-        }
-        for word in ["codex", "astra", "CODEX"] {
-            assert_eq!(
-                word.parse::<FleetFlavor>().unwrap(),
-                FleetFlavor::Codex,
-                "{word}"
-            );
+        for (words, flavor) in [
+            (&["opus", "cc", "claude", "CC", "Opus"][..], FleetFlavor::Opus),
+            (&["fable", "FABLE"][..], FleetFlavor::Fable),
+            (&["astra", "codex", "CODEX"][..], FleetFlavor::Astra),
+            (&["sol", "Sol"][..], FleetFlavor::Sol),
+        ] {
+            for word in words {
+                assert_eq!(word.parse::<FleetFlavor>().unwrap(), flavor, "{word}");
+            }
         }
         assert_eq!(
             FleetFlavor::default(),
-            FleetFlavor::Claude,
-            "a bare `fleet` is Fable"
+            FleetFlavor::Opus,
+            "a bare `fleet` is Opus"
         );
-        let err = "opus".parse::<FleetFlavor>().unwrap_err();
-        assert!(err.contains("unknown fleet flavor 'opus'"), "{err}");
+        let err = "sonnet".parse::<FleetFlavor>().unwrap_err();
+        assert!(err.contains("unknown fleet flavor 'sonnet'"), "{err}");
+        // Display round-trips, because clap prints the default with it.
+        for flavor in [
+            FleetFlavor::Opus,
+            FleetFlavor::Fable,
+            FleetFlavor::Astra,
+            FleetFlavor::Sol,
+        ] {
+            assert_eq!(flavor.to_string().parse::<FleetFlavor>().unwrap(), flavor);
+        }
     }
 
-    /// Each flavor must reach its own teammate file, or `horch fleet codex`
-    /// silently launches the Claude orchestrator.
+    /// Each flavor must reach its own teammate file with its own model, or
+    /// `horch fleet sol` silently launches Astra.
     #[test]
-    fn each_flavor_launches_its_own_orchestrator_pane() {
-        assert_eq!(FleetFlavor::Claude.pane_kind(), PaneKind::FleetOrchestrator);
-        assert_eq!(
-            FleetFlavor::Codex.pane_kind(),
-            PaneKind::FleetCodexOrchestrator
-        );
+    fn each_flavor_launches_its_own_orchestrator_pane_and_model() {
+        for (flavor, kind, model) in [
+            (FleetFlavor::Opus, PaneKind::FleetOrchestrator, "opus"),
+            (FleetFlavor::Fable, PaneKind::FleetOrchestrator, "fable"),
+            (FleetFlavor::Astra, PaneKind::FleetCodexOrchestrator, "gpt-6-astra"),
+            (FleetFlavor::Sol, PaneKind::FleetCodexOrchestrator, "gpt-5.6-sol"),
+        ] {
+            assert_eq!(flavor.pane_kind(), kind, "{flavor}");
+            assert_eq!(flavor.model(), model, "{flavor}");
+            let cmd =
+                pane_command("orchestrator", flavor.pane_kind(), Some(flavor.model())).unwrap();
+            assert!(cmd.contains(kind.as_str()), "{cmd}");
+            assert!(cmd.contains(model), "{cmd}");
+        }
+    }
 
-        let cmd = pane_command("orchestrator", FleetFlavor::Codex.pane_kind(), None).unwrap();
-        assert!(cmd.contains("fleet-codex-orchestrator"), "{cmd}");
+    /// Opus and Sol are not reserved tiers, so an orchestrator on either can
+    /// still hand work to `opus` / `codex-sol` workers; Fable and Astra stay
+    /// out of every worker's reach whichever flavor runs.
+    #[test]
+    fn only_fable_and_astra_orchestrators_hold_a_reserved_tier() {
+        use horch_core::teammates::reserved_tier;
+        assert!(reserved_tier(FleetFlavor::Fable.model()).is_some());
+        assert!(reserved_tier(FleetFlavor::Astra.model()).is_some());
+        assert!(reserved_tier(FleetFlavor::Opus.model()).is_none());
+        assert!(reserved_tier(FleetFlavor::Sol.model()).is_none());
     }
 
     /// The teammate each pane kind names must actually exist, or the pane comes
