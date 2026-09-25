@@ -45,18 +45,30 @@ agent: claude
 # codex:    a literal slug (gpt-5.6-sol | gpt-5.6-terra); no alias mechanism.
 # opencode: provider/model, e.g. opencode/big-pickle. `opencode models` lists
 #           them; the `opencode/...` provider is the free tier.
-# pi/prime: provider/model too, e.g. ollama/qwen3.8 or anthropic/claude-opus-5.
+# pi/prime: provider/model too, e.g. ollama/qwen3.8 or anthropic/claude-opus-5-5.
 # Not fable, and not gpt-6-astra: both top tiers are reserved for whichever
 # orchestrator is running, and `horch spawn` refuses to start a worker on
 # either. A fleet has exactly one top-tier session. Reach for opus or
 # codex-sol instead.
 model: opus
 
-# claude   -> `--effort <level>`   (low | medium | high | xhigh)
+# claude   -> `--effort <level>`   (low | medium | high | xhigh | max)
+#             Not on haiku: Haiku 4.5 has no effort setting.
 # codex    -> `-c model_reasoning_effort="<level>"`
-# opencode -> `--variant <level>`  (minimal | high | max)
+#             (none | low | medium | high | xhigh | max). Never `minimal` (an
+#             API error on gpt-5.6) or `ultra` (fans out, multiplies spend).
+#             REQUIRED on an offered codex teammate: unset, the pane inherits
+#             the operator's ~/.codex/config.toml.
+# opencode -> the build agent's `variant`, via OPENCODE_CONFIG_CONTENT
+#             (the TUI has no --variant flag). Only for models that define
+#             variants; the free `opencode/*` models have none, and `--check`
+#             refuses the field there.
 # pi/prime -> `--thinking <level>` (off | minimal | low | medium | high | xhigh | max)
-# Same field, different mechanism per agent. Omit to take the agent's default.
+# Same field, different mechanism per agent, and `horch teammates --check`
+# validates it per agent. `horch spawn --effort` overrides it for one spawn.
+# Levels are not comparable across vendors: "high" on codex is not "high" on
+# claude. See ai_docs/reports/model-guide-2026-09.md for why each teammate
+# runs at the level it does.
 effort: xhigh
 
 # claude only. Sets CLAUDE_CODE_SUBAGENT_MODEL, i.e. the model this teammate's
@@ -90,6 +102,22 @@ skills: []
 # switch those off with the prefix, or with inherit_plugins: false.
 inherit_claudeai_skills: false
 disabled_skills: []
+
+# claude only. Plugins whose NAMED skills this teammate is expected to use:
+#   plugin_skills:
+#     code: [review-git-changes, complexity-sweep]
+# - The named skills go into the worker's briefing, each with its SKILL.md
+#   description, as skills it is expected to use. (The bundled `skills:` above
+#   get the same treatment.) A bare list of names reads as optional.
+# - Every OTHER skill of that plugin is switched off for this session, as a
+#   `"<plugin>:<skill>": "off"` skillOverrides entry. So a marketplace plugin
+#   that ships twenty skills exposes only the two this role should use.
+# - The plugin is found in plugin_dirs first, then in the operator's
+#   ~/.claude/plugins/installed_plugins.json. An installed one stays enabled
+#   even with inherit_plugins: false.
+# `horch teammates --check` fails on an unknown plugin or skill, and when the
+# teammate has neither a phase nor skills (the briefing could not name them).
+plugin_skills: {}
 
 # ─── startup mode ────────────────────────────────────────────────────────────
 # How much the teammate may do without asking. Unset = inherit the operator's

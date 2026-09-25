@@ -25,10 +25,12 @@ pub mod ledger;
 pub mod mailbox;
 pub mod opencode;
 pub mod paneshell;
+pub mod plugins;
 pub mod prime;
 pub mod prompts;
 pub mod skills;
 pub mod teammates;
+pub mod usage;
 pub mod tile;
 
 /// Mint a session or record id.

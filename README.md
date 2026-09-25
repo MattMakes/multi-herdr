@@ -46,29 +46,38 @@ Day to day: `just install` once, then `herdr-fleet` from any project.
 
 ```bash
 cd ~/your-project
-horch fleet            # Claude Code on Fable orchestrates (the default)
-horch fleet cc         # the same, said out loud
-horch fleet codex      # Codex on Astra orchestrates instead
+horch fleet            # Claude Code on Opus orchestrates (the default)
+horch fleet fable      # Claude Code on Fable, for work that needs the top tier
+horch fleet astra      # Codex on Astra (`codex` says the same)
+horch fleet sol        # Codex on Sol
 ```
+
+`cc` and `claude` still work and mean `opus`. The launcher takes the same words:
+`herdr-fleet sol`.
 
 You get one orchestrator pane and nothing else. It reads the roster, breaks the
 work down, and spawns exactly the workers each piece needs - then shuts them down
 as they finish. No worker is started before there is a job for it.
 
-The flavor picks who orchestrates and nothing else. Both read the same roster
-and spawn the same workers, so a Codex orchestrator still reaches for `opus`
-when a task wants Claude, and a Claude one still reaches for `codex-sol`.
+The flavor picks who orchestrates and nothing else. All four read the same
+roster and spawn the same workers, so a Codex orchestrator still reaches for
+`opus` when a task wants Claude, and a Claude one still reaches for `codex-sol`.
+Opus is the default because it orchestrates well at well under half Fable's
+price (Opus 5.5 is $4/$20 per MTok against Fable 5.1's $10/$50; see
+[the model guide](ai_docs/reports/model-guide-2026-09.md)).
 
-### One top-tier session per fleet
+### At most one top-tier session per fleet
 
 Fable and Astra are reserved for the orchestrator. `horch spawn` refuses to
 start a worker on either tier, whichever flavor is orchestrating - so a Fable
 orchestrator cannot start an Astra, an Astra cannot start a Fable, and neither
 can clone itself. The rule is matched on the tier name rather than an exact
-model slug, so a version bump stays reserved without an edit.
+model slug, so a version bump stays reserved without an edit. An Opus or Sol
+orchestrator holds no reserved tier, so its workers may run on the same model
+it does.
 
 That is why every briefing is written for an Opus or Codex-Sol reader: the
-orchestrator does the reasoning that needs the top tier, writes the result to a
+orchestrator does the reasoning that needs its tier, writes the result to a
 file, and hands the execution down. `horch teammates --check` fails any teammate
 in the roster that asks for a reserved tier, so the rule cannot be broken by
 adding a file.
@@ -122,25 +131,32 @@ frontmatter - agent, model, effort, permission mode, tools - and its body is the
 prompt. **Adding a file adds someone the orchestrator can pick**; there is no
 registry to update.
 
-| teammate               | agent  | model  | for                                          |
-|------------------------|--------|--------|----------------------------------------------|
-| `product-lead`         | Claude | Opus   | Scope, priorities, acceptance criteria       |
-| `researcher`           | Claude | Opus   | R&D; investigating unfamiliar code and prior art |
-| `staff-engineer`       | Claude | Opus   | Deep implementation plans a junior can execute |
-| `designer`             | Claude | Opus   | UX flows, states, copy, accessibility        |
-| `architect-reviewer`   | Claude | Opus   | Boundaries, contracts, coupling. Read-only   |
-| `frontend-developer`   | Claude | Opus   | UI work, with a real browser to check it in  |
-| `backend-developer`    | Claude | Opus   | JS/TS, Python, Go, C#, Rust services and APIs |
-| `qa-engineer`          | Claude | Sonnet | Tests, e2e harnesses, bug reproduction       |
-| `sonnet` `opus` `codex-sol` `codex-terra` | | | Generic fallbacks |
-| `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | Free workers, for public/OSS work |
-| `pi`                   | pi     | local  | Runs on your own hardware; nothing leaves the machine |
-| `prime`                | Prime Agent | Opus | One persistent Python kernel; long, exploratory runs |
+| teammate               | agent  | model  | effort | for                                          |
+|------------------------|--------|--------|--------|----------------------------------------------|
+| `product-lead`         | Claude | Opus   | high   | Scope, priorities, acceptance criteria       |
+| `researcher`           | Claude | Opus   | medium | R&D; investigating unfamiliar code and prior art |
+| `staff-engineer`       | Claude | Opus   | high   | Deep implementation plans a junior can execute |
+| `designer`             | Claude | Opus   | medium | UX flows, states, copy, accessibility        |
+| `architect-reviewer`   | Claude | Opus   | high   | Boundaries, contracts, coupling. Read-only   |
+| `frontend-developer`   | Claude | Opus   | medium | UI work, with a real browser to check it in  |
+| `backend-developer`    | Claude | Opus   | medium | JS/TS, Python, Go, C#, Rust services and APIs |
+| `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
+| `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
+| `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
+| `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
+| `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
+| `pi`                   | pi     | local  | low    | Runs on your own hardware; nothing leaves the machine |
+| `prime`                | Prime Agent | Opus 5.5 | medium | One persistent Python kernel; long, exploratory runs |
+
+Why each runs at that level is in
+[ai_docs/reports/model-guide-2026-09.md](ai_docs/reports/model-guide-2026-09.md);
+see [Models and effort](#models-and-effort) below.
 
 The two orchestrators are teammate files too, and hidden from the roster:
-`orchestrator` (Claude, Fable) and `orchestrator-codex` (Codex, Astra). They
-share one briefing in `teammates/_base/fleet-orchestrator.md`, and each file
-holds only the paragraph naming the tier it is the only session of.
+`orchestrator` (Claude; Opus or Fable) and `orchestrator-codex` (Codex; Astra
+or Sol). The fleet flavor picks the file and passes the model. They share one
+briefing in `teammates/_base/fleet-orchestrator.md`, and each file holds only
+the paragraph about writing for the workers below it.
 
 The last row are the *generic fallbacks*, used when no specialist matches. The
 two prompts the `orchestration` recipe uses are teammate files as well.
@@ -242,6 +258,29 @@ catalogs across all five harnesses. Role defaults and explicit `skills` live in
 teammate YAML; resumes preserve the phase. Full workflows load on demand.
 See [the phase catalog, adapters and context measurements](docs/phase-skills.md).
 
+**Expected skills.** A teammate's own `skills:` are the ones it is expected to
+use, and its briefing says so:
+- each expected skill is named with its description, so the worker knows when
+  its step has come;
+- the rest of the phase catalog is listed by name only.
+
+**Plugin skills.** `plugin_skills` does the same for a Claude plugin:
+
+```yaml
+plugin_skills:
+  code: [review-git-changes]
+```
+
+- The named skills join the briefing with their descriptions.
+- Every other skill in that plugin is switched off for the session.
+- A plugin that ships twenty skills exposes only the ones this role should
+  use.
+- The plugin is found in `plugin_dirs` first, then in the operator's
+  installed plugins. An installed plugin stays enabled even under
+  `inherit_plugins: false`.
+
+`horch cost` then reports which expected skills each worker actually loaded.
+
 ### Five harnesses, one roster
 
 A teammate's `agent:` picks which CLI its pane runs. They differ in almost
@@ -254,7 +293,7 @@ scattered through the code.
 |---|---|---|---|---|
 | `claude`   | trailing positional | `--model` alias | `--effort` | horch mints `--session-id` |
 | `codex`    | trailing positional | `-c model="..."` | `-c model_reasoning_effort` | harvested from rollout files |
-| `opencode` | `--prompt` flag | `-m provider/model` | `--variant` | harvested from `opencode session list --format json` |
+| `opencode` | `--prompt` flag | `--model provider/model` | build agent `variant` via `OPENCODE_CONFIG_CONTENT` | harvested from `opencode session list --format json` |
 | `pi`       | after `--` | `--model provider/id` | `--thinking` | horch mints `--session-id` |
 | `prime`    | after `--` | `--model provider/id` | `--thinking` | horch owns the `--session-dir` and reads it back |
 
@@ -276,6 +315,77 @@ same fleet.
 pi and Prime have no approval gate at all - their tools simply run, which is what
 makes them usable unattended. `permission_mode` is refused on both, because
 setting it would imply a restraint that does not exist.
+
+### Models and effort
+
+Every teammate states its model and effort in its file, and `horch teammates
+--check` validates the effort against what that agent's CLI takes:
+
+| agent | model | effort levels | notes |
+|---|---|---|---|
+| `claude` | alias: `fable` `opus` `sonnet` `haiku` | `low` `medium` `high` `xhigh` `max` | Not on `haiku`: Haiku 4.5 has no effort setting |
+| `codex` | literal slug, e.g. `gpt-5.6-sol` | `none` `low` `medium` `high` `xhigh` `max` | Required on an offered teammate. Never `minimal` (API error) or `ultra` (multiplies spend) |
+| `opencode` | `provider/model` | the model's variants | The free `opencode/*` models have none, so no effort |
+| `pi` `prime` | `provider/id` | `off` `minimal` `low` `medium` `high` `xhigh` `max` | |
+
+Effort follows the role, as in
+[ImCesar/cezaar#40](https://github.com/ImCesar/cezaar/issues/40):
+- builders run at medium, because the thinking belongs in their brief;
+- reviewers and planners run at high, because a missed finding costs a whole
+  review round;
+- the orchestrator runs at xhigh.
+
+`horch spawn <teammate> --effort <level>` overrides the level for one spawn,
+and the ledger records the level each session actually ran at. Levels are not
+comparable across vendors: codex "high" is not claude "high".
+
+**Where effort gets overridden behind your back:**
+- **Claude:** resolves `CLAUDE_CODE_EFFORT_LEVEL` > `--effort` > settings >
+  the model default. That env var, set in your shell or in the `env` block of
+  `~/.claude/settings.json`, therefore overrides every pane at once, and
+  `maxEffortLevel` caps them all.
+- **Codex:** a pane with no effort takes `model_reasoning_effort` from
+  `~/.codex/config.toml`.
+- **`horch doctor` warns about all of these.**
+
+**Pinning what an alias means:** set `ANTHROPIC_DEFAULT_OPUS_MODEL` (and the
+`_SONNET_` and `_HAIKU_` variants) to pin what a Claude alias resolves to
+without editing any teammate. When an alias moves to a new model, re-check
+the effort levels too; the tune-fleet skill walks through it.
+
+`horch teammates --matrix` prints the whole roster as a tuning table:
+harness, model, effective effort, phase, expected skills and price.
+
+### Measuring a run
+
+```bash
+horch cost                              # this project's ledger, every session
+horch cost --since 2026-09-24           # one run
+horch cost --reprice claude-sonnet-5    # what-if: the same tokens on Sonnet
+horch cost --session claude:<id>        # add the orchestrator's own session
+horch cost --json                       # for the tune-fleet skill
+```
+
+`horch cost` reads each worker's transcript by the session id the ledger
+already holds, so attribution is exact, never a guess from timestamps:
+- Claude: `~/.claude/projects/*/<id>.jsonl`;
+- Codex: rollout files;
+- pi and Prime: session JSONL files.
+
+It prices the tokens with a dated per-MTok table; `--pricing <file.json>`
+overrides any row. It reports:
+- **each worker's cost**;
+- **roll-ups** per role family, harness and teammate, including the
+  cache-read share. cezaar#40 found cache reads were 60-70% of spend.
+- **a skills table**: what each worker actually loaded, and which of its
+  expected skills it never touched.
+
+**Never counted as $0:** OpenCode sessions (stored in SQLite, not read),
+sessions without a transcript, and models the table does not know. These are
+listed separately instead.
+
+To retune the roster from these numbers, use the `tune-fleet` skill
+(`.claude/skills/tune-fleet/SKILL.md`) from a session in this repo.
 
 ### Free models are paid for with your prompts
 

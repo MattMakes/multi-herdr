@@ -31,9 +31,9 @@ choose from** — there is no registry to update and nothing to recompile.
   two orchestrators use it because they are launched into a pane, never spawned
   into one.
 - **The top tier is reserved for the orchestrator.** `fable` and `gpt-6-astra`
-  are refused by `horch spawn`, whichever of them is orchestrating: a fleet has
-  exactly one top-tier session. The rule is matched on the tier name, so a
-  version bump stays reserved. `horch teammates --check` fails any offered
+  are refused by `horch spawn`, whichever flavor is orchestrating: a fleet has
+  at most one top-tier session (none under `horch fleet opus` or `sol`). The
+  rule is matched on the tier name, so a version bump stays reserved. `horch teammates --check` fails any offered
   teammate that asks for one.
 - **`brief_description` is the only field the orchestrator reads** to decide
   between a specialist and a generic. One line, ≤120 characters, enforced at
@@ -50,7 +50,7 @@ choose from** — there is no registry to update and nothing to recompile.
   `_base/fleet-orchestrator.md` owns the spawning and ledger contract; a
   persona that restates either will drift from it. `orchestrator.md` and
   `orchestrator-codex.md` are personas in exactly this sense: each is only the
-  paragraph naming the tier it is the only session of, substituted into the one
+  paragraph about writing for the workers below it, substituted into the one
   shared briefing at `{persona}`.
 - **No fleet pane spawns subagents.** A subagent's work never reaches the
   ledger or the grid, and splitting the work is the orchestrator's decision,
@@ -90,7 +90,7 @@ plugin directories.
 
 ## The generics
 
-`sonnet`, `opus`, `codex-sol`, `codex-terra`, `opencode-ultra`,
+`sonnet`, `opus`, `codex-sol`, `codex-terra`, `codex-luna`, `opencode-ultra`,
 `opencode-pickle`, `opencode-lightning`, `pi` and `prime` are the fallbacks:
 what the orchestrator spawns when no specialist's `brief_description` matches
 the work. They are named after the tier or the harness on purpose, so
@@ -106,6 +106,29 @@ confidentiality as much as on capability:
 | `sonnet` `opus` `codex-*` `prime` | money | anything the project already trusts these providers with |
 | `opencode-*` | **your prompts** | public and open-source work only |
 | `pi` | your own GPU | anything, including what must not leave the machine |
+
+## Effort: set by role, stated in every file
+
+Each teammate's `effort:` follows its role, not its model
+([ImCesar/cezaar#40](https://github.com/ImCesar/cezaar/issues/40)). The
+evidence per teammate, with prices and sources, is in
+[`ai_docs/reports/model-guide-2026-09.md`](../ai_docs/reports/model-guide-2026-09.md).
+
+| role | teammates | effort |
+|---|---|---|
+| orchestrator | `orchestrator`, `orchestrator-codex` | xhigh |
+| reviewers and planners | `architect-reviewer`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
+| builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `prime` | medium |
+| runners | `codex-terra`, `codex-luna`, `pi` | low |
+| no effort setting | `opencode-*` (their free models define no variants) | - |
+
+Rules `horch teammates --check` enforces:
+- the level must be one this agent's CLI takes;
+- an offered codex teammate must state one;
+- haiku and the free opencode models must not have one.
+
+Change a level with the `tune-fleet` skill (`.claude/skills/tune-fleet/`),
+which works from `horch cost` numbers, and write the reason next to the line.
 
 ## Free tiers and `trains_on_input`
 
@@ -153,13 +176,29 @@ everywhere stops being read anywhere.
 `pi --list-models | grep ollama` confirms it. The `id` must match the Ollama tag
 (`ollama list`), and `pi.md`'s `model:` must match `ollama/<id>`.
 
+`pi.md` runs at `effort: low`. On Qwen3.8 the long-context benchmark scores
+`xhigh` below `low`, and a local model pays for every thinking token in
+wall-clock time. Known Qwen3.8 issues (2026-09):
+- **`--thinking off` does not turn thinking off** without a
+  `thinkingLevelMap` in the model entry.
+- **The OpenAI-compatible endpoint (`/v1`) can hang on tool calls** with
+  `qwen3.8:27b`. If a pi pane stalls mid-tool-call:
+  1. Point the provider at Ollama's native API instead.
+  2. Or switch the tag to `qwen3.6:27b` (SWE-bench Verified 77.2; fits
+     24 GB). Update both `id` here and `pi.md`'s `model:`.
+
+See `ai_docs/reports/model-guide-2026-09.md`.
+
 ## The two orchestrators
 
-`orchestrator.md` (Claude Code on Fable) and `orchestrator-codex.md` (Codex on
-Astra) are what `horch fleet` and `horch fleet codex` launch. They share one
-briefing — `_base/fleet-orchestrator.md` — and each file is only the paragraph
-naming the tier it is the only session of. Change how orchestration works in
-the base; change how one flavor talks about its own model in the file.
+`orchestrator.md` (Claude Code) and `orchestrator-codex.md` (Codex) back the
+four fleet flavors: `horch fleet opus` (the default) and `fable` launch the
+first, `astra` and `sol` the second. The flavor passes the model as the pane's
+`--model`, which wins over the file's own `model:`; the file's value is only
+the fallback. They share one briefing — `_base/fleet-orchestrator.md` — and
+each file is only the paragraph about writing for the workers below it. Change
+how orchestration works in the base; change how one agent's orchestrator talks
+in its file.
 
 Both also carry `skills: [orchestrate]`. That is the fleet playbook — how to
 decompose work, the plan-file template, how to choose a teammate, how to verify

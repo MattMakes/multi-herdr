@@ -1,0 +1,4 @@
+{"type":"session","id":"sid-p","cwd":"/proj/mine"}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"task"}]}}
+{"type":"message","message":{"role":"assistant","provider":"ollama","model":"qwen3.8","content":[{"type":"toolCall","name":"read","arguments":{"path":"/state/skill-bundles/u/skills/debug/SKILL.md"}}],"usage":{"input":100,"output":40,"cacheRead":500,"cacheWrite":40,"totalTokens":680}}}
+{"type":"message","message":{"role":"assistant","provider":"ollama","model":"qwen3.8","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":50,"output_tokens":20}}}

@@ -34,13 +34,14 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 1. Read the roster in the briefing, or run `horch teammates`. `horch teammates --json` dumps every field.
 2. Choose a specialist when its `brief_description` fits the work. Choose a generic otherwise.
 3. The generics are three ladders, and the choice is cost and confidentiality as much as capability:
-   - Paid — `sonnet`, `opus`, `codex-sol`, `codex-terra`, `prime`. Send anything the project already trusts these providers with.
+   - Paid — `sonnet`, `opus`, `codex-sol`, `codex-terra`, `codex-luna`, `prime`. Send anything the project already trusts these providers with. Within it, cost falls from `opus`/`codex-sol` to `sonnet`/`codex-terra` to `codex-luna`: give a complete, mechanical plan to the cheapest one that can follow it.
    - Free, and trains on input — `opencode-ultra`, `opencode-pickle`, `opencode-lightning`. Public and open-source work only. Never proprietary source, credentials, customer data, or unreleased plans.
    - Local — `pi`. Use for anything that must not leave the machine.
-4. Effort is fixed per teammate in its frontmatter. There is no `--effort` flag on `horch spawn`. To buy more reasoning, spawn a stronger teammate.
+4. Effort is set per teammate in its frontmatter, tuned to the role. `horch spawn <teammate> --effort <level> "task"` overrides it for one spawn: raise it for a fix that already failed review, lower it for a mechanical task. For a different kind of reasoning, spawn a stronger teammate instead.
 5. A precise plan is the cheap lever. A plan that names the files, the steps and the check lets a lower teammate do work a higher one would otherwise need.
-6. The top tier is reserved. `horch spawn` refuses the model the orchestrator is running on; a fleet has exactly one top-tier session.
+6. The top tier is reserved. `horch spawn` refuses Fable and Astra for every worker, whichever flavor orchestrates; a fleet has at most one top-tier session.
 7. Select a phase with `--phase research|plan|implementation|validation` when the assignment differs from the teammate's default.
+8. Review a risky change with the other vendor. `codex-reviewer` reviews Claude-built work; `architect-reviewer` or `qa-engineer` review Codex-built work. A second model family shares fewer blind spots with the author.
 
 ## 4. Keep the fleet busy
 

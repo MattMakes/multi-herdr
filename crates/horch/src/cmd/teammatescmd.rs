@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
-use horch_core::teammates::{Roster, TEMPLATE};
+use horch_core::teammates::{model_takes_effort, Agent, Roster, Teammate, TEMPLATE};
+use horch_core::usage;
+use serde::Serialize;
 
 use crate::output;
 
@@ -80,6 +82,111 @@ pub fn list(json: bool) -> Result<()> {
         for t in hidden {
             out.push_str(&format!("    {:<width$}  {}\n", t.name, t.brief_description, width = width));
         }
+    }
+    output::print(&out);
+    Ok(())
+}
+
+/// One teammate's tuning, as `horch teammates --matrix` shows it.
+#[derive(Debug, Serialize)]
+pub struct MatrixRow {
+    pub name: String,
+    pub agent: String,
+    pub model: String,
+    /// The level passed, or what the pane falls back to when none is.
+    pub effort: String,
+    pub effort_is_explicit: bool,
+    pub phase: String,
+    pub skills: Vec<String>,
+    pub plugin_skills: Vec<String>,
+    pub offered: bool,
+    pub generic: bool,
+    pub trains_on_input: bool,
+    /// USD per MTok, input / output; `None` when the price table does not
+    /// know the model.
+    pub price_in: Option<f64>,
+    pub price_out: Option<f64>,
+}
+
+pub fn matrix_row(t: &Teammate) -> MatrixRow {
+    let model = t.model.clone().unwrap_or_else(|| "-".into());
+    let effort = match &t.effort {
+        Some(e) => e.clone(),
+        None if !model_takes_effort(t.agent, &model) => "n/a".into(),
+        None if t.agent == Agent::Codex => "inherits config.toml".into(),
+        None => "agent default".into(),
+    };
+    let price = usage::price_for(&usage::builtin_prices(), &model);
+    MatrixRow {
+        name: t.name.clone(),
+        agent: t.agent.to_string(),
+        effort_is_explicit: t.effort.is_some(),
+        effort,
+        phase: t.phase.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
+        skills: t.skills.clone(),
+        plugin_skills: t
+            .plugin_skills
+            .iter()
+            .flat_map(|(p, skills)| skills.iter().map(move |s| format!("{p}:{s}")))
+            .collect(),
+        offered: !t.hidden,
+        generic: t.generic,
+        trains_on_input: t.trains_on_input,
+        price_in: price.map(|p| p.input),
+        price_out: price.map(|p| p.output),
+        model,
+    }
+}
+
+/// The roster as a tuning table.
+pub fn matrix(json: bool) -> Result<()> {
+    let roster = Roster::load()?;
+    let rows: Vec<MatrixRow> = roster
+        .names()
+        .iter()
+        .filter_map(|n| roster.get(n))
+        .filter(|t| t.agent != Agent::None)
+        .map(matrix_row)
+        .collect();
+    if json {
+        output::println(&serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    let mut out = String::from(
+        "| teammate | agent | model | effort | phase | expected skills | $/MTok in/out | notes |\n\
+         |---|---|---|---|---|---|---|---|\n",
+    );
+    for r in &rows {
+        let mut notes = Vec::new();
+        if !r.offered {
+            notes.push("hidden");
+        }
+        if r.generic {
+            notes.push("generic");
+        }
+        if r.trains_on_input {
+            notes.push("trains on input");
+        }
+        if !r.effort_is_explicit && r.effort == "inherits config.toml" {
+            notes.push("effort unset");
+        }
+        let mut skills = r.skills.clone();
+        skills.extend(r.plugin_skills.iter().cloned());
+        let price = match (r.price_in, r.price_out) {
+            (Some(i), Some(o)) => format!("{i} / {o}"),
+            _ => "unknown".into(),
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            r.name,
+            r.agent,
+            r.model,
+            r.effort,
+            r.phase,
+            if skills.is_empty() { "-".into() } else { skills.join(", ") },
+            price,
+            notes.join(", "),
+        ));
     }
     output::print(&out);
     Ok(())
@@ -172,6 +279,29 @@ mod tests {
             documented, actual,
             "_template.md and struct Teammate disagree about the field list"
         );
+    }
+
+    /// The shipped roster states every effort it can, and prices every model
+    /// the price table covers.
+    #[test]
+    fn the_matrix_shows_explicit_effort_and_known_prices() {
+        let roster = Roster::builtin().unwrap();
+        let row = |name: &str| super::matrix_row(roster.require(name).unwrap());
+        let backend = row("backend-developer");
+        assert_eq!((backend.effort.as_str(), backend.effort_is_explicit), ("medium", true));
+        assert_eq!((backend.price_in, backend.price_out), (Some(4.0), Some(20.0)));
+        assert_eq!(row("codex-sol").effort, "medium");
+        assert_eq!(row("opencode-pickle").effort, "n/a");
+        assert_eq!(row("opencode-pickle").price_in, Some(0.0));
+        assert_eq!(row("pi").effort, "low");
+        assert_eq!(row("prime").model, "anthropic/claude-opus-5-5");
+        assert_eq!(row("prime").price_in, Some(4.0));
+        for name in roster.names() {
+            let t = roster.get(name).unwrap();
+            if t.agent == horch_core::teammates::Agent::Codex && !t.hidden {
+                assert!(row(name).effort_is_explicit, "{name}");
+            }
+        }
     }
 
     /// The template must survive the same parser real teammates go through,

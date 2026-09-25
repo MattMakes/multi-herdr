@@ -6,7 +6,8 @@ base: fleet-worker
 agent: opencode
 phase: implementation
 model: opencode/nemotron-3-ultra-free
-effort: high
+# No effort: the free models report `variants: {}`, so --variant is a no-op
+# and `--check` refuses the field (ai_docs/reports/model-guide-2026-09.md).
 permission_mode: acceptEdits
 trains_on_input: true
 

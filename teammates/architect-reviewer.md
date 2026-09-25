@@ -5,7 +5,10 @@ base: fleet-worker
 agent: claude
 phase: validation
 model: opus
-effort: xhigh
+# high: a missed finding costs a review round, which cost more than the
+# review itself in cezaar#40's baseline (reviewers+judges were 71% of worker
+# spend at xhigh). high, not xhigh: diminishing returns above it. (ai_docs/reports/model-guide-2026-09.md)
+effort: high
 
 # Review is read-only, enforced by denying the editing tools. Not plan mode:
 # ExitPlanMode asks a human to approve, and there is no human at this pane.

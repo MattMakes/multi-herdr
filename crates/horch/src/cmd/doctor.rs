@@ -6,7 +6,7 @@
 use anyhow::{bail, Result};
 use horch_core::agent;
 use horch_core::herdr::Herdr;
-use horch_core::teammates::Roster;
+use horch_core::teammates::{operator_effort_warnings, Roster};
 
 pub fn doctor() -> Result<()> {
     check()?;
@@ -26,6 +26,10 @@ pub fn doctor() -> Result<()> {
         for p in &problems {
             eprintln!("  {p}");
         }
+    }
+    // Settings that quietly override the effort in every teammate file.
+    for w in operator_effort_warnings() {
+        eprintln!("warning: {w}");
     }
     Ok(())
 }

@@ -209,7 +209,6 @@ impl Bundle {
             .context("teammate settings must be a JSON object")?;
         obj.entry("disableBundledSkills").or_insert(json!(true));
         obj.entry("disableWorkflows").or_insert(json!(true));
-        crate::launch::overlay_skill_switches(teammate, obj)?;
         if !teammate.inherit_plugins {
             let plugins = obj
                 .entry("enabledPlugins")
@@ -220,6 +219,8 @@ impl Bundle {
                 plugins.insert(name, json!(false));
             }
         }
+        // After the plugin switch-off: a plugin_skills plugin stays enabled.
+        crate::launch::overlay_skill_switches(teammate, obj)?;
         if teammate.setting_sources.is_some() && !obj.contains_key("statusLine") {
             if let Some(status) = operator_status_line() {
                 obj.insert("statusLine".into(), status);
@@ -230,10 +231,13 @@ impl Bundle {
 
     pub fn apply_env(&self, cmd: &mut std::process::Command, teammate: &Teammate) -> Result<()> {
         if teammate.agent == Agent::Opencode {
-            let inherited = teammate
-                .env
-                .get("OPENCODE_CONFIG_CONTENT")
-                .cloned()
+            // The builder may already have set it (the effort variant); build
+            // on that rather than on the teammate's or the operator's value.
+            let inherited = cmd
+                .get_envs()
+                .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
+                .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+                .or_else(|| teammate.env.get("OPENCODE_CONFIG_CONTENT").cloned())
                 .or_else(|| std::env::var("OPENCODE_CONFIG_CONTENT").ok());
             cmd.env(
                 "OPENCODE_CONFIG_CONTENT",
@@ -243,20 +247,82 @@ impl Bundle {
         Ok(())
     }
 
-    pub fn briefing(&self, agent: Agent, phase: Option<Phase>) -> String {
-        let names: Vec<String> = self
-            .names
+    /// The skill paragraph prepended to a worker's briefing.
+    ///
+    /// The teammate's own `skills:` and its `plugin_skills` are EXPECTED, and
+    /// each is named with its description, so the worker knows when its step
+    /// has come. A bare list of names read as optional, and workers skipped
+    /// them. The rest of the phase catalog stays available by name only,
+    /// which keeps the context cost of a broad phase small.
+    pub fn briefing(&self, teammate: &Teammate) -> String {
+        let agent = teammate.agent;
+        let qualified = |s: &str| {
+            if agent == Agent::Claude {
+                format!("horch:{s}")
+            } else {
+                s.to_string()
+            }
+        };
+        let catalog = catalog().unwrap_or_default();
+        let mut expected: Vec<String> = teammate
+            .skills
             .iter()
+            .filter(|s| self.names.contains(*s))
             .map(|s| {
-                if agent == Agent::Claude {
-                    format!("horch:{s}")
-                } else {
-                    s.clone()
-                }
+                let description = catalog
+                    .get(s)
+                    .map(|(meta, _)| meta.description.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .unwrap_or_default();
+                format!("- {}: {description}", qualified(s))
             })
             .collect();
-        format!("\n\nFleet skill phase: {}. Available native skills: {}. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under {}. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n",
-            phase.map(|p| p.to_string()).unwrap_or_else(|| "custom".into()), names.join(", "), self.skills_dir().display())
+        // A plugin that does not resolve is reported by `--check`; the
+        // briefing must not fail a launch over a description.
+        if agent == Agent::Claude {
+            if let Ok(plugins) = crate::plugins::resolve_all(teammate) {
+                for (plugin, wanted) in plugins {
+                    for skill in wanted {
+                        let description = plugin.description(&skill).unwrap_or_default();
+                        expected.push(format!("- {}:{skill}: {description}", plugin.name));
+                    }
+                }
+            }
+        }
+        let others: Vec<String> = self
+            .names
+            .iter()
+            .filter(|s| !teammate.skills.contains(*s))
+            .map(|s| qualified(s))
+            .collect();
+
+        let phase = teammate
+            .phase
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "custom".into());
+        let mut out = format!("\n\nFleet skill phase: {phase}.");
+        if !expected.is_empty() {
+            out.push_str(
+                " Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n",
+            );
+            out.push_str(&expected.join("\n"));
+            out.push('\n');
+            if !others.is_empty() {
+                out.push_str(&format!(
+                    "Also available in this phase: {}. Load one only when your current step matches it.",
+                    others.join(", ")
+                ));
+            }
+        } else {
+            out.push_str(&format!(
+                " Available native skills: {}. Load only the skill matching your current step; do not read every skill at startup.",
+                others.join(", ")
+            ));
+        }
+        out.push_str(&format!(
+            " If a same-named ambient skill exists, use the fleet copy under {}. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n",
+            self.skills_dir().display()
+        ));
+        out
     }
 }
 
@@ -427,12 +493,46 @@ mod tests {
         assert_ne!(a.root, b.root);
         assert!(a.skills_dir().join("create-plan/SKILL.md").exists());
         assert!(!a.skills_dir().join("execute").exists());
-        let brief = a.briefing(Agent::Claude, t.phase);
+        let brief = a.briefing(&t);
         assert!(brief.contains("horch:create-plan"));
         assert!(!brief.contains("# Create"));
+        assert!(!brief.contains("expected to use"), "no skills: listed: {brief}");
         drop(a);
         assert!(!gone.exists());
         assert!(b.skills_dir().join("create-plan/SKILL.md").exists());
+    }
+
+    /// A teammate's own skills are named as expected, with descriptions; the
+    /// rest of its phase catalog stays available by name only.
+    #[test]
+    fn skills_briefing_names_expected_skills_with_descriptions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roster = crate::teammates::Roster::builtin().unwrap();
+        let t = roster.require("backend-developer").unwrap();
+        let bundle = Bundle::install(tmp.path(), t).unwrap().unwrap();
+        let brief = bundle.briefing(t);
+        let all = catalog().unwrap();
+        for skill in ["tdd", "security-review"] {
+            let description = all[skill].0.description.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                brief.contains(&format!("- horch:{skill}: {description}")),
+                "{skill} missing from:\n{brief}"
+            );
+        }
+        let also = brief
+            .lines()
+            .find(|l| l.starts_with("Also available in this phase: "))
+            .unwrap_or_else(|| panic!("{brief}"));
+        assert!(also.contains("horch:execute"), "{also}");
+        assert!(!also.contains("horch:tdd"), "an expected skill is not repeated: {also}");
+        assert!(!brief.contains(&all["execute"].0.description), "only expected skills carry descriptions");
+
+        // Codex names skills bare.
+        let codex = roster.require("codex-reviewer").unwrap();
+        if !cfg!(windows) {
+            let bundle = Bundle::install(tmp.path(), codex).unwrap().unwrap();
+            assert!(bundle.briefing(codex).contains("\n- code-review: "));
+        }
     }
 
     #[test]

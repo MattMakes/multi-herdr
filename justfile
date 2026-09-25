@@ -64,10 +64,11 @@ herdr-orchestration: require-herdr
 #
 # FLAVOR picks who orchestrates, and nothing else - the roster of workers
 # is the same either way:
-#   herdr-fleet        Claude Code on Fable (the default)
-#   herdr-fleet cc     the same, said out loud
-#   herdr-fleet codex  Codex on Astra
-herdr-fleet FLAVOR="cc": require-herdr
+#   herdr-fleet        Claude Code on Opus (the default; also cc, claude)
+#   herdr-fleet fable  Claude Code on Fable
+#   herdr-fleet astra  Codex on Astra (also codex)
+#   herdr-fleet sol    Codex on Sol
+herdr-fleet FLAVOR="opus": require-herdr
     {{horch}} fleet {{FLAVOR}} --cwd "{{cwd}}"
 
 # Self-verifying check of the fleet machinery (spawn -> brief -> register
@@ -94,6 +95,17 @@ horch1-smoke: require-herdr
 # Show the roster the orchestrator picks from.
 teammates:
     {{horch}} teammates
+
+# The roster as a tuning table: harness, model, effort, phase, expected
+# skills, price. Pair with `just cost` when retuning (see the tune-fleet skill).
+teammates-matrix:
+    {{horch}} teammates --matrix
+
+# What the fleet run in the directory you called this from cost, per worker,
+# from each harness's transcripts. Extra flags pass through, e.g.
+# `just cost --since 2026-09-24 --reprice sonnet`.
+cost *ARGS:
+    HORCH_PROJECT_DIR="{{cwd}}" {{horch}} cost {{ARGS}}
 
 # Validate every file in teammates/ before a fleet reads them for real.
 teammates-check:
