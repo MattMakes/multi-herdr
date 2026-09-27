@@ -922,6 +922,23 @@ impl Roster {
                     problems.push(format!("{who}: env must not set {key}; never use it"));
                 }
             }
+            // Network access and "never ask" do not go together: a codex
+            // worker with both can send code out, or pull code in and run it,
+            // and nothing stops it. `codex-network` pairs the network with
+            // acceptEdits (-a on-request).
+            if t.agent == Agent::Codex
+                && t.args.iter().any(|a| a.replace(' ', "") == "sandbox_workspace_write.network_access=true")
+                && matches!(
+                    t.permission_mode,
+                    Some(PermissionMode::Auto) | Some(PermissionMode::BypassPermissions)
+                )
+            {
+                problems.push(format!(
+                    "{who}: network access with permission_mode '{}' never asks before \
+                     it sends or fetches; use acceptEdits",
+                    t.permission_mode.unwrap().as_str()
+                ));
+            }
             // Orchestrator-only capabilities stay with the orchestrator.
             if !FLEET_ORCHESTRATORS.contains(&who.as_str()) {
                 for skill in ORCHESTRATOR_ONLY_SKILLS {
@@ -1519,6 +1536,39 @@ mod spawnable_tests {
             r.check()
                 .iter()
                 .any(|p| p.starts_with("codex-sol: 'plugin_skills' is not something codex")),
+            "{:?}",
+            r.check()
+        );
+    }
+
+    /// Only `codex-network` opens the codex sandbox's network, and it is not
+    /// allowed to pair that with "never ask".
+    #[test]
+    fn codex_network_access_is_contained() {
+        let mut r = Roster::builtin().unwrap();
+        let net = "sandbox_workspace_write.network_access=true";
+        for name in r.names() {
+            let t = r.require(name).unwrap();
+            let has = t.args.iter().any(|a| a == net);
+            assert_eq!(has, name == "codex-network", "{name}");
+        }
+        let cmd = crate::launch::command(
+            r.require("codex-network").unwrap(),
+            crate::launch::Session::Unmanaged,
+            "p",
+            None,
+        )
+        .unwrap();
+        let a: Vec<String> = cmd.get_args().map(|x| x.to_string_lossy().into_owned()).collect();
+        assert!(a.windows(4).any(|w| w == ["-s", "workspace-write", "-a", "on-request"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["-c", net]), "{a:?}");
+
+        r.teammates.get_mut("codex-network").unwrap().permission_mode =
+            Some(PermissionMode::Auto);
+        assert!(
+            r.check().iter().any(|p| p.starts_with(
+                "codex-network: network access with permission_mode 'auto'"
+            )),
             "{:?}",
             r.check()
         );

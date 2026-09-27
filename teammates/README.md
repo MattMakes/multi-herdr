@@ -101,13 +101,22 @@ plugin directories.
 
 ## The generics
 
-`sonnet`, `opus`, `codex-sol`, `codex-terra`, `codex-luna`, `opencode-ultra`,
+`sonnet`, `opus`, `codex-sol`, `codex-network`, `codex-terra`, `codex-luna`, `opencode-ultra`,
 `opencode-pickle`, `opencode-lightning`, `pi` and `prime` are the fallbacks:
 what the orchestrator spawns when no specialist's `brief_description` matches
 the work. They are named after the tier or the harness on purpose, so
 `horch spawn opus`, the ledger's `tier` field, and the roster in the
 orchestrator briefing all keep meaning the same thing. There is no `fable` and
 no `astra` generic: those tiers belong to the orchestrator.
+
+`codex-network` is the only Codex worker whose sandbox reaches the network
+(`-c sandbox_workspace_write.network_access=true`). Every other Codex
+teammate keeps the network off, because it runs `auto` (`-a never`) and
+nothing would stop it from sending code out. `codex-network` runs
+`acceptEdits` (`-a on-request`) instead, and `horch teammates --check` fails
+any Codex teammate that pairs network access with `auto` or
+`bypassPermissions`. Claude workers need no switch: no Claude sandbox is
+configured, so their Bash and WebFetch already reach the network.
 
 They are not one ladder but three, and the orchestrator is choosing on cost and
 confidentiality as much as on capability:
@@ -129,7 +138,7 @@ evidence per teammate, with prices and sources, is in
 |---|---|---|
 | orchestrator | `orchestrator`, `orchestrator-codex` | xhigh |
 | reviewers and planners | `architect-reviewer`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
-| builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `prime` | medium |
+| builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `codex-network`, `prime` | medium |
 | runners | `codex-terra`, `codex-luna`, `pi` | low |
 | no effort setting | `opencode-*` (their free models define no variants) | - |
 
