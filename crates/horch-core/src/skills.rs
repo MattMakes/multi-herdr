@@ -415,11 +415,11 @@ mod tests {
     #[test]
     fn skills_catalog_is_portable_and_every_phase_resolves() {
         let catalog = catalog().unwrap();
-        assert_eq!(catalog.len(), 15);
-        // `orchestrate` is attached by name, on the two orchestrators only, and
-        // belongs to no phase catalog. Adding it to `Phase::Plan` would hand the
-        // fleet's playbook to `staff-engineer` and every other plan-phase
-        // teammate, which is the opposite of what it is for.
+        assert_eq!(catalog.len(), 16);
+        // `orchestrate` and `skill-creator` are attached by name, to the
+        // orchestrators only, and belong to no phase catalog. Adding either to
+        // `Phase::Plan` would hand it to `staff-engineer` and every other
+        // plan-phase teammate, which is the opposite of what it is for.
         let phased: BTreeSet<&str> = [
             Phase::Research,
             Phase::Plan,
@@ -434,7 +434,7 @@ mod tests {
             .map(String::as_str)
             .filter(|n| !phased.contains(n))
             .collect();
-        assert_eq!(by_name_only, ["orchestrate"]);
+        assert_eq!(by_name_only, crate::teammates::ORCHESTRATOR_ONLY_SKILLS);
         for phase in [
             Phase::Research,
             Phase::Plan,
@@ -551,14 +551,14 @@ mod tests {
 
     /// The orchestrator's playbook reaches the orchestrator and nobody else.
     /// Both teammates sit on `phase: plan`, so the only difference between
-    /// these two lists is the `skills: [orchestrate]` line in
-    /// `teammates/orchestrator.md`.
+    /// these two lists is the `skills: [orchestrate, skill-creator]` line in
+    /// `teammates/orchestrator.md`. skill-creator is the Claude flavor's only.
     #[test]
     fn skills_orchestrate_is_attached_by_name_to_the_orchestrator_only() {
         let roster = crate::teammates::Roster::builtin().unwrap();
         assert_eq!(
             selected(roster.require("orchestrator").unwrap()).unwrap(),
-            ["create-plan", "handoff", "orchestrate", "pre-flight"]
+            ["create-plan", "handoff", "orchestrate", "pre-flight", "skill-creator"]
         );
         assert_eq!(
             selected(roster.require("orchestrator-codex").unwrap()).unwrap(),
@@ -587,9 +587,15 @@ mod tests {
         let value: Value =
             serde_json::from_str(bundle.configure(&t).unwrap().settings.as_ref().unwrap()).unwrap();
         assert_eq!(value["syncClaudeAiSkills"], false);
+        assert_eq!(value["remoteControlAtStartup"], false);
         assert_eq!(
             value["skillOverrides"],
-            json!({"keep": "name-only", "dev-prime": "off"})
+            json!({
+                "keep": "name-only",
+                "dev-prime": "off",
+                "skill-creator": "off",
+                "anthropic-skills:skill-creator": "off"
+            })
         );
 
         let opted_in = Teammate {
@@ -607,6 +613,13 @@ mod tests {
         )
         .unwrap();
         assert!(value.get("syncClaudeAiSkills").is_none(), "{value}");
-        assert_eq!(value["skillOverrides"], json!({"keep": "name-only"}));
+        assert_eq!(
+            value["skillOverrides"],
+            json!({
+                "keep": "name-only",
+                "skill-creator": "off",
+                "anthropic-skills:skill-creator": "off"
+            })
+        );
     }
 }

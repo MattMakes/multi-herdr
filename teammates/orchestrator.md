@@ -5,10 +5,20 @@ hidden: true
 base: fleet-orchestrator
 agent: claude
 phase: plan
-skills: [orchestrate]
+# skill-creator is a verbatim copy of Anthropic's (skills/provenance.json).
+# It and orchestrate are orchestrator-only: `horch teammates --check` fails
+# any other teammate that names either, and every pane switches off the
+# ambient copies (the official plugin, the claude.ai-synced one).
+skills: [orchestrate, skill-creator]
 model: fable
 effort: xhigh
-permission_mode: acceptEdits
+# Auto mode: a classifier approves routine actions, so the orchestrator does
+# not stall on a prompt while the operator is away from the pane.
+permission_mode: auto
+# Remote Control, so the operator can drive this pane from claude.ai or the
+# phone. A built-in, not a plugin: `remoteControlAtStartup` in the settings
+# overlay. Every other pane gets the same key set to false.
+remote_control: true
 
 # The orchestrator's context is the scarcest resource in the fleet: it holds
 # the plan, the roster, and who is doing what, for the whole run. It keeps the
@@ -23,8 +33,10 @@ permission_mode: acceptEdits
 # (~1.2k tokens on this machine), which is the right trade.
 inherit_plugins: false
 mcp_servers: {}
-# Fleet rule: no subagents. Ask the orchestrator for more workers.
-disallowed_tools: [Agent]
+# Fleet rule: no subagents and no background agents. Workers are the only
+# way to delegate. Agent starts a subagent (and a background one with
+# run_in_background); RemoteTrigger starts a cloud agent.
+disallowed_tools: [Agent, RemoteTrigger]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
 ---
@@ -45,3 +57,10 @@ When a piece of work needs orchestrator-level reasoning - a design with real
 tradeoffs, a plan across many moving parts, a judgement call - that reasoning
 is yours. Do it here, write the result to a file, and hand the execution to
 opus. Never delegate the thinking itself downward and hope.
+
+== horch:skill-creator ==
+The skill-creator skill is yours alone; no worker has it. It tells you to
+spawn subagents and to run `claude -p` loops. The fleet rule wins: use its
+no-subagent path. Run each test case yourself, one at a time, and grade
+inline. Skip the baseline runs, the blind comparison and the description
+optimization loop.

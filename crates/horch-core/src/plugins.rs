@@ -143,6 +143,26 @@ fn installed_root(installed: &Value, plugin: &str) -> Option<(String, PathBuf)> 
     None
 }
 
+/// Every `name@marketplace` key under which `plugin` is installed, plus
+/// `always`, sorted. `always` covers a machine where it is not installed yet:
+/// an `enabledPlugins` entry for a missing plugin does nothing.
+pub fn installed_keys(installed: Option<&Value>, plugin: &str, always: &str) -> Vec<String> {
+    let mut keys: Vec<String> = installed
+        .and_then(|v| v.get("plugins"))
+        .and_then(|p| p.as_object())
+        .map(|p| {
+            p.keys()
+                .filter(|k| k.split('@').next() == Some(plugin))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    keys.push(always.to_string());
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 #[derive(Deserialize)]
 struct SkillFront {
     name: Option<String>,
@@ -234,5 +254,19 @@ mod tests {
 
         let err = resolve_in(&[local], None, "missing").unwrap_err().to_string();
         assert!(err.contains("plugin 'missing' is neither"), "{err}");
+    }
+
+    #[test]
+    fn installed_keys_finds_every_marketplace_and_keeps_the_fallback() {
+        let registry = serde_json::json!({"version": 2, "plugins": {
+            "sc@official": [{"installPath": "/x"}],
+            "sc@fork": [{"installPath": "/y"}],
+            "other@official": [{"installPath": "/z"}]
+        }});
+        assert_eq!(
+            installed_keys(Some(&registry), "sc", "sc@official"),
+            ["sc@fork", "sc@official"]
+        );
+        assert_eq!(installed_keys(None, "sc", "sc@official"), ["sc@official"]);
     }
 }

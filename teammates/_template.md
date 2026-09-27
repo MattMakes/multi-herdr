@@ -119,6 +119,13 @@ disabled_skills: []
 # teammate has neither a phase nor skills (the briefing could not name them).
 plugin_skills: {}
 
+# claude only, orchestrator only. Starts Claude's Remote Control bridge, as
+# `remoteControlAtStartup: true` in the --settings overlay. Every other claude
+# pane gets the key set to false, so an operator or org default cannot turn it
+# on in a worker. `horch teammates --check` fails a non-orchestrator that sets
+# it.
+remote_control: false
+
 # ─── startup mode ────────────────────────────────────────────────────────────
 # How much the teammate may do without asking. Unset = inherit the operator's
 # settings, which for a worker in an unwatched pane usually means it stops on

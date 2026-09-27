@@ -44,6 +44,18 @@ include!(concat!(env!("OUT_DIR"), "/builtin_teammates.rs"));
 /// orchestrator writes every brief for an Opus/Codex-Sol reader either way.
 pub const ORCHESTRATOR_TIERS: [(&str, &str); 2] = [("fable", "opus"), ("astra", "codex-sol")];
 
+/// The teammate files `horch fleet` launches as the orchestrator.
+pub const FLEET_ORCHESTRATORS: [&str; 2] = ["orchestrator", "orchestrator-codex"];
+
+/// Bundled skills only a fleet orchestrator may carry. `check` fails any other
+/// teammate that names one in `skills:`, and none is in a phase catalog.
+pub const ORCHESTRATOR_ONLY_SKILLS: [&str; 2] = ["orchestrate", "skill-creator"];
+
+/// Tools the Claude orchestrator must deny: `Agent` starts a subagent, in the
+/// foreground or the background, and `RemoteTrigger` starts a cloud agent.
+/// Workers are the orchestrator's only way to delegate.
+pub const ORCHESTRATOR_DENIED_TOOLS: [&str; 2] = ["Agent", "RemoteTrigger"];
+
 /// The reserved tier a model belongs to, if any.
 ///
 /// Matched on the model's name segments rather than the whole slug, because the
@@ -294,6 +306,7 @@ impl Agent {
             ("inherit_claudeai_skills", t.inherit_claudeai_skills),
             ("disabled_skills", !t.disabled_skills.is_empty()),
             ("plugin_skills", !t.plugin_skills.is_empty()),
+            ("remote_control", t.remote_control),
             ("mcp_servers", t.mcp_servers.is_some()),
             ("mcp_config_files", !t.mcp_config_files.is_empty()),
         ] {
@@ -487,6 +500,12 @@ pub struct Teammate {
     /// `plugins.rs`.
     #[serde(default)]
     pub plugin_skills: BTreeMap<String, Vec<String>>,
+    /// Claude's Remote Control bridge, as `remoteControlAtStartup` in the
+    /// `--settings` overlay. Every claude pane gets the key: `true` here,
+    /// `false` everywhere else, so an operator or org default cannot turn it
+    /// on in a worker. Only an orchestrator may set it; `check` enforces that.
+    #[serde(default)]
+    pub remote_control: bool,
     #[serde(default)]
     pub settings: Option<String>,
     /// Inline MCP server definitions. `None` leaves the operator's MCP
@@ -548,6 +567,7 @@ impl Default for Teammate {
             inherit_claudeai_skills: false,
             disabled_skills: Vec::new(),
             plugin_skills: BTreeMap::new(),
+            remote_control: false,
             settings: None,
             mcp_servers: None,
             mcp_config_files: Vec::new(),
@@ -880,6 +900,64 @@ impl Roster {
                     "{who}: a fleet pane must not spawn subagents; add \
                      disallowed_tools: [Agent] or set allow_subagents: true"
                 ));
+            }
+            // The orchestrator delegates to workers and nothing else: no
+            // subagent and no background or cloud agent. `allow_subagents`
+            // does not waive this one.
+            if t.agent == Agent::Claude && FLEET_ORCHESTRATORS.contains(&who.as_str()) {
+                for tool in ORCHESTRATOR_DENIED_TOOLS {
+                    if !t.disallowed_tools.iter().any(|x| x == tool) {
+                        problems.push(format!(
+                            "{who}: the orchestrator delegates only to workers; add \
+                             {tool} to disallowed_tools"
+                        ));
+                    }
+                }
+            }
+            // The operator's rule (CLAUDE.md): no teammate uses
+            // ANTHROPIC_API_KEY. The launch removes it; a file that sets it is
+            // a mistake to report, not to hide.
+            for key in crate::launch::FORBIDDEN_ENV {
+                if t.env.contains_key(key) {
+                    problems.push(format!("{who}: env must not set {key}; never use it"));
+                }
+            }
+            // Network access and "never ask" do not go together: a codex
+            // worker with both can send code out, or pull code in and run it,
+            // and nothing stops it. `codex-network` pairs the network with
+            // acceptEdits (-a on-request).
+            if t.agent == Agent::Codex
+                && t.args.iter().any(|a| a.replace(' ', "") == "sandbox_workspace_write.network_access=true")
+                && matches!(
+                    t.permission_mode,
+                    Some(PermissionMode::Auto) | Some(PermissionMode::BypassPermissions)
+                )
+            {
+                problems.push(format!(
+                    "{who}: network access with permission_mode '{}' never asks before \
+                     it sends or fetches; use acceptEdits",
+                    t.permission_mode.unwrap().as_str()
+                ));
+            }
+            // Orchestrator-only capabilities stay with the orchestrator.
+            if !FLEET_ORCHESTRATORS.contains(&who.as_str()) {
+                for skill in ORCHESTRATOR_ONLY_SKILLS {
+                    if t.skills.iter().any(|s| s == skill) {
+                        problems.push(format!(
+                            "{who}: skill '{skill}' belongs to the orchestrator only"
+                        ));
+                    }
+                }
+                if t.plugin_skills.contains_key("skill-creator") {
+                    problems.push(format!(
+                        "{who}: plugin 'skill-creator' belongs to the orchestrator only"
+                    ));
+                }
+                if t.remote_control {
+                    problems.push(format!(
+                        "{who}: remote_control belongs to the orchestrator only"
+                    ));
+                }
             }
             if let Some(mode) = t.permission_mode {
                 let ok = match t.agent {
@@ -1458,6 +1536,80 @@ mod spawnable_tests {
             r.check()
                 .iter()
                 .any(|p| p.starts_with("codex-sol: 'plugin_skills' is not something codex")),
+            "{:?}",
+            r.check()
+        );
+    }
+
+    /// Only `codex-network` opens the codex sandbox's network, and it is not
+    /// allowed to pair that with "never ask".
+    #[test]
+    fn codex_network_access_is_contained() {
+        let mut r = Roster::builtin().unwrap();
+        let net = "sandbox_workspace_write.network_access=true";
+        for name in r.names() {
+            let t = r.require(name).unwrap();
+            let has = t.args.iter().any(|a| a == net);
+            assert_eq!(has, name == "codex-network", "{name}");
+        }
+        let cmd = crate::launch::command(
+            r.require("codex-network").unwrap(),
+            crate::launch::Session::Unmanaged,
+            "p",
+            None,
+        )
+        .unwrap();
+        let a: Vec<String> = cmd.get_args().map(|x| x.to_string_lossy().into_owned()).collect();
+        assert!(a.windows(4).any(|w| w == ["-s", "workspace-write", "-a", "on-request"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["-c", net]), "{a:?}");
+
+        r.teammates.get_mut("codex-network").unwrap().permission_mode =
+            Some(PermissionMode::Auto);
+        assert!(
+            r.check().iter().any(|p| p.starts_with(
+                "codex-network: network access with permission_mode 'auto'"
+            )),
+            "{:?}",
+            r.check()
+        );
+    }
+
+    /// skill-creator, orchestrate and Remote Control are the orchestrator's.
+    /// No worker may carry them, and the orchestrator must deny both ways to
+    /// start an agent of its own.
+    #[test]
+    fn orchestrator_only_capabilities_stay_with_the_orchestrator() {
+        let mut r = Roster::builtin().unwrap();
+        let orch = r.require("orchestrator").unwrap();
+        assert!(orch.remote_control);
+        assert_eq!(orch.permission_mode, Some(PermissionMode::Auto));
+        assert!(orch.skills.iter().any(|s| s == "skill-creator"));
+        assert!(r.check().is_empty(), "{:?}", r.check());
+
+        let opus = r.teammates.get_mut("opus").unwrap();
+        opus.skills.push("skill-creator".into());
+        opus.skills.push("orchestrate".into());
+        opus.remote_control = true;
+        opus.plugin_skills
+            .insert("skill-creator".into(), vec!["skill-creator".into()]);
+        let problems = r.check();
+        for expected in [
+            "opus: skill 'skill-creator' belongs to the orchestrator only",
+            "opus: skill 'orchestrate' belongs to the orchestrator only",
+            "opus: remote_control belongs to the orchestrator only",
+            "opus: plugin 'skill-creator' belongs to the orchestrator only",
+        ] {
+            assert!(problems.iter().any(|p| p == expected), "{expected}: {problems:?}");
+        }
+
+        let mut r = Roster::builtin().unwrap();
+        let orch = r.teammates.get_mut("orchestrator").unwrap();
+        orch.disallowed_tools = vec!["Agent".into()];
+        orch.allow_subagents = true;
+        assert!(
+            r.check().iter().any(|p| p.starts_with(
+                "orchestrator: the orchestrator delegates only to workers; add RemoteTrigger"
+            )),
             "{:?}",
             r.check()
         );
