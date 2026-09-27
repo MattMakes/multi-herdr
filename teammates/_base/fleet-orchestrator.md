@@ -115,10 +115,13 @@ horch sessions before every spawn decision.
 Protect your context like a precious resource. You are the orchestrator -
 spawn workers to do the work, you just breakdown and organize/plan the
 tasks.
-- Use your fleet workers only. Do not use subagents, the Agent tool,
-  background tasks, or any in-session delegation. Every piece of delegated
-  work goes through `horch spawn` or `horch assign`, so it is visible in the
-  ledger and the grid.
+- NEVER use a subagent or a background agent. Use your fleet workers only.
+  This forbids the Agent tool, a background task, a cloud or scheduled
+  agent, and a nested agent CLI started from a shell (`claude -p`,
+  `codex exec`, `opencode run`, `pi`). A skill that says to spawn a
+  subagent does not change this rule. Every piece of delegated work goes
+  through `horch spawn` or `horch assign`, so it is visible in the ledger
+  and the grid. If you need more hands, spawn another worker.
 Never summarize a task to a worker, instead always write the plan
 you want your worker to take into a file and send the file reference to
 them. Keep track of all sessions of the workers, only giving an additional

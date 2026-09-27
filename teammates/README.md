@@ -62,6 +62,17 @@ choose from** — there is no registry to update and nothing to recompile.
   and denies nothing by itself; nothing shipped sets it. The Codex teammates
   carry the same rule as `args: ["-c", "features.multi_agent=false"]`.
   `ai_docs/reports/no-subagents.md` has the evidence per harness.
+- **The orchestrator delegates only to workers.** The Claude orchestrator
+  also denies `RemoteTrigger`, which starts a cloud agent, and
+  `allow_subagents` cannot waive either deny for it. Its briefing forbids a
+  nested agent CLI (`claude -p`, `codex exec`) started from a shell.
+- **Some capabilities are the orchestrator's alone.** The bundled
+  `orchestrate` and `skill-creator` skills and `remote_control: true` are
+  refused by `horch teammates --check` on any other teammate. Every Claude
+  pane switches off the ambient skill-creator copies (the official plugin and
+  the claude.ai-synced skill) and states `remoteControlAtStartup`, `false`
+  except on the orchestrator. The Claude orchestrator starts in
+  `permission_mode: auto`.
 - **Agent-to-agent messages use Simplified Technical English (STE).** The rule
   lives in `_base/fleet-worker.md` and `_base/fleet-orchestrator.md`.
 

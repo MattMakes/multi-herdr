@@ -40,7 +40,7 @@ Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.
 
 Day to day: `just install` once, then `herdr-fleet` from any project.
-`just update` pulls and reinstalls.
+To pick up new changes, run `git pull` yourself, then `just install` again.
 
 ## Running a fleet
 

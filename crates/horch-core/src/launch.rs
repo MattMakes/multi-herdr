@@ -39,11 +39,30 @@ pub fn apply_env(teammate: &Teammate) {
     }
 }
 
+/// Environment variables no agent CLI ever receives. The operator's rule
+/// (CLAUDE.md): nothing in a fleet uses `ANTHROPIC_API_KEY`. Claude panes
+/// sign in with the operator's claude.ai login. The shell that starts a
+/// fleet can export the key, so every launch removes it.
+pub const FORBIDDEN_ENV: [&str; 1] = ["ANTHROPIC_API_KEY"];
+
 /// Build the command for a teammate, whichever CLI it names.
 ///
 /// `model_override` exists for the fixed `orchestration` recipe, where the
 /// model belongs to the pane rather than to the teammate file.
 pub fn command(
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+) -> Result<Command> {
+    let mut cmd = agent_command(teammate, session, prompt, model_override)?;
+    for key in FORBIDDEN_ENV {
+        cmd.env_remove(key);
+    }
+    Ok(cmd)
+}
+
+fn agent_command(
     teammate: &Teammate,
     session: Session<'_>,
     prompt: &str,
@@ -395,18 +414,53 @@ pub(crate) fn overlay_skill_switches(
             .entry("syncClaudeAiSkills")
             .or_insert(serde_json::Value::Bool(false));
     }
-    if !teammate.disabled_skills.is_empty() {
-        let overrides = overlay
-            .entry("skillOverrides")
-            .or_insert_with(|| serde_json::json!({}))
-            .as_object_mut()
-            .context("skillOverrides must be an object")?;
-        for name in &teammate.disabled_skills {
-            overrides.insert(name.clone(), "off".into());
-        }
+    // Plugins synced from claude.ai are plugins too: a teammate that sheds the
+    // operator's plugins sheds these, for this session only.
+    if !teammate.inherit_plugins {
+        overlay
+            .entry("syncClaudeAiPlugins")
+            .or_insert(serde_json::Value::Bool(false));
     }
-    overlay_plugin_skills(teammate, overlay)
+    // Remote Control is the orchestrator's. Stated in every pane, so an
+    // operator or org default of "on" never reaches a worker.
+    overlay
+        .entry("remoteControlAtStartup")
+        .or_insert(serde_json::Value::Bool(teammate.remote_control));
+    let overrides = overlay
+        .entry("skillOverrides")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("skillOverrides must be an object")?;
+    for name in &teammate.disabled_skills {
+        overrides.insert(name.clone(), "off".into());
+    }
+    // The ambient copies of skill-creator go off in every pane. The
+    // orchestrator carries its own as `horch:skill-creator`; no worker has one.
+    for name in AMBIENT_SKILL_CREATOR {
+        overrides.insert(name.to_string(), "off".into());
+    }
+    overlay_plugin_skills(teammate, overlay)?;
+    // A plugin skill ignores skillOverrides, in every key form (Claude Code
+    // 2.1.283, tested live), so the official plugin goes off as a plugin.
+    let plugins = overlay
+        .entry("enabledPlugins")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("enabledPlugins must be an object")?;
+    for key in crate::plugins::installed_keys(
+        crate::plugins::installed_plugins().as_ref(),
+        "skill-creator",
+        "skill-creator@claude-plugins-official",
+    ) {
+        plugins.entry(key).or_insert(serde_json::Value::Bool(false));
+    }
+    Ok(())
 }
+
+/// The names skill-creator loads under as a skill, outside horch's bundle and
+/// the plugin: a user or project skill, and the claude.ai-synced copy.
+pub(crate) const AMBIENT_SKILL_CREATOR: [&str; 2] =
+    ["skill-creator", "anthropic-skills:skill-creator"];
 
 /// Narrow each `plugin_skills` plugin to the skills the teammate names: its
 /// other skills go off as `"<plugin>:<skill>": "off"`, and an installed
@@ -554,8 +608,29 @@ mod tests {
         }
     }
 
+    /// No agent CLI receives ANTHROPIC_API_KEY, whatever the shell exports
+    /// and whatever a teammate's `env:` says.
+    #[test]
+    fn no_launch_carries_the_anthropic_api_key() {
+        let r = Roster::builtin().unwrap();
+        for name in r.names() {
+            let t = r.require(name).unwrap();
+            if t.agent == Agent::None {
+                continue;
+            }
+            let cmd = command(t, Session::Unmanaged, "p", Some("m")).unwrap();
+            assert!(
+                cmd.get_envs()
+                    .any(|(k, v)| k == "ANTHROPIC_API_KEY" && v.is_none()),
+                "{} does not remove ANTHROPIC_API_KEY",
+                t.name
+            );
+        }
+    }
+
     #[test]
     fn claude_fresh_carries_session_and_mode() {
+        let (_home, _g) = fake_home("{}");
         let r = Roster::builtin().unwrap();
         let cmd = command(r.require("opus").unwrap(), Session::Fresh("sid"), "p", None).unwrap();
         let a = argv(&cmd);
@@ -573,7 +648,7 @@ mod tests {
                 "--permission-mode",
                 "auto",
                 "--settings",
-                r#"{"skillOverrides":{"herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off"},"syncClaudeAiSkills":false}"#,
+                r#"{"enabledPlugins":{"skill-creator@claude-plugins-official":false},"remoteControlAtStartup":false,"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -985,18 +1060,39 @@ mod tests {
             overlay["enabledPlugins"].get("old@m").is_none(),
             "{overlay}"
         );
-        // The claude.ai-synced skills go off too.
+        // The claude.ai-synced skills and plugins go off too.
         assert_eq!(overlay["syncClaudeAiSkills"], false, "{overlay}");
+        assert_eq!(overlay["syncClaudeAiPlugins"], false, "{overlay}");
         // And nothing else rides along - no statusLine override and no tuning.
         assert!(overlay.get("statusLine").is_none(), "{overlay}");
         assert!(overlay.get("disableWorkflows").is_none(), "{overlay}");
-        // skillOverrides carries this teammate's own two entries and nothing
-        // else. The operator's `explain-diff-notion` override is not copied in:
-        // Claude merges settings per key, so it still applies by itself.
+        // skillOverrides carries this teammate's own two entries and the
+        // ambient skill-creator copies, nothing else. The operator's
+        // `explain-diff-notion` override is not copied in: Claude merges
+        // settings per key, so it still applies by itself.
         assert_eq!(
             overlay["skillOverrides"],
-            serde_json::json!({"herdr-orchestrator": "off", "herdr-worker": "off"}),
+            serde_json::json!({
+                "herdr-orchestrator": "off",
+                "herdr-worker": "off",
+                "skill-creator": "off",
+                "anthropic-skills:skill-creator": "off"
+            }),
             "{overlay}"
+        );
+        // Remote Control is the orchestrator's alone.
+        assert_eq!(overlay["remoteControlAtStartup"], true, "{overlay}");
+        // Its skill-creator is the bundled `horch:skill-creator`, never the
+        // official plugin: skillOverrides cannot hide a plugin skill.
+        assert_eq!(
+            overlay["enabledPlugins"]["skill-creator@claude-plugins-official"],
+            false,
+            "{overlay}"
+        );
+        assert!(a.windows(2).any(|w| w == ["--permission-mode", "auto"]), "{a:?}");
+        assert!(
+            a.windows(2).any(|w| w == ["--disallowedTools", "Agent,RemoteTrigger"]),
+            "{a:?}"
         );
     }
 
@@ -1107,11 +1203,15 @@ mod tests {
             overlay,
             serde_json::json!({
                 "syncClaudeAiSkills": false,
+                "remoteControlAtStartup": false,
+                "enabledPlugins": {"skill-creator@claude-plugins-official": false},
                 "skillOverrides": {
                     "herdr-orchestrator": "off",
                     "herdr-worker": "off",
                     "herdr:herdr-orchestrator": "off",
-                    "herdr:herdr-worker": "off"
+                    "herdr:herdr-worker": "off",
+                    "skill-creator": "off",
+                    "anthropic-skills:skill-creator": "off"
                 }
             })
         );
@@ -1130,11 +1230,15 @@ mod tests {
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(
             overlay,
-            serde_json::json!({"skillOverrides": {
+            serde_json::json!({"remoteControlAtStartup": false,
+                "enabledPlugins": {"skill-creator@claude-plugins-official": false},
+                "skillOverrides": {
                 "herdr-orchestrator": "off",
                 "herdr-worker": "off",
                 "herdr:herdr-orchestrator": "off",
-                "herdr:herdr-worker": "off"
+                "herdr:herdr-worker": "off",
+                "skill-creator": "off",
+                "anthropic-skills:skill-creator": "off"
             }}),
             "the synced-skills switch must be the only thing opting out removes"
         );
@@ -1163,7 +1267,14 @@ mod tests {
             overlay,
             serde_json::json!({
                 "syncClaudeAiSkills": false,
-                "skillOverrides": {"dev-prime": "off", "code:core": "off"}
+                "remoteControlAtStartup": false,
+                "enabledPlugins": {"skill-creator@claude-plugins-official": false},
+                "skillOverrides": {
+                    "dev-prime": "off",
+                    "code:core": "off",
+                    "skill-creator": "off",
+                    "anthropic-skills:skill-creator": "off"
+                }
             })
         );
     }

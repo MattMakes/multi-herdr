@@ -92,6 +92,14 @@
       "source_path": null,
       "source_sha256": null,
       "adaptation": "Original to this repository. Reconciled from the retired external herdr-orchestrator and herdr-worker skills against the horch CLI."
+    },
+    {
+      "name": "skill-creator",
+      "source_repository": "https://github.com/anthropics/claude-plugins-official",
+      "source_revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+      "source_path": "plugins/skill-creator/skills/skill-creator/SKILL.md",
+      "source_sha256": "dcd4803e61e913e6fc27294184cd3a71f09f5e924ff20c8a9a20173e7b3c2bcf",
+      "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase."
     }
   ]
 }

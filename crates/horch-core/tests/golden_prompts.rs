@@ -234,7 +234,13 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         When a piece of work needs orchestrator-level reasoning - a design with real\n\
         tradeoffs, a plan across many moving parts, a judgement call - that reasoning\n\
         is yours. Do it here, write the result to a file, and hand the execution to\n\
-        opus. Never delegate the thinking itself downward and hope.\n\n";
+        opus. Never delegate the thinking itself downward and hope.\n\n\
+        == horch:skill-creator ==\n\
+        The skill-creator skill is yours alone; no worker has it. It tells you to\n\
+        spawn subagents and to run `claude -p` loops. The fleet rule wins: use its\n\
+        no-subagent path. Run each test case yourself, one at a time, and grade\n\
+        inline. Skip the baseline runs, the blind comparison and the description\n\
+        optimization loop.\n\n";
     assert_eq!(was.matches(lifecycle).count(), 1);
 
     let old_spawning = "  horch spawn <tier> \"<task>\"                            new session\n  horch spawn --resume <session-or-record-id> \"<task>\"   resume old session\n";
@@ -272,10 +278,13 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
                           tasks. ";
     let workers_only = "spawn workers to do the work, you just breakdown and organize/plan the\n\
                         tasks.\n\
-                        - Use your fleet workers only. Do not use subagents, the Agent tool,\n\
-                        \x20 background tasks, or any in-session delegation. Every piece of delegated\n\
-                        \x20 work goes through `horch spawn` or `horch assign`, so it is visible in the\n\
-                        \x20 ledger and the grid.\n";
+                        - NEVER use a subagent or a background agent. Use your fleet workers only.\n\
+                        \x20 This forbids the Agent tool, a background task, a cloud or scheduled\n\
+                        \x20 agent, and a nested agent CLI started from a shell (`claude -p`,\n\
+                        \x20 `codex exec`, `opencode run`, `pi`). A skill that says to spawn a\n\
+                        \x20 subagent does not change this rule. Every piece of delegated work goes\n\
+                        \x20 through `horch spawn` or `horch assign`, so it is visible in the ledger\n\
+                        \x20 and the grid. If you need more hands, spawn another worker.\n";
     assert_eq!(was.matches(spawn_sentence).count(), 1);
 
     // Seventh: `horch spawn` places the pane itself and tiles the workspace after
