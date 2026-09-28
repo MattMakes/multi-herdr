@@ -11,11 +11,17 @@ use anyhow::{bail, Context, Result};
 use horch_core::herdr::Herdr;
 use horch_core::ledger::Ledger;
 use horch_core::mailbox::Mailbox;
+use horch_core::message;
 
 use crate::output;
 
-/// Deliver `message` into the pane registered as `role`.
-pub fn tell(role: &str, message: &str) -> Result<()> {
+/// Deliver `text` into the pane registered as `role`.
+///
+/// From a worker (`HORCH_ROLE` set) the message always starts with the worker's
+/// `[<role>]` tag: an untagged line reads as the human operator. A message over
+/// [`message::MAX_INLINE`] chars is written to a file, and the pane gets one
+/// short line that quotes its head and names the file.
+pub fn tell(role: &str, text: &str) -> Result<()> {
     let herdr = Herdr::new();
     let mailbox = Mailbox::resolve(&herdr)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
@@ -32,7 +38,19 @@ pub fn tell(role: &str, message: &str) -> Result<()> {
             mailbox.dir().display()
         );
     };
-    herdr.send_line(&target, message)
+    let sender = std::env::var("HORCH_ROLE").ok().filter(|s| !s.is_empty());
+    let text = match &sender {
+        Some(me) => message::ensure_tag(text, me),
+        None => text.to_string(),
+    };
+    let line = if text.chars().count() > message::MAX_INLINE {
+        let from = sender.as_deref().unwrap_or("orchestrator");
+        let path = message::spool(&message::spool_dir(), from, role, &text)?;
+        message::reference_line(&text, &path)
+    } else {
+        text
+    };
+    herdr.send_line(&target, &line)
 }
 
 /// List roles registered - and so reachable via `horch tell` - in this workspace.
@@ -85,6 +103,9 @@ pub fn done(summary: &str) -> Result<()> {
     let pane_env = require_env("HERDR_PANE_ID")
         .context("horch done must run inside a herdr pane")?;
 
+    // `done` adds the tag and keyword itself; a summary that repeats them would
+    // arrive as `[r] DONE: [r] DONE: ...`.
+    let summary = message::strip_done_prefix(summary, &role);
     Ledger::open()?.done(&record_id, summary)?;
 
     let herdr = Herdr::new();
