@@ -5,6 +5,8 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route opus-hardening).
+fallbacks: [codex-sol]
 # high: the sweet spot. Root-cause analysis and hardening need depth, and Opus
 # at high often matches or beats a smaller model at max on fewer tokens.
 # Not for first drafts: reasoning tokens spent on preliminary ideas are waste.

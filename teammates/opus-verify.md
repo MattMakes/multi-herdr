@@ -5,6 +5,8 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route opus-verify).
+fallbacks: [codex-sol]
 # max: fully autonomous, sandboxed, high-stakes verification. The most tokens
 # per task on the roster, so only for a precise spec: at max, a flawed premise
 # is pursued at full depth for a long time.

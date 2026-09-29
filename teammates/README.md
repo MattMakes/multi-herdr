@@ -118,6 +118,9 @@ the short form of that boundary in `brief_description`, so both the worker and
 the orchestrator see it. The two `max` seats, `sonnet-sweep` and `opus-verify`,
 have a `first_instruction` that makes the worker ask and wait on an
 underspecified task. At max effort a wrong premise costs the most tokens.
+Like the other Claude seats, each has a Codex `fallbacks:` entry for when the
+Claude pool cannot serve a spawn: `codex-sol` for the Opus four, `codex-terra`
+for the Sonnet four (`horch route <name>` shows the decision).
 
 Token efficiency: for deep reasoning, `opus-hardening` (Opus at high) often
 matches or beats Sonnet at max on fewer tokens. `sonnet-sweep` exists for

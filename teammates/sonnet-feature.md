@@ -5,6 +5,8 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: sonnet
+# When this model's usage pool cannot serve a spawn (horch route sonnet-feature).
+fallbacks: [codex-terra]
 # medium: everyday feature delivery against a written spec, the same level as
 # the other builders. The spec carries the design; this seat carries it out.
 # (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")

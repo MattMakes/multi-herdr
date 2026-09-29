@@ -5,6 +5,8 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: sonnet
+# When this model's usage pool cannot serve a spawn (horch route sonnet-bugfix).
+fallbacks: [codex-terra]
 # high: targeted bug hunting in one known place. A wrong fix costs a second
 # round, so this seat gets the depth to confirm the cause before it edits.
 # (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")

@@ -5,6 +5,8 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: sonnet
+# When this model's usage pool cannot serve a spawn (horch route sonnet-sweep).
+fallbacks: [codex-terra]
 # max: autonomous multi-file runs, where the effort buys consistency across a
 # long run, not insight. Only for precisely specified work: at max, Sonnet
 # compounds a wrong assumption over every file it touches. For deep reasoning,

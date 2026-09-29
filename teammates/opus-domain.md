@@ -5,6 +5,8 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route opus-domain).
+fallbacks: [codex-sol]
 # medium: complex feature engineering. The difficulty is in the domain, which
 # Opus's baseline reasoning handles; medium buys care, not exhaustive search.
 # (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")

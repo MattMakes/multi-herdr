@@ -5,6 +5,8 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: sonnet
+# When this model's usage pool cannot serve a spawn (horch route sonnet-sketch).
+fallbacks: [codex-terra]
 # low: instant feedback and sketching. The output is a first draft someone
 # else refines, so thinking tokens spent here are spent on ideas that will be
 # replaced. (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")

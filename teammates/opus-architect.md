@@ -5,6 +5,8 @@ base: fleet-worker
 agent: claude
 phase: plan
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route opus-architect).
+fallbacks: [codex-sol]
 # low: high-level steering. Opus's baseline reasoning carries the judgment;
 # the effort stays low so the answer comes back fast. Deep verification is a
 # different seat (opus-hardening, opus-verify).
