@@ -100,8 +100,10 @@ pub fn model_takes_effort(agent: Agent, model: &str) -> bool {
         Agent::Claude => !model
             .split(|c: char| !c.is_ascii_alphanumeric())
             .any(|seg| seg.eq_ignore_ascii_case("haiku")),
-        Agent::Opencode => !(model.starts_with("opencode/")
-            && (model.ends_with("-free") || model == "opencode/big-pickle")),
+        Agent::Opencode => {
+            !(model.starts_with("opencode/")
+                && (model.ends_with("-free") || model == "opencode/big-pickle"))
+        }
         Agent::None => false,
         _ => true,
     }
@@ -121,8 +123,7 @@ pub fn effort_problem(agent: Agent, model: Option<&str>, effort: &str) -> Option
         match effort {
             "minimal" => {
                 return Some(
-                    "codex effort 'minimal' is an API error on the gpt-5.6 models; use low"
-                        .into(),
+                    "codex effort 'minimal' is an API error on the gpt-5.6 models; use low".into(),
                 )
             }
             "ultra" => {
@@ -535,6 +536,11 @@ pub struct Teammate {
     pub trains_on_input: bool,
     #[serde(default)]
     pub first_instruction: Option<String>,
+    /// Teammates whose launch settings a spawn borrows when this one's usage
+    /// pool cannot serve it, in order of preference. The persona, base,
+    /// phase and skills stay this teammate's. See `balance_policy.rs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<String>,
     /// The file body. Its meaning depends on `base`: a persona when `base` is
     /// set, the entire prompt when it is not.
     #[serde(skip)]
@@ -575,6 +581,7 @@ impl Default for Teammate {
             env: BTreeMap::new(),
             trains_on_input: false,
             first_instruction: None,
+            fallbacks: Vec::new(),
             persona: String::new(),
         }
     }
@@ -705,6 +712,12 @@ impl Roster {
         Ok(())
     }
 
+    /// Add or replace one teammate. For tests that need a roster variant.
+    #[doc(hidden)]
+    pub fn insert_for_test(&mut self, t: Teammate) {
+        self.teammates.insert(t.name.clone(), t);
+    }
+
     pub fn get(&self, name: &str) -> Option<&Teammate> {
         self.teammates.get(name)
     }
@@ -804,327 +817,338 @@ impl Roster {
         Ok(())
     }
 
+    /// Everything wrong with one teammate, judged against this roster (its
+    /// bases, its rules). Also run on a teammate merged with a fallback.
+    pub fn check_teammate(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        let who = &t.name;
+        if let Err(error) = crate::skills::selected(t) {
+            problems.push(format!("{error:#}"));
+        }
+        if t.brief_description.trim().is_empty() {
+            problems.push(format!("{who}: brief_description is empty"));
+        }
+        if t.brief_description.len() > BRIEF_DESCRIPTION_MAX {
+            problems.push(format!(
+                "{who}: brief_description is {} chars, max {BRIEF_DESCRIPTION_MAX} \
+                 (it is carried in the orchestrator's context on every run)",
+                t.brief_description.len()
+            ));
+        }
+        if let Some(base) = &t.base {
+            if !self.bases.contains_key(base) {
+                problems.push(format!("{who}: base '{base}' does not exist in _base/"));
+            }
+        }
+        // Anything the orchestrator can pick must be something it may spawn.
+        if !t.hidden {
+            if let Err(e) = Roster::is_spawnable(t) {
+                problems.push(format!("{e:#}"));
+            }
+        }
+        if t.agent != Agent::None && t.model.is_none() && t.name != "orchestration-worker" {
+            problems.push(format!("{who}: agent is {} but no model is set", t.agent));
+        }
+        if let Some(effort) = &t.effort {
+            if let Some(why) = effort_problem(t.agent, t.model.as_deref(), effort) {
+                problems.push(format!("{who}: {why}"));
+            }
+        }
+        // Reinforced plugin skills must exist, or the briefing promises a
+        // skill the pane cannot load.
+        if t.agent == Agent::Claude && !t.plugin_skills.is_empty() {
+            if t.disable_skills {
+                problems.push(format!(
+                    "{who}: plugin_skills cannot load with disable_skills: true"
+                ));
+            }
+            if let Err(e) = crate::plugins::resolve_all(t) {
+                problems.push(format!("{who}: {e:#}"));
+            }
+            // The kept skills are named in the skill-bundle briefing, and
+            // the bundle path is the one that merges the switch-offs into
+            // a teammate's own `settings:` file. No phase and no skills
+            // means no bundle: the briefing would never name them.
+            if t.phase.is_none() && t.skills.is_empty() {
+                problems.push(format!(
+                    "{who}: plugin_skills needs a phase or skills, so the briefing \
+                     can name them"
+                ));
+            }
+        }
+        // A codex worker with no effort silently takes whatever the
+        // operator's ~/.codex/config.toml says (the pane's private
+        // CODEX_HOME links it). That made two workers run at "medium"
+        // nobody chose, so every offered codex teammate states its own.
+        if t.agent == Agent::Codex && !t.hidden && t.effort.is_none() {
+            problems.push(format!(
+                "{who}: a codex teammate must set effort; without it the pane \
+                 inherits model_reasoning_effort from ~/.codex/config.toml"
+            ));
+        }
+        // Every claude-shaped field this agent cannot express. Naming the
+        // field beats a generic "unsupported": the author set it on purpose.
+        for field in t.agent.unsupported_fields(t) {
+            problems.push(format!(
+                "{who}: '{field}' is not something {} can express; \
+                 use args, or move this work to a claude teammate",
+                t.agent
+            ));
+        }
+        // A fleet pane must not spawn subagents. The prose rule in
+        // `_base/fleet-worker.md` was not enough on its own, so the switch
+        // carries it: `--disallowedTools Agent` takes the tool out of the
+        // session's tool set on claude 2.1.278. The hidden orchestration-*
+        // teammates run a fixed recipe, not fleet panes, so only a
+        // spawnable teammate and the orchestrator itself are covered.
+        // Codex, OpenCode, pi and Prime are elsewhere; see
+        // `ai_docs/reports/no-subagents.md`.
+        if t.agent == Agent::Claude
+            && (!t.hidden || t.name == "orchestrator")
+            && !t.allow_subagents
+            && !t.disallowed_tools.iter().any(|x| x == "Agent")
+        {
+            problems.push(format!(
+                "{who}: a fleet pane must not spawn subagents; add \
+                 disallowed_tools: [Agent] or set allow_subagents: true"
+            ));
+        }
+        // The orchestrator delegates to workers and nothing else: no
+        // subagent and no background or cloud agent. `allow_subagents`
+        // does not waive this one.
+        if t.agent == Agent::Claude && FLEET_ORCHESTRATORS.contains(&who.as_str()) {
+            for tool in ORCHESTRATOR_DENIED_TOOLS {
+                if !t.disallowed_tools.iter().any(|x| x == tool) {
+                    problems.push(format!(
+                        "{who}: the orchestrator delegates only to workers; add \
+                         {tool} to disallowed_tools"
+                    ));
+                }
+            }
+        }
+        // The operator's rule (CLAUDE.md): no teammate uses
+        // ANTHROPIC_API_KEY. The launch removes it; a file that sets it is
+        // a mistake to report, not to hide.
+        for key in crate::launch::FORBIDDEN_ENV {
+            if t.env.contains_key(key) {
+                problems.push(format!("{who}: env must not set {key}; never use it"));
+            }
+        }
+        // Network access and "never ask" do not go together: a codex
+        // worker with both can send code out, or pull code in and run it,
+        // and nothing stops it. `codex-network` pairs the network with
+        // acceptEdits (-a on-request).
+        if t.agent == Agent::Codex
+            && t.args
+                .iter()
+                .any(|a| a.replace(' ', "") == "sandbox_workspace_write.network_access=true")
+            && matches!(
+                t.permission_mode,
+                Some(PermissionMode::Auto) | Some(PermissionMode::BypassPermissions)
+            )
+        {
+            problems.push(format!(
+                "{who}: network access with permission_mode '{}' never asks before \
+                 it sends or fetches; use acceptEdits",
+                t.permission_mode.unwrap().as_str()
+            ));
+        }
+        // Orchestrator-only capabilities stay with the orchestrator.
+        if !FLEET_ORCHESTRATORS.contains(&who.as_str()) {
+            for skill in ORCHESTRATOR_ONLY_SKILLS {
+                if t.skills.iter().any(|s| s == skill) {
+                    problems.push(format!(
+                        "{who}: skill '{skill}' belongs to the orchestrator only"
+                    ));
+                }
+            }
+            if t.plugin_skills.contains_key("skill-creator") {
+                problems.push(format!(
+                    "{who}: plugin 'skill-creator' belongs to the orchestrator only"
+                ));
+            }
+            if t.remote_control {
+                problems.push(format!(
+                    "{who}: remote_control belongs to the orchestrator only"
+                ));
+            }
+        }
+        if let Some(mode) = t.permission_mode {
+            let ok = match t.agent {
+                Agent::Codex => mode.codex_args().is_some(),
+                Agent::Opencode => mode.opencode_args().is_some(),
+                // pi and Prime run their tools without asking, so there is
+                // no gate for a mode to set. Saying nothing is correct;
+                // saying `acceptEdits` implies a restraint that is absent.
+                Agent::Pi | Agent::Prime => false,
+                Agent::Claude | Agent::None => true,
+            };
+            if !ok {
+                problems.push(format!(
+                    "{who}: permission_mode '{}' has no {} equivalent",
+                    mode.as_str(),
+                    t.agent
+                ));
+            }
+        }
+        // A plan-mode worker that cannot leave plan mode stalls in a pane
+        // nobody is watching. Denies normally beat allows, so naming the
+        // tool in allowed_tools is not accepted as proof on its own.
+        if t.permission_mode == Some(PermissionMode::Plan) && t.agent == Agent::Claude {
+            // `--setting-sources ""` loads no settings file, so a
+            // `permissions.deny` written for an attended session cannot
+            // reach this worker.
+            let escapes_settings = t
+                .setting_sources
+                .as_ref()
+                .map(|v| v.is_empty())
+                .unwrap_or(false)
+                || t.settings.is_some();
+            let tool_available = t
+                .tools
+                .as_ref()
+                .map(|v| v.iter().any(|x| x == "ExitPlanMode" || x == "default"))
+                .unwrap_or(true);
+            if !escapes_settings {
+                problems.push(format!(
+                    "{who}: permission_mode is 'plan' but it inherits the operator's \
+                     settings, which may deny ExitPlanMode - set \
+                     `setting_sources: []` or point `settings:` at a file written \
+                     for workers"
+                ));
+            }
+            if !tool_available {
+                problems.push(format!(
+                    "{who}: permission_mode is 'plan' but 'tools' does not include \
+                     ExitPlanMode, so it can never leave plan mode"
+                ));
+            }
+        }
+        // Dropping the operator's settings also drops `disableBundledSkills`,
+        // so "clean" can silently mean "more skills than before".
+        if t.setting_sources
+            .as_ref()
+            .map(|v| v.is_empty())
+            .unwrap_or(false)
+            && !t.disable_skills
+            && t.plugin_dirs.is_empty()
+            && t.skills.is_empty()
+            && t.phase.is_none()
+        {
+            problems.push(format!(
+                "{who}: setting_sources is empty but disable_skills is false and no \
+                 plugin_dirs are set - bundled skills the operator disabled in settings \
+                 will load. Set disable_skills: true, or name the plugins you want."
+            ));
+        }
+        if t.disable_skills && !t.plugin_dirs.is_empty() {
+            problems.push(format!(
+                "{who}: disable_skills turns off ALL skills, including the ones \
+                 plugin_dirs loads - the plugins would be dead weight"
+            ));
+        }
+        if t.disable_skills && !t.disabled_skills.is_empty() {
+            problems.push(format!(
+                "{who}: disable_skills already turns off ALL skills, so the \
+                 disabled_skills list does nothing"
+            ));
+        }
+        for name in &t.disabled_skills {
+            if name.trim().is_empty() {
+                problems.push(format!("{who}: disabled_skills has a blank entry"));
+            } else if t
+                .skills
+                .iter()
+                .any(|s| *name == *s || *name == format!("horch:{s}"))
+            {
+                problems.push(format!(
+                    "{who}: '{name}' is both in skills and in disabled_skills"
+                ));
+            }
+        }
+        if t.trains_on_input {
+            let renders = t
+                .base
+                .as_ref()
+                .and_then(|b| self.bases.get(b))
+                .map(|b| !b.trains_on_input.trim().is_empty())
+                .unwrap_or(false);
+            if !renders {
+                problems.push(format!(
+                    "{who}: trains_on_input is set but its base has no \
+                     trains_on_input block to render, so the worker would never \
+                     be told"
+                ));
+            }
+        }
+        if (!t.skills.is_empty() || t.phase.is_some()) && t.disable_skills {
+            problems.push(format!(
+                "{who}: declares skills or phase but also disable_skills"
+            ));
+        }
+        // `args` is emitted immediately before the prompt. These flags are
+        // variadic and would take the prompt as one more value.
+        if let Some(last) = t.args.last() {
+            if [
+                "--mcp-config",
+                "--tools",
+                "--allowedTools",
+                "--allowed-tools",
+                "--disallowedTools",
+                "--disallowed-tools",
+            ]
+            .contains(&last.as_str())
+            {
+                problems.push(format!(
+                    "{who}: args ends with '{last}', a variadic flag that would swallow \
+                     the prompt; put it earlier or use the dedicated field"
+                ));
+            }
+        }
+        for dir in &t.plugin_dirs {
+            if !expand_home(dir).is_dir() {
+                problems.push(format!("{who}: plugin_dir '{dir}' does not exist"));
+            }
+        }
+        // A teammate that brings its own settings file takes over the status
+        // line too; one without a statusLine would be the only pane in the
+        // fleet with none.
+        if let Some(path) = &t.settings {
+            let path = expand_home(path);
+            match std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|x| serde_json::from_str::<serde_json::Value>(&x).ok())
+            {
+                None => problems.push(format!(
+                    "{who}: settings file '{}' is missing or not valid JSON",
+                    path.display()
+                )),
+                Some(v) if v.get("statusLine").is_none() => problems.push(format!(
+                    "{who}: settings file '{}' defines no statusLine, so this pane \
+                     would be the only one in the fleet without one",
+                    path.display()
+                )),
+                Some(_) => {}
+            }
+        }
+        for file in &t.mcp_config_files {
+            if !expand_home(file).is_file() {
+                problems.push(format!(
+                    "{who}: mcp_config_files entry '{file}' does not exist"
+                ));
+            }
+        }
+        problems
+    }
+
     /// Everything wrong with the loaded roster, as human-readable lines.
     /// Empty means healthy.
     pub fn check(&self) -> Vec<String> {
         let mut problems = Vec::new();
         for t in self.teammates.values() {
-            let who = &t.name;
-            if let Err(error) = crate::skills::selected(t) {
-                problems.push(format!("{error:#}"));
-            }
-            if t.brief_description.trim().is_empty() {
-                problems.push(format!("{who}: brief_description is empty"));
-            }
-            if t.brief_description.len() > BRIEF_DESCRIPTION_MAX {
-                problems.push(format!(
-                    "{who}: brief_description is {} chars, max {BRIEF_DESCRIPTION_MAX} \
-                     (it is carried in the orchestrator's context on every run)",
-                    t.brief_description.len()
-                ));
-            }
-            if let Some(base) = &t.base {
-                if !self.bases.contains_key(base) {
-                    problems.push(format!("{who}: base '{base}' does not exist in _base/"));
-                }
-            }
-            // Anything the orchestrator can pick must be something it may spawn.
-            if !t.hidden {
-                if let Err(e) = Roster::is_spawnable(t) {
-                    problems.push(format!("{e:#}"));
-                }
-            }
-            if t.agent != Agent::None && t.model.is_none() && t.name != "orchestration-worker" {
-                problems.push(format!("{who}: agent is {} but no model is set", t.agent));
-            }
-            if let Some(effort) = &t.effort {
-                if let Some(why) = effort_problem(t.agent, t.model.as_deref(), effort) {
-                    problems.push(format!("{who}: {why}"));
-                }
-            }
-            // Reinforced plugin skills must exist, or the briefing promises a
-            // skill the pane cannot load.
-            if t.agent == Agent::Claude && !t.plugin_skills.is_empty() {
-                if t.disable_skills {
-                    problems.push(format!(
-                        "{who}: plugin_skills cannot load with disable_skills: true"
-                    ));
-                }
-                if let Err(e) = crate::plugins::resolve_all(t) {
-                    problems.push(format!("{who}: {e:#}"));
-                }
-                // The kept skills are named in the skill-bundle briefing, and
-                // the bundle path is the one that merges the switch-offs into
-                // a teammate's own `settings:` file. No phase and no skills
-                // means no bundle: the briefing would never name them.
-                if t.phase.is_none() && t.skills.is_empty() {
-                    problems.push(format!(
-                        "{who}: plugin_skills needs a phase or skills, so the briefing \
-                         can name them"
-                    ));
-                }
-            }
-            // A codex worker with no effort silently takes whatever the
-            // operator's ~/.codex/config.toml says (the pane's private
-            // CODEX_HOME links it). That made two workers run at "medium"
-            // nobody chose, so every offered codex teammate states its own.
-            if t.agent == Agent::Codex && !t.hidden && t.effort.is_none() {
-                problems.push(format!(
-                    "{who}: a codex teammate must set effort; without it the pane \
-                     inherits model_reasoning_effort from ~/.codex/config.toml"
-                ));
-            }
-            // Every claude-shaped field this agent cannot express. Naming the
-            // field beats a generic "unsupported": the author set it on purpose.
-            for field in t.agent.unsupported_fields(t) {
-                problems.push(format!(
-                    "{who}: '{field}' is not something {} can express; \
-                     use args, or move this work to a claude teammate",
-                    t.agent
-                ));
-            }
-            // A fleet pane must not spawn subagents. The prose rule in
-            // `_base/fleet-worker.md` was not enough on its own, so the switch
-            // carries it: `--disallowedTools Agent` takes the tool out of the
-            // session's tool set on claude 2.1.278. The hidden orchestration-*
-            // teammates run a fixed recipe, not fleet panes, so only a
-            // spawnable teammate and the orchestrator itself are covered.
-            // Codex, OpenCode, pi and Prime are elsewhere; see
-            // `ai_docs/reports/no-subagents.md`.
-            if t.agent == Agent::Claude
-                && (!t.hidden || t.name == "orchestrator")
-                && !t.allow_subagents
-                && !t.disallowed_tools.iter().any(|x| x == "Agent")
-            {
-                problems.push(format!(
-                    "{who}: a fleet pane must not spawn subagents; add \
-                     disallowed_tools: [Agent] or set allow_subagents: true"
-                ));
-            }
-            // The orchestrator delegates to workers and nothing else: no
-            // subagent and no background or cloud agent. `allow_subagents`
-            // does not waive this one.
-            if t.agent == Agent::Claude && FLEET_ORCHESTRATORS.contains(&who.as_str()) {
-                for tool in ORCHESTRATOR_DENIED_TOOLS {
-                    if !t.disallowed_tools.iter().any(|x| x == tool) {
-                        problems.push(format!(
-                            "{who}: the orchestrator delegates only to workers; add \
-                             {tool} to disallowed_tools"
-                        ));
-                    }
-                }
-            }
-            // The operator's rule (CLAUDE.md): no teammate uses
-            // ANTHROPIC_API_KEY. The launch removes it; a file that sets it is
-            // a mistake to report, not to hide.
-            for key in crate::launch::FORBIDDEN_ENV {
-                if t.env.contains_key(key) {
-                    problems.push(format!("{who}: env must not set {key}; never use it"));
-                }
-            }
-            // Network access and "never ask" do not go together: a codex
-            // worker with both can send code out, or pull code in and run it,
-            // and nothing stops it. `codex-network` pairs the network with
-            // acceptEdits (-a on-request).
-            if t.agent == Agent::Codex
-                && t.args.iter().any(|a| a.replace(' ', "") == "sandbox_workspace_write.network_access=true")
-                && matches!(
-                    t.permission_mode,
-                    Some(PermissionMode::Auto) | Some(PermissionMode::BypassPermissions)
-                )
-            {
-                problems.push(format!(
-                    "{who}: network access with permission_mode '{}' never asks before \
-                     it sends or fetches; use acceptEdits",
-                    t.permission_mode.unwrap().as_str()
-                ));
-            }
-            // Orchestrator-only capabilities stay with the orchestrator.
-            if !FLEET_ORCHESTRATORS.contains(&who.as_str()) {
-                for skill in ORCHESTRATOR_ONLY_SKILLS {
-                    if t.skills.iter().any(|s| s == skill) {
-                        problems.push(format!(
-                            "{who}: skill '{skill}' belongs to the orchestrator only"
-                        ));
-                    }
-                }
-                if t.plugin_skills.contains_key("skill-creator") {
-                    problems.push(format!(
-                        "{who}: plugin 'skill-creator' belongs to the orchestrator only"
-                    ));
-                }
-                if t.remote_control {
-                    problems.push(format!(
-                        "{who}: remote_control belongs to the orchestrator only"
-                    ));
-                }
-            }
-            if let Some(mode) = t.permission_mode {
-                let ok = match t.agent {
-                    Agent::Codex => mode.codex_args().is_some(),
-                    Agent::Opencode => mode.opencode_args().is_some(),
-                    // pi and Prime run their tools without asking, so there is
-                    // no gate for a mode to set. Saying nothing is correct;
-                    // saying `acceptEdits` implies a restraint that is absent.
-                    Agent::Pi | Agent::Prime => false,
-                    Agent::Claude | Agent::None => true,
-                };
-                if !ok {
-                    problems.push(format!(
-                        "{who}: permission_mode '{}' has no {} equivalent",
-                        mode.as_str(),
-                        t.agent
-                    ));
-                }
-            }
-            // A plan-mode worker that cannot leave plan mode stalls in a pane
-            // nobody is watching. Denies normally beat allows, so naming the
-            // tool in allowed_tools is not accepted as proof on its own.
-            if t.permission_mode == Some(PermissionMode::Plan) && t.agent == Agent::Claude {
-                // `--setting-sources ""` loads no settings file, so a
-                // `permissions.deny` written for an attended session cannot
-                // reach this worker.
-                let escapes_settings = t
-                    .setting_sources
-                    .as_ref()
-                    .map(|v| v.is_empty())
-                    .unwrap_or(false)
-                    || t.settings.is_some();
-                let tool_available = t
-                    .tools
-                    .as_ref()
-                    .map(|v| v.iter().any(|x| x == "ExitPlanMode" || x == "default"))
-                    .unwrap_or(true);
-                if !escapes_settings {
-                    problems.push(format!(
-                        "{who}: permission_mode is 'plan' but it inherits the operator's \
-                         settings, which may deny ExitPlanMode - set \
-                         `setting_sources: []` or point `settings:` at a file written \
-                         for workers"
-                    ));
-                }
-                if !tool_available {
-                    problems.push(format!(
-                        "{who}: permission_mode is 'plan' but 'tools' does not include \
-                         ExitPlanMode, so it can never leave plan mode"
-                    ));
-                }
-            }
-            // Dropping the operator's settings also drops `disableBundledSkills`,
-            // so "clean" can silently mean "more skills than before".
-            if t.setting_sources
-                .as_ref()
-                .map(|v| v.is_empty())
-                .unwrap_or(false)
-                && !t.disable_skills
-                && t.plugin_dirs.is_empty()
-                && t.skills.is_empty()
-                && t.phase.is_none()
-            {
-                problems.push(format!(
-                    "{who}: setting_sources is empty but disable_skills is false and no \
-                     plugin_dirs are set - bundled skills the operator disabled in settings \
-                     will load. Set disable_skills: true, or name the plugins you want."
-                ));
-            }
-            if t.disable_skills && !t.plugin_dirs.is_empty() {
-                problems.push(format!(
-                    "{who}: disable_skills turns off ALL skills, including the ones \
-                     plugin_dirs loads - the plugins would be dead weight"
-                ));
-            }
-            if t.disable_skills && !t.disabled_skills.is_empty() {
-                problems.push(format!(
-                    "{who}: disable_skills already turns off ALL skills, so the \
-                     disabled_skills list does nothing"
-                ));
-            }
-            for name in &t.disabled_skills {
-                if name.trim().is_empty() {
-                    problems.push(format!("{who}: disabled_skills has a blank entry"));
-                } else if t
-                    .skills
-                    .iter()
-                    .any(|s| *name == *s || *name == format!("horch:{s}"))
-                {
-                    problems.push(format!(
-                        "{who}: '{name}' is both in skills and in disabled_skills"
-                    ));
-                }
-            }
-            if t.trains_on_input {
-                let renders = t
-                    .base
-                    .as_ref()
-                    .and_then(|b| self.bases.get(b))
-                    .map(|b| !b.trains_on_input.trim().is_empty())
-                    .unwrap_or(false);
-                if !renders {
-                    problems.push(format!(
-                        "{who}: trains_on_input is set but its base has no \
-                         trains_on_input block to render, so the worker would never \
-                         be told"
-                    ));
-                }
-            }
-            if (!t.skills.is_empty() || t.phase.is_some()) && t.disable_skills {
-                problems.push(format!(
-                    "{who}: declares skills or phase but also disable_skills"
-                ));
-            }
-            // `args` is emitted immediately before the prompt. These flags are
-            // variadic and would take the prompt as one more value.
-            if let Some(last) = t.args.last() {
-                if [
-                    "--mcp-config",
-                    "--tools",
-                    "--allowedTools",
-                    "--allowed-tools",
-                    "--disallowedTools",
-                    "--disallowed-tools",
-                ]
-                .contains(&last.as_str())
-                {
-                    problems.push(format!(
-                        "{who}: args ends with '{last}', a variadic flag that would swallow \
-                         the prompt; put it earlier or use the dedicated field"
-                    ));
-                }
-            }
-            for dir in &t.plugin_dirs {
-                if !expand_home(dir).is_dir() {
-                    problems.push(format!("{who}: plugin_dir '{dir}' does not exist"));
-                }
-            }
-            // A teammate that brings its own settings file takes over the status
-            // line too; one without a statusLine would be the only pane in the
-            // fleet with none.
-            if let Some(path) = &t.settings {
-                let path = expand_home(path);
-                match std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|x| serde_json::from_str::<serde_json::Value>(&x).ok())
-                {
-                    None => problems.push(format!(
-                        "{who}: settings file '{}' is missing or not valid JSON",
-                        path.display()
-                    )),
-                    Some(v) if v.get("statusLine").is_none() => problems.push(format!(
-                        "{who}: settings file '{}' defines no statusLine, so this pane \
-                         would be the only one in the fleet without one",
-                        path.display()
-                    )),
-                    Some(_) => {}
-                }
-            }
-            for file in &t.mcp_config_files {
-                if !expand_home(file).is_file() {
-                    problems.push(format!(
-                        "{who}: mcp_config_files entry '{file}' does not exist"
-                    ));
-                }
-            }
+            problems.extend(self.check_teammate(t));
         }
+        problems.extend(crate::balance_policy::fallback_problems(self));
         // Every command an agent is told to run must be allowed for codex, and
         // nothing more: a rule with no command behind it is standing permission
         // nobody asked for.
@@ -1393,9 +1417,7 @@ mod spawnable_tests {
                 | "orchestrator"
                 | "orchestrator-codex"
                 | "orchestration-orchestrator" => Some(Phase::Plan),
-                "architect-reviewer" | "qa-engineer" | "codex-reviewer" => {
-                    Some(Phase::Validation)
-                }
+                "architect-reviewer" | "qa-engineer" | "codex-reviewer" => Some(Phase::Validation),
                 _ => Some(Phase::Implementation),
             };
             assert_eq!(t.phase, expected, "{}", t.name);
@@ -1422,20 +1444,49 @@ mod spawnable_tests {
             (Agent::Pi, "ollama/qwen3.8", "off"),
             (Agent::Prime, "anthropic/claude-opus-5-5", "minimal"),
         ] {
-            assert_eq!(effort_problem(agent, Some(model), effort), None, "{agent} {effort}");
+            assert_eq!(
+                effort_problem(agent, Some(model), effort),
+                None,
+                "{agent} {effort}"
+            );
         }
         // Refused, each with a reason that names the fix.
         for (agent, model, effort, says) in [
-            (Agent::Claude, "opus", "minimal", "expected one of: low, medium"),
+            (
+                Agent::Claude,
+                "opus",
+                "minimal",
+                "expected one of: low, medium",
+            ),
             (Agent::Claude, "haiku", "low", "no effort setting"),
-            (Agent::Claude, "claude-haiku-4-5-20251001", "low", "no effort setting"),
+            (
+                Agent::Claude,
+                "claude-haiku-4-5-20251001",
+                "low",
+                "no effort setting",
+            ),
             (Agent::Codex, "gpt-5.6-sol", "minimal", "API error"),
             (Agent::Codex, "gpt-5.6-sol", "ultra", "multiplies spend"),
             (Agent::Codex, "gpt-6-astra", "none", "use low"),
-            (Agent::Opencode, "opencode/big-pickle", "high", "no effort setting"),
-            (Agent::Opencode, "opencode/nemotron-3-ultra-free", "high", "no effort setting"),
+            (
+                Agent::Opencode,
+                "opencode/big-pickle",
+                "high",
+                "no effort setting",
+            ),
+            (
+                Agent::Opencode,
+                "opencode/nemotron-3-ultra-free",
+                "high",
+                "no effort setting",
+            ),
             (Agent::Pi, "ollama/qwen3.8", "ultra", "not a pi level"),
-            (Agent::Prime, "anthropic/claude-opus-5-5", "none", "not a prime level"),
+            (
+                Agent::Prime,
+                "anthropic/claude-opus-5-5",
+                "none",
+                "not a prime level",
+            ),
         ] {
             let why = effort_problem(agent, Some(model), effort)
                 .unwrap_or_else(|| panic!("{agent} {model} {effort} should be refused"));
@@ -1481,12 +1532,15 @@ mod spawnable_tests {
     #[test]
     fn doctor_warns_about_every_effort_override_and_is_silent_without_one() {
         assert!(effort_override_warnings(None, None, None).is_empty());
-        assert!(effort_override_warnings(
-            Some(""),
-            Some(&serde_json::json!({"effortLevel": "high"})),
-            Some("model = \"gpt-5.6-sol\"\n[profiles.x]\nmodel_reasoning_effort = \"low\"\n"),
-        )
-        .is_empty(), "effortLevel loses to --effort, and a profile's key is not the default");
+        assert!(
+            effort_override_warnings(
+                Some(""),
+                Some(&serde_json::json!({"effortLevel": "high"})),
+                Some("model = \"gpt-5.6-sol\"\n[profiles.x]\nmodel_reasoning_effort = \"low\"\n"),
+            )
+            .is_empty(),
+            "effortLevel loses to --effort, and a profile's key is not the default"
+        );
 
         let w = effort_override_warnings(
             Some("low"),
@@ -1498,7 +1552,10 @@ mod spawnable_tests {
         );
         assert_eq!(w.len(), 4, "{w:?}");
         assert!(w[0].starts_with("CLAUDE_CODE_EFFORT_LEVEL=low"), "{w:?}");
-        assert!(w[1].contains("env.CLAUDE_CODE_EFFORT_LEVEL=medium"), "{w:?}");
+        assert!(
+            w[1].contains("env.CLAUDE_CODE_EFFORT_LEVEL=medium"),
+            "{w:?}"
+        );
         assert!(w[2].contains("maxEffortLevel=high"), "{w:?}");
         assert!(w[3].contains("model_reasoning_effort=\"medium\""), "{w:?}");
     }
@@ -1560,12 +1617,21 @@ mod spawnable_tests {
             None,
         )
         .unwrap();
-        let a: Vec<String> = cmd.get_args().map(|x| x.to_string_lossy().into_owned()).collect();
-        assert!(a.windows(4).any(|w| w == ["-s", "workspace-write", "-a", "on-request"]), "{a:?}");
+        let a: Vec<String> = cmd
+            .get_args()
+            .map(|x| x.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            a.windows(4)
+                .any(|w| w == ["-s", "workspace-write", "-a", "on-request"]),
+            "{a:?}"
+        );
         assert!(a.windows(2).any(|w| w == ["-c", net]), "{a:?}");
 
-        r.teammates.get_mut("codex-network").unwrap().permission_mode =
-            Some(PermissionMode::Auto);
+        r.teammates
+            .get_mut("codex-network")
+            .unwrap()
+            .permission_mode = Some(PermissionMode::Auto);
         assert!(
             r.check().iter().any(|p| p.starts_with(
                 "codex-network: network access with permission_mode 'auto'"
@@ -1600,7 +1666,10 @@ mod spawnable_tests {
             "opus: remote_control belongs to the orchestrator only",
             "opus: plugin 'skill-creator' belongs to the orchestrator only",
         ] {
-            assert!(problems.iter().any(|p| p == expected), "{expected}: {problems:?}");
+            assert!(
+                problems.iter().any(|p| p == expected),
+                "{expected}: {problems:?}"
+            );
         }
 
         let mut r = Roster::builtin().unwrap();

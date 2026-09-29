@@ -6,10 +6,12 @@
 //! building layouts.
 
 use anyhow::{bail, Context, Result};
+use horch_core::balance_policy::{self, Decision, GateFlags};
 use horch_core::herdr::{Direction, Herdr};
-use horch_core::ledger::{Ledger, STATUS_WORKING};
+use horch_core::ledger::{Ledger, Record, STATUS_WORKING};
 use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::paneshell::PaneShell;
+use horch_core::policy::Policy;
 use horch_core::teammates::{effort_problem, Phase, Roster, Teammate};
 
 pub struct SpawnArgs {
@@ -24,7 +26,24 @@ pub struct SpawnArgs {
     pub direction: Direction,
     /// Leave the grid alone. `HORCH_TILE=0` says the same thing for every spawn.
     pub no_tile: bool,
+    /// Never substitute a fallback teammate (the usage-limit gate).
+    pub exact: bool,
+    /// Never refuse over usage limits.
+    pub force: bool,
 }
+
+/// The gate refused the spawn. `main` turns this into exit code 3; the
+/// REFUSED line is already on stdout.
+#[derive(Debug)]
+pub struct Refused;
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("spawn refused over usage limits")
+    }
+}
+
+impl std::error::Error for Refused {}
 
 /// Split `horch spawn`'s positional arguments into a teammate and a task.
 ///
@@ -76,6 +95,12 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
         // Resuming: teammate, model and session all come from the record.
         Some(key) => {
             let record = ledger.get(key)?;
+            if record.is_orchestrator() {
+                bail!(
+                    "record {} is an orchestrator; restart it with horch fleet",
+                    record.record_id
+                );
+            }
             let session_id = record.session_id.clone().unwrap_or_default();
             if session_id.is_empty() {
                 bail!(
@@ -91,6 +116,11 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
                 );
             }
             let mut teammate = roster.require(&record.tier)?.clone();
+            // A substituted session resumes on the harness it ran on (BAL-05):
+            // the same fallback's launch settings, never a new gate decision.
+            if let Some(via) = &record.via {
+                teammate = balance_policy::merge(&teammate, roster.require(via)?);
+            }
             teammate.phase = resolve_phase(args.phase, record.phase, teammate.phase);
             // A resume keeps the level it ran at, as it keeps its model.
             if record.effort.is_some() {
@@ -103,6 +133,8 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
                 record_id: record.record_id.clone(),
                 session_id,
                 resume: true,
+                via: record.via.clone(),
+                substitution_reason: record.substitution_reason.clone(),
             }
         }
         None => {
@@ -124,6 +156,8 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
                 },
                 teammate,
                 resume: false,
+                via: None,
+                substitution_reason: None,
             }
         }
     };
@@ -134,6 +168,51 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     // could otherwise start a second top-tier session behind an ordinary tier
     // name. Both branches pass through here.
     Roster::model_is_spawnable(&plan.model, &plan.teammate.name)?;
+
+    // The usage-limit gate (design 13.5): after the top-tier gate, before
+    // any role, ledger or pane side effect. A resume keeps the harness it
+    // ran on, so only a fresh spawn is gated; the smoke fake spends nothing.
+    if !plan.resume && plan.teammate.agent != horch_core::teammates::Agent::None {
+        let policy = Policy::load(&horch_core::ledger::state_root())?;
+        let view = horch_core::quota::current_view(
+            &horch_core::ledger::state_root(),
+            horch_core::clock::now(),
+            &policy,
+            true,
+        )?;
+        let decision = balance_policy::decide(
+            &plan.teammate,
+            &roster,
+            &view,
+            policy.balance_mode,
+            GateFlags {
+                exact: args.exact,
+                force: args.force,
+            },
+        );
+        if let Some(line) = decision.line() {
+            crate::output::println(&line);
+        }
+        match &decision {
+            Decision::Refuse { .. } => return Err(Refused.into()),
+            Decision::Substitute { via, reason, .. } => {
+                let merged = balance_policy::resolve(&plan.teammate, &roster, &decision)
+                    .with_context(|| format!("fallback '{via}' vanished from the roster"))?;
+                plan.model = merged.model.clone().unwrap_or_default();
+                plan.session_id = if merged.agent.mints_session_id() {
+                    horch_core::mint_uuid()
+                } else {
+                    String::new()
+                };
+                plan.teammate = merged;
+                plan.via = Some(via.clone());
+                plan.substitution_reason = Some(reason.clone());
+                Roster::model_is_spawnable(&plan.model, &plan.teammate.name)?;
+            }
+            Decision::Spawn { .. } => {}
+        }
+    }
+
     if let Some(effort) = &args.effort {
         plan.teammate.effort = Some(effort.clone());
     }
@@ -164,16 +243,21 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     if plan.resume {
         ledger.resume_with_phase(&plan.record_id, &role, &args.task, plan.teammate.phase)?;
     } else {
-        ledger.add_with_phase(
-            &plan.record_id,
-            plan.teammate.agent.as_str(),
-            plan.teammate.name.as_str(),
-            &plan.model,
-            &role,
-            Some(plan.session_id.as_str()),
-            &args.task,
-            plan.teammate.phase,
-        )?;
+        ledger.insert(Record {
+            record_id: plan.record_id.clone(),
+            session_id: Some(plan.session_id.clone()),
+            agent: plan.teammate.agent.as_str().to_string(),
+            tier: plan.teammate.name.clone(),
+            model: plan.model.clone(),
+            phase: plan.teammate.phase,
+            role: role.clone(),
+            task: args.task.clone(),
+            project: Some(project_dir.clone()),
+            workspace_id: Some(mailbox.workspace_id().to_string()),
+            via: plan.via.clone(),
+            substitution_reason: plan.substitution_reason.clone(),
+            ..Record::default()
+        })?;
     }
     ledger.set_effort(&plan.record_id, plan.teammate.effort.as_deref())?;
 
@@ -280,6 +364,9 @@ struct Plan {
     /// Empty when the agent mints its own id after launch.
     session_id: String,
     resume: bool,
+    /// The fallback whose launch settings are used, when substituted.
+    via: Option<String>,
+    substitution_reason: Option<String>,
 }
 
 #[cfg(test)]

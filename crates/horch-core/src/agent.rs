@@ -44,6 +44,24 @@ pub fn prime_bin() -> PathBuf {
     env_path("HORCH_PRIME_BIN").unwrap_or_else(|| PathBuf::from("prime-agent"))
 }
 
+/// Which herdr CLI to drive. `$HORCH_HERDR_BIN` overrides, which is how the
+/// end-to-end tests put a recording fake in its place.
+pub fn herdr_bin() -> PathBuf {
+    env_path("HORCH_HERDR_BIN").unwrap_or_else(|| PathBuf::from("herdr"))
+}
+
+/// Which `sqlite3` CLI reads OpenCode's database. `$HORCH_SQLITE3_BIN`
+/// overrides. horch links no SQLite library; the CLI is the only reader.
+pub fn sqlite3_bin() -> PathBuf {
+    env_path("HORCH_SQLITE3_BIN").unwrap_or_else(|| PathBuf::from("sqlite3"))
+}
+
+/// Which `ollama` CLI the local-pool health check asks for its model list.
+/// `$HORCH_OLLAMA_BIN` overrides.
+pub fn ollama_bin() -> PathBuf {
+    env_path("HORCH_OLLAMA_BIN").unwrap_or_else(|| PathBuf::from("ollama"))
+}
+
 fn env_path(key: &str) -> Option<PathBuf> {
     std::env::var_os(key)
         .filter(|v| !v.is_empty())
@@ -164,7 +182,11 @@ pub fn on_path_in(paths: &OsStr, dir: &Path) -> bool {
 fn normalize(p: &Path) -> OsString {
     let s = p.to_string_lossy();
     let trimmed = s.trim_end_matches(std::path::MAIN_SEPARATOR);
-    let trimmed = if trimmed.is_empty() { s.as_ref() } else { trimmed };
+    let trimmed = if trimmed.is_empty() {
+        s.as_ref()
+    } else {
+        trimmed
+    };
     if cfg!(windows) {
         OsString::from(trimmed.to_ascii_lowercase())
     } else {
@@ -335,9 +357,16 @@ mod tests {
         std::env::set_var("PATH", "/nonexistent-for-test");
 
         prepend_own_dir_to_path().unwrap();
-        let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let path = std::env::var_os("PATH").unwrap();
-        assert!(on_path_in(&path, &exe_dir), "{path:?} should contain {exe_dir:?}");
+        assert!(
+            on_path_in(&path, &exe_dir),
+            "{path:?} should contain {exe_dir:?}"
+        );
 
         match previous {
             Some(v) => std::env::set_var("PATH", v),

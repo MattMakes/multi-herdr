@@ -1,0 +1,109 @@
+[
+  {
+    "record_id": "rec-b1",
+    "session_id": "33333333-3333-4333-8333-333333333333",
+    "agent": "pi",
+    "tier": "pi",
+    "model": "ollama/qwen3.8",
+    "phase": "implementation",
+    "role": "pi-1",
+    "status": "done",
+    "task": "Summarise the README",
+    "history": [
+      {
+        "at": "2026-09-28T12:52:00Z",
+        "event": "spawned",
+        "text": "Summarise the README"
+      },
+      {
+        "at": "2026-09-28T12:56:00Z",
+        "event": "done",
+        "text": "finished SENTINEL-CONTENT"
+      }
+    ],
+    "created_at": "2026-09-28T12:52:00Z",
+    "updated_at": "2026-09-28T12:56:00Z",
+    "project": "/work/beta",
+    "workspace_id": "w2"
+  },
+  {
+    "record_id": "rec-b2",
+    "session_id": "{STATE}/prime/prime-1-4444/sessions/44444444-4444-4444-8444-444444444444.jsonl",
+    "agent": "prime",
+    "tier": "prime",
+    "model": "anthropic/claude-opus-5-5",
+    "phase": "plan",
+    "role": "prime-1",
+    "status": "done",
+    "task": "Draft ai_docs/plans/prime-notes.md",
+    "history": [
+      {
+        "at": "2026-09-28T12:58:00Z",
+        "event": "spawned",
+        "text": "Draft ai_docs/plans/prime-notes.md"
+      },
+      {
+        "at": "2026-09-28T13:02:00Z",
+        "event": "done",
+        "text": "finished SENTINEL-CONTENT"
+      }
+    ],
+    "created_at": "2026-09-28T12:58:00Z",
+    "updated_at": "2026-09-28T13:02:00Z",
+    "project": "/work/beta",
+    "workspace_id": "w2"
+  },
+  {
+    "record_id": "rec-b3",
+    "session_id": "ses_beta1",
+    "agent": "opencode",
+    "tier": "opencode-ultra",
+    "model": "opencode/nemotron-3-ultra-free",
+    "phase": "implementation",
+    "role": "opencode-ultra-1",
+    "status": "done",
+    "task": "Public docs pass",
+    "history": [
+      {
+        "at": "2026-09-28T12:53:00Z",
+        "event": "spawned",
+        "text": "Public docs pass"
+      },
+      {
+        "at": "2026-09-28T12:54:00Z",
+        "event": "done",
+        "text": "finished SENTINEL-CONTENT"
+      }
+    ],
+    "created_at": "2026-09-28T12:53:00Z",
+    "updated_at": "2026-09-28T12:54:00Z",
+    "project": "/work/beta",
+    "workspace_id": "w2"
+  },
+  {
+    "record_id": "rec-b4",
+    "session_id": "smoke-sid",
+    "agent": "none",
+    "tier": "smoke",
+    "model": "",
+    "role": "smoke-1",
+    "status": "done",
+    "task": "smoke",
+    "history": [
+      {
+        "at": "2026-09-28T12:00:00Z",
+        "event": "spawned",
+        "text": "smoke"
+      },
+      {
+        "at": "2026-09-28T12:01:00Z",
+        "event": "done",
+        "text": "finished SENTINEL-CONTENT"
+      }
+    ],
+    "created_at": "2026-09-28T12:00:00Z",
+    "updated_at": "2026-09-28T12:01:00Z",
+    "project": "/work/beta",
+    "workspace_id": "w2"
+  }
+]

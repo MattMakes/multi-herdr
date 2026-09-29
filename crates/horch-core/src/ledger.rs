@@ -31,7 +31,23 @@ pub struct HistoryEntry {
     pub text: String,
 }
 
-/// One worker session.
+/// `Record::kind` of a worker pane.
+pub const KIND_WORKER: &str = "worker";
+/// `Record::kind` of a fleet orchestrator pane.
+pub const KIND_ORCHESTRATOR: &str = "orchestrator";
+
+/// Task an orchestrator record carries. It has no task of its own.
+pub const ORCHESTRATING_TASK: &str = "(orchestrating)";
+
+fn worker_kind() -> String {
+    KIND_WORKER.to_string()
+}
+
+fn is_worker(kind: &str) -> bool {
+    kind == KIND_WORKER
+}
+
+/// One agent session: a worker, or a fleet's orchestrator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
     pub record_id: String,
@@ -57,9 +73,59 @@ pub struct Record {
     pub history: Vec<HistoryEntry>,
     pub created_at: String,
     pub updated_at: String,
+    /// `worker` or `orchestrator`. Absent in older ledgers, which only ever
+    /// recorded workers.
+    #[serde(default = "worker_kind", skip_serializing_if = "is_worker")]
+    pub kind: String,
+    /// The absolute project path. The ledger's file name is a lossy slug of
+    /// it, so the path is kept here for the telemetry space.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// The plan-file slug the task names (`ai_docs/plans/<slug>.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// The herdr workspace the pane runs in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The fallback teammate whose launch settings the spawn gate used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// Why the gate substituted, in one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substitution_reason: Option<String>,
+}
+
+impl Default for Record {
+    fn default() -> Self {
+        Record {
+            record_id: String::new(),
+            session_id: None,
+            agent: String::new(),
+            tier: String::new(),
+            model: String::new(),
+            effort: None,
+            phase: None,
+            role: String::new(),
+            status: String::new(),
+            task: String::new(),
+            history: Vec::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            kind: worker_kind(),
+            project: None,
+            plan: None,
+            workspace_id: None,
+            via: None,
+            substitution_reason: None,
+        }
+    }
 }
 
 impl Record {
+    pub fn is_orchestrator(&self) -> bool {
+        self.kind == KIND_ORCHESTRATOR
+    }
+
     /// Records match on either id so callers can address a session by whichever
     /// one they hold.
     fn matches(&self, key: &str) -> bool {
@@ -88,7 +154,7 @@ impl Drop for LockGuard {
 /// (`date -u +%Y-%m-%dT%H:%M:%SZ`). Lexicographic order equals chronological
 /// order, which is what the sorting relies on.
 fn now() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    crate::clock::now_stamp()
 }
 
 /// Turn a project path into a filename, matching `tr -c 'A-Za-z0-9' '-'`.
@@ -258,37 +324,82 @@ impl Ledger {
         task: &str,
         phase: Option<Phase>,
     ) -> Result<()> {
-        let at = now();
-        let record = Record {
+        self.insert(Record {
             record_id: record_id.to_string(),
-            session_id: session_id.filter(|s| !s.is_empty()).map(str::to_owned),
+            session_id: session_id.map(str::to_owned),
             agent: agent.to_string(),
             tier: tier.to_string(),
             model: model.to_string(),
-            effort: None,
             phase,
             role: role.to_string(),
-            status: STATUS_WORKING.to_string(),
-            task: if task.is_empty() {
-                IDLE_TASK.to_string()
-            } else {
-                task.to_string()
-            },
-            history: vec![HistoryEntry {
-                at: at.clone(),
-                event: "spawned".to_string(),
-                text: if task.is_empty() {
-                    format!("spawned idle as {role}")
-                } else {
-                    task.to_string()
-                },
-            }],
-            created_at: at.clone(),
-            updated_at: at,
+            task: task.to_string(),
+            ..Record::default()
+        })
+    }
+
+    /// Record a fresh session from a filled-in [`Record`]. The lifecycle
+    /// fields are set here: status `working`, the idle placeholder for an
+    /// empty task, the `spawned` history entry, both timestamps, and the plan
+    /// slug, project and workspace when the caller left them empty.
+    pub fn insert(&self, mut record: Record) -> Result<()> {
+        let at = now();
+        record.session_id = record.session_id.filter(|s| !s.is_empty());
+        record.status = STATUS_WORKING.to_string();
+        let spawned = if record.task.is_empty() {
+            format!("spawned idle as {}", record.role)
+        } else {
+            record.task.clone()
         };
+        if record.task.is_empty() {
+            record.task = IDLE_TASK.to_string();
+        }
+        if record.plan.is_none() {
+            record.plan = crate::telemetry::plan_slug(&record.task);
+        }
+        if record.project.is_none() {
+            record.project = project_dir().ok().map(|p| p.to_string_lossy().into_owned());
+        }
+        if record.workspace_id.is_none() {
+            record.workspace_id = std::env::var("HORCH_WORKSPACE_ID")
+                .ok()
+                .filter(|s| !s.is_empty());
+        }
+        record.history = vec![HistoryEntry {
+            at: at.clone(),
+            event: "spawned".to_string(),
+            text: spawned,
+        }];
+        record.created_at = at.clone();
+        record.updated_at = at;
         self.update(|records| {
             records.push(record);
             Ok(())
+        })
+    }
+
+    /// Mark `working` orchestrator records done, as `superseded`, unless
+    /// `keep` says their workspace is still open. An orchestrator never runs
+    /// `horch done`; the next `horch fleet` retires the ones whose workspace
+    /// is gone instead. Returns how many records it closed.
+    pub fn supersede_orchestrators(&self, keep: impl Fn(&str) -> bool) -> Result<usize> {
+        let at = now();
+        self.update(|records| {
+            let mut n = 0;
+            for r in records.iter_mut().filter(|r| {
+                r.is_orchestrator()
+                    && r.status == STATUS_WORKING
+                    && !r.workspace_id.as_deref().is_some_and(&keep)
+            }) {
+                r.status = STATUS_DONE.to_string();
+                r.updated_at = at.clone();
+                r.history.push(HistoryEntry {
+                    at: at.clone(),
+                    event: "done".to_string(),
+                    text: "superseded".to_string(),
+                });
+                n += 1;
+            }
+            Ok(n)
         })
     }
 
@@ -349,6 +460,7 @@ impl Ledger {
                 r.updated_at = at.clone();
                 if !task.is_empty() {
                     r.task = task.to_string();
+                    r.plan = crate::telemetry::plan_slug(task);
                 }
                 r.history.push(HistoryEntry {
                     at: at.clone(),
@@ -381,6 +493,7 @@ impl Ledger {
             };
             for r in records.iter_mut().filter(|r| r.record_id == key) {
                 r.task = task.to_string();
+                r.plan = crate::telemetry::plan_slug(task);
                 r.updated_at = at.clone();
                 r.history.push(HistoryEntry {
                     at: at.clone(),
@@ -451,9 +564,23 @@ impl Ledger {
         }
         records.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
         records.reverse();
-
+        // Orchestrators first, in their own section: they are never resumed
+        // with `horch spawn`, so they must not read as candidates among the
+        // workers. A ledger with no orchestrator record renders as before.
+        let (orchestrators, workers): (Vec<Record>, Vec<Record>) =
+            records.into_iter().partition(Record::is_orchestrator);
         let mut out = String::new();
-        for r in &records {
+        if !orchestrators.is_empty() {
+            out.push_str("== orchestrators (restart with horch fleet, never resume) ==\n\n");
+            Self::render_records(&orchestrators, &mut out);
+            out.push_str("== workers ==\n\n");
+        }
+        Self::render_records(&workers, &mut out);
+        Ok(out)
+    }
+
+    fn render_records(records: &[Record], out: &mut String) {
+        for r in records {
             let session = r.session_id.as_deref().unwrap_or("not-yet-known");
             out.push_str(&format!(
                 "[{}] {} ({})  session={}  record={}\n",
@@ -471,6 +598,12 @@ impl Ledger {
             if let Some(phase) = r.phase {
                 out.push_str(&format!("  phase={phase}\n"));
             }
+            if let Some(via) = &r.via {
+                out.push_str(&format!(
+                    "  ran via {via}: {}\n",
+                    r.substitution_reason.as_deref().unwrap_or("substituted")
+                ));
+            }
             out.push_str(&format!("  task: {}\n", r.task));
             let notable: Vec<&HistoryEntry> = r
                 .history
@@ -482,7 +615,6 @@ impl Ledger {
             }
             out.push('\n');
         }
-        Ok(out)
     }
 }
 
@@ -502,7 +634,9 @@ mod tests {
         l.add("r1", "claude", "opus", "opus", "opus-1", Some("s1"), "t")
             .unwrap();
         assert_eq!(l.get("r1").unwrap().effort, None);
-        assert!(!std::fs::read_to_string(l.path()).unwrap().contains("effort"));
+        assert!(!std::fs::read_to_string(l.path())
+            .unwrap()
+            .contains("effort"));
         l.set_effort("s1", Some("medium")).unwrap();
         assert_eq!(l.get("r1").unwrap().effort.as_deref(), Some("medium"));
         assert!(l.render().unwrap().contains("model=opus effort=medium"));
@@ -796,6 +930,98 @@ mod tests {
         assert!(l.get("r1").is_ok());
         // ~15s of spinning before the break, then success.
         assert!(started.elapsed() < Duration::from_secs(45));
+    }
+
+    /// The identity fields default in, round-trip, and stay off disk when
+    /// unset, so a worker record written today reads like one from before.
+    #[test]
+    fn tel_08_insert_fills_plan_project_and_workspace() {
+        let (_t, l) = ledger();
+        std::env::set_var("HORCH_WORKSPACE_ID", "w7");
+        l.insert(Record {
+            record_id: "r1".into(),
+            session_id: Some("s1".into()),
+            agent: "claude".into(),
+            tier: "sonnet".into(),
+            model: "sonnet".into(),
+            role: "sonnet-1".into(),
+            project: Some("/work/alpha".into()),
+            task: "Do ai_docs/plans/golden-prompts-whitespace.md step 2".into(),
+            phase: Some(Phase::Implementation),
+            ..Record::default()
+        })
+        .unwrap();
+        std::env::remove_var("HORCH_WORKSPACE_ID");
+        let r = l.get("r1").unwrap();
+        assert_eq!(r.kind, KIND_WORKER);
+        assert_eq!(r.plan.as_deref(), Some("golden-prompts-whitespace"));
+        assert_eq!(r.project.as_deref(), Some("/work/alpha"));
+        assert_eq!(r.workspace_id.as_deref(), Some("w7"));
+        assert_eq!(r.status, STATUS_WORKING);
+        let raw = std::fs::read_to_string(l.path()).unwrap();
+        assert!(
+            !raw.contains("\"kind\""),
+            "a worker's kind stays implicit: {raw}"
+        );
+        assert!(!raw.contains("\"via\""), "{raw}");
+
+        l.assign("sonnet-1", "now ai_docs/plans/other.md").unwrap();
+        assert_eq!(l.get("r1").unwrap().plan.as_deref(), Some("other"));
+        l.assign("sonnet-1", "no plan").unwrap();
+        assert_eq!(l.get("r1").unwrap().plan, None);
+    }
+
+    /// A fleet's orchestrator is a record too; it is rendered apart from the
+    /// workers and retired by the next fleet in its workspace.
+    #[test]
+    fn tel_02_orchestrator_records_render_apart_and_are_superseded() {
+        let (_t, l) = ledger();
+        l.add(
+            "w1",
+            "claude",
+            "sonnet",
+            "sonnet",
+            "sonnet-1",
+            Some("s1"),
+            "t",
+        )
+        .unwrap();
+        l.insert(Record {
+            record_id: "o1".into(),
+            session_id: Some("s-orch".into()),
+            agent: "claude".into(),
+            tier: "orchestrator".into(),
+            model: "opus".into(),
+            role: "orchestrator".into(),
+            kind: KIND_ORCHESTRATOR.into(),
+            task: ORCHESTRATING_TASK.into(),
+            workspace_id: Some("w9".into()),
+            ..Record::default()
+        })
+        .unwrap();
+        let out = l.render().unwrap();
+        let orch = out.find("record=o1").unwrap();
+        let workers = out.find("== workers ==").unwrap();
+        assert!(
+            orch < workers && workers < out.find("record=w1").unwrap(),
+            "{out}"
+        );
+        assert!(l.get("o1").unwrap().is_orchestrator());
+
+        assert_eq!(
+            l.supersede_orchestrators(|ws| ws == "w9").unwrap(),
+            0,
+            "w9 is open"
+        );
+        assert_eq!(l.supersede_orchestrators(|ws| ws == "w8").unwrap(), 1);
+        let o = l.get("o1").unwrap();
+        assert_eq!(o.status, STATUS_DONE);
+        assert_eq!(o.history.last().unwrap().text, "superseded");
+        assert_eq!(
+            l.get("w1").unwrap().status,
+            STATUS_WORKING,
+            "workers untouched"
+        );
     }
 
     /// Records written by the bash implementation must still load.

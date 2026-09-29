@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/horch-core",
     "crates/horch",
+    "crates/horch-e2e",
     "crates/herdr-install",
     "crates/herdr-docs-sync",
 ]
