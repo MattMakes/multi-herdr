@@ -93,8 +93,10 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
     // in these goldens has the role "r-1", so that is the tag the example shows.
     let lifecycle_end = "gotchas, current state.\n\n";
     // Third sanctioned change: the `horch done` bullet now names what a summary
-    // must carry that the old wording left out - the work that is NOT done.
-    let done_summary = "  Write files touched, decisions, gotchas, and what is not done.\n";
+    // must carry that the old wording left out - the work that is NOT done -
+    // and that the summary must not repeat the tag and keyword `horch done` adds.
+    let done_summary = "  Write files touched, decisions, gotchas, and what is not done.\n  \
+        Do not start the summary with \"[r-1] DONE:\". horch done adds it.\n";
     // Fourth: the `== Scope ==` block, inserted whole between the lifecycle list
     // and the STE section. A worker that reads one thing before starting reads
     // what it owns and what it must not touch.

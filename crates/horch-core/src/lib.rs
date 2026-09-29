@@ -23,6 +23,7 @@ pub mod launch;
 pub mod layout;
 pub mod ledger;
 pub mod mailbox;
+pub mod message;
 pub mod opencode;
 pub mod paneshell;
 pub mod plugins;
