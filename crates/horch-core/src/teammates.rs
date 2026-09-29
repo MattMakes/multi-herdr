@@ -1389,6 +1389,7 @@ mod spawnable_tests {
                 "smoke" => None,
                 "researcher" | "product-lead" | "designer" => Some(Phase::Research),
                 "staff-engineer"
+                | "opus-architect"
                 | "orchestrator"
                 | "orchestrator-codex"
                 | "orchestration-orchestrator" => Some(Phase::Plan),
