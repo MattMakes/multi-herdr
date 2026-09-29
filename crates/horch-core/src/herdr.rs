@@ -99,6 +99,9 @@ pub struct Tab {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Workspace {
     pub workspace_id: String,
+    /// The label it was created with, e.g. `horch telemetry`.
+    #[serde(default)]
+    pub label: Option<String>,
     /// The tab the workspace shows now. Used to put focus back after a
     /// rearrangement.
     #[serde(default)]
@@ -249,7 +252,9 @@ impl std::str::FromStr for Direction {
         match s {
             "right" => Ok(Direction::Right),
             "down" => Ok(Direction::Down),
-            other => Err(format!("unknown direction '{other}' (expected right or down)")),
+            other => Err(format!(
+                "unknown direction '{other}' (expected right or down)"
+            )),
         }
     }
 }
@@ -304,7 +309,7 @@ impl Herdr {
     /// Run `herdr <args>`, returning stdout. Errors carry herdr's own stderr,
     /// which is what actually explains a failure.
     fn output<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
-        let out = Command::new("herdr").args(args).output().map_err(|e| {
+        let out = Command::new(crate::agent::herdr_bin()).args(args).output().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow!("herdr CLI not found on PATH. Install it with `herdr-install`, or see https://herdr.dev/docs/install/")
             } else {
@@ -336,7 +341,7 @@ impl Herdr {
 
     /// True when the herdr server answers at all. Cheap reachability probe.
     pub fn server_reachable(&self) -> bool {
-        Command::new("herdr")
+        Command::new(crate::agent::herdr_bin())
             .args(["workspace", "list"])
             .output()
             .map(|o| o.status.success())
@@ -591,7 +596,13 @@ impl Herdr {
     /// flag is `--label`, not `--tab-label`.
     pub fn pane_move_new_tab(&self, pane: &str, label: &str) -> Result<Move> {
         let r: MoveResult = self.json(&[
-            "pane", "move", pane, "--new-tab", "--label", label, "--no-focus",
+            "pane",
+            "move",
+            pane,
+            "--new-tab",
+            "--label",
+            label,
+            "--no-focus",
         ])?;
         Ok(r.move_result)
     }
@@ -652,7 +663,7 @@ impl Herdr {
     /// Returns false on timeout rather than erroring.
     pub fn wait_output(&self, pane: &str, needle: &str, timeout_ms: u64) -> Result<bool> {
         let timeout = timeout_ms.to_string();
-        let status = Command::new("herdr")
+        let status = Command::new(crate::agent::herdr_bin())
             .args(["wait", "output", pane, "--match", needle, "--timeout"])
             .arg(&timeout)
             .output()
@@ -662,7 +673,7 @@ impl Herdr {
 
     /// `herdr integration status`, or None when the subcommand is unavailable.
     pub fn integration_status(&self) -> Option<String> {
-        Command::new("herdr")
+        Command::new(crate::agent::herdr_bin())
             .args(["integration", "status"])
             .output()
             .ok()
@@ -724,10 +735,9 @@ mod tests {
             (r#""""#, None),
         ];
         for (json, expected) in cases {
-            let pane: Pane = serde_json::from_str(&format!(
-                r#"{{"pane_id":"p","agent_session":{json}}}"#
-            ))
-            .unwrap();
+            let pane: Pane =
+                serde_json::from_str(&format!(r#"{{"pane_id":"p","agent_session":{json}}}"#))
+                    .unwrap();
             assert_eq!(pane.agent_session_id().as_deref(), expected, "for {json}");
         }
     }

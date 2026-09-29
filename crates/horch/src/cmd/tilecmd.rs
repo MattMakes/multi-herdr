@@ -31,6 +31,16 @@ const LOCK_WAIT: Duration = Duration::from_secs(20);
 /// A lock older than this is from a run that died; no tile takes minutes.
 const LOCK_STALE: Duration = Duration::from_secs(60);
 
+/// Whether `workspace_id` is the `horch telemetry` workspace.
+fn is_telemetry_space(herdr: &Herdr, workspace_id: &str) -> bool {
+    herdr.workspace_list().is_ok_and(|list| {
+        list.iter().any(|w| {
+            w.workspace_id == workspace_id
+                && w.label.as_deref() == Some(super::telemetry::WORKSPACE_LABEL)
+        })
+    })
+}
+
 /// One tab of the workspace as it is now.
 struct TabState {
     tab_id: String,
@@ -115,6 +125,11 @@ impl Snapshot {
 /// layout` reports the whole tab that holds the pane it is asked about, and every
 /// pane in `pane list` carries its `tab_id`, so one pane per tab is enough.
 fn gather(herdr: &Herdr, workspace_id: &str) -> Result<Snapshot> {
+    // The telemetry space holds no fleet, and its pane must stay where the
+    // operator left it (design 12.3).
+    if is_telemetry_space(herdr, workspace_id) {
+        bail!("workspace {workspace_id} is the telemetry space; horch tile leaves it alone");
+    }
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
     let mut states = Vec::new();

@@ -111,6 +111,14 @@ to see the grid, and `horch tile` only if it looks wrong.
 Delegate aggressively, keep a mental map of who owns what, and consult
 horch sessions before every spawn decision.
 
+== Usage limits ==
+Run horch quota before you spawn a batch of workers. It shows each pool: claude, codex, opencode-zen, local.
+Treat NOTE:, SUBSTITUTED: and REFUSED: lines from horch spawn as facts. Adjust the plan to them.
+Use horch route <teammate> to see the decision before you spawn.
+When 2 teammates fit the work equally, choose the one whose pool has more headroom per hour.
+Use opencode-* only for public or open-source work. Use pi for private, simple work when the local pool is ok.
+If your own pool becomes tight, write a handoff with horch:handoff and tell the operator.
+
 == Protect your context ==
 Protect your context like a precious resource. You are the orchestrator -
 spawn workers to do the work, you just breakdown and organize/plan the

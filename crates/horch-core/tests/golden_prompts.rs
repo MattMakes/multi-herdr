@@ -325,10 +325,26 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         --direction right|down to control layout (pane ids come from herdr pane list,\n\
         and horch spawn prints the new pane's id on stdout). `horch layout` reports\n\
         the current worker grid and the next split that keeps it 2 rows by N columns.";
-    let new_placement = "`horch spawn` lays the grid out for you after each spawn, and again when a\n\
+    let new_placement =
+        "`horch spawn` lays the grid out for you after each spawn, and again when a\n\
         worker closes. You never pass --from-pane or --direction. Run `horch layout`\n\
         to see the grid, and `horch tile` only if it looks wrong.";
     assert_eq!(was.matches(old_placement).count(), 1);
+
+    // Eleventh: usage limits (design 2026-09-28-fleet-telemetry, BAL-07). The
+    // orchestrator now works against weekly pools that run out; `horch spawn`
+    // may print NOTE:, SUBSTITUTED: or REFUSED:, and this is where it is told
+    // to read them, how to see a decision first, and which pools are public-
+    // only. Inserted whole, directly before the context section.
+    let context = "== Protect your context ==";
+    let usage_limits = "== Usage limits ==\n\
+        Run horch quota before you spawn a batch of workers. It shows each pool: claude, codex, opencode-zen, local.\n\
+        Treat NOTE:, SUBSTITUTED: and REFUSED: lines from horch spawn as facts. Adjust the plan to them.\n\
+        Use horch route <teammate> to see the decision before you spawn.\n\
+        When 2 teammates fit the work equally, choose the one whose pool has more headroom per hour.\n\
+        Use opencode-* only for public or open-source work. Use pi for private, simple work when the local pool is ok.\n\
+        If your own pool becomes tight, write a handoff with horch:handoff and tell the operator.\n\n";
+    assert_eq!(was.matches(context).count(), 1);
 
     let expected = was
         .replace(old_block, &new_block)
@@ -339,10 +355,38 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         .replace(spawn_sentence, workers_only)
         .replace(old_placement, new_placement)
         .replace(spawning_header, &format!("{core_loop}{spawning_header}"))
-        .replace(close, &format!("{close}{guard}"));
+        .replace(close, &format!("{close}{guard}"))
+        .replace(context, &format!("{usage_limits}{context}"));
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the ten sanctioned blocks"
+        "the orchestrator briefing changed outside the eleven sanctioned blocks"
+    );
+}
+
+/// BAL-07: the usage-limits block is a named, sanctioned change (the
+/// eleventh in `the_orchestrator_briefing_differs_only_where_sanctioned`),
+/// it reaches both orchestrator flavors, and a codex orchestrator may run the
+/// two commands it names.
+#[test]
+fn bal_07_usage_limits_block_sanctioned() {
+    let r = roster();
+    for name in ["orchestrator", "orchestrator-codex"] {
+        let p = prompts::agent_prompt(&r, r.require(name).unwrap(), "orchestrator").unwrap();
+        let at = p.find("== Usage limits ==").expect("the block");
+        assert!(at < p.find("== Protect your context ==").unwrap(), "{name}");
+        assert!(p.contains("Use horch route <teammate> to see the decision before you spawn."));
+    }
+    let rules: Vec<String> = r
+        .orchestrator_exec_rules()
+        .iter()
+        .map(|x| x.pattern.clone())
+        .collect();
+    assert!(rules.iter().any(|p| p.contains("\"quota\"")), "{rules:?}");
+    assert!(rules.iter().any(|p| p.contains("\"route\"")), "{rules:?}");
+    let golden_was = golden("fleet-orchestrator");
+    assert!(
+        !golden_was.contains("== Usage limits =="),
+        "the golden is the OLD text"
     );
 }
 
@@ -377,7 +421,10 @@ fn the_codex_orchestrator_differs_from_the_claude_one_only_in_its_tier_block() {
     // The same heading, a different reader ladder and hand-off teammate.
     assert!(codex.contains("on Codex Sol or Opus at best"), "{codex}");
     assert!(claude.contains("on Opus or Codex Sol at best"), "{claude}");
-    assert!(codex.contains("hand the execution to\ncodex-sol."), "{codex}");
+    assert!(
+        codex.contains("hand the execution to\ncodex-sol."),
+        "{codex}"
+    );
     // No placeholder may survive into a live pane - not {roster}, not {persona}.
     assert!(
         !codex.contains('{'),

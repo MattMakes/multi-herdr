@@ -901,3 +901,43 @@ Codex `account/rateLimits/read` response, as `fake-codex limits_weekly` prints i
 | Spawn routing points, `spawn.rs:136`, ledger write at 164-178 | [Q] Routing points |
 | herdr sessions, labels, metadata tokens, `--no-focus` | [H] herdr capabilities |
 | No TUI, async, SQLite or OTLP crates today | [H] Dependencies |
+
+---
+
+## 20. Build notes (2026-09-29, cloud session)
+
+M0 to M6 were written on one branch, `claude/intelligent-heisenberg-vwfjre`, not
+one branch per milestone. The prerequisite branch `orchestrator-prompt-unwrap`
+does not exist on the remote, so the section 13.6 block is inserted into the
+current prose. **Nothing was compiled or run:** this environment's egress
+policy refuses `static.crates.io`, so `cargo` cannot download any crate (the
+existing workspace does not build here either). Every file was parse-checked
+and formatted with `rustfmt`. Run `just verify` where crates.io is reachable;
+the render goldens are then written once with `HORCH_BLESS=1` and reviewed.
+
+Where the build departs from sections 1-19, and why:
+
+| # | design | built | why |
+|---|---|---|---|
+| B1 | Claude: a pending entry per session, emitted on a new `message.id` or 2 quiet ticks | emit on first sight; a repeat with more tokens emits a correction `<id>+<n>` (`delta: true`) | [S] C1: subagent lines carry start-of-stream usage; corrections count growth without a delay, and staged reads equal whole reads by construction |
+| B2 | Codex: `token_count` only when a rollout has no `token_usage_record` | the mode is chosen by `session_meta.cli_version` (>= 0.157.0 counts records); a file with no version switches to records at its first record | an incremental reader cannot know the file's future; [S] X1 |
+| B3 | `cacheWrite -> cw5m` for pi | `cacheWrite - cacheWrite1h -> cw5m`, `cacheWrite1h -> cw1h` | [S] pi: 0.87 reports the 1h subset |
+| B4 | `<sid>/subagents/*.jsonl` | every `*.jsonl` under `<sid>/subagents/`, nested | [S] C1 |
+| B5 | Appendix A `get_usage` shape | `seven_day_opus`, `seven_day_sonnet`, `model_scoped[]` and `limits[]` inside `rate_limits`; `severity: normal` | [Q] 1a, from the shipped schema |
+| B6 | ratatui + crossterm | the frame is plain text rendered by horch; crossterm only for raw mode and keys | the goldens compare text either way; one crate fewer (NFR-05 still holds) |
+| B7 | the next `horch fleet` in the same workspace supersedes an orchestrator | the next `horch fleet` supersedes `working` orchestrator records whose workspace is no longer open | `horch fleet` always creates a new workspace, so "the same workspace" never recurs |
+| B8 | lock liveness: pid alive and start time matches | pid alive only (`kill(pid, 0)`, `tasklist` on Windows) | stable Rust has no portable process start time; the lock is also removed on every exit |
+| B9 | Windows file identity `(volume serial, file index)` | `(0, creation time)` | the file-index accessors are unstable in Rust |
+| B10 | `NOTE: ... resets Thu 14:00Z` | `Fri 14:00Z` | 2026-10-02 is a Friday |
+| B11 | stale readings are `unknown` | a `HORCH_QUOTA_FILE` reading is never stale | a drill fixture must keep its meaning on the operator's real clock |
+| B12 | - | `unread` reasons carry no machine path | the screen and its goldens must be the same on every machine |
+| B13 | - | new seams: `HORCH_PROBE_TIMEOUT_MS`, `HORCH_FAULT=after-append|abort-after-append` (collector), `HORCH_FAKE_FAIL_LABEL` (fake-herdr), `HORCH_BLESS=1` (render goldens) | tests need short timeouts, a crash window and one failing label |
+| B14 | settings in `quota.rs` | `policy.rs`; the singleton lock in `telemetry/lock.rs` | both are shared by the collector, the gate and the CLIs |
+| B15 | `horch route`: no side effects | it may run the same on-demand probe as the gate (it writes `quota.json` only) | otherwise route and gate could decide on different readings (BAL-06) |
+| B16 | `collect --once` | also probes when the collector schedule says a probe is due | it is the collector, for one tick |
+| B17 | the codex orchestrator's commands | `horch quota` and `horch route` added to `_base/codex-orchestrator-execpolicy.md` | the briefing names them; a codex orchestrator could not run them otherwise |
+
+Evidence corrections, from the reports: the "8 sessions per socket" figure
+is not in the herdr docs [H]; `report_metadata` allows 16 keys per report and
+32 per workspace [H]; pi's Node >= 22.19 floor belongs to
+`@earendil-works/pi-coding-agent` [Q][S].

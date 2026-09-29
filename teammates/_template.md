@@ -52,6 +52,16 @@ agent: claude
 # codex-sol instead.
 model: opus
 
+# ─── usage limits ────────────────────────────────────────────────────────────
+# Teammates whose LAUNCH settings (agent, model, args, env, ...) a spawn
+# borrows when this teammate's usage pool is exhausted, broken or cooling -
+# or tight while a fallback has twice the headroom. This teammate's persona,
+# base, phase and skills stay. First usable entry wins; a fallback's own
+# fallbacks are never followed. Each must run on a different pool, and never
+# on a trains-on-input (opencode) teammate. `horch route <name>` shows what a
+# spawn would do right now.
+fallbacks: []
+
 # claude   -> `--effort <level>`   (low | medium | high | xhigh | max)
 #             Not on haiku: Haiku 4.5 has no effort setting.
 # codex    -> `-c model_reasoning_effort="<level>"`

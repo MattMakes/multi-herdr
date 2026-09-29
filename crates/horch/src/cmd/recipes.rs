@@ -14,10 +14,11 @@ use horch_core::agent;
 use horch_core::codex;
 use horch_core::herdr::{Direction, Herdr};
 use horch_core::launch::{self, Session};
-use horch_core::ledger::Ledger;
-use horch_core::mailbox::Mailbox;
+use horch_core::ledger::{Ledger, Record, KIND_ORCHESTRATOR, ORCHESTRATING_TASK};
+use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::paneshell::PaneShell;
 use horch_core::prompts;
+use horch_core::quota::{self, QuotaView, State};
 use horch_core::teammates::{Agent, Roster};
 
 use super::doctor;
@@ -82,6 +83,9 @@ pub enum FleetFlavor {
     Astra,
     /// Codex, on Sol.
     Sol,
+    /// Whichever of Opus and Sol the usage pools can serve (BAL-08). Resolved
+    /// to one of the others before anything launches.
+    Auto,
 }
 
 impl FleetFlavor {
@@ -91,6 +95,7 @@ impl FleetFlavor {
             FleetFlavor::Fable => "fable",
             FleetFlavor::Astra => "astra",
             FleetFlavor::Sol => "sol",
+            FleetFlavor::Auto => "auto",
         }
     }
 
@@ -101,6 +106,7 @@ impl FleetFlavor {
             FleetFlavor::Fable => "Claude Code on Fable",
             FleetFlavor::Astra => "Codex on Astra",
             FleetFlavor::Sol => "Codex on Sol",
+            FleetFlavor::Auto => "chosen by usage limits",
         }
     }
 
@@ -108,7 +114,8 @@ impl FleetFlavor {
     /// latest release; codex has no alias mechanism, so its slugs are literal.
     pub fn model(self) -> &'static str {
         match self {
-            FleetFlavor::Opus => "opus",
+            // `Auto` never launches as itself; `fleet` resolves it first.
+            FleetFlavor::Opus | FleetFlavor::Auto => "opus",
             FleetFlavor::Fable => "fable",
             FleetFlavor::Astra => "gpt-6-astra",
             FleetFlavor::Sol => "gpt-5.6-sol",
@@ -118,7 +125,9 @@ impl FleetFlavor {
     /// The teammate file this flavor's orchestrator pane is briefed from.
     fn pane_kind(self) -> PaneKind {
         match self {
-            FleetFlavor::Opus | FleetFlavor::Fable => PaneKind::FleetOrchestrator,
+            FleetFlavor::Opus | FleetFlavor::Fable | FleetFlavor::Auto => {
+                PaneKind::FleetOrchestrator
+            }
             FleetFlavor::Astra | FleetFlavor::Sol => PaneKind::FleetCodexOrchestrator,
         }
     }
@@ -136,8 +145,9 @@ impl std::str::FromStr for FleetFlavor {
             "fable" => Ok(FleetFlavor::Fable),
             "astra" | "codex" => Ok(FleetFlavor::Astra),
             "sol" => Ok(FleetFlavor::Sol),
+            "auto" => Ok(FleetFlavor::Auto),
             other => Err(format!(
-                "unknown fleet flavor '{other}' (expected opus, fable, astra or sol; \
+                "unknown fleet flavor '{other}' (expected opus, fable, astra, sol or auto; \
                  cc/claude mean opus, codex means astra)"
             )),
         }
@@ -161,6 +171,22 @@ fn resolve_cwd(cwd: Option<&str>) -> Result<String> {
 
 /// The command line that turns a pane into `kind`.
 fn pane_command(role: &str, kind: PaneKind, model: Option<&str>) -> Result<String> {
+    pane_command_for(role, kind, model, None)
+}
+
+/// The ledger identity an orchestrator pane runs under.
+struct PaneRecord<'a> {
+    record_id: &'a str,
+    session_id: Option<&'a str>,
+}
+
+/// [`pane_command`], carrying a ledger record for the pane.
+fn pane_command_for(
+    role: &str,
+    kind: PaneKind,
+    model: Option<&str>,
+    record: Option<PaneRecord<'_>>,
+) -> Result<String> {
     let exe = std::env::current_exe().context("locating the horch binary")?;
     let mut args = vec![
         "pane-launch".to_string(),
@@ -179,6 +205,22 @@ fn pane_command(role: &str, kind: PaneKind, model: Option<&str>) -> Result<Strin
         if !dir.is_empty() {
             args.push("--teammates-dir".to_string());
             args.push(dir);
+        }
+    }
+    if let Some(record) = record {
+        args.push("--record-id".to_string());
+        args.push(record.record_id.to_string());
+        if let Some(sid) = record.session_id {
+            args.push("--session-id".to_string());
+            args.push(sid.to_string());
+        }
+        // The same reason as the roster path: the ledger this record lives
+        // in must be the one the pane writes.
+        if let Ok(dir) = std::env::var("HORCH_STATE_DIR") {
+            if !dir.is_empty() {
+                args.push("--state-dir".to_string());
+                args.push(dir);
+            }
         }
     }
     Ok(PaneShell::host().command_line(&exe, &args))
@@ -201,17 +243,72 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
 
     warn_about_missing_integrations(&herdr);
 
+    let flavor = if flavor == FleetFlavor::Auto {
+        let state_root = horch_core::ledger::state_root();
+        let policy = horch_core::policy::Policy::load(&state_root)?;
+        let view = quota::current_view(&state_root, horch_core::clock::now(), &policy, true)?;
+        let (chosen, why) = auto_flavor(&view);
+        println!("fleet: auto chose {chosen} - {why}.");
+        chosen
+    } else {
+        flavor
+    };
+
     println!("Creating fleet workspace rooted at {cwd}...");
     let ws = herdr.workspace_create(&workspace_label(Path::new(&cwd)), Some(&cwd), true)?;
     std::env::set_var("HORCH_WORKSPACE_ID", &ws.workspace_id);
     std::env::set_var("HORCH_PROJECT_DIR", &cwd);
 
+    // The orchestrator is a ledger record like any worker (TEL-02), so its
+    // spend is counted. Orchestrators of workspaces that are gone are
+    // retired first: an orchestrator never runs `horch done`.
+    let ledger = Ledger::open()?;
+    if let Ok(open) = herdr.workspace_list() {
+        let open: Vec<String> = open.into_iter().map(|w| w.workspace_id).collect();
+        ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
+    }
     let kind = flavor.pane_kind();
+    let roster = Roster::load()?;
+    let teammate = roster.require(orchestrator_teammate(kind))?;
+    let record_id = horch_core::mint_uuid();
+    let session_id = teammate
+        .agent
+        .mints_session_id()
+        .then(horch_core::mint_uuid);
+    ledger.insert(Record {
+        record_id: record_id.clone(),
+        session_id: session_id.clone(),
+        agent: teammate.agent.as_str().to_string(),
+        tier: teammate.name.clone(),
+        model: flavor.model().to_string(),
+        effort: teammate.effort.clone(),
+        phase: teammate.phase,
+        role: "orchestrator".to_string(),
+        kind: KIND_ORCHESTRATOR.to_string(),
+        task: ORCHESTRATING_TASK.to_string(),
+        project: Some(cwd.clone()),
+        workspace_id: Some(ws.workspace_id.clone()),
+        ..Record::default()
+    })?;
+
     println!("Launching orchestrator ({})...", flavor.label());
     herdr.pane_run(
         &ws.root_pane_id,
-        &pane_command("orchestrator", kind, Some(flavor.model()))?,
+        &pane_command_for(
+            "orchestrator",
+            kind,
+            Some(flavor.model()),
+            Some(PaneRecord {
+                record_id: &record_id,
+                session_id: session_id.as_deref(),
+            }),
+        )?,
     )?;
+
+    // The telemetry space (SPC-06). Never a reason for the fleet to fail.
+    if let Err(e) = super::telemetry::ensure(&herdr, true) {
+        println!("warning: telemetry space not started: {e:#}");
+    }
 
     println!(
         "\nDone. Fleet workspace {} is live with one orchestrator pane.",
@@ -221,6 +318,62 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
     println!("Orchestrator commands: horch sessions | horch assign | horch spawn [--resume]");
     println!("Workers are spawned on demand: horch spawn <teammate> \"task\"");
     Ok(())
+}
+
+/// Which teammate file backs a fleet orchestrator pane of `kind`.
+fn orchestrator_teammate(kind: PaneKind) -> &'static str {
+    match kind {
+        PaneKind::FleetCodexOrchestrator => "orchestrator-codex",
+        _ => "orchestrator",
+    }
+}
+
+/// `claude 7d 100% (resets Fri 14:00Z)`: a pool in a few words.
+fn pool_words(view: &QuotaView, pool: &str, scope: &str) -> String {
+    let a = view.assess_pool(pool, Some(scope), None);
+    match &a.worst {
+        Some(w) => {
+            let mut s = format!("{pool} {} {}", w.label(), quota::pct(w.used_at(view.now)));
+            if a.state.blocks() {
+                if let Some(r) = &w.resets_at {
+                    s.push_str(&format!(" (resets {})", quota::short_time(r)));
+                }
+            }
+            s
+        }
+        None => format!("{pool} {}", a.state),
+    }
+}
+
+/// `horch fleet auto` (BAL-08): Opus if the claude pool can serve it, else
+/// Sol if the codex pool can, else whichever pool resets first.
+fn auto_flavor(view: &QuotaView) -> (FleetFlavor, String) {
+    let claude = view.assess_pool(quota::POOL_CLAUDE, Some("opus"), None);
+    let codex = view.assess_pool(quota::POOL_CODEX, Some("sol"), None);
+    let why = format!(
+        "{}, {}",
+        pool_words(view, quota::POOL_CLAUDE, "opus"),
+        pool_words(view, quota::POOL_CODEX, "sol")
+    );
+    let serves = |s: State| matches!(s, State::Ok | State::Tight);
+    let chosen = if serves(claude.state) {
+        FleetFlavor::Opus
+    } else if serves(codex.state) {
+        FleetFlavor::Sol
+    } else {
+        let reset = |a: &quota::Assessment| {
+            a.worst
+                .as_ref()
+                .and_then(|w| w.resets_at.clone())
+                .unwrap_or_else(|| "9999".into())
+        };
+        if reset(&codex) < reset(&claude) {
+            FleetFlavor::Sol
+        } else {
+            FleetFlavor::Opus
+        }
+    };
+    (chosen, why)
 }
 
 /// The fleet workspace is named after the project folder; a path with no final
@@ -345,14 +498,30 @@ pub fn orchestration(cwd: Option<&str>) -> Result<()> {
 ///
 /// Replaces `scripts/herdr-fleet/orchestrator.sh`, `scripts/lib/herdr-worker.sh`,
 /// and the five `scripts/herdr-orchestration/*.sh` launchers.
+/// The ledger identity `horch fleet` gave an orchestrator pane.
+#[derive(Debug, Clone, Default)]
+pub struct PaneIdentity {
+    pub record_id: Option<String>,
+    pub session_id: Option<String>,
+    pub state_dir: Option<String>,
+}
+
 pub fn pane_launch(
     role: &str,
     kind: PaneKind,
     model: Option<&str>,
     teammates_dir: Option<&str>,
+    identity: PaneIdentity,
 ) -> Result<ExitCode> {
     let herdr = Herdr::new();
-    Mailbox::register(&herdr, role)?;
+    let (mailbox, _pane) = Mailbox::register(&herdr, role)?;
+    if let Some(dir) = &identity.state_dir {
+        std::env::set_var("HORCH_STATE_DIR", dir);
+    }
+    // Like a worker, the orchestrator knows its own record.
+    if let Some(record_id) = &identity.record_id {
+        std::env::set_var("HORCH_RECORD_ID", record_id);
+    }
 
     // Re-export it: the orchestrator runs `horch spawn` from this pane, and
     // those spawns must resolve the same roster this pane was launched with.
@@ -419,13 +588,13 @@ pub fn pane_launch(
         None
     };
 
-    let mut cmd = launch::command_with_skills(
-        &teammate,
-        Session::Unmanaged,
-        &prompt,
-        model,
-        skills.as_ref(),
-    )?;
+    // A managed session when `horch fleet` minted an id (claude); a codex
+    // orchestrator's id is harvested after launch, as a worker's is.
+    let session = match (&identity.session_id, teammate.agent.mints_session_id()) {
+        (Some(sid), true) => Session::Fresh(sid.as_str()),
+        _ => Session::Unmanaged,
+    };
+    let mut cmd = launch::command_with_skills(&teammate, session, &prompt, model, skills.as_ref())?;
     if let Some(rules) = &rules {
         if let Some(skills) = &skills {
             rules.attach_skills(&skills.skills_dir())?;
@@ -433,7 +602,35 @@ pub fn pane_launch(
         rules.apply(&mut cmd);
     }
     let name = format!("{:?}", cmd.get_program());
+    let harvest = match &identity.record_id {
+        Some(record_id) if teammate.agent.harvests_session_id() => {
+            let project_dir = horch_core::ledger::project_dir()?
+                .to_string_lossy()
+                .into_owned();
+            let brief = Brief {
+                role: role.to_string(),
+                teammate: teammate.name.clone(),
+                agent: teammate.agent.as_str().to_string(),
+                model: model.unwrap_or_default().to_string(),
+                record_id: record_id.clone(),
+                session_id: String::new(),
+                resume: false,
+                task: String::new(),
+                project_dir,
+                state_dir: identity.state_dir.clone(),
+                claude_bin: None,
+                codex_bin: None,
+                resolved: None,
+                teammates_dir: teammates_dir.map(str::to_owned),
+            };
+            super::worker::start_harvest(&mailbox, &brief, teammate.agent, None).ok()
+        }
+        _ => None,
+    };
     let code = run(cmd, name.trim_matches('"'));
+    if let Some(h) = harvest {
+        h.stop();
+    }
     if let Some(rules) = rules {
         rules.finish();
     }
@@ -481,7 +678,10 @@ mod tests {
     #[test]
     fn fleet_flavors_parse_from_what_a_user_types() {
         for (words, flavor) in [
-            (&["opus", "cc", "claude", "CC", "Opus"][..], FleetFlavor::Opus),
+            (
+                &["opus", "cc", "claude", "CC", "Opus"][..],
+                FleetFlavor::Opus,
+            ),
             (&["fable", "FABLE"][..], FleetFlavor::Fable),
             (&["astra", "codex", "CODEX"][..], FleetFlavor::Astra),
             (&["sol", "Sol"][..], FleetFlavor::Sol),
@@ -515,8 +715,16 @@ mod tests {
         for (flavor, kind, model) in [
             (FleetFlavor::Opus, PaneKind::FleetOrchestrator, "opus"),
             (FleetFlavor::Fable, PaneKind::FleetOrchestrator, "fable"),
-            (FleetFlavor::Astra, PaneKind::FleetCodexOrchestrator, "gpt-6-astra"),
-            (FleetFlavor::Sol, PaneKind::FleetCodexOrchestrator, "gpt-5.6-sol"),
+            (
+                FleetFlavor::Astra,
+                PaneKind::FleetCodexOrchestrator,
+                "gpt-6-astra",
+            ),
+            (
+                FleetFlavor::Sol,
+                PaneKind::FleetCodexOrchestrator,
+                "gpt-5.6-sol",
+            ),
         ] {
             assert_eq!(flavor.pane_kind(), kind, "{flavor}");
             assert_eq!(flavor.model(), model, "{flavor}");

@@ -35,8 +35,9 @@ enum Command {
     Fleet {
         /// Who orchestrates, by model: `opus` (the default; also `cc`/`claude`)
         /// or `fable` for Claude Code, `astra` (also `codex`) or `sol` for
-        /// Codex. Only the orchestrator pane changes; all four spawn workers
-        /// from the same roster.
+        /// Codex, or `auto`: Opus or Sol, whichever usage pool can serve it.
+        /// Only the orchestrator pane changes; all of them spawn workers from
+        /// the same roster.
         #[arg(value_name = "FLAVOR", default_value = "opus")]
         flavor: cmd::recipes::FleetFlavor,
         /// Project directory the fleet works in. Defaults to the current directory.
@@ -171,6 +172,62 @@ enum Command {
         /// Leave the grid alone after spawning. Same as HORCH_TILE=0.
         #[arg(long)]
         no_tile: bool,
+        /// Never run a fallback teammate when this one's usage pool is short.
+        #[arg(long)]
+        exact: bool,
+        /// Spawn even when every usage pool that could serve it is exhausted.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Where the tokens went: every pane on this machine, from the telemetry
+    /// event store. Runs one collector tick first when no collector is live.
+    Usage {
+        #[arg(long)]
+        json: bool,
+        /// Only events at or after this time (RFC 3339, or a date).
+        #[arg(long, value_name = "TIME")]
+        since: Option<String>,
+        /// Only this project (its absolute path).
+        #[arg(long, value_name = "PATH")]
+        project: Option<String>,
+        /// Group by teammate, phase, agent, project, plan or kind.
+        #[arg(long, default_value = "teammate")]
+        by: String,
+        /// Only the last 5h, today, or the last 7d.
+        #[arg(long)]
+        window: Option<String>,
+    },
+
+    /// The usage pools (claude, codex, opencode-zen, local) and their state.
+    Quota {
+        #[arg(long)]
+        json: bool,
+        /// Probe now, when no collector is live and the reading is stale.
+        #[arg(long)]
+        refresh: bool,
+    },
+
+    /// What `horch spawn <teammate>` would do about usage limits right now:
+    /// spawn it, substitute a fallback, or refuse. Spawns nothing.
+    Route {
+        teammate: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        exact: bool,
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// The fleet telemetry space: the collector and its screen, or a viewer
+    /// when a collector is already live.
+    Telemetry {
+        #[command(subcommand)]
+        command: Option<TelemetrySub>,
+        /// State root for a pane that does not inherit $HORCH_STATE_DIR.
+        #[arg(long, value_name = "DIR", hide = true, global = true)]
+        state_dir: Option<String>,
     },
 
     /// Report the worker grid of every tab in the workspace.
@@ -271,11 +328,45 @@ enum Command {
         /// shell and does not inherit $HORCH_TEAMMATES_DIR.
         #[arg(long, value_name = "DIR")]
         teammates_dir: Option<String>,
+        /// The orchestrator's ledger record, written by `horch fleet`.
+        #[arg(long, value_name = "ID")]
+        record_id: Option<String>,
+        /// The session id `horch fleet` minted for a claude orchestrator.
+        #[arg(long, value_name = "ID")]
+        session_id: Option<String>,
+        /// The state root, for a pane that does not inherit $HORCH_STATE_DIR.
+        #[arg(long, value_name = "DIR")]
+        state_dir: Option<String>,
     },
 
     /// Register the current pane under a role. Used by the smoke checks.
     #[command(hide = true)]
     Register { role: String },
+}
+
+#[derive(Subcommand)]
+enum TelemetrySub {
+    /// Open the collector in its own herdr workspace, unless one is live.
+    /// Never focuses, moves or splits an existing pane.
+    Ensure,
+    /// Run exactly one collector tick, with no screen. Exit 2 when a live
+    /// collector holds the lock.
+    Collect {
+        #[arg(long)]
+        once: bool,
+    },
+    /// Print one frame of the screen as plain text.
+    Render {
+        /// A snapshot file. Defaults to the state root's.
+        #[arg(long, value_name = "FILE")]
+        snapshot: Option<String>,
+        #[arg(long, default_value = "120x40")]
+        size: String,
+        #[arg(long, default_value = "teammate")]
+        group: String,
+        #[arg(long, default_value = "live")]
+        window: String,
+    },
 }
 
 /// Join a trailing var-arg list the way `"$*"` did.
@@ -286,6 +377,11 @@ fn joined(parts: &[String]) -> String {
 fn main() -> std::process::ExitCode {
     match run() {
         Ok(code) => code,
+        // The REFUSED line is already on stdout; exit 3 says why (design 13.4).
+        Err(e) if e.downcast_ref::<cmd::spawn::Refused>().is_some() => {
+            eprintln!("horch: {e}");
+            std::process::ExitCode::from(3)
+        }
         Err(e) => {
             eprintln!("horch: {e:#}");
             std::process::ExitCode::FAILURE
@@ -335,6 +431,8 @@ fn run() -> Result<std::process::ExitCode> {
             from_pane,
             direction,
             no_tile,
+            exact,
+            force,
         } => {
             let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())?;
             let pane = cmd::spawn::spawn(cmd::spawn::SpawnArgs {
@@ -347,8 +445,61 @@ fn run() -> Result<std::process::ExitCode> {
                 from_pane,
                 direction,
                 no_tile,
+                exact,
+                force,
             })?;
             output::println(&pane);
+        }
+        Command::Usage {
+            json,
+            since,
+            project,
+            by,
+            window,
+        } => cmd::usagecmd::usage(cmd::usagecmd::UsageArgs {
+            json,
+            since,
+            project,
+            by,
+            window,
+        })?,
+        Command::Quota { json, refresh } => cmd::quotacmd::quota(json, refresh)?,
+        Command::Route {
+            teammate,
+            json,
+            exact,
+            force,
+        } => return cmd::route::route(&teammate, json, exact, force),
+        Command::Telemetry { command, state_dir } => {
+            if let Some(dir) = state_dir {
+                std::env::set_var("HORCH_STATE_DIR", dir);
+            }
+            use cmd::telemetry::TelemetryCommand as T;
+            let command = match command {
+                None => T::Run,
+                Some(TelemetrySub::Ensure) => T::Ensure,
+                Some(TelemetrySub::Collect { once }) => {
+                    if !once {
+                        anyhow::bail!(
+                            "`horch telemetry collect` needs --once; the long-running \
+                             collector is plain `horch telemetry`"
+                        );
+                    }
+                    T::CollectOnce
+                }
+                Some(TelemetrySub::Render {
+                    snapshot,
+                    size,
+                    group,
+                    window,
+                }) => T::Render {
+                    snapshot,
+                    size,
+                    group,
+                    window,
+                },
+            };
+            return cmd::telemetry::run(command);
         }
         Command::Cost {
             json,
@@ -407,12 +558,20 @@ fn run() -> Result<std::process::ExitCode> {
             kind,
             model,
             teammates_dir,
+            record_id,
+            session_id,
+            state_dir,
         } => {
             return cmd::recipes::pane_launch(
                 &role,
                 kind,
                 model.as_deref(),
                 teammates_dir.as_deref(),
+                cmd::recipes::PaneIdentity {
+                    record_id,
+                    session_id,
+                    state_dir,
+                },
             )
         }
         Command::Register { role } => cmd::messaging::register(&role)?,
@@ -535,6 +694,45 @@ mod tests {
                 );
             }
             _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn spawn_takes_the_gate_flags() {
+        match Cli::try_parse_from(["horch", "spawn", "opus", "x", "--exact", "--force"])
+            .unwrap()
+            .command
+        {
+            Command::Spawn { exact, force, .. } => assert!(exact && force),
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn the_telemetry_commands_parse() {
+        for argv in [
+            vec!["horch", "telemetry"],
+            vec!["horch", "telemetry", "ensure"],
+            vec!["horch", "telemetry", "collect", "--once"],
+            vec![
+                "horch",
+                "telemetry",
+                "render",
+                "--size",
+                "80x24",
+                "--group",
+                "phase",
+                "--window",
+                "7d",
+            ],
+            vec![
+                "horch", "usage", "--json", "--by", "plan", "--window", "today",
+            ],
+            vec!["horch", "quota", "--refresh", "--json"],
+            vec!["horch", "route", "researcher", "--json"],
+            vec!["horch", "fleet", "auto"],
+        ] {
+            assert!(Cli::try_parse_from(argv.clone()).is_ok(), "{argv:?}");
         }
     }
 

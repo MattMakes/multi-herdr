@@ -9,6 +9,8 @@ phase: implementation
 # $0.50) and better on the published benchmarks (cezaar#41). medium, because
 # long exploratory runs multiply every thinking token (cezaar#40 researchers).
 model: anthropic/claude-opus-5-5
+# When this model's usage pool cannot serve a spawn (horch route prime).
+fallbacks: [codex-sol]
 effort: medium
 
 # Prime Agent gives the model a single tool - a persistent IPython kernel - and

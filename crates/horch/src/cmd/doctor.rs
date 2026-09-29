@@ -22,7 +22,10 @@ pub fn doctor() -> Result<()> {
     } else {
         // Not fatal: a fleet still launches, but at least one teammate would
         // misbehave in a pane nobody is watching.
-        eprintln!("roster has {} problem(s) (see horch teammates --check):", problems.len());
+        eprintln!(
+            "roster has {} problem(s) (see horch teammates --check):",
+            problems.len()
+        );
         for p in &problems {
             eprintln!("  {p}");
         }
@@ -37,7 +40,13 @@ pub fn doctor() -> Result<()> {
 /// The precondition every recipe shares. Deliberately does NOT validate the
 /// roster: a roster warning must not stop a fleet from launching.
 pub fn check() -> Result<()> {
-    if agent::which("herdr").is_none() {
+    let herdr_bin = agent::herdr_bin();
+    let found = if herdr_bin.components().count() > 1 {
+        herdr_bin.is_file()
+    } else {
+        agent::which(&herdr_bin.to_string_lossy()).is_some()
+    };
+    if !found {
         bail!(
             "herdr CLI not found on PATH.\n\
              Install it with `herdr-install`, or see https://herdr.dev/docs/install/"

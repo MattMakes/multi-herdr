@@ -109,3 +109,19 @@ teammates-check:
 # Scaffold teammates/<NAME>.md from the annotated template.
 teammate-new NAME:
     {{horch}} teammates --new "{{NAME}}"
+
+# Everything the telemetry design asks before a milestone is claimed
+# (ai_docs/designs/2026-09-28-fleet-telemetry-design.md, section 16.3).
+verify:
+    cargo build --workspace --bins
+    cargo test --workspace
+    ./scripts/check-req-coverage.sh
+    ./scripts/verify-telemetry-e2e.sh
+    ./scripts/check-deps.sh
+    rustfmt --edition 2021 --check $(git diff --name-only --diff-filter=AM main -- '*.rs')
+    HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check
+
+# NFR-02: the collector's tick and cold-start budgets over a generated 1 GB
+# corpus. Slow; not part of `verify`.
+verify-perf:
+    cargo test --release -p horch-core --test nfr -- --ignored --nocapture nfr_02
