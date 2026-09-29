@@ -142,6 +142,14 @@ registry to update.
 | `backend-developer`    | Claude | Opus   | medium | JS/TS, Python, Go, C#, Rust services and APIs |
 | `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
 | `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
+| `sonnet-sketch`        | Claude | Sonnet | low    | Drafts, brainstorms, boilerplate, one-file edits |
+| `sonnet-feature`       | Claude | Sonnet | medium | Standard features against a clear spec       |
+| `sonnet-bugfix`        | Claude | Sonnet | high   | Localized bugs with repro steps, edge-case hardening |
+| `sonnet-sweep`         | Claude | Sonnet | max    | Long mechanical multi-file sweeps, exact spec only |
+| `opus-architect`       | Claude | Opus   | low    | Fast architecture critique, API/schema design, triage |
+| `opus-domain`          | Claude | Opus   | medium | Intricate algorithms, domain logic, brownfield features |
+| `opus-hardening`       | Claude | Opus   | high   | Races, leaks, security review, fuzz harnesses |
+| `opus-verify`          | Claude | Opus   | max    | Unattended formal proofs, compiler passes, sandboxed pentest |
 | `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
 | `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
