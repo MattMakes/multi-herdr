@@ -99,6 +99,36 @@ still declare `plugin_dirs` (`~/` expands at launch); `horch teammates --check`
 verifies those paths exist. `disable_skills` conflicts with phase, skills, or
 plugin directories.
 
+## The effort-matrix personas
+
+Eight more Claude specialists split the work by model tier and effort level
+rather than by discipline. Sonnet does fast, cheap execution. Opus 5.5 brings
+more baseline reasoning and handles complex abstraction. The effort level sets
+how deep each one checks.
+
+| effort | Sonnet | Opus |
+|---|---|---|
+| low | `sonnet-sketch`: drafts, brainstorms, boilerplate, one-file edits, scoping | `opus-architect`: architecture critique, API and schema design, multi-service bug triage |
+| medium | `sonnet-feature`: endpoints, UI components, CRUD, test updates to a clear spec | `opus-domain`: intricate algorithms, domain rules, brownfield cross-cutting features |
+| high | `sonnet-bugfix`: localized bugs with repro steps, edge-case validation, module refactors | `opus-hardening`: races, leaks, concurrency, adversarial security review, fuzz harnesses |
+| max | `sonnet-sweep`: one refactor over many files, e2e boilerplate from a schema | `opus-verify`: Lean 4, hardware synthesis, compiler passes, sandboxed pentest |
+
+Each persona states its boundary ("stop and report when...") in its body, and
+the short form of that boundary in `brief_description`, so both the worker and
+the orchestrator see it. The two `max` seats, `sonnet-sweep` and `opus-verify`,
+have a `first_instruction` that makes the worker ask and wait on an
+underspecified task. At max effort a wrong premise costs the most tokens.
+Like the other Claude seats, each has a Codex `fallbacks:` entry for when the
+Claude pool cannot serve a spawn: `codex-sol` for the Opus four, `codex-terra`
+for the Sonnet four (`horch route <name>` shows the decision).
+
+Token efficiency: for deep reasoning, `opus-hardening` (Opus at high) often
+matches or beats Sonnet at max on fewer tokens. `sonnet-sweep` exists for
+repetitive volume, not for depth. `opus-architect` is the fast, low-effort
+counterpart of `staff-engineer` (deep plans, high) and `architect-reviewer`
+(reviews a change, high). Rationale per seat is in
+[`ai_docs/reports/model-guide-2026-09.md`](../ai_docs/reports/model-guide-2026-09.md).
+
 ## The generics
 
 `sonnet`, `opus`, `codex-sol`, `codex-network`, `codex-terra`, `codex-luna`, `opencode-ultra`,
@@ -140,6 +170,7 @@ evidence per teammate, with prices and sources, is in
 | reviewers and planners | `architect-reviewer`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
 | builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `codex-network`, `prime` | medium |
 | runners | `codex-terra`, `codex-luna`, `pi` | low |
+| effort-matrix personas | `sonnet-*`, `opus-*` (effort is the role; see above) | low to max |
 | no effort setting | `opencode-*` (their free models define no variants) | - |
 
 Rules `horch teammates --check` enforces:

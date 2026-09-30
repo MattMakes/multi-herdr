@@ -10,6 +10,8 @@ phase: implementation
 # reasoning. Prices disagree across sources; see
 # ai_docs/reports/model-guide-2026-09.md.
 model: gpt-5.6-luna
+# When this model's usage pool cannot serve a spawn (horch route codex-luna).
+fallbacks: [sonnet, pi]
 effort: low
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.

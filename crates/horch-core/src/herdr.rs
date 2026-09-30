@@ -99,6 +99,9 @@ pub struct Tab {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Workspace {
     pub workspace_id: String,
+    /// The label it was created with, e.g. `horch telemetry`.
+    #[serde(default)]
+    pub label: Option<String>,
     /// The tab the workspace shows now. Used to put focus back after a
     /// rearrangement.
     #[serde(default)]
@@ -249,7 +252,9 @@ impl std::str::FromStr for Direction {
         match s {
             "right" => Ok(Direction::Right),
             "down" => Ok(Direction::Down),
-            other => Err(format!("unknown direction '{other}' (expected right or down)")),
+            other => Err(format!(
+                "unknown direction '{other}' (expected right or down)"
+            )),
         }
     }
 }
@@ -304,7 +309,7 @@ impl Herdr {
     /// Run `herdr <args>`, returning stdout. Errors carry herdr's own stderr,
     /// which is what actually explains a failure.
     fn output<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
-        let out = Command::new("herdr").args(args).output().map_err(|e| {
+        let out = Command::new(crate::agent::herdr_bin()).args(args).output().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow!("herdr CLI not found on PATH. Install it with `herdr-install`, or see https://herdr.dev/docs/install/")
             } else {
@@ -336,7 +341,7 @@ impl Herdr {
 
     /// True when the herdr server answers at all. Cheap reachability probe.
     pub fn server_reachable(&self) -> bool {
-        Command::new("herdr")
+        Command::new(crate::agent::herdr_bin())
             .args(["workspace", "list"])
             .output()
             .map(|o| o.status.success())
@@ -591,7 +596,13 @@ impl Herdr {
     /// flag is `--label`, not `--tab-label`.
     pub fn pane_move_new_tab(&self, pane: &str, label: &str) -> Result<Move> {
         let r: MoveResult = self.json(&[
-            "pane", "move", pane, "--new-tab", "--label", label, "--no-focus",
+            "pane",
+            "move",
+            pane,
+            "--new-tab",
+            "--label",
+            label,
+            "--no-focus",
         ])?;
         Ok(r.move_result)
     }
@@ -652,7 +663,7 @@ impl Herdr {
     /// Returns false on timeout rather than erroring.
     pub fn wait_output(&self, pane: &str, needle: &str, timeout_ms: u64) -> Result<bool> {
         let timeout = timeout_ms.to_string();
-        let status = Command::new("herdr")
+        let status = Command::new(crate::agent::herdr_bin())
             .args(["wait", "output", pane, "--match", needle, "--timeout"])
             .arg(&timeout)
             .output()
@@ -662,7 +673,7 @@ impl Herdr {
 
     /// `herdr integration status`, or None when the subcommand is unavailable.
     pub fn integration_status(&self) -> Option<String> {
-        Command::new("herdr")
+        Command::new(crate::agent::herdr_bin())
             .args(["integration", "status"])
             .output()
             .ok()
@@ -670,27 +681,97 @@ impl Herdr {
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     }
 
-    /// Type a line into another pane's terminal and submit it.
-    ///
-    /// Two calls rather than `pane run`: the orchestrator and workers are TUIs in
-    /// raw mode, where an Enter arriving in the same write as the text can be
-    /// consumed as part of the paste instead of submitting it. The settle delay
-    /// scales with length, and the second Enter is a no-op-safe retry (Enter on
-    /// an empty input does nothing).
-    pub fn send_line(&self, pane: &str, message: &str) -> Result<()> {
-        self.pane_send_text(pane, message)?;
-        let settle = if message.len() > 1500 { 2 } else { 1 };
-        std::thread::sleep(std::time::Duration::from_secs(settle));
-        self.pane_send_keys(pane, "enter")?;
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        self.pane_send_keys(pane, "enter")?;
+    /// `herdr agent prompt <target> <text>`: herdr writes the text as one
+    /// bracketed paste plus an encoded Enter, atomically, even while the agent
+    /// is mid-turn. Fails when herdr sees no agent in the pane.
+    pub fn agent_prompt(&self, pane: &str, text: &str) -> Result<()> {
+        self.output(&["agent", "prompt", pane, text])?;
         Ok(())
     }
+
+    /// Type a line into another pane's terminal and submit it.
+    ///
+    /// The first choice is `herdr agent prompt`, which submits text and Enter as
+    /// one atomic write. Separate `send-text` and `send-keys enter` calls race a
+    /// busy TUI: an Enter that lands while the text is still arriving submits a
+    /// head, and the tail becomes a second, untagged message that the receiver
+    /// reads as human input. That was the truncated-`DONE` bug.
+    ///
+    /// When herdr detects no agent in the pane, fall back to the two-call path,
+    /// but press Enter only once the end of the message shows in the pane, not
+    /// after a fixed sleep. The second Enter is a retry that is safe only
+    /// because the whole text has landed (Enter on an empty input does nothing).
+    pub fn send_line(&self, pane: &str, message: &str) -> Result<()> {
+        if self.agent_prompt(pane, message).is_ok() {
+            return Ok(());
+        }
+        self.pane_send_text(pane, message)?;
+        let landed = self.wait_for_tail(pane, message, std::time::Duration::from_secs(15));
+        if !landed {
+            // Could not see it land (wrapped past recognition, or the pane
+            // redraws oddly). Keep the old length-scaled settle as a last resort.
+            let settle = if message.len() > 1500 { 2 } else { 1 };
+            std::thread::sleep(std::time::Duration::from_secs(settle));
+        }
+        self.pane_send_keys(pane, "enter")?;
+        if landed {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            self.pane_send_keys(pane, "enter")?;
+        }
+        Ok(())
+    }
+
+    /// Poll the pane until the last characters of `message` show in it.
+    fn wait_for_tail(&self, pane: &str, message: &str, timeout: std::time::Duration) -> bool {
+        let needle = tail_needle(message);
+        if needle.is_empty() {
+            return true;
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        let mut delay = std::time::Duration::from_millis(100);
+        loop {
+            if let Ok(screen) = self.pane_read(pane, "visible") {
+                if squash(&screen).contains(&needle) {
+                    return true;
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(delay);
+            delay = (delay * 2).min(std::time::Duration::from_secs(1));
+        }
+    }
+}
+
+/// Drop what a TUI adds or moves when it draws an input box: whitespace (soft
+/// wraps) and box-drawing borders. What is left compares across a wrap.
+fn squash(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace() && !('\u{2500}'..='\u{257F}').contains(c))
+        .collect()
+}
+
+/// The last 16 significant characters of `message`, in squashed form.
+fn tail_needle(message: &str) -> String {
+    let squashed: Vec<char> = squash(message).chars().collect();
+    let start = squashed.len().saturating_sub(16);
+    squashed[start..].iter().collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tail_needle_survives_a_soft_wrap_inside_a_box() {
+        let msg = "[sonnet-1] DONE: No file was unclassifiable.";
+        let needle = tail_needle(msg);
+        assert_eq!(needle, "sunclassifiable.");
+        let screen = "\u{2502} > [sonnet-1] DONE: No file was uncl \u{2502}\n\u{2502}   assifiable.      \u{2502}\n";
+        assert!(squash(screen).contains(&needle));
+        assert_eq!(tail_needle("   "), "");
+    }
 
     #[test]
     fn parses_pane_get_envelope() {
@@ -724,10 +805,9 @@ mod tests {
             (r#""""#, None),
         ];
         for (json, expected) in cases {
-            let pane: Pane = serde_json::from_str(&format!(
-                r#"{{"pane_id":"p","agent_session":{json}}}"#
-            ))
-            .unwrap();
+            let pane: Pane =
+                serde_json::from_str(&format!(r#"{{"pane_id":"p","agent_session":{json}}}"#))
+                    .unwrap();
             assert_eq!(pane.agent_session_id().as_deref(), expected, "for {json}");
         }
     }

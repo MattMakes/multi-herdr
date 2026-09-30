@@ -171,6 +171,9 @@ fn fleet() -> Result<ExitCode> {
         direction: Direction::Right,
         // Tiling on, so this check covers the hook `horch spawn` now runs.
         no_tile: false,
+        // The smoke fake spends nothing; never gate it on usage limits.
+        exact: false,
+        force: true,
     })?;
 
     let ledger = Ledger::open()?;
@@ -624,6 +627,9 @@ fn tile() -> Result<ExitCode> {
         from_pane: Some(orchestrator.clone()),
         direction: Direction::Right,
         no_tile: false,
+        // The smoke fake spends nothing; never gate it on usage limits.
+        exact: false,
+        force: true,
     })?;
 
     // 9 workers: 4 on tab 1, 5 on tab 2. The spawned pane is the newcomer, so it

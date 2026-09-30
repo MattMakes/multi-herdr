@@ -192,12 +192,12 @@ fn launch_agent(
 }
 
 /// Handle to the background session-id harvest.
-struct Harvest {
+pub(crate) struct Harvest {
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Harvest {
-    fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.done.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -206,7 +206,7 @@ impl Harvest {
 ///
 /// Prefers herdr's native `agent_session` (available when the codex integration is
 /// installed), falling back to the newest rollout file for this project dir.
-fn start_harvest(
+pub(crate) fn start_harvest(
     mailbox: &Mailbox,
     brief: &Brief,
     agent: Agent,

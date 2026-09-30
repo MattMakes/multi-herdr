@@ -76,6 +76,39 @@ matter more than its lower list price.
 | architect-reviewer, qa-engineer | opus / sonnet | xhigh | high | #40 reviewers/judges: 71% of worker spend was review, but a missed finding costs a round |
 | staff-engineer, product-lead | opus | xhigh | high | Plans and product calls; the orchestrator above is already xhigh |
 
+### Effort-matrix personas
+
+These eight teammates take their effort level from the operator's Sonnet vs.
+Opus 5.5 matrix, not from the #40 role table. For each one, the kind of work
+*is* the effort level. They do not replace the rows above. They give the
+orchestrator a way to buy depth on purpose for one task, instead of raising
+`--effort` on a generic.
+
+| teammate | model | effort | role | boundary (in its persona and brief) |
+|---|---|---|---|---|
+| sonnet-sketch | sonnet | low | Drafts, brainstorms, boilerplate, one-file edits, scoping | No non-trivial bug diagnosis or complex state management |
+| sonnet-feature | sonnet | medium | Features to a clear spec | No obscure edge cases or race conditions |
+| sonnet-bugfix | sonnet | high | Localized bugs with repro steps, defensive validation, moderate refactors | Stays in one module; escalates cross-system causes |
+| sonnet-sweep | sonnet | max | Repetitive multi-file refactors, e2e boilerplate from schemas | No open-ended research; asks and waits on an unclear spec |
+| opus-architect | opus | low | Architecture critique, API and schema design, multi-service triage | No deep verification or fuzzing; low effort stops exploration early |
+| opus-domain | opus | medium | Intricate algorithms, domain rules, brownfield features | No extensive adversarial verification |
+| opus-hardening | opus | high | Races, leaks, concurrency, security review, fuzz harnesses | Not for first drafts |
+| opus-verify | opus | max | Formal verification, HW synthesis, compiler passes, sandboxed pentest | Never on an underspecified task; asks and waits |
+
+Two claims from the matrix decide how these seats are used:
+- **Opus 5.5 at high often matches or beats a smaller model at max, on fewer
+  tokens.** For deep reasoning, pick `opus-hardening`, not `sonnet-sweep`.
+  `sonnet-sweep` is for volume, where the spec already decides every edit.
+  **Unverified**: this is the operator's guidance and has not yet been
+  measured with `horch cost` in this repo.
+- **Pairings.** Fast iteration uses Sonnet at low or medium. Hard bugs,
+  brownfield analysis and critical security work use Opus 5.5 at high. Fully
+  autonomous, sandboxed, high-stakes work uses Opus 5.5 at max.
+
+The two `max` seats are the only offered Claude workers above `high`. Each
+has a `first_instruction` that makes the worker check the spec before it
+spends anything. Measure a run with `horch cost` before widening either seat.
+
 **Default orchestrator is now Opus** (`horch fleet`). Fable is one word away
 (`horch fleet fable`) for work that needs it. Fable and Astra stay reserved
 from every worker.

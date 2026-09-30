@@ -142,6 +142,14 @@ registry to update.
 | `backend-developer`    | Claude | Opus   | medium | JS/TS, Python, Go, C#, Rust services and APIs |
 | `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
 | `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
+| `sonnet-sketch`        | Claude | Sonnet | low    | Drafts, brainstorms, boilerplate, one-file edits |
+| `sonnet-feature`       | Claude | Sonnet | medium | Standard features against a clear spec       |
+| `sonnet-bugfix`        | Claude | Sonnet | high   | Localized bugs with repro steps, edge-case hardening |
+| `sonnet-sweep`         | Claude | Sonnet | max    | Long mechanical multi-file sweeps, exact spec only |
+| `opus-architect`       | Claude | Opus   | low    | Fast architecture critique, API/schema design, triage |
+| `opus-domain`          | Claude | Opus   | medium | Intricate algorithms, domain logic, brownfield features |
+| `opus-hardening`       | Claude | Opus   | high   | Races, leaks, security review, fuzz harnesses |
+| `opus-verify`          | Claude | Opus   | max    | Unattended formal proofs, compiler passes, sandboxed pentest |
 | `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
 | `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
@@ -380,9 +388,41 @@ overrides any row. It reports:
 - **a skills table**: what each worker actually loaded, and which of its
   expected skills it never touched.
 
-**Never counted as $0:** OpenCode sessions (stored in SQLite, not read),
-sessions without a transcript, and models the table does not know. These are
+**Never counted as $0:** sessions without a transcript, OpenCode sessions on
+a machine without `sqlite3`, and models the table does not know. These are
 listed separately instead.
+
+`horch cost` now reads through the same readers as the telemetry space, so its
+numbers changed (2026-09-28): Codex counts each response's
+`token_usage_record`, including the final one the old running total missed;
+Claude counts subagent transcripts under `<id>/subagents/`; OpenCode is read
+from `opencode.db` with the `sqlite3` CLI.
+
+### The telemetry space and usage limits
+
+One collector per machine reads every ledger under the state root, every
+harness's transcripts, and each harness's own usage limits, and writes
+files that everything else reads
+(`ai_docs/designs/2026-09-28-fleet-telemetry-design.md`):
+
+```bash
+horch telemetry                 # the collector and its screen (g, w, p, q); a viewer if one runs
+horch telemetry ensure          # open it in its own herdr workspace, never focused (horch fleet does this)
+horch usage --by plan --window 7d   # where the tokens went, every project
+horch quota --refresh           # the pools: claude, codex, opencode-zen, local
+horch route researcher          # what spawn would do right now: spawn, substitute, or refuse
+horch fleet auto                # Opus or Sol, whichever pool can serve it
+```
+
+Every pane is a ledger record, the orchestrator included, so its spend is
+counted. `horch spawn` checks the teammate's usage pool first. When the pool
+is exhausted, it runs the teammate on its first usable `fallbacks:` entry
+(the persona, phase and skills stay) and prints `SUBSTITUTED:`. With no usable
+fallback it prints `REFUSED:` and exits 3. `--exact` never substitutes,
+`--force` never refuses, and `HORCH_BALANCE=advise|off` (or `balance_mode` in
+`<state root>/policy.json`) softens the gate. No automatic choice ever picks
+a free `opencode-*` teammate. The quota probes use each harness's own client
+(`get_usage`, `account/rateLimits/read`); horch never holds a credential.
 
 To retune the roster from these numbers, use the `tune-fleet` skill
 (`.claude/skills/tune-fleet/SKILL.md`) from a session in this repo.
@@ -515,6 +555,13 @@ junction, so an update never overwrites a running `herdr.exe`.
 | `HORCH_STATE_DIR`    | Where ledgers live                                             |
 | `HORCH_PROJECT_DIR`  | Which project a ledger belongs to. Defaults to the cwd         |
 | `HORCH_WORKSPACE_ID` | Target workspace, when not running inside a herdr pane         |
+| `HORCH_BALANCE`      | Usage-limit gate: `auto` (default), `advise` or `off`          |
+| `HORCH_NOW`          | Pin the clock (RFC 3339), for tests; announced on stderr       |
+| `HORCH_QUOTA_FILE`   | Read pool states from this file and never probe (tests, drills) |
+| `HORCH_HERDR_BIN`    | Which herdr CLI to drive. Defaults to `herdr`                  |
+| `HORCH_SQLITE3_BIN`  | Which `sqlite3` reads OpenCode's database                       |
+| `HORCH_OLLAMA_BIN`   | Which `ollama` the local-pool check asks                       |
+| `HORCH_OPENCODE_DB`  | OpenCode's database. Defaults to `~/.local/share/opencode/opencode.db` |
 | `CODEX_HOME`         | The codex home a private one is mirrored from. Defaults to `~/.codex` |
 | `HERDR_INSTALL_DIR`  | Where `herdr-install` puts herdr                               |
 
@@ -525,6 +572,7 @@ crates/
   horch-core/         Shared machinery: herdr client, mailbox, ledger, layout,
                       prompts, codex glue, pane-shell quoting
   horch/              The horch CLI
+  horch-e2e/          Fake harness binaries and the hermetic end-to-end tests
   herdr-install/      The Herdr CLI installer
   herdr-docs-sync/    The documentation mirror
 herdr-docs/           The mirrored documentation
@@ -533,6 +581,7 @@ herdr-docs/           The mirrored documentation
 ## Tests
 
 ```bash
+just verify             # build, every test, requirement coverage, the e2e story
 cargo test              # unit tests, no herdr server needed
 horch smoke messaging   # against a live herdr server
 horch smoke fleet

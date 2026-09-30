@@ -17,21 +17,27 @@
 
 pub mod agent;
 pub mod balance;
+pub mod balance_policy;
+pub mod clock;
 pub mod codex;
 pub mod herdr;
 pub mod launch;
 pub mod layout;
 pub mod ledger;
 pub mod mailbox;
+pub mod message;
 pub mod opencode;
 pub mod paneshell;
 pub mod plugins;
+pub mod policy;
 pub mod prime;
 pub mod prompts;
+pub mod quota;
 pub mod skills;
 pub mod teammates;
-pub mod usage;
+pub mod telemetry;
 pub mod tile;
+pub mod usage;
 
 /// Mint a session or record id.
 pub fn mint_uuid() -> String {
