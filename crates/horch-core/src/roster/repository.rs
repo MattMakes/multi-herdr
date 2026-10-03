@@ -17,6 +17,9 @@ pub struct Roster {
     pub(crate) bases: BTreeMap<String, Base>,
     /// Directories that were overlaid, lowest precedence first. For `doctor`.
     pub sources: Vec<PathBuf>,
+    /// The home directory this roster was loaded under, for `~/` paths in
+    /// teammate files. `None` for the built-ins alone.
+    pub(crate) home: Option<PathBuf>,
 }
 
 impl Roster {
@@ -40,21 +43,22 @@ impl Roster {
         Ok(r)
     }
 
-    /// Built-ins, overlaid by `~/.config/horch/teammates`, then by
-    /// `$HORCH_TEAMMATES_DIR`.
-    pub fn load() -> Result<Roster> {
-        Roster::load_with(None)
-    }
-
-    /// As [`Roster::load`], with `explicit` as the highest-precedence overlay.
+    /// Built-ins, overlaid by `<home>/.config/horch/teammates`, then by
+    /// `roster_override` (`$HORCH_TEAMMATES_DIR`), then by `explicit`.
     ///
-    /// A herdr pane is a fresh shell started by the server: it inherits the
+    /// A worker pane is a fresh shell started by the server: it inherits the
     /// user's profile, not the environment `horch` was invoked with. So a pane
-    /// cannot see `$HORCH_TEAMMATES_DIR` and has to be told the path outright,
-    /// the same way `HORCH_CLAUDE_BIN` travels in the worker's brief.
-    pub fn load_with(explicit: Option<&str>) -> Result<Roster> {
+    /// cannot see `$HORCH_TEAMMATES_DIR` and has to be told the path outright
+    /// as `explicit`, the same way `HORCH_CLAUDE_BIN` travels in the worker's
+    /// brief.
+    pub fn load_layered(
+        home: Option<&Path>,
+        roster_override: Option<&Path>,
+        explicit: Option<&str>,
+    ) -> Result<Roster> {
         let mut r = Roster::builtin()?;
-        let mut dirs = overlay_dirs();
+        r.home = home.map(Path::to_path_buf);
+        let mut dirs = overlay_dirs(home, roster_override);
         if let Some(dir) = explicit.filter(|d| !d.is_empty()) {
             dirs.push(PathBuf::from(dir));
         }
@@ -176,14 +180,14 @@ impl Roster {
 }
 
 /// Where a runtime directory may be found, lowest precedence first.
-fn overlay_dirs() -> Vec<PathBuf> {
+pub fn overlay_dirs(home: Option<&Path>, roster_override: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join(".config/horch/teammates"));
+    if let Some(home) = home {
+        dirs.push(home.join(".config/horch/teammates"));
     }
-    if let Some(dir) = std::env::var_os("HORCH_TEAMMATES_DIR") {
-        if !dir.is_empty() {
-            dirs.push(PathBuf::from(dir));
+    if let Some(dir) = roster_override {
+        if !dir.as_os_str().is_empty() {
+            dirs.push(dir.to_path_buf());
         }
     }
     dirs

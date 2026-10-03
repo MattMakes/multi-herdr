@@ -327,7 +327,7 @@ impl Roster {
             }
         }
         for dir in &t.plugin_dirs {
-            if !expand_home(dir).is_dir() {
+            if !expand_home(dir, self.home.as_deref()).is_dir() {
                 problems.push(format!("{who}: plugin_dir '{dir}' does not exist"));
             }
         }
@@ -335,7 +335,7 @@ impl Roster {
         // line too; one without a statusLine would be the only pane in the
         // fleet with none.
         if let Some(path) = &t.settings {
-            let path = expand_home(path);
+            let path = expand_home(path, self.home.as_deref());
             match std::fs::read_to_string(&path)
                 .ok()
                 .and_then(|x| serde_json::from_str::<serde_json::Value>(&x).ok())
@@ -353,7 +353,7 @@ impl Roster {
             }
         }
         for file in &t.mcp_config_files {
-            if !expand_home(file).is_file() {
+            if !expand_home(file, self.home.as_deref()).is_file() {
                 problems.push(format!(
                     "{who}: mcp_config_files entry '{file}' does not exist"
                 ));

@@ -1,7 +1,7 @@
 //! The operator's own settings that reach every pane: the status line, the
 //! globally enabled plugins, and anything that overrides a teammate's effort.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The operator's `statusLine` block, read from `~/.claude/settings.json`.
 ///
@@ -13,14 +13,16 @@ use std::path::PathBuf;
 /// It has to be re-injected explicitly because `--setting-sources ""`, which is
 /// how a teammate sheds the operator's globally-enabled plugins, sheds their
 /// `statusLine` with everything else.
-pub fn operator_status_line() -> Option<serde_json::Value> {
-    operator_settings()?.get("statusLine").cloned()
+///
+/// `home` is the operator's home directory; `None` means it is unknown.
+pub fn operator_status_line(home: Option<&Path>) -> Option<serde_json::Value> {
+    operator_settings(home)?.get("statusLine").cloned()
 }
 
 /// Names of the plugins the operator has enabled globally, from
 /// `enabledPlugins` in `~/.claude/settings.json`.
-pub fn operator_enabled_plugins() -> Vec<String> {
-    let Some(settings) = operator_settings() else {
+pub fn operator_enabled_plugins(home: Option<&Path>) -> Vec<String> {
+    let Some(settings) = operator_settings(home) else {
         return Vec::new();
     };
     match settings.get("enabledPlugins").and_then(|v| v.as_object()) {
@@ -35,14 +37,18 @@ pub fn operator_enabled_plugins() -> Vec<String> {
 
 /// Operator settings that silently override a teammate's `effort`, as
 /// warning lines for `horch doctor`. Empty when nothing overrides.
-pub fn operator_effort_warnings() -> Vec<String> {
-    let codex_config = std::fs::read_to_string(
-        crate::codex::codex_home(&crate::agent::home_dir()).join("config.toml"),
-    )
-    .ok();
+///
+/// `codex_home` is the directory that holds codex's `config.toml`, and
+/// `claude_code_effort_level` is `$CLAUDE_CODE_EFFORT_LEVEL`, if set.
+pub fn operator_effort_warnings(
+    home: Option<&Path>,
+    codex_home: &Path,
+    claude_code_effort_level: Option<&str>,
+) -> Vec<String> {
+    let codex_config = std::fs::read_to_string(codex_home.join("config.toml")).ok();
     effort_override_warnings(
-        std::env::var("CLAUDE_CODE_EFFORT_LEVEL").ok().as_deref(),
-        operator_settings().as_ref(),
+        claude_code_effort_level,
+        operator_settings(home).as_ref(),
         codex_config.as_deref(),
     )
 }
@@ -113,22 +119,22 @@ fn codex_default_effort(toml: &str) -> Option<String> {
     None
 }
 
-fn operator_settings() -> Option<serde_json::Value> {
-    let home = std::env::var_os("HOME")?;
-    let path = PathBuf::from(home).join(".claude/settings.json");
+fn operator_settings(home: Option<&Path>) -> Option<serde_json::Value> {
+    let path = home?.join(".claude/settings.json");
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-/// Expand a leading `~/` against `$HOME`.
+/// Expand a leading `~/` against `home`. With no `home`, the path is returned
+/// as written.
 ///
 /// Teammate files are committed, so a plugin path written as an absolute
 /// `/Users/<someone>/...` only works on one machine. `~` keeps them portable
 /// without inventing a template syntax for paths.
-pub fn expand_home(path: &str) -> PathBuf {
+pub fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
     match path.strip_prefix("~/") {
-        Some(rest) => match std::env::var_os("HOME") {
-            Some(home) => PathBuf::from(home).join(rest),
+        Some(rest) => match home {
+            Some(home) => home.join(rest),
             None => PathBuf::from(path),
         },
         None => PathBuf::from(path),
