@@ -67,3 +67,5 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Merged U13 b1-measure (B1 landed). NumstatLine serializes `deleted` (golden frozen). occurred_at must be monotonic. fold needs execution_id on candidate.planned/spawned.
 ## Wave 4 running: U18 a4-harness (opus-9), U19 a6a-store (pQ), U20 a11-marketplace-cli (backend-developer-6), U21 a7b-messaging (pS), U22 b3-planner (pT), U23 b4-judge-input (pV), U24 b6-export (pW)
 - Merged U19 a6a-store. A6b needs: Execution type + to/from, find_by_idempotency, set_skills call (SKL-04 wiring), ExecutionStore::open(paths, project). Store bytes = to_string_pretty no trailing newline, mode 0644. Lock <state_root>/<slug>.json.lock/.
+- Merged U20 a11 (A11 landed), U21 a7b (A7 landed), U24 b6-export. A6b: fold DoneSteps.mark_done into ExecutionStore; add run_worker in lifecycle.rs. A12 shims: mailbox.rs, message.rs, Herdr::send_line, tilecmd::after_change, balancecmd::equalize_quietly, ledger::state_root (no core caller).
+- B5: needs operator.promote event kind (COMPLETE/NEEDS_INTERVENTION -> DECIDED re-entry, b3-planner allows COMPLETE->DECIDED).
