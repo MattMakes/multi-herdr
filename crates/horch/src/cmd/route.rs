@@ -4,11 +4,11 @@
 use std::process::ExitCode;
 
 use anyhow::Result;
-use horch_core::balance_policy::{self, Decision, GateFlags};
 use horch_core::clock;
 use horch_core::ledger::state_root;
-use horch_core::policy::Policy;
-use horch_core::quota;
+use horch_core::routing::balance::touched_pools;
+use horch_core::routing::decision::{self, Decision, GateFlags};
+use horch_core::routing::snapshot;
 use horch_core::teammates::Roster;
 use serde_json::json;
 
@@ -18,9 +18,15 @@ pub fn route(name: &str, json_out: bool, exact: bool, force: bool) -> Result<Exi
     let roster = Roster::load_with(std::env::var("HORCH_TEAMMATES_DIR").ok().as_deref())?;
     let teammate = roster.require(name)?.clone();
     let root = state_root();
-    let policy = Policy::load(&root)?;
-    let view = quota::current_view(&root, clock::now(), &policy, true)?;
-    let decision = balance_policy::decide(
+    let policy = super::quotacmd::load_policy(&root)?;
+    let view = snapshot::obtain(
+        &root,
+        clock::now(),
+        &policy,
+        true,
+        &super::quotacmd::quota_env(),
+    )?;
+    let decision = decision::decide(
         &teammate,
         &roster,
         &view,
@@ -29,22 +35,7 @@ pub fn route(name: &str, json_out: bool, exact: bool, force: bool) -> Result<Exi
     );
 
     // Every pool the decision could touch: the teammate's and its fallbacks'.
-    let mut pools = Vec::new();
-    for t in
-        std::iter::once(&teammate).chain(teammate.fallbacks.iter().filter_map(|f| roster.get(f)))
-    {
-        let a = view.assess(t.agent.as_str(), t.model.as_deref().unwrap_or_default());
-        if !pools
-            .iter()
-            .any(|p: &balance_policy::PoolLine| p.pool == a.pool)
-        {
-            pools.push(balance_policy::PoolLine {
-                pool: a.pool.clone(),
-                state: a.state.to_string(),
-                detail: balance_policy::summary(&a, &view),
-            });
-        }
-    }
+    let pools = touched_pools(&teammate, &roster, &view);
     let refused = matches!(decision, Decision::Refuse { .. });
     if json_out {
         let (kind, via, reason) = match &decision {

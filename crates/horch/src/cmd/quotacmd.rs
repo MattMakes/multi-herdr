@@ -5,13 +5,43 @@
 //! `probe_on_demand_age_min` (QUO-07); with a live collector it reads what
 //! the collector last wrote.
 
+use std::path::PathBuf;
+use std::time::Duration;
+
 use anyhow::Result;
 use horch_core::clock;
 use horch_core::ledger::state_root;
-use horch_core::policy::Policy;
-use horch_core::quota::{self, QuotaFile, QuotaView};
+use horch_core::routing::policy::Policy;
+use horch_core::routing::quota::{QuotaFile, QuotaView};
+use horch_core::routing::snapshot::{self, QuotaEnv};
 
 use crate::output;
+
+/// `HORCH_BALANCE`, the balance mode over `policy.json`.
+// A2: from RuntimeContext
+pub fn balance_override() -> Option<String> {
+    std::env::var("HORCH_BALANCE").ok()
+}
+
+/// `policy.json` with `HORCH_BALANCE` applied.
+pub fn load_policy(root: &std::path::Path) -> Result<Policy> {
+    Policy::load(root, balance_override().as_deref())
+}
+
+/// `HORCH_QUOTA_FILE`, `HORCH_PROBE_TIMEOUT_MS` and the temp dir.
+// A2: from RuntimeContext
+pub fn quota_env() -> QuotaEnv {
+    QuotaEnv {
+        quota_file: std::env::var_os("HORCH_QUOTA_FILE")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from),
+        probe_timeout: std::env::var("HORCH_PROBE_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis),
+        temp_root: std::env::temp_dir(),
+    }
+}
 
 /// `quota.json` with each pool's state assessed at `view.now`.
 pub fn assessed(view: &QuotaView) -> QuotaFile {
@@ -27,8 +57,8 @@ pub fn assessed(view: &QuotaView) -> QuotaFile {
 
 pub fn quota(json: bool, refresh: bool) -> Result<()> {
     let root = state_root();
-    let policy = Policy::load(&root)?;
-    let view = quota::current_view(&root, clock::now(), &policy, refresh)?;
+    let policy = load_policy(&root)?;
+    let view = snapshot::obtain(&root, clock::now(), &policy, refresh, &quota_env())?;
     if json {
         output::println(&serde_json::to_string_pretty(&assessed(&view))?);
     } else {

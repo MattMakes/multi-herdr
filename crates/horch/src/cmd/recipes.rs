@@ -246,8 +246,14 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
 
     let flavor = if flavor == FleetFlavor::Auto {
         let state_root = horch_core::ledger::state_root();
-        let policy = horch_core::policy::Policy::load(&state_root)?;
-        let view = quota::current_view(&state_root, horch_core::clock::now(), &policy, true)?;
+        let policy = super::quotacmd::load_policy(&state_root)?;
+        let view = horch_core::routing::snapshot::obtain(
+            &state_root,
+            horch_core::clock::now(),
+            &policy,
+            true,
+            &super::quotacmd::quota_env(),
+        )?;
         let (chosen, why) = auto_flavor(&view);
         println!("fleet: auto chose {chosen} - {why}.");
         chosen

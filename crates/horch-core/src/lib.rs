@@ -39,6 +39,7 @@ pub mod prime;
 pub mod prompts;
 pub mod quota;
 pub mod roster;
+pub mod routing;
 pub mod runtime;
 pub mod skills;
 pub mod teacher;

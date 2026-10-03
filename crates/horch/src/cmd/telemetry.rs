@@ -616,7 +616,7 @@ fn space() -> Result<ExitCode> {
         }
     };
     let tick = Duration::from_millis(
-        horch_core::policy::Policy::load(&root)
+        super::quotacmd::load_policy(&root)
             .map(|p| p.tick_ms)
             .unwrap_or(2000),
     );

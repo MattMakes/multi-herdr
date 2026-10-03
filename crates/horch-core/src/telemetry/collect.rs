@@ -21,7 +21,7 @@ use super::{Event, Observation, QuotaSignal, TokenClasses, Unread};
 use crate::clock;
 use crate::ledger::{Record, KIND_ORCHESTRATOR, STATUS_DONE, STATUS_WORKING};
 use crate::policy::Policy;
-use crate::quota::{self, ProbeBins, QuotaFile, QuotaView};
+use crate::quota::{self, ProbeBins, QuotaEnv, QuotaFile, QuotaView};
 use crate::usage::{self, Locations, Price};
 
 /// Every record in every ledger under `state_root`, skipping a ledger that
@@ -159,6 +159,8 @@ pub struct Collector {
     pub cursors: Cursors,
     pub probing: Probing,
     pub bins: ProbeBins,
+    /// The quota file override, probe timeout and temp root.
+    pub quota_env: QuotaEnv,
     pub info: CollectorInfo,
     last_good: BTreeMap<PathBuf, Vec<Record>>,
     /// Test hook: fail after the append, before the cursor save.
@@ -179,7 +181,9 @@ impl Collector {
         probing: Probing,
         now: DateTime<Utc>,
     ) -> Result<Collector> {
-        let policy = Policy::load(state_root)?;
+        // A2: from RuntimeContext
+        let balance = std::env::var("HORCH_BALANCE").ok();
+        let policy = Policy::load(state_root, balance.as_deref())?;
         let dir = super::dir(state_root);
         let store = Store::open(&dir, now, policy.retention_days)?;
         let cursors = store::load_cursors(&dir);
@@ -189,6 +193,7 @@ impl Collector {
                 codex_sessions: loc.codex_sessions.clone(),
                 ..ProbeBins::from_env()
             },
+            quota_env: quota_env_from_process(),
             loc,
             prices: usage::builtin_prices(),
             policy,
@@ -309,11 +314,11 @@ impl Collector {
     /// Fold signals into `quota.json`, probing when due. A file override
     /// is read, never written.
     fn update_quota(&mut self, now: DateTime<Utc>, signals: &[QuotaSignal]) -> Result<QuotaView> {
-        if quota::override_file().is_some() {
-            let file = QuotaFile::load(&self.state_root)?;
+        if let Some(p) = &self.quota_env.quota_file {
+            let file = QuotaFile::load(&self.state_root, Some(p))?;
             return Ok(QuotaView::new(file, now, self.policy.clone(), true));
         }
-        let mut file = QuotaFile::load(&self.state_root).unwrap_or_default();
+        let mut file = QuotaFile::load(&self.state_root, None).unwrap_or_default();
         file.apply_signals(signals, &self.policy);
         let due = match self.probing {
             Probing::Never => false,
@@ -321,10 +326,31 @@ impl Collector {
             Probing::OnDemand => quota::probe_due(&file, now, self.policy.probe_on_demand_age_min),
         };
         if due {
-            quota::probe_all(&mut file, &self.bins, now);
+            quota::probe_all(
+                &mut file,
+                &self.bins,
+                now,
+                self.quota_env.probe_timeout,
+                &self.quota_env.temp_root,
+            );
         }
         file.write(&self.state_root, now, &self.policy)?;
         Ok(QuotaView::new(file, now, self.policy.clone(), false))
+    }
+}
+
+/// `HORCH_QUOTA_FILE`, `HORCH_PROBE_TIMEOUT_MS` and the temp dir.
+// A2: from RuntimeContext
+fn quota_env_from_process() -> QuotaEnv {
+    QuotaEnv {
+        quota_file: std::env::var_os("HORCH_QUOTA_FILE")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from),
+        probe_timeout: std::env::var("HORCH_PROBE_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis),
+        temp_root: std::env::temp_dir(),
     }
 }
 

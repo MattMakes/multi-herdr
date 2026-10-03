@@ -6,14 +6,14 @@
 //! building layouts.
 
 use anyhow::{bail, Context, Result};
-use horch_core::balance_policy::{self, Decision, GateFlags};
+use horch_core::balance_policy;
 use horch_core::execution::{SessionMode, TilingMode};
 use horch_core::herdr::{Direction, Herdr};
 use horch_core::ids::SessionId;
 use horch_core::ledger::{Ledger, Record, STATUS_WORKING};
 use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::paneshell::PaneShell;
-use horch_core::policy::Policy;
+use horch_core::routing::decision::{self, Decision, GateFlags, RoutingMode, RoutingProvenance};
 use horch_core::teammates::{effort_problem, Phase, Roster, Teammate};
 
 pub struct SpawnArgs {
@@ -130,6 +130,20 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
                 teammate.effort = record.effort.clone();
             }
             Roster::is_spawnable(&teammate)?;
+            // A resume keeps the routing of the record it resumes. A record
+            // from before A5 has none; rebuild it from `via`.
+            let routing = match &record.routing {
+                Some(r) => r.clone(),
+                None => RoutingProvenance::legacy(
+                    &record.tier,
+                    record.via.as_deref(),
+                    &record.agent,
+                    &record.model,
+                    record.substitution_reason.as_deref(),
+                    roster.get(&record.tier),
+                )?,
+            }
+            .resumed();
             Plan {
                 teammate,
                 model: record.model.clone(),
@@ -137,6 +151,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
                 session: SessionMode::Resume(SessionId::new(session_id)?),
                 via: record.via.clone(),
                 substitution_reason: record.substitution_reason.clone(),
+                routing,
             }
         }
         None => {
@@ -145,6 +160,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
             teammate.phase = resolve_phase(args.phase, None, teammate.phase);
             Roster::is_spawnable(&teammate)?;
             Plan {
+                routing: RoutingProvenance::ungated(&teammate)?,
                 model: teammate.model.clone().unwrap_or_default(),
                 record_id: horch_core::mint_uuid(),
                 // Claude, pi and Prime accept a caller-minted session id, so
@@ -170,30 +186,36 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     // any role, ledger or pane side effect. A resume keeps the harness it
     // ran on, so only a fresh spawn is gated; the smoke fake spends nothing.
     if !plan.session.is_resume() && plan.teammate.agent != horch_core::teammates::Agent::None {
-        let policy = Policy::load(&horch_core::ledger::state_root())?;
-        let view = horch_core::quota::current_view(
-            &horch_core::ledger::state_root(),
+        let root = horch_core::ledger::state_root();
+        let policy = super::quotacmd::load_policy(&root)?;
+        let view = horch_core::routing::snapshot::obtain(
+            &root,
             horch_core::clock::now(),
             &policy,
             true,
+            &super::quotacmd::quota_env(),
         )?;
-        let decision = balance_policy::decide(
+        let flags = GateFlags {
+            exact: args.exact,
+            force: args.force,
+        };
+        let decision = decision::decide(&plan.teammate, &roster, &view, policy.balance_mode, flags);
+        if let Some(routing) = RoutingProvenance::from_decision(
             &plan.teammate,
             &roster,
             &view,
-            policy.balance_mode,
-            GateFlags {
-                exact: args.exact,
-                force: args.force,
-            },
-        );
+            &decision,
+            RoutingMode::for_gate(policy.balance_mode, flags),
+        )? {
+            plan.routing = routing;
+        }
         if let Some(line) = decision.line() {
             crate::output::println(&line);
         }
         match &decision {
             Decision::Refuse { .. } => return Err(Refused.into()),
             Decision::Substitute { via, reason, .. } => {
-                let merged = balance_policy::resolve(&plan.teammate, &roster, &decision)
+                let merged = decision::resolve(&plan.teammate, &roster, &decision)
                     .with_context(|| format!("fallback '{via}' vanished from the roster"))?;
                 plan.model = merged.model.clone().unwrap_or_default();
                 plan.session = fresh_session(merged.agent)?;
@@ -249,10 +271,14 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
             workspace_id: Some(mailbox.workspace_id().to_string()),
             via: plan.via.clone(),
             substitution_reason: plan.substitution_reason.clone(),
+            routing: Some(plan.routing.clone()),
             ..Record::default()
         })?;
     }
     ledger.set_effort(&plan.record_id, plan.teammate.effort.as_deref())?;
+    if plan.session.is_resume() {
+        ledger.set_routing(&plan.record_id, Some(&plan.routing))?;
+    }
 
     mailbox.write_brief(&Brief {
         role: role.clone(),
@@ -370,6 +396,8 @@ struct Plan {
     /// The fallback whose launch settings are used, when substituted.
     via: Option<String>,
     substitution_reason: Option<String>,
+    /// What routing decided; written next to `via` (ARC-14).
+    routing: RoutingProvenance,
 }
 
 #[cfg(test)]

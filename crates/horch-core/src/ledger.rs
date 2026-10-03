@@ -93,6 +93,9 @@ pub struct Record {
     /// Why the gate substituted, in one line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substitution_reason: Option<String>,
+    /// What routing decided for this record (ARC-14). Absent before A5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<crate::routing::decision::RoutingProvenance>,
 }
 
 impl Default for Record {
@@ -117,6 +120,7 @@ impl Default for Record {
             workspace_id: None,
             via: None,
             substitution_reason: None,
+            routing: None,
         }
     }
 }
@@ -423,6 +427,21 @@ impl Ledger {
             Self::require_key(records, key, &self.path)?;
             for r in records.iter_mut().filter(|r| r.matches(key)) {
                 r.effort = effort.map(str::to_owned);
+            }
+            Ok(())
+        })
+    }
+
+    /// Record what routing decided for a session. `None` clears it.
+    pub fn set_routing(
+        &self,
+        key: &str,
+        routing: Option<&crate::routing::decision::RoutingProvenance>,
+    ) -> Result<()> {
+        self.update(|records| {
+            Self::require_key(records, key, &self.path)?;
+            for r in records.iter_mut().filter(|r| r.matches(key)) {
+                r.routing = routing.cloned();
             }
             Ok(())
         })
