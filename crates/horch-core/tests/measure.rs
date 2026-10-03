@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeZone, Utc};
+use horch_core::competition::model::RoundState;
 use horch_core::execution::FailureKind;
 use horch_core::harness::HarnessKind;
 use horch_core::ids::{
@@ -12,9 +13,10 @@ use horch_core::ids::{
 use horch_core::measure::digest::{sha256_bytes, Digest};
 use horch_core::measure::event::*;
 use horch_core::measure::paths::DatasetPaths;
+use horch_core::measure::projection::{fold, Projection};
 use horch_core::measure::recorder::{Appended, JsonlRecorder, NewEvent, NoopRecorder, Recorder};
 use horch_core::measure::store::{EventIndex, StoreOptions};
-use horch_core::measure::testkit::property;
+use horch_core::measure::testkit::{property, SplitMix64};
 use horch_core::teacher::TeacherRef;
 use horch_core::telemetry::collect::read_ledgers;
 use serde_json::{json, Value};
@@ -618,4 +620,396 @@ fn measure_files_are_private() {
         assert_eq!(mode(&dir), 0o700, "{}", dir.display());
     }
     assert_eq!(mode(&paths.events_file(t0().date_naive())), 0o600);
+}
+
+// ─── MEA-05: the projection fold ────────────────────────────────────────────
+
+/// Builds a scripted event list with deterministic ids and times.
+struct Script {
+    events: Vec<EventEnvelope>,
+}
+
+impl Script {
+    fn new() -> Self {
+        Script { events: Vec::new() }
+    }
+
+    fn at(&self) -> DateTime<Utc> {
+        t0() + chrono::Duration::milliseconds(self.events.len() as i64 * 250)
+    }
+
+    fn push(&mut self, kind: EventKind, label: Option<&str>) {
+        let n = self.events.len();
+        let experiment_level = matches!(
+            kind,
+            EventKind::ExperimentCreated(_)
+                | EventKind::PreflightCompleted(_)
+                | EventKind::ExperimentAborted(_)
+        );
+        self.events.push(EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION.into(),
+            event_id: EventId::new(format!("evt-{n:05}")).unwrap(),
+            kind: kind.name().into(),
+            occurred_at: format_occurred_at(self.at()),
+            actor: Actor::Coordinator,
+            experiment_id: exp_id(),
+            round_id: (!experiment_level).then(round_id),
+            execution_id: label.map(exec_id),
+            idempotency_key: format!("{}:{}:{n}", kind.name(), label.unwrap_or("-")),
+            payload: kind.payload(),
+        });
+    }
+
+    fn new_events(&self) -> Vec<NewEvent> {
+        self.events
+            .iter()
+            .map(|e| NewEvent {
+                kind: e.event().unwrap(),
+                actor: e.actor,
+                experiment_id: e.experiment_id.clone(),
+                round_id: e.round_id.clone(),
+                execution_id: e.execution_id.clone(),
+                idempotency_key: e.idempotency_key.clone(),
+                occurred_at: DateTime::parse_from_rfc3339(&e.occurred_at)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            })
+            .collect()
+    }
+}
+
+/// How a scripted candidate ends.
+#[derive(Clone, Copy)]
+struct Fate {
+    completes: bool,
+    eligible: bool,
+}
+
+/// A whole round: created, run, validated, judged (with `judge_fails`
+/// failed attempts first), then a winner or a rejection, and an optional
+/// promotion.
+fn lifecycle(fates: &[Fate], judge_fails: u32, promote: bool) -> Script {
+    let labels: Vec<String> = (0..fates.len())
+        .map(|i| ((b'A' + i as u8) as char).to_string())
+        .collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let mut s = Script::new();
+    s.push(
+        EventKind::ExperimentCreated(experiment_created(fates.len() as u32)),
+        None,
+    );
+    s.push(
+        EventKind::PreflightCompleted(PreflightCompleted {
+            report: json!({"passed": true}),
+        }),
+        None,
+    );
+    s.push(EventKind::RoundCreated(round_created(&refs)), None);
+    for l in &refs {
+        s.push(EventKind::CandidatePlanned(candidate_planned(l)), Some(l));
+    }
+    for l in &refs {
+        s.push(
+            EventKind::WorktreeCreated(WorktreeCreated {
+                label: l.to_string(),
+                path: format!("/wt/{l}").into(),
+                branch: format!("mh/exp/0199a5b0/r0/{l}"),
+                base_sha: "a".repeat(40),
+            }),
+            Some(l),
+        );
+    }
+    for l in &refs {
+        s.push(
+            EventKind::CandidateSpawned(CandidateSpawned {
+                label: l.to_string(),
+                pane: PaneId::new(format!("p-{l}")).unwrap(),
+                routing: json!({"requested": "sonnet", "resolved": "sonnet"}),
+            }),
+            Some(l),
+        );
+    }
+    for (l, f) in refs.iter().zip(fates) {
+        let kind = if f.completes {
+            EventKind::CandidateCompleted(CandidateCompleted {
+                label: l.to_string(),
+                exit_code: Some(0),
+            })
+        } else {
+            EventKind::CandidateFailed(CandidateFailed {
+                label: l.to_string(),
+                failure: FailureKind::TimedOut,
+            })
+        };
+        s.push(kind, Some(l));
+    }
+    for (l, f) in refs.iter().zip(fates) {
+        s.push(
+            EventKind::CandidateFrozen(CandidateFrozen {
+                label: l.to_string(),
+                head_sha: "b".repeat(40),
+                numstat: vec![json!({"added": 3, "removed": 1, "path": "src/lib.rs"})],
+                diff_digest: dg(l),
+            }),
+            Some(l),
+        );
+        s.push(
+            EventKind::ValidationCompleted(ValidationCompleted {
+                label: l.to_string(),
+                report: validation_report(l, f.eligible),
+            }),
+            Some(l),
+        );
+    }
+    let Some(winner) = refs
+        .iter()
+        .zip(fates)
+        .find(|(_, f)| f.eligible)
+        .map(|(l, _)| *l)
+    else {
+        s.push(
+            EventKind::WinnerRejected(WinnerRejected {
+                reason: json!("no_eligible"),
+            }),
+            None,
+        );
+        return s;
+    };
+    for attempt in 1..=judge_fails + 1 {
+        s.push(
+            EventKind::JudgeScheduled(JudgeScheduled {
+                attempt,
+                input_digest: dg("input"),
+                judge_policy_digest: dg("policy"),
+                job_dir: format!("/jobs/r/judge-{attempt}").into(),
+            }),
+            None,
+        );
+        s.push(
+            EventKind::JudgeStarted(JudgeStarted {
+                attempt,
+                pid: 4000 + attempt,
+            }),
+            None,
+        );
+        if attempt <= judge_fails {
+            s.push(
+                EventKind::JudgeFailed(JudgeFailed {
+                    attempt,
+                    cause: JudgeFailure::TimedOut,
+                }),
+                None,
+            );
+            if attempt >= 2 {
+                return s;
+            }
+        }
+    }
+    let judgment = JudgmentId::new("j-1").unwrap();
+    s.push(
+        EventKind::JudgeCompleted(JudgeCompleted {
+            attempt: judge_fails + 1,
+            judgment_id: judgment.clone(),
+            output_digest: dg("out"),
+        }),
+        None,
+    );
+    s.push(
+        EventKind::WinnerSelected(WinnerSelected {
+            label: winner.to_string(),
+            execution_id: exec_id(winner),
+            head_sha: "b".repeat(40),
+            judgment_id: judgment,
+            promotion: if promote {
+                PromotionIntent::Requested {
+                    target: "main".into(),
+                }
+            } else {
+                PromotionIntent::NotRequested
+            },
+        }),
+        Some(winner),
+    );
+    if promote {
+        s.push(
+            EventKind::PromotionStarted(PromotionStarted {
+                target: "main".into(),
+                dest_before: "a".repeat(40),
+                planned_after: "b".repeat(40),
+                strategy: json!("fast_forward"),
+            }),
+            None,
+        );
+        s.push(
+            EventKind::PromotionCompleted(PromotionCompleted {
+                receipt_digest: dg("receipt"),
+                dest_after: "b".repeat(40),
+            }),
+            None,
+        );
+    }
+    s
+}
+
+/// A random lifecycle, then random drops, repeats, swaps and foreign
+/// events, so the fold sees both valid and invalid transitions.
+fn random_events(rng: &mut SplitMix64) -> Vec<EventEnvelope> {
+    // Every (fates, judge failures, promote) script, built once: building
+    // payloads costs more than folding them.
+    static SCRIPTS: std::sync::OnceLock<Vec<Vec<EventEnvelope>>> = std::sync::OnceLock::new();
+    let scripts = SCRIPTS.get_or_init(|| {
+        let mut all = Vec::new();
+        for n in 1..=2usize {
+            for bits in 0..(1u32 << (2 * n)) {
+                let fates: Vec<Fate> = (0..n)
+                    .map(|i| Fate {
+                        completes: bits >> (2 * i) & 1 == 1,
+                        eligible: bits >> (2 * i + 1) & 1 == 1,
+                    })
+                    .collect();
+                for judge_fails in 0..3 {
+                    for promote in [false, true] {
+                        all.push(lifecycle(&fates, judge_fails, promote).events);
+                    }
+                }
+            }
+        }
+        all
+    });
+    let mut events = scripts[rng.below(scripts.len() as u64) as usize].clone();
+    for _ in 0..rng.below(4) {
+        if events.is_empty() {
+            break;
+        }
+        let i = rng.below(events.len() as u64) as usize;
+        match rng.below(5) {
+            0 => {
+                events.remove(i);
+            }
+            1 => {
+                let e = events[i].clone();
+                events.insert(i, e);
+            }
+            2 if i + 1 < events.len() => events.swap(i, i + 1),
+            3 => {
+                let mut e = events[i].clone();
+                e.kind = "candidate.teleported".into();
+                events.insert(i, e);
+            }
+            _ => {
+                let mut e = events[i].clone();
+                e.payload = json!({"garbage": true});
+                events.insert(i, e);
+            }
+        }
+    }
+    events
+}
+
+#[test]
+fn mea_05_full_lifecycles_fold_without_anomalies() {
+    let ok = Fate {
+        completes: true,
+        eligible: true,
+    };
+    let bad = Fate {
+        completes: false,
+        eligible: false,
+    };
+    let cases: Vec<(Script, RoundState)> = vec![
+        (lifecycle(&[ok, bad], 0, false), RoundState::Decided),
+        (lifecycle(&[ok], 1, true), RoundState::Promoted),
+        (
+            lifecycle(&[ok, ok], 2, false),
+            RoundState::NeedsIntervention,
+        ),
+        (lifecycle(&[bad, bad], 0, false), RoundState::Rejected),
+    ];
+    for (script, want) in cases {
+        let p = fold(&script.events);
+        assert_eq!(p.anomalies, vec![]);
+        assert_eq!(p.rounds[&round_id()].state, want);
+        assert_eq!(p.experiments[&exp_id()].state, RoundState::Planned);
+    }
+}
+
+#[test]
+fn mea_05_invalid_transition_is_an_anomaly_and_not_applied() {
+    let mut s = Script::new();
+    s.push(EventKind::ExperimentCreated(experiment_created(1)), None);
+    s.push(
+        EventKind::PreflightCompleted(PreflightCompleted {
+            report: json!({"passed": true}),
+        }),
+        None,
+    );
+    s.push(EventKind::RoundCreated(round_created(&["A"])), None);
+    let before = fold(&s.events);
+    s.push(
+        EventKind::PromotionCompleted(PromotionCompleted {
+            receipt_digest: dg("receipt"),
+            dest_after: "b".repeat(40),
+        }),
+        None,
+    );
+    let after = fold(&s.events);
+    assert_eq!(after.anomalies.len(), 1);
+    assert_eq!(after.anomalies[0].event_id.as_str(), "evt-00003");
+    assert!(
+        after.anomalies[0].reason.contains("PLANNED"),
+        "{:?}",
+        after.anomalies
+    );
+    assert_eq!(after.rounds, before.rounds);
+    assert_eq!(after.experiments, before.experiments);
+}
+
+#[test]
+fn mea_05_prop_fold_deterministic() {
+    property(0x6d65_615f_3035, 10_000, |rng| {
+        let events = random_events(rng);
+        let a = fold(&events);
+        let b = fold(&events);
+        assert_eq!(a, b);
+        assert!(a.anomalies.len() <= events.len());
+    });
+}
+
+#[test]
+fn mea_05_prop_replay_identical() {
+    property(0x6d65_615f_3036, 10_000, |rng| {
+        let events = random_events(rng);
+        let split = rng.below(events.len() as u64 + 1) as usize;
+        let mut p: Projection = fold(&events[..split]);
+        for e in &events[split..] {
+            p.apply(e);
+        }
+        assert_eq!(p, fold(&events));
+    });
+}
+
+#[test]
+fn mea_05_rebuild_equals_live() {
+    let ok = Fate {
+        completes: true,
+        eligible: true,
+    };
+    let script = lifecycle(&[ok, ok], 1, true);
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, rec) = open_dataset(tmp.path());
+    let mut live = Vec::new();
+    for e in script.new_events() {
+        match rec.append(e).unwrap() {
+            Appended::Recorded(env) => live.push(env),
+            other => panic!("{other:?}"),
+        }
+    }
+    let live_p = fold(&live);
+    assert_eq!(live_p.anomalies, vec![]);
+    drop(rec);
+    let (_, rec) = open_dataset(tmp.path());
+    let read = rec.read_all().unwrap();
+    assert_eq!(read.torn_lines, 0);
+    assert_eq!(read.events, live);
+    assert_eq!(fold(&read.events), live_p);
 }
