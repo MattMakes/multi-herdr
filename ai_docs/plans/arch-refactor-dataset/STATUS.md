@@ -42,7 +42,7 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Spec A / Spec B verbatim text: requested from operator. Needed for design appendices, judge.md (§10), Judgment schema (§11), event list, CHECKLIST (§16), final audit.
 - SPEC-TODO from U29: Spec B §3 build_bytes estimate, local_model_bytes, trusted_parents (PRE-13 warns every run); outcome default score per kind.
 
-- Running: U32 b5-cli (p15). Queued: U33 last.
+- Running: U37 dataset-gaps. Queued: U33 last.
 
 ## Gotchas carried forward (put into later plans)
 - A4: launch oracle does not cover codex Rules or Prime daemon args; smoke (agent none) and orchestration-worker (no model) record errors. Tests iterate the roster: a new teammate (judge.md in B4) must be skipped by oracle tests, not given oracle files.
@@ -89,3 +89,4 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - SPEC-TODO from U30: Spec B §budget expected spend of a running candidate (committed = 0).
 - Merged U35 worker-startup-failure (enter_context/register failure -> Failed(AgentExited{None})).
 - Gap (from U32): codex session discovery polls every 3 s; a worker that ends sooner never records its session id -> no cost. Fix: final discovery attempt at agent exit / horch done.
+- Merged U36 session-discovery-race, U32 b5-cli (B5, B6 landed; A9 marked). cmp_07_timeout/mea_10 deadline 2->6 s (load flake). U37 dataset-gaps: exp8 collision + --promote-to preflight.
