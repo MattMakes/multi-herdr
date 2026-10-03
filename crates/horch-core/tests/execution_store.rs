@@ -11,9 +11,7 @@ use horch_core::execution::legacy::{HistoryEntry, LedgerRecordV1};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{ExecutionStatus, FailureKind, LaunchStage};
 use horch_core::ids::SkillId;
-use horch_core::ledger::{
-    Ledger, Record, KIND_ORCHESTRATOR, KIND_WORKER, STATUS_DONE, STATUS_WORKING,
-};
+use horch_core::ledger::{Ledger, Record, KIND_WORKER, STATUS_DONE, STATUS_WORKING};
 use horch_core::measure::digest::Digest;
 use horch_core::skills::{InvocationPolicy, ResolvedSkillRef, SkillVersion};
 use horch_core::teammates::Phase;
