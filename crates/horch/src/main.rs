@@ -10,6 +10,7 @@ mod cmd;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use horch::{bootstrap, exit, output};
+use horch_core::execution::service::SpawnError;
 use horch_core::execution::TilingMode;
 use horch_core::herdr::Direction;
 
@@ -388,7 +389,12 @@ fn main() -> std::process::ExitCode {
     match run() {
         Ok(code) => code,
         // The REFUSED line is already on stdout; exit 3 says why (design 13.4).
-        Err(e) if e.downcast_ref::<cmd::spawn::Refused>().is_some() => {
+        Err(e)
+            if matches!(
+                e.downcast_ref::<SpawnError>(),
+                Some(SpawnError::Refused { .. })
+            ) =>
+        {
             eprintln!("horch: {e}");
             std::process::ExitCode::from(exit::REFUSED)
         }

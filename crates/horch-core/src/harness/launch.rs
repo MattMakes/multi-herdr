@@ -240,6 +240,12 @@ pub fn session_for<'a>(caps: &Capabilities, mode: &'a SessionMode) -> Session<'a
 /// prepare (codex rules, Prime daemon, skills bundle) → build → a session
 /// discovery thread unless horch minted the id → wait → clean up.
 pub fn run_flow(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<ExitCode> {
+    Ok(exit_code(run_flow_code(ctx, req)?))
+}
+
+/// [`run_flow`], returning the agent's exit status as a number: `None` when
+/// a signal ended it. The worker records it (ARC-18).
+pub fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<Option<i32>> {
     let adapter = req.teammate.agent.adapter();
     let caps = adapter.capabilities();
     // Held across the launch, so lazy reads of the bundle remain valid.
@@ -299,7 +305,7 @@ pub fn run_flow(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<ExitCode
         }
         _ => None,
     };
-    let code = run_agent(cmd, name.trim_matches('"'));
+    let code = run_agent_code(cmd, name.trim_matches('"'));
     // Discovery is best-effort: a finished agent needs no session id captured.
     if let Some(d) = discovery {
         d.stop();
@@ -456,8 +462,17 @@ fn start_discovery(
     Ok(Discovery { done })
 }
 
-/// Run the agent as a child process and propagate its exit status.
-fn run_agent(mut cmd: Command, name: &str) -> Result<ExitCode> {
+/// The process exit code for an agent's exit status.
+fn exit_code(code: Option<i32>) -> ExitCode {
+    match code {
+        Some(0) => ExitCode::SUCCESS,
+        Some(code) => ExitCode::from(code.clamp(1, 255) as u8),
+        None => ExitCode::FAILURE,
+    }
+}
+
+/// Run the agent as a child process and return its exit status.
+fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
     let status = cmd.status().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             anyhow::anyhow!(
@@ -468,11 +483,7 @@ fn run_agent(mut cmd: Command, name: &str) -> Result<ExitCode> {
             anyhow::Error::new(e).context(format!("launching {name}"))
         }
     })?;
-    Ok(match status.code() {
-        Some(0) => ExitCode::SUCCESS,
-        Some(code) => ExitCode::from(code.clamp(1, 255) as u8),
-        None => ExitCode::FAILURE,
-    })
+    Ok(status.code())
 }
 
 #[cfg(test)]

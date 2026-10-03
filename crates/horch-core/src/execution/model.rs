@@ -4,9 +4,21 @@
 //! [`ExecutionStatus`] says more, and maps onto that string so a ledger an old
 //! binary reads never shows a failed launch as live.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ExperimentId, RoundId, SessionId};
+pub use crate::execution::legacy::HistoryEntry;
+pub use crate::execution::lifecycle::ReportTarget;
+use crate::harness::HarnessKind;
+use crate::ids::{
+    ExecutionId, ExperimentId, PaneId, RoleName, RoundId, SessionId, TaskId, TeammateName,
+    WorkerId, WorkspaceId,
+};
+use crate::routing::decision::{GateFlags, RoutingProvenance};
+use crate::skills::activation::{ResolvedSkillRef, SkillActivationPlan};
+use crate::teammates::{Phase, Teammate};
+use crate::workspace::model::Direction;
 
 /// The ledger's legacy status for a live execution.
 const LEGACY_WORKING: &str = "working";
@@ -185,6 +197,167 @@ impl TilingMode {
             Self::Automatic
         }
     }
+}
+
+// `legacy.rs` derives no `PartialEq` for history entries; plans compare them.
+impl PartialEq for HistoryEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.at == other.at && self.event == other.event && self.text == other.text
+    }
+}
+
+/// The work an execution was given.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Task {
+    /// Set by callers that track tasks (B3); absent for an ad hoc task.
+    pub id: Option<TaskId>,
+    /// The task text, or the idle placeholder for a worker spawned without one.
+    pub text: String,
+    /// The plan-file slug the task names (`ai_docs/plans/<slug>.md`).
+    pub plan: Option<String>,
+}
+
+/// One run of one worker, orchestrator, candidate or judge: the typed view of
+/// a ledger record. [`crate::execution::store::to_execution`] and
+/// [`crate::execution::store::from_execution`] convert, losing nothing.
+///
+/// `SPEC-TODO(Spec A §4)`: the field list verbatim. The timestamps stay the
+/// ledger's text, so a record written by any earlier version keeps its bytes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Execution {
+    pub id: ExecutionId,
+    pub kind: ExecutionKind,
+    pub teammate: TeammateName,
+    pub harness: HarnessKind,
+    pub model: String,
+    pub effort: Option<String>,
+    pub phase: Option<Phase>,
+    pub role: RoleName,
+    pub task: Task,
+    pub status: ExecutionStatus,
+    /// Whether the ledger carries `status` as a typed `state`. False for a
+    /// record written before A6, which keeps only the legacy string.
+    pub typed_status: bool,
+    pub session: SessionState,
+    pub exit_code: Option<i32>,
+    pub project: Option<PathBuf>,
+    /// The directory the agent runs in, when it is not the project.
+    pub workdir: Option<PathBuf>,
+    pub workspace: Option<WorkspaceId>,
+    pub pane: Option<PaneId>,
+    pub skills: Vec<ResolvedSkillRef>,
+    pub routing: Option<RoutingProvenance>,
+    /// The fallback teammate whose launch settings ran, and why (legacy keys).
+    pub via: Option<String>,
+    pub substitution_reason: Option<String>,
+    pub history: Vec<HistoryEntry>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub finished_at: Option<String>,
+}
+
+impl Execution {
+    /// The key a repeated spawn of the same candidate finds this execution
+    /// by: `spawn:<round>:<label>`. Other kinds have none.
+    pub fn idempotency_key(&self) -> Option<String> {
+        match &self.kind {
+            ExecutionKind::Candidate { round, label, .. } => Some(format!("spawn:{round}:{label}")),
+            _ => None,
+        }
+    }
+}
+
+/// What a caller asks `horch spawn` (or the B3 coordinator) to start.
+///
+/// `SPEC-TODO(Spec A §8)`: the field list verbatim.
+#[derive(Debug, Clone)]
+pub struct SpawnRequest {
+    /// The teammate to start. `None` with `resume`: the record names it.
+    pub teammate: Option<TeammateName>,
+    /// A record id or session id to resume.
+    pub resume: Option<String>,
+    /// Empty for an idle worker.
+    pub task: String,
+    pub phase: Option<Phase>,
+    /// Effort for this spawn only, over the teammate's (or the record's).
+    pub effort: Option<String>,
+    /// An explicit role; `None` allocates `<teammate>-<n>`.
+    pub role: Option<String>,
+    /// The pane to split; `None` splits the caller's own pane.
+    pub from_pane: Option<String>,
+    pub direction: Direction,
+    pub tiling: TilingMode,
+    /// `exact`: never substitute; `force`: never refuse.
+    pub flags: GateFlags,
+    /// Skip the usage-limit gate: the teammate is fixed (B3 candidates).
+    /// The provenance says `pinned`.
+    pub pinned: bool,
+    /// `None`: the agent runs in the project dir.
+    pub workdir: Option<PathBuf>,
+    pub kind: ExecutionKind,
+    pub report_to: ReportTarget,
+}
+
+impl SpawnRequest {
+    /// A worker spawn of `teammate` with every option at its default.
+    pub fn worker(teammate: Option<TeammateName>, task: impl Into<String>) -> Self {
+        SpawnRequest {
+            teammate,
+            resume: None,
+            task: task.into(),
+            phase: None,
+            effort: None,
+            role: None,
+            from_pane: None,
+            direction: Direction::Right,
+            tiling: TilingMode::Automatic,
+            flags: GateFlags::default(),
+            pinned: false,
+            workdir: None,
+            kind: ExecutionKind::Worker,
+            report_to: ReportTarget::Orchestrator,
+        }
+    }
+}
+
+/// What the worker will launch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaunchPlan {
+    /// Resolved: merged with the fallback when the gate substituted.
+    pub teammate: Teammate,
+    pub model: String,
+    pub session: SessionMode,
+    /// The task the worker is briefed with, as asked: empty for an idle
+    /// worker or a resume without a new task.
+    pub task: String,
+}
+
+/// Where the worker's pane goes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkspacePlan {
+    /// Set by [`crate::execution::plan::finish_plan`].
+    pub workspace: Option<WorkspaceId>,
+    pub from_pane: Option<String>,
+    pub direction: Direction,
+    pub tiling: TilingMode,
+}
+
+/// A spawn, decided: everything the service writes and starts. Built with no
+/// I/O by [`crate::execution::plan::plan_launch`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionPlan {
+    /// Status `Planned`. A resume holds the record as it will be written.
+    pub execution: Execution,
+    /// Set by `finish_plan`, with the role.
+    pub worker: Option<WorkerId>,
+    pub launch: LaunchPlan,
+    pub skills: SkillActivationPlan,
+    pub workspace: WorkspacePlan,
+    /// The NOTE or SUBSTITUTED line printed before the pane id.
+    pub gate_line: Option<String>,
+    /// True when the plan reopens an existing record.
+    pub resumed: bool,
+    pub report_to: ReportTarget,
 }
 
 #[cfg(test)]
