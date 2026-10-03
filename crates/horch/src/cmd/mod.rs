@@ -8,6 +8,7 @@ pub mod messaging;
 pub mod quotacmd;
 pub mod recipes;
 pub mod route;
+pub mod skillscmd;
 pub mod smoke;
 pub mod spawn;
 pub mod teammatescmd;

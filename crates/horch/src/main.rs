@@ -287,6 +287,8 @@ enum Command {
 
     /// Inspect the integrated skill catalog and estimated context cost.
     Skills {
+        #[command(subcommand)]
+        command: Option<cmd::skillscmd::SkillsCommand>,
         #[arg(long)]
         phase: Option<horch_core::teammates::Phase>,
         /// Emit machine-readable JSON (also the default catalog format).
@@ -405,28 +407,11 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Note { text } => cmd::messaging::note(ctx, &joined(&text))?,
         Command::Done { summary } => cmd::messaging::done(ctx, &joined(&summary))?,
         Command::Sessions { json } => cmd::ledgercmd::sessions(ctx, json)?,
-        Command::Skills { phase, json } => {
-            let catalog = horch_core::skills::describe(phase)?;
-            if json {
-                output::println(&serde_json::to_string_pretty(&catalog)?);
-            } else {
-                output::println(&format!(
-                    "Phase: {}",
-                    phase.map(|p| p.to_string()).unwrap_or_else(|| "all".into())
-                ));
-                for skill in catalog["skills"].as_array().expect("catalog skills array") {
-                    output::println(&format!(
-                        "  {:<18} {}",
-                        skill["name"].as_str().unwrap(),
-                        skill["description"].as_str().unwrap()
-                    ));
-                }
-                output::println(&format!(
-                    "Metadata: {} bytes (~{} tokens, estimate only); workflows load on demand.",
-                    catalog["metadata_bytes"], catalog["metadata_tokens_estimate"]
-                ));
-            }
-        }
+        Command::Skills {
+            command,
+            phase,
+            json,
+        } => return cmd::skillscmd::run(ctx, command, phase, json),
         Command::Spawn {
             args,
             resume,
