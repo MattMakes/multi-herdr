@@ -99,7 +99,8 @@ fn pem(b: &[u8], i: usize) -> Option<(usize, usize)> {
     }
     let header_end = find(b, i + BEGIN.len(), b"-----")?;
     let label = &b[i + BEGIN.len()..header_end];
-    if !label.ends_with(b"PRIVATE KEY") || label.contains(&b'\n') {
+    let private = label.windows(11).any(|w| w == b"PRIVATE KEY");
+    if !private || label.contains(&b'\n') {
         return None;
     }
     let end = find(b, header_end + 5, b"-----END ")
@@ -136,13 +137,27 @@ fn assignment(b: &[u8], i: usize) -> Option<(usize, usize)> {
     let end = match b.get(j) {
         Some(&q @ (b'"' | b'\'')) => {
             j += 1;
-            run_end(b, j, |c| c != q && c != b'\n')
+            quoted_end(b, j, q)
         }
         _ => run_end(b, j, |c| {
             !c.is_ascii_whitespace() && c != b'"' && c != b'\''
         }),
     };
     (end > j).then_some((j, end))
+}
+
+/// End of a quoted value starting at `i`: the closing `q`, a newline or the
+/// end of the text. A backslash escapes the next byte, so `\"` does not end
+/// it early.
+fn quoted_end(b: &[u8], mut i: usize, q: u8) -> usize {
+    while i < b.len() && b[i] != q && b[i] != b'\n' {
+        i += if b[i] == b'\\' && i + 1 < b.len() {
+            2
+        } else {
+            1
+        };
+    }
+    i.min(b.len())
 }
 
 /// `sk-ant-…`, `sk-…`, `ghp_…`, `github_pat_…` and Slack `xox?-…` tokens.
@@ -236,6 +251,14 @@ mod tests {
                 "{\"password\": \"[REDACTED]\"}",
             ),
             ("Password:'x'", "Password:'[REDACTED]'"),
+            (
+                r#"{"token": "a\"b c", "n": 1}"#,
+                r#"{"token": "[REDACTED]", "n": 1}"#,
+            ),
+            (
+                "-----BEGIN PGP PRIVATE KEY BLOCK-----\nxyz\n-----END PGP PRIVATE KEY BLOCK-----",
+                "[REDACTED]",
+            ),
         ];
         for (input, want) in cases {
             assert_eq!(red(input), *want, "input: {input:?}");
