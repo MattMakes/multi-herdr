@@ -705,4 +705,70 @@ mod tests {
         assert_eq!(r.result.layout.panes.len(), 1);
         assert_eq!(r.result.layout.area.width, 200);
     }
+
+    fn fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/herdr")
+            .join(name);
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    /// Every wire shape that `Herdr` parses has a JSON sample under
+    /// `tests/fixtures/herdr/`; each one parses into the model types.
+    #[test]
+    fn arc_19_herdr_parsing_contract() {
+        let r: Envelope<PaneResult> = serde_json::from_str(&fixture("pane_get.json")).unwrap();
+        let pane = r.result.pane;
+        assert_eq!(pane.pane_id, "w1:p3");
+        assert_eq!(pane.workspace_id.as_deref(), Some("w1"));
+        assert_eq!(pane.tab_id.as_deref(), Some("w1:t1"));
+        assert_eq!(pane.agent_session_id().as_deref(), Some("s-42"));
+
+        let r: Envelope<PaneListResult> = serde_json::from_str(&fixture("pane_list.json")).unwrap();
+        let ids: Vec<&str> = r.result.panes.iter().map(|p| p.pane_id.as_str()).collect();
+        assert_eq!(ids, ["w1:p1", "w1:p2"]);
+        assert_eq!(r.result.panes[0].agent_session_id(), None);
+        assert_eq!(
+            r.result.panes[1].agent_session_id().as_deref(),
+            Some("abc-123")
+        );
+
+        let r: Envelope<LayoutResult> = serde_json::from_str(&fixture("layout.json")).unwrap();
+        let layout = r.result.layout;
+        assert_eq!(layout.tab_id, "w0:t1");
+        assert_eq!(layout.area.width, 184);
+        assert_eq!(layout.panes.len(), 2);
+        assert_eq!(layout.panes[1].rect.x, 118);
+        assert_eq!(layout.focused_pane_id.as_deref(), Some("w0:p2"));
+        assert!(!layout.zoomed);
+
+        let r: Envelope<TabListResult> = serde_json::from_str(&fixture("tab_list.json")).unwrap();
+        assert_eq!(r.result.tabs.len(), 2);
+        assert_eq!(r.result.tabs[0].number, 2);
+        assert_eq!(r.result.tabs[0].label.as_deref(), Some("workers 2"));
+        assert_eq!(r.result.tabs[1].pane_count, Some(5));
+
+        let r: Envelope<WorkspaceListResult> =
+            serde_json::from_str(&fixture("workspace_list.json")).unwrap();
+        assert_eq!(
+            r.result.workspaces[0].label.as_deref(),
+            Some("horch telemetry")
+        );
+        assert_eq!(
+            r.result.workspaces[0].active_tab_id.as_deref(),
+            Some("w0:t1")
+        );
+        assert_eq!(r.result.workspaces[1].workspace_id, "w1");
+        assert_eq!(r.result.workspaces[1].label, None);
+
+        let r: Envelope<PaneResult> = serde_json::from_str(&fixture("pane_split.json")).unwrap();
+        assert_eq!(r.result.pane.pane_id, "w1:p4");
+
+        let r: Envelope<WorkspaceCreateResult> =
+            serde_json::from_str(&fixture("workspace_create.json")).unwrap();
+        assert_eq!(r.result.workspace.workspace_id, "w7");
+        assert_eq!(r.result.workspace.label.as_deref(), Some("fleet"));
+        assert_eq!(r.result.root_pane.pane_id, "w7:p1");
+        assert_eq!(r.result.root_pane.tab_id.as_deref(), Some("w7:t1"));
+    }
 }

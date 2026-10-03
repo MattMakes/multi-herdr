@@ -1,0 +1,7 @@
+{"result":{"layout":{"workspace_id":"w0","tab_id":"w0:t1",
+  "area":{"x":26,"y":1,"width":184,"height":53},
+  "focused_pane_id":"w0:p2","zoomed":false,
+  "panes":[
+    {"pane_id":"w0:p1","rect":{"x":26,"y":1,"width":92,"height":53}},
+    {"pane_id":"w0:p2","rect":{"x":118,"y":1,"width":92,"height":53}}],
+  "splits":[]}}}

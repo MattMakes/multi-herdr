@@ -680,7 +680,7 @@ pub fn focus_target(
 /// One neighbour step from `from` toward `to`, or `None` when they overlap.
 ///
 /// herdr has no focus-by-id for an ordinary pane, so this is what
-/// [`crate::workspace::model::Herdr::pane_focus_walk`] steers by.
+/// [`crate::herdr::Herdr::pane_focus_walk`] steers by.
 ///
 /// The axis the two rects are SEPARATED on decides the direction; the centre
 /// distance only breaks the tie when they are separated on both, which is a
