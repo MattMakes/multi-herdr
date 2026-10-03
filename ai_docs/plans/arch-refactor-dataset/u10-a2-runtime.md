@@ -118,7 +118,7 @@ do not touch: `teammates.rs`, `quota.rs`, `policy.rs`, `balance_policy.rs`,
 5. `runtime/process.rs`: `which`, `which_in`, `make_executable`,
    `path_with_prepended`, `on_path_in` (pure) move here; and
    `spawn_detached(cmd: &mut Command) -> Result<Child>` copied from the setsid
-   code in `crates/horch/src/cmd/tilecmd.rs` (about line 628). Leave the
+   code in `crates/horch/src/cmd/tilecmd.rs` (`settle_after_close`, the setsid call at about lines 647 to 655). Leave the
    tilecmd copy in place; A7 part (b) switches it.
 6. `runtime/fault.rs`: `pub struct Faults(BTreeSet<String>)` parsed from
    `HORCH_FAULT` (comma-separated). `faults.has("after-append")`. Replace
