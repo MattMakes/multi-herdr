@@ -925,10 +925,53 @@ fn cmp_11_disk_pressure_stops_new_work() {
 /// invariants: exactly N candidate executions, at most 1 judgment, the
 /// projection equals a rebuild.
 fn crash_and_resume(point: &str, first_code: i32, resumed_code: i32) {
-    let name = format!("cmp13-{}", point.replace([':', '-'], ""));
-    let Some(h) = pair(&name, "", done("a.txt")) else {
+    crash_and_resume_in(point, "", first_code, resumed_code);
+}
+
+/// [`crash_and_resume`] for a round that promotes onto `release` (B5). The
+/// invariants add: at most 1 receipt, and `release` moved at most once.
+fn crash_and_resume_promoting(point: &str) {
+    let Some(h) = crash_and_resume_in(point, "promote_to: release\n", 86, 0) else {
         return;
     };
+    let receipts: Vec<Value> = files_under(&h.state.join("multi-herdr"))
+        .into_iter()
+        .filter(|f| f.parent().is_some_and(|p| p.ends_with("promotions")))
+        .map(|f| serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap())
+        .collect();
+    assert_eq!(receipts.len(), 1, "{point}");
+    let out = h
+        .git_cmd(&["reflog", "show", "--format=%H", "refs/heads/release"])
+        .output()
+        .unwrap();
+    let moves: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    // The creation, then 1 move.
+    assert_eq!(moves.len(), 2, "{point}: {moves:?}");
+    assert_eq!(
+        moves[0],
+        receipts[0]["dest_after"].as_str().unwrap(),
+        "{point}"
+    );
+    let events = events(&h);
+    assert_eq!(of_kind(&events, "promotion.completed").len(), 1, "{point}");
+    assert_eq!(round_state(&h), "COMPLETE", "{point}");
+}
+
+/// Crash at `point` in a round with `yaml`, then `resume`. The harness is
+/// returned for more checks; it has a `release` branch at the base.
+fn crash_and_resume_in(
+    point: &str,
+    yaml: &str,
+    first_code: i32,
+    resumed_code: i32,
+) -> Option<Harness> {
+    let name = format!("cmp13-{}", point.replace([':', '-'], ""));
+    let h = pair(&name, yaml, done("a.txt"))?;
+    let out = h.git_cmd(&["branch", "release"]).output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
     let out = run_round(&h, 2, &[("HORCH_FAULT", point)]);
     assert_eq!(
         out.status.code(),
@@ -956,6 +999,7 @@ fn crash_and_resume(point: &str, first_code: i32, resumed_code: i32) {
     assert_rebuild_equal(&h);
     assert_every_spawn_ended(&h);
     assert_clean(&h);
+    Some(h)
 }
 
 #[test]
@@ -971,8 +1015,17 @@ fn cmp_13_crash_every_boundary() {
         "abort-after-judge-scheduled",
         "abort-after-judgment-written",
         "abort-after-winner-selected",
+        "abort-during-cleanup:1",
     ] {
         crash_and_resume(point, 86, 0);
+    }
+    // B5: the promotion's points, in a round with `promote_to`.
+    for point in [
+        "abort-after-promotion-started",
+        "abort-after-update-ref",
+        "abort-after-receipt",
+    ] {
+        crash_and_resume_promoting(point);
     }
     // The judge job's points: the job dies, not the coordinator. After the
     // output the answer counts; before it, both attempts fail and the round
