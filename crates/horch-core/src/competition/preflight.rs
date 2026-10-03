@@ -31,10 +31,9 @@ pub const REPORT_SCHEMA_VERSION: &str = "1.0.0";
 /// The oldest git with `git worktree` (added in 2.5, stable with `--lock`
 /// and `remove` by 2.17).
 pub const MIN_GIT_VERSION: (u32, u32) = (2, 17);
-/// Resident memory of one agent CLI and its tool processes.
-pub const HARNESS_FOOTPRINT_BYTES: u64 = 600 * MIB;
-/// The smoke harness runs no agent.
-pub const NONE_FOOTPRINT_BYTES: u64 = 64 * MIB;
+/// Resident memory of one agent CLI and its tool processes, and of the smoke
+/// harness, which runs no agent. Owned by [`crate::harness::capabilities`].
+pub use crate::harness::capabilities::{HARNESS_FOOTPRINT_BYTES, NONE_FOOTPRINT_BYTES};
 /// CPU cores one candidate needs: the agent plus its builds and tests.
 pub const CPUS_PER_CANDIDATE: u32 = 2;
 /// Open files one candidate needs (agent, pane, builds, logs).
@@ -47,8 +46,6 @@ pub const DEFAULT_TOKEN_ESTIMATE: TokenEstimate = TokenEstimate {
     cache_read: 3_000_000,
     output: 60_000,
 };
-
-const MIB: u64 = 1024 * 1024;
 
 /// A candidate the round plans to run.
 // B3: replaced by CandidatePlanned (U13) once it lands.
@@ -359,13 +356,7 @@ fn pre_02_disk(plan: &PreflightPlan, snapshot: &MachineSnapshot, n: u32) -> Chec
 
 /// Resident memory of one candidate on `harness`.
 pub fn footprint_bytes(harness: HarnessKind, local_model_bytes: u64) -> u64 {
-    match harness {
-        HarnessKind::Claude | HarnessKind::Codex | HarnessKind::OpenCode | HarnessKind::Prime => {
-            HARNESS_FOOTPRINT_BYTES
-        }
-        HarnessKind::Pi => HARNESS_FOOTPRINT_BYTES.saturating_add(local_model_bytes),
-        HarnessKind::None => NONE_FOOTPRINT_BYTES,
-    }
+    harness.capabilities().footprint(local_model_bytes)
 }
 
 fn pre_03_memory(plan: &PreflightPlan, snapshot: &MachineSnapshot, safe_n: u32) -> CheckResult {

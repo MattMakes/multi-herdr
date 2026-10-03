@@ -34,13 +34,7 @@ impl std::fmt::Display for Effort {
 /// tops out at `max`. Checked at `--check` and at `horch spawn --effort`, so a
 /// typo fails before a pane starts rather than inside one nobody watches.
 pub fn valid_efforts(agent: Agent) -> &'static [&'static str] {
-    match agent {
-        Agent::Claude => &["low", "medium", "high", "xhigh", "max"],
-        Agent::Codex => &["none", "low", "medium", "high", "xhigh", "max"],
-        Agent::OpenCode => &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-        Agent::Pi | Agent::Prime => &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-        Agent::None => &[],
-    }
+    agent.capabilities().effort
 }
 
 /// Whether `model` has any effort setting at all on `agent`.
@@ -49,19 +43,9 @@ pub fn valid_efforts(agent: Agent) -> &'static [&'static str] {
 /// OpenCode free-tier models report `variants: {}` (`opencode models
 /// --verbose`, ai_docs/reports/env-research/codex-opencode.md), so an effort
 /// there is silently a no-op - worse than an error, because the file then
-/// claims a setting that is not happening.
+/// claims a setting that is not happening. Each harness module owns its rule.
 pub fn model_takes_effort(agent: Agent, model: &str) -> bool {
-    match agent {
-        Agent::Claude => !model
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|seg| seg.eq_ignore_ascii_case("haiku")),
-        Agent::OpenCode => {
-            !(model.starts_with("opencode/")
-                && (model.ends_with("-free") || model == "opencode/big-pickle"))
-        }
-        Agent::None => false,
-        _ => true,
-    }
+    agent.model_takes_effort(model)
 }
 
 /// Why `effort` cannot be used with this agent and model, or `None` if it can.
