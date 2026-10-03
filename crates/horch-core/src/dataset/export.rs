@@ -214,7 +214,7 @@ pub fn write_export(
             row.label_policy_version
         );
     }
-    let dir = paths.exports_dir(label_policy_version);
+    let dir = paths.exports_dir(label_policy_version)?;
     fsx::ensure_private_dir(&paths.exports_root())?;
     fsx::ensure_private_dir(&dir)?;
     let file = dir.join(format!("{}.jsonl", ts.format("%Y%m%dT%H%M%S%.3fZ")));
@@ -274,7 +274,7 @@ fn build_row(
         .created;
     let judgment = match &r.judge.judgment_id {
         Some(id) => {
-            let file = paths.judgement(round_id);
+            let file = paths.judgement(round_id)?;
             let text = std::fs::read_to_string(&file)
                 .with_context(|| format!("reading {}", file.display()))?;
             let record: JudgmentRecord = serde_json::from_str(&text)
@@ -428,7 +428,7 @@ fn build_row(
 
 /// `dest_after` of `promotions/<round>.json`, when the file exists.
 fn read_promotion(paths: &DatasetPaths, round_id: &RoundId) -> Result<Option<ExportPromotion>> {
-    let file = paths.promotion(round_id);
+    let file = paths.promotion(round_id)?;
     let text = match std::fs::read_to_string(&file) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

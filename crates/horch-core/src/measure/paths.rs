@@ -3,7 +3,12 @@
 //! The root is `<state_root>/multi-herdr/<project-slug>/`. It is a
 //! subdirectory on purpose: `telemetry::collect::read_ledgers` parses every
 //! `state_root/*.json`, and must never see a dataset file (MEA-08).
+//!
+//! Every accessor that joins an id or a label checks that it is one plain
+//! path component (see [`component`]). The id types accept legacy ids with
+//! `/` or `..`; such an id never becomes a path.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
@@ -14,6 +19,44 @@ use crate::ledger;
 
 /// The directory under the state root that holds every project's dataset.
 pub const DATASET_DIR: &str = "multi-herdr";
+
+/// An id or label that is not one plain path component.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadPathComponent {
+    /// What the value names, such as `round id`.
+    pub what: &'static str,
+    pub value: String,
+}
+
+impl fmt::Display for BadPathComponent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {:?} is not a plain path component",
+            self.what, self.value
+        )
+    }
+}
+
+impl std::error::Error for BadPathComponent {}
+
+pub type PathResult = Result<PathBuf, BadPathComponent>;
+
+/// `value`, when it is one plain path component: not empty, not `.` or
+/// `..`, and without `/`, `\`, `..` or NUL.
+pub fn component<'a>(what: &'static str, value: &'a str) -> Result<&'a str, BadPathComponent> {
+    let bad = value.is_empty()
+        || value == "."
+        || value.contains("..")
+        || value.contains(['/', '\\', '\0']);
+    if bad {
+        return Err(BadPathComponent {
+            what,
+            value: value.to_string(),
+        });
+    }
+    Ok(value)
+}
 
 /// Every path of one project's dataset. Pure: nothing touches the disk
 /// except [`DatasetPaths::ensure`].
@@ -58,73 +101,81 @@ impl DatasetPaths {
         self.root.join("experiments")
     }
 
-    pub fn experiment_dir(&self, exp: &ExperimentId) -> PathBuf {
-        self.experiments_dir().join(exp.as_str())
+    pub fn experiment_dir(&self, exp: &ExperimentId) -> PathResult {
+        Ok(self
+            .experiments_dir()
+            .join(component("experiment id", exp.as_str())?))
     }
 
-    pub fn manifest(&self, exp: &ExperimentId) -> PathBuf {
-        self.experiment_dir(exp).join("manifest.json")
+    pub fn manifest(&self, exp: &ExperimentId) -> PathResult {
+        Ok(self.experiment_dir(exp)?.join("manifest.json"))
     }
 
-    pub fn rounds_dir(&self, exp: &ExperimentId) -> PathBuf {
-        self.experiment_dir(exp).join("rounds")
+    pub fn rounds_dir(&self, exp: &ExperimentId) -> PathResult {
+        Ok(self.experiment_dir(exp)?.join("rounds"))
     }
 
-    pub fn round_file(&self, exp: &ExperimentId, round: &RoundId) -> PathBuf {
-        self.rounds_dir(exp).join(format!("{round}.json"))
+    pub fn round_file(&self, exp: &ExperimentId, round: &RoundId) -> PathResult {
+        Ok(self.rounds_dir(exp)?.join(json_name(round)?))
     }
 
-    pub fn artifacts_dir(&self, exp: &ExperimentId, round: &RoundId) -> PathBuf {
-        self.experiment_dir(exp)
+    pub fn artifacts_dir(&self, exp: &ExperimentId, round: &RoundId) -> PathResult {
+        Ok(self
+            .experiment_dir(exp)?
             .join("artifacts")
-            .join(round.as_str())
+            .join(component("round id", round.as_str())?))
     }
 
-    pub fn judge_input_dir(&self, exp: &ExperimentId, round: &RoundId) -> PathBuf {
-        self.artifacts_dir(exp, round).join("judge-input")
+    pub fn judge_input_dir(&self, exp: &ExperimentId, round: &RoundId) -> PathResult {
+        Ok(self.artifacts_dir(exp, round)?.join("judge-input"))
     }
 
-    pub fn validation_dir(&self, exp: &ExperimentId, round: &RoundId, label: &str) -> PathBuf {
-        self.artifacts_dir(exp, round)
+    pub fn validation_dir(&self, exp: &ExperimentId, round: &RoundId, label: &str) -> PathResult {
+        Ok(self
+            .artifacts_dir(exp, round)?
             .join("validation")
-            .join(label)
+            .join(component("label", label)?))
     }
 
     pub fn judgements_dir(&self) -> PathBuf {
         self.root.join("judgements")
     }
 
-    pub fn judgement(&self, round: &RoundId) -> PathBuf {
-        self.judgements_dir().join(format!("{round}.json"))
+    pub fn judgement(&self, round: &RoundId) -> PathResult {
+        Ok(self.judgements_dir().join(json_name(round)?))
     }
 
     pub fn promotions_dir(&self) -> PathBuf {
         self.root.join("promotions")
     }
 
-    pub fn promotion(&self, round: &RoundId) -> PathBuf {
-        self.promotions_dir().join(format!("{round}.json"))
+    pub fn promotion(&self, round: &RoundId) -> PathResult {
+        Ok(self.promotions_dir().join(json_name(round)?))
     }
 
     pub fn exports_root(&self) -> PathBuf {
         self.root.join("exports")
     }
 
-    pub fn exports_dir(&self, label_policy_version: &str) -> PathBuf {
-        self.exports_root().join(label_policy_version)
+    pub fn exports_dir(&self, label_policy_version: &str) -> PathResult {
+        Ok(self
+            .exports_root()
+            .join(component("label policy version", label_policy_version)?))
     }
 
     pub fn jobs_root(&self) -> PathBuf {
         self.root.join("jobs")
     }
 
-    pub fn jobs_dir(&self, round: &RoundId) -> PathBuf {
-        self.jobs_root().join(round.as_str())
+    pub fn jobs_dir(&self, round: &RoundId) -> PathResult {
+        Ok(self
+            .jobs_root()
+            .join(component("round id", round.as_str())?))
     }
 
     /// `jobs/<round>/judge-<attempt>/`.
-    pub fn job_dir(&self, round: &RoundId, attempt: u32) -> PathBuf {
-        self.jobs_dir(round).join(format!("judge-{attempt}"))
+    pub fn job_dir(&self, round: &RoundId, attempt: u32) -> PathResult {
+        Ok(self.jobs_dir(round)?.join(format!("judge-{attempt}")))
     }
 
     pub fn worktrees_root(&self) -> PathBuf {
@@ -132,8 +183,10 @@ impl DatasetPaths {
     }
 
     /// The default `--worktree-root` of an experiment.
-    pub fn default_worktree_root(&self, exp: &ExperimentId) -> PathBuf {
-        self.worktrees_root().join(exp.as_str())
+    pub fn default_worktree_root(&self, exp: &ExperimentId) -> PathResult {
+        Ok(self
+            .worktrees_root()
+            .join(component("experiment id", exp.as_str())?))
     }
 
     /// Create the root and its fixed top-level directories, each 0700
@@ -156,4 +209,9 @@ impl DatasetPaths {
         }
         Ok(())
     }
+}
+
+/// `<round>.json`, for a round id that is a plain path component.
+fn json_name(round: &RoundId) -> Result<String, BadPathComponent> {
+    Ok(format!("{}.json", component("round id", round.as_str())?))
 }
