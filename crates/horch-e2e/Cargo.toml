@@ -33,6 +33,10 @@ name = "fake-prime"
 path = "src/bin/fake-prime.rs"
 
 [[bin]]
+name = "fake-antigravity"
+path = "src/bin/fake-antigravity.rs"
+
+[[bin]]
 name = "fake-ollama"
 path = "src/bin/fake-ollama.rs"
 
