@@ -1,6 +1,7 @@
 //! Smoke tests for the fakes themselves: each fake answers the calls horch
 //! makes, in the shape horch parses. These are not requirement tests.
 
+use std::path::Path;
 use std::process::{Command, Output};
 
 use horch_e2e::harness::Harness;
@@ -347,4 +348,72 @@ fn fake_prime_creates_session_file() {
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(status(&h).is_empty(), "a killed launch is not listed");
+}
+
+#[test]
+fn harness_with_git_makes_repo() {
+    let h = Harness::new("fakes-git").with_git();
+    let Some(git) = h.git_bin().map(|p| p.to_path_buf()) else {
+        // `with_git` already refused to go on under HORCH_REQUIRE_GIT=1.
+        return;
+    };
+    assert!(git.is_absolute());
+    let git_out = |h: &Harness, args: &[&str]| {
+        let out = h.git_cmd(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    // 2 files, 1 commit, branch `main`, a clean tree.
+    assert_eq!(git_out(&h, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+    assert_eq!(git_out(&h, &["rev-list", "--count", "HEAD"]), "1");
+    assert_eq!(
+        git_out(&h, &["ls-files"]).lines().collect::<Vec<_>>(),
+        ["README.md", "notes.txt"]
+    );
+    assert_eq!(git_out(&h, &["status", "--porcelain"]), "");
+    let sha = h.head_sha().unwrap();
+    assert_eq!(sha.len(), 40);
+    assert_eq!(sha, git_out(&h, &["rev-parse", "HEAD"]));
+    assert_eq!(
+        git_out(&h, &["log", "-1", "--format=%an <%ae> %aI"]),
+        "Horch Fixture <fixture@horch.invalid> 2026-09-28T12:00:00+00:00"
+    );
+
+    // Pinned: the same fixture gives the same commit in every harness.
+    let other = Harness::new("fakes-git-2").with_git();
+    assert_eq!(other.head_sha(), Some(sha));
+
+    // The environment horch sees is pinned and names git by absolute path.
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c").arg("/usr/bin/env");
+    h.seal(&mut cmd);
+    let env = String::from_utf8_lossy(&cmd.output().unwrap().stdout).into_owned();
+    let has = |line: String| env.lines().any(|l| l == line);
+    assert!(has("GIT_CONFIG_NOSYSTEM=1".into()), "{env}");
+    assert!(has(format!("HORCH_GIT_BIN={}", git.display())), "{env}");
+    let config = h.root.join("gitconfig");
+    assert!(
+        has(format!("GIT_CONFIG_GLOBAL={}", config.display())),
+        "{env}"
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "");
+    assert!(!env.lines().any(|l| l.starts_with("ANTHROPIC_API_KEY=")));
+
+    // NFR-01: the fakes and exactly that one git are allowed; nothing else is,
+    // and git is not on the sealed PATH.
+    assert!(h.allows_program(&h.bin.join("claude")));
+    assert!(h.allows_program(&git));
+    assert!(!h.allows_program(Path::new("/usr/bin/sh")));
+    assert!(!h.allows_program(&git.with_file_name("git-other")));
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c").arg("command -v git");
+    h.seal(&mut cmd);
+    assert!(String::from_utf8_lossy(&cmd.output().unwrap().stdout)
+        .trim()
+        .is_empty());
+    // Without `with_git`, no git is allowed.
+    let plain = Harness::new("fakes-nogit");
+    assert!(plain.git_bin().is_none() && plain.head_sha().is_none());
+    assert!(!plain.allows_program(&git));
 }

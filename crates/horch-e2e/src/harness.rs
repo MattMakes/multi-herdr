@@ -36,7 +36,13 @@ pub struct Harness {
     pub project: PathBuf,
     /// Extra environment for every `horch` this harness runs.
     pub env: BTreeMap<String, String>,
+    /// The real `git`, by absolute path, once [`Harness::with_git`] found it.
+    git: Option<PathBuf>,
 }
+
+/// The commit date of the fixture repo, and of every commit made through the
+/// harness environment, so a commit hash is the same in every run.
+pub const GIT_DATE: &str = "2026-09-28T12:00:00+00:00";
 
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
@@ -59,6 +65,7 @@ impl Harness {
             project: root.join("work/alpha"),
             root,
             env: BTreeMap::new(),
+            git: None,
         };
         for dir in [&h.home, &h.state, &h.tmp, &h.bin, &h.project] {
             std::fs::create_dir_all(dir).expect("creating harness dirs");
@@ -78,6 +85,93 @@ impl Harness {
             let _ = std::fs::copy(sqlite, h.bin.join(exe("sqlite3")));
         }
         h
+    }
+
+    /// Give this harness a real git repository: 2 files and 1 commit on branch
+    /// `main`, in the project dir.
+    ///
+    /// `git` is found by absolute path on the real `PATH` and is never put on
+    /// the sealed `PATH`; `HORCH_GIT_BIN` names it. The environment pins
+    /// everything that could change a commit hash or read the operator's
+    /// config: an empty `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM=1`, the
+    /// author, the committer and both dates. Real git touches only temp dirs.
+    ///
+    /// Without `git` the harness is returned as it was and [`Harness::git_bin`]
+    /// is `None`, unless `HORCH_REQUIRE_GIT=1`, which makes that a panic.
+    pub fn with_git(mut self) -> Self {
+        let Some(git) = find_on_real_path("git").filter(|p| p.is_absolute()) else {
+            assert!(
+                std::env::var_os("HORCH_REQUIRE_GIT").is_none_or(|v| v != "1"),
+                "HORCH_REQUIRE_GIT=1 is set but git is not on PATH"
+            );
+            return self;
+        };
+        let config = self.root.join("gitconfig");
+        std::fs::write(&config, "").expect("writing the empty git config");
+        let pinned = [
+            ("GIT_CONFIG_GLOBAL", config.to_string_lossy().into_owned()),
+            ("GIT_CONFIG_NOSYSTEM", "1".into()),
+            ("GIT_AUTHOR_NAME", "Horch Fixture".into()),
+            ("GIT_AUTHOR_EMAIL", "fixture@horch.invalid".into()),
+            ("GIT_COMMITTER_NAME", "Horch Fixture".into()),
+            ("GIT_COMMITTER_EMAIL", "fixture@horch.invalid".into()),
+            ("GIT_AUTHOR_DATE", GIT_DATE.into()),
+            ("GIT_COMMITTER_DATE", GIT_DATE.into()),
+            ("GIT_TERMINAL_PROMPT", "0".into()),
+            ("HORCH_GIT_BIN", git.to_string_lossy().into_owned()),
+        ];
+        for (k, v) in pinned {
+            self.env.insert(k.into(), v);
+        }
+        std::fs::write(self.project.join("README.md"), "# alpha\n").expect("writing a fixture");
+        std::fs::write(self.project.join("notes.txt"), "one\ntwo\n").expect("writing a fixture");
+        self.git = Some(git);
+        // `symbolic-ref` rather than `init -b`: older git has no `-b`.
+        for args in [
+            &["init", "--quiet"][..],
+            &["symbolic-ref", "HEAD", "refs/heads/main"],
+            &["add", "-A"],
+            &["commit", "--quiet", "--no-gpg-sign", "-m", "initial commit"],
+        ] {
+            let out = self.git_cmd(args).output().expect("running git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        self
+    }
+
+    /// The real `git`, by absolute path, after [`Harness::with_git`].
+    pub fn git_bin(&self) -> Option<&Path> {
+        self.git.as_deref()
+    }
+
+    /// A `git` command in the project dir with the pinned environment.
+    /// Panics before [`Harness::with_git`].
+    pub fn git_cmd(&self, args: &[&str]) -> Command {
+        let git = self.git.as_ref().expect("call with_git() first");
+        let mut cmd = Command::new(git);
+        cmd.args(args);
+        self.seal(&mut cmd);
+        cmd
+    }
+
+    /// The commit at `HEAD` of the project repo. `None` without git.
+    pub fn head_sha(&self) -> Option<String> {
+        self.git.as_ref()?;
+        let out = self.git_cmd(&["rev-parse", "HEAD"]).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// NFR-01: whether `horch` may start the program at `path`. Allowed are
+    /// the files in the fakes dir and the one real `git` that
+    /// [`Harness::with_git`] found. Nothing else is.
+    pub fn allows_program(&self, path: &Path) -> bool {
+        path.starts_with(&self.bin) || self.git.as_deref() == Some(path)
     }
 
     /// The `horch` binary under test, built next to the fakes.
