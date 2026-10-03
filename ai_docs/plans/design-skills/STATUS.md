@@ -12,7 +12,7 @@ Gate: /tmp/igate-ds.sh
 | D03 | skill-landing-page | opus-25 | running |
 | D04 | skill-design-system | opus-26 | running |
 | D05 | skill-motion | opus-27 | running |
-| D06 | skill-imagery | opus-28 | running |
+| D06 | skill-imagery | opus-28 | MERGED |
 | D07 | design-personas | opus-29 | running (adds skill ids as skills merge) |
 | D08 | antigravity-harness | opus-30 | running (research first) |
 | D09 | agent-list | sonnet-7 | MERGED |
