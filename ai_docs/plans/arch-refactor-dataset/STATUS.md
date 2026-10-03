@@ -9,13 +9,13 @@ CURRENT_PHASE: orchestrator appends a phase when its last unit merges.
 | Unit | Slug | Worker | Status |
 |---|---|---|---|
 | U01 | a0-gate | opus-3 (codex-sol-1 retired: sandbox) | running |
-| U02 | a0-oracles | opus-1 | running |
+| U02 | a0-oracles | opus-1 | MERGED |
 | U03 | a0-designs | staff-engineer-1 | running |
 | U04 | a8-marketplace | backend-developer-2 | running (needs U01 allowlist) |
 | U05 | a1-vocabulary | opus-2 | running |
 | U06 | b1-primitives | backend-developer-1 | running (needs U01 allowlist) |
 | U07 | e2e-fakes | qa-engineer-1 | running |
-| U08 | machine-teacher | sonnet-1 | running |
+| U08 | machine-teacher | sonnet-1 | MERGED 658b57d |
 
 ## Wave 2 plan (after A1 merges)
 - A2-core (runtime/*, bootstrap, ledger/mailbox/clock/usage/telemetry env, Brief v2), arc_05 scan with temp allowlist for A3/A4/A5 files.
