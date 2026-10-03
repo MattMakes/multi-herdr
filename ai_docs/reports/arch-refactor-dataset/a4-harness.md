@@ -100,8 +100,9 @@ stop discovery → `Prepared::finish` (codex home cleanup, then daemon stop).
 
 ## Tests added (10)
 
-- `arc_09_argv_matches_baseline` (`baseline_oracles.rs`): runs all 33+
-  teammates × {fresh, resume, unmanaged} through `adapter().build_command`
+- `arc_09_argv_matches_baseline` (`baseline_oracles.rs`): runs every
+  teammate that `oracle_names` covers (all except `judge`, which B4 added
+  without an A0 oracle) × {fresh, resume, unmanaged} through `adapter().build_command`
   and compares the result with the frozen A0 launch oracle. It only
   compares and never writes, even under `HORCH_BLESS=1`. `launch_oracle`
   now takes the build function. `oracle_launch_matches` still uses

@@ -338,8 +338,8 @@ fn arc_09_argv_matches_baseline() {
     let world = World::new();
     let roster = world.roster();
     let mut checked = 0;
-    for name in roster.names() {
-        let t = roster.get(name).unwrap();
+    for name in oracle_names(&roster) {
+        let t = roster.get(&name).unwrap();
         let path = oracles().join(format!("launch/{name}.json"));
         let want =
             std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
