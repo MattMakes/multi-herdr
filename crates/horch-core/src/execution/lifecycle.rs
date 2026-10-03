@@ -47,13 +47,18 @@ pub trait DoneSteps {
     fn report(&self, line: &str) -> Result<()>;
     fn unregister(&self, workspace: &str, role: &str);
     fn settle(&self, workspace: &str);
+    /// One last session discovery, before the pane close ends the discovery
+    /// thread. Best effort; the default does nothing.
+    fn record_session(&self, _workspace: &str, _role: &str, _record_id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
 /// while waiting on a question).
 ///
 /// The order is fixed: mark done in the ledger, report to the orchestrator,
-/// unregister the mailbox entry, settle the grid, close the pane. Everything
+/// record a session id still undiscovered, unregister the mailbox entry, settle the grid, close the pane. Everything
 /// happens BEFORE the pane close, because closing the pane kills this very
 /// process tree. The underlying agent session stays on disk and resumable.
 ///
@@ -81,6 +86,10 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
         .map(str::to_owned)
         .or_else(|| pane.workspace_id.clone())
         .context("could not resolve this pane's workspace")?;
+
+    if let Err(e) = steps.record_session(&workspace, role, req.record_id) {
+        eprintln!("horch done: could not record the session id ({e:#}); shutting down anyway");
+    }
 
     steps.unregister(&workspace, role);
 
