@@ -63,8 +63,8 @@ own:
 - `crates/horch-core/src/harness/headless.rs` (new), `harness/mod.rs` (1 `pub mod` line)
 - `crates/horch-core/src/evaluation/scheduler.rs` (new), `evaluation/mod.rs` (1 line)
 - `crates/horch-core/src/competition/judging.rs` (new), `competition/mod.rs` (1 line)
-- `crates/horch/src/dataset/judge_job.rs` (new) and the `judge-job` arm in
-  `crates/horch/src/bin/multi-herdr-dataset.rs` (replace the placeholder only)
+- `crates/horch/src/dataset/judge_job.rs` (new) and the `judge-job` arm:
+  the arms live in `crates/horch/src/dataset/cli.rs` (the clap `Placeholder` variant: give it real args) and `crates/horch/src/dataset/mod.rs` (the dispatch `not_implemented(...)` line). Only the `JudgeJob` lines.
 - `crates/horch-e2e/src/bin/fake-claude.rs` (a `judge` mode: reads the stdin
   prompt, writes a scripted judgment, or crashes or hangs per
   `$HORCH_FAKE_LOG.judge.json`; records argv, cwd and env)

@@ -50,8 +50,7 @@ telemetry count candidate and judge executions.
 
 own:
 - `crates/horch/src/dataset/{promote,rollback,cleanup}.rs` (new), and their
-  arms in `crates/horch/src/bin/multi-herdr-dataset.rs` (replace the
-  placeholders only)
+  arms: the arms live in `crates/horch/src/dataset/cli.rs` (the clap `Placeholder` variant: give it real args) and `crates/horch/src/dataset/mod.rs` (the dispatch `not_implemented(...)` line). Only the `Promote`, `Rollback`, `Cleanup` lines.
 - `crates/horch/src/dataset/run.rs` (only the `--promote-to` handling after
   DECIDED)
 - `crates/horch-core/src/competition/coordinator.rs` (only the DECIDED

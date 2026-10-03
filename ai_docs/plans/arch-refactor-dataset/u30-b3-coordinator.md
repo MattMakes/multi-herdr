@@ -60,13 +60,21 @@ stops in JUDGING_BACKGROUND and exits 0.
   and the coming B4 job unit (it fills the judging step and the
   `judge-job` subcommand; leave a clear `judge::schedule` call site).
 
+- From U29 (`b2-binary.md`): the round id and the plan already exist at the
+  `// B3:` mark in `dataset::run::run`; emit `round.created` and
+  `candidate.planned` from them. Exit codes 3, 5, 6 are defined and unused:
+  return them. `HORCH_PROJECT_DIR` wins over the cwd (set it in tests).
+  `StoreFacts::facts_of` exports `Unpriced` with 0 tokens: fill it.
+  `DatasetPaths` accessors return `Result` (U27). A fault point in the
+  promotion engine returns `FaultFired`; abort the process on it.
+
 ## FILES
 
 own:
 - `crates/horch-core/src/competition/{coordinator,observe}.rs` (new), `competition/judging.rs` (the stub only; U31 replaces its body), `competition/mod.rs` (your lines)
 - `crates/horch-core/src/competition/budget.rs` (only to add the live `UsageMeter`)
 - `crates/horch-core/src/routing/decision.rs` (only `RoutingMode::Pinned`)
-- `crates/horch/src/dataset/run.rs`, `dataset/watch.rs`, `dataset/status.rs` (extend), `crates/horch/src/cmd/ledgercmd.rs` (`--all`), `crates/horch/src/cmd/spawn.rs` (resume refusal line only), `crates/horch/src/main.rs` (`sessions --all` flag only)
+- `crates/horch/src/dataset/run.rs` (replace the `// B3:` tail), `dataset/watch.rs` (new) and the `Watch` arm plus a new `Resume` subcommand in `dataset/cli.rs` and `dataset/mod.rs` (only those lines), `dataset/status.rs` (extend), `dataset/export.rs` (only `StoreFacts::facts_of`: fill tokens and cost from the usage meter or telemetry), `crates/horch/src/cmd/ledgercmd.rs` (`--all`), `crates/horch/src/cmd/spawn.rs` (resume refusal line only), `crates/horch/src/main.rs` (`sessions --all` flag only)
 - `teammates/_base/competition-candidate.md` (new)
 - `crates/horch-e2e/src/bin/fake-{claude,codex,opencode,herdr}.rs` (candidate mode, dataset workspaces)
 - `crates/horch-e2e/tests/dataset.rs` (extend)
