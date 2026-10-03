@@ -71,7 +71,7 @@ fn agent_command(
     match teammate.agent {
         Agent::Claude => claude_command(teammate, session, prompt, model_override),
         Agent::Codex => codex_command(teammate, session, prompt, model_override),
-        Agent::Opencode => opencode_command(teammate, session, prompt, model_override),
+        Agent::OpenCode => opencode_command(teammate, session, prompt, model_override),
         // pi and Prime Agent share a CLI surface - Prime is a fork of pi - but
         // they have drifted where it matters most: pi can be told its session
         // id, Prime cannot, and Prime runs a daemon. One builder, two dialects.
@@ -585,7 +585,7 @@ mod tests {
                             .exists());
                         assert!(flag < args.iter().position(|s| s == "--").unwrap());
                     }
-                    Agent::Opencode => {
+                    Agent::OpenCode => {
                         let (_, config) = cmd
                             .get_envs()
                             .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")

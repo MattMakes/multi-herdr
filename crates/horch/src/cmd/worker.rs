@@ -247,7 +247,7 @@ pub(crate) fn start_harvest(
                 // concurrently spawned worker. Codex records sessions as
                 // rollout files; OpenCode answers `session list`.
                 let candidates: Vec<String> = match agent {
-                    Agent::Opencode => opencode::find_sessions(&project_dir, since)
+                    Agent::OpenCode => opencode::find_sessions(&project_dir, since)
                         .into_iter()
                         .map(|c| c.session_id)
                         .collect(),

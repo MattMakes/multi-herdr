@@ -109,7 +109,7 @@ pub fn merge(original: &Teammate, fallback: &Teammate) -> Teammate {
 /// Whether a teammate's provider trains on its input: every OpenCode one
 /// (BAL-09). Never chosen automatically.
 pub fn trains_on_input(t: &Teammate) -> bool {
-    t.trains_on_input || t.agent == Agent::Opencode
+    t.trains_on_input || t.agent == Agent::OpenCode
 }
 
 // ─── decide ─────────────────────────────────────────────────────────────────

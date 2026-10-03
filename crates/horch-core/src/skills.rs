@@ -185,7 +185,7 @@ impl Bundle {
             Agent::Pi | Agent::Prime => adjusted
                 .args
                 .extend(native_args(teammate.agent, &self.root)),
-            Agent::Codex | Agent::Opencode => {}
+            Agent::Codex | Agent::OpenCode => {}
             Agent::None => bail!("skills need an agent harness"),
         }
         Ok(adjusted)
@@ -230,7 +230,7 @@ impl Bundle {
     }
 
     pub fn apply_env(&self, cmd: &mut std::process::Command, teammate: &Teammate) -> Result<()> {
-        if teammate.agent == Agent::Opencode {
+        if teammate.agent == Agent::OpenCode {
             // The builder may already have set it (the effort variant); build
             // on that rather than on the teammate's or the operator's value.
             let inherited = cmd
@@ -394,7 +394,7 @@ mod tests {
             );
         }
         assert!(native_args(Agent::Codex, root).is_empty());
-        assert!(native_args(Agent::Opencode, root).is_empty());
+        assert!(native_args(Agent::OpenCode, root).is_empty());
     }
 
     #[test]
