@@ -2,4 +2,5 @@
 //! PRNG and secret redaction. The event store and projections join later.
 
 pub mod digest;
+pub mod redact;
 pub mod testkit;
