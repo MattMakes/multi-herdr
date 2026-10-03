@@ -29,6 +29,7 @@
 //! rather than pass. A new briefing line is added here as a named block with
 //! the reason for it, which is what makes the change reviewable.
 
+use horch_core::execution::SessionMode;
 use horch_core::prompts;
 use horch_core::teammates::Roster;
 
@@ -133,7 +134,12 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
             ("idle", "", false),
             ("resume", "Continue where you left off", true),
         ] {
-            let got = prompts::worker_prompt(&r, t, "r-1", task, resume).unwrap();
+            let session = if resume {
+                SessionMode::Resume("s-1".parse().unwrap())
+            } else {
+                SessionMode::Fresh(None)
+            };
+            let got = prompts::worker_prompt(&r, t, "r-1", task, &session).unwrap();
             let was = golden(&format!("worker-{name}-{label}"));
             let old_agent = "orchestrator (a separate Claude session) runs in another pane";
             let new_agent = "orchestrator (a separate agent session) runs in another pane";

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::execution::SessionMode;
 use crate::herdr::Herdr;
 use crate::teammates::{Agent, Teammate};
 
@@ -26,11 +27,12 @@ pub struct Brief {
     pub agent: String,
     pub model: String,
     pub record_id: String,
-    /// Empty until known. Claude session ids are minted at spawn; codex only
-    /// reveals its id after launch.
-    #[serde(default)]
-    pub session_id: String,
-    pub resume: bool,
+    /// Fresh or resumed, and the session id when it is known at spawn. Claude
+    /// session ids are minted at spawn; codex only reveals its id after launch.
+    /// On disk this is still the `session_id` string (empty until known) and
+    /// the `resume` flag.
+    #[serde(flatten, with = "session_wire")]
+    pub session: SessionMode,
     #[serde(default)]
     pub task: String,
     pub project_dir: String,
@@ -60,6 +62,44 @@ pub struct Brief {
 impl Brief {
     pub fn agent(&self) -> Result<Agent> {
         self.agent.parse().map_err(anyhow::Error::msg)
+    }
+}
+
+/// The brief's on-disk session fields, which predate [`SessionMode`].
+mod session_wire {
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::execution::SessionMode;
+    use crate::ids::SessionId;
+
+    #[derive(Serialize, Deserialize)]
+    struct Wire {
+        #[serde(default)]
+        session_id: String,
+        #[serde(rename = "resume")]
+        resuming: bool,
+    }
+
+    pub fn serialize<S: Serializer>(session: &SessionMode, s: S) -> Result<S::Ok, S::Error> {
+        Wire {
+            session_id: session.id().map(|id| id.to_string()).unwrap_or_default(),
+            resuming: session.is_resume(),
+        }
+        .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SessionMode, D::Error> {
+        let wire = Wire::deserialize(d)?;
+        let id = match wire.session_id.as_str() {
+            "" => None,
+            _ => Some(SessionId::new(wire.session_id).map_err(D::Error::custom)?),
+        };
+        match (wire.resuming, id) {
+            (true, Some(id)) => Ok(SessionMode::Resume(id)),
+            (true, None) => Err(D::Error::custom("a resume brief needs a session_id")),
+            (false, id) => Ok(SessionMode::Fresh(id)),
+        }
     }
 }
 
@@ -254,8 +294,7 @@ mod tests {
             agent: "claude".into(),
             model: "sonnet".into(),
             record_id: "r1".into(),
-            session_id: "s1".into(),
-            resume: false,
+            session: SessionMode::Fresh(Some("s1".parse().unwrap())),
             task: "do the thing".into(),
             project_dir: "/tmp/proj".into(),
             state_dir: None,
@@ -298,6 +337,37 @@ mod tests {
         let back = mb.read_brief("old").unwrap();
         assert_eq!(back.claude_bin, None);
         assert_eq!(back.role, "old");
+    }
+
+    /// The session mode is typed in memory but keeps the brief's two fields
+    /// on disk, so a worker from either side of A1 reads the other's brief.
+    #[test]
+    fn arc_04_brief_session_wire_unchanged() {
+        let s1: crate::ids::SessionId = "s1".parse().unwrap();
+        for (session, id, resume) in [
+            (SessionMode::Fresh(None), "", false),
+            (SessionMode::Fresh(Some(s1.clone())), "s1", false),
+            (SessionMode::Resume(s1), "s1", true),
+        ] {
+            let mut b = brief("r");
+            b.session = session.clone();
+            let v = serde_json::to_value(&b).unwrap();
+            assert_eq!(v["session_id"], id);
+            assert_eq!(v["resume"], resume);
+            assert!(v.get("session").is_none());
+            let back: Brief = serde_json::from_value(v).unwrap();
+            assert_eq!(back.session, session);
+        }
+
+        // A missing session_id is a fresh session whose id is not known yet.
+        let v = serde_json::json!({"role":"r","teammate":"t","agent":"codex","model":"m",
+            "record_id":"r1","resume":false,"project_dir":"/p"});
+        let b: Brief = serde_json::from_value(v).unwrap();
+        assert_eq!(b.session, SessionMode::Fresh(None));
+
+        let v = serde_json::json!({"role":"r","teammate":"t","agent":"claude","model":"m",
+            "record_id":"r1","session_id":"","resume":true,"project_dir":"/p"});
+        assert!(serde_json::from_value::<Brief>(v).is_err());
     }
 
     #[test]

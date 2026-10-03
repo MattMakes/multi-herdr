@@ -12,6 +12,7 @@ use std::process::{Command, ExitCode};
 use anyhow::{Context, Result};
 use horch_core::agent;
 use horch_core::codex;
+use horch_core::execution::SessionMode;
 use horch_core::herdr::{Direction, Herdr};
 use horch_core::launch::{self, Session};
 use horch_core::ledger::{Ledger, Record, KIND_ORCHESTRATOR, ORCHESTRATING_TASK};
@@ -613,8 +614,7 @@ pub fn pane_launch(
                 agent: teammate.agent.as_str().to_string(),
                 model: model.unwrap_or_default().to_string(),
                 record_id: record_id.clone(),
-                session_id: String::new(),
-                resume: false,
+                session: SessionMode::Fresh(None),
                 task: String::new(),
                 project_dir,
                 state_dir: identity.state_dir.clone(),

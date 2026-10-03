@@ -10,6 +10,7 @@ mod output;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use horch_core::execution::TilingMode;
 use horch_core::herdr::Direction;
 
 #[derive(Parser)]
@@ -170,8 +171,8 @@ enum Command {
         #[arg(long, default_value = "right")]
         direction: Direction,
         /// Leave the grid alone after spawning. Same as HORCH_TILE=0.
-        #[arg(long)]
-        no_tile: bool,
+        #[arg(long = "no-tile")]
+        untiled: bool,
         /// Never run a fallback teammate when this one's usage pool is short.
         #[arg(long)]
         exact: bool,
@@ -430,7 +431,7 @@ fn run() -> Result<std::process::ExitCode> {
             role,
             from_pane,
             direction,
-            no_tile,
+            untiled,
             exact,
             force,
         } => {
@@ -444,7 +445,7 @@ fn run() -> Result<std::process::ExitCode> {
                 role,
                 from_pane,
                 direction,
-                no_tile,
+                tiling: TilingMode::from_no_tile(untiled),
                 exact,
                 force,
             })?;

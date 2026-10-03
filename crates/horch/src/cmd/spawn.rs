@@ -7,7 +7,9 @@
 
 use anyhow::{bail, Context, Result};
 use horch_core::balance_policy::{self, Decision, GateFlags};
+use horch_core::execution::{SessionMode, TilingMode};
 use horch_core::herdr::{Direction, Herdr};
+use horch_core::ids::SessionId;
 use horch_core::ledger::{Ledger, Record, STATUS_WORKING};
 use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::paneshell::PaneShell;
@@ -24,8 +26,9 @@ pub struct SpawnArgs {
     pub role: Option<String>,
     pub from_pane: Option<String>,
     pub direction: Direction,
-    /// Leave the grid alone. `HORCH_TILE=0` says the same thing for every spawn.
-    pub no_tile: bool,
+    /// `Disabled` leaves the grid alone. `HORCH_TILE=0` says the same thing
+    /// for every spawn.
+    pub tiling: TilingMode,
     /// Never substitute a fallback teammate (the usage-limit gate).
     pub exact: bool,
     /// Never refuse over usage limits.
@@ -131,8 +134,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
                 teammate,
                 model: record.model.clone(),
                 record_id: record.record_id.clone(),
-                session_id,
-                resume: true,
+                session: SessionMode::Resume(SessionId::new(session_id)?),
                 via: record.via.clone(),
                 substitution_reason: record.substitution_reason.clone(),
             }
@@ -149,13 +151,8 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
                 // the ledger knows the resume handle before the agent even
                 // starts. Codex and OpenCode reveal theirs only after launch;
                 // `horch worker` harvests those into the ledger asynchronously.
-                session_id: if teammate.agent.mints_session_id() {
-                    horch_core::mint_uuid()
-                } else {
-                    String::new()
-                },
+                session: fresh_session(teammate.agent)?,
                 teammate,
-                resume: false,
                 via: None,
                 substitution_reason: None,
             }
@@ -172,7 +169,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     // The usage-limit gate (design 13.5): after the top-tier gate, before
     // any role, ledger or pane side effect. A resume keeps the harness it
     // ran on, so only a fresh spawn is gated; the smoke fake spends nothing.
-    if !plan.resume && plan.teammate.agent != horch_core::teammates::Agent::None {
+    if !plan.session.is_resume() && plan.teammate.agent != horch_core::teammates::Agent::None {
         let policy = Policy::load(&horch_core::ledger::state_root())?;
         let view = horch_core::quota::current_view(
             &horch_core::ledger::state_root(),
@@ -199,11 +196,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
                 let merged = balance_policy::resolve(&plan.teammate, &roster, &decision)
                     .with_context(|| format!("fallback '{via}' vanished from the roster"))?;
                 plan.model = merged.model.clone().unwrap_or_default();
-                plan.session_id = if merged.agent.mints_session_id() {
-                    horch_core::mint_uuid()
-                } else {
-                    String::new()
-                };
+                plan.session = fresh_session(merged.agent)?;
                 plan.teammate = merged;
                 plan.via = Some(via.clone());
                 plan.substitution_reason = Some(reason.clone());
@@ -240,12 +233,12 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     }
 
     // Ledger first, brief second, pane last: the worker can assume both exist.
-    if plan.resume {
+    if plan.session.is_resume() {
         ledger.resume_with_phase(&plan.record_id, &role, &args.task, plan.teammate.phase)?;
     } else {
         ledger.insert(Record {
             record_id: plan.record_id.clone(),
-            session_id: Some(plan.session_id.clone()),
+            session_id: Some(session_id_or_empty(&plan.session)),
             agent: plan.teammate.agent.as_str().to_string(),
             tier: plan.teammate.name.clone(),
             model: plan.model.clone(),
@@ -267,8 +260,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
         agent: plan.teammate.agent.as_str().to_string(),
         model: plan.model.clone(),
         record_id: plan.record_id.clone(),
-        session_id: plan.session_id.clone(),
-        resume: plan.resume,
+        session: plan.session.clone(),
         task: args.task.clone(),
         project_dir,
         state_dir: std::env::var("HORCH_STATE_DIR")
@@ -305,7 +297,7 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     //
     // Best effort: a grid that will not lay out must not fail a spawn whose
     // worker is already running.
-    if args.no_tile {
+    if args.tiling == TilingMode::Disabled {
         if let Ok(layout) = herdr.pane_layout(Some(&new_pane)) {
             crate::cmd::balancecmd::equalize_quietly(&herdr, layout);
         }
@@ -313,21 +305,19 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
         crate::cmd::tilecmd::after_change(&herdr, mailbox.workspace_id(), Some(&new_pane));
     }
 
-    if plan.resume {
-        eprintln!(
-            "spawned {role} (pane {new_pane}): {} {}, RESUMING session {}",
-            plan.teammate.agent, plan.model, plan.session_id
-        );
-    } else if plan.session_id.is_empty() {
-        eprintln!(
+    match &plan.session {
+        SessionMode::Resume(id) => eprintln!(
+            "spawned {role} (pane {new_pane}): {} {}, RESUMING session {id}",
+            plan.teammate.agent, plan.model
+        ),
+        SessionMode::Fresh(None) => eprintln!(
             "spawned {role} (pane {new_pane}): {} {}, new session",
             plan.teammate.agent, plan.model
-        );
-    } else {
-        eprintln!(
-            "spawned {role} (pane {new_pane}): {} {}, new session {}",
-            plan.teammate.agent, plan.model, plan.session_id
-        );
+        ),
+        SessionMode::Fresh(Some(id)) => eprintln!(
+            "spawned {role} (pane {new_pane}): {} {}, new session {id}",
+            plan.teammate.agent, plan.model
+        ),
     }
     Ok(new_pane)
 }
@@ -356,14 +346,27 @@ fn env_override(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|s| !s.is_empty())
 }
 
+/// A fresh session, with an id minted now when the agent accepts one.
+fn fresh_session(agent: horch_core::teammates::Agent) -> Result<SessionMode> {
+    Ok(SessionMode::Fresh(if agent.mints_session_id() {
+        Some(SessionId::new(horch_core::mint_uuid())?)
+    } else {
+        None
+    }))
+}
+
+/// The ledger's `session_id`: empty until known.
+fn session_id_or_empty(session: &SessionMode) -> String {
+    session.id().map(|id| id.to_string()).unwrap_or_default()
+}
+
 /// What to launch, resolved from either the roster or a ledger record.
 struct Plan {
     teammate: Teammate,
     model: String,
     record_id: String,
-    /// Empty when the agent mints its own id after launch.
-    session_id: String,
-    resume: bool,
+    /// The id is `None` when the agent mints its own after launch.
+    session: SessionMode,
     /// The fallback whose launch settings are used, when substituted.
     via: Option<String>,
     substitution_reason: Option<String>,

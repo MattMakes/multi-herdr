@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use horch_core::agent;
 use horch_core::codex;
+use horch_core::execution::SessionMode;
 use horch_core::herdr::Herdr;
 use horch_core::launch::{self, Session};
 use horch_core::ledger::Ledger;
@@ -59,7 +60,7 @@ pub fn worker(role: &str) -> Result<ExitCode> {
             .clone(),
     };
     let roster = Roster::load_with(brief.teammates_dir.as_deref())?;
-    let prompt = prompts::worker_prompt(&roster, &teammate, role, &brief.task, brief.resume)?;
+    let prompt = prompts::worker_prompt(&roster, &teammate, role, &brief.task, &brief.session)?;
 
     match teammate.agent {
         Agent::None => run_smoke(),
@@ -73,8 +74,12 @@ fn export_brief(brief: &Brief) {
     std::env::set_var("HORCH_AGENT", &brief.agent);
     std::env::set_var("HORCH_MODEL", &brief.model);
     std::env::set_var("HORCH_RECORD_ID", &brief.record_id);
-    std::env::set_var("HORCH_SESSION_ID", &brief.session_id);
-    std::env::set_var("HORCH_RESUME", if brief.resume { "1" } else { "0" });
+    let session_id = brief.session.id().map(|id| id.as_str()).unwrap_or_default();
+    std::env::set_var("HORCH_SESSION_ID", session_id);
+    std::env::set_var(
+        "HORCH_RESUME",
+        if brief.session.is_resume() { "1" } else { "0" },
+    );
     std::env::set_var("HORCH_TASK", &brief.task);
     std::env::set_var("HORCH_PROJECT_DIR", &brief.project_dir);
     if let Some(state_dir) = &brief.state_dir {
@@ -121,13 +126,13 @@ fn launch_agent(
         None
     };
 
-    let session = if brief.resume {
-        Session::Resume(&brief.session_id)
-    } else if teammate.agent.mints_session_id() {
-        Session::Fresh(&brief.session_id)
-    } else {
+    let session = match &brief.session {
+        SessionMode::Resume(id) => Session::Resume(id.as_str()),
+        SessionMode::Fresh(id) if teammate.agent.mints_session_id() => {
+            Session::Fresh(id.as_ref().map(|id| id.as_str()).unwrap_or_default())
+        }
         // A fresh codex or opencode session mints its id itself.
-        Session::Unmanaged
+        SessionMode::Fresh(_) => Session::Unmanaged,
     };
 
     // Prime Agent supervises its own sessions, so it gets a socket and a session
@@ -165,7 +170,7 @@ fn launch_agent(
 
     // Harvest runs only for a fresh codex session, in the background, while
     // codex holds the foreground.
-    let harvest = if teammate.agent.harvests_session_id() && !brief.resume {
+    let harvest = if teammate.agent.harvests_session_id() && !brief.session.is_resume() {
         Some(start_harvest(
             mailbox,
             brief,

@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use horch_core::execution::TilingMode;
 use horch_core::herdr::{Direction, Herdr, Layout, Rect};
 use horch_core::ledger::Ledger;
 use horch_core::mailbox::Mailbox;
@@ -170,7 +171,7 @@ fn fleet() -> Result<ExitCode> {
         from_pane: Some(ws.root_pane_id.clone()),
         direction: Direction::Right,
         // Tiling on, so this check covers the hook `horch spawn` now runs.
-        no_tile: false,
+        tiling: TilingMode::Automatic,
         // The smoke fake spends nothing; never gate it on usage limits.
         exact: false,
         force: true,
@@ -626,7 +627,7 @@ fn tile() -> Result<ExitCode> {
         // the checker's own pane in another workspace.
         from_pane: Some(orchestrator.clone()),
         direction: Direction::Right,
-        no_tile: false,
+        tiling: TilingMode::Automatic,
         // The smoke fake spends nothing; never gate it on usage limits.
         exact: false,
         force: true,

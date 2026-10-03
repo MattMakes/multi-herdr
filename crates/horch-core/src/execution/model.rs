@@ -214,8 +214,8 @@ pub enum TilingMode {
 
 impl TilingMode {
     /// The mode `--no-tile` asks for.
-    pub fn from_no_tile(no_tile: bool) -> Self {
-        if no_tile {
+    pub fn from_no_tile(flag: bool) -> Self {
+        if flag {
             Self::Disabled
         } else {
             Self::Automatic
