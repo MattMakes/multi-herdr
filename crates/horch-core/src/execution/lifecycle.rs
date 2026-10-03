@@ -123,11 +123,30 @@ pub trait WorkerSteps {
 /// calls `done`: the agent runs `horch done`, which closes this pane.
 ///
 /// A ledger write that fails is logged and the worker goes on: the agent
-/// must start even when its bookkeeping cannot be written.
+/// must start even when its bookkeeping cannot be written. That includes
+/// `set_running`: the agent still starts, and its exit ends the record.
+///
+/// A failure after the brief loads and before the agent launches
+/// (`enter_context`, `register`) ends the record at once as
+/// `Failed(AgentExited{None})`, the same state a launch failure gets, then
+/// returns the original error. Without it the record stays `Starting` with a
+/// dead worker until a deadline. The recording is best effort: its own error
+/// is logged. A failure of `load_brief` records nothing: the record is
+/// unknown.
 pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
     let brief = steps.load_brief()?;
-    steps.enter_context(&brief)?;
-    steps.register(&brief)?;
+    if let Err(e) = steps
+        .enter_context(&brief)
+        .and_then(|()| steps.register(&brief))
+    {
+        if let Err(rec) = steps.agent_exited(&brief, None) {
+            eprintln!(
+                "horch worker[{}]: recording the startup failure failed: {rec:#}",
+                brief.role
+            );
+        }
+        return Err(e);
+    }
     if let Err(e) = steps.set_running(&brief) {
         eprintln!(
             "horch worker[{}]: recording the start failed: {e:#}",

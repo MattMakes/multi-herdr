@@ -911,6 +911,86 @@ fn store_with(record: LedgerRecordV1) -> (tempfile::TempDir, ExecutionStore) {
     (tmp, store)
 }
 
+/// Fails at `fail_at` (`enter_context` or `register`); records each step.
+struct FailingSteps<'a> {
+    calls: Vec<String>,
+    fail_at: &'static str,
+    store: &'a ExecutionStore,
+}
+
+impl FailingSteps<'_> {
+    fn step(&mut self, name: &'static str) -> Result<()> {
+        self.calls.push(name.into());
+        if self.fail_at == name {
+            bail!("{name} failed");
+        }
+        Ok(())
+    }
+}
+
+impl WorkerSteps for FailingSteps<'_> {
+    fn load_brief(&mut self) -> Result<Brief> {
+        self.step("load_brief")?;
+        Ok(brief("rec-1"))
+    }
+    fn enter_context(&mut self, _: &Brief) -> Result<()> {
+        self.step("enter_context")
+    }
+    fn register(&mut self, _: &Brief) -> Result<()> {
+        self.step("register")
+    }
+    fn set_running(&mut self, _: &Brief) -> Result<()> {
+        self.step("set_running")
+    }
+    fn launch(&mut self, _: &Brief) -> Result<Option<i32>> {
+        self.calls.push("launch".into());
+        Ok(Some(0))
+    }
+    fn agent_exited(&mut self, b: &Brief, code: Option<i32>) -> Result<()> {
+        self.calls.push(format!("agent_exited({code:?})"));
+        self.store.record_exit(&b.record_id, code)
+    }
+}
+
+/// A worker that fails at `fail_at` ends its `Starting` record at once and
+/// never launches the agent; the original error returns.
+fn startup_failure_records_failed(fail_at: &'static str) {
+    let live = record("sonnet", "claude", "sonnet");
+    let (_tmp, store) = store_with(live);
+    store.mark_starting("rec-1", "p1").unwrap();
+    assert_eq!(
+        store.get("rec-1").unwrap().execution_status(),
+        ExecutionStatus::Starting
+    );
+    let mut steps = FailingSteps {
+        calls: Vec::new(),
+        fail_at,
+        store: &store,
+    };
+    let e = run_worker(&mut steps).unwrap_err();
+    assert_eq!(e.to_string(), format!("{fail_at} failed"));
+    assert_eq!(steps.calls.last().unwrap(), "agent_exited(None)");
+    assert!(!steps.calls.iter().any(|c| c == "launch"));
+    let r = store.get("rec-1").unwrap();
+    assert_eq!(
+        r.execution_status(),
+        ExecutionStatus::Failed {
+            failure: FailureKind::AgentExited { code: None }
+        }
+    );
+    assert!(r.finished_at.is_some());
+}
+
+#[test]
+fn arc_18_register_failure_records_failed() {
+    startup_failure_records_failed("register");
+}
+
+#[test]
+fn arc_18_enter_context_failure_records_failed() {
+    startup_failure_records_failed("enter_context");
+}
+
 #[test]
 fn arc_18_agent_exit_recorded() {
     let mut live = record("sonnet", "claude", "sonnet");
