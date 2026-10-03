@@ -17,11 +17,11 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 
 use crate::execution::SessionMode;
-use crate::herdr::Herdr;
 use crate::ledger::Ledger;
 use crate::mailbox::Mailbox;
 use crate::runtime::{BinOverrides, EnvSource, HarnessBins, ProcessEnv, RuntimeContext};
 use crate::teammates::{ExecRule, Teammate};
+use crate::workspace::herdr::Herdr;
 
 use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest};
 

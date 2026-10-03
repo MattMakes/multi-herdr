@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use horch::{bootstrap, exit, output};
 use horch_core::execution::service::SpawnError;
 use horch_core::execution::TilingMode;
-use horch_core::herdr::Direction;
+use horch_core::workspace::model::Direction;
 
 #[derive(Parser)]
 #[command(

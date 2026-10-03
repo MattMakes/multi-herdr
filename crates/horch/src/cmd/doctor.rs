@@ -4,9 +4,9 @@
 //! reachable. The old `jq` check is gone: nothing shells out to jq any more.
 
 use anyhow::{bail, Result};
-use horch_core::herdr::Herdr;
 use horch_core::roster::operator_effort_warnings;
 use horch_core::runtime::{process, RuntimeContext};
+use horch_core::workspace::herdr::Herdr;
 
 pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     check(ctx)?;

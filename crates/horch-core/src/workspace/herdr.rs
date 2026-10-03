@@ -16,7 +16,7 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
-pub use crate::workspace::model::*;
+use crate::workspace::model::*;
 
 #[derive(Debug, Deserialize)]
 struct Envelope<T> {
@@ -468,12 +468,6 @@ impl Herdr {
     pub fn agent_prompt(&self, pane: &str, text: &str) -> Result<()> {
         self.output(&["agent", "prompt", pane, text])?;
         Ok(())
-    }
-
-    /// Type a line into another pane's terminal and submit it. See
-    /// [`crate::messaging::delivery::send_line`].
-    pub fn send_line(&self, pane: &str, message: &str) -> Result<()> {
-        crate::messaging::delivery::send_line(self, pane, message)
     }
 }
 

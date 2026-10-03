@@ -12,15 +12,16 @@ use std::process::ExitCode;
 use anyhow::Result;
 use horch_core::execution::SessionMode;
 use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
-use horch_core::herdr::{Direction, Herdr};
 use horch_core::ids::SessionId;
 use horch_core::ledger::{Ledger, Record, KIND_ORCHESTRATOR, ORCHESTRATING_TASK};
 use horch_core::mailbox::Mailbox;
-use horch_core::paneshell::PaneShell;
 use horch_core::prompts;
 use horch_core::quota::{self, QuotaView, State};
 use horch_core::runtime::RuntimeContext;
 use horch_core::teammates::Agent;
+use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::model::Direction;
+use horch_core::workspace::paneshell::PaneShell;
 
 use super::doctor;
 

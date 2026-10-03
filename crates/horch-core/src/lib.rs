@@ -16,7 +16,6 @@
 //! process is `herdr` itself, plus whichever agent CLI a worker launches.
 
 pub mod agent;
-pub mod balance;
 pub mod balance_policy;
 pub mod clock;
 pub mod codex;
@@ -26,17 +25,14 @@ pub mod evaluation;
 pub mod execution;
 pub mod fsx;
 pub mod harness;
-pub mod herdr;
 pub mod ids;
 pub mod launch;
-pub mod layout;
 pub mod ledger;
 pub mod mailbox;
 pub mod measure;
 pub mod message;
 pub mod messaging;
 pub mod opencode;
-pub mod paneshell;
 pub mod plugins;
 pub mod policy;
 pub mod prime;
@@ -49,7 +45,6 @@ pub mod skills;
 pub mod teacher;
 pub mod teammates;
 pub mod telemetry;
-pub mod tile;
 pub mod usage;
 pub mod vcs;
 pub mod workspace;

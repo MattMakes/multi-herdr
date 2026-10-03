@@ -11,12 +11,14 @@ use horch_core::execution::plan::{self, GateInputs, MintedIds, PlanInputs};
 use horch_core::execution::service::{ExecutionService, SpawnError};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{SessionMode, SpawnRequest, TilingMode};
-use horch_core::herdr::{Direction, Herdr};
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
 use horch_core::mailbox::Mailbox;
 use horch_core::routing::decision::GateFlags;
 use horch_core::runtime::RuntimeContext;
 use horch_core::teammates::Phase;
+use horch_core::workspace::arrange;
+use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::model::Direction;
 
 pub struct SpawnArgs {
     pub teammate: Option<String>,
@@ -157,10 +159,10 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     let tile = |pane: &str, tiling: TilingMode| {
         if tiling == TilingMode::Disabled {
             if let Ok(layout) = herdr.pane_layout(Some(pane)) {
-                super::balancecmd::equalize_quietly(ctx, &herdr, layout);
+                arrange::equalize_quietly(ctx, &herdr, layout);
             }
         } else {
-            super::tilecmd::after_change(ctx, &herdr, mailbox.workspace_id(), Some(pane));
+            arrange::after_change(ctx, &herdr, mailbox.workspace_id(), Some(pane));
         }
     };
     let service = ExecutionService {

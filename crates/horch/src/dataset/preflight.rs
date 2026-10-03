@@ -17,7 +17,6 @@ use horch_core::competition::preflight::{
 };
 use horch_core::fsx;
 use horch_core::harness::HarnessKind;
-use horch_core::herdr::Herdr;
 use horch_core::ids::{ExperimentId, TaskId};
 use horch_core::measure::digest::{digest_json, sha256_bytes, Digest};
 use horch_core::measure::envsnap::env_snapshot;
@@ -33,6 +32,7 @@ use horch_core::runtime::fault::Faults;
 use horch_core::runtime::machine::{self, MachineSnapshot};
 use horch_core::runtime::RuntimeContext;
 use horch_core::vcs::git::{GitCli, GitClient};
+use horch_core::workspace::herdr::Herdr;
 use serde::Serialize;
 
 /// The manifest schema of `experiments/<id>/manifest.json`.

@@ -60,7 +60,7 @@ pub const OVERFLOW_COLUMNS: usize = 3;
 pub const ROWS: usize = 2;
 
 /// A divider within one cell of its target is left alone: the same tolerance
-/// [`crate::balance`] uses, absorbing border rows and herdr's rounding of a
+/// [`crate::workspace::balance`] uses, absorbing border rows and herdr's rounding of a
 /// split ratio to four decimal places.
 pub const TOLERANCE: i64 = 1;
 
@@ -680,7 +680,7 @@ pub fn focus_target(
 /// One neighbour step from `from` toward `to`, or `None` when they overlap.
 ///
 /// herdr has no focus-by-id for an ordinary pane, so this is what
-/// [`crate::herdr::Herdr::pane_focus_walk`] steers by.
+/// [`crate::workspace::herdr::Herdr::pane_focus_walk`] steers by.
 ///
 /// The axis the two rects are SEPARATED on decides the direction; the centre
 /// distance only breaks the tie when they are separated on both, which is a
@@ -855,7 +855,7 @@ pub fn is_canonical(tabs: &[TabShape], orchestrator: &str, workers: usize) -> bo
 /// The next resize that moves this tab toward equal columns, or `None` when every
 /// divider is within [`TOLERANCE`].
 ///
-/// One op at a time on purpose. [`crate::balance::plan`] simulates herdr's
+/// One op at a time on purpose. [`crate::workspace::balance::plan`] simulates herdr's
 /// proportional rescale so it can emit a whole sequence against predicted
 /// geometry; a driver that re-reads the layout herdr hands back after each
 /// resize needs no prediction, and cannot accumulate rounding. What is reused
