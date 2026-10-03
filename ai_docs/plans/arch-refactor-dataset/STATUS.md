@@ -17,7 +17,20 @@ CURRENT_PHASE: orchestrator appends a phase when its last unit merges.
 | U07 | e2e-fakes | qa-engineer-1 | MERGED |
 | U08 | machine-teacher | sonnet-1 | MERGED 658b57d |
 
-## Wave 2 plan (after A1 merges)
+## Merged: U01 U02 U03 U04 U05 U06 U07 U08 U09. CURRENT_PHASE: A0 A1 A8.
+
+## Wave 2/3 (running)
+| Unit | Slug | Worker |
+|---|---|---|
+| U10 | a2-runtime | opus-4 |
+| U11 | a3-roster | backend-developer-3 |
+| U12 | a5-routing | opus-5 |
+| U13 | b1-measure | opus-6 |
+| U14 | b2-vcs | backend-developer-4 |
+| U15 | b4-evaluation | opus-7 |
+| U16 | a9a-skills | backend-developer-5 |
+
+## Wave 2 plan (original notes)
 - A2-core (runtime/*, bootstrap, ledger/mailbox/clock/usage/telemetry env, Brief v2), arc_05 scan with temp allowlist for A3/A4/A5 files.
 - A3 roster split (owns teammates env removal, fallback_problems move).
 - A4 harness ownership (owns launch/codex/opencode/prime/plugins/skills env removal). Needs U02 oracles.
