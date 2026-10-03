@@ -148,9 +148,9 @@ it prints how to build it and continues. `just install` builds both bins.
 - The core `evaluate` still treats PRE-12 as PRE-06 (placeholder from
   b2-preflight). The real PRE-12 guarantee is the e2e test: nothing before
   the refusal creates a worktree or launches a model.
-- After B5 merges, every `DatasetPaths` accessor that takes an id returns
-  `Result`. Add `?` at `paths.experiment_dir`, `paths.manifest` and
-  `paths.default_worktree_root` in `dataset/preflight.rs` and `dataset/run.rs`.
+- B5 made every `DatasetPaths` accessor that takes an id return `Result`.
+  `paths.experiment_dir`, `paths.manifest` and `paths.default_worktree_root`
+  in `dataset/preflight.rs` and `dataset/run.rs` use `?` (rebased on B5).
 - The e2e tests find the binary next to the fakes (`bin_dir()`), so
   `cargo build --workspace --bins` must run first, as for every e2e test.
 

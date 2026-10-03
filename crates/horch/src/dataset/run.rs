@@ -37,10 +37,10 @@ pub fn run(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, args: &RunA
 
     // PRE-13 checks the root against the trusted directories, so it must be
     // absolute. A relative root is relative to the project.
-    let root = config
-        .worktree_root
-        .clone()
-        .unwrap_or_else(|| paths.default_worktree_root(&experiment));
+    let root = match config.worktree_root.clone() {
+        Some(root) => root,
+        None => paths.default_worktree_root(&experiment)?,
+    };
     config.worktree_root = Some(if root.is_absolute() {
         root
     } else {

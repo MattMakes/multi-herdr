@@ -336,10 +336,10 @@ pub fn record(
         env_snapshot: env_snapshot(&f.env),
         preflight: f.report,
     };
-    let dir = paths.experiment_dir(exp);
+    let dir = paths.experiment_dir(exp)?;
     fsx::ensure_private_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let json = serde_json::to_vec_pretty(&manifest)?;
-    let file = paths.manifest(exp);
+    let file = paths.manifest(exp)?;
     fsx::create_immutable(&file, &json, 0o600)
         .with_context(|| format!("writing {}", file.display()))?;
 
