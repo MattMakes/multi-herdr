@@ -98,6 +98,12 @@ impl ExecutionStore {
         }
     }
 
+    /// The store for the context's state root and project.
+    pub fn open_in(ctx: &crate::runtime::RuntimeContext) -> Result<Self> {
+        let project = ctx.paths.project()?.to_string_lossy().into_owned();
+        Ok(Self::for_project(&ctx.paths.state_root, &project))
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

@@ -35,6 +35,16 @@ pub fn read_ledgers(state_root: &Path) -> Vec<Record> {
         .collect()
 }
 
+/// The ids of the records whose typed status is terminal: their spend counts
+/// as finished work in the rollups.
+pub fn done_record_ids(records: &[Record]) -> BTreeSet<String> {
+    records
+        .iter()
+        .filter(|r| r.execution_status().is_terminal())
+        .map(|r| r.record_id.clone())
+        .collect()
+}
+
 /// The idle marker a worker spawned without a task carries.
 pub const IDLE_TASK: &str = "(idle - awaiting assignment)";
 
@@ -406,11 +416,7 @@ pub fn build_snapshot(
     collector: CollectorInfo,
 ) -> Snapshot {
     let _ = policy;
-    let done: BTreeSet<String> = records
-        .iter()
-        .filter(|r| r.execution_status().is_terminal())
-        .map(|r| r.record_id.clone())
-        .collect();
+    let done = done_record_ids(records);
     let mut rollups = BTreeMap::new();
     for w in WINDOWS {
         let since = window_start(w, now);

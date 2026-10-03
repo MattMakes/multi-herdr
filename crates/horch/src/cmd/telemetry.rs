@@ -761,11 +761,7 @@ fn filtered(snap: &Snapshot, view: &ViewState, root: &Path) -> Snapshot {
         .into_iter()
         .filter(|e| e.project.as_deref() == Some(project.as_str()))
         .collect();
-    let done = collect::read_ledgers(root)
-        .into_iter()
-        .filter(|r| r.status == horch_core::ledger::STATUS_DONE)
-        .map(|r| r.record_id)
-        .collect();
+    let done = collect::done_record_ids(&collect::read_ledgers(root));
     let now = clock::parse(&snap.generated_at).unwrap_or_else(clock::now);
     let mut out = snap.clone();
     for w in collect::WINDOWS {

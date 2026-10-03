@@ -138,11 +138,7 @@ pub fn build(
     source: String,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Report {
-    let done: std::collections::BTreeSet<String> = collect::read_ledgers(state_root)
-        .into_iter()
-        .filter(|r| r.status == horch_core::ledger::STATUS_DONE)
-        .map(|r| r.record_id)
-        .collect();
+    let done = collect::done_record_ids(&collect::read_ledgers(state_root));
     let rows = store::rollup_rows(events.iter(), &args.by, &done);
     let mut per: BTreeMap<String, RecordRow> = BTreeMap::new();
     let mut total = RecordTotal::default();

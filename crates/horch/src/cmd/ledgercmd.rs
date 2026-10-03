@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
+use horch_core::execution::store::ExecutionStore;
 use horch_core::ledger::Ledger;
 use horch_core::runtime::RuntimeContext;
 
@@ -83,11 +84,16 @@ pub fn sessions(ctx: &RuntimeContext, json: bool) -> Result<()> {
     print_list(ctx, json)
 }
 
+/// The JSON form is the store's records as written: a record with a typed
+/// status carries it under `state` (additive), and `status` keeps the legacy
+/// word. The text form prints only the legacy words, which the orchestrator
+/// prompt reads (risk 5).
 fn print_list(ctx: &RuntimeContext, json: bool) -> Result<()> {
-    let ledger = Ledger::open_in(ctx)?;
     if json {
-        output::println(&serde_json::to_string_pretty(&ledger.read()?)?);
+        let store = ExecutionStore::open_in(ctx)?;
+        output::println(&ExecutionStore::render_json(&store.read()?)?);
     } else {
+        let ledger = Ledger::open_in(ctx)?;
         output::print(&ledger.render()?);
     }
     Ok(())

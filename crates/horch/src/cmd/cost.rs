@@ -13,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
-use horch_core::ledger::{Ledger, Record};
+use horch_core::execution::store::ExecutionStore;
+use horch_core::ledger::Record;
 use horch_core::runtime::RuntimeContext;
 use horch_core::teammates::{Phase, Roster};
 use horch_core::usage::{self, Locations, Missing, Price, Tokens};
@@ -88,8 +89,8 @@ pub struct Report {
 }
 
 pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
-    let ledger = Ledger::open_in(ctx)?;
-    let mut records = ledger.read()?;
+    let store = ExecutionStore::open_in(ctx)?;
+    let mut records = store.read()?;
     if let Some(since) = &args.since {
         records.retain(|r| r.created_at.as_str() >= since.as_str());
     }
@@ -145,7 +146,7 @@ pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
     } else {
         output::print(&render(
             &report,
-            ledger.path().display().to_string().as_str(),
+            store.path().display().to_string().as_str(),
         ));
     }
     Ok(())
