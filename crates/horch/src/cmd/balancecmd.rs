@@ -81,7 +81,7 @@ pub fn balance(
     if settle_ms > 0 {
         std::thread::sleep(std::time::Duration::from_millis(settle_ms));
     }
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
 
     // Same resolution order as `horch layout`: an explicit pane, else any pane in
     // the named workspace, else this pane. HERDR_PANE_ID is an internal id, so it

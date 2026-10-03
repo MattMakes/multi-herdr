@@ -521,7 +521,7 @@ pub fn run(ctx: &RuntimeContext, command: TelemetryCommand) -> Result<ExitCode> 
     match command {
         TelemetryCommand::Run => space(ctx),
         TelemetryCommand::Ensure => {
-            ensure(ctx, &Herdr::new(), false)?;
+            ensure(ctx, &Herdr::with_bin(&ctx.bins.harness.herdr), false)?;
             Ok(ExitCode::SUCCESS)
         }
         TelemetryCommand::CollectOnce => collect_once(ctx),

@@ -28,7 +28,7 @@ use horch_core::runtime::{process, RuntimeContext};
 use horch_core::teammates::{Agent, Roster, Teammate};
 
 pub fn worker(ctx: &mut RuntimeContext, role: &str) -> Result<ExitCode> {
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let (mailbox, _pane_id) = Mailbox::register_in(&herdr, ctx, role)?;
     let brief = mailbox.read_brief(role)?;
 
@@ -270,7 +270,7 @@ pub(crate) fn start_harvest(
     let record_id = brief.record_id.clone();
     let project_dir = brief.project_dir.clone();
     let ledger = Ledger::open_in(ctx)?;
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
 
     std::thread::spawn(move || {
         for _ in 0..60 {

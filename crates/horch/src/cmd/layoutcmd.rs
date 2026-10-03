@@ -96,7 +96,7 @@ fn verdict(layout: &Layout, orchestrator: Option<&str>, expected: usize) -> Stri
 }
 
 pub fn layout(ctx: &RuntimeContext, pane: Option<&str>, workspace: Option<&str>) -> Result<()> {
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let workspace_id = crate::cmd::tilecmd::workspace_of(ctx, &herdr, pane, workspace)?;
     output::print(&report(ctx, &herdr, &workspace_id)?);
     Ok(())

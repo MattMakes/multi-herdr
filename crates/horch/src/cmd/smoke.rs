@@ -68,7 +68,7 @@ fn arithmetic_echo(shell: PaneShell) -> &'static str {
 /// (send-text + send-keys enter, and the mailbox registry).
 fn messaging(ctx: &RuntimeContext) -> Result<ExitCode> {
     doctor::check(ctx)?;
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
 
@@ -126,7 +126,7 @@ fn messaging(ctx: &RuntimeContext) -> Result<ExitCode> {
 /// in a scratch workspace with an isolated ledger.
 fn fleet(ctx: &RuntimeContext) -> Result<ExitCode> {
     doctor::check(ctx)?;
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
 
@@ -455,7 +455,7 @@ fn fail(workspace_id: &str, what: &str, complaints: &[String]) -> ExitCode {
 /// real spawn uses the `smoke` teammate, which has no agent.
 fn tile(ctx: &RuntimeContext) -> Result<ExitCode> {
     doctor::check(ctx)?;
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
     let counters = tempfile::Builder::new()

@@ -241,7 +241,7 @@ fn pane_command_for(
 /// agent sessions holding a greeting.
 pub fn fleet(ctx: &RuntimeContext, cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
     doctor::check(ctx)?;
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let cwd = resolve_cwd(ctx, cwd)?;
 
     warn_about_missing_integrations(&herdr);
@@ -453,7 +453,7 @@ fn warn_about_missing_integrations(herdr: &Herdr) {
 /// on the right, wired for two-way messaging via `horch tell`.
 pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<()> {
     doctor::check(ctx)?;
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let cwd = resolve_cwd(ctx, cwd)?;
 
     println!("Creating workspace rooted at {cwd}...");
@@ -530,7 +530,7 @@ pub fn pane_launch(
     teammates_dir: Option<&str>,
     identity: PaneIdentity,
 ) -> Result<ExitCode> {
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let (mailbox, _pane) = Mailbox::register_in(&herdr, ctx, role)?;
     // What the agent inherits on top of this process's environment. A pane
     // is a fresh shell, so everything `horch fleet` knew travels here.

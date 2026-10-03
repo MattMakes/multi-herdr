@@ -24,7 +24,7 @@ use crate::output;
 /// [`message::MAX_INLINE`] chars is written to a file, and the pane gets one
 /// short line that quotes its head and names the file.
 pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
 
@@ -62,7 +62,7 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
 
 /// List roles registered - and so reachable via `horch tell` - in this workspace.
 pub fn inbox(ctx: &RuntimeContext) -> Result<()> {
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
     if !mailbox.exists() {
         println!("no roles registered yet");
@@ -118,7 +118,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
     let summary = message::strip_done_prefix(summary, &role);
     Ledger::open_in(ctx)?.done(&record_id, summary)?;
 
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     if let Err(e) = tell(ctx, "orchestrator", &format!("[{role}] DONE: {summary}")) {
         eprintln!(
             "horch done: could not reach orchestrator ({e:#}); ledger is updated, \
@@ -150,7 +150,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
 
 /// Record this pane's public id under `role` so other panes can address it.
 pub fn register(ctx: &mut RuntimeContext, role: &str) -> Result<()> {
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let (mailbox, pane_id) = Mailbox::register_in(&herdr, ctx, role)?;
     println!(
         "registered {role} as {pane_id} in {}",

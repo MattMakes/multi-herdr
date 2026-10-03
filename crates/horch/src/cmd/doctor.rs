@@ -64,7 +64,7 @@ pub fn check(ctx: &RuntimeContext) -> Result<()> {
              Install it with `herdr-install`, or see https://herdr.dev/docs/install/"
         );
     }
-    if !Herdr::new().server_reachable() {
+    if !Herdr::with_bin(&ctx.bins.harness.herdr).server_reachable() {
         bail!(
             "herdr server is not reachable (herdr workspace list failed). Checks:\n\
              \x20 - is a herdr session running? (launch the herdr app, or `herdr server` headless)\n\

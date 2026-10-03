@@ -10,6 +10,7 @@
 //! are additions, so a caller that never tiles still only needs 0.6.1.
 
 use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -75,18 +76,21 @@ struct WorkspaceCreateResult {
 }
 
 /// Handle to the `herdr` executable.
-#[derive(Debug, Clone, Default)]
-pub struct Herdr;
+#[derive(Debug, Clone)]
+pub struct Herdr {
+    bin: PathBuf,
+}
 
 impl Herdr {
-    pub fn new() -> Self {
-        Self
+    /// A handle that runs `bin`. The CLI passes `ctx.bins.harness.herdr`.
+    pub fn with_bin(bin: impl Into<PathBuf>) -> Self {
+        Self { bin: bin.into() }
     }
 
     /// Run `herdr <args>`, returning stdout. Errors carry herdr's own stderr,
     /// which is what actually explains a failure.
     fn output<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
-        let out = Command::new(crate::agent::herdr_bin()).args(args).output().map_err(|e| {
+        let out = Command::new(&self.bin).args(args).output().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow!("herdr CLI not found on PATH. Install it with `herdr-install`, or see https://herdr.dev/docs/install/")
             } else {
@@ -118,7 +122,7 @@ impl Herdr {
 
     /// True when the herdr server answers at all. Cheap reachability probe.
     pub fn server_reachable(&self) -> bool {
-        Command::new(crate::agent::herdr_bin())
+        Command::new(&self.bin)
             .args(["workspace", "list"])
             .output()
             .map(|o| o.status.success())
@@ -440,7 +444,7 @@ impl Herdr {
     /// Returns false on timeout rather than erroring.
     pub fn wait_output(&self, pane: &str, needle: &str, timeout_ms: u64) -> Result<bool> {
         let timeout = timeout_ms.to_string();
-        let status = Command::new(crate::agent::herdr_bin())
+        let status = Command::new(&self.bin)
             .args(["wait", "output", pane, "--match", needle, "--timeout"])
             .arg(&timeout)
             .output()
@@ -450,7 +454,7 @@ impl Herdr {
 
     /// `herdr integration status`, or None when the subcommand is unavailable.
     pub fn integration_status(&self) -> Option<String> {
-        Command::new(crate::agent::herdr_bin())
+        Command::new(&self.bin)
             .args(["integration", "status"])
             .output()
             .ok()

@@ -84,7 +84,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let roster = super::load_roster(ctx, roster_dir.as_deref())?;
 
-    let herdr = Herdr::new();
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane")?;
     std::fs::create_dir_all(mailbox.dir())?;
