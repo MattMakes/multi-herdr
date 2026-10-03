@@ -36,3 +36,12 @@ Each folder contains a self-contained Agent Skills entrypoint with a name, a tar
 | [document](document/SKILL.md) | `plugins/dev/skills/document-project/SKILL.md` |
 | [orchestrate](orchestrate/SKILL.md) | *(none - repo-original)* |
 | [skill-creator](skill-creator/SKILL.md) | `anthropics/claude-plugins-official`: `plugins/skill-creator/skills/skill-creator/` (verbatim) |
+
+## Multi-source skills
+
+A skill may combine several upstream files, from several repositories. Its entry in [provenance.json](provenance.json) then lists `sources`, one item per adapted file: `{repository, revision, path, sha256, license}`. A skill written in this repository has `"sources": []` and an `adaptation` text. The older single-source fields (`source_path`, `source_sha256`, optional `source_repository` and `source_revision`) still parse as a 1-item list. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; `skill-creator` is exempt. `horch skills show <id>` prints each source.
+
+## Design skills
+
+| Skill | Upstream sources |
+| --- | --- |
