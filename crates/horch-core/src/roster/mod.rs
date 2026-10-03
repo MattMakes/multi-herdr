@@ -57,3 +57,6 @@ pub use teammate::{
     ORCHESTRATOR_DENIED_TOOLS, ORCHESTRATOR_ONLY_SKILLS, ORCHESTRATOR_TIERS,
 };
 pub use validation::{fallback_problems, fallback_warnings};
+
+#[cfg(test)]
+mod tests;
