@@ -7,17 +7,27 @@
 //! is answered too, but recorded as a violation, so a test can prove horch
 //! never made it.
 //!
-//! Scenarios:
+//! `pane split` adds a pane to the state, in the tab and workspace of the
+//! source pane, and answers with its id (`<workspace>:p<n>`). `pane close`
+//! removes the pane. Both stay recorded as violations.
+//!
+//! `HORCH_FAKE_SCENARIO` holds one scenario or a comma-separated list, for
+//! example `exec,fail_run`. Scenarios:
 //! - `default`: answer everything.
 //! - `fail_create`: `workspace create` exits 1. `HORCH_FAKE_FAIL_LABEL`
 //!   fails it for one label only, in any scenario.
+//! - `fail_split`: `pane split` exits 1 with a message on stderr. The state
+//!   does not change.
+//! - `fail_run`: `pane run` exits 1 with a message on stderr. The state does
+//!   not change and no command runs.
 //! - `exec`: `pane run` also executes the command, detached, with
 //!   `HERDR_PANE_ID` set, the way a real pane would. Output goes to
-//!   `$HORCH_FAKE_LOG.pane-<id>.out`.
+//!   `$HORCH_FAKE_LOG.pane-<id>.out`. The process group id is stored in the
+//!   state, and `pane close` kills that group.
 
 use std::path::PathBuf;
 
-use horch_e2e::{say, scenario, Call};
+use horch_e2e::{say, scenario_has, Call};
 use serde_json::{json, Value};
 
 const MUTATING: [&str; 7] = ["focus", "tile", "split", "move", "close", "swap", "resize"];
@@ -79,7 +89,7 @@ fn run(call: &mut Call) -> i32 {
             let label_fails = std::env::var("HORCH_FAKE_FAIL_LABEL")
                 .ok()
                 .is_some_and(|l| flag(rest, "--label") == Some(l.as_str()));
-            if scenario() == "fail_create" || label_fails {
+            if scenario_has("fail_create") || label_fails {
                 eprintln!("fake-herdr: workspace create refused (scenario fail_create)");
                 return 1;
             }
@@ -121,15 +131,35 @@ fn run(call: &mut Call) -> i32 {
             ok(json!({"type": "pane_list", "panes": panes}))
         }
         ["pane", "run", pane, command] => {
+            if scenario_has("fail_run") {
+                eprintln!("fake-herdr: pane run refused (scenario fail_run)");
+                return 1;
+            }
             call.extra.insert("ran".into(), json!(command));
-            if scenario() == "exec" {
-                exec_detached(pane, command);
+            if scenario_has("exec") {
+                if let Some(pid) = exec_detached(pane, command) {
+                    state["pids"][*pane] = json!(pid);
+                    save(&state);
+                }
             }
             ok(json!({"type": "ok"}))
         }
         ["pane", "split", from, ..] => {
-            let id = format!("{from}-split");
-            ok(json!({"type": "pane", "pane": {"pane_id": id}}))
+            if scenario_has("fail_split") {
+                eprintln!("fake-herdr: pane split refused (scenario fail_split)");
+                return 1;
+            }
+            let pane = split_pane(&mut state, from);
+            save(&state);
+            ok(json!({"type": "pane", "pane": pane}))
+        }
+        ["pane", "close", pane] => {
+            if !remove_pane(&mut state, pane) {
+                eprintln!("fake-herdr: no pane {pane}");
+                return 1;
+            }
+            save(&state);
+            ok(json!({"type": "ok"}))
         }
         ["session", "list", ..] => ok(json!({
             "type": "session_list",
@@ -157,9 +187,75 @@ fn find_pane(state: &Value, id: &str) -> Option<Value> {
         .find(|p| p["pane_id"].as_str() == Some(id))
 }
 
+/// Add a pane next to `from`, in its tab and workspace. A source pane that is
+/// not in the state still gets an answer, as the fake always gave one.
+fn split_pane(state: &mut Value, from: &str) -> Value {
+    let Some(ws) = state["workspaces"].as_array_mut().and_then(|all| {
+        all.iter_mut().find(|w| {
+            w["panes"]
+                .as_array()
+                .is_some_and(|p| p.iter().any(|p| p["pane_id"].as_str() == Some(from)))
+        })
+    }) else {
+        return json!({"pane_id": format!("{from}-split")});
+    };
+    let wid = ws["workspace_id"].as_str().unwrap_or("w0").to_string();
+    let panes = ws["panes"].as_array_mut().unwrap();
+    let tab = panes
+        .iter()
+        .find(|p| p["pane_id"].as_str() == Some(from))
+        .map(|p| p["tab_id"].clone())
+        .unwrap_or(Value::Null);
+    // The first free `<workspace>:p<n>`: ids are never reused while live.
+    let mut n = panes.len() + 1;
+    while panes
+        .iter()
+        .any(|p| p["pane_id"].as_str() == Some(format!("{wid}:p{n}").as_str()))
+    {
+        n += 1;
+    }
+    let pane = json!({"pane_id": format!("{wid}:p{n}"), "workspace_id": wid, "tab_id": tab});
+    panes.push(pane.clone());
+    pane
+}
+
+/// Remove a pane from the state and kill its process group, if `exec` started
+/// one. False when the pane is not in the state.
+fn remove_pane(state: &mut Value, pane: &str) -> bool {
+    let mut found = false;
+    for ws in state["workspaces"].as_array_mut().into_iter().flatten() {
+        if let Some(panes) = ws["panes"].as_array_mut() {
+            let before = panes.len();
+            panes.retain(|p| p["pane_id"].as_str() != Some(pane));
+            found |= panes.len() != before;
+        }
+    }
+    if let Some(pid) = state["pids"].as_object_mut().and_then(|m| m.remove(pane)) {
+        if let Some(pid) = pid.as_u64() {
+            kill_group(pid);
+        }
+    }
+    found
+}
+
+/// Kill the process group of a pane's command.
+fn kill_group(pgid: u64) {
+    if cfg!(windows) {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pgid.to_string(), "/T", "/F"])
+            .status();
+    } else {
+        let _ = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("kill -TERM -- -{pgid} 2>/dev/null"))
+            .status();
+    }
+}
+
 /// Run `command` the way a herdr pane would: in a shell, with the pane's id
-/// in its environment, not waiting for it.
-fn exec_detached(pane: &str, command: &str) {
+/// in its environment, not waiting for it. Returns the pid, which is also the
+/// process group id on unix.
+fn exec_detached(pane: &str, command: &str) -> Option<u32> {
     let out = std::env::var_os("HORCH_FAKE_LOG").map(|p| {
         let mut p = p;
         p.push(format!(".pane-{}.out", pane.replace(':', "_")));
@@ -179,5 +275,10 @@ fn exec_detached(pane: &str, command: &str) {
         }
         cmd.stdout(out);
     }
-    let _ = cmd.spawn();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.spawn().ok().map(|child| child.id())
 }

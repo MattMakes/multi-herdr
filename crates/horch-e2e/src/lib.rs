@@ -9,7 +9,7 @@
 //!
 //! A test reads that log to prove what horch asked of each program, and that
 //! it never asked for anything forbidden. The behavior of a fake is chosen by
-//! `$HORCH_FAKE_SCENARIO`.
+//! `$HORCH_FAKE_SCENARIO`, one name or a comma-separated list.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -78,12 +78,32 @@ impl Call {
     }
 }
 
-/// `$HORCH_FAKE_SCENARIO`, or `default`.
-pub fn scenario() -> String {
-    std::env::var("HORCH_FAKE_SCENARIO")
-        .ok()
+/// Every scenario in `$HORCH_FAKE_SCENARIO`. The variable holds one name or a
+/// comma-separated list (`exec,fail_split`). Empty means `["default"]`.
+pub fn scenarios() -> Vec<String> {
+    let list: Vec<String> = std::env::var("HORCH_FAKE_SCENARIO")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "default".into())
+        .collect();
+    if list.is_empty() {
+        vec!["default".into()]
+    } else {
+        list
+    }
+}
+
+/// The first scenario in `$HORCH_FAKE_SCENARIO`, or `default`. With a single
+/// name this is that name, as before. Use [`scenario_has`] to test one name
+/// in a list.
+pub fn scenario() -> String {
+    scenarios().remove(0)
+}
+
+/// True when `$HORCH_FAKE_SCENARIO` lists `name`.
+pub fn scenario_has(name: &str) -> bool {
+    scenarios().iter().any(|s| s == name)
 }
 
 /// Print one line to stdout and flush it: the probes read line by line.
