@@ -14,7 +14,7 @@ executions through the kernel's `ExecutionService`, observes them to a
 terminal state, enforces deadline, budget and disk limits, freezes and
 validates each candidate, and records every step as an idempotent event so a
 killed coordinator resumes without duplicates. Judging is a stub that the B4
-job unit fills; with judging stubbed, a round with ≥ 1 eligible candidate
+job unit (U31) fills; with judging stubbed, a round with ≥ 1 eligible candidate
 stops in JUDGING_BACKGROUND and exits 0.
 
 ## CONTEXT
@@ -63,7 +63,7 @@ stops in JUDGING_BACKGROUND and exits 0.
 ## FILES
 
 own:
-- `crates/horch-core/src/competition/{coordinator,observe}.rs` (new), `competition/mod.rs` (your lines)
+- `crates/horch-core/src/competition/{coordinator,observe}.rs` (new), `competition/judging.rs` (the stub only; U31 replaces its body), `competition/mod.rs` (your lines)
 - `crates/horch-core/src/competition/budget.rs` (only to add the live `UsageMeter`)
 - `crates/horch-core/src/routing/decision.rs` (only `RoutingMode::Pinned`)
 - `crates/horch/src/dataset/run.rs`, `dataset/watch.rs`, `dataset/status.rs` (extend), `crates/horch/src/cmd/ledgercmd.rs` (`--all`), `crates/horch/src/cmd/spawn.rs` (resume refusal line only), `crates/horch/src/main.rs` (`sessions --all` flag only)
@@ -98,7 +98,15 @@ do not touch: oracle and golden data, `execution/{service,plan,lifecycle}.rs`
    (`candidate.frozen`) → validate (`validation.completed`) → when every
    candidate is validated: 0 eligible → `winner.rejected{no_eligible}` →
    REJECTED → cleanup → COMPLETE (keep data); ≥ 1 eligible →
-   `judge::schedule(...)` stub (logs and returns) → JUDGING_BACKGROUND.
+   JUDGING_BACKGROUND → call `competition::judging::start(&env, &round)`
+   and, each tick, `competition::judging::poll(&env, &round, now)`
+   returning `JudgingStatus { Waiting, Decided(WinnerOutcome), NeedsIntervention }`.
+   U31 `b4-judge-job` writes `competition/judging.rs`. You add only a stub
+   file with these 2 functions (`start` records nothing and returns Ok;
+   `poll` returns Waiting) and a `JudgeEnv` struct holding what the judge
+   needs (recorder, paths, git, ctx, clock, faults). `run` exits 0 while
+   `poll` says Waiting and the judge stub is in use (B4 replaces this:
+   `run` then waits for the job).
    Every fault point in CONTEXT is checked after its event.
 4. `competition/observe.rs`: per tick, per live candidate: execution state
    Done → `candidate.completed`; pane gone while live →
