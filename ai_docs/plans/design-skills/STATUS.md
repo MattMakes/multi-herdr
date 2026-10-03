@@ -6,7 +6,7 @@ Gate: /tmp/igate-ds.sh
 
 | Unit | Slug | Worker | State |
 |---|---|---|---|
-| D00 | skills-infra | sonnet-6 | running |
+| D00 | skills-infra | sonnet-6 | MERGED |
 | D01 | skill-taste | opus-23 | running |
 | D02 | skill-art-direction | opus-24 | running |
 | D03 | skill-landing-page | opus-25 | running |
@@ -15,9 +15,11 @@ Gate: /tmp/igate-ds.sh
 | D06 | skill-imagery | opus-28 | running |
 | D07 | design-personas | opus-29 | running (adds skill ids as skills merge) |
 | D08 | antigravity-harness | opus-30 | running (research first) |
-| D09 | agent-list | sonnet-7 | running |
+| D09 | agent-list | sonnet-7 | MERGED |
 
 Merge order: D00 first; then D01-D06 (tell each to rebase and add provenance), D09, D08; D07 last.
 Notes:
 - Oracle rule: new teammates go in SKIP_NEW_TEAMMATES (no new oracle files; arc_01 counts fixed). designer/frontend-developer skills oracles re-blessed on purpose.
 - Installed horch (~/.local/bin) is the old build; roster overlay from HORCH_TEAMMATES_DIR=v1 path in the orchestrator shell. No sonnet-feature there.
+- Orchestrator fix merged: skill tests independent of new skills (A0 view for full listing; DESIGN_SOURCE_PINS).
+- Follow-ups: harness_version should read stderr (prime prints --version there; pi --version crashes here); SkillExposure::as_str; skills/README intro still says one upstream.
