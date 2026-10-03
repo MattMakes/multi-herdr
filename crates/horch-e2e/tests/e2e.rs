@@ -92,9 +92,10 @@ fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
 }
 
 /// Stop the collector a test started, by the pid in `collector.json`.
+/// Never panics, so it is safe to call from `Drop` while a test unwinds.
 #[cfg(unix)]
-fn stop_collector(h: &Harness) {
-    let info = h.state.join("telemetry/collector.json");
+fn stop_collector_in(state: &Path) {
+    let info = state.join("telemetry/collector.json");
     if let Some(pid) = std::fs::read_to_string(&info)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -103,7 +104,26 @@ fn stop_collector(h: &Harness) {
         let _ = std::process::Command::new("/bin/kill")
             .arg(pid.to_string())
             .status();
-        wait_for("the collector to release its lock", || !info.exists());
+        let until = Instant::now() + Duration::from_secs(15);
+        while info.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+#[cfg(unix)]
+fn stop_collector(h: &Harness) {
+    stop_collector_in(&h.state);
+}
+
+/// Stops the collector when dropped, so a failing assert cannot leak it.
+#[cfg(unix)]
+struct CollectorGuard(PathBuf);
+
+#[cfg(unix)]
+impl Drop for CollectorGuard {
+    fn drop(&mut self) {
+        stop_collector_in(&self.0);
     }
 }
 
@@ -239,6 +259,7 @@ fn tel_11_no_content_or_identity_persisted() {
 #[test]
 fn tel_02_fleet_writes_orchestrator_record() {
     let mut h = Harness::new("tel02");
+    let _collector = CollectorGuard(h.state.clone());
     h.set("HORCH_FAKE_SCENARIO", "exec");
     let project = h.project.to_string_lossy().into_owned();
     let out = h.run(&["fleet", "--cwd", &project]);
@@ -272,16 +293,19 @@ fn tel_02_fleet_writes_orchestrator_record() {
             }
         })
         .collect();
-    let records: Vec<Value> =
-        serde_json::from_str(&std::fs::read_to_string(ledger_path(&h, &slug)).unwrap()).unwrap();
-    let orch = records
-        .iter()
-        .find(|r| r["kind"] == "orchestrator")
-        .expect("an orchestrator record");
+    // The ledger is replaced atomically, so a read can see no file or a
+    // partial one. Retry the whole read and parse on every poll.
+    let mut orch = Value::Null;
+    wait_for("the orchestrator record in the ledger", || {
+        let found = std::fs::read_to_string(ledger_path(&h, &slug))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
+            .and_then(|rs| rs.into_iter().find(|r| r["kind"] == "orchestrator"));
+        found.map(|r| orch = r).is_some()
+    });
     assert_eq!(orch["session_id"].as_str(), Some(sid.as_str()));
     assert_eq!(orch["role"], "orchestrator");
     assert_eq!(orch["task"], "(orchestrating)");
-    stop_collector(&h);
 }
 
 #[test]
