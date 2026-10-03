@@ -438,6 +438,8 @@ pub fn render(snap: &Snapshot, view: &ViewState, width: u16, height: u16) -> Vec
     if let Some(p) = &view.project {
         right = format!("project: {}   {right}", project_name(Some(p)));
     }
+    // The left part gives way first: the view's group and window must show.
+    let left = clip(&left, width.saturating_sub(right.chars().count() + 2));
     let gap = width
         .saturating_sub(left.chars().count() + right.chars().count())
         .max(2);
