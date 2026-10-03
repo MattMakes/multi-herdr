@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeZone, Utc};
 use horch_core::competition::model::RoundState;
+use horch_core::evaluation::winner::RejectReason;
 use horch_core::execution::FailureKind;
 use horch_core::harness::HarnessKind;
 use horch_core::ids::{
@@ -172,7 +173,7 @@ fn sample_kinds() -> Vec<EventKind> {
             },
         }),
         EventKind::WinnerRejected(WinnerRejected {
-            reason: json!("no_eligible"),
+            reason: RejectReason::NoEligible,
         }),
         EventKind::PromotionStarted(PromotionStarted {
             target: "main".into(),
@@ -777,7 +778,7 @@ fn decide(fates: &[Fate], judge_fails: u32, promote: bool) -> (Script, FinalOutc
     else {
         s.push(
             EventKind::WinnerRejected(WinnerRejected {
-                reason: json!("no_eligible"),
+                reason: RejectReason::NoEligible,
             }),
             None,
         );

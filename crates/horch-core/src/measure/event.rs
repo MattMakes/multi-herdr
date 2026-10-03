@@ -17,6 +17,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::evaluation::winner::RejectReason;
 use crate::execution::FailureKind;
 use crate::harness::HarnessKind;
 use crate::ids::{
@@ -358,8 +359,7 @@ pub enum PromotionIntent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WinnerRejected {
-    // B4: typed once RejectReason lands (U15 b4-evaluation, evaluation/winner.rs).
-    pub reason: Value,
+    pub reason: RejectReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

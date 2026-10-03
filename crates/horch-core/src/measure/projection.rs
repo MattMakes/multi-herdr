@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::competition::model::RoundState;
+use crate::evaluation::winner::RejectReason;
 use crate::ids::{EventId, ExecutionId, ExperimentId, JudgmentId, RoundId};
 use crate::measure::event::{
     CandidateCompleted, CandidateFailed, CandidateFrozen, CandidatePlanned, CandidateSpawned,
@@ -64,8 +65,7 @@ pub struct RoundView {
     pub candidates: BTreeMap<String, CandidateView>,
     pub judge: JudgeView,
     pub winner: Option<WinnerSelected>,
-    // B4: typed once RejectReason lands.
-    pub rejected: Option<Value>,
+    pub rejected: Option<RejectReason>,
     pub promotion: PromotionView,
     pub needs_intervention: Option<RoundNeedsIntervention>,
     /// The state the round held when cleanup started.
