@@ -21,6 +21,7 @@ pub mod balance_policy;
 pub mod clock;
 pub mod codex;
 pub mod herdr;
+pub mod ids;
 pub mod launch;
 pub mod layout;
 pub mod ledger;
