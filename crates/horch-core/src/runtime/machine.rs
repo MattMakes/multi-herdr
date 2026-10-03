@@ -87,12 +87,11 @@ impl Default for ProbeBins {
 /// When `fixture` is `Some`, read the snapshot from that JSON file instead.
 pub fn probe(path: &Path, bins: &ProbeBins, fixture: Option<&Path>) -> MachineSnapshot {
     if let Some(file) = fixture {
-        if let Some(snapshot) = std::fs::read_to_string(file)
+        // A fixture that cannot be read never falls back to a live probe.
+        return std::fs::read_to_string(file)
             .ok()
             .and_then(|text| serde_json::from_str::<MachineSnapshot>(&text).ok())
-        {
-            return snapshot;
-        }
+            .unwrap_or_else(all_unknown);
     }
     let os = std::env::consts::OS;
     let parts = sys::probe_parts(os, path, bins);
@@ -110,6 +109,21 @@ pub fn probe(path: &Path, bins: &ProbeBins, fixture: Option<&Path>) -> MachineSn
         gpu: parts.gpu,
         max_open_files: parts.max_open_files.into(),
         max_processes: parts.max_processes.into(),
+    }
+}
+
+fn all_unknown() -> MachineSnapshot {
+    MachineSnapshot {
+        os: "unknown".to_string(),
+        arch: "unknown".to_string(),
+        cpus: Known::Unknown,
+        mem_total_bytes: Known::Unknown,
+        mem_available_bytes: Known::Unknown,
+        disk_free_bytes: Known::Unknown,
+        disk_total_bytes: Known::Unknown,
+        gpu: GpuClass::Unknown,
+        max_open_files: Known::Unknown,
+        max_processes: Known::Unknown,
     }
 }
 
@@ -401,6 +415,20 @@ mod tests {
         let again: MachineSnapshot =
             serde_json::from_str(&serde_json::to_string(&linux).unwrap()).unwrap();
         assert_eq!(again, linux);
+    }
+
+    #[test]
+    fn machine_bad_fixture_is_all_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("bad.json");
+        std::fs::write(&bad, r#"{"os":"linux","bogus":1}"#).unwrap();
+        let missing = dir.path().join("missing.json");
+        for fixture in [&bad, &missing] {
+            let snap = probe(dir.path(), &ProbeBins::default(), Some(fixture));
+            assert_eq!(snap, all_unknown());
+            assert_eq!(snap.os, "unknown");
+            assert_eq!(snap.arch, "unknown");
+        }
     }
 
     #[test]
