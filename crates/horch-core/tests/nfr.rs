@@ -59,6 +59,7 @@ fn nfr_05_no_new_runtime_crates() {
         "chrono",
         "uuid",
         "libc",
+        "sha2",
     ];
     for d in deps(&repo().join("crates/horch-core/Cargo.toml")) {
         assert!(
@@ -81,6 +82,102 @@ fn nfr_05_no_new_runtime_crates() {
     for d in deps(&repo().join("crates/horch/Cargo.toml")) {
         assert!(allowed.contains(&d.as_str()), "horch gained '{d}'");
     }
+}
+
+/// Every dependency name in every table of a Cargo.toml: normal, dev,
+/// build, target-specific and `[workspace.dependencies]`.
+fn all_deps(manifest: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(manifest).unwrap();
+    let mut out = Vec::new();
+    let mut in_deps = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_deps = line.trim_end_matches(']').ends_with("dependencies");
+            continue;
+        }
+        if in_deps && !line.is_empty() && !line.starts_with('#') {
+            if let Some((name, _)) = line.split_once('=') {
+                out.push(name.trim().trim_end_matches(".workspace").to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The root Cargo.toml and every `crates/*/Cargo.toml`, with the crate's
+/// directory name (`""` for the root).
+fn workspace_manifests() -> Vec<(String, std::path::PathBuf)> {
+    let mut out = vec![(String::new(), repo().join("Cargo.toml"))];
+    for entry in std::fs::read_dir(repo().join("crates")).unwrap().flatten() {
+        let manifest = entry.path().join("Cargo.toml");
+        if manifest.is_file() {
+            out.push((entry.file_name().to_string_lossy().into_owned(), manifest));
+        }
+    }
+    out
+}
+
+/// Fails if any workspace Cargo.toml outside `exempt` names one of `banned`.
+fn assert_no_workspace_dep(banned: &[&str], exempt: &[&str], why: &str) {
+    for (krate, manifest) in workspace_manifests() {
+        if exempt.contains(&krate.as_str()) {
+            continue;
+        }
+        for d in all_deps(&manifest) {
+            assert!(
+                !banned.contains(&d.as_str()),
+                "{why}: {} names '{d}'",
+                manifest.display()
+            );
+        }
+    }
+}
+
+/// NFR-06 (OD6): horch-marketplace stays on its allowed list, and no horch
+/// crate takes an HTTP client. herdr-install and herdr-docs-sync are the
+/// standalone download tools; they used ureq before this rule.
+#[test]
+fn nfr_06_dependency_allowlist() {
+    let manifest = repo().join("crates/horch-marketplace/Cargo.toml");
+    if manifest.is_file() {
+        let allowed = ["anyhow", "serde", "serde_json", "serde_yaml", "sha2"];
+        for d in deps(&manifest) {
+            assert!(
+                allowed.contains(&d.as_str()),
+                "horch-marketplace gained '{d}'"
+            );
+        }
+    }
+    assert_no_workspace_dep(
+        &["reqwest", "ureq", "hyper", "isahc", "attohttpc", "curl"],
+        &["herdr-install", "herdr-docs-sync"],
+        "NFR-06: no HTTP crate",
+    );
+}
+
+/// NFR-09: everything is synchronous; no async runtime and no database crate.
+#[test]
+fn nfr_09_no_async_runtime_deps() {
+    assert_no_workspace_dep(
+        &[
+            "tokio",
+            "async-std",
+            "smol",
+            "futures",
+            "rusqlite",
+            "sqlx",
+            "diesel",
+        ],
+        &[],
+        "NFR-09: sync only",
+    );
+}
+
+/// NFR-11: randomized tests use the in-repo PRNG, not a property-test crate.
+#[test]
+fn nfr_11_no_proptest() {
+    assert_no_workspace_dep(&["proptest", "quickcheck"], &[], "NFR-11: in-repo PRNG");
 }
 
 /// NFR-02: a steady-state tick over 50 live sessions under 200 ms, and a cold
