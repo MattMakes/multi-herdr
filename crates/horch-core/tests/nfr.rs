@@ -60,6 +60,7 @@ fn nfr_05_no_new_runtime_crates() {
         "uuid",
         "libc",
         "sha2",
+        "horch-marketplace",
     ];
     for d in deps(&repo().join("crates/horch-core/Cargo.toml")) {
         assert!(

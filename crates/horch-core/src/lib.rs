@@ -47,6 +47,7 @@ pub mod teammates;
 pub mod telemetry;
 pub mod tile;
 pub mod usage;
+pub mod vcs;
 pub mod workspace;
 
 /// Mint a session or record id.

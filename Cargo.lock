@@ -615,6 +615,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "horch-marketplace",
  "libc",
  "serde",
  "serde_json",

@@ -5,7 +5,7 @@
 # dependencies of each checked crate with its allowed list.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-allowed_core="anyhow serde serde_json serde_yaml chrono uuid libc sha2"
+allowed_core="anyhow serde serde_json serde_yaml chrono uuid libc sha2 horch-marketplace"
 allowed_horch="horch-core anyhow clap serde serde_json chrono tempfile libc ratatui crossterm"
 allowed_marketplace="anyhow serde serde_json serde_yaml sha2"
 fail=0
