@@ -12,6 +12,14 @@
 //!
 //! Scenarios: `usage_ok`, `usage_exhausted` (the default for a probe),
 //! `usage_scoped`, `usage_hang` (or `hang`), `usage_garbage` (or `error`).
+//!
+//! - As the headless judge (`-p --output-format json`): read the prompt from
+//!   stdin, record argv, cwd and env keys, then act per
+//!   `$HORCH_FAKE_LOG.judge.json`, `{"attempts": ["crash", "valid"]}`: the
+//!   n-th judge call takes the n-th entry (the last one repeats). `valid`
+//!   answers a winner over the bundle labels in `./manifest.json`;
+//!   `invalid` answers a fenced object; `crash` exits 3; `hang` blocks;
+//!   `oversize` prints a 2 MiB answer.
 //! `inspect_skills`: a pane launch also writes the `skills/` dir of each
 //! `--plugin-dir`, the plugin manifest names and the `--settings` value to
 //! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
@@ -31,6 +39,15 @@ fn main() {
     if call.argv.iter().any(|a| a == "--version") {
         say("2.1.284 (Claude Code)");
         call.flush();
+        return;
+    }
+    let judge = call.argv.first().is_some_and(|a| a == "-p")
+        && call
+            .argv
+            .windows(2)
+            .any(|w| w[0] == "--output-format" && w[1] == "json");
+    if judge {
+        judge_mode(call);
         return;
     }
     let probe = call
@@ -143,4 +160,105 @@ fn inspect_skills(argv: &[String]) {
         &dirs,
         json!({"flags": flags, "plugins": plugins, "settings": settings}),
     );
+}
+
+/// The headless judge: one prompt on stdin, one json envelope on stdout.
+fn judge_mode(mut call: Call) {
+    let mut prompt = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut prompt);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    call.extra
+        .insert("cwd".into(), json!(cwd.to_string_lossy()));
+    call.extra.insert("mode".into(), json!("judge"));
+    call.extra.insert(
+        "prompt_has_rubric".into(),
+        json!(!prompt.contains("{rubric}")),
+    );
+    call.stdin.push(format!("<prompt: {} bytes>", prompt.len()));
+    let log = std::env::var("HORCH_FAKE_LOG").unwrap_or_default();
+    let counter = format!("{log}.judge.count");
+    let n: usize = std::fs::read_to_string(&counter)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let _ = std::fs::write(&counter, (n + 1).to_string());
+    let script: Value = std::fs::read_to_string(format!("{log}.judge.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let attempts: Vec<String> = script["attempts"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mode = attempts
+        .get(n)
+        .or(attempts.last())
+        .cloned()
+        .unwrap_or_else(|| "valid".into());
+    call.extra.insert("judge_scenario".into(), json!(mode));
+    call.flush();
+    let session = call
+        .argv
+        .windows(2)
+        .find(|w| w[0] == "--session-id")
+        .map(|w| w[1].clone())
+        .unwrap_or_default();
+    let envelope = |result: String| {
+        json!({"type": "result", "subtype": "success", "is_error": false,
+               "result": result, "session_id": session, "total_cost_usd": 0.0})
+        .to_string()
+    };
+    match mode.as_str() {
+        "crash" => {
+            eprintln!("fake-claude: judge crash");
+            std::process::exit(3);
+        }
+        "hang" => hang(),
+        "invalid" => say(&envelope("```json\n{}\n```".into())),
+        "oversize" => say(&envelope("x".repeat(2 * 1024 * 1024))),
+        _ => say(&envelope(judgment(&labels(&cwd)))),
+    }
+}
+
+/// The bundle labels from `manifest.json` in the judge's cwd.
+fn labels(cwd: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(cwd.join("manifest.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|m| {
+            m["labels"].as_array().map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// A valid judgment: the first label wins with confidence 0.9.
+fn judgment(labels: &[String]) -> String {
+    let scores = json!({"correctness": 8, "tests": 7, "scope": 9, "maintainability": 8, "risk": 8});
+    let candidates: serde_json::Map<String, Value> = labels
+        .iter()
+        .map(|l| {
+            (
+                l.clone(),
+                json!({"scores": scores, "acceptable": true, "notes": "ok"}),
+            )
+        })
+        .collect();
+    json!({
+        "schema_version": "1.0.0",
+        "verdict": "winner",
+        "winner": labels.first(),
+        "ranking": labels,
+        "candidates": candidates,
+        "confidence": 0.9,
+        "rationale": "The first candidate is best.",
+    })
+    .to_string()
 }

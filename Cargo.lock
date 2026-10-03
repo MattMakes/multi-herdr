@@ -629,6 +629,8 @@ dependencies = [
 name = "horch-e2e"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "horch-core",
  "serde_json",
  "tempfile",
 ]

@@ -946,3 +946,91 @@ fn jdg_08_second_failure_needs_intervention() {
         .unwrap();
     assert_eq!(last.payload["cause"]["kind"], "malformed");
 }
+
+/// JDG-09 for `schedule`: it starts the dataset binary's `judge-job` with the
+/// spec's argv, detached in a new session, stdin null, stdout and stderr in
+/// `job.log`, the state and project dirs set, and no `ANTHROPIC_API_KEY`.
+#[cfg(unix)]
+#[test]
+fn jdg_09_schedule_detaches_and_strips_env() {
+    use horch_core::evaluation::scheduler::{schedule, DATASET_BIN};
+    use horch_core::ids::SessionId;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let out = tmp.path().join("out");
+    let script = bin.join(DATASET_BIN);
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$@\" > {out}.args\n\
+             echo \"key=${{ANTHROPIC_API_KEY+set}} state=$HORCH_STATE_DIR project=$HORCH_PROJECT_DIR\" > {out}.env\n\
+             echo $$ > {out}.pid\n\
+             ps -o pgid= -p $$ > {out}.pgid 2>/dev/null\n\
+             read line && echo stdin-not-null > {out}.stdin\n\
+             echo to-stdout\n\
+             echo to-stderr >&2\n\
+             touch {out}.done\n",
+            out = out.display()
+        ),
+    )
+    .unwrap();
+    horch_core::runtime::process::make_executable(&script).unwrap();
+    let state = tmp.path().join("state");
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let ctx = RuntimeContext::from_env(
+        &MapEnv::new(&project)
+            .with_exe(&script)
+            .with("HORCH_STATE_DIR", state.to_str().unwrap())
+            .with("HORCH_PROJECT_DIR", project.to_str().unwrap()),
+    )
+    .unwrap();
+    let job_dir = DatasetPaths::new(&state, &project)
+        .job_dir(&round_id(), 1)
+        .unwrap();
+    let spec = JudgeJobSpec {
+        round: round_id(),
+        attempt: 1,
+        input_dir: tmp.path().join("bundle"),
+        job_dir: job_dir.clone(),
+        session: SessionId::new("0199a5b0-0000-7000-8000-0000000000aa").unwrap(),
+        model: "opus".into(),
+        effort: "high".into(),
+        timeout: Duration::from_secs(90),
+    };
+    let pid = schedule(&ctx, &spec).unwrap();
+    assert!(pid > 0);
+    let done = PathBuf::from(format!("{}.done", out.display()));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !done.exists() {
+        assert!(std::time::Instant::now() < deadline, "the job never ran");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let read =
+        |ext: &str| std::fs::read_to_string(format!("{}.{ext}", out.display())).unwrap_or_default();
+    let args: Vec<String> = read("args").lines().map(str::to_owned).collect();
+    assert_eq!(args, horch_core::evaluation::scheduler::job_args(&spec));
+    assert_eq!(
+        read("env").trim(),
+        format!(
+            "key= state={} project={}",
+            state.display(),
+            project.display()
+        )
+    );
+    assert_eq!(read("stdin"), "", "stdin is not null");
+    // A new session: the job leads its own process group.
+    let pgid = read("pgid");
+    if !pgid.trim().is_empty() {
+        assert_eq!(pgid.trim(), read("pid").trim());
+        assert_eq!(read("pid").trim(), pid.to_string());
+    }
+    let log = std::fs::read_to_string(job_dir.join(LOG_FILE)).unwrap();
+    assert!(
+        log.contains("to-stdout") && log.contains("to-stderr"),
+        "{log}"
+    );
+}
