@@ -366,6 +366,44 @@ fn pro_08_default_collects_only() {
     assert_clean(&h);
 }
 
+/// `--promote-to` a branch that does not exist, or a candidate branch:
+/// PRE-01 refuses (exit 4) before any worktree or model call.
+#[test]
+fn pro_08_promote_to_missing_branch_refused_in_preflight() {
+    let Some(h) = round_harness(
+        "pro08missing",
+        "",
+        json!({"A": done("a.txt"), "B": done("b.txt")}),
+    ) else {
+        return;
+    };
+    for (target, problem) in [
+        ("no-such-branch", "is not a local branch"),
+        ("mh/exp/0a1b2c3d/r0/A", "is a candidate branch"),
+    ] {
+        let out = run_round(&h, &["--promote-to", target], &[]);
+        assert_eq!(out.status.code(), Some(4), "{}", text(&out));
+        assert!(text(&out).contains("REFUSED"), "{}", text(&out));
+        assert!(text(&out).contains(problem), "{}", text(&out));
+    }
+    let events = events(&h);
+    let aborted = of_kind(&events, "experiment.aborted");
+    assert_eq!(aborted.len(), 2);
+    for a in &aborted {
+        assert_eq!(a["payload"]["failed_checks"], json!(["PRE-01"]), "{a}");
+    }
+    assert!(of_kind(&events, "worktree.created").is_empty());
+    assert_eq!(worktree_count(&h), 1);
+    assert!(candidate_branches(&h).is_empty());
+    // Agent fakes were asked for `--version` only: no model turn.
+    for agent in ["claude", "codex", "opencode", "pi", "prime"] {
+        for call in h.calls_of(agent) {
+            assert_eq!(call["argv"], json!(["--version"]), "{agent}: {call}");
+        }
+    }
+    assert_clean(&h);
+}
+
 #[test]
 fn pro_08_promote_to_and_promote_cmd() {
     let Some(h) = round_harness(

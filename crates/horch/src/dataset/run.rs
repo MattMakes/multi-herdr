@@ -145,11 +145,11 @@ fn preflight_and_run(
     });
 
     let git = GitCli::new(ctx.bins.harness.git.clone());
-    let head = preflight::repo_facts(&git, &project, &[]).base_sha;
+    let head = preflight::repo_facts(&git, &project, &[], None).base_sha;
     let (plan, view) = plan_with_view(ctx, &config, &round_id, head.as_deref().unwrap_or(""))?;
 
     let branches = planned_branches(experiment, &plan, &config);
-    let git_facts = preflight::repo_facts(&git, &project, &branches);
+    let git_facts = preflight::repo_facts(&git, &project, &branches, config.promote_to.as_deref());
     let candidates = plan
         .candidates
         .iter()
