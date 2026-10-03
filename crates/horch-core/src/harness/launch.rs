@@ -23,7 +23,6 @@ use crate::mailbox::Mailbox;
 use crate::runtime::{BinOverrides, EnvSource, HarnessBins, ProcessEnv, RuntimeContext};
 use crate::teammates::{ExecRule, Teammate};
 
-pub(crate) use super::claude::overlay_skill_switches;
 use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest};
 
 /// What a launch reads from its environment: the programs to run, the home
@@ -244,7 +243,7 @@ pub fn run_flow(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<ExitCode
     let adapter = req.teammate.agent.adapter();
     let caps = adapter.capabilities();
     // Held across the launch, so lazy reads of the bundle remain valid.
-    let skills = crate::skills::Bundle::install(&ctx.paths.state_root, req.teammate)?;
+    let skills = install_skills(ctx, &req)?;
     let prepared = adapter.prepare(
         ctx,
         &PrepareRequest {
@@ -307,6 +306,27 @@ pub fn run_flow(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<ExitCode
     }
     prepared.finish();
     code
+}
+
+/// The activated skills of this launch, from the bundled catalog plus the
+/// installed marketplace skills. Nothing here touches the network: a
+/// marketplace skill is copied from the local store. The directory is named
+/// for the execution (the ledger record) when the launch records one and no
+/// earlier launch of it left its directory behind; otherwise for a fresh id.
+fn install_skills(
+    ctx: &RuntimeContext,
+    req: &LaunchRequest<'_>,
+) -> Result<Option<crate::skills::Bundle>> {
+    let catalog = crate::skills::SkillCatalog::installed(&ctx.paths.data_root)?;
+    let bundles = ctx.paths.state_root.join("skill-bundles");
+    let execution_id = req
+        .record
+        .as_ref()
+        .and_then(|r| crate::ids::ExecutionId::new(r.record_id).ok())
+        .map(|id| id.to_string())
+        .filter(|id| !bundles.join(id).exists())
+        .unwrap_or_else(|| crate::ids::ExecutionId::mint(crate::clock::now()).to_string());
+    crate::skills::Bundle::install_from(&ctx.paths.state_root, req.teammate, catalog, &execution_id)
 }
 
 /// The agent's command: the teammate's launch line, its own environment, then

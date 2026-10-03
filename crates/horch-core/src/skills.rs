@@ -6,11 +6,10 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
-use crate::teammates::{Agent, Phase, Teammate};
+use crate::teammates::{Phase, Teammate};
 
 pub mod activation;
 pub mod briefing;
@@ -22,7 +21,7 @@ pub use activation::{plan_activation, InvocationPolicy, ResolvedSkillRef, SkillA
 pub use briefing::BriefingContext;
 pub use catalog::{CatalogEntry, CatalogSource, Provenance, SkillCatalog, SkillVersion};
 pub use materialize::MaterializedSkills;
-pub use selection::{phase_skills, selected};
+pub use selection::{phase_skills, selected, selected_in};
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
@@ -47,10 +46,17 @@ fn catalog() -> Result<BTreeMap<String, (Metadata, usize)>> {
 }
 
 /// Check platform support before allocating a pane or writing shared rules.
+/// Names are checked against the compiled-in catalog; see
+/// [`ensure_supported_in`].
 pub fn ensure_supported(teammate: &Teammate) -> Result<()> {
-    let names = selected(teammate)?;
-    if cfg!(windows) && !names.is_empty() && teammate.agent == Agent::Codex {
-        bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows, or explicitly set phase: null and skills: [] for the legacy shared-rules launcher");
+    ensure_supported_in(teammate, &SkillCatalog::bundled()?)
+}
+
+/// [`ensure_supported`] against `catalog`, which may include installed
+/// marketplace skills.
+pub fn ensure_supported_in(teammate: &Teammate, catalog: &SkillCatalog) -> Result<()> {
+    if !selected_in(teammate, catalog)?.is_empty() {
+        teammate.agent.adapter().ensure_skills_supported()?;
     }
     Ok(())
 }
@@ -81,6 +87,10 @@ pub fn describe(phase: Option<Phase>) -> Result<Value> {
 }
 
 /// An owned launch directory. Dropping it only deletes files we created.
+///
+/// It holds exactly the activated skills. How a CLI discovers them is the
+/// harness's business: [`Bundle::configure`] and [`Bundle::apply_env`] hand
+/// the bundle to the teammate's harness adapter.
 #[derive(Debug)]
 pub struct Bundle {
     root: PathBuf,
@@ -90,27 +100,40 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    /// The compiled-in catalog, under a fresh directory name.
     pub fn install(state_root: &Path, teammate: &Teammate) -> Result<Option<Self>> {
-        ensure_supported(teammate)?;
-        let catalog = SkillCatalog::bundled()?;
+        Self::install_from(
+            state_root,
+            teammate,
+            SkillCatalog::bundled()?,
+            &crate::mint_uuid(),
+        )
+    }
+
+    /// Plan `teammate`'s skills against `catalog` and materialize the
+    /// activated ones under `<state_root>/skill-bundles/<execution_id>/`.
+    /// `None` when nothing is activated.
+    pub fn install_from(
+        state_root: &Path,
+        teammate: &Teammate,
+        catalog: SkillCatalog,
+        execution_id: &str,
+    ) -> Result<Option<Self>> {
         let plan = plan_activation(teammate, teammate.phase, &catalog)?;
+        if !plan.activated.is_empty() {
+            teammate.agent.adapter().ensure_skills_supported()?;
+        }
         let Some(files) =
-            MaterializedSkills::materialize(&plan, &catalog, state_root, &crate::mint_uuid())?
+            MaterializedSkills::materialize(&plan, &catalog, state_root, execution_id)?
         else {
             return Ok(None);
         };
-        let bundle = Self {
+        Ok(Some(Self {
             root: files.root.clone(),
             catalog,
             plan,
             _files: files,
-        };
-        std::fs::create_dir_all(bundle.root.join(".claude-plugin"))?;
-        std::fs::write(
-            bundle.root.join(".claude-plugin/plugin.json"),
-            r#"{"name":"horch","description":"Phase-selected fleet skills","version":"0.1.0"}"#,
-        )?;
-        Ok(Some(bundle))
+        }))
     }
 
     /// The activation plan this bundle materialized.
@@ -118,94 +141,35 @@ impl Bundle {
         &self.plan
     }
 
+    /// `<state_root>/skill-bundles/<execution_id>/`.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// One directory per activated skill, and nothing else.
     pub fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }
 
-    /// Add native discovery flags before the builder appends its positional prompt.
-    /// `home` is `$HOME`, where the operator's Claude settings live.
+    /// The teammate as its harness launches it with these skills exposed.
+    /// `home` is `$HOME`, where the operator's settings live.
     pub fn configure(&self, teammate: &Teammate, home: Option<&Path>) -> Result<Teammate> {
-        let mut adjusted = teammate.clone();
-        match teammate.agent {
-            Agent::Claude => {
-                // plugin_dirs precede scalar flags in the Claude builder, which
-                // fences variadic --plugin-dir parsing away from the briefing.
-                adjusted
-                    .plugin_dirs
-                    .push(self.root.to_string_lossy().into_owned());
-                let settings = self.claude_settings(teammate, home)?;
-                adjusted.settings = Some(settings.to_string());
-            }
-            Agent::Pi | Agent::Prime => adjusted
-                .args
-                .extend(native_args(teammate.agent, &self.root)),
-            Agent::Codex | Agent::OpenCode => {}
-            Agent::None => bail!("skills need an agent harness"),
-        }
-        Ok(adjusted)
+        teammate.agent.adapter().expose_skills(teammate, self, home)
     }
 
-    fn claude_settings(&self, teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
-        let mut settings = match &teammate.settings {
-            Some(source) => {
-                let text = if source.trim_start().starts_with('{') {
-                    source.clone()
-                } else {
-                    std::fs::read_to_string(expand_home(source, home))
-                        .context("reading teammate settings")?
-                };
-                serde_json::from_str::<Value>(&text).context("invalid teammate settings JSON")?
-            }
-            None => json!({}),
-        };
-        let obj = settings
-            .as_object_mut()
-            .context("teammate settings must be a JSON object")?;
-        obj.entry("disableBundledSkills").or_insert(json!(true));
-        obj.entry("disableWorkflows").or_insert(json!(true));
-        if !teammate.inherit_plugins {
-            let plugins = obj
-                .entry("enabledPlugins")
-                .or_insert(json!({}))
-                .as_object_mut()
-                .context("enabledPlugins must be an object")?;
-            for name in operator_enabled_plugins(home) {
-                plugins.insert(name, json!(false));
-            }
-        }
-        // After the plugin switch-off: a plugin_skills plugin stays enabled.
-        crate::launch::overlay_skill_switches(teammate, obj, home)?;
-        if teammate.setting_sources.is_some() && !obj.contains_key("statusLine") {
-            if let Some(status) = operator_status_line(home) {
-                obj.insert("statusLine".into(), status);
-            }
-        }
-        Ok(settings)
-    }
-
-    /// Point an OpenCode child at the bundle. `inherited` is the
-    /// `$OPENCODE_CONFIG_CONTENT` the launch would otherwise pass through.
+    /// Expose these skills on the built command, where the harness reads
+    /// them from its environment. `inherited` is the value of that variable
+    /// the launch would otherwise pass through.
     pub fn apply_env(
         &self,
         cmd: &mut std::process::Command,
         teammate: &Teammate,
         inherited: Option<&str>,
     ) -> Result<()> {
-        if teammate.agent == Agent::OpenCode {
-            // The builder may already have set it (the effort variant); build
-            // on that rather than on the teammate's or the operator's value.
-            let inherited = cmd
-                .get_envs()
-                .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
-                .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
-                .or_else(|| teammate.env.get("OPENCODE_CONFIG_CONTENT").cloned())
-                .or_else(|| inherited.map(str::to_owned));
-            cmd.env(
-                "OPENCODE_CONFIG_CONTENT",
-                opencode_config(inherited.as_deref(), &self.skills_dir())?,
-            );
-        }
-        Ok(())
+        teammate
+            .agent
+            .adapter()
+            .expose_skills_env(cmd, teammate, self, inherited)
     }
 
     /// The skill paragraph prepended to a worker's briefing; see
@@ -219,11 +183,12 @@ impl Bundle {
 
     /// [`Bundle::briefing`], with plugin skills resolved under `home`.
     pub fn briefing_in(&self, teammate: &Teammate, home: Option<&Path>) -> String {
-        let claude = teammate.agent == Agent::Claude;
+        let namespace = teammate.agent.adapter().skill_namespace();
         let mut plugin_lines = Vec::new();
-        // A plugin that does not resolve is reported by `--check`; the
-        // briefing must not fail a launch over a description.
-        if claude {
+        // Plugin skills exist only where skills load as plugins. A plugin
+        // that does not resolve is reported by `--check`; the briefing must
+        // not fail a launch over a description.
+        if namespace.is_some() {
             if let Ok(plugins) = crate::plugins::resolve_all_in(teammate, home) {
                 for (plugin, wanted) in plugins {
                     for skill in wanted {
@@ -239,7 +204,7 @@ impl Bundle {
             &BriefingContext {
                 phase: teammate.phase,
                 declared: &teammate.skills,
-                namespace: claude.then_some("horch"),
+                namespace,
                 plugin_lines: &plugin_lines,
                 skills_dir: &self.skills_dir(),
             },
@@ -247,85 +212,9 @@ impl Bundle {
     }
 }
 
-fn native_args(agent: Agent, root: &Path) -> Vec<String> {
-    match agent {
-        Agent::Claude => vec!["--plugin-dir".into(), root.to_string_lossy().into_owned()],
-        Agent::Pi | Agent::Prime => vec![
-            "--skill".into(),
-            root.join("skills").to_string_lossy().into_owned(),
-        ],
-        _ => Vec::new(),
-    }
-}
-
-fn opencode_config(inherited: Option<&str>, skills: &Path) -> Result<String> {
-    let mut value: Value = match inherited {
-        Some(s) => serde_json::from_str(s).context("invalid OPENCODE_CONFIG_CONTENT JSON")?,
-        None => json!({}),
-    };
-    let object = value
-        .as_object_mut()
-        .context("OPENCODE_CONFIG_CONTENT must be an object")?;
-    let config = object
-        .entry("skills")
-        .or_insert(json!({}))
-        .as_object_mut()
-        .context("skills config must be an object")?;
-    let paths = config
-        .entry("paths")
-        .or_insert(json!([]))
-        .as_array_mut()
-        .context("skills.paths must be an array")?;
-    let path = json!(skills);
-    if !paths.contains(&path) {
-        paths.push(path);
-    }
-    Ok(value.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn skills_native_loaders_receive_explicit_paths() {
-        let root = Path::new("/tmp/a bundle");
-        assert_eq!(
-            native_args(Agent::Claude, root),
-            ["--plugin-dir", "/tmp/a bundle"]
-        );
-        for agent in [Agent::Pi, Agent::Prime] {
-            assert_eq!(
-                native_args(agent, root),
-                [
-                    "--skill".to_owned(),
-                    root.join("skills").to_string_lossy().into_owned()
-                ]
-            );
-        }
-        assert!(native_args(Agent::Codex, root).is_empty());
-        assert!(native_args(Agent::OpenCode, root).is_empty());
-    }
-
-    #[test]
-    fn skills_opencode_overlay_preserves_provider_and_denials() {
-        let before = r#"{"provider":{"private":{"name":"keep"}},"permission":{"bash":"deny"},"skills":{"paths":["old"],"urls":["https://example.com"]}}"#;
-        let actual: Value =
-            serde_json::from_str(&opencode_config(Some(before), Path::new("/new skills")).unwrap())
-                .unwrap();
-        assert_eq!(actual["provider"]["private"]["name"], "keep");
-        assert_eq!(actual["permission"]["bash"], "deny");
-        assert_eq!(actual["skills"]["paths"], json!(["old", "/new skills"]));
-        assert_eq!(actual["skills"]["urls"], json!(["https://example.com"]));
-        for invalid in [
-            "oops",
-            "[]",
-            r#"{"skills":false}"#,
-            r#"{"skills":{"paths":false}}"#,
-        ] {
-            assert!(opencode_config(Some(invalid), Path::new("/x")).is_err());
-        }
-    }
 
     #[test]
     fn skills_catalog_is_portable_and_every_phase_resolves() {

@@ -260,11 +260,9 @@ fn arc_22_matcher_finds_error_text_checks() {
 }
 
 /// Files outside `harness/` that still match on a harness variant, with the
-/// phase that removes each entry. Do not add entries.
-///
-/// - `skills.rs`: skill exposure per harness (`Bundle::configure`,
-///   `native_args`). Removed by A10.
-const HARNESS_MATCH_PENDING: &[&str] = &["skills.rs"];
+/// phase that removes each entry. Do not add entries. A10 removed the last
+/// one (`skills.rs`).
+const HARNESS_MATCH_PENDING: &[&str] = &[];
 
 /// Whether `line` is a match arm (or a `matches!`) on a `HarnessKind` /
 /// `Agent` variant. A comparison such as `t.agent == Agent::None` or an

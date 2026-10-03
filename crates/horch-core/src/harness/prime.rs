@@ -29,6 +29,8 @@ use anyhow::{Context, Result};
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared};
 use crate::agent;
 use crate::runtime::RuntimeContext;
+use crate::skills::Bundle;
+use crate::teammates::Teammate;
 
 /// One Prime Agent launch's private daemon socket and session directory.
 #[derive(Debug, Clone)]
@@ -176,6 +178,15 @@ impl Harness for Prime {
         // take the session it is still writing with it.
         prepared.on_finish(move || daemon.finish());
         Ok(prepared)
+    }
+
+    fn expose_skills(
+        &self,
+        teammate: &Teammate,
+        skills: &Bundle,
+        _home: Option<&Path>,
+    ) -> Result<Teammate> {
+        Ok(super::pi::with_skill_flag(teammate, skills))
     }
 
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {

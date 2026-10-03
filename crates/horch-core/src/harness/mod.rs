@@ -26,6 +26,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::{HarnessBins, RuntimeContext};
+use crate::skills::Bundle;
 use crate::teammates::{ExecRule, Teammate};
 
 pub use capabilities::{Capabilities, SkillExposure};
@@ -38,7 +39,7 @@ pub struct PrepareRequest<'a> {
     /// The execpolicy rules this pane needs (codex).
     pub exec_rules: &'a [ExecRule],
     /// The skills bundle the launch exposes, when the teammate has one.
-    pub skills: Option<&'a crate::skills::Bundle>,
+    pub skills: Option<&'a Bundle>,
 }
 
 /// What [`Harness::prepare`] set up for one launch. Hold it until the CLI
@@ -107,7 +108,9 @@ pub trait Harness: Sync {
     }
 
     /// Set up what the launch needs on disk before the CLI starts: codex's
-    /// private home and rules, Prime's daemon socket.
+    /// private home with the skills bundle linked in, Prime's daemon socket.
+    /// The launch then calls [`Harness::expose_skills`] and
+    /// [`Harness::expose_skills_env`] around the build.
     fn prepare(&self, _ctx: &RuntimeContext, _req: &PrepareRequest<'_>) -> Result<Prepared> {
         Ok(Prepared::default())
     }
@@ -115,6 +118,44 @@ pub trait Harness: Sync {
     /// The harness's own command line. Call [`Harness::build_command`]
     /// instead, which removes the forbidden environment.
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command>;
+
+    /// Fail when this CLI cannot expose skills here, before a pane is
+    /// allocated or shared rules are written.
+    fn ensure_skills_supported(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// The prefix this CLI shows before a bundled skill's name (`horch:`
+    /// for a plugin), or `None` when it names skills bare.
+    fn skill_namespace(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Expose the bundle's activated skills the way this CLI discovers
+    /// skills, by changing the teammate the command is built from. `home`
+    /// is `$HOME`. The bundle holds exactly the activated skills, one
+    /// directory each under [`Bundle::skills_dir`].
+    fn expose_skills(
+        &self,
+        teammate: &Teammate,
+        _skills: &Bundle,
+        _home: Option<&Path>,
+    ) -> Result<Teammate> {
+        Ok(teammate.clone())
+    }
+
+    /// Expose the bundle's skills on the built command, for a CLI that reads
+    /// them from an environment overlay the builder may already have set.
+    /// `inherited` is the value the launch would otherwise pass through.
+    fn expose_skills_env(
+        &self,
+        _cmd: &mut Command,
+        _teammate: &Teammate,
+        _skills: &Bundle,
+        _inherited: Option<&str>,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// The command for `spec`, with every [`launch::FORBIDDEN_ENV`] key
     /// removed. Not overridden by any harness.

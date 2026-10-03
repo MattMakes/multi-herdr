@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 use anyhow::{bail, Result};
 
 use super::catalog::SkillCatalog;
-use crate::teammates::{Agent, Phase, Teammate};
+use crate::harness::SkillExposure;
+use crate::teammates::{Phase, Teammate};
 
 pub fn phase_skills(phase: Phase) -> &'static [&'static str] {
     match phase {
@@ -24,12 +25,19 @@ pub fn phase_skills(phase: Phase) -> &'static [&'static str] {
     }
 }
 
+/// The names a teammate selects, checked against the compiled-in catalog.
 pub fn selected(teammate: &Teammate) -> Result<Vec<String>> {
+    selected_in(teammate, &SkillCatalog::bundled()?)
+}
+
+/// [`selected`], checked against `catalog`, which may include installed
+/// marketplace skills.
+pub fn selected_in(teammate: &Teammate, catalog: &SkillCatalog) -> Result<Vec<String>> {
     let mut names: BTreeSet<String> = teammate.skills.iter().cloned().collect();
     if let Some(phase) = teammate.phase {
         names.extend(phase_skills(phase).iter().map(|s| (*s).to_owned()));
     }
-    check(teammate, &names, &SkillCatalog::bundled()?)?;
+    check(teammate, &names, catalog)?;
     Ok(names.into_iter().collect())
 }
 
@@ -48,7 +56,8 @@ pub(crate) fn check(
             );
         }
     }
-    if !names.is_empty() && (teammate.disable_skills || teammate.agent == Agent::None) {
+    let exposes = teammate.agent.capabilities().skill_exposure != SkillExposure::None;
+    if !names.is_empty() && (teammate.disable_skills || !exposes) {
         bail!(
             "teammate '{}': selected skills cannot load with disabled skills or no agent",
             teammate.name
