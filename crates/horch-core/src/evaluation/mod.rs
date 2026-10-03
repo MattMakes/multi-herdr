@@ -3,4 +3,6 @@
 //! rubric and the winner policy.
 
 pub mod judgment;
+pub mod rubric;
 pub mod validator;
+pub mod winner;
