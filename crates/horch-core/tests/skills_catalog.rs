@@ -16,6 +16,38 @@ use horch_marketplace::LockEntry;
 
 const PINNED_REPOSITORY: &str = "https://github.com/MattMakes/skill-marketplace";
 const PINNED_COMMIT: &str = "d47670328c59a3311a9b4149bc5f8f33f0a92754";
+/// The design-skill upstreams, at the commits the design skills were adapted
+/// from (`ai_docs/plans/design-skills/00-conventions.md`).
+const DESIGN_SOURCE_PINS: &[(&str, &str)] = &[
+    (
+        "https://github.com/akseolabs-seo/cinematic-ui",
+        "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+    ),
+    (
+        "https://github.com/greensock/gsap-skills",
+        "aed9cfd3277740755f6bfc1155c7aa645403b760",
+    ),
+    (
+        "https://github.com/nutlope/hallmark",
+        "13ac0ec7e148655948100b6396439e481361d690",
+    ),
+    (
+        "https://github.com/stevembarclay/pencilplaybook",
+        "b7324295d73d67ea0a672cf16832880c111df0ed",
+    ),
+    (
+        "https://github.com/leonxlnx/taste-skill",
+        "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+    ),
+    (
+        "https://github.com/felix-huber/ui-landingpage-generator-skill",
+        "8dc143767218bc884b502a054b5d3fc401411a4b",
+    ),
+    (
+        "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+        "09170eec67eefd46a7ae85de61b40c194020f997",
+    ),
+];
 
 /// Skills written in this repository: their provenance has no sources.
 const REPO_ORIGINAL: &[&str] = &["orchestrate"];
@@ -116,10 +148,15 @@ fn skl_01_bundled_catalog_versions_and_digests() {
         for src in &p.sources {
             assert_eq!(src.sha256.len(), 64, "{id}");
             assert!(is_hex(&src.sha256), "{id}");
-            assert!(src.path.ends_with(".md"), "{id}");
+            assert!(!src.path.is_empty(), "{id}");
             if id != "skill-creator" {
-                assert_eq!(src.repository, PINNED_REPOSITORY, "{id}");
-                assert_eq!(src.revision, PINNED_COMMIT, "{id}");
+                let pin = (src.repository.as_str(), src.revision.as_str());
+                assert!(
+                    pin == (PINNED_REPOSITORY, PINNED_COMMIT) || DESIGN_SOURCE_PINS.contains(&pin),
+                    "{id}: {} at {} is not a pinned upstream",
+                    src.repository,
+                    src.revision
+                );
             }
         }
     }

@@ -15,6 +15,59 @@ use serde_json::Value;
 
 const PHASES: [&str; 4] = ["research", "plan", "implementation", "validation"];
 
+/// The skills of the A0 oracle. Skills added later appear in the full
+/// listing (`horch skills` without `--phase`) but belong to no phase, so the
+/// frozen full-listing oracle is compared on these 16 skills only, and its
+/// metadata totals are checked for shape, not value.
+const A0_SKILLS: [&str; 16] = [
+    "brainstorm",
+    "check",
+    "code-analysis",
+    "code-review",
+    "create-plan",
+    "debug",
+    "document",
+    "execute",
+    "handoff",
+    "orchestrate",
+    "pre-flight",
+    "research-codebase",
+    "security-review",
+    "skill-creator",
+    "tdd",
+    "trace",
+];
+
+/// `text` (a full `horch skills` listing, text or JSON) reduced to the A0
+/// skills, with the metadata totals blanked.
+fn a0_skills_view(text: &str) -> String {
+    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(skills) = v["skills"].as_array_mut() {
+            skills.retain(|s| A0_SKILLS.contains(&s["name"].as_str().unwrap_or("")));
+        }
+        assert!(v["metadata_bytes"].is_u64() && v["metadata_tokens_estimate"].is_u64());
+        v["metadata_bytes"] = serde_json::Value::Null;
+        v["metadata_tokens_estimate"] = serde_json::Value::Null;
+        return serde_json::to_string_pretty(&v).unwrap();
+    }
+    text.lines()
+        .filter(|l| match l.strip_prefix("  ") {
+            Some(rest) => A0_SKILLS.contains(&rest.split_whitespace().next().unwrap_or("")),
+            None => true,
+        })
+        .map(|l| {
+            if l.starts_with("Metadata: ") {
+                let rest = l.split_once(" bytes (~").expect("metadata line").1;
+                let tail = rest.split_once(" tokens").expect("metadata line").1;
+                format!("Metadata: N bytes (~N tokens{tail}")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A temp home, state root and data root, and a `horch` that sees only them.
 struct World {
     _tmp: tempfile::TempDir,
@@ -164,8 +217,16 @@ fn mkt_09_legacy_skills_flags_output_unchanged() {
             args.extend_from_slice(extra);
             w.horch(&args)
         };
-        assert_eq!(run(&[]), oracle("skills.txt"), "{prefix:?}");
-        assert_eq!(run(&["--json"]), oracle("skills-json.txt"), "{prefix:?}");
+        assert_eq!(
+            a0_skills_view(&run(&[])),
+            a0_skills_view(&oracle("skills.txt")),
+            "{prefix:?}"
+        );
+        assert_eq!(
+            a0_skills_view(&run(&["--json"])),
+            a0_skills_view(&oracle("skills-json.txt")),
+            "{prefix:?}"
+        );
         for phase in PHASES {
             assert_eq!(
                 run(&["--phase", phase]),

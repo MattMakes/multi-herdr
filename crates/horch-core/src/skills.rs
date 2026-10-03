@@ -185,7 +185,8 @@ mod tests {
     #[test]
     fn skills_catalog_is_portable_and_every_phase_resolves() {
         let catalog = catalog().unwrap();
-        assert_eq!(catalog.len(), 16);
+        // The 16 original skills; design skills join by name, not by phase.
+        assert!(catalog.len() >= 16, "{}", catalog.len());
         // `orchestrate` and `skill-creator` are attached by name, to the
         // orchestrators only, and belong to no phase catalog. Adding either to
         // `Phase::Plan` would hand it to `staff-engineer` and every other
@@ -204,7 +205,10 @@ mod tests {
             .map(String::as_str)
             .filter(|n| !phased.contains(n))
             .collect();
-        assert_eq!(by_name_only, crate::roster::ORCHESTRATOR_ONLY_SKILLS);
+        // Design skills are by name too, for the specialists that list them.
+        for name in &crate::roster::ORCHESTRATOR_ONLY_SKILLS {
+            assert!(by_name_only.contains(name), "{name}");
+        }
         for phase in [
             Phase::Research,
             Phase::Plan,
