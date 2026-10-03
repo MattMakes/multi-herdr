@@ -1,5 +1,6 @@
 //! Workspace boundary: the herdr client and the pure tiler modules.
 
+pub mod arrange;
 pub mod balance;
 pub mod client;
 pub mod herdr;
