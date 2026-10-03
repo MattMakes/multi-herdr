@@ -79,3 +79,4 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - B4 job unit: headless.rs must substitute {rubric}/{schema} in judge.md (agent_prompt can't render it). Cleanup must chmod 0500 bundle dirs before removal. Partial bundle build with changed bytes → Conflict forever; coordinator must not retry it (use a fresh attempt dir or rebuild policy). task.md not blindness-scanned. HEADLESS_ONLY at roster::teammate::HEADLESS_ONLY. build_judge_input(round_id, ..., repo). tel_02_fleet_writes_orchestrator_record flaky under load.
 - Merged U27 b5-promotion. Engine API and gotchas: ai_docs/reports/arch-refactor-dataset/b5-promotion.md
 - Merged U29 b2-binary (CLI in dataset/cli.rs, dispatch dataset/mod.rs).
+- Merged U28 a10-exposure (A10 landed).
