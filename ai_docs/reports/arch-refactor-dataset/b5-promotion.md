@@ -16,6 +16,7 @@ unit.
 | `measure/projection.rs` | `operator.promote`: NEEDS_INTERVENTION or COMPLETE → DECIDED → REVALIDATING. A round without a winner gives an anomaly |
 | `tests/promotion.rs` | 15 tests |
 | `dataset/export.rs`, `tests/measure.rs`, `tests/dataset_export.rs` | call sites only (the orchestrator approved this) |
+| `evaluation/judge_input.rs`, `tests/judge_input.rs` | 1 call site each, after the rebase onto U23 (same `?` / `.unwrap()` fix) |
 
 `competition/state.rs` did not change. Its table already has the
 REVALIDATING rows and `operator.promote`.
