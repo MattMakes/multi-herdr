@@ -88,3 +88,4 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Merged U30 b3-coordinator (B3 landed). Kernel gaps: worker dying before set_running leaves Starting+live pane (deadline only); CommandValidator gets no HORCH_FAULT set (fail-gate unreachable from run) -> U35.
 - SPEC-TODO from U30: Spec B §budget expected spend of a running candidate (committed = 0).
 - Merged U35 worker-startup-failure (enter_context/register failure -> Failed(AgentExited{None})).
+- Gap (from U32): codex session discovery polls every 3 s; a worker that ends sooner never records its session id -> no cost. Fix: final discovery attempt at agent exit / horch done.
