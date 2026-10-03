@@ -11,12 +11,14 @@
 //! constant, listed in `ai_docs/reports/arch-refactor-dataset/b2-preflight.md`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::competition::config::DatasetConfig;
+use crate::fsx::DirLock;
 use crate::harness::HarnessKind;
 use crate::ids::{ModelId, TeammateName};
 use crate::measure::digest::{digest_json, Digest};
@@ -859,6 +861,49 @@ fn pre_11_storage(probe: StorageProbe) -> CheckResult {
             measured,
         )
     }
+}
+
+/// Probe `dir` the way the dataset store uses it: create a private file,
+/// write and fsync it, rename it, delete it, and take and release a
+/// [`DirLock`]. Each step that fails sets its flag to `false`; the probe
+/// never errors. It leaves nothing behind.
+pub fn storage_probe(dir: &Path) -> StorageProbe {
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let first = dir.join(format!(".preflight-{}.tmp", &nonce[..12]));
+    let second = dir.join(format!(".preflight-{}.done", &nonce[..12]));
+    let mut probe = StorageProbe::default();
+
+    match create_private(&first) {
+        Ok(mut file) => {
+            use std::io::Write;
+            probe.writable = file.write_all(b"preflight\n").is_ok();
+            probe.fsync_ok = probe.writable && file.sync_all().is_ok();
+            drop(file);
+            probe.rename_ok = std::fs::rename(&first, &second).is_ok();
+            let _ = std::fs::remove_file(if probe.rename_ok { &second } else { &first });
+        }
+        Err(_) => probe.writable = false,
+    }
+    probe.lock_ok = DirLock::acquire(
+        dir,
+        &format!(".preflight-{}", &nonce[..12]),
+        Duration::from_secs(60),
+        Duration::from_secs(2),
+    )
+    .map(|guard| guard.release())
+    .is_ok();
+    probe
+}
+
+fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(crate::fsx::PRIVATE_FILE);
+    }
+    options.open(path)
 }
 
 fn pre_13_herdr(plan: &PreflightPlan) -> CheckResult {
