@@ -10,6 +10,7 @@ pub(crate) mod claude;
 pub(crate) mod claude_plugins;
 pub mod codex;
 pub mod headless;
+pub mod inventory;
 pub mod launch;
 pub(crate) mod none;
 pub mod opencode;
@@ -269,6 +270,16 @@ pub enum HarnessKind {
 }
 
 impl HarnessKind {
+    /// Every kind, `None` included. A new harness adds itself here.
+    pub const ALL: &'static [HarnessKind] = &[
+        HarnessKind::Claude,
+        HarnessKind::Codex,
+        HarnessKind::OpenCode,
+        HarnessKind::Pi,
+        HarnessKind::Prime,
+        HarnessKind::None,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             HarnessKind::Claude => "claude",
