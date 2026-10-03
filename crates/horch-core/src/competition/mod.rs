@@ -2,6 +2,8 @@
 //! pure domain model and, in later phases, rounds and promotion.
 
 pub mod config;
+pub mod diversity;
 pub mod model;
+pub mod planner;
 pub mod preflight;
 pub mod state;
