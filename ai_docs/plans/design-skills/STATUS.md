@@ -25,3 +25,4 @@ Notes:
 - Orchestrator fix merged: skill tests independent of new skills (A0 view for full listing; DESIGN_SOURCE_PINS).
 - Follow-ups: harness_version should read stderr (prime prints --version there; pi --version crashes here); SkillExposure::as_str; skills/README intro still says one upstream.
 - Orchestrator: harness_version 15 s + stderr. Merge helper /tmp/dsmerge.sh resolves README rows and provenance (union by name).
+- Open (from D10): fleet-orchestrator.md:115 and its golden do not list the google pool; horch done can still fail if its pane get runs after the coordinator closed the pane; fake-herdr reuses pane ids after close.
