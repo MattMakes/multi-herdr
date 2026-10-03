@@ -123,7 +123,13 @@ pub fn poll_record(
         "opencode" => {
             let key = input_key(agent, sid, &loc.opencode_db);
             let cursor = cursors.entry(key).or_default();
-            opencode_poll(&loc.opencode_db, sid, cursor, &mut polled.observations)?;
+            opencode_poll(
+                &loc.opencode_db,
+                &loc.sqlite3,
+                sid,
+                cursor,
+                &mut polled.observations,
+            )?;
             polled.files.push(loc.opencode_db.clone());
         }
         "none" => return Err(Unreadable::NotRead("agent none is not read".into())),
@@ -598,6 +604,7 @@ fn safe_id(s: &str) -> bool {
 /// opened read-only through the `sqlite3` CLI; horch links no SQLite.
 pub fn opencode_poll(
     db: &Path,
+    sqlite3: &Path,
     session_id: &str,
     c: &mut Cursor,
     out: &mut Vec<Observation>,
@@ -618,7 +625,7 @@ pub fn opencode_poll(
          AND time_updated >= {} ORDER BY time_updated, id;",
         c.since_ms
     );
-    let rows = sqlite_json(db, &query)?;
+    let rows = sqlite_json(sqlite3, db, &query)?;
     let grew = !rows.is_empty();
     for row in rows {
         let id = row
@@ -708,9 +715,8 @@ pub fn opencode_message(c: &mut Cursor, id: &str, data: &Value, out: &mut Vec<Ob
 }
 
 /// Run a query through `sqlite3 -readonly -json`. No rows prints nothing.
-fn sqlite_json(db: &Path, query: &str) -> Result<Vec<Value>, Unreadable> {
-    let bin = crate::agent::sqlite3_bin();
-    let output = std::process::Command::new(&bin)
+fn sqlite_json(bin: &Path, db: &Path, query: &str) -> Result<Vec<Value>, Unreadable> {
+    let output = std::process::Command::new(bin)
         .arg("-readonly")
         .arg("-json")
         .arg(db)

@@ -499,6 +499,7 @@ mod tests {
             codex_sessions: home.join(".codex/sessions"),
             pi_sessions: home.join(".pi/agent/sessions"),
             opencode_db: home.join(".local/share/opencode/opencode.db"),
+            sqlite3: "sqlite3".into(),
         };
         let records = vec![
             record(

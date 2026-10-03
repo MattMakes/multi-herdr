@@ -30,6 +30,7 @@ pub fn locations(home: &Path) -> Locations {
         codex_sessions: home.join(".codex/sessions"),
         pi_sessions: home.join(".pi/agent/sessions"),
         opencode_db: home.join(".local/share/opencode/opencode.db"),
+        sqlite3: horch_core::agent::sqlite3_bin(),
     }
 }
 

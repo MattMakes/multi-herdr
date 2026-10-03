@@ -480,18 +480,25 @@ pub struct Locations {
     pub pi_sessions: PathBuf,
     /// OpenCode's SQLite database. `$HORCH_OPENCODE_DB` overrides.
     pub opencode_db: PathBuf,
+    /// The `sqlite3` CLI that reads `opencode_db`. `$HORCH_SQLITE3_BIN`
+    /// overrides.
+    pub sqlite3: PathBuf,
 }
 
 impl Locations {
     /// Every location for the context's home, with the environment overrides
-    /// it read applied.
+    /// it read applied, and the context's `sqlite3`.
     pub fn from_context(ctx: &crate::runtime::RuntimeContext) -> Self {
-        Self::under_home(&ctx.paths.home, &ctx.inherited)
+        Self {
+            sqlite3: ctx.bins.harness.sqlite3.clone(),
+            ..Self::under_home(&ctx.paths.home, &ctx.inherited)
+        }
     }
 
     /// Every location for a given home directory, with the overrides in
     /// `inherited` applied: `CODEX_HOME`, `PI_CODING_AGENT_SESSION_DIR`,
     /// `HORCH_OPENCODE_DB` and `XDG_DATA_HOME`. Tests pass a temp dir.
+    /// `sqlite3` is the plain program name.
     pub fn under_home(home: &Path, inherited: &crate::runtime::Inherited) -> Self {
         let codex_sessions =
             crate::codex::codex_home(home, inherited.codex_home.as_deref()).join("sessions");
@@ -512,6 +519,7 @@ impl Locations {
             codex_sessions,
             pi_sessions,
             opencode_db,
+            sqlite3: PathBuf::from("sqlite3"),
         }
     }
 }
@@ -719,6 +727,7 @@ mod tests {
             codex_sessions: home.join(".codex/sessions"),
             pi_sessions: home.join(".pi/agent/sessions"),
             opencode_db: home.join(".local/share/opencode/opencode.db"),
+            sqlite3: PathBuf::from("sqlite3"),
         };
 
         assert!(read_session(&loc, "claude", Some("sid-c")).is_ok());
