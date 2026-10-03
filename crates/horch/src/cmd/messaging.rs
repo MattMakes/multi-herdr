@@ -46,9 +46,12 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     };
     let line = if text.chars().count() > message::MAX_INLINE {
         let from = sender.as_deref().unwrap_or("orchestrator");
-        // `message::spool_dir()` under the context's state root.
-        let spool_dir = ctx.paths.state_root.join("messages");
-        let path = message::spool(&spool_dir, from, role, &text)?;
+        let path = message::spool(
+            &message::spool_dir(&ctx.paths.state_root),
+            from,
+            role,
+            &text,
+        )?;
         message::reference_line(&text, &path)
     } else {
         text
