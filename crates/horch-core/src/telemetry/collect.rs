@@ -19,8 +19,9 @@ use super::readers::{poll_record, Cursors};
 use super::store::{self, Rollup, Store};
 use super::{Event, Observation, QuotaSignal, TokenClasses, Unread};
 use crate::clock;
+use crate::execution::model::ExecutionStatus;
 use crate::execution::store as execution_store;
-use crate::ledger::{Record, KIND_ORCHESTRATOR, STATUS_DONE, STATUS_WORKING};
+use crate::ledger::{Record, KIND_ORCHESTRATOR};
 use crate::policy::Policy;
 use crate::quota::{self, ProbeBins, QuotaEnv, QuotaFile, QuotaView};
 use crate::usage::{self, Locations, Price};
@@ -407,7 +408,7 @@ pub fn build_snapshot(
     let _ = policy;
     let done: BTreeSet<String> = records
         .iter()
-        .filter(|r| r.status == STATUS_DONE)
+        .filter(|r| r.execution_status().is_terminal())
         .map(|r| r.record_id.clone())
         .collect();
     let mut rollups = BTreeMap::new();
@@ -448,10 +449,17 @@ pub fn build_snapshot(
         let a = per.get(r.record_id.as_str());
         let last = a.and_then(|a| a.last.clone());
         let recent_event = last.as_deref().is_some_and(|l| l >= ten_min_ago.as_str());
-        if r.status != STATUS_WORKING && !recent_event {
+        // A live execution always shows; a finished one while its last
+        // event is recent. A failed one never does: no agent runs for it.
+        let status = r.execution_status();
+        let failed = matches!(
+            status,
+            ExecutionStatus::Failed { .. } | ExecutionStatus::LaunchFailed { .. }
+        );
+        if failed || (!status.is_live() && !recent_event) {
             continue;
         }
-        let idle = r.task == IDLE_TASK || (r.status == STATUS_WORKING && !recent_event);
+        let idle = r.task == IDLE_TASK || (status.is_live() && !recent_event);
         let assessment = quota.assess(&r.agent, &r.model);
         live.push(LiveRow {
             project: r.project.clone(),

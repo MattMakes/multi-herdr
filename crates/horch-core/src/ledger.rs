@@ -197,17 +197,18 @@ impl Ledger {
         self.store.insert(record)
     }
 
-    /// Mark `working` orchestrator records done, as `superseded`, unless
-    /// `keep` says their workspace is still open. An orchestrator never runs
-    /// `horch done`; the next `horch fleet` retires the ones whose workspace
-    /// is gone instead. Returns how many records it closed.
+    /// Mark live (starting or running) orchestrator records done, as
+    /// `superseded`, unless `keep` says their workspace is still open. An
+    /// orchestrator never runs `horch done`; the next `horch fleet` retires
+    /// the ones whose workspace is gone instead. Returns how many records it
+    /// closed. A planned record never launched, so it is left alone.
     pub fn supersede_orchestrators(&self, keep: impl Fn(&str) -> bool) -> Result<usize> {
         let at = now();
         self.store.update(|records| {
             let mut n = 0;
             for r in records.iter_mut().filter(|r| {
                 r.is_orchestrator()
-                    && r.status == STATUS_WORKING
+                    && r.execution_status().is_live()
                     && !r.workspace_id.as_deref().is_some_and(&keep)
             }) {
                 r.set_legacy_status(STATUS_DONE);
@@ -294,14 +295,15 @@ impl Ledger {
 
     /// Point a live worker at a new task.
     ///
-    /// Targets the most recently updated `working` record for the role, so
-    /// assigning updates what that worker is doing without minting a new session.
+    /// Targets the most recently updated live (starting or running) record
+    /// for the role, so assigning updates what that worker is doing without
+    /// minting a new session. A planned record has no agent yet.
     pub fn assign(&self, role: &str, task: &str) -> Result<()> {
         let at = now();
         self.store.update(|records| {
             let key = records
                 .iter()
-                .filter(|r| r.role == role && r.status == STATUS_WORKING)
+                .filter(|r| r.role == role && r.execution_status().is_live())
                 .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
                 .map(|r| r.record_id.clone());
             let Some(key) = key else {
