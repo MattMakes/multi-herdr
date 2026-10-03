@@ -40,6 +40,7 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 
 ## Open items
 - Spec A / Spec B verbatim text: requested from operator. Needed for design appendices, judge.md (§10), Judgment schema (§11), event list, CHECKLIST (§16), final audit.
+- SPEC-TODO from U29: Spec B §3 build_bytes estimate, local_model_bytes, trusted_parents (PRE-13 warns every run); outcome default score per kind.
 
 - Running: U26 a6b-service (opus-17), U28 a10-exposure (backend-developer-8), U31 b4-judge-job (opus-18). Queued: U30 (after U26), U32 (after U30+U31), U33 last.
 
