@@ -145,11 +145,11 @@ fn preflight_and_run(
     });
 
     let git = GitCli::new(ctx.bins.harness.git.clone());
-    let head = preflight::repo_facts(&git, &project, &[]).base_sha;
+    let head = preflight::repo_facts(&git, &project, &[], None).base_sha;
     let (plan, view) = plan_with_view(ctx, &config, &round_id, head.as_deref().unwrap_or(""))?;
 
     let branches = planned_branches(experiment, &plan, &config);
-    let git_facts = preflight::repo_facts(&git, &project, &branches);
+    let git_facts = preflight::repo_facts(&git, &project, &branches, config.promote_to.as_deref());
     let candidates = plan
         .candidates
         .iter()
@@ -540,7 +540,7 @@ fn planned_branches(
             WorktreeSpec {
                 repo: root.clone(),
                 root: root.clone(),
-                exp8: exp8(experiment),
+                exp8: experiment.short(),
                 round_index: plan.index,
                 label: c.label.to_string(),
                 base_sha: plan.base_sha.clone(),
@@ -548,11 +548,6 @@ fn planned_branches(
             .branch()
         })
         .collect()
-}
-
-/// The first 8 characters of the experiment id.
-pub fn exp8(experiment: &ExperimentId) -> String {
-    experiment.as_str().chars().take(8).collect()
 }
 
 /// The variables `envsnap` may keep: the plain ones the binary read, plus

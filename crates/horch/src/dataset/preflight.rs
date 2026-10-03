@@ -45,7 +45,14 @@ const NOT_CHECKED_OUT: [&str; 3] = [".git", "target", "node_modules"];
 /// Read the git facts of `project`. A failing git call leaves its fact
 /// unknown; PRE-01 then fails with the reason. `branches` are the planned
 /// candidate branches; each one that exists already is "taken".
-pub fn repo_facts(git: &GitCli, project: &Path, branches: &[String]) -> GitFacts {
+/// `promote_to` is the `--promote-to` target, checked to be a local branch
+/// outside the candidate namespace.
+pub fn repo_facts(
+    git: &GitCli,
+    project: &Path,
+    branches: &[String],
+    promote_to: Option<&str>,
+) -> GitFacts {
     let toplevel = git.toplevel(project).ok();
     let dir = toplevel.as_deref().unwrap_or(project);
     let base_sha = toplevel.as_ref().and_then(|_| git.head(dir).ok());
@@ -67,13 +74,34 @@ pub fn repo_facts(git: &GitCli, project: &Path, branches: &[String]) -> GitFacts
             .collect(),
         None => Vec::new(),
     };
+    let promote_target_problem = match (&toplevel, promote_to) {
+        (Some(dir), Some(target)) => promote_target_problem(git, dir, target),
+        _ => None,
+    };
     GitFacts {
         toplevel,
         base_sha,
         dirty,
         worktree_supported,
         namespace_taken,
+        promote_target_problem,
         git_version: git.version().ok().map(|v| redact(v.trim()).into_owned()),
+    }
+}
+
+/// Why `target` cannot take a promotion, or `None` when it can: it must
+/// be an existing local branch and not a candidate branch.
+fn promote_target_problem(git: &GitCli, dir: &Path, target: &str) -> Option<String> {
+    if target.starts_with("mh/exp/") {
+        return Some(format!(
+            "the promotion target '{target}' is a candidate branch (mh/exp/...)"
+        ));
+    }
+    match git.rev_parse(dir, &format!("refs/heads/{target}")) {
+        Ok(Some(_)) => None,
+        _ => Some(format!(
+            "the promotion target '{target}' is not a local branch"
+        )),
     }
 }
 

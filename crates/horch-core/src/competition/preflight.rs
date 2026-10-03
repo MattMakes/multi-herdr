@@ -76,6 +76,11 @@ pub struct GitFacts {
     pub worktree_supported: bool,
     /// Planned branch names that already exist.
     pub namespace_taken: Vec<String>,
+    /// Why `--promote-to` names no valid target: it is not a local branch,
+    /// or it is a candidate branch (`mh/exp/...`). `None` when it is valid
+    /// or not asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promote_target_problem: Option<String>,
     /// `git --version` output, such as `git version 2.39.5`.
     pub git_version: Option<String>,
 }
@@ -263,6 +268,9 @@ fn pre_01_git(plan: &PreflightPlan) -> CheckResult {
             git.namespace_taken.join(", ")
         ));
     }
+    if let Some(problem) = &git.promote_target_problem {
+        problems.push(problem.clone());
+    }
     let measured = json!({
         "toplevel": git.toplevel,
         "base_sha": git.base_sha,
@@ -271,6 +279,7 @@ fn pre_01_git(plan: &PreflightPlan) -> CheckResult {
         "worktree_supported": git.worktree_supported,
         "git_version": git.git_version,
         "namespace_taken": git.namespace_taken,
+        "promote_target_problem": git.promote_target_problem,
     });
     if problems.is_empty() {
         let detail = if git.dirty {

@@ -1070,6 +1070,56 @@ fn cmp_13_rebuild_after_power_loss() {
     assert_clean(&h);
 }
 
+/// Two experiments started back to back in one repo share the timestamp
+/// head of their ids; their branch prefixes come from the random tail, so
+/// both pass PRE-01 and their branches do not overlap.
+#[test]
+fn pre_01_two_experiments_same_minute_no_branch_collision() {
+    let Some(h) = pair("pre01same", "", done("a.txt")) else {
+        return;
+    };
+    let out = run_round(&h, 2, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let first = candidate_branches(&h);
+    assert_eq!(first.len(), 2, "{first:?}");
+    let out = run_round(&h, 2, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let all = candidate_branches(&h);
+    assert_eq!(all.len(), 4, "the second run made 2 new branches: {all:?}");
+
+    let events = events(&h);
+    let reports = of_kind(&events, "preflight.completed");
+    assert_eq!(reports.len(), 2);
+    for r in &reports {
+        let pre01 = r["payload"]["report"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "PRE-01")
+            .unwrap();
+        assert_eq!(pre01["status"], "pass", "{pre01}");
+    }
+    let exps: Vec<&str> = reports
+        .iter()
+        .map(|r| r["experiment_id"].as_str().unwrap())
+        .collect();
+    assert_ne!(exps[0], exps[1]);
+    // Each experiment's branches carry its own prefix: the id's random tail.
+    for (exp, worktree) in exps.iter().flat_map(|exp| {
+        of_kind(&events, "worktree.created")
+            .into_iter()
+            .filter(move |w| w["experiment_id"] == *exp)
+            .map(move |w| (*exp, w))
+    }) {
+        let tail: String = exp.chars().filter(char::is_ascii_hexdigit).collect();
+        let prefix = format!("mh/exp/{}/", &tail[tail.len() - 8..]);
+        let branch = worktree["payload"]["branch"].as_str().unwrap();
+        assert!(branch.starts_with(&prefix), "{branch} under {prefix}");
+    }
+    assert_rebuild_equal(&h);
+    assert_clean(&h);
+}
+
 #[test]
 fn cmp_14_all_candidates_fail_round_rejected() {
     let crash = serde_json::json!({"write": {"x.txt": "x\n"}, "exit": "crash"});

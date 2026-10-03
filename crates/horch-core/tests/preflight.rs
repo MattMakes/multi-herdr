@@ -104,6 +104,7 @@ fn plan() -> PreflightPlan {
             dirty: false,
             worktree_supported: true,
             namespace_taken: Vec::new(),
+            promote_target_problem: None,
             git_version: Some("git version 2.39.5 (Apple Git-154)".to_string()),
         },
         storage_probe: StorageProbe {
@@ -213,6 +214,17 @@ fn pre_01_dirty_policy() {
     let r = evaluate(&p, &mac());
     assert_eq!(status(&r, "PRE-01"), CheckStatus::Pass);
     assert!(detail(&r, "PRE-01").contains("dirty tree allowed"));
+}
+
+#[test]
+fn pre_01_promote_target_problem_fails() {
+    let mut p = plan();
+    p.git.promote_target_problem =
+        Some("the promotion target 'release' is not a local branch".into());
+    let r = evaluate(&p, &mac());
+    assert_eq!(status(&r, "PRE-01"), CheckStatus::Fail);
+    assert!(detail(&r, "PRE-01").contains("'release' is not a local branch"));
+    assert!(!r.passed);
 }
 
 #[test]

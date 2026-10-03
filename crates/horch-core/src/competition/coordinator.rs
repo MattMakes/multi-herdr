@@ -90,6 +90,7 @@ use crate::workspace::client::WorkspaceClient;
 
 /// The `_base/` file whose body is every candidate's task text (CMP-15).
 pub const CANDIDATE_TEMPLATE: &str = "competition-candidate";
+
 /// The label of a round's herdr workspace: `multi-herdr-dataset <exp8>`.
 pub const WORKSPACE_LABEL: &str = "multi-herdr-dataset";
 
@@ -268,11 +269,17 @@ impl<G: GitClient> Coordinator<'_, G> {
 
     // ── provisioning ────────────────────────────────────────────────────
 
-    fn worktree_spec(&self, spec: &RoundSpec, label: &str, base_sha: &str) -> WorktreeSpec {
+    fn worktree_spec(
+        &self,
+        spec: &RoundSpec,
+        view: &RoundView,
+        label: &str,
+        base_sha: &str,
+    ) -> WorktreeSpec {
         WorktreeSpec {
             repo: spec.repo.clone(),
             root: spec.worktree_root.clone(),
-            exp8: spec.experiment.as_str().chars().take(8).collect(),
+            exp8: exp8_of(spec, view),
             round_index: spec.index,
             label: label.to_string(),
             base_sha: base_sha.to_string(),
@@ -295,7 +302,7 @@ impl<G: GitClient> Coordinator<'_, G> {
             if c.worktree.is_some() {
                 continue;
             }
-            let wt = self.worktree_spec(spec, label, &base);
+            let wt = self.worktree_spec(spec, &view, label, &base);
             let mgr = WorktreeManager { git: self.git };
             let path = mgr
                 .create(&wt)
@@ -341,7 +348,7 @@ impl<G: GitClient> Coordinator<'_, G> {
                 return Ok(ws);
             }
         }
-        let exp8: String = spec.experiment.as_str().chars().take(8).collect();
+        let exp8 = spec.experiment.short();
         let repo = spec.repo.to_string_lossy();
         let created = self
             .workspace
@@ -870,7 +877,8 @@ impl<G: GitClient> Coordinator<'_, G> {
         }
         let records = self.records()?;
         for label in view.candidates.keys() {
-            let c = &self.view(spec)?.candidates[label];
+            let current = self.view(spec)?;
+            let c = &current.candidates[label];
             let wt = c.worktree.as_ref().context("candidate has no worktree")?;
             let execution = c
                 .execution_id
@@ -886,7 +894,7 @@ impl<G: GitClient> Coordinator<'_, G> {
             if c.frozen.is_none() {
                 let (head_sha, numstat, diff_digest) = if ran {
                     let f = WorktreeManager { git: self.git }.freeze(
-                        &self.worktree_spec(spec, label, &wt.base_sha),
+                        &self.worktree_spec(spec, &current, label, &wt.base_sha),
                         &execution,
                         (self.clock)(),
                     )?;
@@ -1168,6 +1176,19 @@ impl<G: GitClient> Coordinator<'_, G> {
 /// Labels are plain letters, so no candidate worktree has this name.
 pub fn integration_root(worktree_root: &std::path::Path) -> PathBuf {
     worktree_root.join("_promote")
+}
+
+/// The round's branch prefix (`mh/exp/<exp8>/...`). A round whose
+/// `worktree.created` events exist keeps the prefix they record, so a round
+/// started under the old rule (the id's first 8 characters) still freezes;
+/// else the random tail of the experiment id.
+fn exp8_of(spec: &RoundSpec, view: &RoundView) -> String {
+    view.candidates
+        .values()
+        .filter_map(|c| c.worktree.as_ref())
+        .find_map(|wt| wt.branch.strip_prefix("mh/exp/")?.split('/').next())
+        .map(str::to_string)
+        .unwrap_or_else(|| spec.experiment.short())
 }
 
 /// The promotion a round's events ask for: the target branch and the
