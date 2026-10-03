@@ -3,6 +3,7 @@
 //! projections.
 
 pub mod digest;
+pub mod event;
 pub mod paths;
 pub mod redact;
 pub mod testkit;
