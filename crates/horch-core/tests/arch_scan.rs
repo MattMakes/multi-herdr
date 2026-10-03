@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 /// Files that still read the process environment, with the phase that
-/// removes each entry. Do not add entries. A12 removed the last one
-/// (`teammates.rs`).
+/// removes each entry. Do not add entries. The last one (`teammates.rs`) is
+/// gone.
 const PENDING: &[&str] = &[];
 
 /// Ambient environment access. `std::env::consts` is allowed.
@@ -407,7 +407,7 @@ const REEXPORT_ALLOWED: &[(&str, &str)] = &[(
 )];
 
 /// The top-level `horch-core` files that were re-export shims (or the
-/// `ledger.rs` facade) until A12. None may come back.
+/// `ledger.rs` facade) during the refactor. None may come back.
 const REMOVED_SHIM_FILES: [&str; 18] = [
     "agent.rs",
     "balance.rs",
@@ -429,8 +429,8 @@ const REMOVED_SHIM_FILES: [&str; 18] = [
     "tile.rs",
 ];
 
-/// Signatures of the wrappers kept "until A12". Matched against code lines
-/// outside tests.
+/// Signatures of the wrappers the refactor kept for old callers. Matched
+/// against code lines outside tests.
 const REMOVED_SHIM_ITEMS: [&str; 17] = [
     "fn from_process(",
     "fn send_line(&self",
@@ -479,7 +479,7 @@ fn reexport(line: &str) -> Option<&str> {
 }
 
 /// The refactor ends with no shim: no file only re-exports, every `pub use`
-/// names one of the file's own child modules, and none of the A12 shim
+/// names one of the file's own child modules, and none of the removed shim
 /// files or wrappers exist (ARC-25).
 #[test]
 fn arc_25_no_shim_modules() {
@@ -545,11 +545,7 @@ fn arc_25_no_shim_modules() {
         }
     }
     assert!(scanned > 60, "scanned only {scanned} files");
-    assert!(
-        found.is_empty(),
-        "shims left after A12:\n{}",
-        found.join("\n")
-    );
+    assert!(found.is_empty(), "shims left:\n{}", found.join("\n"));
     for entry in REEXPORT_ALLOWED {
         assert!(
             allowed_used.contains(entry),
