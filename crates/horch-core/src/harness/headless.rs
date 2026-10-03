@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
-use super::launch::{overlay_skill_switches, teammate_env, LaunchEnv};
+use super::claude::overlay_skill_switches;
+use super::launch::{teammate_env, LaunchEnv};
 use crate::evaluation::rubric::{rubric_text, schema_text};
 use crate::ids::SessionId;
 use crate::roster::operator_enabled_plugins;

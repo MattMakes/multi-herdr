@@ -30,9 +30,10 @@ use crate::evaluation::scheduler::{
 };
 use crate::evaluation::validator::ValidationReport;
 use crate::evaluation::winner::{decide_winner, WinnerOutcome, WinnerPolicy};
-use crate::execution::legacy::LedgerRecordV1;
-use crate::execution::model::{ExecutionStatus, FailureKind};
-use crate::execution::store::ExecutionStore;
+use crate::execution::store::{to_execution, ExecutionStore};
+use crate::execution::{
+    Execution, ExecutionKind, ExecutionStatus, FailureKind, SessionState, Task,
+};
 use crate::fsx;
 use crate::ids::{ExecutionId, JudgmentId, RoundId, SessionId};
 use crate::measure::digest::{sha256_bytes, Digest};
@@ -56,17 +57,8 @@ pub const ABORT_AFTER_JUDGMENT_WRITTEN: &str = "abort-after-judgment-written";
 /// After `winner.selected`.
 pub const ABORT_AFTER_WINNER_SELECTED: &str = "abort-after-winner-selected";
 
-/// The exit code of a process a fault point stopped (as `Faults::abort_if`).
-const ABORT_EXIT_CODE: i32 = 86;
-
 /// The longest one judge attempt may run, unless the config says otherwise.
 pub const DEFAULT_JUDGE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
-
-/// The `label` of a judge record: `judge:<attempt>` (the A6 ledger shape of
-/// `ExecutionKind::Judge`).
-pub fn judge_record_label(attempt: u32) -> String {
-    format!("judge:{attempt}")
-}
 
 /// Starts one judge attempt. The real one is [`DetachedLauncher`]; tests
 /// give a fake that writes the job files itself.
@@ -255,13 +247,6 @@ fn view(env: &JudgeEnv, round_id: &RoundId) -> Result<RoundView> {
         .with_context(|| format!("no round {round_id} in the event log"))
 }
 
-fn abort_if(env: &JudgeEnv, point: &str) {
-    if env.ctx.settings.faults.has(point) {
-        eprintln!("multi-herdr-dataset: HORCH_FAULT {point}: aborting");
-        std::process::exit(ABORT_EXIT_CODE);
-    }
-}
-
 fn emit(
     env: &JudgeEnv,
     round_id: &RoundId,
@@ -364,46 +349,72 @@ fn model_effort(judge: &Teammate) -> Result<(String, String)> {
     Ok((model, judge.effort.clone().unwrap_or_default()))
 }
 
-/// The judge record of `attempt`, created on first use: `kind: judge`
-/// (ledger `kind` worker, `round_id`, `label` `judge:<n>`), status Planned.
-fn judge_record(
+/// The judge execution of `attempt`, if the store has it.
+fn find_judge(env: &JudgeEnv, round_id: &RoundId, attempt: u32) -> Result<Option<Execution>> {
+    let want = ExecutionKind::Judge {
+        round: round_id.clone(),
+        attempt,
+    };
+    // A record that does not convert predates every keyed kind; skip it.
+    Ok(env
+        .store
+        .read()?
+        .iter()
+        .filter_map(|r| to_execution(r).ok())
+        .rfind(|e| e.kind == want))
+}
+
+/// The judge execution of `attempt`, created on first use: `kind: judge`,
+/// status Planned (Starting once launched), no pane, a minted session id.
+fn judge_execution(
     env: &JudgeEnv,
     round_id: &RoundId,
     attempt: u32,
     input_dir: &Path,
-) -> Result<LedgerRecordV1> {
-    let label = judge_record_label(attempt);
-    let round_text = round_id.to_string();
-    let found = env.store.read()?.into_iter().rfind(|r| {
-        r.round_id.as_deref() == Some(round_text.as_str()) && r.label.as_deref() == Some(&label)
-    });
-    if let Some(r) = found {
-        return Ok(r);
+) -> Result<Execution> {
+    if let Some(e) = find_judge(env, round_id, attempt)? {
+        return Ok(e);
     }
     let now = (env.clock)();
     let stamp = crate::clock::stamp(now);
     let (model, effort) = model_effort(env.judge)?;
-    let session = SessionId::new(crate::ids::mint_v7(now).to_string())?;
-    let mut r = LedgerRecordV1 {
-        record_id: ExecutionId::mint(now).to_string(),
-        session_id: Some(session.to_string()),
-        agent: env.judge.agent.as_str().to_string(),
-        tier: env.judge.name.clone(),
+    let round_text = round_id.to_string();
+    let e = Execution {
+        id: ExecutionId::mint(now),
+        kind: ExecutionKind::Judge {
+            round: round_id.clone(),
+            attempt,
+        },
+        teammate: env.judge.name.parse()?,
+        harness: env.judge.agent,
         model,
         effort: Some(effort).filter(|e| !e.is_empty()),
-        role: format!("judge-{}-{attempt}", short(&round_text)),
-        task: format!("judge round {round_id}, attempt {attempt}"),
+        phase: None,
+        role: format!("judge-{}-{attempt}", short(&round_text)).parse()?,
+        task: Task {
+            id: None,
+            text: format!("judge round {round_id}, attempt {attempt}"),
+            plan: None,
+        },
+        status: ExecutionStatus::Planned,
+        typed_status: true,
+        session: SessionState::Known(SessionId::new(crate::ids::mint_v7(now).to_string())?),
+        exit_code: None,
+        project: Some(env.ctx.paths.project()?),
+        workdir: Some(input_dir.to_path_buf()),
+        workspace: None,
+        pane: None,
+        skills: Vec::new(),
+        routing: None,
+        via: None,
+        substitution_reason: None,
+        history: Vec::new(),
         created_at: stamp.clone(),
         updated_at: stamp,
-        project: Some(env.ctx.paths.project()?.to_string_lossy().into_owned()),
-        workdir: Some(input_dir.to_string_lossy().into_owned()),
-        round_id: Some(round_text),
-        label: Some(label),
-        ..LedgerRecordV1::default()
+        finished_at: None,
     };
-    r.set_state(ExecutionStatus::Planned);
-    env.store.insert(r.clone())?;
-    Ok(r)
+    env.store.insert_execution(&e)?;
+    Ok(e)
 }
 
 fn short(id: &str) -> &str {
@@ -420,8 +431,8 @@ fn schedule_attempt(
     attempt: u32,
 ) -> Result<()> {
     let input = bundle(env, round_id, round)?;
-    let record = judge_record(env, round_id, attempt, &input.dir)?;
-    let execution: ExecutionId = record.record_id.parse()?;
+    let record = judge_execution(env, round_id, attempt, &input.dir)?;
+    let execution = record.id.clone();
     let job_dir = env.paths.job_dir(round_id, attempt)?;
     emit(
         env,
@@ -438,37 +449,35 @@ fn schedule_attempt(
     )?;
     if job_facts(&job_dir).spawned_at.is_none() {
         let (model, effort) = model_effort(env.judge)?;
-        let session = record
-            .session_id
-            .clone()
-            .context("the judge record has no session id")?;
+        let SessionState::Known(session) = record.session.clone() else {
+            bail!("the judge execution {execution} has no session id");
+        };
         env.launcher.launch(&JudgeJobSpec {
             round: round_id.clone(),
             attempt,
             input_dir: input.dir.clone(),
             job_dir,
-            session: SessionId::new(session)?,
+            session,
             model,
             effort,
             timeout: env.timeout,
         })?;
+        // Starting, not Planned: `recover_abandoned` closes a Planned record
+        // without a pane, and a judge never has one.
+        env.store
+            .set_state(execution.as_str(), ExecutionStatus::Starting)?;
     }
-    abort_if(env, ABORT_AFTER_JUDGE_SCHEDULED);
+    env.ctx
+        .settings
+        .faults
+        .abort_if(ABORT_AFTER_JUDGE_SCHEDULED);
     Ok(())
 }
 
 fn record_of(env: &JudgeEnv, round_id: &RoundId, attempt: u32) -> Result<ExecutionId> {
-    let label = judge_record_label(attempt);
-    let round_text = round_id.to_string();
-    let r = env
-        .store
-        .read()?
-        .into_iter()
-        .rfind(|r| {
-            r.round_id.as_deref() == Some(round_text.as_str()) && r.label.as_deref() == Some(&label)
-        })
-        .with_context(|| format!("no judge record for round {round_id} attempt {attempt}"))?;
-    Ok(r.record_id.parse()?)
+    Ok(find_judge(env, round_id, attempt)?
+        .with_context(|| format!("no judge execution for round {round_id} attempt {attempt}"))?
+        .id)
 }
 
 fn mark_started(
@@ -602,7 +611,10 @@ fn decide(
     bytes.push(b'\n');
     fsx::ensure_private_dir(&env.paths.judgements_dir())?;
     fsx::create_immutable(&env.paths.judgement(round_id)?, &bytes, fsx::PRIVATE_FILE)?;
-    abort_if(env, ABORT_AFTER_JUDGMENT_WRITTEN);
+    env.ctx
+        .settings
+        .faults
+        .abort_if(ABORT_AFTER_JUDGMENT_WRITTEN);
 
     let eligible: BTreeSet<String> = to_original
         .iter()
@@ -637,7 +649,10 @@ fn decide(
                     promotion: env.promotion.clone(),
                 }),
             )?;
-            abort_if(env, ABORT_AFTER_WINNER_SELECTED);
+            env.ctx
+                .settings
+                .faults
+                .abort_if(ABORT_AFTER_WINNER_SELECTED);
             Ok(JudgingStatus::Decided(WinnerOutcome::Winner {
                 label: original,
             }))
@@ -695,12 +710,4 @@ fn read_capped(path: &Path) -> Result<Vec<u8>> {
         .read_to_end(&mut raw)
         .with_context(|| format!("reading {}", path.display()))?;
     Ok(raw)
-}
-
-/// For a test or a caller that needs the record shape: whether `r` is the
-/// judge record of `round` and `attempt`.
-pub fn is_judge_record(r: &LedgerRecordV1, round: &RoundId, attempt: u32) -> bool {
-    r.round_id.as_deref() == Some(round.as_str())
-        && r.label.as_deref() == Some(judge_record_label(attempt).as_str())
-        && r.experiment_id.is_none()
 }

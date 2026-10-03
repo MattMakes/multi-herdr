@@ -177,9 +177,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 
-use horch_core::competition::judging::{
-    is_judge_record, judge_record_label, poll, start, JobLauncher, JudgeEnv, JudgingStatus,
-};
+use horch_core::competition::judging::{poll, start, JobLauncher, JudgeEnv, JudgingStatus};
 use horch_core::competition::model::RoundState;
 use horch_core::competition::preflight::PreflightReport;
 use horch_core::evaluation::judge_input::blind_labels;
@@ -188,7 +186,7 @@ use horch_core::evaluation::scheduler::JudgeJobSpec;
 use horch_core::evaluation::validator::ValidationReport;
 use horch_core::evaluation::winner::{WinnerOutcome, WinnerPolicy};
 use horch_core::execution::legacy::LedgerRecordV1;
-use horch_core::execution::store::ExecutionStore;
+use horch_core::execution::store::{to_execution, ExecutionStore};
 use horch_core::execution::{ExecutionKind, ExecutionStatus, FailureKind};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::{ExecutionId, ExperimentId, ModelId, PaneId, RoundId, TaskId, TeammateName};
@@ -649,18 +647,9 @@ fn original_of_a() -> String {
     map["A"].clone()
 }
 
-/// The typed kind of a judge record, as A6's `to_execution` reads it
-/// (`kind` worker, no experiment, `round_id`, `label` `judge:<n>`).
-/// When U26 merges, `horch_core::execution::store::to_execution` replaces it.
+/// The typed kind of a record, through A6's `to_execution`.
 fn typed_kind(r: &LedgerRecordV1) -> Option<ExecutionKind> {
-    if r.kind != "worker" || r.experiment_id.is_some() {
-        return None;
-    }
-    let attempt = r.label.as_deref()?.strip_prefix("judge:")?.parse().ok()?;
-    Some(ExecutionKind::Judge {
-        round: r.round_id.as_deref()?.parse().ok()?,
-        attempt,
-    })
+    to_execution(r).ok().map(|e| e.kind)
 }
 
 /// JDG-04: the job only answers; the coordinator writes the judgment file
@@ -835,7 +824,7 @@ fn cmp_12_judge_waits_for_terminal_set() {
 }
 
 /// JDG-09: each attempt is a `kind: judge` execution in the normal store,
-/// Planned at schedule time, then Done or Failed to match the outcome.
+/// Starting once launched, then Done or Failed to match the outcome.
 #[test]
 fn jdg_09_judge_execution_in_ledger() {
     let w = World::new();
@@ -855,15 +844,16 @@ fn jdg_09_judge_execution_in_ledger() {
             attempt: 1
         })
     );
-    assert!(is_judge_record(r, &round_id(), 1));
-    assert_eq!(r.label.as_deref(), Some(judge_record_label(1).as_str()));
+    assert_eq!(r.label.as_deref(), Some("judge:1"));
+    assert_eq!(r.round_id.as_deref(), Some(round_id().as_str()));
+    assert_eq!(r.experiment_id, None);
     assert_eq!(
         (r.tier.as_str(), r.agent.as_str(), r.model.as_str()),
         ("judge", "claude", "opus")
     );
     assert_eq!(r.effort.as_deref(), Some("high"));
     assert_eq!(r.pane_id, None);
-    assert_eq!(r.execution_status(), ExecutionStatus::Planned);
+    assert_eq!(r.execution_status(), ExecutionStatus::Starting);
     let session = r.session_id.clone().unwrap();
     assert_eq!(launcher.launched.borrow()[0].session.as_str(), session);
     assert_eq!(

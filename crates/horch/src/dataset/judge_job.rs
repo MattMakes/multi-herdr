@@ -33,9 +33,6 @@ pub const ABORT_BEFORE_OUTPUT: &str = "abort-in-judge-job-before-output";
 /// Inside the job, after `output.json` and before `exit.json`.
 pub const ABORT_AFTER_OUTPUT: &str = "abort-after-judge-output";
 
-/// The exit code of a process a fault point stopped (as `Faults::abort_if`).
-const ABORT_EXIT_CODE: i32 = 86;
-
 /// What one judge CLI run gave.
 enum RunResult {
     /// The answer text, taken out of the `--output-format json` envelope.
@@ -67,9 +64,9 @@ pub fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8> {
     });
     let done = match result {
         RunResult::Answer(text) => {
-            abort_if(ctx, ABORT_BEFORE_OUTPUT);
+            ctx.settings.faults.abort_if(ABORT_BEFORE_OUTPUT);
             fsx::create_immutable(&job_dir.join(OUTPUT_FILE), &text, fsx::PRIVATE_FILE)?;
-            abort_if(ctx, ABORT_AFTER_OUTPUT);
+            ctx.settings.faults.abort_if(ABORT_AFTER_OUTPUT);
             JobExit {
                 reason: ExitReason::Ok,
                 code: Some(0),
@@ -86,13 +83,6 @@ pub fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8> {
     } else {
         exit::FAILURE
     })
-}
-
-fn abort_if(ctx: &RuntimeContext, point: &str) {
-    if ctx.settings.faults.has(point) {
-        eprintln!("judge-job: HORCH_FAULT {point}: aborting");
-        std::process::exit(ABORT_EXIT_CODE);
-    }
 }
 
 /// Rewrite `heartbeat` every [`HEARTBEAT_EVERY`] until `stop`.
