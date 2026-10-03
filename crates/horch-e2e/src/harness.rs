@@ -81,7 +81,11 @@ impl Harness {
             std::fs::copy(&from, h.bin.join(exe(name))).expect("copying a fake");
         }
         // The one real program the tests use, on a fixture database only.
+        // A symlink, not a copy: macOS kills a copied system binary (137).
         if let Some(sqlite) = find_on_real_path("sqlite3") {
+            #[cfg(unix)]
+            let _ = std::os::unix::fs::symlink(sqlite, h.bin.join(exe("sqlite3")));
+            #[cfg(not(unix))]
             let _ = std::fs::copy(sqlite, h.bin.join(exe("sqlite3")));
         }
         h
