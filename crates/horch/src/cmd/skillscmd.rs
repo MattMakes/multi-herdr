@@ -72,8 +72,9 @@ pub fn run(
 }
 
 /// `horch skills show <id>`. JSON keys: `id`, `version`, `source`,
-/// `digest`, `description`, `provenance` (null unless bundled from
-/// upstream) and `install_path` (null for a compiled-in skill).
+/// `digest`, `description`, `provenance` (null unless a bundled skill
+/// has an entry in `provenance.json`) and `install_path` (null for a
+/// compiled-in skill).
 fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
     let catalog = SkillCatalog::installed(&ctx.paths.data_root)?;
     let entry = catalog
@@ -99,10 +100,23 @@ fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
     output::println(&format!("digest:       {}", entry.digest));
     output::println(&format!("description:  {}", printable(&entry.description)));
     if let Some(p) = &entry.provenance {
-        output::println(&format!(
-            "provenance:   {}@{} {}",
-            p.repository, p.revision, p.source_path
-        ));
+        if p.sources.is_empty() {
+            output::println("provenance:   original to this repository");
+        }
+        for src in &p.sources {
+            output::println(&format!(
+                "upstream:     {}@{} {} sha256:{}{}",
+                src.repository,
+                src.revision,
+                src.path,
+                src.sha256,
+                src.license
+                    .as_ref()
+                    .map(|l| format!(" {l}"))
+                    .unwrap_or_default()
+            ));
+        }
+        output::println(&format!("adaptation:   {}", printable(&p.adaptation)));
     }
     output::println(&format!(
         "install path: {}",

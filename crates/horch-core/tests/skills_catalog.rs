@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::SkillId;
 use horch_core::roster::{Phase, Roster, Teammate};
+use horch_core::skills::catalog::parse_provenance;
 use horch_core::skills::{
     self, briefing, plan_activation, BriefingContext, CatalogSource, InvocationPolicy,
     MaterializedSkills, SkillCatalog, BUNDLED_SKILL_FILES,
@@ -15,6 +16,9 @@ use horch_marketplace::LockEntry;
 
 const PINNED_REPOSITORY: &str = "https://github.com/MattMakes/skill-marketplace";
 const PINNED_COMMIT: &str = "d47670328c59a3311a9b4149bc5f8f33f0a92754";
+
+/// Skills written in this repository: their provenance has no sources.
+const REPO_ORIGINAL: &[&str] = &["orchestrate"];
 
 const PHASES: [Option<Phase>; 5] = [
     None,
@@ -27,6 +31,10 @@ const PHASES: [Option<Phase>; 5] = [
 fn repo_roster() -> Roster {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
     Roster::load_layered(None, None, Some(dir.to_str().unwrap())).unwrap()
+}
+
+fn skills_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills")
 }
 
 fn oracles() -> PathBuf {
@@ -58,8 +66,17 @@ fn lock_entry(id: &str, source: &str, version: &str) -> LockEntry {
 #[test]
 fn skl_01_bundled_catalog_versions_and_digests() {
     let catalog = SkillCatalog::bundled().unwrap();
-    assert_eq!(catalog.len(), 16);
     assert_eq!(catalog, SkillCatalog::bundled().unwrap(), "stable digests");
+
+    // Every skill directory is in the catalog, and nothing else is.
+    let on_disk: BTreeSet<String> = std::fs::read_dir(skills_dir())
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.path().join("SKILL.md").is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let in_catalog: BTreeSet<String> = catalog.entries().map(|e| e.id.to_string()).collect();
+    assert_eq!(in_catalog, on_disk);
 
     let tmp = tempfile::tempdir().unwrap();
     for entry in catalog.entries() {
@@ -87,21 +104,112 @@ fn skl_01_bundled_catalog_versions_and_digests() {
             "{id}"
         );
 
-        // `orchestrate` is original to this repository; `skill-creator`
-        // names its own upstream; the rest come from the pinned marketplace.
-        match id {
-            "orchestrate" => assert_eq!(entry.provenance, None),
-            _ => {
-                let p = entry.provenance.as_ref().unwrap_or_else(|| panic!("{id}"));
-                assert_eq!(p.source_sha256.len(), 64, "{id}");
-                assert!(is_hex(&p.source_sha256), "{id}");
-                assert!(p.source_path.ends_with("SKILL.md"), "{id}");
-                if id != "skill-creator" {
-                    assert_eq!(p.repository, PINNED_REPOSITORY, "{id}");
-                    assert_eq!(p.revision, PINNED_COMMIT, "{id}");
-                }
+        // A repo-original skill has an entry with no sources; every other
+        // skill names pinned upstream files.
+        let p = entry.provenance.as_ref().unwrap_or_else(|| panic!("{id}"));
+        assert!(!p.adaptation.trim().is_empty(), "{id}");
+        if REPO_ORIGINAL.contains(&id) {
+            assert!(p.sources.is_empty(), "{id}");
+            continue;
+        }
+        assert!(!p.sources.is_empty(), "{id}");
+        for src in &p.sources {
+            assert_eq!(src.sha256.len(), 64, "{id}");
+            assert!(is_hex(&src.sha256), "{id}");
+            assert!(src.path.ends_with(".md"), "{id}");
+            if id != "skill-creator" {
+                assert_eq!(src.repository, PINNED_REPOSITORY, "{id}");
+                assert_eq!(src.revision, PINNED_COMMIT, "{id}");
             }
         }
+    }
+}
+
+/// A skill entry may list several upstream sources; the single-source
+/// fields still parse as a 1-item list; an original skill has none.
+#[test]
+fn skills_multi_source_provenance_parses() {
+    let text = r#"{
+      "skills": [
+        {
+          "name": "multi",
+          "sources": [
+            {"repository": "https://example.com/a", "revision": "aa11", "path": "x/SKILL.md",
+             "sha256": "SHA", "license": "MIT"},
+            {"repository": "https://example.com/b", "revision": "bb22", "path": "y/rules.md",
+             "sha256": "SHA"}
+          ],
+          "adaptation": "Merged."
+        },
+        {"name": "old", "source_repository": "https://example.com/c", "source_revision": "cc33",
+         "source_path": "z/SKILL.md", "source_sha256": "SHA", "adaptation": "Kept."},
+        {"name": "own", "source_path": null, "adaptation": "Original."}
+      ]
+    }"#
+    .replace("SHA", &"ab".repeat(32));
+    let parsed = parse_provenance(&text).unwrap();
+    let multi = &parsed["multi"];
+    assert_eq!(multi.sources.len(), 2);
+    assert_eq!(multi.sources[0].license.as_deref(), Some("MIT"));
+    assert_eq!(multi.sources[1].repository, "https://example.com/b");
+    assert_eq!(multi.sources[1].license, None);
+    assert_eq!(parsed["old"].sources.len(), 1);
+    assert_eq!(parsed["old"].sources[0].revision, "cc33");
+    assert!(parsed["own"].sources.is_empty());
+    assert_eq!(parsed["own"].adaptation, "Original.");
+
+    // Mixing both shapes, a bad digest and a duplicate name fail.
+    let mixed = text.replace(
+        r#""name": "own", "source_path": null"#,
+        r#""name": "own", "sources": [], "source_path": "p""#,
+    );
+    assert!(parse_provenance(&mixed).is_err());
+    let bad = text.replacen(&"ab".repeat(32), "abc", 1);
+    assert!(parse_provenance(&bad).is_err());
+    let dup = text.replace(r#""name": "own""#, r#""name": "old""#);
+    assert!(parse_provenance(&dup).is_err());
+}
+
+/// The first 16 skills are over a limit or carry non-text files and stay as
+/// they are. A new skill meets the budget.
+const EXEMPT_FROM_BUDGET: &[&str] = &["skill-creator"];
+const MAX_SKILL_MD_BYTES: usize = 12 * 1024;
+const MAX_SKILL_DIR_BYTES: usize = 160 * 1024;
+
+#[test]
+fn skills_bundled_size_budget() {
+    let mut dirs: BTreeMap<&str, usize> = BTreeMap::new();
+    for (path, bytes) in BUNDLED_SKILL_FILES {
+        // Top-level files (README.md, provenance.json) belong to no skill.
+        let Some((id, rel)) = path.split_once('/') else {
+            continue;
+        };
+        *dirs.entry(id).or_default() += bytes.len();
+        if rel == "SKILL.md" && !EXEMPT_FROM_BUDGET.contains(&id) {
+            assert!(
+                bytes.len() <= MAX_SKILL_MD_BYTES,
+                "{id}/SKILL.md: {} bytes",
+                bytes.len()
+            );
+        }
+    }
+    for (id, total) in dirs {
+        if !EXEMPT_FROM_BUDGET.contains(&id) {
+            assert!(total <= MAX_SKILL_DIR_BYTES, "{id}: {total} bytes");
+        }
+    }
+}
+
+#[test]
+fn skills_bundled_text_only() {
+    for (path, _) in BUNDLED_SKILL_FILES {
+        let Some((id, _)) = path.split_once('/') else {
+            continue;
+        };
+        if EXEMPT_FROM_BUDGET.contains(&id) {
+            continue;
+        }
+        assert!(path.ends_with(".md") || path.ends_with(".txt"), "{path}");
     }
 }
 

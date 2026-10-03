@@ -42,15 +42,24 @@ pub enum CatalogSource {
     },
 }
 
-/// Where a bundled skill was adapted from, per `skills/provenance.json`. A
-/// skill written in this repository has none.
+/// One upstream file a bundled skill was adapted from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Provenance {
+pub struct SourceRef {
     pub repository: String,
     pub revision: String,
-    pub source_path: String,
-    /// sha256 hex of the full original upstream SKILL.md.
-    pub source_sha256: String,
+    pub path: String,
+    /// sha256 hex of the full original upstream file.
+    pub sha256: String,
+    /// The upstream license, when the entry records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+}
+
+/// Where a bundled skill was adapted from, per `skills/provenance.json`.
+/// A skill written in this repository has no sources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provenance {
+    pub sources: Vec<SourceRef>,
     pub adaptation: String,
 }
 
@@ -104,16 +113,19 @@ struct Metadata {
 
 #[derive(Deserialize)]
 struct ProvenanceFile {
-    source_repository: String,
-    source_revision: String,
+    /// Defaults for an entry that uses the single-source fields.
+    source_repository: Option<String>,
+    source_revision: Option<String>,
     skills: Vec<ProvenanceSkill>,
 }
 
-/// A skill may name its own upstream; `source_path: null` marks a skill
-/// written in this repository.
+/// A skill lists its upstream files in `sources` (empty for a skill written
+/// in this repository), or uses the single-source fields, which map to a
+/// 1-item list. `source_path: null` marks a skill written in this repository.
 #[derive(Deserialize)]
 struct ProvenanceSkill {
     name: String,
+    sources: Option<Vec<SourceRef>>,
     source_repository: Option<String>,
     source_revision: Option<String>,
     source_path: Option<String>,
@@ -121,11 +133,65 @@ struct ProvenanceSkill {
     adaptation: String,
 }
 
+/// Parse the text of `skills/provenance.json` into one entry per skill name.
+pub fn parse_provenance(text: &str) -> Result<BTreeMap<String, Provenance>> {
+    let file: ProvenanceFile = serde_json::from_str(text).context("skills/provenance.json")?;
+    let mut out = BTreeMap::new();
+    for s in file.skills {
+        let name = s.name;
+        let sources = match s.sources {
+            Some(sources) => {
+                if s.source_path.is_some()
+                    || s.source_sha256.is_some()
+                    || s.source_repository.is_some()
+                    || s.source_revision.is_some()
+                {
+                    bail!("provenance '{name}': use either `sources` or the single-source fields");
+                }
+                sources
+            }
+            None => match s.source_path {
+                None => Vec::new(),
+                Some(path) => vec![SourceRef {
+                    repository: s
+                        .source_repository
+                        .or_else(|| file.source_repository.clone())
+                        .with_context(|| format!("provenance '{name}': no repository"))?,
+                    revision: s
+                        .source_revision
+                        .or_else(|| file.source_revision.clone())
+                        .with_context(|| format!("provenance '{name}': no revision"))?,
+                    path,
+                    sha256: s
+                        .source_sha256
+                        .with_context(|| format!("provenance '{name}': no source_sha256"))?,
+                    license: None,
+                }],
+            },
+        };
+        for src in &sources {
+            if src.sha256.len() != 64 || !src.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+                bail!(
+                    "provenance '{name}': '{}' sha256 is not 64 hex digits",
+                    src.path
+                );
+            }
+        }
+        let entry = Provenance {
+            sources,
+            adaptation: s.adaptation,
+        };
+        if out.insert(name.clone(), entry).is_some() {
+            bail!("provenance '{name}': duplicate entry");
+        }
+    }
+    Ok(out)
+}
+
 impl SkillCatalog {
     /// The compiled-in skills, validated, with their upstream provenance.
     pub fn bundled() -> Result<SkillCatalog> {
-        let provenance: ProvenanceFile =
-            serde_json::from_str(BUNDLED_PROVENANCE).context("skills/provenance.json")?;
+        let mut provenance = parse_provenance(BUNDLED_PROVENANCE)?;
         let mut entries = BTreeMap::new();
         for (path, bytes) in BUNDLED_SKILL_FILES {
             let Some(name) = path.strip_suffix("/SKILL.md") else {
@@ -142,25 +208,7 @@ impl SkillCatalog {
                 .collect();
             let digest = tree_digest(&files);
             let id = SkillId::new(name).with_context(|| format!("{path}: skill id"))?;
-            let provenance = provenance
-                .skills
-                .iter()
-                .find(|s| s.name == name)
-                .and_then(|s| {
-                    Some(Provenance {
-                        repository: s
-                            .source_repository
-                            .clone()
-                            .unwrap_or_else(|| provenance.source_repository.clone()),
-                        revision: s
-                            .source_revision
-                            .clone()
-                            .unwrap_or_else(|| provenance.source_revision.clone()),
-                        source_path: s.source_path.clone()?,
-                        source_sha256: s.source_sha256.clone()?,
-                        adaptation: s.adaptation.clone(),
-                    })
-                });
+            let provenance = provenance.remove(name);
             entries.insert(
                 name.to_owned(),
                 CatalogEntry {
