@@ -2,6 +2,7 @@
 //! validation first, then the judge: its answer, the strict parser, the
 //! rubric and the winner policy.
 
+pub mod judge_input;
 pub mod judgment;
 pub mod parser;
 pub mod rubric;
