@@ -3,6 +3,7 @@
 //! projections.
 
 pub mod digest;
+pub mod envsnap;
 pub mod event;
 pub mod paths;
 pub mod projection;

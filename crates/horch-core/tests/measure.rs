@@ -1106,3 +1106,49 @@ fn mea_05_rebuild_equals_live() {
     assert_eq!(read.events, live);
     assert_eq!(fold(&read.events), live_p);
 }
+
+// ─── SEC-02: the environment snapshot ───────────────────────────────────────
+
+#[test]
+fn sec_02_env_snapshot_allowlist() {
+    use horch_core::measure::envsnap::env_snapshot;
+    let vars: std::collections::BTreeMap<String, String> = [
+        ("ANTHROPIC_API_KEY", "sk-ant-api03-abcdefghijklmnop"),
+        ("OPENAI_API_KEY", "sk-abcdefghijklmnopqrstuvwxyz"),
+        ("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG"),
+        ("GITHUB_TOKEN", "ghp_abcdefghijklmnopqrstuvwxyz"),
+        ("PATH", "/usr/bin:/bin"),
+        ("HOME", "/Users/someone"),
+        ("LANG", "en_US.UTF-8"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let snap = env_snapshot(&vars);
+    assert_eq!(
+        snap.into_iter().collect::<Vec<_>>(),
+        vec![("LANG".to_string(), "en_US.UTF-8".to_string())]
+    );
+}
+
+#[test]
+fn sec_02_env_snapshot_presence_and_redaction() {
+    use horch_core::measure::envsnap::env_snapshot;
+    let vars: std::collections::BTreeMap<String, String> = [
+        ("HORCH_TEAMMATES_DIR", "/Users/someone/teammates"),
+        ("HORCH_CLAUDE_BIN", "/opt/claude"),
+        ("HORCH__BIN", "x"),
+        ("HORCH_BALANCE", "token=sk-ant-api03-abcdefghijklmnop"),
+        ("TZ", "UTC"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let snap = env_snapshot(&vars);
+    assert_eq!(snap["HORCH_TEAMMATES_DIR"], "set");
+    assert_eq!(snap["HORCH_CLAUDE_BIN"], "set");
+    assert!(!snap.contains_key("HORCH__BIN"));
+    assert_eq!(snap["TZ"], "UTC");
+    assert!(!snap["HORCH_BALANCE"].contains("sk-ant"), "{snap:?}");
+    assert_eq!(snap.len(), 4);
+}
