@@ -338,6 +338,131 @@
       "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
     },
     {
+      "name": "motion-gsap",
+      "sources": [
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-core/SKILL.md",
+          "sha256": "3887b47e050ab5afbe2a9a820f23d39fa02ab785e06a343be44c6f91d84d12b3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-timeline/SKILL.md",
+          "sha256": "1a8b0f39cc4be3ed3d834b89672e4ae2f151b901dc3450bebf10bbc45379fe02",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-scrolltrigger/SKILL.md",
+          "sha256": "9351b6666a4749c0740406ea363aaccb99a087ff45cc5e8b99a0f367facf3ef4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-plugins/SKILL.md",
+          "sha256": "5838b856c74c07fbc9fa99b6dfd1eee34ea554c3e530c30e0d58014b707d70a4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-utils/SKILL.md",
+          "sha256": "1927bcc4ea95b38203404ad5ea1d060b15c4a886c65ae53e885ff1793aabe0ba",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-performance/SKILL.md",
+          "sha256": "cb5408d6fba707aabcbfe3320317a14c1f8fca6070074e5261047930f50d441e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-react/SKILL.md",
+          "sha256": "88e2a5312b45e8cc7b3c496637ff5bc9af2ae9c925b555c8b235b34cbc989d74",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-frameworks/SKILL.md",
+          "sha256": "842d9d3659ec3ddc8abbdc524708f8facf81f468ac25d0577f48c759c4fa31e6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/vanilla/main.js",
+          "sha256": "0c8c3d79a10dad596687b0013aa66b93c28581e42e1c0052e1bcbc265e40b98a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/react/App.jsx",
+          "sha256": "bdad45dafd00c7bb4f34ab2baa33ad9d624a15e9b29162a3c9b0eb2dce86db4b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/vue/app.vue",
+          "sha256": "fe82f03b53be9b6ec4294c9bd831e31d59ccb2fb1cc4c9d65a7301e91a4f2529",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/nuxt/app/composables/useGSAP.ts",
+          "sha256": "cbd3c12d6a8d889017e2d8ff48f914b5237cb9dc58ec52bd2002a48f2c7b09f0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/nuxt/app/pages/index.vue",
+          "sha256": "1cd00f9919bf546b138670718acb884541f65c1226ab6fe283f2dd4e77c15fcf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "SKILL.md",
+          "sha256": "d14490c0cad019522ac3b087b0f2d509517285238a0df3233227b063324dd709",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/implementation-guardrails.md",
+          "sha256": "fb4f6e0be13651b92db423de9dc20c77668ec6e8893b3cfc215f07e4dc67bf38",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/camera-shots-50.md",
+          "sha256": "c36c56402570a7c36ae10b18609e15c033f751976e2cb0e53264144c3d0cba20",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/interaction-effects-50.md",
+          "sha256": "8b40fcb9b576130e5d885c53f037c330e4d51de5c687f16a869a9754020e1b9a",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged the 8 GSAP skills and their examples into one workflow skill with 8 topic references; rewrote in our voice, fixed source API errors, added checks and a verification step; carried the cinematic-ui entrance map, interaction budget and camera vocabulary as GSAP recipes; dropped persuasion, duplicate lists and the cinematic research workflow."
+    },
+    {
       "name": "orchestrate",
       "source_path": null,
       "source_sha256": null,
