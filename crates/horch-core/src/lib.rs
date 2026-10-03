@@ -35,6 +35,7 @@ pub mod prompts;
 pub mod quota;
 pub mod runtime;
 pub mod skills;
+pub mod teacher;
 pub mod teammates;
 pub mod telemetry;
 pub mod tile;
