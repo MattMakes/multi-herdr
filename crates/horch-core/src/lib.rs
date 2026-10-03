@@ -21,6 +21,7 @@ pub mod balance_policy;
 pub mod clock;
 pub mod codex;
 pub mod execution;
+pub mod fsx;
 pub mod harness;
 pub mod herdr;
 pub mod ids;
