@@ -25,20 +25,21 @@ pub struct NanoUsd(pub i128);
 /// What can go wrong converting a price.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MoneyError {
-    /// The $/MTok price is not a whole number of n$/token.
-    InexactPrice(f64),
-    /// The price is negative, infinite or NaN.
-    InvalidPrice(f64),
+    /// The $/MTok price is not a whole, non-negative number of n$/token.
+    InexactPrice { dollars_per_mtok: f64 },
+    /// The price does not fit the integer range.
+    Overflow,
 }
 
 impl fmt::Display for MoneyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MoneyError::InexactPrice(p) => write!(
+            MoneyError::InexactPrice { dollars_per_mtok } => write!(
                 f,
-                "price ${p}/MTok is not a whole number of nano-dollars per token"
+                "price ${dollars_per_mtok}/MTok is not a whole, non-negative number of \
+                 nano-dollars per token"
             ),
-            MoneyError::InvalidPrice(p) => write!(f, "price ${p}/MTok is not a valid price"),
+            MoneyError::Overflow => f.write_str("price is too large"),
         }
     }
 }
@@ -50,13 +51,17 @@ const EXACT_EPSILON: f64 = 1e-9;
 
 /// Nano-dollars per token for a price in dollars per million tokens.
 pub fn nano_per_token(dollars_per_mtok: f64) -> Result<i128, MoneyError> {
-    if !dollars_per_mtok.is_finite() || dollars_per_mtok < 0.0 {
-        return Err(MoneyError::InvalidPrice(dollars_per_mtok));
+    let inexact = MoneyError::InexactPrice { dollars_per_mtok };
+    if dollars_per_mtok.is_nan() || dollars_per_mtok < 0.0 {
+        return Err(inexact);
     }
     let scaled = dollars_per_mtok * 1000.0;
+    if scaled >= i64::MAX as f64 {
+        return Err(MoneyError::Overflow);
+    }
     let whole = scaled.round();
-    if (scaled - whole).abs() > EXACT_EPSILON || whole > i64::MAX as f64 {
-        return Err(MoneyError::InexactPrice(dollars_per_mtok));
+    if (scaled - whole).abs() > EXACT_EPSILON {
+        return Err(inexact);
     }
     Ok(whole as i128)
 }
@@ -65,6 +70,11 @@ impl NanoUsd {
     /// The cost of `tokens` tokens at `nano_per_token` n$ each.
     pub fn of(tokens: u64, nano_per_token: i128) -> Self {
         NanoUsd(tokens as i128 * nano_per_token)
+    }
+
+    /// Add the cost of `tokens` tokens at `nano_per_token` n$ each.
+    pub fn add_tokens(&mut self, tokens: u64, nano_per_token: i128) {
+        *self += NanoUsd::of(tokens, nano_per_token);
     }
 
     /// Round to whole µ$, half to even. Saturates at the `i64` range.
@@ -205,13 +215,20 @@ mod tests {
         assert_eq!(nano_per_token(0.02), Ok(20));
         assert_eq!(
             nano_per_token(0.0001),
-            Err(MoneyError::InexactPrice(0.0001))
+            Err(MoneyError::InexactPrice {
+                dollars_per_mtok: 0.0001
+            })
         );
-        assert_eq!(nano_per_token(-1.0), Err(MoneyError::InvalidPrice(-1.0)));
+        assert!(matches!(
+            nano_per_token(-1.0),
+            Err(MoneyError::InexactPrice { .. })
+        ));
         assert!(matches!(
             nano_per_token(f64::NAN),
-            Err(MoneyError::InvalidPrice(_))
+            Err(MoneyError::InexactPrice { .. })
         ));
+        assert_eq!(nano_per_token(f64::INFINITY), Err(MoneyError::Overflow));
+        assert_eq!(nano_per_token(1e20), Err(MoneyError::Overflow));
     }
 
     #[test]
@@ -222,7 +239,7 @@ mod tests {
         let mut total = NanoUsd(0);
         let mut f = 0.0f64;
         for _ in 0..1_000_000 {
-            total += NanoUsd::of(1, per);
+            total.add_tokens(1, per);
             f += 0.02 / 1_000_000.0;
         }
         assert_eq!(total, NanoUsd(20_000_000));
