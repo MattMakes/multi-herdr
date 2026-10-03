@@ -204,6 +204,16 @@ enum Command {
         window: Option<String>,
     },
 
+    /// Every agent harness horch can drive: binary, version, efforts,
+    /// capabilities, the models the roster runs on it, and its usage pool.
+    AgentList {
+        #[arg(long)]
+        json: bool,
+        /// Skip the `--version` probe: run no harness binary.
+        #[arg(long)]
+        no_probe: bool,
+    },
+
     /// The usage pools (claude, codex, opencode-zen, local) and their state.
     Quota {
         #[arg(long)]
@@ -475,6 +485,7 @@ fn run() -> Result<std::process::ExitCode> {
                 window,
             },
         )?,
+        Command::AgentList { json, no_probe } => cmd::agentlist::agent_list(ctx, json, no_probe)?,
         Command::Quota { json, refresh } => cmd::quotacmd::quota(ctx, json, refresh)?,
         Command::Route {
             teammate,

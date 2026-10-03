@@ -409,6 +409,7 @@ files that everything else reads
 horch telemetry                 # the collector and its screen (g, w, p, q); a viewer if one runs
 horch telemetry ensure          # open it in its own herdr workspace, never focused (horch fleet does this)
 horch usage --by plan --window 7d   # where the tokens went, every project
+horch agent-list                # every harness: binary, version, efforts, models, pool state
 horch quota --refresh           # the pools: claude, codex, opencode-zen, local
 horch route researcher          # what spawn would do right now: spawn, substitute, or refuse
 horch fleet auto                # Opus or Sol, whichever pool can serve it
