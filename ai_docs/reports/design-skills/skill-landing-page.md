@@ -11,7 +11,7 @@ Unit: `skill-landing-page`. Branch: `ds/skill-landing-page`. Skill: `skills/land
 | `references/copy.md` | 5997 | Step 4: message block, headline and CTA formulas, banned patterns, self-audit |
 | `references/hero.md` | 8060 | Step 5: hero rules, paradigms, visual sources, art direction, banners |
 | `references/performance-budget.md` | 5008 | Step 6: CWV and weight budgets, responsive, images, fonts, measuring |
-| `references/review-loop.md` | 8880 | Step 8: direction note, review round, 15-item rubric, JS measurement snippets, critic request |
+| `references/review-loop.md` | 8886 | Step 8: direction note, review round, 15-item rubric, JS measurement snippets, critic request |
 
 Directory: 56 KB (`du -sk`). Budgets: body at most 12 KB, directory at most 160 KB.
 
@@ -95,6 +95,12 @@ Paths are relative to `_sources/design-skills/`.
 - `review-loop.md` measurement snippet needs `data-cta="primary"` on the main CTA for the fold check. The skill says so in the snippet comment.
 - Layout-shift and LCP entries may need a buffered `PerformanceObserver` in some browsers; noted in the file.
 - The banner size table will age. The skill says the brief's platform spec wins.
+
+## Provenance and gate
+
+- `skills/provenance.json` entry `landing-page` lists 9 sources (3 repositories) at the PINS.txt revisions, each with sha256 and `license: MIT`. `horch skills show landing-page` prints 9 `upstream:` lines.
+- `skills/README.md` has one row in "Design skills".
+- Gate: green on the 3rd run. Runs 1 and 2 failed in `crates/horch-e2e/tests/dataset.rs` (`sec_08_e2e_no_api_key_in_any_child`: "PRE-06 FAIL harness version unresolved: claude"; once `cmp_05_e2e_candidates_in_dataset_workspace`). The machine load average was about 7.7, with other worktrees building. These tests do not read skills. They pass alone. This is a timing flake to watch. After the rebase on D01 and D06, run 1 failed once more in the same file (`cmp_04_n_worktrees_same_base_modify_same_file`: empty numstat), at load average about 8.6. Run 2 was green.
 
 ## Follow-ups (outside my scope)
 
