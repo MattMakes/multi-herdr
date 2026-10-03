@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use horch_core::balance_policy::{self, Decision, GateFlags, PoolLine};
+use horch_core::execution::store::ExecutionStore;
 use horch_core::launch::{self, Session};
 use horch_core::ledger::{Ledger, Record};
 use horch_core::policy::{BalanceMode, Policy};
@@ -435,9 +436,9 @@ fn oracle_ledgers_match() {
             &format!("ledgers/{name}.loaded.json"),
             &pretty(&json!(loaded)),
         );
-        // The exact bytes `Ledger::write` (private) produces for these
-        // records: `serde_json::to_string_pretty`, no trailing newline.
-        let saved = serde_json::to_string_pretty(&records).unwrap();
+        // The exact bytes the store writes for these records:
+        // `serde_json::to_string_pretty`, no trailing newline.
+        let saved = ExecutionStore::render_json(&records).unwrap();
         check_oracle(&format!("ledgers/{name}.saved.json"), &saved);
     }
 }

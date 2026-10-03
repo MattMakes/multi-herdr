@@ -137,8 +137,7 @@ impl ExecutionStore {
     pub fn get(&self, key: &str) -> Result<LedgerRecordV1> {
         self.read()?
             .into_iter()
-            .filter(|r| r.matches(key))
-            .next_back()
+            .rfind(|r| r.matches(key))
             .with_context(|| format!("no record matches {key}"))
     }
 
