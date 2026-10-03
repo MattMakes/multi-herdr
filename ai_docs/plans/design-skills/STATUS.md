@@ -11,7 +11,7 @@ Gate: /tmp/igate-ds.sh
 | D02 | skill-art-direction | opus-24 | MERGED |
 | D03 | skill-landing-page | opus-25 | MERGED |
 | D04 | skill-design-system | opus-26 | MERGED |
-| D05 | skill-motion | opus-27 | running |
+| D05 | skill-motion | opus-27 | MERGED |
 | D06 | skill-imagery | opus-28 | MERGED |
 | D10 | followups | opus-31 | running |
 | D07 | design-personas | opus-29 | running (adds skill ids as skills merge) |
