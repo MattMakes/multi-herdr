@@ -11,8 +11,13 @@ use horch_core::measure::paths::DatasetPaths;
 use horch_core::runtime::RuntimeContext;
 
 pub mod cli;
+pub mod export;
+pub mod outcome;
 pub mod preflight;
+pub mod readiness;
+pub mod rebuild;
 pub mod run;
+pub mod status;
 
 use cli::Command;
 
@@ -42,11 +47,25 @@ pub fn dispatch(
 ) -> Result<u8> {
     match command {
         Command::Run(args) => run::run(ctx, env, &args),
-        Command::Status { .. } => not_implemented("status"),
-        Command::Export { .. } => not_implemented("export"),
-        Command::Readiness { .. } => not_implemented("readiness"),
-        Command::Outcome { .. } => not_implemented("outcome"),
-        Command::Rebuild { .. } => not_implemented("rebuild"),
+        Command::Status { experiment } => status::status(ctx, experiment.as_deref()),
+        Command::Export { label_policy } => export::export(ctx, label_policy.as_deref()),
+        Command::Readiness {
+            policy,
+            label_policy,
+        } => readiness::readiness(ctx, policy.as_deref(), label_policy.as_deref()),
+        Command::Outcome {
+            round,
+            kind,
+            score,
+            note,
+        } => outcome::outcome(
+            ctx,
+            &round,
+            kind.kind(),
+            score.unwrap_or(kind.default_score()),
+            note,
+        ),
+        Command::Rebuild { experiment } => rebuild::rebuild(ctx, &experiment),
         Command::JudgeJob(_) => not_implemented("judge-job"),
         Command::Promote(_) => not_implemented("promote"),
         Command::Rollback(_) => not_implemented("rollback"),
