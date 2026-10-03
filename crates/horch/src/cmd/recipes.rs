@@ -10,11 +10,12 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
+use horch_core::execution::legacy::{Record, KIND_ORCHESTRATOR};
+use horch_core::execution::records::{Ledger, ORCHESTRATING_TASK};
 use horch_core::execution::SessionMode;
 use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::SessionId;
-use horch_core::ledger::{Ledger, Record, KIND_ORCHESTRATOR, ORCHESTRATING_TASK};
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::prompts;
 use horch_core::routing::quota::{self, QuotaView, State};

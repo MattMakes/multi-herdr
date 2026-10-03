@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use horch_core::execution::records::Ledger;
 use horch_core::execution::TilingMode;
-use horch_core::ledger::Ledger;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
@@ -746,7 +746,7 @@ fn smoke_session_done(ledger: &Ledger) -> bool {
         return false;
     };
     let events: Vec<&str> = record.history.iter().map(|h| h.event.as_str()).collect();
-    record.status == horch_core::ledger::STATUS_DONE
+    record.status == horch_core::execution::legacy::STATUS_DONE
         && events.contains(&"note")
         && events.contains(&"done")
 }

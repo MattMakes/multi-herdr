@@ -15,7 +15,6 @@ use chrono::NaiveDate;
 
 use crate::fsx;
 use crate::ids::{ExperimentId, RoundId};
-use crate::ledger;
 
 /// The directory under the state root that holds every project's dataset.
 pub const DATASET_DIR: &str = "multi-herdr";
@@ -68,7 +67,10 @@ pub struct DatasetPaths {
 impl DatasetPaths {
     /// The dataset of `project`, slugged as the ledger slugs it.
     pub fn new(state_root: &Path, project: &Path) -> DatasetPaths {
-        Self::from_slug(state_root, &ledger::slug(&project.to_string_lossy()))
+        Self::from_slug(
+            state_root,
+            &crate::execution::store::slug(&project.to_string_lossy()),
+        )
     }
 
     /// The dataset for an already slugged project name.

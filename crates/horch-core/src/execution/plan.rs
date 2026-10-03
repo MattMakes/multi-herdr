@@ -13,6 +13,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
+use crate::execution::legacy::STATUS_WORKING;
 use crate::execution::legacy::{HistoryEntry, LedgerRecordV1};
 use crate::execution::model::{
     Execution, ExecutionPlan, ExecutionStatus, LaunchPlan, SessionMode, SessionState, SpawnRequest,
@@ -21,7 +22,6 @@ use crate::execution::model::{
 use crate::execution::store::to_execution;
 use crate::harness::HarnessKind;
 use crate::ids::{ExecutionId, IdError, RoleName, SessionId, WorkerId, WorkspaceId};
-use crate::ledger::STATUS_WORKING;
 use crate::roster::{effort_problem, Phase, Roster, Teammate};
 use crate::routing::decision::{self, Decision, RoutingDecision, RoutingMode, RoutingProvenance};
 use crate::routing::policy::BalanceMode;

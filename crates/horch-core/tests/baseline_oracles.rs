@@ -9,10 +9,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
+use horch_core::execution::legacy::Record;
+use horch_core::execution::records::Ledger;
 use horch_core::execution::store::ExecutionStore;
 use horch_core::harness::launch::{self, LaunchEnv, Session};
 use horch_core::harness::CommandSpec;
-use horch_core::ledger::{Ledger, Record};
 use horch_core::roster::validation::fallback_problems;
 use horch_core::roster::{Phase, Roster, Teammate};
 use horch_core::routing::decision::{self, Decision, GateFlags, PoolLine};

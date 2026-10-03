@@ -338,7 +338,7 @@ fn arc_14_legacy_record_resumes_with_provenance() {
     assert_eq!(wire["pool_state"], "unknown");
 
     // A record from before A5 has no `routing` key and saves without one.
-    let rec: horch_core::ledger::Record = serde_json::from_value(json!({
+    let rec: horch_core::execution::legacy::Record = serde_json::from_value(json!({
         "record_id": "r1", "session_id": null, "agent": "claude", "tier": "opus",
         "model": "opus", "role": "opus-1", "status": "done", "task": "",
         "history": [], "created_at": "", "updated_at": ""

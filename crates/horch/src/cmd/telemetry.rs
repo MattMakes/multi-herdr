@@ -421,7 +421,7 @@ pub fn render(snap: &Snapshot, view: &ViewState, width: u16, height: u16) -> Vec
         .collect();
     let fleets = live
         .iter()
-        .filter(|r| r.kind == horch_core::ledger::KIND_ORCHESTRATOR)
+        .filter(|r| r.kind == horch_core::execution::legacy::KIND_ORCHESTRATOR)
         .count();
     let left = format!(
         "horch telemetry · {fleets} fleet{} · {} live pane{} · {}",

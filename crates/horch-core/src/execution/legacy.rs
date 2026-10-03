@@ -37,6 +37,11 @@ pub struct HistoryEntry {
     pub text: String,
 }
 
+/// `Record::status` of a live worker session (the legacy status word).
+pub const STATUS_WORKING: &str = "working";
+/// `Record::status` of a finished session (the legacy status word).
+pub const STATUS_DONE: &str = "done";
+
 /// `Record::kind` of a worker pane.
 pub const KIND_WORKER: &str = "worker";
 /// `Record::kind` of a fleet orchestrator pane.
