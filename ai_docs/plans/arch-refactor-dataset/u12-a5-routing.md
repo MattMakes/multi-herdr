@@ -66,6 +66,10 @@ provenance. Decisions are byte-identical to the A0 routing oracle, and the
   delete the `quota.rs`, `policy.rs` and `routing/` entries from its
   `PENDING` list in your last commit.
 
+## A1 NOTE
+
+- Do not add any `resume: bool` or `no_tile: bool` field or parameter. The A1 check `grep -rn 'no_tile: bool\|resume: bool' crates` must stay empty.
+
 ## FILES
 
 own:

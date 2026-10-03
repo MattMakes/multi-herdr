@@ -61,6 +61,18 @@ binary override. Behavior is unchanged.
   and `recipes.rs pane_launch`. You may edit the env-related lines in those
   files; do not restructure them.
 
+## A1 FACTS (merged)
+
+- `mailbox::Brief` already replaced `session_id: String` + `resume: bool`
+  with `session: SessionMode`, and keeps the same JSON through
+  `#[serde(flatten, with = "session_wire")]`. Keep `session: SessionMode`
+  when you move `Brief` to `messaging/brief.rs`. Do not reintroduce a
+  `resume: bool` field; the A1 check `grep -rn 'no_tile: bool\|resume: bool' crates`
+  must stay empty. Design §4.8 still shows the old fields; the code wins.
+- `TilingMode` and `SessionMode` live in `horch_core::execution`.
+- Ids live in `horch_core::ids`; use them for new context fields
+  (`WorkspaceId`, `PaneId`).
+
 ## FILES
 
 own:

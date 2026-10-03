@@ -52,6 +52,10 @@ and every existing test passes unchanged. No user-visible change.
   test has a `PENDING` allowlist with `teammates.rs` and `roster/`. If that
   test is on your base, delete those 2 entries in your last commit.
 
+## A1 NOTE
+
+- Do not add any `resume: bool` or `no_tile: bool` field or parameter. The A1 check `grep -rn 'no_tile: bool\|resume: bool' crates` must stay empty.
+
 ## FILES
 
 own:

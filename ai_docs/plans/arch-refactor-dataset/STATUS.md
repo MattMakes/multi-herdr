@@ -34,3 +34,5 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - B2: horch must read HORCH_GIT_BIN (A2 adds it to BinOverrides). Harness::with_git sets it.
 - OpenCode fake id: ses_ + 16 hex of canonical cwd; Prime: prime_ + 16 hex of --session-dir, file <dir>/<id>.jsonl.
 - Saved ledger oracle uses to_string_pretty (Ledger::write is private), no trailing newline.
+| U09 | a7a-workspace | sonnet-2 | MERGED |
+- A7b: design §4.7 wants PaneId newtypes, send_text/send_keys names, HerdrClient built from HarnessBins — not yet aligned. Herdr methods outside the trait: send_line, wait_output, integration_status, pane_focus*, pane_move*, pane_resize, tab_*. workspace_create(cwd: Option<&str>).
