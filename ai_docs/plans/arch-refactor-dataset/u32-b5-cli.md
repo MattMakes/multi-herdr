@@ -57,6 +57,14 @@ telemetry count candidate and judge executions.
   judge records; use `--all` or `horch ledger list --json`. Reuse the
   e2e helpers U30 added to `crates/horch-e2e/src/lib.rs`.
 
+- Gap from U30: `CommandValidator` gets no `HORCH_FAULT` points, so
+  `fail-gate:<name>` does not reach the gates from `run`. Fix it here (you
+  need it for `pro_02_e2e_only_valid_candidate_promotable`): add a
+  read-only accessor on `runtime::fault::Faults` that returns the set (or
+  the `fail-gate:` names), and pass it where `run`/the coordinator builds
+  the `CommandValidator`. You own those lines in `runtime/fault.rs` and the
+  validator construction in `coordinator.rs`/`run.rs`.
+
 ## FILES
 
 own:
