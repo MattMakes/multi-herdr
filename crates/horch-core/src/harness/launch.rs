@@ -318,15 +318,23 @@ fn install_skills(
     req: &LaunchRequest<'_>,
 ) -> Result<Option<crate::skills::Bundle>> {
     let catalog = crate::skills::SkillCatalog::installed(&ctx.paths.data_root)?;
-    let bundles = ctx.paths.state_root.join("skill-bundles");
-    let execution_id = req
-        .record
-        .as_ref()
-        .and_then(|r| crate::ids::ExecutionId::new(r.record_id).ok())
+    let name = bundle_name(
+        req.record.as_ref().map(|r| r.record_id),
+        &ctx.paths.state_root.join("skill-bundles"),
+    );
+    crate::skills::Bundle::install_from(&ctx.paths.state_root, req.teammate, catalog, &name)
+}
+
+/// The record id when it is one plain path component that no directory in
+/// `bundles` has yet; otherwise a fresh execution id. A legacy record id can
+/// hold `/` or `..`, which must never name a directory.
+fn bundle_name(record_id: Option<&str>, bundles: &Path) -> String {
+    record_id
+        .and_then(|id| crate::ids::ExecutionId::new(id).ok())
         .map(|id| id.to_string())
-        .filter(|id| !bundles.join(id).exists())
-        .unwrap_or_else(|| crate::ids::ExecutionId::mint(crate::clock::now()).to_string());
-    crate::skills::Bundle::install_from(&ctx.paths.state_root, req.teammate, catalog, &execution_id)
+        .filter(|id| !matches!(id.as_str(), "." | "..") && !id.contains(['/', '\\', ':', '\0']))
+        .filter(|id| std::fs::symlink_metadata(bundles.join(id)).is_err())
+        .unwrap_or_else(|| crate::ids::ExecutionId::mint(crate::clock::now()).to_string())
 }
 
 /// The agent's command: the teammate's launch line, its own environment, then
@@ -533,6 +541,25 @@ mod tests {
 
     /// No agent CLI receives ANTHROPIC_API_KEY, whatever the shell exports
     /// and whatever a teammate's `env:` says.
+    /// The bundle is named for its execution, unless that name is not one
+    /// plain path component or is taken; then it gets a fresh id.
+    #[test]
+    fn bundle_name_is_the_record_id_when_it_is_safe_and_free() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rec = "0190f2c4-0000-7000-8000-000000000001";
+        assert_eq!(bundle_name(Some(rec), tmp.path()), rec);
+        std::fs::create_dir(tmp.path().join(rec)).unwrap();
+        let fresh = bundle_name(Some(rec), tmp.path());
+        assert_ne!(fresh, rec);
+        assert!(crate::ids::ExecutionId::new(&fresh).is_ok());
+        for bad in ["../escape", "a/b", "a\\b", "..", ".", "C:x", ""] {
+            let name = bundle_name(Some(bad), tmp.path());
+            assert_ne!(name, bad);
+            assert!(!name.contains(['/', '\\', ':']), "{name}");
+        }
+        assert!(!bundle_name(None, tmp.path()).is_empty());
+    }
+
     #[test]
     fn no_launch_carries_the_anthropic_api_key() {
         let r = Roster::builtin().unwrap();
