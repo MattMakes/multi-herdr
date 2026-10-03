@@ -4,4 +4,5 @@
 //! calls a model or the network.
 
 pub mod export;
+pub mod outcome;
 pub mod readiness;
