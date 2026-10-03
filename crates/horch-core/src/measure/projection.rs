@@ -6,9 +6,11 @@
 //! does not fit the state it arrives in (design §5) is recorded as an
 //! [`Anomaly`] and never applied.
 //!
-//! The full transition table is CMP-03 (B3). This fold applies only what the
-//! events themselves say. `round.needs_intervention`, `round.cleanup_started`
-//! and `round.completed` reach NEEDS_INTERVENTION, CLEANUP and COMPLETE
+//! Every state change goes through `competition::state::transition`
+//! (CMP-03). The fold maps each event to a `RoundEvent`, asks the table for
+//! the target state, then checks what the table cannot see (such as a judge
+//! attempt number). `round.needs_intervention`, `round.cleanup_started` and
+//! `round.completed` reach NEEDS_INTERVENTION, CLEANUP and COMPLETE
 //! (SPEC-TODO(Spec B event list): the orchestrator added these 3 kinds).
 
 use std::collections::BTreeMap;
@@ -17,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::competition::model::RoundState;
 use crate::competition::preflight::PreflightReport;
+use crate::competition::state::{transition, RoundEvent};
 use crate::evaluation::validator::ValidationReport;
 use crate::evaluation::winner::RejectReason;
 use crate::ids::{EventId, ExecutionId, ExperimentId, JudgmentId, RoundId};
@@ -146,10 +149,11 @@ impl Projection {
                     return Err(format!("experiment {exp} already created"));
                 }
                 // CREATED → PREFLIGHT on the event itself.
+                let state = step(RoundState::Created, RoundEvent::ExperimentCreated)?;
                 self.experiments.insert(
                     exp.clone(),
                     ExperimentView {
-                        state: RoundState::Preflight,
+                        state,
                         created,
                         preflight: None,
                         aborted: None,
@@ -160,29 +164,25 @@ impl Projection {
             }
             EventKind::PreflightCompleted(p) => {
                 let x = self.experiment(exp)?;
-                expect_state(x.state, &[RoundState::Preflight], "preflight.completed")?;
                 // A failed preflight waits for experiment.aborted.
-                if p.report.passed {
-                    x.state = RoundState::Planned;
-                }
+                let ev = if p.report.passed {
+                    RoundEvent::PreflightPassed
+                } else {
+                    RoundEvent::PreflightFailed
+                };
+                x.state = step(x.state, ev)?;
                 x.preflight = Some(p.report);
                 Ok(())
             }
             EventKind::ExperimentAborted(a) => {
                 let x = self.experiment(exp)?;
-                expect_state(
-                    x.state,
-                    &[RoundState::Created, RoundState::Preflight],
-                    "experiment.aborted",
-                )?;
-                x.state = RoundState::Aborted;
+                x.state = step(x.state, RoundEvent::ExperimentAborted)?;
                 x.aborted = Some(a);
                 Ok(())
             }
             EventKind::RoundCreated(created) => {
                 let round = round_id(env)?;
-                let state = self.experiment(exp)?.state;
-                expect_state(state, &[RoundState::Planned], "round.created")?;
+                let state = step(self.experiment(exp)?.state, RoundEvent::RoundCreated)?;
                 if self.rounds.contains_key(&round) {
                     return Err(format!("round {round} already created"));
                 }
@@ -200,7 +200,7 @@ impl Projection {
                     round,
                     RoundView {
                         experiment_id: exp.clone(),
-                        state: RoundState::Planned,
+                        state,
                         created,
                         candidates,
                         judge: JudgeView::default(),
@@ -251,12 +251,17 @@ fn round_id(env: &EventEnvelope) -> Result<RoundId, String> {
         .ok_or_else(|| format!("{} without a round_id", env.kind))
 }
 
-fn expect_state(state: RoundState, allowed: &[RoundState], what: &str) -> Result<(), String> {
-    if allowed.contains(&state) {
-        Ok(())
-    } else {
-        Err(format!("{what} is invalid in state {state}"))
-    }
+/// The state `event` moves `from` to, or why the table has no such row.
+fn step(from: RoundState, event: RoundEvent) -> Result<RoundState, String> {
+    transition(from, &event).map_err(|e| e.to_string())
+}
+
+/// Whether every candidate other than `label` satisfies `pred`.
+fn others_all(r: &RoundView, label: &str, pred: impl Fn(&CandidateView) -> bool) -> bool {
+    r.candidates
+        .iter()
+        .filter(|(l, _)| l.as_str() != label)
+        .all(|(_, c)| pred(c))
 }
 
 fn candidate<'a>(r: &'a mut RoundView, label: &str) -> Result<&'a mut CandidateView, String> {
@@ -272,34 +277,33 @@ fn once<T>(slot: &Option<T>, what: &str, label: &str) -> Result<(), String> {
     }
 }
 
-/// Apply a round-level event to `r`.
+/// Apply a round-level event to `r`. The target state comes from the table
+/// first, so nothing changes when the event is invalid.
 fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Result<(), String> {
     use RoundState as S;
     let name = kind.name().to_string();
     match kind {
         EventKind::CandidatePlanned(p) => {
-            expect_state(r.state, &[S::Planned], &name)?;
+            let last = others_all(r, &p.label, |c| c.planned.is_some());
+            let to = step(r.state, RoundEvent::CandidatePlanned { last })?;
             let c = candidate(r, &p.label)?;
             once(&c.planned, &name, &p.label)?;
             if env.execution_id.is_some() {
                 c.execution_id = env.execution_id.clone();
             }
             c.planned = Some(p);
-            if r.candidates.values().all(|c| c.planned.is_some()) {
-                r.state = S::Provisioning;
-            }
+            r.state = to;
         }
         EventKind::WorktreeCreated(w) => {
-            expect_state(r.state, &[S::Provisioning], &name)?;
+            let last = others_all(r, &w.label, |c| c.worktree.is_some());
+            let to = step(r.state, RoundEvent::WorktreeCreated { last })?;
             let c = candidate(r, &w.label)?;
             once(&c.worktree, &name, &w.label)?;
             c.worktree = Some(w);
-            if r.candidates.values().all(|c| c.worktree.is_some()) {
-                r.state = S::Running;
-            }
+            r.state = to;
         }
         EventKind::CandidateSpawned(s) => {
-            expect_state(r.state, &[S::Running], &name)?;
+            let to = step(r.state, RoundEvent::CandidateSpawned)?;
             let c = candidate(r, &s.label)?;
             once(&c.spawned, &name, &s.label)?;
             if c.is_terminal() {
@@ -309,9 +313,11 @@ fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Resul
                 c.execution_id = env.execution_id.clone();
             }
             c.spawned = Some(s);
+            r.state = to;
         }
         EventKind::CandidateCompleted(done) => {
-            expect_state(r.state, &[S::Running], &name)?;
+            let last = others_all(r, &done.label, CandidateView::is_terminal);
+            let to = step(r.state, RoundEvent::CandidateEnded { last })?;
             let c = candidate(r, &done.label)?;
             if c.spawned.is_none() {
                 return Err(format!("{name} before {} was spawned", done.label));
@@ -320,38 +326,46 @@ fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Resul
                 return Err(format!("{name} after {} ended", done.label));
             }
             c.completed = Some(done);
-            finish_running(r);
+            r.state = to;
         }
         EventKind::CandidateFailed(failed) => {
             // A launch can fail before the spawn event.
-            expect_state(r.state, &[S::Running], &name)?;
+            let last = others_all(r, &failed.label, CandidateView::is_terminal);
+            let to = step(r.state, RoundEvent::CandidateEnded { last })?;
             let c = candidate(r, &failed.label)?;
             if c.is_terminal() {
                 return Err(format!("{name} after {} ended", failed.label));
             }
             c.failed = Some(failed);
-            finish_running(r);
+            r.state = to;
         }
         EventKind::CandidateFrozen(f) => {
-            expect_state(r.state, &[S::Validating], &name)?;
+            let to = step(r.state, RoundEvent::CandidateFrozen)?;
             let c = candidate(r, &f.label)?;
             once(&c.frozen, &name, &f.label)?;
             c.frozen = Some(f);
+            r.state = to;
         }
         EventKind::ValidationCompleted(v) => {
-            expect_state(r.state, &[S::Validating], &name)?;
+            let last = others_all(r, &v.label, |c| c.validation.is_some());
+            let any_eligible = v.report.eligible
+                || r.candidates
+                    .iter()
+                    .any(|(l, c)| l != &v.label && c.is_eligible());
+            let to = step(
+                r.state,
+                RoundEvent::ValidationCompleted { last, any_eligible },
+            )?;
             let c = candidate(r, &v.label)?;
             if c.frozen.is_none() {
                 return Err(format!("{name} before {} was frozen", v.label));
             }
             once(&c.validation, &name, &v.label)?;
             c.validation = Some(v.report);
-            if all_validated(r) && r.candidates.values().any(CandidateView::is_eligible) {
-                r.state = S::JudgingBackground;
-            }
+            r.state = to;
         }
         EventKind::JudgeScheduled(j) => {
-            expect_state(r.state, &[S::JudgingBackground], &name)?;
+            let to = step(r.state, RoundEvent::JudgeScheduled)?;
             if r.judge.judgment_id.is_some() {
                 return Err(format!("{name} after a judgment"));
             }
@@ -363,27 +377,36 @@ fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Resul
             }
             r.judge.attempt = j.attempt;
             r.judge.started = false;
+            r.state = to;
         }
         EventKind::JudgeStarted(j) => {
+            let to = step(r.state, RoundEvent::JudgeStarted)?;
             expect_judge_attempt(r, j.attempt, &name)?;
             if r.judge.started {
                 return Err(format!("{name} repeated for attempt {}", j.attempt));
             }
             r.judge.started = true;
+            r.state = to;
         }
         EventKind::JudgeCompleted(j) => {
+            let to = step(r.state, RoundEvent::JudgeCompleted)?;
             expect_judge_attempt(r, j.attempt, &name)?;
             r.judge.judgment_id = Some(j.judgment_id);
+            r.state = to;
         }
         EventKind::JudgeFailed(j) => {
+            let last_attempt = j.attempt >= MAX_JUDGE_ATTEMPTS;
+            let to = step(r.state, RoundEvent::JudgeFailed { last_attempt })?;
             expect_judge_attempt(r, j.attempt, &name)?;
             r.judge.failures += 1;
-            if j.attempt >= MAX_JUDGE_ATTEMPTS {
-                r.state = S::NeedsIntervention;
-            }
+            r.state = to;
         }
         EventKind::WinnerSelected(w) => {
-            expect_state(r.state, &[S::JudgingBackground], &name)?;
+            // DECIDED; a requested promotion moves on to revalidate at once.
+            let mut to = step(r.state, RoundEvent::WinnerSelected)?;
+            if let PromotionIntent::Requested { .. } = w.promotion {
+                to = step(to, RoundEvent::PromotionRequested)?;
+            }
             let Some(judgment) = &r.judge.judgment_id else {
                 return Err(format!("{name} before a judgment"));
             };
@@ -393,90 +416,70 @@ fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Resul
             if !candidate(r, &w.label)?.is_eligible() {
                 return Err(format!("{name}: {} is not eligible", w.label));
             }
-            // DECIDED; a requested promotion moves straight on to revalidate.
-            r.state = match w.promotion {
-                PromotionIntent::NotRequested => S::Decided,
-                PromotionIntent::Requested { .. } => S::Revalidating,
-            };
             r.winner = Some(w);
+            r.state = to;
         }
         EventKind::WinnerRejected(rej) => {
+            let to = step(r.state, RoundEvent::WinnerRejected)?;
             let allowed = match r.state {
                 S::Validating => {
                     all_validated(r) && !r.candidates.values().any(CandidateView::is_eligible)
                 }
                 S::JudgingBackground => r.judge.judgment_id.is_some(),
-                S::Revalidating => true,
-                _ => false,
+                _ => true,
             };
             if !allowed {
                 return Err(format!("{name} is invalid in state {}", r.state));
             }
             r.rejected = Some(rej.reason);
-            r.state = S::Rejected;
+            r.state = to;
         }
         EventKind::PromotionStarted(p) => {
-            expect_state(r.state, &[S::Revalidating], &name)?;
+            let to = step(r.state, RoundEvent::PromotionStarted)?;
             r.promotion.started = Some(p);
-            r.state = S::Promoting;
+            r.state = to;
         }
         EventKind::PromotionConflicted(c) => {
-            expect_state(r.state, &[S::Revalidating, S::Promoting], &name)?;
+            let to = step(r.state, RoundEvent::PromotionConflicted)?;
             r.promotion.conflicted = Some(c);
-            r.state = S::NeedsIntervention;
+            r.state = to;
         }
         EventKind::PromotionCompleted(c) => {
-            expect_state(r.state, &[S::Promoting], &name)?;
+            let to = step(r.state, RoundEvent::PromotionCompleted)?;
             r.promotion.completed = Some(c);
-            r.state = S::Promoted;
+            r.state = to;
         }
         EventKind::PromotionRolledBack(rb) => {
-            expect_state(r.state, &[S::Promoted, S::Complete], &name)?;
+            let to = step(r.state, RoundEvent::PromotionRolledBack)?;
             r.promotion.rolled_back.push(rb);
+            r.state = to;
         }
+        // Neither moves the round.
         EventKind::WorktreeCleanupFailed(f) => {
             candidate(r, &f.label)?;
             r.cleanup_failures.push(f);
         }
         EventKind::OutcomeRecorded(o) => {
-            expect_state(
-                r.state,
-                &[S::Decided, S::Promoted, S::Cleanup, S::Complete],
-                &name,
-            )?;
+            if !matches!(r.state, S::Decided | S::Promoted | S::Cleanup | S::Complete) {
+                return Err(format!("{name} is invalid in state {}", r.state));
+            }
             r.outcomes.push(o);
         }
         EventKind::RoundNeedsIntervention(n) => {
-            let allowed: &[S] = match n.source {
-                InterventionSource::Judge => &[S::JudgingBackground],
-                InterventionSource::Promotion => &[S::Revalidating, S::Promoting],
-                InterventionSource::Operator => &[
-                    S::Running,
-                    S::Validating,
-                    S::JudgingBackground,
-                    S::Decided,
-                    S::Revalidating,
-                    S::Promoting,
-                ],
-            };
-            expect_state(r.state, allowed, &name)?;
+            let to = step(r.state, RoundEvent::NeedsIntervention(n.source))?;
             if n.source == InterventionSource::Judge && r.judge.judgment_id.is_none() {
                 return Err(format!("{name} from the judge before a judgment"));
             }
             r.needs_intervention = Some(n);
-            r.state = S::NeedsIntervention;
+            r.state = to;
         }
         EventKind::RoundCleanupStarted(_) => {
-            expect_state(
-                r.state,
-                &[S::Decided, S::Rejected, S::Promoted, S::NeedsIntervention],
-                &name,
-            )?;
+            let to = step(r.state, RoundEvent::CleanupStarted)?;
             r.cleaned_from = Some(r.state);
-            r.state = S::Cleanup;
+            r.state = to;
         }
         EventKind::RoundCompleted(c) => {
-            expect_state(r.state, &[S::Cleanup], &name)?;
+            let to = step(r.state, RoundEvent::RoundCompleted)?;
             let want = match r.cleaned_from {
                 Some(S::Decided) => FinalOutcome::Winner,
                 Some(S::Rejected) => FinalOutcome::Rejected,
@@ -490,7 +493,7 @@ fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Resul
                 ));
             }
             r.final_outcome = Some(c.final_outcome);
-            r.state = S::Complete;
+            r.state = to;
         }
         EventKind::ExperimentCreated(_)
         | EventKind::PreflightCompleted(_)
@@ -501,19 +504,11 @@ fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Resul
     Ok(())
 }
 
-/// RUNNING → VALIDATING once every candidate is terminal.
-fn finish_running(r: &mut RoundView) {
-    if r.candidates.values().all(CandidateView::is_terminal) {
-        r.state = RoundState::Validating;
-    }
-}
-
 fn all_validated(r: &RoundView) -> bool {
     r.candidates.values().all(|c| c.validation.is_some())
 }
 
 fn expect_judge_attempt(r: &RoundView, attempt: u32, what: &str) -> Result<(), String> {
-    expect_state(r.state, &[RoundState::JudgingBackground], what)?;
     if r.judge.judgment_id.is_some() {
         return Err(format!("{what} after a judgment"));
     }
