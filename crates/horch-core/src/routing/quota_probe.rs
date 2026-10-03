@@ -227,10 +227,56 @@ pub(crate) fn probe_local(pi: &Path, ollama: &Path) -> Result<Vec<String>, Strin
 
 /// The first line a harness prints for `--version`.
 pub fn harness_version(bin: &Path) -> Option<String> {
-    run_short(bin, &["--version"], StdDuration::from_secs(5))
-        .ok()
-        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+    let mut cmd = Command::new(bin);
+    for key in crate::harness::launch::FORBIDDEN_ENV {
+        cmd.env_remove(key);
+    }
+    let mut child = cmd
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    // Generous: a loaded machine can take seconds just to start a binary,
+    // and a missed version fails the dataset preflight.
+    let deadline = Instant::now() + VERSION_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(StdDuration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    let read = |pipe: Option<&mut dyn std::io::Read>| {
+        let mut text = String::new();
+        if let Some(p) = pipe {
+            let _ = p.read_to_string(&mut text);
+        }
+        text
+    };
+    let out = read(child.stdout.as_mut().map(|p| p as &mut dyn std::io::Read));
+    let err = read(child.stderr.as_mut().map(|p| p as &mut dyn std::io::Read));
+    // Some harnesses (Prime) print their version on stderr.
+    [out, err].iter().find_map(|t| {
+        t.lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(str::to_string)
+    })
 }
+
+/// How long `harness_version` waits for `<bin> --version`.
+const VERSION_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
 /// The newest `rate_limits` snapshot in any rollout under `sessions` (the
 /// Codex fallback, QUO-03), with the time it was written.
