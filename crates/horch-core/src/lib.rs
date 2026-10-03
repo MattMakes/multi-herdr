@@ -21,6 +21,7 @@ pub mod balance_policy;
 pub mod clock;
 pub mod codex;
 pub mod competition;
+pub mod dataset;
 pub mod evaluation;
 pub mod execution;
 pub mod fsx;
