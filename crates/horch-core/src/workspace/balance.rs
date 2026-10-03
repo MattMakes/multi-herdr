@@ -33,7 +33,7 @@
 //! interleaved passes converge on the next pass instead of oscillating, which is
 //! why the driver needs no locking. See `interleaved_passes_converge`.
 
-use crate::workspace::herdr::Layout;
+use crate::workspace::model::Layout;
 
 /// A column boundary within one cell of its target is left alone. Absorbs both
 /// border rows and herdr's rounding of a split ratio to four decimal places.
@@ -99,7 +99,7 @@ fn worker_rows(layout: &Layout, orchestrator: Option<&str>) -> Option<Vec<Row>> 
             .map(|p| p.pane_id.clone()),
     };
 
-    let workers: Vec<&crate::workspace::herdr::LayoutPane> = layout
+    let workers: Vec<&crate::workspace::model::LayoutPane> = layout
         .panes
         .iter()
         .filter(|p| Some(&p.pane_id) != orch.as_ref())
@@ -231,7 +231,7 @@ pub fn plan(layout: &Layout, orchestrator: Option<&str>) -> Vec<ResizeOp> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::herdr::{LayoutPane, Rect};
+    use crate::workspace::model::{LayoutPane, Rect};
 
     /// Build a tab: a full-height orchestrator on the left, then two worker rows
     /// described by their column boundaries.

@@ -45,7 +45,7 @@
 use std::collections::HashMap;
 
 use crate::workspace::balance::{ResizeDir, ResizeOp};
-use crate::workspace::herdr::{Direction, FocusDir, Layout, Rect};
+use crate::workspace::model::{Direction, FocusDir, Layout, Rect};
 
 /// Label of the tab workers are parked in while the grid is rebuilt. It exists
 /// for at most one run; a run that dies leaves it, and the next run gathers the
@@ -680,7 +680,7 @@ pub fn focus_target(
 /// One neighbour step from `from` toward `to`, or `None` when they overlap.
 ///
 /// herdr has no focus-by-id for an ordinary pane, so this is what
-/// [`crate::workspace::herdr::Herdr::pane_focus_walk`] steers by.
+/// [`crate::workspace::model::Herdr::pane_focus_walk`] steers by.
 ///
 /// The axis the two rects are SEPARATED on decides the direction; the centre
 /// distance only breaks the tie when they are separated on both, which is a

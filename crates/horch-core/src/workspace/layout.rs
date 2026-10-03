@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use crate::workspace::herdr::{Direction, Layout, Rect};
+use crate::workspace::model::{Direction, Layout, Rect};
 
 /// A pane reduced to the geometry the grid analysis needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,7 +441,7 @@ pub fn render(analysis: &Analysis, roles: &HashMap<String, String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::herdr::LayoutPane;
+    use crate::workspace::model::LayoutPane;
 
     /// Build a layout from `(id, x, y, w, h)` tuples in a 200x50 tab.
     fn layout(panes: &[(&str, i64, i64, i64, i64)]) -> Layout {

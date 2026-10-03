@@ -3,5 +3,6 @@
 pub mod balance;
 pub mod herdr;
 pub mod layout;
+pub mod model;
 pub mod paneshell;
 pub mod tile;
