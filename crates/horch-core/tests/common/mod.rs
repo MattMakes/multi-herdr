@@ -114,11 +114,21 @@ pub fn build_opencode_db(db: &Path) -> Option<()> {
     let bin = sqlite3()?;
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();
     let sql = std::fs::read_to_string(fixtures().join("opencode/opencode.sql")).unwrap();
-    let status = std::process::Command::new(bin)
+    // The SQL goes in on stdin: it starts with `--`, which sqlite3 reads as
+    // an option when it is an argument.
+    let mut child = std::process::Command::new(bin)
         .arg(db)
-        .arg(sql)
-        .status()
+        .stdin(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(sql.as_bytes())
+        .unwrap();
+    let status = child.wait().unwrap();
     assert!(status.success(), "building the opencode fixture database");
     Some(())
 }

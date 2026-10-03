@@ -46,11 +46,21 @@ fn corpus(name: &str) -> Harness {
         let db = h.home.join(".local/share/opencode/opencode.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
         let sql = std::fs::read_to_string(f.join("opencode/opencode.sql")).unwrap();
-        let ok = std::process::Command::new(h.bin.join("sqlite3"))
+        // The SQL goes in on stdin: it starts with `--`, which sqlite3
+        // reads as an option when it is an argument.
+        let mut child = std::process::Command::new(h.bin.join("sqlite3"))
             .arg(&db)
-            .arg(sql)
-            .status()
+            .stdin(std::process::Stdio::piped())
+            .spawn()
             .unwrap();
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(sql.as_bytes())
+            .unwrap();
+        let ok = child.wait().unwrap();
         assert!(ok.success());
     }
     h.set("HORCH_NOW", NOW);
