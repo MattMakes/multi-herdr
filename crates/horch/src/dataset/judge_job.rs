@@ -85,28 +85,37 @@ pub(crate) fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8>
     })
 }
 
-/// Rewrite `heartbeat` every [`HEARTBEAT_EVERY`] until `stop`.
+/// Write `heartbeat` once now, then rewrite it every [`HEARTBEAT_EVERY`]
+/// until `stop`. The first beat is written before this returns: a judge
+/// that answers before the thread first runs still leaves a heartbeat, and
+/// the coordinator emits `judge.started` from it.
 fn heartbeat(dir: std::path::PathBuf, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     let pid = std::process::id();
+    beat(&dir, pid);
     std::thread::spawn(move || {
         let tick = Duration::from_millis(100);
-        let mut next = Instant::now();
+        let mut next = Instant::now() + HEARTBEAT_EVERY;
         while !stop.load(Ordering::SeqCst) {
             if Instant::now() >= next {
-                let hb = Heartbeat {
-                    pid,
-                    // Wall-clock, never a pinned HORCH_NOW: the coordinator
-                    // compares it with real file times.
-                    at: horch_core::clock::stamp(chrono::Utc::now()),
-                };
-                if let Ok(bytes) = serde_json::to_vec(&hb) {
-                    let _ = fsx::write_atomic(&dir.join(HEARTBEAT_FILE), &bytes, fsx::PRIVATE_FILE);
-                }
+                beat(&dir, pid);
                 next = Instant::now() + HEARTBEAT_EVERY;
             }
             std::thread::sleep(tick);
         }
     })
+}
+
+/// Write one heartbeat for `pid` in `dir`.
+fn beat(dir: &Path, pid: u32) {
+    let hb = Heartbeat {
+        pid,
+        // Wall-clock, never a pinned HORCH_NOW: the coordinator compares it
+        // with real file times.
+        at: horch_core::clock::stamp(chrono::Utc::now()),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&hb) {
+        let _ = fsx::write_atomic(&dir.join(HEARTBEAT_FILE), &bytes, fsx::PRIVATE_FILE);
+    }
 }
 
 fn run_judge(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<RunResult> {
@@ -227,6 +236,20 @@ fn answer_text(raw: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first heartbeat exists when `heartbeat` returns, even when the
+    /// job is already over and the thread never beats.
+    #[test]
+    fn heartbeat_is_written_before_the_judge_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stop = Arc::new(AtomicBool::new(true));
+        let thread = heartbeat(tmp.path().to_path_buf(), stop);
+        let written = tmp.path().join(HEARTBEAT_FILE);
+        assert!(written.is_file(), "no heartbeat before the judge runs");
+        thread.join().unwrap();
+        let hb: Heartbeat = serde_json::from_slice(&std::fs::read(written).unwrap()).unwrap();
+        assert_eq!(hb.pid, std::process::id());
+    }
 
     #[test]
     fn answer_text_reads_the_envelope() {
