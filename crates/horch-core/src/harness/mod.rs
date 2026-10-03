@@ -25,7 +25,7 @@ use std::time::SystemTime;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::runtime::RuntimeContext;
+use crate::runtime::{HarnessBins, RuntimeContext};
 use crate::teammates::{ExecRule, Teammate};
 
 pub use capabilities::{Capabilities, SkillExposure};
@@ -235,6 +235,19 @@ impl HarnessKind {
         }
     }
 
+    /// The CLI this harness runs, from `bins`. `None` for the agentless
+    /// smoke harness.
+    pub fn binary(self, bins: &HarnessBins) -> Option<PathBuf> {
+        match self {
+            HarnessKind::Claude => Some(bins.claude.clone()),
+            HarnessKind::Codex => Some(bins.codex.clone()),
+            HarnessKind::OpenCode => Some(bins.opencode.clone()),
+            HarnessKind::Pi => Some(bins.pi.clone()),
+            HarnessKind::Prime => Some(bins.prime.clone()),
+            HarnessKind::None => None,
+        }
+    }
+
     /// The module that owns this harness's behavior.
     pub fn adapter(self) -> &'static dyn Harness {
         match self {
@@ -365,6 +378,23 @@ mod tests {
         HarnessKind::Prime,
         HarnessKind::None,
     ];
+
+    #[test]
+    fn binary_names_each_harness_cli() {
+        let bins = HarnessBins::resolve(&crate::runtime::BinOverrides::default(), None, None);
+        let got: Vec<Option<PathBuf>> = ALL.iter().map(|k| k.binary(&bins)).collect();
+        assert_eq!(
+            got,
+            [
+                Some(bins.claude.clone()),
+                Some(bins.codex.clone()),
+                Some(bins.opencode.clone()),
+                Some(bins.pi.clone()),
+                Some(bins.prime.clone()),
+                None,
+            ]
+        );
+    }
 
     /// The predicates and effort table as they were before A4, copied
     /// verbatim: (mints_session_id, harvests_session_id, runs_a_daemon,

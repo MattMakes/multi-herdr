@@ -8,6 +8,11 @@ rust-version.workspace = true
 name = "horch"
 path = "src/main.rs"
 
+# The separate, expensive entrypoint for competitive dataset runs (OD2).
+[[bin]]
+name = "multi-herdr-dataset"
+path = "src/bin/multi-herdr-dataset.rs"
+
 [dependencies]
 horch-core.workspace = true
 anyhow.workspace = true

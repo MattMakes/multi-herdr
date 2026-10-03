@@ -5,6 +5,7 @@
 //! `just --justfile <repo>/justfile herdr-fleet` and so depended on the repo
 //! staying put. `horch` embeds its prompts and needs no repo, so installing is
 //! just putting one binary on PATH - no profile editing, nothing to keep in sync.
+//! The dataset binary, `multi-herdr-dataset`, goes next to it.
 
 use std::path::{Path, PathBuf};
 
@@ -36,13 +37,19 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
         .context("the running binary has no file name")?;
     let target = dir.join(file_name);
 
-    // `same_file` follows symlinks, so a link that resolves to this binary
-    // would count as installed. The install must be a real file: not a link.
-    if same_file(&source, &target) && !is_symlink(&target) {
-        println!("horch is already installed at {}", target.display());
+    install_one("horch", &source, &target)?;
+
+    // The dataset binary is built next to horch (`cargo build --bin
+    // multi-herdr-dataset`), and is installed next to it too.
+    let dataset_source = dataset_sibling(&source);
+    let dataset_target = dir.join(exe_name(DATASET_BIN));
+    if dataset_source.is_file() {
+        install_one(DATASET_BIN, &dataset_source, &dataset_target)?;
     } else {
-        place_binary(&source, &target)?;
-        println!("installed horch to {}", target.display());
+        println!(
+            "{DATASET_BIN} is not built next to horch ({}); build it with `cargo build --release --bin {DATASET_BIN}`, then install again",
+            dataset_source.display()
+        );
     }
 
     if ctx
@@ -68,6 +75,35 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     }
 
     println!("\nInstalled version: {}", installed_version(&target)?);
+    Ok(())
+}
+
+/// The second binary that `horch install` puts on PATH.
+pub const DATASET_BIN: &str = "multi-herdr-dataset";
+
+fn exe_name(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The dataset binary built beside `horch_source`. A link to horch is
+/// resolved first, so the sibling is the one in the build directory.
+fn dataset_sibling(horch_source: &Path) -> PathBuf {
+    let real = horch_source
+        .canonicalize()
+        .unwrap_or_else(|_| horch_source.to_path_buf());
+    real.with_file_name(exe_name(DATASET_BIN))
+}
+
+/// Install `source` as `target`, unless that real file is there already.
+fn install_one(name: &str, source: &Path, target: &Path) -> Result<()> {
+    // `same_file` follows symlinks, so a link that resolves to this binary
+    // would count as installed. The install must be a real file: not a link.
+    if same_file(source, target) && !is_symlink(target) {
+        println!("{name} is already installed at {}", target.display());
+    } else {
+        place_binary(source, target)?;
+        println!("installed {name} to {}", target.display());
+    }
     Ok(())
 }
 
@@ -234,6 +270,41 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, vec![std::ffi::OsString::from("horch")]);
+    }
+
+    #[test]
+    fn install_puts_the_dataset_binary_next_to_horch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build = tmp.path().join("release");
+        std::fs::create_dir_all(&build).unwrap();
+        let horch = build.join(exe_name("horch"));
+        std::fs::write(&horch, "horch").unwrap();
+        std::fs::write(build.join(exe_name(DATASET_BIN)), "dataset").unwrap();
+        let bin = tmp.path().join("bin");
+
+        let source = dataset_sibling(&horch);
+        install_one(DATASET_BIN, &source, &bin.join(exe_name(DATASET_BIN))).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(bin.join(exe_name(DATASET_BIN))).unwrap(),
+            "dataset"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dataset_sibling_follows_a_link_to_horch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build = tmp.path().join("release");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(build.join("horch"), "horch").unwrap();
+        let link = tmp.path().join("horch-link");
+        std::os::unix::fs::symlink(build.join("horch"), &link).unwrap();
+
+        assert_eq!(
+            dataset_sibling(&link),
+            build.canonicalize().unwrap().join(DATASET_BIN)
+        );
     }
 
     #[test]

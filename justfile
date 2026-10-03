@@ -27,11 +27,12 @@ export HORCH_TEAMMATES_DIR := justfile_directory() / "teammates"
 default:
     @just --list
 
-# Build the release binary, install it as ~/.local/bin/horch, install the
-# herdr-fleet launcher next to it, and remove the old herdr-fleet shell
-# function from ~/.zshrc (a backup is written first).
+# Build the release binaries, install them as ~/.local/bin/horch and
+# ~/.local/bin/multi-herdr-dataset, install the herdr-fleet launcher next
+# to them, and remove the old herdr-fleet shell function from ~/.zshrc (a
+# backup is written first).
 install:
-    cargo build --release --bin horch
+    cargo build --release --bin horch --bin multi-herdr-dataset
     ./target/release/horch install
     sed "s|__TEAMMATES_DIR__|{{justfile_directory()}}/teammates|" scripts/herdr-fleet > ~/.local/bin/herdr-fleet
     chmod 755 ~/.local/bin/herdr-fleet
