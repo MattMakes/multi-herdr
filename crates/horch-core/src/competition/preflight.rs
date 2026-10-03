@@ -27,19 +27,19 @@ use crate::runtime::machine::{GpuClass, Known, MachineSnapshot};
 use crate::usage::money::{nano_per_token, MicroUsd, NanoUsd};
 use crate::usage::{builtin_prices, price_for, Price};
 
-pub const REPORT_SCHEMA_VERSION: &str = "1.0.0";
+pub(crate) const REPORT_SCHEMA_VERSION: &str = "1.0.0";
 
 /// The oldest git with `git worktree` (added in 2.5, stable with `--lock`
 /// and `remove` by 2.17).
-pub const MIN_GIT_VERSION: (u32, u32) = (2, 17);
+pub(crate) const MIN_GIT_VERSION: (u32, u32) = (2, 17);
 /// CPU cores one candidate needs: the agent plus its builds and tests.
-pub const CPUS_PER_CANDIDATE: u32 = 2;
+pub(crate) const CPUS_PER_CANDIDATE: u32 = 2;
 /// Open files one candidate needs (agent, pane, builds, logs).
-pub const FDS_PER_CANDIDATE: u64 = 256;
+pub(crate) const FDS_PER_CANDIDATE: u64 = 256;
 /// Processes one candidate needs.
-pub const PROCS_PER_CANDIDATE: u64 = 64;
+pub(crate) const PROCS_PER_CANDIDATE: u64 = 64;
 /// Tokens one candidate is expected to use when the plan has no estimate.
-pub const DEFAULT_TOKEN_ESTIMATE: TokenEstimate = TokenEstimate {
+pub(crate) const DEFAULT_TOKEN_ESTIMATE: TokenEstimate = TokenEstimate {
     input: 200_000,
     cache_read: 3_000_000,
     output: 60_000,

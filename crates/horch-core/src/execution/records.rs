@@ -53,7 +53,7 @@ impl Ledger {
     }
 
     /// The project [`Ledger::insert`] fills into a record without one.
-    pub fn with_project(mut self, project: Option<String>) -> Self {
+    pub(crate) fn with_project(mut self, project: Option<String>) -> Self {
         self.project = project;
         self
     }
@@ -105,7 +105,7 @@ impl Ledger {
 
     /// Record a fresh session with its resolved work phase.
     #[allow(clippy::too_many_arguments)]
-    pub fn add_with_phase(
+    pub(crate) fn add_with_phase(
         &self,
         record_id: &str,
         agent: &str,
@@ -231,7 +231,7 @@ impl Ledger {
     }
 
     /// Resume, preserving the phase unless an override is supplied.
-    pub fn resume_with_phase(
+    pub(crate) fn resume_with_phase(
         &self,
         key: &str,
         role: &str,

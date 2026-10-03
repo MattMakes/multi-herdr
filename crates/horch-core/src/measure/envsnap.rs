@@ -13,7 +13,7 @@ const KEEP_VALUE: &[&str] = &["LANG", "LC_ALL", "TERM", "SHELL", "TZ", "HORCH_BA
 /// Kept as `"set"`: the value is a local path.
 const KEEP_PRESENCE: &[&str] = &["HORCH_TEAMMATES_DIR"];
 /// What a presence-only variable records.
-pub const PRESENT: &str = "set";
+pub(crate) const PRESENT: &str = "set";
 
 /// `HORCH_<NAME>_BIN`, such as `HORCH_CLAUDE_BIN`.
 fn is_bin_override(key: &str) -> bool {

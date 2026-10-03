@@ -86,7 +86,7 @@ impl ExecutionStatus {
 
     /// The ledger's `status` string for this state. Every terminal state is
     /// `"done"`, so an old reader never mistakes a failure for a live worker.
-    pub fn legacy_status(&self) -> &'static str {
+    pub(crate) fn legacy_status(&self) -> &'static str {
         if self.is_terminal() {
             LEGACY_DONE
         } else {
@@ -136,7 +136,7 @@ pub enum ExecutionKind {
 impl ExecutionKind {
     /// The ledger's `kind` string. Candidates and judges are workers to every
     /// reader that predates them.
-    pub fn legacy_kind(&self) -> &'static str {
+    pub(crate) fn legacy_kind(&self) -> &'static str {
         match self {
             Self::Orchestrator => "orchestrator",
             Self::Worker | Self::Candidate { .. } | Self::Judge { .. } => "worker",
@@ -155,7 +155,7 @@ pub enum SessionMode {
 }
 
 impl SessionMode {
-    pub fn is_resume(&self) -> bool {
+    pub(crate) fn is_resume(&self) -> bool {
         matches!(self, Self::Resume(_))
     }
 

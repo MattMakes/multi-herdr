@@ -167,7 +167,7 @@ impl Mailbox {
     }
 
     /// Map of pane id -> role, for labelling layout output.
-    pub fn panes_to_roles(&self) -> Vec<(String, String)> {
+    pub(crate) fn panes_to_roles(&self) -> Vec<(String, String)> {
         self.roles().into_iter().map(|(r, p)| (p, r)).collect()
     }
 
@@ -201,7 +201,7 @@ impl Mailbox {
     }
 
     /// Next per-teammate ordinal for auto-naming a role `<teammate>-<n>`.
-    pub fn next_seq(&self, teammate: &str) -> Result<u32> {
+    pub(crate) fn next_seq(&self, teammate: &str) -> Result<u32> {
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(format!(".seq-{teammate}"));
         let current: u32 = std::fs::read_to_string(&path)
@@ -215,11 +215,11 @@ impl Mailbox {
 
     /// Marker file used to bound the codex rollout-file search to sessions
     /// created after this worker launched.
-    pub fn launch_marker(&self, role: &str) -> PathBuf {
+    pub(crate) fn launch_marker(&self, role: &str) -> PathBuf {
         self.dir.join(format!(".{role}.launch-marker"))
     }
 
-    pub fn harvest_log(&self, role: &str) -> PathBuf {
+    pub(crate) fn harvest_log(&self, role: &str) -> PathBuf {
         self.dir.join(format!("{role}.harvest.log"))
     }
 }

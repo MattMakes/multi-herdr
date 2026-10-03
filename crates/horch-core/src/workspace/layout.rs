@@ -149,7 +149,7 @@ pub fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
 }
 
 /// Analyse a tab layout, saying explicitly whether the orchestrator is on it.
-pub fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analysis {
+pub(crate) fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analysis {
     let area = layout.area;
     let height = area.height;
     let all: Vec<Slot> = layout
@@ -304,7 +304,7 @@ pub fn analyze_with(layout: &Layout, orchestrator: Orchestrator) -> Analysis {
 /// prints describe one tab of a 2xN grid on its own, so an overflow tab whose last
 /// bottom slot is still free reads as `ragged-bottom` when it is in fact exactly
 /// right; the note is where `horch tile`'s verdict on the tab goes.
-pub fn render_all(
+pub(crate) fn render_all(
     analyses: &[Analysis],
     notes: &[String],
     roles: &HashMap<String, String>,

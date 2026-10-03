@@ -6,14 +6,14 @@
 //! [`HarnessKind::capabilities`].
 
 pub mod capabilities;
-pub mod claude;
-pub mod claude_plugins;
+pub(crate) mod claude;
+pub(crate) mod claude_plugins;
 pub mod codex;
 pub mod headless;
 pub mod launch;
-pub mod none;
+pub(crate) mod none;
 pub mod opencode;
-pub mod pi;
+pub(crate) mod pi;
 pub mod prime;
 
 use std::ffi::OsString;
@@ -60,7 +60,7 @@ pub struct Prepared {
 
 impl Prepared {
     /// Run `step` after the CLI has exited, in the order the steps were added.
-    pub fn on_finish(&mut self, step: impl FnOnce() + 'static) {
+    pub(crate) fn on_finish(&mut self, step: impl FnOnce() + 'static) {
         self.finish.push(Box::new(step));
     }
 
@@ -183,7 +183,10 @@ pub trait Harness: Sync {
 
 /// The checks every harness shares, from its [`Capabilities`]. A harness
 /// that adds a check calls this first.
-pub fn generic_validate<H: Harness + ?Sized>(harness: &H, t: &Teammate) -> Vec<&'static str> {
+pub(crate) fn generic_validate<H: Harness + ?Sized>(
+    harness: &H,
+    t: &Teammate,
+) -> Vec<&'static str> {
     let caps = harness.capabilities();
     let mut out = Vec::new();
     if t.tools.is_some() && !caps.tool_lists {
@@ -337,7 +340,7 @@ impl HarnessKind {
 
     /// Claude-shaped teammate fields this agent has no way to express. See
     /// [`Harness::validate`].
-    pub fn unsupported_fields(self, t: &Teammate) -> Vec<&'static str> {
+    pub(crate) fn unsupported_fields(self, t: &Teammate) -> Vec<&'static str> {
         self.adapter().validate(t)
     }
 }
@@ -444,7 +447,11 @@ mod tests {
             assert_eq!(c.skill_exposure, exposure, "{kind}");
             assert_eq!(kind.takes_tool_lists(), tools, "{kind}");
             assert_eq!(kind.takes_tool_denylist(), denylist, "{kind}");
-            assert_eq!(crate::roster::valid_efforts(kind), efforts, "{kind}");
+            assert_eq!(
+                crate::roster::effort::valid_efforts(kind),
+                efforts,
+                "{kind}"
+            );
             // The pre-A4 preflight footprint: 600 MiB, plus the local model on pi,
             // 64 MiB for none.
             let local = 7 << 30;

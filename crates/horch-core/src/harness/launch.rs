@@ -64,7 +64,7 @@ impl LaunchEnv {
     }
 
     /// `~/` in a teammate path, expanded against [`LaunchEnv::home`].
-    pub fn expand_home(&self, path: &str) -> PathBuf {
+    pub(crate) fn expand_home(&self, path: &str) -> PathBuf {
         crate::roster::expand_home(path, self.home())
     }
 }
@@ -86,7 +86,7 @@ pub enum Session<'a> {
 /// with [`crate::runtime::process::inherit_env`], so a value the builder set
 /// on the command still wins, as it did when this was exported into the
 /// parent's environment.
-pub fn teammate_env(teammate: &Teammate) -> Vec<(String, String)> {
+pub(crate) fn teammate_env(teammate: &Teammate) -> Vec<(String, String)> {
     let mut out = BTreeMap::new();
     if let Some(sub) = &teammate.subagent_model {
         out.insert("CLAUDE_CODE_SUBAGENT_MODEL".to_string(), sub.clone());
@@ -108,7 +108,7 @@ pub const FORBIDDEN_ENV: [&str; 1] = ["ANTHROPIC_API_KEY"];
 ///
 /// `model_override` exists for the fixed `orchestration` recipe, where the
 /// model belongs to the pane rather than to the teammate file.
-pub fn command_in(
+pub(crate) fn command_in(
     env: &LaunchEnv,
     teammate: &Teammate,
     session: Session<'_>,
@@ -217,7 +217,7 @@ pub fn run_flow(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<ExitCode
 
 /// [`run_flow`], returning the agent's exit status as a number: `None` when
 /// a signal ended it. The worker records it (ARC-18).
-pub fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<Option<i32>> {
+pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<Option<i32>> {
     let adapter = req.teammate.agent.adapter();
     let caps = adapter.capabilities();
     // Held across the launch, so lazy reads of the bundle remain valid.
@@ -318,7 +318,7 @@ fn bundle_name(record_id: Option<&str>, bundles: &Path) -> String {
 /// The agent's command: the teammate's launch line, its own environment, then
 /// `child_env`. Nothing here touches this process's environment, and
 /// `FORBIDDEN_ENV` stays removed.
-pub fn agent_command(
+pub(crate) fn agent_command(
     ctx: &RuntimeContext,
     teammate: &Teammate,
     session: Session<'_>,
@@ -341,12 +341,12 @@ pub fn agent_command(
 }
 
 /// Handle to the background session discovery.
-pub struct Discovery {
+pub(crate) struct Discovery {
     done: Arc<AtomicBool>,
 }
 
 impl Discovery {
-    pub fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.done.store(true, Ordering::Relaxed);
     }
 }

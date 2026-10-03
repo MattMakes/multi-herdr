@@ -13,8 +13,8 @@ use crate::measure::digest::{canonical_json, Digest};
 pub const RUBRIC_VERSION: &str = "rubric-1";
 
 /// The lowest and the highest score a rubric component can get.
-pub const SCORE_MIN: f64 = 0.0;
-pub const SCORE_MAX: f64 = 10.0;
+pub(crate) const SCORE_MIN: f64 = 0.0;
+pub(crate) const SCORE_MAX: f64 = 10.0;
 
 const RUBRIC: &str = include_str!("../../assets/judge/rubric-1.md");
 const SCHEMA: &str = include_str!("../../assets/judge/judgment-schema-1.0.0.json");

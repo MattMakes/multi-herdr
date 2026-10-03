@@ -32,26 +32,25 @@
 //! Nothing here reads the process environment: the home directory and the
 //! roster override arrive as parameters.
 
-pub mod effort;
-pub mod operator;
-pub mod parser;
-pub mod permission;
-pub mod phase;
-pub mod repository;
-pub mod teammate;
+pub(crate) mod effort;
+pub(crate) mod operator;
+pub(crate) mod parser;
+pub(crate) mod permission;
+pub(crate) mod phase;
+pub(crate) mod repository;
+pub(crate) mod teammate;
 pub mod validation;
 
-pub use effort::{effort_problem, model_takes_effort, valid_efforts, Effort};
-pub use operator::{
-    effort_override_warnings, expand_home, operator_effort_warnings, operator_enabled_plugins,
-    operator_status_line,
-};
+pub(crate) use effort::effort_problem;
+pub use effort::{model_takes_effort, Effort};
+pub use operator::operator_effort_warnings;
+pub(crate) use operator::{expand_home, operator_enabled_plugins, operator_status_line};
 pub use permission::PermissionMode;
 pub use phase::Phase;
 pub use repository::{Roster, TEMPLATE};
-pub use teammate::{
-    reserved_tier, Base, ExecRule, Teammate, BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS,
-    ORCHESTRATOR_DENIED_TOOLS, ORCHESTRATOR_ONLY_SKILLS, ORCHESTRATOR_TIERS,
+pub use teammate::{reserved_tier, Base, ExecRule, Teammate};
+pub(crate) use teammate::{
+    BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS, ORCHESTRATOR_ONLY_SKILLS,
 };
 pub use validation::{fallback_problems, fallback_warnings};
 

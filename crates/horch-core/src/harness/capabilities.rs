@@ -9,7 +9,7 @@ const MIB: u64 = 1024 * 1024;
 /// Resident memory of one harness CLI process, before any local model.
 pub const HARNESS_FOOTPRINT_BYTES: u64 = 600 * MIB;
 /// Resident memory of the smoke teammate, which runs no agent CLI.
-pub const NONE_FOOTPRINT_BYTES: u64 = 64 * MIB;
+pub(crate) const NONE_FOOTPRINT_BYTES: u64 = 64 * MIB;
 
 /// How a harness discovers the skills a launch activates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,13 +54,13 @@ pub struct Capabilities {
 impl Capabilities {
     /// The session id has to be found after launch, because the CLI mints
     /// it and only reveals it afterwards.
-    pub fn discovers_session(&self) -> bool {
+    pub(crate) fn discovers_session(&self) -> bool {
         self.resumes && !self.caller_minted_session
     }
 
     /// Resident memory of one candidate whose local model takes
     /// `local_model_bytes`.
-    pub fn footprint(&self, local_model_bytes: u64) -> u64 {
+    pub(crate) fn footprint(&self, local_model_bytes: u64) -> u64 {
         if self.local_model {
             self.footprint_bytes.saturating_add(local_model_bytes)
         } else {

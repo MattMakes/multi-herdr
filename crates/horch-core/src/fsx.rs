@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// Mode for private files (owner read and write).
 pub const PRIVATE_FILE: u32 = 0o600;
 /// Mode for private directories (owner only).
-pub const PRIVATE_DIR: u32 = 0o700;
+pub(crate) const PRIVATE_DIR: u32 = 0o700;
 
 /// What can go wrong in this module.
 #[derive(Debug)]
@@ -267,7 +267,7 @@ fn host_name() -> String {
 
 /// The holder of a [`DirLock`], as written to `<name>.lock/owner`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockOwner {
+pub(crate) struct LockOwner {
     /// Process id of the holder.
     pub pid: u32,
     /// Host name of the holder; a pid is only checked on the same host.
@@ -280,7 +280,7 @@ pub struct LockOwner {
 }
 
 /// A cross-process lock at `<dir>/<name>.lock/`.
-pub struct DirLock;
+pub(crate) struct DirLock;
 
 /// The held lock. Dropping it releases the lock.
 #[derive(Debug)]
@@ -340,7 +340,7 @@ impl DirLock {
     /// Take `<dir>/<name>.lock/`, waiting up to `timeout`. A lock whose owner
     /// pid is dead on this host, or that is older than `stale_after`, is
     /// broken.
-    pub fn acquire(
+    pub(crate) fn acquire(
         dir: &Path,
         name: &str,
         stale_after: Duration,

@@ -23,10 +23,11 @@ use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
 
 /// The only tools a headless judge may have. They read; none writes or runs.
-pub const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
+pub(crate) const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
 
 /// Denied on every headless run, on top of the teammate's own list.
-pub const HEADLESS_DENIED_TOOLS: [&str; 5] = ["Agent", "Edit", "Write", "NotebookEdit", "Bash"];
+pub(crate) const HEADLESS_DENIED_TOOLS: [&str; 5] =
+    ["Agent", "Edit", "Write", "NotebookEdit", "Bash"];
 
 /// How long `claude --help` may take before the probe says "no".
 const HELP_PROBE_TIMEOUT: Duration = Duration::from_secs(10);

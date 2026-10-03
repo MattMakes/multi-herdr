@@ -220,7 +220,7 @@ impl SkillCatalog {
 
     /// The bundled skills as the installer's catalog, so a `bundled:<id>`
     /// source installs the compiled-in copy.
-    pub fn marketplace_catalog(&self) -> Result<Catalog> {
+    pub(crate) fn marketplace_catalog(&self) -> Result<Catalog> {
         let mut out = Catalog::new();
         for entry in self.entries.values() {
             if entry.source != CatalogSource::Bundled {

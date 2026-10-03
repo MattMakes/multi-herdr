@@ -14,7 +14,7 @@ use crate::measure::digest::Digest;
 
 /// The version of the [`Judgment`] shape and of
 /// `assets/judge/judgment-schema-1.0.0.json`.
-pub const JUDGMENT_SCHEMA_VERSION: &str = "1.0.0";
+pub(crate) const JUDGMENT_SCHEMA_VERSION: &str = "1.0.0";
 
 /// The field names of [`Judgment`], in declaration order.
 pub const JUDGMENT_FIELDS: &[&str] = &[
@@ -29,13 +29,13 @@ pub const JUDGMENT_FIELDS: &[&str] = &[
 
 /// The fields of [`Judgment`] that may be left out: `winner` is required
 /// only when the verdict is `winner`, which the parser checks.
-pub const JUDGMENT_OPTIONAL_FIELDS: &[&str] = &["winner"];
+pub(crate) const JUDGMENT_OPTIONAL_FIELDS: &[&str] = &["winner"];
 
 /// The field names of [`CandidateAssessment`], in declaration order.
-pub const ASSESSMENT_FIELDS: &[&str] = &["scores", "acceptable", "notes"];
+pub(crate) const ASSESSMENT_FIELDS: &[&str] = &["scores", "acceptable", "notes"];
 
 /// The serde spellings of [`JudgmentVerdict`].
-pub const VERDICTS: &[&str] = &["winner", "tie", "abstain", "reject_all"];
+pub(crate) const VERDICTS: &[&str] = &["winner", "tie", "abstain", "reject_all"];
 
 /// SPEC-TODO(Spec B §11): the Judgment schema verbatim. This shape is provisional.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -28,11 +28,11 @@ pub struct LockInfo {
     pub pane_id: Option<String>,
 }
 
-pub fn lock_dir(state_root: &Path) -> PathBuf {
+pub(crate) fn lock_dir(state_root: &Path) -> PathBuf {
     super::dir(state_root).join("collector.lock")
 }
 
-pub fn info_path(state_root: &Path) -> PathBuf {
+pub(crate) fn info_path(state_root: &Path) -> PathBuf {
     super::dir(state_root).join("collector.json")
 }
 
@@ -47,7 +47,7 @@ pub enum Holder {
     Stale(Option<LockInfo>),
 }
 
-pub fn read_info(state_root: &Path) -> Option<LockInfo> {
+pub(crate) fn read_info(state_root: &Path) -> Option<LockInfo> {
     std::fs::read_to_string(info_path(state_root))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())

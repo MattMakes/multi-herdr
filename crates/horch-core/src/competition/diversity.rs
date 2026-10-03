@@ -11,7 +11,7 @@ use crate::routing::eligible::EligibleEntry;
 
 /// The values a round already covers, per dimension.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Coverage {
+pub(crate) struct Coverage {
     harnesses: BTreeSet<String>,
     models: BTreeSet<String>,
     efforts: BTreeSet<String>,
@@ -30,13 +30,13 @@ fn key(e: &EligibleEntry) -> (String, String, String) {
 
 impl Coverage {
     /// Count one more candidate's values as covered.
-    pub fn add(&mut self, harness: &str, model: &str, effort: Option<&str>) {
+    pub(crate) fn add(&mut self, harness: &str, model: &str, effort: Option<&str>) {
         self.harnesses.insert(harness.to_string());
         self.models.insert(model.to_string());
         self.efforts.insert(effort.unwrap_or("-").to_string());
     }
 
-    pub fn add_entry(&mut self, e: &EligibleEntry) {
+    pub(crate) fn add_entry(&mut self, e: &EligibleEntry) {
         let (h, m, f) = key(e);
         self.harnesses.insert(h);
         self.models.insert(m);
@@ -44,7 +44,7 @@ impl Coverage {
     }
 
     /// How many new values `e` adds: 0 to 3.
-    pub fn gain(&self, e: &EligibleEntry) -> u32 {
+    pub(crate) fn gain(&self, e: &EligibleEntry) -> u32 {
         let (h, m, f) = key(e);
         u32::from(!self.harnesses.contains(&h))
             + u32::from(!self.models.contains(&m))
@@ -55,7 +55,7 @@ impl Coverage {
 /// Pick up to `count` entries from `pool`, greedily, each with the largest
 /// [`Coverage::gain`] over what `covered` and the earlier picks hold.
 /// Ineligible entries are skipped. `covered` ends with every pick added.
-pub fn pick_diverse(
+pub(crate) fn pick_diverse(
     pool: &[EligibleEntry],
     covered: &mut Coverage,
     count: usize,

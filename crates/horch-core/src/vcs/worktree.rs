@@ -19,8 +19,8 @@ use crate::vcs::git::{GitClient, GitIdentity};
 
 /// The identity of every freeze commit. With the date fixed by the caller,
 /// the same edits on the same base give the same commit hash (CMP-08).
-pub const FREEZE_NAME: &str = "multi-herdr-dataset";
-pub const FREEZE_EMAIL: &str = "dataset@multi-herdr.invalid";
+pub(crate) const FREEZE_NAME: &str = "multi-herdr-dataset";
+pub(crate) const FREEZE_EMAIL: &str = "dataset@multi-herdr.invalid";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeSpec {

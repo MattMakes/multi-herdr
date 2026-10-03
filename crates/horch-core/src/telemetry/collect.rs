@@ -256,7 +256,7 @@ impl Collector {
     }
 
     /// Arm the test hooks that `HORCH_FAULT` names (`RuntimeContext::settings`).
-    pub fn with_faults(mut self, faults: &crate::runtime::Faults) -> Collector {
+    pub(crate) fn with_faults(mut self, faults: &crate::runtime::Faults) -> Collector {
         self.fail_after_append = faults.has("after-append");
         self.abort_after_append = faults.has("abort-after-append");
         self
@@ -370,7 +370,7 @@ impl Collector {
 }
 
 /// A reader's usage, stamped with the record it belongs to and priced.
-pub fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String, Price>) -> Event {
+pub(crate) fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String, Price>) -> Event {
     let model = if u.model.is_empty() {
         r.model.clone()
     } else {

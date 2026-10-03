@@ -13,7 +13,7 @@ use crate::measure::recorder::{Appended, NewEvent, Recorder};
 
 /// Why an outcome is refused before anything is recorded.
 #[derive(Debug, Clone, PartialEq)]
-pub enum OutcomeError {
+pub(crate) enum OutcomeError {
     /// `post_merge_score` is not a finite number in 0.0..=1.0.
     ScoreOutOfRange(f64),
 }

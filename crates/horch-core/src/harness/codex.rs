@@ -35,7 +35,7 @@ use crate::roster::{ExecRule, Teammate};
 use crate::runtime::RuntimeContext;
 
 /// Path to codex's shared rules file: `~/.codex/rules/default.rules`.
-pub fn rules_path(home: &Path) -> PathBuf {
+pub(crate) fn rules_path(home: &Path) -> PathBuf {
     home.join(".codex").join("rules").join("default.rules")
 }
 
@@ -96,7 +96,7 @@ impl Rules {
 
     /// Replace only the private home's skills link. Never follow it into the
     /// operator's skills directory. Codex discovers these files natively.
-    pub fn attach_skills(&self, skills_dir: &Path) -> Result<()> {
+    pub(crate) fn attach_skills(&self, skills_dir: &Path) -> Result<()> {
         #[cfg(not(windows))]
         if let Rules::Private { dir } = self {
             let target = dir.join("skills");
@@ -270,7 +270,7 @@ fn install_rules(
 /// Idempotent: a rule whose pattern is already present is left alone, so the
 /// user's own rules and formatting survive.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
+pub(crate) fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
     let path = rules_path(home);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -303,7 +303,7 @@ pub fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
 /// Codex names them `rollout-<timestamp>-<uuid>.jsonl`. Returns `None` for
 /// anything that does not end in a well-formed uuid, which is what stops a
 /// partially written or unrelated file from being recorded as a session.
-pub fn session_id_from_rollout(file_name: &str) -> Option<&str> {
+pub(crate) fn session_id_from_rollout(file_name: &str) -> Option<&str> {
     let stem = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
     // The uuid is the trailing 36 characters, preceded by the separating dash.
     let candidate = stem.get(stem.len().checked_sub(36)?..)?;
@@ -339,7 +339,7 @@ pub struct RolloutCandidate {
 /// The cwd check is what keeps two projects' concurrent codex sessions apart.
 /// Each `"cwd"` value in the first 16KB is compared canonically
 /// ([`Workdir`]), so `/var/...` finds a session recorded as `/private/var/...`.
-pub fn find_rollouts(
+pub(crate) fn find_rollouts(
     sessions_dir: &Path,
     project_dir: &str,
     since: SystemTime,

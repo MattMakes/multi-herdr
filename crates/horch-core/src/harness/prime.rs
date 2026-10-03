@@ -97,7 +97,7 @@ fn daemon_pid(bin: &Path, socket: &Path) -> Option<i32> {
 
 /// Split out from [`daemon_pid`] so the matching is testable without Prime
 /// installed.
-pub fn pid_for_socket(json: &str, socket: &Path) -> Option<i32> {
+pub(crate) fn pid_for_socket(json: &str, socket: &Path) -> Option<i32> {
     let records: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
     records
         .iter()

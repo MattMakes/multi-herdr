@@ -184,7 +184,7 @@ string_id!(JudgmentId, validate_plain);
 impl WorkerId {
     /// `<workspace>:<role>`. Both parts are validated already; a herdr
     /// workspace id has no `:`, so the result is a well-formed `WorkerId`.
-    pub fn new_for(workspace: &WorkspaceId, role: &RoleName) -> Self {
+    pub(crate) fn new_for(workspace: &WorkspaceId, role: &RoleName) -> Self {
         Self(format!("{workspace}:{role}"))
     }
 }
@@ -219,7 +219,7 @@ mintable!(ExecutionId, EventId, ExperimentId, RoundId, JudgmentId);
 /// Bytes 0..6 hold the big-endian Unix millisecond timestamp, so ids sort by
 /// time; the version nibble is 7 and the RFC 4122 variant bits are kept from
 /// the v4 source. The remaining 74 bits are random.
-pub fn mint_v7(at: DateTime<Utc>) -> uuid::Uuid {
+pub(crate) fn mint_v7(at: DateTime<Utc>) -> uuid::Uuid {
     let mut bytes = *uuid::Uuid::new_v4().as_bytes();
     // A pre-1970 instant has no v7 encoding; clamp rather than wrap.
     let ms = at.timestamp_millis().max(0) as u64;

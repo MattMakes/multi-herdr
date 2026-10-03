@@ -13,7 +13,7 @@ use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session};
 use crate::roster::Teammate;
 use crate::skills::Bundle;
 
-pub struct Pi;
+pub(crate) struct Pi;
 
 impl Harness for Pi {
     fn kind(&self) -> HarnessKind {

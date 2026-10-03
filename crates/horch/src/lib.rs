@@ -3,6 +3,8 @@
 //! and the exit codes ([`exit`]). [`dataset`] holds the commands of the
 //! second binary, `multi-herdr-dataset`.
 
+#![warn(unreachable_pub)]
+
 pub mod bootstrap;
 pub mod dataset;
 pub mod exit;

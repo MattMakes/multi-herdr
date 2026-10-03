@@ -35,7 +35,7 @@ impl Pane {
     ///
     /// Mirrors the jq fallback chain `.session_id // .id // .ref` used by the
     /// bash implementation, because the key has moved between herdr versions.
-    pub fn agent_session_id(&self) -> Option<String> {
+    pub(crate) fn agent_session_id(&self) -> Option<String> {
         match self.agent_session.as_ref()? {
             serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
             serde_json::Value::Object(map) => ["session_id", "id", "ref"]
@@ -100,7 +100,7 @@ pub struct Workspace {
 
 /// What `herdr pane resize` reports back.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Resize {
+pub(crate) struct Resize {
     /// False when herdr declined the move, which in practice means the divider is
     /// against the minimum pane width. The loop-breaker for any resize sequence.
     pub changed: bool,
@@ -206,7 +206,7 @@ impl std::fmt::Display for Direction {
 /// (`herdr plugin pane focus` answers `plugin_pane_not_found`), so stepping is
 /// the only way to put a named pane back in focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusDir {
+pub(crate) enum FocusDir {
     Left,
     Right,
     Up,
@@ -214,7 +214,7 @@ pub enum FocusDir {
 }
 
 impl FocusDir {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             FocusDir::Left => "left",
             FocusDir::Right => "right",

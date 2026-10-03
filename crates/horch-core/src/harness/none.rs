@@ -10,7 +10,7 @@ use super::{CommandSpec, Harness, HarnessKind, LaunchEnv};
 use crate::roster::Teammate;
 use crate::skills::Bundle;
 
-pub struct NoAgent;
+pub(crate) struct NoAgent;
 
 impl Harness for NoAgent {
     fn kind(&self) -> HarnessKind {

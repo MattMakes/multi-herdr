@@ -24,7 +24,7 @@ use crate::roster::Teammate;
 
 /// One plugin, resolved to its skills.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Plugin {
+pub(crate) struct Plugin {
     pub name: String,
     /// The `name@marketplace` key when the plugin came from the operator's
     /// installed plugins, so the overlay can keep it enabled. `None` when it
@@ -36,7 +36,7 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    pub fn description(&self, skill: &str) -> Option<&str> {
+    pub(crate) fn description(&self, skill: &str) -> Option<&str> {
         self.skills
             .iter()
             .find(|(name, _)| name == skill)
@@ -46,7 +46,7 @@ impl Plugin {
 
 /// Resolve `plugin` for `teammate`, reading the operator's installed plugins
 /// under `home` (`$HOME`).
-pub fn resolve(teammate: &Teammate, plugin: &str, home: Option<&Path>) -> Result<Plugin> {
+pub(crate) fn resolve(teammate: &Teammate, plugin: &str, home: Option<&Path>) -> Result<Plugin> {
     let dirs: Vec<PathBuf> = teammate
         .plugin_dirs
         .iter()
@@ -57,7 +57,7 @@ pub fn resolve(teammate: &Teammate, plugin: &str, home: Option<&Path>) -> Result
 
 /// Every `plugin_skills` entry of `teammate`, resolved and checked: each
 /// plugin exists and ships each named skill. `home` is `$HOME`.
-pub fn resolve_all_in(
+pub(crate) fn resolve_all_in(
     teammate: &Teammate,
     home: Option<&Path>,
 ) -> Result<Vec<(Plugin, Vec<String>)>> {
@@ -87,7 +87,7 @@ pub fn resolve_all_in(
 
 /// The pure half of [`resolve`]: explicit plugin directories and the parsed
 /// `installed_plugins.json`, whose `~/` paths expand against `home`.
-pub fn resolve_in(
+pub(crate) fn resolve_in(
     dirs: &[PathBuf],
     installed: Option<&Value>,
     plugin: &str,
@@ -129,7 +129,7 @@ fn plugin_name(dir: &Path) -> Option<String> {
 
 /// The operator's installed-plugins registry under `home` (`$HOME`), if it
 /// exists and parses.
-pub fn installed_plugins_in(home: Option<&Path>) -> Option<Value> {
+pub(crate) fn installed_plugins_in(home: Option<&Path>) -> Option<Value> {
     let path = home?.join(".claude/plugins/installed_plugins.json");
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
@@ -164,7 +164,7 @@ fn installed_root(
 /// Every `name@marketplace` key under which `plugin` is installed, plus
 /// `always`, sorted. `always` covers a machine where it is not installed yet:
 /// an `enabledPlugins` entry for a missing plugin does nothing.
-pub fn installed_keys(installed: Option<&Value>, plugin: &str, always: &str) -> Vec<String> {
+pub(crate) fn installed_keys(installed: Option<&Value>, plugin: &str, always: &str) -> Vec<String> {
     let mut keys: Vec<String> = installed
         .and_then(|v| v.get("plugins"))
         .and_then(|p| p.as_object())

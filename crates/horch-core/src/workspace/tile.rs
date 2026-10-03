@@ -50,19 +50,19 @@ use crate::workspace::model::{Direction, FocusDir, Layout, Rect};
 /// Label of the tab workers are parked in while the grid is rebuilt. It exists
 /// for at most one run; a run that dies leaves it, and the next run gathers the
 /// panes in it like any others and places them.
-pub const SCRATCH_LABEL: &str = "horch-tile-scratch";
+pub(crate) const SCRATCH_LABEL: &str = "horch-tile-scratch";
 
 /// Tab 1 gives one of its columns to the orchestrator, so it holds 2 worker
 /// columns where an overflow tab holds 3.
-pub const TAB1_COLUMNS: usize = 2;
-pub const OVERFLOW_COLUMNS: usize = 3;
+pub(crate) const TAB1_COLUMNS: usize = 2;
+pub(crate) const OVERFLOW_COLUMNS: usize = 3;
 /// Two rows everywhere. A 3-row layout is deliberately out of scope.
-pub const ROWS: usize = 2;
+pub(crate) const ROWS: usize = 2;
 
 /// A divider within one cell of its target is left alone: the same tolerance
 /// [`crate::workspace::balance`] uses, absorbing border rows and herdr's rounding of a
 /// split ratio to four decimal places.
-pub const TOLERANCE: i64 = 1;
+pub(crate) const TOLERANCE: i64 = 1;
 
 /// Worker columns on a 1-based tab index.
 pub fn columns(tab_index: usize) -> usize {
@@ -74,7 +74,7 @@ pub fn columns(tab_index: usize) -> usize {
 }
 
 /// How many workers a 1-based tab index holds when full.
-pub fn capacity(tab_index: usize) -> usize {
+pub(crate) fn capacity(tab_index: usize) -> usize {
     columns(tab_index) * ROWS
 }
 
@@ -105,7 +105,7 @@ pub struct Slot {
 }
 
 /// The first `n` slots in fill order.
-pub fn slots_for(n: usize) -> Vec<Slot> {
+pub(crate) fn slots_for(n: usize) -> Vec<Slot> {
     let mut slots = Vec::with_capacity(n);
     let mut tab_index = 1;
     while slots.len() < n {
@@ -127,12 +127,12 @@ pub fn slots_for(n: usize) -> Vec<Slot> {
 }
 
 /// How many tabs `n` workers need. Always at least one: the orchestrator's.
-pub fn tab_count(n: usize) -> usize {
+pub(crate) fn tab_count(n: usize) -> usize {
     slots_for(n).last().map(|s| s.tab_index).unwrap_or(1)
 }
 
 /// How many workers land on a 1-based tab index, given `n` in the workspace.
-pub fn workers_on_tab(tab_index: usize, n: usize) -> usize {
+pub(crate) fn workers_on_tab(tab_index: usize, n: usize) -> usize {
     slots_for(n)
         .iter()
         .filter(|s| s.tab_index == tab_index)
@@ -234,7 +234,7 @@ impl Plan {
 /// Columns are clustered within [`TOLERANCE`] before being compared, so a
 /// divider that drifted one cell cannot swap a column's two panes on the next
 /// run.
-pub fn order_workers(fleet: &Fleet) -> Vec<&Worker> {
+pub(crate) fn order_workers(fleet: &Fleet) -> Vec<&Worker> {
     let tab_index = |tab_id: &str| {
         fleet
             .tabs
@@ -494,7 +494,11 @@ pub fn command_line(op: &Op) -> String {
 }
 
 /// The grid a plan ends with: one block per tab, every slot named.
-pub fn render_target(plan: &Plan, orchestrator: &str, roles: &HashMap<String, String>) -> String {
+pub(crate) fn render_target(
+    plan: &Plan,
+    orchestrator: &str,
+    roles: &HashMap<String, String>,
+) -> String {
     let label = |id: &str| match roles.get(id) {
         Some(role) => format!("{role}({id})"),
         None => id.to_string(),
@@ -573,14 +577,14 @@ pub fn render_target(plan: &Plan, orchestrator: &str, roles: &HashMap<String, St
 /// Both values come from one gather: the tab from the workspace's
 /// `active_tab_id`, the pane from that tab's `focused_pane_id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FocusState {
+pub(crate) struct FocusState {
     pub tab: String,
     pub pane: String,
 }
 
 /// Where the operator should be looking after a rebuild.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FocusTarget {
+pub(crate) struct FocusTarget {
     pub tab: String,
     /// `None` means leave herdr's choice alone, which is the rule on an overflow
     /// tab whose remembered pane is gone: there is no pane there worth
@@ -612,7 +616,7 @@ pub struct FocusTarget {
 ///
 /// Pure: `after` is the snapshot the command already built, and nothing here
 /// calls herdr.
-pub fn focus_target(
+pub(crate) fn focus_target(
     before: &FocusState,
     after: &[TabShape],
     orchestrator: &str,
@@ -693,7 +697,7 @@ pub fn focus_target(
 ///
 /// `None` for two rects that overlap on both axes, which means they are the same
 /// pane: no direction leads anywhere.
-pub fn step_toward(from: &Rect, to: &Rect) -> Option<FocusDir> {
+pub(crate) fn step_toward(from: &Rect, to: &Rect) -> Option<FocusDir> {
     let spans = |a0: i64, a1: i64, b0: i64, b1: i64| a0 < b1 && b0 < a1;
     let overlaps_x = spans(from.x, from.x + from.width, to.x, to.x + to.width);
     let overlaps_y = spans(from.y, from.y + from.height, to.y, to.y + to.height);
@@ -729,7 +733,7 @@ pub fn step_toward(from: &Rect, to: &Rect) -> Option<FocusDir> {
 
 /// One tab's live geometry, reduced to what the checks and the balance need.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TabShape {
+pub(crate) struct TabShape {
     pub tab_id: String,
     pub area: Rect,
     pub panes: Vec<(String, Rect)>,
@@ -737,7 +741,7 @@ pub struct TabShape {
 }
 
 impl TabShape {
-    pub fn from_layout(layout: &Layout) -> Self {
+    pub(crate) fn from_layout(layout: &Layout) -> Self {
         Self {
             tab_id: layout.tab_id.clone(),
             area: layout.area,
@@ -762,7 +766,11 @@ fn near(a: i64, b: i64) -> bool {
 /// torn down and rebuilt. `orchestrator` is `Some` on tab 1 and `None` on an
 /// overflow tab, where a lone full-height pane is a worker column and not an
 /// orchestrator.
-pub fn tab_is_canonical(shape: &TabShape, orchestrator: Option<&str>, workers: usize) -> bool {
+pub(crate) fn tab_is_canonical(
+    shape: &TabShape,
+    orchestrator: Option<&str>,
+    workers: usize,
+) -> bool {
     let area = shape.area;
     let mut x0 = area.x;
     let x1 = area.x + area.width;
@@ -841,7 +849,7 @@ pub fn tab_is_canonical(shape: &TabShape, orchestrator: Option<&str>, workers: u
 
 /// True when the whole workspace is already the canonical grid for `workers`
 /// panes, so nothing needs moving and only the balance has to run.
-pub fn is_canonical(tabs: &[TabShape], orchestrator: &str, workers: usize) -> bool {
+pub(crate) fn is_canonical(tabs: &[TabShape], orchestrator: &str, workers: usize) -> bool {
     if tabs.len() != tab_count(workers) {
         return false;
     }
@@ -867,7 +875,7 @@ pub fn is_canonical(tabs: &[TabShape], orchestrator: &str, workers: usize) -> bo
 /// Targets come from the grid, not from the pane edges: column boundaries are
 /// `x0 + round(k * w / columns)` whatever each row happens to hold, so a row
 /// with a spanning bottom pane still lines up with the row above it.
-pub fn balance_op(shape: &TabShape, orchestrator: Option<&str>) -> Option<ResizeOp> {
+pub(crate) fn balance_op(shape: &TabShape, orchestrator: Option<&str>) -> Option<ResizeOp> {
     let area = shape.area;
     let x1 = area.x + area.width;
     let mut rest: Vec<&(String, Rect)> = shape.panes.iter().collect();

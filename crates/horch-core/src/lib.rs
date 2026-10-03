@@ -15,6 +15,8 @@
 //! Nothing here shells out to `bash`, `jq`, `node`, or `just`: the only external
 //! process is `herdr` itself, plus whichever agent CLI a worker launches.
 
+#![warn(unreachable_pub)]
+
 pub mod clock;
 pub mod competition;
 pub mod dataset;

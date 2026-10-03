@@ -11,17 +11,18 @@ use serde_json::{json, Value};
 
 use crate::roster::{Phase, Teammate};
 
-pub mod activation;
+pub(crate) mod activation;
 pub mod briefing;
 pub mod catalog;
-pub mod materialize;
-pub mod selection;
+pub(crate) mod materialize;
+pub(crate) mod selection;
 
 pub use activation::{plan_activation, InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};
 pub use briefing::BriefingContext;
-pub use catalog::{CatalogEntry, CatalogSource, Provenance, SkillCatalog};
+pub use catalog::{CatalogSource, SkillCatalog};
 pub use materialize::MaterializedSkills;
-pub use selection::{phase_skills, selected, selected_in};
+pub use selection::selected;
+pub(crate) use selection::{phase_skills, selected_in};
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
@@ -107,7 +108,7 @@ impl Bundle {
     /// Plan `teammate`'s skills against `catalog` and materialize the
     /// activated ones under `<state_root>/skill-bundles/<execution_id>/`.
     /// `None` when nothing is activated.
-    pub fn install_from(
+    pub(crate) fn install_from(
         state_root: &Path,
         teammate: &Teammate,
         catalog: SkillCatalog,

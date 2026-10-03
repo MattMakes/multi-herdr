@@ -91,7 +91,7 @@ impl Brief {
 
     /// Parse a brief of either schema, with the schema 1 overrides folded
     /// into [`Brief::bin_overrides`].
-    pub fn from_json(raw: &str) -> Result<Brief> {
+    pub(crate) fn from_json(raw: &str) -> Result<Brief> {
         let mut brief: Brief = serde_json::from_str(raw)?;
         brief.bin_overrides = brief.overrides();
         Ok(brief)
@@ -111,7 +111,7 @@ impl Brief {
 
     /// Record `overrides` in both schemas: the full set in `bin_overrides`,
     /// and the claude and codex values in their schema 1 fields.
-    pub fn set_overrides(&mut self, overrides: BinOverrides) {
+    pub(crate) fn set_overrides(&mut self, overrides: BinOverrides) {
         let text =
             |p: &Option<std::path::PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
         self.claude_bin = text(&overrides.claude);
@@ -120,7 +120,7 @@ impl Brief {
     }
 
     /// The directory the agent works in.
-    pub fn workdir_or_project(&self) -> &str {
+    pub(crate) fn workdir_or_project(&self) -> &str {
         self.workdir.as_deref().unwrap_or(&self.project_dir)
     }
 
@@ -128,7 +128,7 @@ impl Brief {
     /// `horch` command the agent runs: who it is (`horch note` and
     /// `horch done` find their record by it), where the ledger and roster
     /// are, and every binary override. Applied to the child command only.
-    pub fn transport_env(&self) -> Vec<(String, String)> {
+    pub(crate) fn transport_env(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = [
             ("HORCH_ROLE", self.role.as_str()),
             ("HORCH_TEAMMATE", self.teammate.as_str()),
@@ -180,7 +180,7 @@ mod session_wire {
         resuming: bool,
     }
 
-    pub fn serialize<S: Serializer>(session: &SessionMode, s: S) -> Result<S::Ok, S::Error> {
+    pub(crate) fn serialize<S: Serializer>(session: &SessionMode, s: S) -> Result<S::Ok, S::Error> {
         Wire {
             session_id: session.id().map(|id| id.to_string()).unwrap_or_default(),
             resuming: session.is_resume(),
@@ -188,7 +188,7 @@ mod session_wire {
         .serialize(s)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SessionMode, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SessionMode, D::Error> {
         let wire = Wire::deserialize(d)?;
         let id = match wire.session_id.as_str() {
             "" => None,

@@ -22,7 +22,7 @@ use crate::runtime::fault::Faults;
 use crate::telemetry::cursor::{poll_lines, Cursor};
 
 /// The `DirLock` name under the dataset root: `<root>/events.lock/`.
-pub const EVENTS_LOCK: &str = "events";
+pub(crate) const EVENTS_LOCK: &str = "events";
 /// A lock this old belongs to a hung writer and is broken.
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
 /// How long an append waits for the lock.
@@ -37,7 +37,7 @@ pub struct StoreOptions {
 }
 
 /// The `HORCH_FAULT` point that aborts right after an event append.
-pub const ABORT_AFTER_EVENT_APPEND: &str = "abort-after-event-append";
+pub(crate) const ABORT_AFTER_EVENT_APPEND: &str = "abort-after-event-append";
 
 impl StoreOptions {
     pub fn from_faults(faults: &Faults) -> StoreOptions {
@@ -57,12 +57,12 @@ pub struct ReadEvents {
 }
 
 /// One line as an envelope, or `None` for a torn or foreign line.
-pub fn parse_line(line: &[u8]) -> Option<EventEnvelope> {
+pub(crate) fn parse_line(line: &[u8]) -> Option<EventEnvelope> {
     serde_json::from_slice(line).ok()
 }
 
 /// The `*.jsonl` files of the events dir, sorted by name (= by UTC day).
-pub fn event_files(paths: &DatasetPaths) -> Result<Vec<PathBuf>> {
+pub(crate) fn event_files(paths: &DatasetPaths) -> Result<Vec<PathBuf>> {
     let dir = paths.events_dir();
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,

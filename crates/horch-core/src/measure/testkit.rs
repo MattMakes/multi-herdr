@@ -18,7 +18,7 @@ impl SplitMix64 {
     }
 
     /// The next 64 random bits (the published reference algorithm).
-    pub fn next_u64(&mut self) -> u64 {
+    pub(crate) fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -46,7 +46,7 @@ impl SplitMix64 {
     }
 
     /// Shuffle `items` in place (Fisher-Yates).
-    pub fn shuffle<T>(&mut self, items: &mut [T]) {
+    pub(crate) fn shuffle<T>(&mut self, items: &mut [T]) {
         for i in (1..items.len()).rev() {
             let j = self.below(i as u64 + 1) as usize;
             items.swap(i, j);
@@ -55,7 +55,7 @@ impl SplitMix64 {
 }
 
 /// A seed from a digest: its first 8 bytes, big-endian.
-pub fn seed_from_digest(d: &Digest) -> u64 {
+pub(crate) fn seed_from_digest(d: &Digest) -> u64 {
     let mut b = [0u8; 8];
     b.copy_from_slice(&d.0[..8]);
     u64::from_be_bytes(b)

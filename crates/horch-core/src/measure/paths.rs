@@ -17,7 +17,7 @@ use crate::fsx;
 use crate::ids::{ExperimentId, RoundId};
 
 /// The directory under the state root that holds every project's dataset.
-pub const DATASET_DIR: &str = "multi-herdr";
+pub(crate) const DATASET_DIR: &str = "multi-herdr";
 
 /// An id or label that is not one plain path component.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +39,7 @@ impl fmt::Display for BadPathComponent {
 
 impl std::error::Error for BadPathComponent {}
 
-pub type PathResult = Result<PathBuf, BadPathComponent>;
+pub(crate) type PathResult = Result<PathBuf, BadPathComponent>;
 
 /// `value`, when it is one plain path component: not empty, not `.` or
 /// `..`, and without `/`, `\`, `..` or NUL.

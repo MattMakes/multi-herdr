@@ -141,7 +141,7 @@ pub fn needs_gate(req: &SpawnRequest, roster: &Roster) -> bool {
 }
 
 /// Explicit task selection wins over the recorded phase and roster default.
-pub fn resolve_phase(
+pub(crate) fn resolve_phase(
     explicit: Option<Phase>,
     recorded: Option<Phase>,
     default: Option<Phase>,

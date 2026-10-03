@@ -81,7 +81,7 @@ pub fn parse(raw: &str) -> Option<DateTime<Utc>> {
 }
 
 /// Seconds since the Unix epoch, as a UTC time. Codex reports resets this way.
-pub fn from_epoch(secs: i64) -> Option<DateTime<Utc>> {
+pub(crate) fn from_epoch(secs: i64) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp(secs, 0)
 }
 

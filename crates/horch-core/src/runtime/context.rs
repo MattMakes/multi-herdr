@@ -322,13 +322,13 @@ impl RuntimeContext {
 
     /// Take the bin overrides a brief carries, and resolve every program
     /// again with them.
-    pub fn apply_overrides(&mut self, overrides: &BinOverrides) {
+    pub(crate) fn apply_overrides(&mut self, overrides: &BinOverrides) {
         self.bins.overrides.merge(overrides);
         self.refresh_bins();
     }
 
     /// Resolve every program again, after the overrides or PATH changed.
-    pub fn refresh_bins(&mut self) {
+    pub(crate) fn refresh_bins(&mut self) {
         self.bins.harness = HarnessBins::resolve(
             &self.bins.overrides,
             self.inherited.path.as_deref(),
@@ -348,7 +348,7 @@ impl RuntimeContext {
 }
 
 /// `HORCH_TILE`: automatic tiling unless it says `0`, `false`, `no` or `off`.
-pub fn tiling(raw: Option<&str>) -> TilingMode {
+pub(crate) fn tiling(raw: Option<&str>) -> TilingMode {
     match raw.unwrap_or_default() {
         "0" | "false" | "no" | "off" => TilingMode::Disabled,
         _ => TilingMode::Automatic,

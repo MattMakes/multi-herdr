@@ -44,7 +44,7 @@ pub fn redact(text: &str) -> Cow<'_, str> {
 
 /// An environment value as it may be recorded: fully redacted when the key
 /// names a secret, else passed through [`redact`].
-pub fn redact_env_value<'a>(key: &str, value: &'a str) -> Cow<'a, str> {
+pub(crate) fn redact_env_value<'a>(key: &str, value: &'a str) -> Cow<'a, str> {
     let k = key.to_ascii_uppercase();
     let secret_key = ["KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL"]
         .iter()

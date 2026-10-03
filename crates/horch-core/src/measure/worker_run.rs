@@ -31,7 +31,7 @@ use crate::skills::activation::ResolvedSkillRef;
 use crate::usage::money::{CostSource, MicroUsd};
 use crate::usage::Tokens;
 
-pub const WORKER_RUN_SCHEMA_VERSION: &str = "1.0.0";
+pub(crate) const WORKER_RUN_SCHEMA_VERSION: &str = "1.0.0";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

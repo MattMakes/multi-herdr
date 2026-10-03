@@ -34,7 +34,7 @@ impl std::fmt::Display for Effort {
 /// sets differ: codex has `none` but rejects `minimal`, pi has `off`, claude
 /// tops out at `max`. Checked at `--check` and at `horch spawn --effort`, so a
 /// typo fails before a pane starts rather than inside one nobody watches.
-pub fn valid_efforts(agent: HarnessKind) -> &'static [&'static str] {
+pub(crate) fn valid_efforts(agent: HarnessKind) -> &'static [&'static str] {
     agent.capabilities().effort
 }
 
@@ -50,7 +50,11 @@ pub fn model_takes_effort(agent: HarnessKind, model: &str) -> bool {
 }
 
 /// Why `effort` cannot be used with this agent and model, or `None` if it can.
-pub fn effort_problem(agent: HarnessKind, model: Option<&str>, effort: &str) -> Option<String> {
+pub(crate) fn effort_problem(
+    agent: HarnessKind,
+    model: Option<&str>,
+    effort: &str,
+) -> Option<String> {
     let model = model.unwrap_or_default();
     if !model.is_empty() && !model_takes_effort(agent, model) {
         return Some(format!(

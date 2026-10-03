@@ -19,7 +19,7 @@ use horch_core::usage::money::{CostSource, MicroUsd};
 
 use super::{dataset_paths, exit};
 
-pub fn export(ctx: &RuntimeContext, label_policy: Option<&str>) -> Result<u8> {
+pub(crate) fn export(ctx: &RuntimeContext, label_policy: Option<&str>) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let lpv = label_policy.unwrap_or(LABEL_POLICY_VERSION);
     let rows = rows(ctx, &paths, lpv)?;
@@ -29,7 +29,7 @@ pub fn export(ctx: &RuntimeContext, label_policy: Option<&str>) -> Result<u8> {
 }
 
 /// Every exportable row of `label_policy_version`.
-pub fn rows(
+pub(crate) fn rows(
     ctx: &RuntimeContext,
     paths: &DatasetPaths,
     label_policy_version: &str,
@@ -44,7 +44,7 @@ pub fn rows(
 }
 
 /// The execution store as an [`ExecutionFactsSource`].
-pub struct StoreFacts {
+pub(crate) struct StoreFacts {
     pub records: Vec<LedgerRecordV1>,
     /// The coordinator's usage records, by execution id.
     pub usage: BTreeMap<String, UsageRecord>,
@@ -67,7 +67,7 @@ impl ExecutionFactsSource for StoreFacts {
 /// The execution part of a WorkerRun, from one record and the usage record
 /// the coordinator's meter wrote when the candidate was frozen. A run
 /// without a usage record is `Unpriced` with zero tokens.
-pub fn facts_of(
+pub(crate) fn facts_of(
     execution_id: &ExecutionId,
     r: &LedgerRecordV1,
     usage: Option<&UsageRecord>,

@@ -10,7 +10,7 @@ use horch_core::runtime::RuntimeContext;
 
 use super::{dataset_paths, exit};
 
-pub fn rebuild(ctx: &RuntimeContext, experiment: &str) -> Result<u8> {
+pub(crate) fn rebuild(ctx: &RuntimeContext, experiment: &str) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let exp = ExperimentId::new(experiment)?;
     let read = store::read_all(&paths)?;

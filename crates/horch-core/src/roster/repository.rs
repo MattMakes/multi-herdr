@@ -124,7 +124,7 @@ impl Roster {
         self.bases.get(name)
     }
 
-    pub fn require_base(&self, name: &str) -> Result<&Base> {
+    pub(crate) fn require_base(&self, name: &str) -> Result<&Base> {
         self.bases.get(name).with_context(|| {
             format!("teammate names base '{name}', which does not exist in _base/")
         })
@@ -182,7 +182,7 @@ impl Roster {
 }
 
 /// Where a runtime directory may be found, lowest precedence first.
-pub fn overlay_dirs(home: Option<&Path>, roster_override: Option<&Path>) -> Vec<PathBuf> {
+pub(crate) fn overlay_dirs(home: Option<&Path>, roster_override: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = home {
         dirs.push(home.join(".config/horch/teammates"));

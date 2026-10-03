@@ -41,7 +41,7 @@ impl PermissionMode {
     /// `Plan` and the two ask-shaped modes have no analogue at all: there is no
     /// read-only mode to put it in, and a worker left to prompt in a pane nobody
     /// is watching stalls forever. Returning `None` makes that an error.
-    pub fn opencode_args(self) -> Option<Vec<String>> {
+    pub(crate) fn opencode_args(self) -> Option<Vec<String>> {
         match self {
             PermissionMode::Auto | PermissionMode::BypassPermissions => {
                 Some(vec!["--auto".to_string()])
@@ -58,7 +58,7 @@ impl PermissionMode {
     /// `Manual` and `DontAsk` have no codex analogue. Returning `None` lets the
     /// caller raise an error rather than silently downgrade a teammate to
     /// something more permissive than its file asked for.
-    pub fn codex_args(self) -> Option<Vec<String>> {
+    pub(crate) fn codex_args(self) -> Option<Vec<String>> {
         let pair: &[&str] = match self {
             PermissionMode::Plan => &["-s", "read-only", "-a", "on-request"],
             PermissionMode::AcceptEdits => &["-s", "workspace-write", "-a", "on-request"],

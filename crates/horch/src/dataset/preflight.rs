@@ -36,7 +36,7 @@ use horch_core::workspace::herdr::Herdr;
 use serde::Serialize;
 
 /// The manifest schema of `experiments/<id>/manifest.json`.
-pub const MANIFEST_SCHEMA_VERSION: &str = "1.0.0";
+pub(crate) const MANIFEST_SCHEMA_VERSION: &str = "1.0.0";
 
 /// Directories a walk for the checkout size skips: git's own data and
 /// build output, which a fresh worktree does not have.
@@ -47,7 +47,7 @@ const NOT_CHECKED_OUT: [&str; 3] = [".git", "target", "node_modules"];
 /// candidate branches; each one that exists already is "taken".
 /// `promote_to` is the `--promote-to` target, checked to be a local branch
 /// outside the candidate namespace.
-pub fn repo_facts(
+pub(crate) fn repo_facts(
     git: &GitCli,
     project: &Path,
     branches: &[String],
@@ -108,7 +108,7 @@ fn promote_target_problem(git: &GitCli, dir: &Path, target: &str) -> Option<Stri
 /// `--version` of every harness in `harnesses`, redacted (PRE-06, PRE-07).
 /// No model turn: `--version` only. `None` when the binary is missing or
 /// does not answer.
-pub fn harness_versions(
+pub(crate) fn harness_versions(
     ctx: &RuntimeContext,
     harnesses: &BTreeSet<&'static str>,
 ) -> BTreeMap<String, Option<String>> {
@@ -141,7 +141,7 @@ fn kind_of(name: &str) -> Option<HarnessKind> {
 }
 
 /// Each candidate's quota pool and its state, as the router sees it.
-pub fn pool_facts(view: &QuotaView, candidates: &[PreflightCandidate]) -> Vec<PoolFacts> {
+pub(crate) fn pool_facts(view: &QuotaView, candidates: &[PreflightCandidate]) -> Vec<PoolFacts> {
     let pools: BTreeSet<&str> = candidates
         .iter()
         .map(|c| pool_for(c.harness.as_str(), c.model.as_str()))
@@ -160,7 +160,7 @@ pub fn pool_facts(view: &QuotaView, candidates: &[PreflightCandidate]) -> Vec<Po
 }
 
 /// The inputs [`gather`] needs besides the context.
-pub struct GatherInput<'a> {
+pub(crate) struct GatherInput<'a> {
     pub paths: &'a DatasetPaths,
     pub config: &'a DatasetConfig,
     pub candidates: Vec<PreflightCandidate>,
@@ -169,7 +169,10 @@ pub struct GatherInput<'a> {
 }
 
 /// Gather every fact of the plan, and the machine snapshot.
-pub fn gather(ctx: &RuntimeContext, input: GatherInput<'_>) -> (PreflightPlan, MachineSnapshot) {
+pub(crate) fn gather(
+    ctx: &RuntimeContext,
+    input: GatherInput<'_>,
+) -> (PreflightPlan, MachineSnapshot) {
     let GatherInput {
         paths,
         config,
@@ -275,7 +278,7 @@ fn tree_bytes(dir: &Path, skip: &[&str]) -> u64 {
 
 /// The experiment's identity: what `experiment.created` and the manifest
 /// carry.
-pub struct ExperimentFacts<'a> {
+pub(crate) struct ExperimentFacts<'a> {
     pub experiment: &'a ExperimentId,
     pub task: &'a str,
     pub plan: &'a PreflightPlan,
@@ -306,7 +309,7 @@ struct Manifest<'a> {
 /// Record `experiment.created` and `preflight.completed`, write the
 /// manifest, and on any Fail record `experiment.aborted`. Returns the
 /// failed check ids.
-pub fn record(
+pub(crate) fn record(
     recorder: &dyn Recorder,
     paths: &DatasetPaths,
     f: &ExperimentFacts<'_>,
@@ -394,7 +397,7 @@ pub fn record(
 }
 
 /// The report as text: one line per check, then the totals.
-pub fn render(report: &PreflightReport) -> String {
+pub(crate) fn render(report: &PreflightReport) -> String {
     let mut out = String::from("preflight:\n");
     for c in &report.checks {
         let status = match c.status {

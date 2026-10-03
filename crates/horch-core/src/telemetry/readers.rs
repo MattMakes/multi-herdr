@@ -60,7 +60,7 @@ pub struct Polled {
 }
 
 /// The cursor key of one input.
-pub fn input_key(agent: &str, session_id: &str, path: &Path) -> String {
+pub(crate) fn input_key(agent: &str, session_id: &str, path: &Path) -> String {
     format!("{agent}|{session_id}|{}", path.display())
 }
 
@@ -156,7 +156,7 @@ fn poll_file(
 
 /// Every `*.jsonl` under `<sid>/subagents/`, nested directories included
 /// ([S] C1: a flat glob misses nested ones). Sorted, for a stable order.
-pub fn claude_subagent_files(main: &Path) -> Vec<PathBuf> {
+pub(crate) fn claude_subagent_files(main: &Path) -> Vec<PathBuf> {
     let dir = main.with_extension("").join("subagents");
     let mut out = Vec::new();
     collect_jsonl(&dir, &mut out);
@@ -264,7 +264,7 @@ fn claude_refusal_label(line: &Value) -> String {
 }
 
 /// One Claude transcript line (TEL-04).
-pub fn claude_line(
+pub(crate) fn claude_line(
     c: &mut Cursor,
     _at: u64,
     line: &str,
@@ -382,7 +382,7 @@ fn codex_tokens(u: &Value) -> TokenClasses {
 
 /// A Codex `rate_limits` snapshot as windows, by duration (QUO-04). Codex
 /// reports 0-100 and epoch seconds.
-pub fn codex_rollout_windows(rl: &Value) -> Vec<Window> {
+pub(crate) fn codex_rollout_windows(rl: &Value) -> Vec<Window> {
     let mut out = Vec::new();
     for slot in ["primary", "secondary"] {
         let Some(w) = rl.get(slot).filter(|w| w.is_object()) else {
@@ -403,7 +403,7 @@ pub fn codex_rollout_windows(rl: &Value) -> Vec<Window> {
 }
 
 /// One Codex rollout line (TEL-05).
-pub fn codex_line(c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observation>) {
+pub(crate) fn codex_line(c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observation>) {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return;
     };
@@ -525,7 +525,7 @@ fn codex_fallback(c: &mut Cursor, payload: &Value, when: &str, out: &mut Vec<Obs
 ///
 /// `cacheWrite` includes `cacheWrite1h` in pi 0.87 ([S] pi), so the 1h part
 /// is split out. Anthropic spellings are accepted too.
-pub fn pi_line(_c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observation>) {
+pub(crate) fn pi_line(_c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observation>) {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return;
     };
@@ -602,7 +602,7 @@ fn safe_id(s: &str) -> bool {
 /// Only completed assistant messages count. A message seen again with
 /// different tokens yields a correction for the difference. The database is
 /// opened read-only through the `sqlite3` CLI; horch links no SQLite.
-pub fn opencode_poll(
+pub(crate) fn opencode_poll(
     db: &Path,
     sqlite3: &Path,
     session_id: &str,
@@ -651,7 +651,7 @@ pub fn opencode_poll(
 }
 
 /// One OpenCode `message.data` value.
-pub fn opencode_message(c: &mut Cursor, id: &str, data: &Value, out: &mut Vec<Observation>) {
+pub(crate) fn opencode_message(c: &mut Cursor, id: &str, data: &Value, out: &mut Vec<Observation>) {
     if data
         .get("error")
         .is_some_and(|e| e.to_string().contains("FreeUsageLimitError"))

@@ -11,7 +11,7 @@ use std::process::{Child, Command};
 
 /// Executable extensions to try when a name has none: the `PATHEXT` entries
 /// on Windows (lowercased), and nothing anywhere else.
-pub fn path_extensions(pathext: Option<&str>) -> Vec<String> {
+pub(crate) fn path_extensions(pathext: Option<&str>) -> Vec<String> {
     if !cfg!(windows) {
         return Vec::new();
     }
@@ -29,7 +29,7 @@ pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<
 }
 
 /// Find `name` in an explicit PATH-formatted list.
-pub fn which_in(paths: &OsStr, name: &str, extensions: &[String]) -> Option<PathBuf> {
+pub(crate) fn which_in(paths: &OsStr, name: &str, extensions: &[String]) -> Option<PathBuf> {
     for dir in std::env::split_paths(paths).filter(|d| !d.as_os_str().is_empty()) {
         let direct = dir.join(name);
         if is_executable(&direct) {
@@ -74,7 +74,7 @@ pub fn make_executable(path: &Path) -> std::io::Result<()> {
 }
 
 /// A PATH with `dir` first, or `None` when it is already first.
-pub fn path_with_prepended(current: &OsStr, dir: &Path) -> Option<OsString> {
+pub(crate) fn path_with_prepended(current: &OsStr, dir: &Path) -> Option<OsString> {
     let existing: Vec<PathBuf> = std::env::split_paths(current)
         .filter(|p| !p.as_os_str().is_empty())
         .collect();
@@ -94,7 +94,7 @@ pub fn path_with_prepended(current: &OsStr, dir: &Path) -> Option<OsString> {
 /// that true with `export PATH="$root/bin:$PATH"`; without the equivalent, a
 /// `horch` run from a build directory would leave every worker unable to reach the
 /// orchestrator - its only channel. `None` when nothing needs to change.
-pub fn path_with_own_dir(current_exe: &Path, path: Option<&OsStr>) -> Option<OsString> {
+pub(crate) fn path_with_own_dir(current_exe: &Path, path: Option<&OsStr>) -> Option<OsString> {
     let dir = current_exe.parent()?;
     path_with_prepended(path.unwrap_or_default(), dir)
 }
@@ -124,7 +124,7 @@ fn normalize(p: &Path) -> OsString {
 
 /// Remove every [`FORBIDDEN_ENV`](crate::harness::launch::FORBIDDEN_ENV) variable from
 /// a child's environment.
-pub fn strip_forbidden(cmd: &mut Command) {
+pub(crate) fn strip_forbidden(cmd: &mut Command) {
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
@@ -135,7 +135,7 @@ pub fn strip_forbidden(cmd: &mut Command) {
 /// This is what inheriting them from the parent used to mean: a value the
 /// builder put on the command itself always won over the parent's. A
 /// forbidden key never gets through.
-pub fn inherit_env<K, V>(cmd: &mut Command, vars: impl IntoIterator<Item = (K, V)>)
+pub(crate) fn inherit_env<K, V>(cmd: &mut Command, vars: impl IntoIterator<Item = (K, V)>)
 where
     K: AsRef<OsStr>,
     V: AsRef<OsStr>,

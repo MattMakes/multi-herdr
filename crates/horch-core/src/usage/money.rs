@@ -20,11 +20,11 @@ pub struct MicroUsd(pub i64);
 
 /// Whole nano-dollars (1e-9 USD), the accumulation unit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NanoUsd(pub i128);
+pub(crate) struct NanoUsd(pub i128);
 
 /// What can go wrong converting a price.
 #[derive(Debug, Clone, PartialEq)]
-pub enum MoneyError {
+pub(crate) enum MoneyError {
     /// The $/MTok price is not a whole, non-negative number of n$/token.
     InexactPrice { dollars_per_mtok: f64 },
     /// The price does not fit the integer range.
@@ -50,7 +50,7 @@ impl std::error::Error for MoneyError {}
 const EXACT_EPSILON: f64 = 1e-9;
 
 /// Nano-dollars per token for a price in dollars per million tokens.
-pub fn nano_per_token(dollars_per_mtok: f64) -> Result<i128, MoneyError> {
+pub(crate) fn nano_per_token(dollars_per_mtok: f64) -> Result<i128, MoneyError> {
     let inexact = MoneyError::InexactPrice { dollars_per_mtok };
     if dollars_per_mtok.is_nan() || dollars_per_mtok < 0.0 {
         return Err(inexact);
@@ -68,17 +68,17 @@ pub fn nano_per_token(dollars_per_mtok: f64) -> Result<i128, MoneyError> {
 
 impl NanoUsd {
     /// The cost of `tokens` tokens at `nano_per_token` n$ each.
-    pub fn of(tokens: u64, nano_per_token: i128) -> Self {
+    pub(crate) fn of(tokens: u64, nano_per_token: i128) -> Self {
         NanoUsd(tokens as i128 * nano_per_token)
     }
 
     /// Add the cost of `tokens` tokens at `nano_per_token` n$ each.
-    pub fn add_tokens(&mut self, tokens: u64, nano_per_token: i128) {
+    pub(crate) fn add_tokens(&mut self, tokens: u64, nano_per_token: i128) {
         *self += NanoUsd::of(tokens, nano_per_token);
     }
 
     /// Round to whole µ$, half to even. Saturates at the `i64` range.
-    pub fn to_micro_half_even(self) -> MicroUsd {
+    pub(crate) fn to_micro_half_even(self) -> MicroUsd {
         let q = self.0.div_euclid(1000);
         let r = self.0.rem_euclid(1000);
         let q = if r > 500 || (r == 500 && q % 2 != 0) {

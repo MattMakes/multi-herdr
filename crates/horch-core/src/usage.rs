@@ -151,7 +151,7 @@ pub fn load_prices(path: Option<&Path>) -> Result<BTreeMap<String, Price>> {
 /// The price-table key for a model as a transcript or teammate names it:
 /// provider prefix, `[1m]` suffix and date stamp removed, Claude aliases
 /// resolved to the model they currently point at.
-pub fn canonical_model(model: &str) -> String {
+pub(crate) fn canonical_model(model: &str) -> String {
     let mut m = model.trim().to_ascii_lowercase();
     if let Some(rest) = m.strip_suffix("[1m]") {
         m = rest.to_string();
@@ -177,7 +177,7 @@ pub fn canonical_model(model: &str) -> String {
 }
 
 /// Models that cost nothing: local Ollama and OpenCode's free tier.
-pub fn is_free(model: &str) -> bool {
+pub(crate) fn is_free(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
     m.starts_with("ollama/")
         || (m.starts_with("opencode/") && (m.ends_with("-free") || m == "opencode/big-pickle"))
@@ -199,7 +199,7 @@ pub fn price_for(prices: &BTreeMap<String, Price>, model: &str) -> Option<Price>
 
 /// `~/.claude/projects/<any>/<sid>.jsonl`. Searched across project
 /// directories instead of re-deriving Claude's cwd slug.
-pub fn find_claude_transcript(projects: &Path, session_id: &str) -> Option<PathBuf> {
+pub(crate) fn find_claude_transcript(projects: &Path, session_id: &str) -> Option<PathBuf> {
     let file = format!("{session_id}.jsonl");
     for entry in std::fs::read_dir(projects).ok()?.flatten() {
         let candidate = entry.path().join(&file);
@@ -211,7 +211,7 @@ pub fn find_claude_transcript(projects: &Path, session_id: &str) -> Option<PathB
 }
 
 /// A codex rollout named after `session_id`, anywhere under `sessions_dir`.
-pub fn find_codex_rollout(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
+pub(crate) fn find_codex_rollout(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
     find_file(sessions_dir, &|name| {
         name.starts_with("rollout-") && name.ends_with(&format!("{session_id}.jsonl"))
     })
@@ -219,7 +219,7 @@ pub fn find_codex_rollout(sessions_dir: &Path, session_id: &str) -> Option<PathB
 
 /// A pi session file whose name carries `session_id`. `session_id` may also
 /// be a path already (the Prime case).
-pub fn find_pi_session(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
+pub(crate) fn find_pi_session(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
     let direct = PathBuf::from(session_id);
     if direct.is_file() {
         return Some(direct);
@@ -261,7 +261,7 @@ fn u(v: &Value, keys: &[&str]) -> u64 {
 /// same `message.id` and usage that only grows, so the last record per id is
 /// the response. `<synthetic>` records are Claude Code's own, not API calls.
 /// Skill loads are `Skill` tool calls, counted once per `tool_use` id.
-pub fn read_claude(text: &str) -> Usage {
+pub(crate) fn read_claude(text: &str) -> Usage {
     let mut last: BTreeMap<String, (String, Tokens)> = BTreeMap::new();
     let mut tool_uses: BTreeMap<String, String> = BTreeMap::new();
     for line in text.lines() {
@@ -369,7 +369,7 @@ fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
 /// compacted session reads low. A session that switched models is priced
 /// entirely as its last model; the totals are not split per turn. Skill loads
 /// are shell or tool calls that read a `skills/<name>/SKILL.md`.
-pub fn read_codex(text: &str) -> Usage {
+pub(crate) fn read_codex(text: &str) -> Usage {
     let mut total: Option<Value> = None;
     let mut model = String::new();
     let mut turns: BTreeSet<u64> = BTreeSet::new();
@@ -424,7 +424,7 @@ pub fn read_codex(text: &str) -> Usage {
 /// messages carrying `usage`. The field names are pi's (`input`, `output`,
 /// `cacheRead`, `cacheWrite`), with the Anthropic spellings accepted too,
 /// because they were not confirmed against a live file.
-pub fn read_pi(text: &str) -> Usage {
+pub(crate) fn read_pi(text: &str) -> Usage {
     let mut usage = Usage::default();
     for line in text.lines() {
         let Ok(record) = serde_json::from_str::<Value>(line) else {

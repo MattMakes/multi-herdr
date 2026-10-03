@@ -2,7 +2,7 @@
 //! branch: nothing here makes a network call.
 
 pub mod inert;
-pub mod system_one;
+pub(crate) mod system_one;
 
 use std::collections::BTreeMap;
 

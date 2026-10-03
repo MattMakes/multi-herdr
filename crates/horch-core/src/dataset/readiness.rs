@@ -19,11 +19,11 @@ use crate::ids::{ModelId, TaskId, TeammateName};
 use crate::measure::worker_run::RunConfig;
 
 /// The built-in `dataset-policy.json`.
-pub const DEFAULT_POLICY: &str = include_str!("../../assets/dataset-policy.json");
+pub(crate) const DEFAULT_POLICY: &str = include_str!("../../assets/dataset-policy.json");
 
 /// One arm: a worker configuration the router can choose.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArmKey {
+pub(crate) struct ArmKey {
     pub teammate: TeammateName,
     pub harness: HarnessKind,
     pub model: ModelId,
@@ -31,7 +31,7 @@ pub struct ArmKey {
 }
 
 impl ArmKey {
-    pub fn of(config: &RunConfig) -> ArmKey {
+    pub(crate) fn of(config: &RunConfig) -> ArmKey {
         ArmKey {
             teammate: config.teammate.clone(),
             harness: config.harness,
@@ -42,7 +42,7 @@ impl ArmKey {
 
     /// `<teammate>|<harness>|<model>|<effort>`, with `-` for no effort, as
     /// the planner spells a config id.
-    pub fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         format!(
             "{}|{}|{}|{}",
             self.teammate,
@@ -86,7 +86,7 @@ struct DatasetPolicy {
 
 impl ReadinessThresholds {
     /// The thresholds of a `dataset-policy.json` text.
-    pub fn from_policy_json(text: &str) -> Result<ReadinessThresholds> {
+    pub(crate) fn from_policy_json(text: &str) -> Result<ReadinessThresholds> {
         let policy: DatasetPolicy =
             serde_json::from_str(text).context("parsing the dataset policy")?;
         Ok(policy.readiness)

@@ -39,7 +39,7 @@ impl Roster {
     /// from the teammate file, so checking the file alone would leave a stale or
     /// hand-edited record able to start a second top-tier session behind an
     /// innocent-looking tier name.
-    pub fn model_is_spawnable(model: &str, who: &str) -> Result<()> {
+    pub(crate) fn model_is_spawnable(model: &str, who: &str) -> Result<()> {
         if let Some((tier, instead)) = reserved_tier(model) {
             bail!(
                 "'{who}' runs on {model}, and the {tier} tier is reserved for the \
@@ -69,7 +69,7 @@ impl Roster {
     /// Everything wrong with one teammate, judged against this roster (its
     /// bases, its rules, its skill catalog). Also run on a teammate merged
     /// with a fallback.
-    pub fn check_teammate(&self, t: &Teammate) -> Vec<String> {
+    pub(crate) fn check_teammate(&self, t: &Teammate) -> Vec<String> {
         let mut problems = Vec::new();
         let who = &t.name;
         let selected = match &self.skill_catalog {

@@ -127,7 +127,7 @@ macro_rules! event_kinds {
             }
 
             /// The payload as JSON.
-            pub fn try_payload(&self) -> Result<Value, EventError> {
+            pub(crate) fn try_payload(&self) -> Result<Value, EventError> {
                 let value = match self {
                     $(EventKind::$variant(p) => serde_json::to_value(p),)*
                     EventKind::Unknown { payload, .. } => return Ok(payload.clone()),

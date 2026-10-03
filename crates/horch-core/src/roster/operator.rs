@@ -15,13 +15,13 @@ use std::path::{Path, PathBuf};
 /// `statusLine` with everything else.
 ///
 /// `home` is the operator's home directory; `None` means it is unknown.
-pub fn operator_status_line(home: Option<&Path>) -> Option<serde_json::Value> {
+pub(crate) fn operator_status_line(home: Option<&Path>) -> Option<serde_json::Value> {
     operator_settings(home)?.get("statusLine").cloned()
 }
 
 /// Names of the plugins the operator has enabled globally, from
 /// `enabledPlugins` in `~/.claude/settings.json`.
-pub fn operator_enabled_plugins(home: Option<&Path>) -> Vec<String> {
+pub(crate) fn operator_enabled_plugins(home: Option<&Path>) -> Vec<String> {
     let Some(settings) = operator_settings(home) else {
         return Vec::new();
     };
@@ -62,7 +62,7 @@ pub fn operator_effort_warnings(
 /// beats it, and it beats it for every pane at once. `maxEffortLevel` caps
 /// every level above it. A codex pane with no effort takes
 /// `model_reasoning_effort` from the operator's config.toml.
-pub fn effort_override_warnings(
+pub(crate) fn effort_override_warnings(
     env_level: Option<&str>,
     settings: Option<&serde_json::Value>,
     codex_config: Option<&str>,
@@ -131,7 +131,7 @@ fn operator_settings(home: Option<&Path>) -> Option<serde_json::Value> {
 /// Teammate files are committed, so a plugin path written as an absolute
 /// `/Users/<someone>/...` only works on one machine. `~` keeps them portable
 /// without inventing a template syntax for paths.
-pub fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
+pub(crate) fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
     match path.strip_prefix("~/") {
         Some(rest) => match home {
             Some(home) => home.join(rest),

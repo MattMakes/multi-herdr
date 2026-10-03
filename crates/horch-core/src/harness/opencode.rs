@@ -32,7 +32,11 @@ pub struct SessionCandidate {
 /// The directory check is what keeps two projects' concurrent OpenCode sessions
 /// apart, exactly as the cwd check does for codex rollouts. Directories
 /// compare canonically ([`Workdir`]).
-pub fn find_sessions(bin: &Path, project_dir: &str, since: SystemTime) -> Vec<SessionCandidate> {
+pub(crate) fn find_sessions(
+    bin: &Path,
+    project_dir: &str,
+    since: SystemTime,
+) -> Vec<SessionCandidate> {
     let output = Command::new(bin)
         .args(["session", "list", "--format", "json"])
         .current_dir(project_dir)

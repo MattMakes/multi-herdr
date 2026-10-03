@@ -29,7 +29,7 @@ use crate::runtime::fault::Faults;
 use crate::vcs::git::GitClient;
 
 /// The fault prefix: `abort-during-cleanup:<n>` stops after removal `n`.
-pub const ABORT_DURING_CLEANUP: &str = "abort-during-cleanup";
+pub(crate) const ABORT_DURING_CLEANUP: &str = "abort-during-cleanup";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CleanupOptions {

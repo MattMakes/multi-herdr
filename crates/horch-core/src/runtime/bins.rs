@@ -40,7 +40,7 @@ pub struct BinOverrides {
 
 impl BinOverrides {
     /// Every override variable, in a fixed order.
-    pub const VARS: [&'static str; 9] = [
+    pub(crate) const VARS: [&'static str; 9] = [
         "HORCH_CLAUDE_BIN",
         "HORCH_CODEX_BIN",
         "HORCH_OPENCODE_BIN",
@@ -163,17 +163,17 @@ pub fn codex_bin(o: &BinOverrides) -> PathBuf {
 }
 
 /// Which OpenCode CLI to launch. `$HORCH_OPENCODE_BIN` overrides.
-pub fn opencode_bin(o: &BinOverrides) -> PathBuf {
+pub(crate) fn opencode_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.opencode, "opencode")
 }
 
 /// Which pi CLI to launch. `$HORCH_PI_BIN` overrides.
-pub fn pi_bin(o: &BinOverrides) -> PathBuf {
+pub(crate) fn pi_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.pi, "pi")
 }
 
 /// Which Prime Agent CLI to launch. `$HORCH_PRIME_BIN` overrides.
-pub fn prime_bin(o: &BinOverrides) -> PathBuf {
+pub(crate) fn prime_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.prime, "prime-agent")
 }
 
@@ -191,7 +191,7 @@ pub fn sqlite3_bin(o: &BinOverrides) -> PathBuf {
 
 /// Which `ollama` CLI the local-pool health check asks for its model list.
 /// `$HORCH_OLLAMA_BIN` overrides.
-pub fn ollama_bin(o: &BinOverrides) -> PathBuf {
+pub(crate) fn ollama_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.ollama, "ollama")
 }
 

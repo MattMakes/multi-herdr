@@ -18,9 +18,9 @@ use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line}
 use crate::skills::Bundle;
 
 /// The plugin the skills bundle loads as. Its skills show as `horch:<id>`.
-pub const SKILLS_PLUGIN: &str = "horch";
+pub(crate) const SKILLS_PLUGIN: &str = "horch";
 
-pub struct Claude;
+pub(crate) struct Claude;
 
 impl Harness for Claude {
     fn kind(&self) -> HarnessKind {

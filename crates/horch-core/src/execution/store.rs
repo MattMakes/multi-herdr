@@ -52,7 +52,7 @@ pub fn slug(project: &str) -> String {
 /// Every ledger file directly under `state_root`, sorted: each `*.json` file
 /// except `policy.json`. Directories are never ledgers, so the dataset tree
 /// under `<state_root>/multi-herdr/` is never read (OD3).
-pub fn ledger_paths(state_root: &Path) -> Vec<PathBuf> {
+pub(crate) fn ledger_paths(state_root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(state_root) else {
         return Vec::new();
     };
@@ -72,7 +72,7 @@ pub fn ledger_paths(state_root: &Path) -> Vec<PathBuf> {
 /// One ledger file's records, or `None` when it cannot be read or does not
 /// parse right now (a write by an old binary may be in flight). An empty
 /// file is an empty ledger.
-pub fn read_ledger_file(path: &Path) -> Option<Vec<LedgerRecordV1>> {
+pub(crate) fn read_ledger_file(path: &Path) -> Option<Vec<LedgerRecordV1>> {
     let text = std::fs::read_to_string(path).ok()?;
     if text.trim().is_empty() {
         return Some(Vec::new());
@@ -371,7 +371,11 @@ impl ExecutionStore {
 
     /// Mutate every record addressed by `key` (record id or session id).
     /// Fails, naming the file, when none matches.
-    pub fn update_key(&self, key: &str, mut f: impl FnMut(&mut LedgerRecordV1)) -> Result<()> {
+    pub(crate) fn update_key(
+        &self,
+        key: &str,
+        mut f: impl FnMut(&mut LedgerRecordV1),
+    ) -> Result<()> {
         self.update(|records| {
             if !records.iter().any(|r| r.matches(key)) {
                 bail!("no record matches '{key}' in {}", self.path.display())

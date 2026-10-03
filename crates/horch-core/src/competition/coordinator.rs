@@ -89,21 +89,21 @@ use crate::vcs::worktree::{
 use crate::workspace::client::WorkspaceClient;
 
 /// The `_base/` file whose body is every candidate's task text (CMP-15).
-pub const CANDIDATE_TEMPLATE: &str = "competition-candidate";
+pub(crate) const CANDIDATE_TEMPLATE: &str = "competition-candidate";
 
 /// The label of a round's herdr workspace: `multi-herdr-dataset <exp8>`.
 pub const WORKSPACE_LABEL: &str = "multi-herdr-dataset";
 
 /// How often the budget meter and the disk probe run.
-pub const CHECK_EVERY: Duration = Duration::from_secs(5);
+pub(crate) const CHECK_EVERY: Duration = Duration::from_secs(5);
 
 /// The hidden teammate that judges a round.
-pub const JUDGE_TEAMMATE: &str = "judge";
+pub(crate) const JUDGE_TEAMMATE: &str = "judge";
 
-pub const ABORT_AFTER_WORKTREE: &str = "abort-after-worktree";
-pub const ABORT_AFTER_CANDIDATE_SPAWNED: &str = "abort-after-candidate-spawned";
-pub const ABORT_AFTER_FREEZE: &str = "abort-after-freeze";
-pub const ABORT_AFTER_VALIDATION: &str = "abort-after-validation";
+pub(crate) const ABORT_AFTER_WORKTREE: &str = "abort-after-worktree";
+pub(crate) const ABORT_AFTER_CANDIDATE_SPAWNED: &str = "abort-after-candidate-spawned";
+pub(crate) const ABORT_AFTER_FREEZE: &str = "abort-after-freeze";
+pub(crate) const ABORT_AFTER_VALIDATION: &str = "abort-after-validation";
 
 /// What the coordinator works with. Every adapter is passed in.
 pub struct Coordinator<'a, G: GitClient> {
@@ -164,7 +164,7 @@ pub enum RoundOutcome {
 /// The dataset workspace of an experiment, kept in
 /// `experiments/<exp>/workspace.json` so a resume reuses it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DatasetWorkspace {
+pub(crate) struct DatasetWorkspace {
     pub workspace_id: String,
     pub root_pane: String,
 }
@@ -213,7 +213,7 @@ impl<G: GitClient> Coordinator<'_, G> {
 
     /// Record `round.created` and each missing `candidate.planned`, with a
     /// fresh execution id per candidate. Idempotent.
-    pub fn record_plan(&self, spec: &RoundSpec, plan: &RoundPlan) -> Result<()> {
+    pub(crate) fn record_plan(&self, spec: &RoundSpec, plan: &RoundPlan) -> Result<()> {
         if plan.candidates.is_empty() {
             bail!("the round plan has no candidates");
         }
@@ -1195,7 +1195,7 @@ fn exp8_of(spec: &RoundSpec, view: &RoundView) -> String {
 /// attempt number. The last `operator.promote` wins over the
 /// `winner.selected{requested}` target. The attempt is 1, plus 1 per
 /// `operator.promote`.
-pub fn promotion_request(
+pub(crate) fn promotion_request(
     events: &[EventEnvelope],
     round: &RoundId,
     view: &RoundView,
@@ -1221,7 +1221,7 @@ pub fn promotion_request(
 /// The judged winner as the promotion engine takes it. Its worktree may be
 /// gone (a round cleaned up before `promote <round>`): the engine then
 /// checks the branch alone.
-pub fn frozen_winner(view: &RoundView, at: DateTime<Utc>) -> Result<FrozenCandidate> {
+pub(crate) fn frozen_winner(view: &RoundView, at: DateTime<Utc>) -> Result<FrozenCandidate> {
     let winner = view.winner.as_ref().context("the round has no winner")?;
     let c = view
         .candidates
@@ -1248,7 +1248,7 @@ pub fn frozen_winner(view: &RoundView, at: DateTime<Utc>) -> Result<FrozenCandid
 /// Promotion of a decided round: what the coordinator and the operator's
 /// `promote <round>` share. The caller has brought the round to
 /// REVALIDATING (`winner.selected{requested}` or `operator.promote`).
-pub struct RoundPromoter<'a, G: GitClient> {
+pub(crate) struct RoundPromoter<'a, G: GitClient> {
     pub git: &'a G,
     pub validator: &'a dyn Validator,
     pub recorder: &'a JsonlRecorder,
@@ -1263,7 +1263,7 @@ impl<G: GitClient> RoundPromoter<'_, G> {
     /// REVALIDATING: run the engine. PROMOTING: finish the publish that a
     /// stopped run started (`resume_promotion`, the target moves at most
     /// once). A fault point returns [`FaultFired`].
-    pub fn advance(&self, round: &RoundId, view: &RoundView) -> Result<PromotionResult> {
+    pub(crate) fn advance(&self, round: &RoundId, view: &RoundView) -> Result<PromotionResult> {
         let events = self.recorder.read_all()?.events;
         let (target, attempt) = promotion_request(&events, round, view)?;
         let now = crate::clock::now();
