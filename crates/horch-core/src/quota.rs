@@ -505,7 +505,13 @@ impl QuotaView {
                 headroom,
             );
         }
-        if let Some(seen) = r.refusal_seen_at.as_deref().and_then(clock::parse) {
+        // A Zen refusal starts a cooldown instead (below).
+        if let Some(seen) = r
+            .refusal_seen_at
+            .as_deref()
+            .and_then(clock::parse)
+            .filter(|_| pool != POOL_ZEN)
+        {
             if refusal_in_force(r, &windows, seen, now) {
                 return out(
                     State::Exhausted,
