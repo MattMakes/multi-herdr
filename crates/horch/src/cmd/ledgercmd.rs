@@ -33,9 +33,14 @@ pub enum LedgerCommand {
         task: Option<String>,
     },
     /// Attach a session id discovered after launch.
-    SetSession { key: String, session_id: String },
+    SetSession {
+        key: String,
+        session_id: String,
+    },
     /// Exit 0 when any record already claims this session id.
-    HasSession { session_id: String },
+    HasSession {
+        session_id: String,
+    },
     /// Re-open a finished session under a role.
     Resume {
         key: String,
@@ -48,10 +53,18 @@ pub enum LedgerCommand {
         role: String,
         task: String,
     },
-    Note { key: String, text: String },
-    Done { key: String, summary: String },
+    Note {
+        key: String,
+        text: String,
+    },
+    Done {
+        key: String,
+        summary: String,
+    },
     /// Print one record as JSON.
-    Get { key: String },
+    Get {
+        key: String,
+    },
     List {
         #[arg(long)]
         json: bool,

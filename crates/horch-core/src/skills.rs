@@ -271,7 +271,12 @@ impl Bundle {
             .map(|s| {
                 let description = catalog
                     .get(s)
-                    .map(|(meta, _)| meta.description.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .map(|(meta, _)| {
+                        meta.description
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
                     .unwrap_or_default();
                 format!("- {}: {description}", qualified(s))
             })
@@ -496,7 +501,10 @@ mod tests {
         let brief = a.briefing(&t);
         assert!(brief.contains("horch:create-plan"));
         assert!(!brief.contains("# Create"));
-        assert!(!brief.contains("expected to use"), "no skills: listed: {brief}");
+        assert!(
+            !brief.contains("expected to use"),
+            "no skills: listed: {brief}"
+        );
         drop(a);
         assert!(!gone.exists());
         assert!(b.skills_dir().join("create-plan/SKILL.md").exists());
@@ -513,7 +521,12 @@ mod tests {
         let brief = bundle.briefing(t);
         let all = catalog().unwrap();
         for skill in ["tdd", "security-review"] {
-            let description = all[skill].0.description.split_whitespace().collect::<Vec<_>>().join(" ");
+            let description = all[skill]
+                .0
+                .description
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             assert!(
                 brief.contains(&format!("- horch:{skill}: {description}")),
                 "{skill} missing from:\n{brief}"
@@ -524,8 +537,14 @@ mod tests {
             .find(|l| l.starts_with("Also available in this phase: "))
             .unwrap_or_else(|| panic!("{brief}"));
         assert!(also.contains("horch:execute"), "{also}");
-        assert!(!also.contains("horch:tdd"), "an expected skill is not repeated: {also}");
-        assert!(!brief.contains(&all["execute"].0.description), "only expected skills carry descriptions");
+        assert!(
+            !also.contains("horch:tdd"),
+            "an expected skill is not repeated: {also}"
+        );
+        assert!(
+            !brief.contains(&all["execute"].0.description),
+            "only expected skills carry descriptions"
+        );
 
         // Codex names skills bare.
         let codex = roster.require("codex-reviewer").unwrap();
@@ -558,7 +577,13 @@ mod tests {
         let roster = crate::teammates::Roster::builtin().unwrap();
         assert_eq!(
             selected(roster.require("orchestrator").unwrap()).unwrap(),
-            ["create-plan", "handoff", "orchestrate", "pre-flight", "skill-creator"]
+            [
+                "create-plan",
+                "handoff",
+                "orchestrate",
+                "pre-flight",
+                "skill-creator"
+            ]
         );
         assert_eq!(
             selected(roster.require("orchestrator-codex").unwrap()).unwrap(),

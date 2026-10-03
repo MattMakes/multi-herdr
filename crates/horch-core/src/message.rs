@@ -94,7 +94,13 @@ fn cut(s: &str, max: usize) -> &str {
 
 fn file_safe(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -105,26 +111,50 @@ mod tests {
     #[test]
     fn ensure_tag_adds_a_missing_tag_and_keeps_a_present_one() {
         assert_eq!(ensure_tag("NOTE: x", "sonnet-1"), "[sonnet-1] NOTE: x");
-        assert_eq!(ensure_tag("  [sonnet-1] NOTE: x", "sonnet-1"), "[sonnet-1] NOTE: x");
+        assert_eq!(
+            ensure_tag("  [sonnet-1] NOTE: x", "sonnet-1"),
+            "[sonnet-1] NOTE: x"
+        );
         // Another role's tag is not this worker's tag.
-        assert_eq!(ensure_tag("[opus-1] hi", "sonnet-1"), "[sonnet-1] [opus-1] hi");
+        assert_eq!(
+            ensure_tag("[opus-1] hi", "sonnet-1"),
+            "[sonnet-1] [opus-1] hi"
+        );
     }
 
     #[test]
     fn strip_done_prefix_removes_what_done_adds() {
-        assert_eq!(strip_done_prefix("[opus-3] DONE: The report.", "opus-3"), "The report.");
-        assert_eq!(strip_done_prefix("DONE: The report.", "opus-3"), "The report.");
-        assert_eq!(strip_done_prefix("done:The report.", "opus-3"), "The report.");
-        assert_eq!(strip_done_prefix("[opus-3] The report.", "opus-3"), "The report.");
+        assert_eq!(
+            strip_done_prefix("[opus-3] DONE: The report.", "opus-3"),
+            "The report."
+        );
+        assert_eq!(
+            strip_done_prefix("DONE: The report.", "opus-3"),
+            "The report."
+        );
+        assert_eq!(
+            strip_done_prefix("done:The report.", "opus-3"),
+            "The report."
+        );
+        assert_eq!(
+            strip_done_prefix("[opus-3] The report.", "opus-3"),
+            "The report."
+        );
         assert_eq!(strip_done_prefix("The report.", "opus-3"), "The report.");
-        assert_eq!(strip_done_prefix("[opus-2] DONE: x", "opus-3"), "[opus-2] DONE: x");
+        assert_eq!(
+            strip_done_prefix("[opus-2] DONE: x", "opus-3"),
+            "[opus-2] DONE: x"
+        );
         assert_eq!(strip_done_prefix("DONE", "opus-3"), "DONE");
         assert_eq!(strip_done_prefix("ééé", "opus-3"), "ééé");
     }
 
     #[test]
     fn reference_line_keeps_the_tag_first_and_names_the_file() {
-        let long = format!("[sonnet-1] DONE: {}", "Brandon and nova were other authors. ".repeat(40));
+        let long = format!(
+            "[sonnet-1] DONE: {}",
+            "Brandon and nova were other authors. ".repeat(40)
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = spool(dir.path(), "sonnet-1", "orchestrator", &long).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), long);

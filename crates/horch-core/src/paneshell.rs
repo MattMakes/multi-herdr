@@ -59,10 +59,8 @@ mod tests {
 
     #[test]
     fn posix_command_line_quotes_every_word() {
-        let line = PaneShell::Posix.command_line(
-            Path::new("/usr/local/bin/horch"),
-            &["worker", "sonnet-1"],
-        );
+        let line = PaneShell::Posix
+            .command_line(Path::new("/usr/local/bin/horch"), &["worker", "sonnet-1"]);
         assert_eq!(line, "'/usr/local/bin/horch' 'worker' 'sonnet-1'");
     }
 
@@ -74,7 +72,10 @@ mod tests {
             Path::new(r"C:\Users\First Last\horch.exe"),
             &["worker", "sonnet-1"],
         );
-        assert_eq!(line, r"& 'C:\Users\First Last\horch.exe' 'worker' 'sonnet-1'");
+        assert_eq!(
+            line,
+            r"& 'C:\Users\First Last\horch.exe' 'worker' 'sonnet-1'"
+        );
     }
 
     #[test]

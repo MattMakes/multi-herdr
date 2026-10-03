@@ -103,10 +103,7 @@ pub fn command_with_skills(
         return command(teammate, session, prompt, model_override);
     };
     let adjusted = bundle.configure(teammate)?;
-    let prompt = format!(
-        "{}\n{prompt}",
-        bundle.briefing(teammate)
-    );
+    let prompt = format!("{}\n{prompt}", bundle.briefing(teammate));
     let mut cmd = command(&adjusted, session, &prompt, model_override)?;
     bundle.apply_env(&mut cmd, teammate)?;
     Ok(cmd)
@@ -859,14 +856,18 @@ mod tests {
         assert!(overrides.get("code:review").is_none(), "{overlay}");
 
         // The briefing names the reinforced one with its description.
-        let bundle = crate::skills::Bundle::install(tmp.path(), &t).unwrap().unwrap();
+        let bundle = crate::skills::Bundle::install(tmp.path(), &t)
+            .unwrap()
+            .unwrap();
         let brief = bundle.briefing(&t);
         assert!(brief.contains("- code:review: Does review."), "{brief}");
         assert!(!brief.contains("code:lint"), "{brief}");
 
         // A skill the plugin does not ship fails the launch and the check.
         t.plugin_skills.insert("code".into(), vec!["deploy".into()]);
-        let err = command(&t, Session::Unmanaged, "p", None).unwrap_err().to_string();
+        let err = command(&t, Session::Unmanaged, "p", None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no skill 'deploy'"), "{err}");
     }
 
@@ -910,10 +911,15 @@ mod tests {
         assert!(!argv(&cmd).contains(&"--variant".to_string()));
         let v = overlay(&cmd);
         assert_eq!(v["agent"]["build"]["variant"], "high", "{v}");
-        assert_eq!(v["mcp"]["playwright"]["enabled"], false, "the teammate's own overlay stays: {v}");
+        assert_eq!(
+            v["mcp"]["playwright"]["enabled"], false,
+            "the teammate's own overlay stays: {v}"
+        );
 
         let tmp = tempfile::tempdir().unwrap();
-        let bundle = crate::skills::Bundle::install(tmp.path(), &t).unwrap().unwrap();
+        let bundle = crate::skills::Bundle::install(tmp.path(), &t)
+            .unwrap()
+            .unwrap();
         let cmd = command_with_skills(&t, Session::Unmanaged, "p", None, Some(&bundle)).unwrap();
         let v = overlay(&cmd);
         assert_eq!(v["agent"]["build"]["variant"], "high", "{v}");
@@ -1085,13 +1091,16 @@ mod tests {
         // Its skill-creator is the bundled `horch:skill-creator`, never the
         // official plugin: skillOverrides cannot hide a plugin skill.
         assert_eq!(
-            overlay["enabledPlugins"]["skill-creator@claude-plugins-official"],
-            false,
+            overlay["enabledPlugins"]["skill-creator@claude-plugins-official"], false,
             "{overlay}"
         );
-        assert!(a.windows(2).any(|w| w == ["--permission-mode", "auto"]), "{a:?}");
         assert!(
-            a.windows(2).any(|w| w == ["--disallowedTools", "Agent,RemoteTrigger"]),
+            a.windows(2).any(|w| w == ["--permission-mode", "auto"]),
+            "{a:?}"
+        );
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["--disallowedTools", "Agent,RemoteTrigger"]),
             "{a:?}"
         );
     }

@@ -89,14 +89,20 @@ fn run() -> Result<()> {
     println!("{BANNER}");
 
     let target = Target::detect()?;
-    let channel = cli.channel.unwrap_or_else(|| Channel::default_for(target.os));
+    let channel = cli
+        .channel
+        .unwrap_or_else(|| Channel::default_for(target.os));
     if target.os == Os::Windows && channel == Channel::Stable {
         bail!(
             "Windows builds are preview-only for now. Omit --channel, or pass \
              --channel preview."
         );
     }
-    step(&format!("detected {} ({} channel)", target.describe(), channel.as_str()));
+    step(&format!(
+        "detected {} ({} channel)",
+        target.describe(),
+        channel.as_str()
+    ));
 
     let url = cli
         .manifest_url
@@ -129,7 +135,14 @@ fn run() -> Result<()> {
     }
 
     let installed = match target.os {
-        Os::Windows => install_windows(&bytes, &asset.format, cli.install_dir.as_deref(), &version, target, cli.retain)?,
+        Os::Windows => install_windows(
+            &bytes,
+            &asset.format,
+            cli.install_dir.as_deref(),
+            &version,
+            target,
+            cli.retain,
+        )?,
         Os::MacOs | Os::Linux => install_unix(&bytes, cli.install_dir.as_deref())?,
     };
 
@@ -146,11 +159,9 @@ fn describe_destination(
     version: &str,
 ) -> Result<PathBuf> {
     Ok(match target.os {
-        Os::Windows => {
-            win_layout(install_dir, version, target)?
-                .visible_bin
-                .join(place::exe_name())
-        }
+        Os::Windows => win_layout(install_dir, version, target)?
+            .visible_bin
+            .join(place::exe_name()),
         Os::MacOs | Os::Linux => {
             place::unix_install_dir(&home_dir()?, install_dir).join(place::exe_name())
         }
@@ -293,8 +304,7 @@ fn on_path(dir: &Path) -> bool {
         return false;
     };
     let target = dir.to_string_lossy().trim_end_matches('/').to_string();
-    std::env::split_paths(&paths)
-        .any(|p| p.to_string_lossy().trim_end_matches('/') == target)
+    std::env::split_paths(&paths).any(|p| p.to_string_lossy().trim_end_matches('/') == target)
 }
 
 fn home_dir() -> Result<PathBuf> {

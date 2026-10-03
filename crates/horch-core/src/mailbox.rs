@@ -99,16 +99,18 @@ impl Mailbox {
                 return Ok(Self::new(&ws));
             }
         }
-        let pane_id = std::env::var("HERDR_PANE_ID").ok().filter(|s| !s.is_empty());
+        let pane_id = std::env::var("HERDR_PANE_ID")
+            .ok()
+            .filter(|s| !s.is_empty());
         let Some(pane_id) = pane_id else {
             bail!(
                 "not inside a herdr pane (HERDR_PANE_ID is unset) and HORCH_WORKSPACE_ID is not set"
             )
         };
         let pane = herdr.pane_get(&pane_id)?;
-        let ws = pane.workspace_id.with_context(|| {
-            format!("herdr did not report a workspace_id for pane {pane_id}")
-        })?;
+        let ws = pane
+            .workspace_id
+            .with_context(|| format!("herdr did not report a workspace_id for pane {pane_id}"))?;
         Ok(Self::new(&ws))
     }
 
@@ -198,7 +200,10 @@ impl Mailbox {
     pub fn read_brief(&self, role: &str) -> Result<Brief> {
         let path = self.brief_path(role);
         let raw = std::fs::read_to_string(&path).with_context(|| {
-            format!("no brief at {} (spawn this worker with `horch spawn`)", path.display())
+            format!(
+                "no brief at {} (spawn this worker with `horch spawn`)",
+                path.display()
+            )
         })?;
         serde_json::from_str(&raw).with_context(|| format!("parsing brief {}", path.display()))
     }

@@ -49,10 +49,7 @@ pub fn install(dir: Option<&str>) -> Result<()> {
             println!("  PowerShell (current session):");
             println!("    $env:Path = \"{};$env:Path\"", dir.display());
             println!("\n  Permanently, for future sessions:");
-            println!(
-                "    setx PATH \"{};$($env:Path)\"",
-                dir.display()
-            );
+            println!("    setx PATH \"{};$($env:Path)\"", dir.display());
         } else {
             println!("  Add to ~/.zshrc (or ~/.bashrc):");
             println!("    export PATH=\"{}:$PATH\"", dir.display());
@@ -86,7 +83,10 @@ fn place_binary(source: &Path, target: &Path) -> Result<()> {
         .with_context(|| format!("copying {} to {}", source.display(), staged.display()))?;
     agent::make_executable(&staged)?;
     std::fs::rename(&staged, target).with_context(|| {
-        format!("installing to {} (is a horch process running from there?)", target.display())
+        format!(
+            "installing to {} (is a horch process running from there?)",
+            target.display()
+        )
     })?;
     Ok(())
 }

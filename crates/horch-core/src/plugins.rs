@@ -45,7 +45,11 @@ impl Plugin {
 
 /// Resolve `plugin` for `teammate`, reading the operator's installed plugins.
 pub fn resolve(teammate: &Teammate, plugin: &str) -> Result<Plugin> {
-    let dirs: Vec<PathBuf> = teammate.plugin_dirs.iter().map(|d| expand_home(d)).collect();
+    let dirs: Vec<PathBuf> = teammate
+        .plugin_dirs
+        .iter()
+        .map(|d| expand_home(d))
+        .collect();
     resolve_in(&dirs, installed_plugins().as_ref(), plugin)
 }
 
@@ -172,8 +176,7 @@ struct SkillFront {
 /// `(name, description)` for each `skills/<dir>/SKILL.md` under `root`.
 fn read_skills(root: &Path) -> Result<Vec<(String, String)>> {
     let dir = root.join("skills");
-    let entries =
-        std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?;
+    let entries = std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?;
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let file = entry.path().join("SKILL.md");
@@ -231,7 +234,11 @@ mod tests {
     #[test]
     fn a_plugin_resolves_from_plugin_dirs_first_then_the_installed_registry() {
         let tmp = tempfile::tempdir().unwrap();
-        let local = plugin(tmp.path(), "code", &[("review", "Review a diff."), ("lint", "Lint.")]);
+        let local = plugin(
+            tmp.path(),
+            "code",
+            &[("review", "Review a diff."), ("lint", "Lint.")],
+        );
         let found = resolve_in(&[local.clone()], None, "code").unwrap();
         assert_eq!(found.installed_key, None);
         assert_eq!(
@@ -252,7 +259,9 @@ mod tests {
             assert_eq!(found.description("tdd"), Some("Red, green."));
         }
 
-        let err = resolve_in(&[local], None, "missing").unwrap_err().to_string();
+        let err = resolve_in(&[local], None, "missing")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("plugin 'missing' is neither"), "{err}");
     }
 

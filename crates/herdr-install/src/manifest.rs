@@ -59,7 +59,9 @@ impl std::str::FromStr for Channel {
         match s {
             "stable" => Ok(Channel::Stable),
             "preview" => Ok(Channel::Preview),
-            other => Err(format!("unknown channel '{other}' (expected stable or preview)")),
+            other => Err(format!(
+                "unknown channel '{other}' (expected stable or preview)"
+            )),
         }
     }
 }
@@ -226,7 +228,11 @@ impl Manifest {
                 sha256: None,
                 format: infer_format(url),
             },
-            RawAsset::Detailed { url, sha256, format } => Asset {
+            RawAsset::Detailed {
+                url,
+                sha256,
+                format,
+            } => Asset {
                 url: url.clone(),
                 sha256: sha256.clone(),
                 format: match format.as_deref() {
@@ -345,7 +351,10 @@ mod tests {
     /// Windows ARM64 runs the x86_64 build under emulation.
     #[test]
     fn windows_arm64_maps_to_the_x86_64_asset() {
-        assert_eq!(target(Os::Windows, Arch::Aarch64).asset_key(), "windows-x86_64");
+        assert_eq!(
+            target(Os::Windows, Arch::Aarch64).asset_key(),
+            "windows-x86_64"
+        );
         assert_eq!(
             target(Os::Windows, Arch::Aarch64).triple(),
             "x86_64-pc-windows-msvc"
@@ -357,7 +366,10 @@ mod tests {
     #[test]
     fn a_missing_target_lists_what_is_available() {
         let m = Manifest::parse(STABLE).unwrap();
-        let err = m.asset(target(Os::Windows, Arch::X86_64)).unwrap_err().to_string();
+        let err = m
+            .asset(target(Os::Windows, Arch::X86_64))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no binary for windows-x86_64"), "{err}");
         assert!(err.contains("macos-aarch64"), "{err}");
     }
@@ -371,8 +383,14 @@ mod tests {
 
     #[test]
     fn channel_urls_are_the_ones_herdr_update_uses() {
-        assert_eq!(Channel::Stable.manifest_url(), "https://herdr.dev/latest.json");
-        assert_eq!(Channel::Preview.manifest_url(), "https://herdr.dev/preview.json");
+        assert_eq!(
+            Channel::Stable.manifest_url(),
+            "https://herdr.dev/latest.json"
+        );
+        assert_eq!(
+            Channel::Preview.manifest_url(),
+            "https://herdr.dev/preview.json"
+        );
     }
 
     #[test]

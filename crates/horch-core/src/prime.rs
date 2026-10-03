@@ -39,9 +39,17 @@ impl Daemon {
     pub fn install(state_root: &Path, role: &str) -> Result<Daemon> {
         let slug: String = role
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
-        let base = state_root.join("prime").join(format!("{slug}-{}", crate::mint_uuid()));
+        let base = state_root
+            .join("prime")
+            .join(format!("{slug}-{}", crate::mint_uuid()));
         let sessions = base.join("sessions");
         std::fs::create_dir_all(&sessions)
             .with_context(|| format!("creating {}", sessions.display()))?;
@@ -86,10 +94,15 @@ fn daemon_pid(socket: &Path) -> Option<i32> {
 /// installed.
 pub fn pid_for_socket(json: &str, socket: &Path) -> Option<i32> {
     let records: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
-    records.iter().find_map(|r| {
-        let path = r.get("socketPath")?.as_str()?;
-        (Path::new(path) == socket).then(|| r.get("pid")?.as_i64()).flatten()
-    }).map(|pid| pid as i32)
+    records
+        .iter()
+        .find_map(|r| {
+            let path = r.get("socketPath")?.as_str()?;
+            (Path::new(path) == socket)
+                .then(|| r.get("pid")?.as_i64())
+                .flatten()
+        })
+        .map(|pid| pid as i32)
 }
 
 #[cfg(unix)]
@@ -148,7 +161,10 @@ mod tests {
             pid_for_socket(STATUS, Path::new("/state/prime/codex-1-abc/d.sock")),
             Some(99865)
         );
-        assert_eq!(pid_for_socket(STATUS, Path::new("/state/prime/other/d.sock")), None);
+        assert_eq!(
+            pid_for_socket(STATUS, Path::new("/state/prime/other/d.sock")),
+            None
+        );
     }
 
     /// A daemon that is not running yet, or output that is not what we expect,
@@ -157,7 +173,10 @@ mod tests {
     fn unmatched_or_unparseable_status_kills_nothing() {
         assert_eq!(pid_for_socket("not json", Path::new("/a/d.sock")), None);
         assert_eq!(pid_for_socket("[]", Path::new("/a/d.sock")), None);
-        assert_eq!(pid_for_socket(r#"[{"pid":1}]"#, Path::new("/a/d.sock")), None);
+        assert_eq!(
+            pid_for_socket(r#"[{"pid":1}]"#, Path::new("/a/d.sock")),
+            None
+        );
     }
 
     #[test]

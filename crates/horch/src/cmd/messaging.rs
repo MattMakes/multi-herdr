@@ -100,8 +100,8 @@ pub fn note(text: &str) -> Result<()> {
 pub fn done(summary: &str) -> Result<()> {
     let record_id = require_env("HORCH_RECORD_ID")?;
     let role = require_env("HORCH_ROLE")?;
-    let pane_env = require_env("HERDR_PANE_ID")
-        .context("horch done must run inside a herdr pane")?;
+    let pane_env =
+        require_env("HERDR_PANE_ID").context("horch done must run inside a herdr pane")?;
 
     // `done` adds the tag and keyword itself; a summary that repeats them would
     // arrive as `[r] DONE: [r] DONE: ...`.
