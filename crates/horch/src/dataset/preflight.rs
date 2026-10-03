@@ -76,19 +76,6 @@ pub fn repo_facts(git: &GitCli, project: &Path, branches: &[String]) -> GitFacts
     }
 }
 
-/// The binary that runs `harness`; `None` for the agentless smoke harness.
-pub fn harness_bin(ctx: &RuntimeContext, harness: HarnessKind) -> Option<PathBuf> {
-    let bins = &ctx.bins.harness;
-    match harness {
-        HarnessKind::Claude => Some(bins.claude.clone()),
-        HarnessKind::Codex => Some(bins.codex.clone()),
-        HarnessKind::OpenCode => Some(bins.opencode.clone()),
-        HarnessKind::Pi => Some(bins.pi.clone()),
-        HarnessKind::Prime => Some(bins.prime.clone()),
-        HarnessKind::None => None,
-    }
-}
-
 /// `--version` of every harness in `harnesses`, redacted (PRE-06, PRE-07).
 /// No model turn: `--version` only. `None` when the binary is missing or
 /// does not answer.
@@ -100,7 +87,7 @@ pub fn harness_versions(
         .iter()
         .map(|name| {
             let kind = kind_of(name);
-            let version = match kind.and_then(|k| harness_bin(ctx, k)) {
+            let version = match kind.and_then(|k| k.binary(&ctx.bins.harness)) {
                 Some(bin) => harness_version(&bin).map(|v| redact(&v).into_owned()),
                 // The smoke harness runs no agent, so it has nothing to resolve.
                 None if kind == Some(HarnessKind::None) => Some("none".to_string()),

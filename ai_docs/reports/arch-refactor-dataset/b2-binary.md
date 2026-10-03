@@ -126,6 +126,11 @@ it prints how to build it and continues. `just install` builds both bins.
 
 ## Decisions and deviations
 
+- `HarnessKind::binary(&HarnessBins) -> Option<PathBuf>` is new in
+  `harness/mod.rs`, on the orchestrator's answer: A4's `arc_10` forbids a
+  harness match outside `harness/`. The gatherer calls it for `--version`.
+  Unit test: `harness::tests::binary_names_each_harness_cli`.
+
 - `JudgeConfig.policy` is now `evaluation::winner::WinnerPolicy` (default
   `min_confidence 0.7`, `tie_break disabled`). `WinnerPolicy` has no
   `deny_unknown_fields`; I did not change `winner.rs` (not my file).
@@ -149,12 +154,13 @@ it prints how to build it and continues. `just install` builds both bins.
 - The e2e tests find the binary next to the fakes (`bin_dir()`), so
   `cargo build --workspace --bins` must run first, as for every e2e test.
 
-## Tests added: 7
+## Tests added: 8
 
 - `crates/horch/tests/dataset_cli.rs`: `cmp_01_cli_args`,
   `exp_06_outcome_cli_refuses_wrong_state`.
 - `crates/horch-e2e/tests/dataset.rs`: `pre_06_harness_resolution_before_worktree`,
   `pre_07_probe_no_secret_persisted`, `pre_12_e2e_refuses_before_worktree_or_model`.
+- `crates/horch-core/src/harness/mod.rs`: `binary_names_each_harness_cli`.
 - `crates/horch/src/cmd/install.rs`: `install_puts_the_dataset_binary_next_to_horch`,
   `dataset_sibling_follows_a_link_to_horch`.
 
