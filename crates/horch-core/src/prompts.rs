@@ -179,6 +179,9 @@ mod tests {
         let r = roster();
         let mut all = Vec::new();
         for t in r.names() {
+            if crate::roster::teammate::HEADLESS_ONLY.contains(&t) {
+                continue;
+            }
             let t = r.require(t).unwrap();
             if t.base.is_some() {
                 let resume = SessionMode::Resume("s-1".parse().unwrap());

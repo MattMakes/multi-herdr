@@ -538,7 +538,7 @@ mod spawnable_tests {
                 t.name
             );
             let expected = match t.name.as_str() {
-                "smoke" => None,
+                "smoke" | "judge" => None,
                 "researcher" | "product-lead" | "designer" => Some(Phase::Research),
                 "staff-engineer"
                 | "opus-architect"
