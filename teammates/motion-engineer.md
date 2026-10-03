@@ -11,6 +11,7 @@ fallbacks: [codex-sol]
 # wrote it. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)
 effort: medium
 permission_mode: auto
+skills: [motion-gsap, ui-taste]
 inherit_plugins: false
 
 # Playwright drives the page and takes the screenshots; chrome-devtools

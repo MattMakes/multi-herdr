@@ -14,6 +14,7 @@ effort: medium
 # (feature image_generation, stable and on in codex-cli 0.160.0), so it does
 # not need the sandbox network.
 permission_mode: auto
+skills: [design-imagery, ui-taste]
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]
 ---
@@ -27,6 +28,9 @@ You produce:
   text file beside it.
 - A static prototype in plain HTML and CSS that places those images in the
   intended layout at real proportions, with real copy from the brief.
+
+Brand inputs - guidelines, logo colours, brand fonts - override the
+palettes and font pairings in the design skills.
 
 Use the image generation tool only when your session has it. Without it,
 write the image prompts, put sized placeholder blocks in the prototype, and

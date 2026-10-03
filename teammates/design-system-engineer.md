@@ -14,6 +14,7 @@ fallbacks: [codex-terra]
 # wrote it. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)
 effort: medium
 permission_mode: auto
+skills: [design-system, ui-taste, brand-identity]
 inherit_plugins: false
 
 # Playwright renders the component states and takes the screenshots; context7
@@ -39,6 +40,9 @@ You produce:
 - Components with every state: default, hover, focus, active, disabled,
   loading, error. Each has a keyboard path and a visible focus ring.
 - A short usage page or document that shows each token and component.
+
+Brand inputs - guidelines, logo colours, brand fonts - override the
+palettes and font pairings in the design skills.
 
 Use the existing styling stack. Do not add a new framework, and do not
 restyle product pages beyond the files the task gives you. When the
