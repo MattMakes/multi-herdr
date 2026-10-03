@@ -40,6 +40,7 @@ pub mod teammates;
 pub mod telemetry;
 pub mod tile;
 pub mod usage;
+pub mod workspace;
 
 /// Mint a session or record id.
 pub fn mint_uuid() -> String {
