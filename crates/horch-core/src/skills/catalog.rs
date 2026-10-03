@@ -25,7 +25,7 @@ use crate::measure::digest::Digest;
 
 /// The marketplace API, for the `horch` binary, which depends on core only.
 pub use horch_marketplace as marketplace;
-pub use horch_marketplace::SkillVersion;
+use horch_marketplace::SkillVersion;
 
 /// Where a catalog entry's files come from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

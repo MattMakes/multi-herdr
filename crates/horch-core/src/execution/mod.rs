@@ -14,7 +14,8 @@ pub mod records;
 pub mod service;
 pub mod store;
 
+pub use lifecycle::ReportTarget;
 pub use model::{
     Execution, ExecutionKind, ExecutionPlan, ExecutionStatus, FailureKind, LaunchPlan, LaunchStage,
-    ReportTarget, SessionMode, SessionState, SpawnRequest, Task, TilingMode, WorkspacePlan,
+    SessionMode, SessionState, SpawnRequest, Task, TilingMode, WorkspacePlan,
 };

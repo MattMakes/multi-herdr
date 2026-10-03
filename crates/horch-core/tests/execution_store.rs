@@ -15,7 +15,8 @@ use horch_core::execution::{ExecutionStatus, FailureKind, LaunchStage};
 use horch_core::ids::SkillId;
 use horch_core::measure::digest::Digest;
 use horch_core::roster::Phase;
-use horch_core::skills::{InvocationPolicy, ResolvedSkillRef, SkillVersion};
+use horch_core::skills::{InvocationPolicy, ResolvedSkillRef};
+use horch_marketplace::SkillVersion;
 use serde::Deserialize;
 
 const LEDGERS: [&str; 4] = ["bash-era", "pre-effort", "pr14-substituted", "orchestrator"];

@@ -36,8 +36,7 @@ pub fn info_path(state_root: &Path) -> PathBuf {
     super::dir(state_root).join("collector.json")
 }
 
-/// Whether process `pid` exists. Shared with [`crate::fsx::DirLock`].
-pub use crate::fsx::pid_alive;
+use crate::fsx::pid_alive;
 
 /// Who holds the lock, if anyone.
 #[derive(Debug, Clone, PartialEq, Eq)]

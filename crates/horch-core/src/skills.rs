@@ -19,7 +19,7 @@ pub mod selection;
 
 pub use activation::{plan_activation, InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};
 pub use briefing::BriefingContext;
-pub use catalog::{CatalogEntry, CatalogSource, Provenance, SkillCatalog, SkillVersion};
+pub use catalog::{CatalogEntry, CatalogSource, Provenance, SkillCatalog};
 pub use materialize::MaterializedSkills;
 pub use selection::{phase_skills, selected, selected_in};
 

@@ -16,9 +16,10 @@ use horch_core::measure::digest::{sha256_bytes, Digest};
 use horch_core::measure::event::RoundCreated;
 use horch_core::measure::paths::DatasetPaths;
 use horch_core::measure::projection::{CandidateView, JudgeView, PromotionView, RoundView};
+use horch_core::measure::NumstatLine;
 use horch_core::roster::Roster;
 use horch_core::teacher::TeacherRef;
-use horch_core::vcs::git::{CheckoutLocation, CherryPick, GitClient, GitIdentity, NumstatLine};
+use horch_core::vcs::git::{CheckoutLocation, CherryPick, GitClient, GitIdentity};
 use horch_core::vcs::worktree::FrozenCandidate;
 use serde_json::{json, Value};
 

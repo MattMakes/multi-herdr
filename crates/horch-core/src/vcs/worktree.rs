@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::ExecutionId;
 use crate::measure::digest::Digest;
-use crate::vcs::git::{GitClient, GitIdentity, NumstatLine};
+use crate::measure::NumstatLine;
+use crate::vcs::git::{GitClient, GitIdentity};
 
 /// The identity of every freeze commit. With the date fixed by the caller,
 /// the same edits on the same base give the same commit hash (CMP-08).

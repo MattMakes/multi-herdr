@@ -10,6 +10,7 @@
 //! provisional until the Spec B text arrives. Each threshold is a named
 //! constant, listed in `ai_docs/reports/arch-refactor-dataset/b2-preflight.md`.
 
+use crate::harness::capabilities::HARNESS_FOOTPRINT_BYTES;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -31,9 +32,6 @@ pub const REPORT_SCHEMA_VERSION: &str = "1.0.0";
 /// The oldest git with `git worktree` (added in 2.5, stable with `--lock`
 /// and `remove` by 2.17).
 pub const MIN_GIT_VERSION: (u32, u32) = (2, 17);
-/// Resident memory of one agent CLI and its tool processes, and of the smoke
-/// harness, which runs no agent. Owned by [`crate::harness::capabilities`].
-pub use crate::harness::capabilities::{HARNESS_FOOTPRINT_BYTES, NONE_FOOTPRINT_BYTES};
 /// CPU cores one candidate needs: the agent plus its builds and tests.
 pub const CPUS_PER_CANDIDATE: u32 = 2;
 /// Open files one candidate needs (agent, pane, builds, logs).

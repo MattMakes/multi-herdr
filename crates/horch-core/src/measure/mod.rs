@@ -13,7 +13,14 @@ pub mod store;
 pub mod testkit;
 pub mod worker_run;
 
-/// `git diff --numstat` lines, re-exported so the domain modules (events,
-/// projection, WorkerRun) name the value type without naming the git
-/// adapter module (CMP-02). The type belongs in a domain module; B3 may move it.
-pub use crate::vcs::git::NumstatLine;
+use serde::{Deserialize, Serialize};
+
+/// One line of `git diff --numstat`. A binary file has no line counts. It is
+/// a domain value: the events, the projection and WorkerRun carry it, and
+/// the git adapter (`vcs::git`) produces it (CMP-02).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NumstatLine {
+    pub added: Option<u32>,
+    pub deleted: Option<u32>,
+    pub path: String,
+}

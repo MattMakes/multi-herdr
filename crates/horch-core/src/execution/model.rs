@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::execution::legacy::HistoryEntry;
-pub use crate::execution::lifecycle::ReportTarget;
+use crate::execution::legacy::HistoryEntry;
+use crate::execution::lifecycle::ReportTarget;
 use crate::harness::HarnessKind;
 use crate::ids::{
     ExecutionId, ExperimentId, PaneId, RoleName, RoundId, SessionId, TaskId, TeammateName,
