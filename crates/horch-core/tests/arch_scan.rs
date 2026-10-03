@@ -1,0 +1,162 @@
+//! Source scans for the module rules of the architecture refactor.
+//!
+//! A scan reads the source as text, so a rule holds for code that no test
+//! happens to run. Comment lines and `#[cfg(test)]` modules are skipped: a
+//! test may build a `MapEnv`, and a doc comment may name what it replaced.
+
+use std::path::{Path, PathBuf};
+
+/// Files that still read the process environment, with the phase that
+/// removes each entry. Do not add entries.
+///
+/// - `teammates.rs`: the zero-argument `Roster::load` / `Roster::load_with`
+///   wrappers over `Roster::load_layered`. A12 removes them once the oracle
+///   and NFR tests load the roster through a `RuntimeContext`.
+const PENDING: &[&str] = &["teammates.rs"];
+
+/// Ambient environment access. `std::env::consts` is allowed.
+const AMBIENT: &[&str] = &[
+    "std::env::var",
+    "env::var_os",
+    "set_var",
+    "remove_var",
+    "std::env::current_dir",
+    "std::env::temp_dir",
+];
+
+fn crate_src(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(name)
+        .join("src")
+}
+
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// The lines of `path` that are code outside tests, numbered from 1. A file
+/// named `tests.rs` is a `#[cfg(test)]` module; a file's own `#[cfg(test)]`
+/// module ends the scan of that file.
+fn code_lines(path: &Path) -> Vec<(usize, String)> {
+    if path.file_name().is_some_and(|n| n == "tests.rs") {
+        return Vec::new();
+    }
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut out = Vec::new();
+    let mut lines = text.lines().enumerate().peekable();
+    while let Some((i, line)) = lines.next() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#[cfg(test)]")
+            && lines
+                .peek()
+                .is_some_and(|(_, next)| next.trim_start().starts_with("mod "))
+        {
+            break;
+        }
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        out.push((i + 1, line.to_string()));
+    }
+    out
+}
+
+fn relative(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Domain code never calls `std::env`: only `runtime/` reads the process
+/// environment, and the `horch` binary's bootstrap builds the context.
+#[test]
+fn arc_05_no_ambient_env_in_core() {
+    let root = crate_src("horch-core");
+    let mut files = Vec::new();
+    rust_files(&root, &mut files);
+    assert!(files.len() > 20, "scanned only {} files", files.len());
+
+    let mut found = Vec::new();
+    let mut pending_used = Vec::new();
+    for path in &files {
+        let rel = relative(path, &root);
+        if rel.starts_with("runtime/") {
+            continue;
+        }
+        for (n, line) in code_lines(path) {
+            if let Some(needle) = AMBIENT.iter().find(|a| line.contains(*a)) {
+                if PENDING.contains(&rel.as_str()) {
+                    pending_used.push(rel.clone());
+                    continue;
+                }
+                found.push(format!("{rel}:{n}: {needle}: {}", line.trim()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "ambient environment access outside runtime/:\n{}",
+        found.join("\n")
+    );
+    // An entry nothing needs any more must go, so the list only shrinks.
+    for entry in PENDING {
+        assert!(
+            pending_used.iter().any(|p| p == entry),
+            "PENDING entry {entry} reads no environment any more; remove it"
+        );
+    }
+}
+
+/// The environment is the child's transport, not this process's scratch
+/// space. A2 began with 44 environment access sites; the mutations among
+/// them are gone from both crates.
+#[test]
+fn arc_06_env_mutation_sites_reduced() {
+    let mut count = 0;
+    let mut sites = Vec::new();
+    for name in ["horch-core", "horch"] {
+        let root = crate_src(name);
+        let mut files = Vec::new();
+        rust_files(&root, &mut files);
+        for path in &files {
+            for (n, line) in code_lines(path) {
+                if line.contains("set_var(") || line.contains("remove_var(") {
+                    count += 1;
+                    sites.push(format!("{name}/{}:{n}", relative(path, &root)));
+                }
+            }
+        }
+    }
+    println!("environment mutation sites outside tests: {count} {sites:?}");
+    assert!(count < 44, "{count} sites: {sites:?}");
+    assert_eq!(count, 0, "no process environment mutation left: {sites:?}");
+}
+
+/// The scan's own filter: test modules and comment lines are not code.
+#[test]
+fn arc_05_scan_skips_tests_and_comments() {
+    let tmp = std::env::temp_dir().join(format!("arch-scan-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let file = tmp.join("x.rs");
+    std::fs::write(
+        &file,
+        "// std::env::var in a comment\nfn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() { std::env::set_var(\"A\", \"1\"); }\n}\n",
+    )
+    .unwrap();
+    let lines = code_lines(&file);
+    std::fs::remove_dir_all(&tmp).unwrap();
+    assert_eq!(lines, vec![(2, "fn a() {}".to_string())]);
+}
