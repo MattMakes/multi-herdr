@@ -1,7 +1,9 @@
 //! Portable phase catalogs. Only selected skill files are materialized per launch;
 //! native harness loaders expose metadata and read bodies on demand.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -11,9 +13,13 @@ use crate::teammates::{
     expand_home, operator_enabled_plugins, operator_status_line, Agent, Phase, Teammate,
 };
 
+pub mod activation;
 pub mod catalog;
+pub mod selection;
 
+pub use activation::{plan_activation, InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};
 pub use catalog::{CatalogEntry, CatalogSource, Provenance, SkillCatalog, SkillVersion};
+pub use selection::{phase_skills, selected};
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
@@ -21,22 +27,6 @@ include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 struct Metadata {
     name: String,
     description: String,
-}
-
-pub fn phase_skills(phase: Phase) -> &'static [&'static str] {
-    match phase {
-        Phase::Research => &["brainstorm", "research-codebase", "trace", "handoff"],
-        Phase::Plan => &["create-plan", "pre-flight", "handoff"],
-        Phase::Implementation => &["execute", "tdd", "debug", "check", "handoff"],
-        Phase::Validation => &[
-            "check",
-            "code-analysis",
-            "code-review",
-            "security-review",
-            "document",
-            "handoff",
-        ],
-    }
 }
 
 /// The bundled catalog in the shape the legacy callers read.
@@ -51,29 +41,6 @@ fn catalog() -> Result<BTreeMap<String, (Metadata, usize)>> {
             (e.id.to_string(), (meta, e.skill_file_bytes))
         })
         .collect())
-}
-
-pub fn selected(teammate: &Teammate) -> Result<Vec<String>> {
-    let mut names: BTreeSet<String> = teammate.skills.iter().cloned().collect();
-    if let Some(phase) = teammate.phase {
-        names.extend(phase_skills(phase).iter().map(|s| (*s).to_owned()));
-    }
-    let known = catalog()?;
-    for name in &names {
-        if !known.contains_key(name) {
-            bail!(
-                "teammate '{}': unknown bundled skill '{name}'",
-                teammate.name
-            );
-        }
-    }
-    if !names.is_empty() && (teammate.disable_skills || teammate.agent == Agent::None) {
-        bail!(
-            "teammate '{}': selected skills cannot load with disabled skills or no agent",
-            teammate.name
-        );
-    }
-    Ok(names.into_iter().collect())
 }
 
 /// Check platform support before allocating a pane or writing shared rules.
