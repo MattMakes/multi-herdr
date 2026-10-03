@@ -5,5 +5,7 @@
 pub mod digest;
 pub mod event;
 pub mod paths;
+pub mod recorder;
 pub mod redact;
+pub mod store;
 pub mod testkit;
