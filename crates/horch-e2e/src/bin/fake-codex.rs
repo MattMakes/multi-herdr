@@ -11,11 +11,17 @@
 //! `limits_not_allowed`, `hang`, `error`. `inspect_skills`: a pane launch
 //! also writes `$CODEX_HOME/skills` and the files under it to
 //! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
+//!
+//! As a pane agent, the scenario `stay` makes a launch behave like the codex
+//! TUI: a fresh launch writes a rollout file for its cwd under
+//! `$HOME/.codex/sessions/`, then the launch sleeps until killed. The session
+//! id is a UUID derived from the canonical cwd, recorded as `session_id`; a
+//! `resume <id>` launch records `resumed` and writes nothing.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
-use horch_e2e::{hang, say, scenario, scenario_has, write_skills_report, Call};
+use horch_e2e::{hang, hash16, say, scenario, scenario_has, write_skills_report, Call};
 use serde_json::{json, Value};
 
 const ALLOWED: [&str; 3] = ["initialize", "initialized", "account/rateLimits/read"];
@@ -30,6 +36,9 @@ fn main() {
     if call.argv.first().map(String::as_str) != Some("app-server") {
         if scenario_has("inspect_skills") {
             inspect_skills();
+        }
+        if scenario_has("stay") {
+            stay(&mut call);
         }
         call.flush();
         return;
@@ -129,4 +138,46 @@ fn list_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
             out.push(rel.to_string_lossy().replace('\\', "/"));
         }
     }
+}
+
+/// The `stay` launch: record or write the session, then block until killed.
+fn stay(call: &mut Call) {
+    if call.argv.first().map(String::as_str) == Some("resume") {
+        if let Some(id) = call.argv.get(1) {
+            call.extra.insert("resumed".into(), json!(id));
+        }
+    } else {
+        let id = write_rollout();
+        call.extra.insert("session_id".into(), json!(id));
+    }
+    // Eager: a `stay` launch is killed, so nothing is written after it.
+    call.flush();
+    hang();
+}
+
+/// Write `rollout-<stamp>-<uuid>.jsonl` naming this process's cwd, the file
+/// horch's session discovery reads. Returns the uuid.
+fn write_rollout() -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+    let h = format!("{}{}", hash16(&cwd.to_string_lossy()), hash16("codex"));
+    let id = format!(
+        "{}-{}-4{}-8{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[13..16],
+        &h[17..20],
+        &h[20..32]
+    );
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let dir = home.join(".codex/sessions/2026/10/02");
+    let _ = std::fs::create_dir_all(&dir);
+    let line = json!({"type": "session_meta", "payload": {"id": id, "cwd": cwd.to_string_lossy()}});
+    let _ = std::fs::write(
+        dir.join(format!("rollout-2026-10-02T00-00-00-{id}.jsonl")),
+        format!("{line}\n"),
+    );
+    id
 }

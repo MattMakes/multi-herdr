@@ -1,14 +1,18 @@
 //! Executions: one run of one worker, orchestrator, candidate or judge.
 //!
-//! [`model`] holds the vocabulary (A1). [`legacy`] is the on-disk ledger
-//! record and [`store`] reads and writes it (A6); planning and the service
-//! follow later in A6. [`lifecycle`] holds `done` (A7).
+//! [`model`] holds the vocabulary (A1) and the spawn types (A6). [`legacy`]
+//! is the on-disk ledger record and [`store`] reads and writes it. [`plan`]
+//! turns a spawn request into a plan with no I/O, and [`service`] applies
+//! it. [`lifecycle`] holds the worker's run and `done`.
 
 pub mod legacy;
 pub mod lifecycle;
 pub mod model;
+pub mod plan;
+pub mod service;
 pub mod store;
 
 pub use model::{
-    ExecutionKind, ExecutionStatus, FailureKind, LaunchStage, SessionMode, SessionState, TilingMode,
+    Execution, ExecutionKind, ExecutionPlan, ExecutionStatus, FailureKind, LaunchPlan, LaunchStage,
+    ReportTarget, SessionMode, SessionState, SpawnRequest, Task, TilingMode, WorkspacePlan,
 };
