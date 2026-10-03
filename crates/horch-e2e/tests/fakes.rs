@@ -126,12 +126,17 @@ fn fake_herdr_close_kills_the_exec_process() {
         .unwrap()
         .to_string();
     let pidfile = h.tmp.join("pid");
-    let command = format!("echo $$ > {}; sleep 60", pidfile.display());
+    let command = format!("echo $$ > {}; /bin/sleep 60", pidfile.display());
     assert!(fake(&h, "herdr", &["pane", "run", &root, &command])
         .status
         .success());
     let started = std::time::Instant::now();
-    while !pidfile.exists() && started.elapsed().as_secs() < 10 {
+    while std::fs::read_to_string(&pidfile)
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+        && started.elapsed().as_secs() < 10
+    {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let pid = std::fs::read_to_string(&pidfile).expect("the pane command started");
@@ -152,4 +157,101 @@ fn fake_herdr_close_kills_the_exec_process() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(!alive(&pid), "pane close kills the pane process");
+}
+
+#[test]
+fn fake_opencode_session_list_matches_cwd() {
+    let mut h = Harness::new("fakes-opencode");
+    assert_eq!(
+        String::from_utf8_lossy(&fake(&h, "opencode", &["--version"]).stdout).trim(),
+        "1.18.33"
+    );
+
+    // The same call horch makes, through the library that parses it.
+    let listed = fake(&h, "opencode", &["session", "list", "--format", "json"]);
+    assert!(listed.status.success());
+    let text = String::from_utf8_lossy(&listed.stdout).into_owned();
+    let records: Vec<Value> = serde_json::from_str(&text).unwrap();
+    assert_eq!(records.len(), 1);
+    let id = horch_e2e::opencode_session_id(&h.project);
+    assert!(id.starts_with("ses_") && id.len() == 4 + 16, "{id}");
+    assert_eq!(records[0]["id"], id.as_str());
+    let dir = records[0]["directory"].as_str().unwrap();
+    assert_eq!(
+        std::fs::canonicalize(dir).unwrap(),
+        std::fs::canonicalize(&h.project).unwrap()
+    );
+    // The fields `horch_core::opencode::parse_sessions` reads: `created` is
+    // milliseconds since the epoch and is recent, so the "after launch" filter
+    // keeps it.
+    let created = records[0]["created"].as_u64().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    assert!(
+        created <= now && now - created < 60_000,
+        "{created} vs {now}"
+    );
+
+    // A launch is recorded and exits 0 at once; a resume names its session.
+    let launch = fake(
+        &h,
+        "opencode",
+        &[
+            "--model",
+            "opencode/m",
+            "--session",
+            "ses_old",
+            "--prompt",
+            "go",
+        ],
+    );
+    assert!(launch.status.success());
+    let calls = h.calls_of("opencode");
+    let last = calls.last().unwrap();
+    assert_eq!(last["model"], "opencode/m");
+    assert_eq!(last["resumed"], "ses_old");
+    assert_eq!(last["session_id"], id.as_str());
+
+    // `stay` keeps a launch alive until it is killed.
+    h.set("HORCH_FAKE_SCENARIO", "stay");
+    let mut cmd = Command::new(h.bin.join("opencode"));
+    cmd.args(["--model", "opencode/m", "--prompt", "go"]);
+    h.seal(&mut cmd);
+    let mut child = cmd.spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(child.try_wait().unwrap().is_none(), "stay keeps running");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
+fn fake_opencode_writes_transcript_rows_when_asked() {
+    let mut h = Harness::new("fakes-opencode-db");
+    let works = h.has_sqlite3()
+        && Command::new(h.bin.join("sqlite3"))
+            .arg("-version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+    if !works {
+        assert!(
+            std::env::var_os("HORCH_REQUIRE_SQLITE").is_none(),
+            "HORCH_REQUIRE_SQLITE is set but the harness sqlite3 does not run"
+        );
+        return;
+    }
+    h.set("HORCH_FAKE_TRANSCRIPTS", "1");
+    let launch = fake(&h, "opencode", &["--model", "opencode/m", "--prompt", "go"]);
+    assert!(launch.status.success());
+    let db = h.home.join(".local/share/opencode/opencode.db");
+    assert!(db.is_file(), "no database at {}", db.display());
+    let id = horch_e2e::opencode_session_id(&h.project);
+    let mut cmd = Command::new(h.bin.join("sqlite3"));
+    cmd.arg("-readonly").arg("-json").arg(&db).arg(format!(
+        "SELECT count(*) AS n FROM message WHERE session_id = '{id}';"
+    ));
+    let out = cmd.output().unwrap();
+    let rows: Vec<Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["n"], 1);
 }

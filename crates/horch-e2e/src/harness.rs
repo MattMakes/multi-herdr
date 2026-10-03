@@ -2,10 +2,9 @@
 //!
 //! Each [`Harness`] gets a fresh temp directory holding a fake home, a state
 //! root, a temp dir for mailboxes, and a `bin/` of fakes named like the real
-//! programs (`claude`, `codex`, `herdr`, `pi`, `ollama`). `horch` runs with a
-//! cleared environment whose PATH is that `bin/` alone, and every `HORCH_*_BIN`
-//! points into it, so no real harness, no real herdr and no file outside the
-//! temp dir can be reached (NFR-01).
+//! programs (`claude`, `codex`, `herdr`, `opencode`, `pi`, `ollama`). `horch` runs with a cleared environment whose PATH is that
+//! `bin/` alone, and every `HORCH_*_BIN` points into it, so no real harness, no
+//! real herdr and no file outside the temp dir can be reached (NFR-01).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,10 +15,11 @@ use serde_json::Value;
 use crate::bin_dir;
 
 /// The fakes, by the name of the program each stands in for.
-pub const FAKES: [(&str, &str); 5] = [
+pub const FAKES: [(&str, &str); 6] = [
     ("claude", "fake-claude"),
     ("codex", "fake-codex"),
     ("herdr", "fake-herdr"),
+    ("opencode", "fake-opencode"),
     ("pi", "fake-pi"),
     ("ollama", "fake-ollama"),
 ];
@@ -145,6 +145,7 @@ impl Harness {
             ("claude", "HORCH_CLAUDE_BIN"),
             ("codex", "HORCH_CODEX_BIN"),
             ("herdr", "HORCH_HERDR_BIN"),
+            ("opencode", "HORCH_OPENCODE_BIN"),
             ("pi", "HORCH_PI_BIN"),
             ("ollama", "HORCH_OLLAMA_BIN"),
             ("sqlite3", "HORCH_SQLITE3_BIN"),

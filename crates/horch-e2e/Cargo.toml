@@ -21,6 +21,10 @@ name = "fake-herdr"
 path = "src/bin/fake-herdr.rs"
 
 [[bin]]
+name = "fake-opencode"
+path = "src/bin/fake-opencode.rs"
+
+[[bin]]
 name = "fake-pi"
 path = "src/bin/fake-pi.rs"
 

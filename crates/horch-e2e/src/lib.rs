@@ -106,6 +106,32 @@ pub fn scenario_has(name: &str) -> bool {
     scenarios().iter().any(|s| s == name)
 }
 
+/// 16 lowercase hex digits of the FNV-1a 64-bit hash of `text`. Simple and
+/// stable, so a test can predict the ids the fakes mint.
+pub fn hash16(text: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// The session id `fake-opencode` reports for a worker running in `dir`:
+/// `ses_` and `hash16` of the canonical directory path. Canonical, because the
+/// fake sees the path the operating system reports (`/private/var` on macOS).
+pub fn opencode_session_id(dir: &Path) -> String {
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    format!("ses_{}", hash16(&dir.to_string_lossy()))
+}
+
+/// The session id `fake-prime` mints for the `--session-dir` it is given:
+/// `prime_` and `hash16` of the path text exactly as passed. The session file
+/// is `<id>.jsonl` in that directory.
+pub fn prime_session_id(session_dir: &str) -> String {
+    format!("prime_{}", hash16(session_dir))
+}
+
 /// Print one line to stdout and flush it: the probes read line by line.
 pub fn say(line: &str) {
     let mut out = std::io::stdout().lock();
