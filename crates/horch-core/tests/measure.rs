@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeZone, Utc};
 use horch_core::competition::model::RoundState;
+use horch_core::competition::preflight::PreflightReport;
+use horch_core::evaluation::validator::ValidationReport;
 use horch_core::evaluation::winner::RejectReason;
 use horch_core::execution::FailureKind;
 use horch_core::harness::HarnessKind;
@@ -18,6 +20,8 @@ use horch_core::measure::projection::{fold, Projection};
 use horch_core::measure::recorder::{Appended, JsonlRecorder, NewEvent, NoopRecorder, Recorder};
 use horch_core::measure::store::{EventIndex, StoreOptions};
 use horch_core::measure::testkit::{property, SplitMix64};
+use horch_core::measure::NumstatLine;
+use horch_core::routing::decision::RoutingProvenance;
 use horch_core::teacher::TeacherRef;
 use horch_core::telemetry::collect::read_ledgers;
 use serde_json::{json, Value};
@@ -65,7 +69,14 @@ fn round_created(labels: &[&str]) -> RoundCreated {
         index: 0,
         base_sha: "a".repeat(40),
         labels: labels.iter().map(|l| l.to_string()).collect(),
-        eligible_set: vec![json!({"teammate": "sonnet", "verdict": "eligible"})],
+        eligible_set: typed(json!([
+            {"teammate": "sonnet", "harness": "claude", "model": "sonnet", "effort": "high",
+             "fallback_index": null, "pool": "claude-max", "pool_state": "ok",
+             "verdict": "eligible"},
+            {"teammate": "codex-sol", "harness": "codex", "model": "gpt-5-codex", "effort": null,
+             "fallback_index": null, "pool": "codex", "pool_state": "exhausted",
+             "verdict": "excluded", "reason": "pool_blocked"},
+        ])),
         propensities: labels
             .iter()
             .map(|l| (l.to_string(), 1.0 / labels.len() as f64))
@@ -89,17 +100,56 @@ fn candidate_planned(label: &str) -> CandidatePlanned {
     }
 }
 
-fn validation_report(label: &str, eligible: bool) -> Value {
-    json!({
+fn typed<T: serde::de::DeserializeOwned>(v: Value) -> T {
+    serde_json::from_value(v).unwrap()
+}
+
+fn validation_report(label: &str, eligible: bool) -> ValidationReport {
+    let status = if eligible {
+        json!({"kind": "passed"})
+    } else {
+        json!({"kind": "failed", "code": 101})
+    };
+    typed(json!({
         "validation_id": "0199a5b0-0000-7000-8000-0000000000f1",
         "label": label,
         "head_sha": "b".repeat(40),
-        "gates": [{"name": "test", "status": {"status": "passed"}, "duration_ms": 1200,
-                   "log_ref": "validation/A/test.log", "log_digest": dg("log").to_string(),
-                   "log_truncated": false}],
+        "gates": [{"name": "test", "status": status, "duration_ms": 1200,
+                   "log_ref": format!("validation/{label}/test.log"),
+                   "log_digest": dg("log").to_string(), "log_truncated": false}],
         "mechanical_score": if eligible { 1.0 } else { 0.0 },
         "eligible": eligible,
-    })
+    }))
+}
+
+fn preflight_report() -> PreflightReport {
+    typed(json!({
+        "schema_version": "1.0.0",
+        "checks": [{"id": "PRE-01", "status": "pass", "detail": "git ok", "measured": null}],
+        "safe_n": 2,
+        "waves": 1,
+        "projected_cost_microusd": 1_500_000,
+        "machine": {"os": "macos", "arch": "aarch64", "cpus": 10,
+                    "mem_total_bytes": 34_359_738_368u64, "mem_available_bytes": null,
+                    "disk_free_bytes": 100_000_000_000u64, "disk_total_bytes": null,
+                    "gpu": "apple_silicon", "max_open_files": 10240, "max_processes": null},
+        "environment_digest": dg("env").to_string(),
+        "passed": true,
+    }))
+}
+
+fn routing(teammate: &str) -> RoutingProvenance {
+    typed(json!({
+        "requested": teammate, "resolved": teammate, "fallback_index": null,
+        "pool": "claude-max", "pool_state": "ok", "reason": null, "mode": "pinned",
+    }))
+}
+
+fn numstat() -> Vec<NumstatLine> {
+    typed(json!([
+        {"added": 3, "deleted": 1, "path": "src/lib.rs"},
+        {"added": null, "deleted": null, "path": "assets/logo.png"},
+    ]))
 }
 
 /// One sample of every known kind, in `EventKind::KNOWN` order.
@@ -107,7 +157,7 @@ fn sample_kinds() -> Vec<EventKind> {
     vec![
         EventKind::ExperimentCreated(experiment_created(2)),
         EventKind::PreflightCompleted(PreflightCompleted {
-            report: json!({"passed": true, "checks": []}),
+            report: preflight_report(),
         }),
         EventKind::ExperimentAborted(ExperimentAborted {
             reason: "disk".into(),
@@ -124,7 +174,7 @@ fn sample_kinds() -> Vec<EventKind> {
         EventKind::CandidateSpawned(CandidateSpawned {
             label: "A".into(),
             pane: PaneId::new("p-1").unwrap(),
-            routing: json!({"requested": "sonnet", "resolved": "sonnet"}),
+            routing: routing("sonnet"),
         }),
         EventKind::CandidateCompleted(CandidateCompleted {
             label: "A".into(),
@@ -137,7 +187,7 @@ fn sample_kinds() -> Vec<EventKind> {
         EventKind::CandidateFrozen(CandidateFrozen {
             label: "A".into(),
             head_sha: "b".repeat(40),
-            numstat: vec![json!({"added": 3, "removed": 1, "path": "src/lib.rs"})],
+            numstat: numstat(),
             diff_digest: dg("diff"),
         }),
         EventKind::ValidationCompleted(ValidationCompleted {
@@ -709,7 +759,7 @@ fn decide(fates: &[Fate], judge_fails: u32, promote: bool) -> (Script, FinalOutc
     );
     s.push(
         EventKind::PreflightCompleted(PreflightCompleted {
-            report: json!({"passed": true}),
+            report: preflight_report(),
         }),
         None,
     );
@@ -733,7 +783,7 @@ fn decide(fates: &[Fate], judge_fails: u32, promote: bool) -> (Script, FinalOutc
             EventKind::CandidateSpawned(CandidateSpawned {
                 label: l.to_string(),
                 pane: PaneId::new(format!("p-{l}")).unwrap(),
-                routing: json!({"requested": "sonnet", "resolved": "sonnet"}),
+                routing: routing("sonnet"),
             }),
             Some(l),
         );
@@ -757,7 +807,7 @@ fn decide(fates: &[Fate], judge_fails: u32, promote: bool) -> (Script, FinalOutc
             EventKind::CandidateFrozen(CandidateFrozen {
                 label: l.to_string(),
                 head_sha: "b".repeat(40),
-                numstat: vec![json!({"added": 3, "removed": 1, "path": "src/lib.rs"})],
+                numstat: numstat(),
                 diff_digest: dg(l),
             }),
             Some(l),
@@ -1032,7 +1082,7 @@ fn mea_05_invalid_transition_is_an_anomaly_and_not_applied() {
     s.push(EventKind::ExperimentCreated(experiment_created(1)), None);
     s.push(
         EventKind::PreflightCompleted(PreflightCompleted {
-            report: json!({"passed": true}),
+            report: preflight_report(),
         }),
         None,
     );

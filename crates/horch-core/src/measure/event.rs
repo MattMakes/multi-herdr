@@ -6,8 +6,8 @@
 //! [`EventKind::Unknown`] and keeps its payload, so a newer writer's events
 //! survive a rebuild by an older reader.
 //!
-//! Fields whose types other units build are `serde_json::Value` for now;
-//! each one says which unit types it.
+//! `PromotionStarted.strategy` is `serde_json::Value` until B5 builds
+//! `PromotionStrategy`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -17,6 +17,8 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::competition::preflight::PreflightReport;
+use crate::evaluation::validator::ValidationReport;
 use crate::evaluation::winner::RejectReason;
 use crate::execution::FailureKind;
 use crate::harness::HarnessKind;
@@ -24,6 +26,9 @@ use crate::ids::{
     EventId, ExecutionId, ExperimentId, JudgmentId, ModelId, PaneId, RoundId, TaskId, TeammateName,
 };
 use crate::measure::digest::Digest;
+use crate::measure::NumstatLine;
+use crate::routing::decision::RoutingProvenance;
+use crate::routing::eligible::EligibleEntry;
 use crate::teacher::TeacherRef;
 
 pub const EVENT_SCHEMA_VERSION: &str = "1.0.0";
@@ -213,8 +218,7 @@ pub struct ExperimentCreated {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreflightCompleted {
-    // B2: typed once PreflightReport lands.
-    pub report: Value,
+    pub report: PreflightReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -229,8 +233,7 @@ pub struct RoundCreated {
     pub index: u32,
     pub base_sha: String,
     pub labels: Vec<String>,
-    // A5: typed once EligibleEntry lands.
-    pub eligible_set: Vec<Value>,
+    pub eligible_set: Vec<EligibleEntry>,
     pub propensities: BTreeMap<String, f64>,
     pub teacher: TeacherRef,
     pub seed: u64,
@@ -270,8 +273,7 @@ pub struct WorktreeCreated {
 pub struct CandidateSpawned {
     pub label: String,
     pub pane: PaneId,
-    // A5: typed once RoutingProvenance lands.
-    pub routing: Value,
+    pub routing: RoutingProvenance,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -290,16 +292,14 @@ pub struct CandidateFailed {
 pub struct CandidateFrozen {
     pub label: String,
     pub head_sha: String,
-    // B3: typed once NumstatLine lands.
-    pub numstat: Vec<Value>,
+    pub numstat: Vec<NumstatLine>,
     pub diff_digest: Digest,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValidationCompleted {
     pub label: String,
-    // B3: typed once ValidationReport lands.
-    pub report: Value,
+    pub report: ValidationReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

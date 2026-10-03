@@ -11,3 +11,8 @@ pub mod recorder;
 pub mod redact;
 pub mod store;
 pub mod testkit;
+
+/// `git diff --numstat` lines, re-exported so the domain modules (events,
+/// projection, WorkerRun) name the value type without naming the git
+/// adapter module (CMP-02). The type belongs in a domain module; B3 may move it.
+pub use crate::vcs::git::NumstatLine;

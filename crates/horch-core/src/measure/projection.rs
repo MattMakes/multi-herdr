@@ -14,9 +14,10 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::competition::model::RoundState;
+use crate::competition::preflight::PreflightReport;
+use crate::evaluation::validator::ValidationReport;
 use crate::evaluation::winner::RejectReason;
 use crate::ids::{EventId, ExecutionId, ExperimentId, JudgmentId, RoundId};
 use crate::measure::event::{
@@ -50,8 +51,7 @@ pub struct Anomaly {
 pub struct ExperimentView {
     pub state: RoundState,
     pub created: ExperimentCreated,
-    // B2: typed once PreflightReport lands.
-    pub preflight: Option<Value>,
+    pub preflight: Option<PreflightReport>,
     pub aborted: Option<ExperimentAborted>,
     pub rounds: Vec<RoundId>,
 }
@@ -84,8 +84,7 @@ pub struct CandidateView {
     pub completed: Option<CandidateCompleted>,
     pub failed: Option<CandidateFailed>,
     pub frozen: Option<CandidateFrozen>,
-    // B3: typed once ValidationReport lands.
-    pub validation: Option<Value>,
+    pub validation: Option<ValidationReport>,
 }
 
 impl CandidateView {
@@ -93,13 +92,9 @@ impl CandidateView {
         self.completed.is_some() || self.failed.is_some()
     }
 
-    /// The validation report says `eligible: true`.
+    /// Validated, and every gate passed.
     pub fn is_eligible(&self) -> bool {
-        self.validation
-            .as_ref()
-            .and_then(|v| v.get("eligible"))
-            .and_then(Value::as_bool)
-            == Some(true)
+        self.validation.as_ref().is_some_and(|v| v.eligible)
     }
 }
 
@@ -167,7 +162,7 @@ impl Projection {
                 let x = self.experiment(exp)?;
                 expect_state(x.state, &[RoundState::Preflight], "preflight.completed")?;
                 // A failed preflight waits for experiment.aborted.
-                if p.report.get("passed").and_then(Value::as_bool) != Some(false) {
+                if p.report.passed {
                     x.state = RoundState::Planned;
                 }
                 x.preflight = Some(p.report);
