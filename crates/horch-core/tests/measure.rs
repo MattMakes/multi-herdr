@@ -229,7 +229,9 @@ fn sample_kinds() -> Vec<EventKind> {
             target: "main".into(),
             dest_before: "a".repeat(40),
             planned_after: "b".repeat(40),
-            strategy: json!("fast_forward"),
+            strategy: horch_core::competition::promotion::PromotionStrategy::FastForward,
+            publish: "update_ref_cas".into(),
+            validation_ids: vec!["v-1".into()],
         }),
         EventKind::PromotionCompleted(PromotionCompleted {
             receipt_digest: dg("receipt"),
@@ -259,6 +261,9 @@ fn sample_kinds() -> Vec<EventKind> {
         EventKind::RoundCleanupStarted(RoundCleanupStarted {}),
         EventKind::RoundCompleted(RoundCompleted {
             final_outcome: FinalOutcome::Winner,
+        }),
+        EventKind::OperatorPromote(OperatorPromote {
+            target: "main".into(),
         }),
     ]
 }
@@ -298,12 +303,12 @@ fn mea_08_dataset_dir_not_read_as_ledger() {
     paths.ensure().unwrap();
     assert_eq!(paths.root(), state.join("multi-herdr/-work-my-proj"));
     let exp = ExperimentId::new("exp-1").unwrap();
-    std::fs::create_dir_all(paths.experiment_dir(&exp)).unwrap();
+    std::fs::create_dir_all(paths.experiment_dir(&exp).unwrap()).unwrap();
     // Valid-looking ledgers at every dataset level, plus an event file.
     for p in [
         paths.root().join("ledger.json"),
         paths.root().parent().unwrap().join("ledger.json"),
-        paths.manifest(&exp),
+        paths.manifest(&exp).unwrap(),
         paths.events_dir().join("x.json"),
     ] {
         std::fs::write(&p, ledger_json("rec-dataset")).unwrap();
@@ -334,33 +339,39 @@ fn dataset_paths_layout() {
         ),
         (paths.events_lock_dir(), "/s/multi-herdr/p/events.lock"),
         (
-            paths.manifest(&exp),
+            paths.manifest(&exp).unwrap(),
             "/s/multi-herdr/p/experiments/e/manifest.json",
         ),
         (
-            paths.round_file(&exp, &round),
+            paths.round_file(&exp, &round).unwrap(),
             "/s/multi-herdr/p/experiments/e/rounds/r.json",
         ),
         (
-            paths.judge_input_dir(&exp, &round),
+            paths.judge_input_dir(&exp, &round).unwrap(),
             "/s/multi-herdr/p/experiments/e/artifacts/r/judge-input",
         ),
         (
-            paths.validation_dir(&exp, &round, "A"),
+            paths.validation_dir(&exp, &round, "A").unwrap(),
             "/s/multi-herdr/p/experiments/e/artifacts/r/validation/A",
         ),
         (
-            paths.judgement(&round),
+            paths.judgement(&round).unwrap(),
             "/s/multi-herdr/p/judgements/r.json",
         ),
         (
-            paths.promotion(&round),
+            paths.promotion(&round).unwrap(),
             "/s/multi-herdr/p/promotions/r.json",
         ),
-        (paths.exports_dir("lp-1"), "/s/multi-herdr/p/exports/lp-1"),
-        (paths.job_dir(&round, 2), "/s/multi-herdr/p/jobs/r/judge-2"),
         (
-            paths.default_worktree_root(&exp),
+            paths.exports_dir("lp-1").unwrap(),
+            "/s/multi-herdr/p/exports/lp-1",
+        ),
+        (
+            paths.job_dir(&round, 2).unwrap(),
+            "/s/multi-herdr/p/jobs/r/judge-2",
+        ),
+        (
+            paths.default_worktree_root(&exp).unwrap(),
             "/s/multi-herdr/p/worktrees/e",
         ),
     ];
@@ -906,7 +917,9 @@ fn decide(fates: &[Fate], judge_fails: u32, promote: bool) -> (Script, FinalOutc
                 target: "main".into(),
                 dest_before: "a".repeat(40),
                 planned_after: "b".repeat(40),
-                strategy: json!("fast_forward"),
+                strategy: horch_core::competition::promotion::PromotionStrategy::FastForward,
+                publish: "update_ref_cas".into(),
+                validation_ids: vec!["v-1".into()],
             }),
             None,
         );

@@ -5,9 +5,6 @@
 //! `(kind, payload)` pair. A kind this binary does not know becomes
 //! [`EventKind::Unknown`] and keeps its payload, so a newer writer's events
 //! survive a rebuild by an older reader.
-//!
-//! `PromotionStarted.strategy` is `serde_json::Value` until B5 builds
-//! `PromotionStrategy`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -18,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::competition::preflight::PreflightReport;
+use crate::competition::promotion::PromotionStrategy;
 use crate::evaluation::validator::ValidationReport;
 use crate::evaluation::winner::RejectReason;
 use crate::execution::FailureKind;
@@ -197,6 +195,9 @@ event_kinds! {
     RoundCleanupStarted => "round.cleanup_started",
     /// SPEC-TODO(Spec B event list): added so a rebuild reaches COMPLETE.
     RoundCompleted => "round.completed",
+    /// The operator's `promote <round>`: a promotion of the round's winner
+    /// into `target`, after the round ended without one (B5).
+    OperatorPromote => "operator.promote",
 }
 
 // ─── payloads ───────────────────────────────────────────────────────────────
@@ -367,8 +368,15 @@ pub struct PromotionStarted {
     pub target: String,
     pub dest_before: String,
     pub planned_after: String,
-    // B5: typed once PromotionStrategy lands.
-    pub strategy: Value,
+    pub strategy: PromotionStrategy,
+    /// `update_ref_cas` or `merge_ff_only`; the receipt repeats it. Empty in
+    /// an event written before B5.
+    #[serde(default)]
+    pub publish: String,
+    /// The revalidation of `planned_after`. A restart writes the receipt
+    /// from this event, so the event carries what the receipt needs.
+    #[serde(default)]
+    pub validation_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -433,6 +441,12 @@ pub struct RoundCleanupStarted {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoundCompleted {
     pub final_outcome: FinalOutcome,
+}
+
+/// `promote <round>`: promote the round's winner into `target`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorPromote {
+    pub target: String,
 }
 
 /// How a completed round ended: the state it held when cleanup started.

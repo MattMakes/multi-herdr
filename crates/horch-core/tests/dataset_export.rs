@@ -352,7 +352,7 @@ fn judge(log: &mut Log, paths: &DatasetPaths, n: u64, judgment: Judgment) {
         judgment,
     };
     std::fs::write(
-        paths.judgement(&round(n)),
+        paths.judgement(&round(n)).unwrap(),
         serde_json::to_vec(&record).unwrap(),
     )
     .unwrap();
@@ -724,7 +724,10 @@ fn exp_04_regenerate_twice_identical() {
     let file = write_export(&paths, LPV, &rows, ts).unwrap();
     assert_eq!(
         file,
-        paths.exports_dir(LPV).join("20261003T120000.000Z.jsonl")
+        paths
+            .exports_dir(LPV)
+            .unwrap()
+            .join("20261003T120000.000Z.jsonl")
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), first);
     // The same export at the same time is accepted; the file is immutable.
@@ -957,7 +960,7 @@ fn exp_03_promotion_receipt_gives_dest_after() {
     let tmp = tempfile::tempdir().unwrap();
     let (paths, _rec, facts) = build_fixture(tmp.path());
     std::fs::write(
-        paths.promotion(&round(1)),
+        paths.promotion(&round(1)).unwrap(),
         json!({"round_id": round(1).to_string(), "dest_before": "c".repeat(40),
                "dest_after": "d".repeat(40), "strategy": "fast_forward"})
         .to_string(),
@@ -970,7 +973,7 @@ fn exp_03_promotion_receipt_gives_dest_after() {
     );
     assert!(rows[1].promotion.is_none());
 
-    std::fs::write(paths.promotion(&round(1)), "{}").unwrap();
+    std::fs::write(paths.promotion(&round(1)).unwrap(), "{}").unwrap();
     assert!(export(&paths, &facts, LPV).is_err());
 }
 

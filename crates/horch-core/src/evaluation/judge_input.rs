@@ -307,7 +307,7 @@ pub fn build_judge_input(
             .collect(),
     };
     let manifest_bytes = to_json(&manifest);
-    let dir = paths.judge_input_dir(&round.experiment_id, round_id);
+    let dir = paths.judge_input_dir(&round.experiment_id, round_id)?;
 
     if dir.join("manifest.json").exists() {
         // Already sealed: verify, write nothing.

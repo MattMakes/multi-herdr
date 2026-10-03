@@ -376,7 +376,10 @@ fn jdg_02_bundle_digest_and_readonly() {
         .iter()
         .all(|d| d == Path::new("/main/repo")));
 
-    let dir = state.paths().judge_input_dir(&exp_id(), &round_id());
+    let dir = state
+        .paths()
+        .judge_input_dir(&exp_id(), &round_id())
+        .unwrap();
     assert_eq!(input.dir, dir);
     assert_eq!(input.labels, ["A", "B", "C"]);
     let files = bundle_files(&dir);
