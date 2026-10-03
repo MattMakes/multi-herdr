@@ -63,3 +63,4 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - A7b: settle_after_close keeps own setsid → runtime::process::spawn_detached; Herdr resolves bin via agent::herdr_bin() → give ctx.bins.harness.herdr.
 - B2 bin: settings.machine_file read but unused. e2e fake-herdr exec passes spawner env to pane.
 - ProcessEnv shims remain (remove later): workspace/herdr.rs (A7b), opencode.rs + prime.rs (A4), telemetry/readers.rs (A6c), message.rs (A7b), roster/validation.rs (A12). set_current_dir kept in worker.rs/recipes.rs.
+- A10 (from A11): roster/validation.rs:46 skills::selected rejects marketplace ids → accept catalog with lock; worker.rs/recipes.rs Bundle::install must use catalog with lock from data_root; add e2e spawn variant of mkt_08 no-network.
