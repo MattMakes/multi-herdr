@@ -598,6 +598,7 @@ name = "horch"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "crossterm",
  "horch-core",

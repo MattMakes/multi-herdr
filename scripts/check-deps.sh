@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 allowed_core="anyhow serde serde_json serde_yaml chrono uuid libc"
-allowed_horch="horch-core anyhow clap serde serde_json tempfile libc ratatui crossterm"
+allowed_horch="horch-core anyhow clap serde serde_json chrono tempfile libc ratatui crossterm"
 fail=0
 check() {
   local crate=$1 allowed=$2

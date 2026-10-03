@@ -14,6 +14,7 @@ anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tempfile = "3"
 # The telemetry screen's raw-mode terminal and key events (NFR-05: the only
 # new runtime crate). The frame itself is plain text, rendered by horch.

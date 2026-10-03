@@ -72,6 +72,7 @@ fn nfr_05_no_new_runtime_crates() {
         "clap",
         "serde",
         "serde_json",
+        "chrono",
         "tempfile",
         "libc",
         "ratatui",
