@@ -26,7 +26,7 @@
 //!
 //! With at least 1 eligible candidate the round goes to JUDGING_BACKGROUND
 //! and the judge step runs (`judging::start`, then `judging::poll` each
-//! tick).
+//! tick) until the round is decided; then cleanup removes the worktrees.
 //!
 //! Fault points (each fires after its event, as [`FaultFired`]):
 //! `abort-after-worktree:<n>`, `abort-after-candidate-spawned:<n>`,
@@ -43,12 +43,14 @@ use serde::{Deserialize, Serialize};
 use crate::competition::budget::{BudgetAction, BudgetPolicy, UsageMeter, UsageSource};
 use crate::competition::cleanup::{CleanupOptions, RoundCleanup};
 use crate::competition::config::DatasetConfig;
+use crate::competition::judging::{self, JobLauncher, JudgeEnv, JudgingStatus};
 use crate::competition::model::RoundState;
 use crate::competition::observe::{
     self, classify, deadline_passed, Observed, TelemetryUsage, CANCELLED_BUDGET, CANCELLED_DISK,
 };
 use crate::competition::planner::{candidate_planned_payload, round_created_payload, RoundPlan};
 use crate::competition::promotion::FaultFired;
+use crate::evaluation::scheduler::DEFAULT_STALE_AFTER;
 use crate::evaluation::validator::{ValidationReport, Validator};
 use crate::evaluation::winner::RejectReason;
 use crate::execution::plan::{plan_launch, MintedIds, PlanInputs};
@@ -58,13 +60,13 @@ use crate::execution::{
     Execution, ExecutionKind, ExecutionStatus, FailureKind, LaunchStage, ReportTarget,
     SpawnRequest, TilingMode,
 };
-use crate::fsx;
+use crate::fsx::{self, FsxError};
 use crate::ids::{ExecutionId, ExperimentId, PaneId, RoundId, SessionId};
 use crate::measure::digest::sha256_bytes;
 use crate::measure::event::{
     Actor, CandidateCompleted, CandidateFailed, CandidateFrozen, CandidatePlanned,
-    CandidateSpawned, EventKind, FinalOutcome, ValidationCompleted, WinnerRejected,
-    WorktreeCreated,
+    CandidateSpawned, EventKind, FinalOutcome, InterventionSource, PromotionIntent,
+    RoundNeedsIntervention, ValidationCompleted, WinnerRejected, WorktreeCreated,
 };
 use crate::measure::paths::DatasetPaths;
 use crate::measure::projection::{fold, CandidateView, RoundView};
@@ -83,6 +85,9 @@ use crate::workspace::client::WorkspaceClient;
 pub const CANDIDATE_TEMPLATE: &str = "competition-candidate";
 /// The label of a round's herdr workspace: `multi-herdr-dataset <exp8>`.
 pub const WORKSPACE_LABEL: &str = "multi-herdr-dataset";
+
+/// The hidden teammate that judges a round.
+pub const JUDGE_TEAMMATE: &str = "judge";
 
 pub const ABORT_AFTER_WORKTREE: &str = "abort-after-worktree";
 pub const ABORT_AFTER_CANDIDATE_SPAWNED: &str = "abort-after-candidate-spawned";
@@ -109,6 +114,8 @@ pub struct Coordinator<'a, G: GitClient> {
     pub clock: &'a dyn Fn() -> DateTime<Utc>,
     pub sleep: &'a dyn Fn(Duration),
     pub faults: &'a Faults,
+    /// Starts a judge job: `DetachedLauncher(ctx)` in the binary.
+    pub launcher: &'a dyn JobLauncher,
 }
 
 /// One round's fixed inputs.
@@ -133,8 +140,6 @@ pub struct RoundSpec {
 /// Where a round ended up when [`Coordinator::drive`] returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoundOutcome {
-    /// The judge runs in the background; nothing is left for the coordinator.
-    JudgingBackground,
     /// The round is complete with a winner, or decided and handed to promotion.
     Decided,
     /// The round was rejected. `budget`: the budget cancelled or stopped a
@@ -988,33 +993,73 @@ impl<G: GitClient> Coordinator<'_, G> {
         Ok(())
     }
 
-    /// JUDGING_BACKGROUND: start the judge, then poll it each tick.
-    ///
-    /// B4 (U31 `b4-judge-job`) owns `competition/judging.rs`. Until it
-    /// merges, `judging_stub` stands in with the same signatures; the unit
-    /// that merges second swaps the stub for `crate::competition::judging`
-    /// and removes the `STUB` early return.
+    /// JUDGING_BACKGROUND: start the judge job, then poll it each tick
+    /// until the round is decided (B4, `competition::judging`). `poll` gets
+    /// wall-clock time: it compares heartbeats and file times. A judge bundle
+    /// that conflicts with one already on disk is never retried: the round
+    /// stops in NEEDS_INTERVENTION.
     fn judge(&self, spec: &RoundSpec) -> Result<RoundOutcome> {
-        let env = judging_stub::JudgeEnv {
+        let config = &spec.config;
+        let mut teammate = self.roster.require(JUDGE_TEAMMATE)?.clone();
+        teammate.model = Some(config.judge.model.clone());
+        teammate.effort = Some(config.judge.effort.clone()).filter(|e| !e.is_empty());
+        let env = JudgeEnv {
             ctx: self.ctx,
             recorder: self.recorder,
             paths: self.paths,
+            git: self.git,
             repo: &spec.repo,
             store: self.store,
+            judge: &teammate,
             task_text: &spec.task,
+            policy: &config.judge.policy,
+            promotion: match &config.promote_to {
+                Some(target) => PromotionIntent::Requested {
+                    target: target.clone(),
+                },
+                None => PromotionIntent::NotRequested,
+            },
+            timeout: Duration::from_secs(config.judge.timeout_s),
+            stale_after: DEFAULT_STALE_AFTER,
+            launcher: self.launcher,
             clock: self.clock,
         };
-        judging_stub::start(&env, &spec.round)?;
+        if let Err(e) = judging::start(&env, &spec.round) {
+            return self.judge_error(spec, e);
+        }
         loop {
-            match judging_stub::poll(&env, &spec.round, (self.clock)())? {
-                judging_stub::JudgingStatus::Waiting if judging_stub::STUB => {
-                    return Ok(RoundOutcome::JudgingBackground)
+            match judging::poll(&env, &spec.round, Utc::now()) {
+                Ok(JudgingStatus::Waiting) => (self.sleep)(spec.tick),
+                Ok(JudgingStatus::Decided(_) | JudgingStatus::NeedsIntervention) => {
+                    return self.decide(spec)
                 }
-                judging_stub::JudgingStatus::Waiting => (self.sleep)(spec.tick),
-                judging_stub::JudgingStatus::Decided(_)
-                | judging_stub::JudgingStatus::NeedsIntervention => return self.decide(spec),
+                Err(e) => return self.judge_error(spec, e),
             }
         }
+    }
+
+    /// A bundle conflict stops the round for the operator; any other error
+    /// stops the coordinator, and `resume` polls again.
+    fn judge_error(&self, spec: &RoundSpec, e: anyhow::Error) -> Result<RoundOutcome> {
+        let conflict = e.chain().any(|c| {
+            matches!(
+                c.downcast_ref::<FsxError>(),
+                Some(FsxError::Conflict { .. })
+            )
+        });
+        if !conflict {
+            return Err(e);
+        }
+        self.emit(
+            spec,
+            EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
+                reason: format!("judge bundle conflict: {e:#}"),
+                source: InterventionSource::Operator,
+            }),
+            format!("needs_intervention:{}", spec.round),
+            None,
+        )?;
+        Ok(RoundOutcome::NeedsIntervention)
     }
 
     // ── events ──────────────────────────────────────────────────────────
@@ -1065,51 +1110,6 @@ fn budget_stopped(view: &RoundView) -> bool {
             Some(FailureKind::Cancelled { reason }) if reason == CANCELLED_BUDGET
         )
     })
-}
-
-/// Stands in for `crate::competition::judging` (U31) until it merges. Same
-/// signatures: `start` records nothing, `poll` always says `Waiting`, and
-/// `STUB` makes the coordinator stop in JUDGING_BACKGROUND (exit 0).
-mod judging_stub {
-    use std::path::Path;
-
-    use anyhow::Result;
-    use chrono::{DateTime, Utc};
-
-    use crate::evaluation::winner::WinnerOutcome;
-    use crate::execution::store::ExecutionStore;
-    use crate::ids::RoundId;
-    use crate::measure::paths::DatasetPaths;
-    use crate::measure::recorder::JsonlRecorder;
-    use crate::runtime::RuntimeContext;
-
-    pub const STUB: bool = true;
-
-    #[allow(dead_code)]
-    pub struct JudgeEnv<'a> {
-        pub ctx: &'a RuntimeContext,
-        pub recorder: &'a JsonlRecorder,
-        pub paths: &'a DatasetPaths,
-        pub repo: &'a Path,
-        pub store: &'a ExecutionStore,
-        pub task_text: &'a str,
-        pub clock: &'a dyn Fn() -> DateTime<Utc>,
-    }
-
-    #[allow(dead_code)]
-    pub enum JudgingStatus {
-        Waiting,
-        Decided(WinnerOutcome),
-        NeedsIntervention,
-    }
-
-    pub fn start(_env: &JudgeEnv, _round: &RoundId) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn poll(_env: &JudgeEnv, _round: &RoundId, _now: DateTime<Utc>) -> Result<JudgingStatus> {
-        Ok(JudgingStatus::Waiting)
-    }
 }
 
 /// An `occurred_at` clock that never goes backwards and never repeats a

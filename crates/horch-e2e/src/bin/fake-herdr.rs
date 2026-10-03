@@ -38,9 +38,57 @@ const MUTATING: [&str; 7] = ["focus", "tile", "split", "move", "close", "swap", 
 
 fn main() {
     let mut call = Call::start("herdr");
+    // One call at a time reads and writes the state: concurrent calls (a
+    // coordinator and its workers) would otherwise lose each other's panes.
+    let lock = StateLock::acquire();
     let code = run(&mut call);
+    drop(lock);
     call.flush();
+    // Kill only after the state is saved and unlocked: a pane that closes
+    // itself kills this very process.
+    for pgid in std::mem::take(&mut *KILL.lock().unwrap()) {
+        kill_group(pgid);
+    }
     std::process::exit(code);
+}
+
+/// Process groups to kill once the call is done.
+static KILL: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// `$HORCH_FAKE_LOG.state.lock/`, a mkdir lock. A lock older than 10 s is
+/// left by a killed call and is taken over.
+struct StateLock(Option<PathBuf>);
+
+impl StateLock {
+    fn acquire() -> StateLock {
+        let Some(state) = state_path() else {
+            return StateLock(None);
+        };
+        let dir = state.with_extension("lock");
+        let start = std::time::Instant::now();
+        loop {
+            if std::fs::create_dir(&dir).is_ok() {
+                return StateLock(Some(dir));
+            }
+            let stale = std::fs::metadata(&dir)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > std::time::Duration::from_secs(10));
+            if stale || start.elapsed() > std::time::Duration::from_secs(30) {
+                let _ = std::fs::remove_dir(&dir);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.0 {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
 }
 
 fn state_path() -> Option<PathBuf> {
@@ -231,8 +279,8 @@ fn split_pane(state: &mut Value, from: &str) -> Value {
     pane
 }
 
-/// Remove a pane from the state and kill its process group, if `exec` started
-/// one. False when the pane is not in the state.
+/// Remove a pane from the state and queue its process group for the kill,
+/// if `exec` started one. False when the pane is not in the state.
 fn remove_pane(state: &mut Value, pane: &str) -> bool {
     let mut found = false;
     for ws in state["workspaces"].as_array_mut().into_iter().flatten() {
@@ -244,7 +292,7 @@ fn remove_pane(state: &mut Value, pane: &str) -> bool {
     }
     if let Some(pid) = state["pids"].as_object_mut().and_then(|m| m.remove(pane)) {
         if let Some(pid) = pid.as_u64() {
-            kill_group(pid);
+            KILL.lock().unwrap().push(pid);
         }
     }
     found
@@ -259,6 +307,9 @@ fn in_dataset_workspace(state: &Value, args: &[&str]) -> bool {
     let Some(target) = args.get(2) else {
         return false;
     };
+    // Pane ids are `<workspace>:p<n>`, so a pane that is already gone still
+    // names its workspace.
+    let ws = target.split(':').next().unwrap_or(target);
     state["workspaces"]
         .as_array()
         .into_iter()
@@ -267,10 +318,7 @@ fn in_dataset_workspace(state: &Value, args: &[&str]) -> bool {
             w["label"]
                 .as_str()
                 .is_some_and(|l| l.starts_with(DATASET_LABEL))
-                && (w["workspace_id"].as_str() == Some(target)
-                    || w["panes"]
-                        .as_array()
-                        .is_some_and(|p| p.iter().any(|p| p["pane_id"].as_str() == Some(target))))
+                && w["workspace_id"].as_str() == Some(ws)
         })
 }
 

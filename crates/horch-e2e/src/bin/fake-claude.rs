@@ -230,8 +230,22 @@ fn judge_mode(mut call: Call) {
     }
 }
 
-/// The bundle labels from `manifest.json` in the judge's cwd.
+/// The bundle labels from `manifest.json` in the judge's cwd, eligible ones
+/// first (each `candidates/<L>/validation.json` says), so a `valid` answer
+/// picks a winner that can win.
 fn labels(cwd: &std::path::Path) -> Vec<String> {
+    let mut labels = manifest_labels(cwd);
+    let eligible = |l: &String| {
+        std::fs::read_to_string(cwd.join("candidates").join(l).join("validation.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .is_none_or(|v| v["eligible"] != false)
+    };
+    labels.sort_by_key(|l| !eligible(l));
+    labels
+}
+
+fn manifest_labels(cwd: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(cwd.join("manifest.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -289,6 +303,9 @@ fn write_transcript(argv: &[String], usage: &Value) {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
+    // A file name has at most 255 bytes; a worktree under a temp dir is
+    // longer. horch finds the session file in any project dir.
+    let slug = &slug[slug.len().saturating_sub(200)..];
     let dir = home.join(".claude/projects").join(slug);
     let _ = std::fs::create_dir_all(&dir);
     let line = json!({

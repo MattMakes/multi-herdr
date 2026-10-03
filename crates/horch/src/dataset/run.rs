@@ -12,6 +12,7 @@ use horch_core::clock;
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::config::{self, DatasetConfig, JudgeMode, RunFlags, Strategy};
 use horch_core::competition::coordinator::{monotonic, Coordinator, RoundOutcome, RoundSpec};
+use horch_core::competition::judging::DetachedLauncher;
 use horch_core::competition::model::RoundState;
 use horch_core::competition::observe::{self, TelemetryUsage};
 use horch_core::competition::planner::{plan_round, PlanInput, RoundPlan};
@@ -227,8 +228,8 @@ struct Round<'a> {
 }
 
 /// Run the round through the coordinator and map where it ended to an exit
-/// code: 0 judging or decided, 3 the budget stopped it, 5 needs the
-/// operator, 6 rejected. A fault point aborts the process.
+/// code: 0 decided, 3 the budget stopped it, 5 needs the operator, 6
+/// rejected. The coordinator waits for the judge job. A fault point aborts the process.
 fn coordinate(
     ctx: &RuntimeContext,
     paths: &DatasetPaths,
@@ -310,6 +311,7 @@ fn coordinate(
         clock: &clock,
         sleep: &sleep,
         faults: &ctx.settings.faults,
+        launcher: &DetachedLauncher(ctx),
     };
     let spec = RoundSpec {
         experiment: r.experiment.clone(),
@@ -339,7 +341,6 @@ fn coordinate(
     };
     coordinator.close_workspace(&spec);
     let (line, code) = match outcome {
-        RoundOutcome::JudgingBackground => ("JUDGING_BACKGROUND: the judge decides", exit::SUCCESS),
         RoundOutcome::Decided => ("DECIDED", exit::SUCCESS),
         RoundOutcome::Rejected { budget: true } => (
             "REJECTED: the budget stopped the candidates",
