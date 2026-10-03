@@ -265,6 +265,7 @@ pub(crate) fn start_harvest(
         .map(|p| p.to_string())
         .unwrap_or_default();
     let sessions_dir = codex::sessions_dir(&ctx.paths.home);
+    let opencode_bin = ctx.bins.harness.opencode.clone();
     let log_path = mailbox.harvest_log(&brief.role);
     let role = brief.role.clone();
     let record_id = brief.record_id.clone();
@@ -289,7 +290,7 @@ pub(crate) fn start_harvest(
                 // concurrently spawned worker. Codex records sessions as
                 // rollout files; OpenCode answers `session list`.
                 let candidates: Vec<String> = match agent {
-                    Agent::OpenCode => opencode::find_sessions(&project_dir, since)
+                    Agent::OpenCode => opencode::find_sessions(&opencode_bin, &project_dir, since)
                         .into_iter()
                         .map(|c| c.session_id)
                         .collect(),
