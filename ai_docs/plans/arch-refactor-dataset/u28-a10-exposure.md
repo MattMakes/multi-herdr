@@ -48,8 +48,12 @@ own:
   (`prepare` exposes the plan)
 - `crates/horch-core/src/roster/validation.rs` and `skills/selection.rs`
   (accept a catalog that includes the lock)
-- `crates/horch/src/cmd/worker.rs`, `crates/horch/src/cmd/recipes.rs`
-  (pass `data_root` and the catalog; minimal edits)
+- NOT `crates/horch/src/cmd/worker.rs` or `cmd/recipes.rs`: U26
+  `a6b-service` rewrites them in parallel. The harness launch flow
+  (`harness/launch.rs`) already receives the `RuntimeContext`; build the
+  catalog from `ctx.paths.data_root` there (or in `skills/`), so the CLI
+  files need no change. If you cannot avoid a CLI edit, send `QUESTION:`.
+- `crates/horch-core/src/harness/launch.rs` (catalog from context)
 - `crates/horch-core/tests/arch_scan.rs` (remove the `skills.rs` PENDING entry; add the SKL-05 scan)
 - `crates/horch-e2e/src/bin/fake-*.rs` (add the `inspect_skills` scenario)
 - `crates/horch-e2e/tests/skills_exposure.rs` (new)
@@ -72,7 +76,10 @@ green), routing, workspace, measure, competition.
    The bundle dir name is the execution id (validated as a path component).
 3. Marketplace skills: catalog = `SkillCatalog::installed(data_root)`
    (bundled + lock); roster validation and `skills::selected` accept ids in
-   that catalog. `worker.rs` and `recipes.rs` pass it.
+   that catalog. The harness launch flow builds it from the context.
+   Read `ai_docs/reports/arch-refactor-dataset/a4-harness.md`:
+   `HARNESS_MATCH_PENDING = ["skills.rs"]` must become empty;
+   `SkillExposure` is ready on `Capabilities`; `Prepared` is not `Send`.
 4. Fakes: an `inspect_skills` scenario in every fake that writes the skill
    dirs, flags and env it received (for Codex, the files under its
    `CODEX_HOME`) to `$HORCH_FAKE_LOG.skills.json`.
