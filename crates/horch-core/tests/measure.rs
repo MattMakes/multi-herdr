@@ -229,7 +229,9 @@ fn sample_kinds() -> Vec<EventKind> {
             target: "main".into(),
             dest_before: "a".repeat(40),
             planned_after: "b".repeat(40),
-            strategy: json!("fast_forward"),
+            strategy: horch_core::competition::promotion::PromotionStrategy::FastForward,
+            publish: "update_ref_cas".into(),
+            validation_ids: vec!["v-1".into()],
         }),
         EventKind::PromotionCompleted(PromotionCompleted {
             receipt_digest: dg("receipt"),
@@ -259,6 +261,9 @@ fn sample_kinds() -> Vec<EventKind> {
         EventKind::RoundCleanupStarted(RoundCleanupStarted {}),
         EventKind::RoundCompleted(RoundCompleted {
             final_outcome: FinalOutcome::Winner,
+        }),
+        EventKind::OperatorPromote(OperatorPromote {
+            target: "main".into(),
         }),
     ]
 }
@@ -912,7 +917,9 @@ fn decide(fates: &[Fate], judge_fails: u32, promote: bool) -> (Script, FinalOutc
                 target: "main".into(),
                 dest_before: "a".repeat(40),
                 planned_after: "b".repeat(40),
-                strategy: json!("fast_forward"),
+                strategy: horch_core::competition::promotion::PromotionStrategy::FastForward,
+                publish: "update_ref_cas".into(),
+                validation_ids: vec!["v-1".into()],
             }),
             None,
         );

@@ -449,6 +449,16 @@ fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Resul
             r.promotion.completed = Some(c);
             r.state = to;
         }
+        EventKind::OperatorPromote(_) => {
+            // Back to DECIDED, and on to revalidate at once, as a
+            // `winner.selected` with a requested promotion does.
+            let to = step(r.state, RoundEvent::OperatorPromote)?;
+            let to = step(to, RoundEvent::PromotionRequested)?;
+            if r.winner.is_none() {
+                return Err(format!("{name} for a round without a winner"));
+            }
+            r.state = to;
+        }
         EventKind::PromotionRolledBack(rb) => {
             let to = step(r.state, RoundEvent::PromotionRolledBack)?;
             r.promotion.rolled_back.push(rb);

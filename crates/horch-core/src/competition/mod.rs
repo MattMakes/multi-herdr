@@ -7,4 +7,5 @@ pub mod diversity;
 pub mod model;
 pub mod planner;
 pub mod preflight;
+pub mod promotion;
 pub mod state;
