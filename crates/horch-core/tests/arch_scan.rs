@@ -160,3 +160,101 @@ fn arc_05_scan_skips_tests_and_comments() {
     std::fs::remove_dir_all(&tmp).unwrap();
     assert_eq!(lines, vec![(2, "fn a() {}".to_string())]);
 }
+
+/// Code that matches on text that looks like error text, each with the
+/// reason it is not a Rust error value. Do not add entries without a reason.
+///
+/// - `horch-core/telemetry/readers.rs`, `FreeUsageLimitError`: the `error`
+///   field of an OpenCode message row is external data from OpenCode's
+///   database, not an error this code produced. Its name is the only signal.
+const ALLOWED: &[(&str, &str)] = &[("horch-core/telemetry/readers.rs", "FreeUsageLimitError")];
+
+/// The needle in `line` that matches on an error's text, if any.
+fn error_text_match(line: &str) -> Option<&'static str> {
+    const RECEIVERS: [&str; 5] = ["e", "err", "error", "why", "cause"];
+    if line.contains(".to_string().contains(") {
+        return Some(".to_string().contains(");
+    }
+    if line.contains("format!(\"{") && line.contains("\").contains(") {
+        return Some("format!(\"{..}\").contains(");
+    }
+    if line.contains(".contains(\"error") {
+        return Some(".contains(\"error");
+    }
+    let mut rest = line;
+    while let Some(at) = rest.find(".to_string() ==") {
+        let receiver = rest[..at]
+            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or_default();
+        if RECEIVERS.contains(&receiver) {
+            return Some(".to_string() ==");
+        }
+        rest = &rest[at + 1..];
+    }
+    None
+}
+
+/// Application code branches on typed errors, never on their message text:
+/// a reworded message must not change behavior (ARC-22).
+#[test]
+fn arc_22_no_error_string_matching() {
+    let mut found = Vec::new();
+    let mut allowed_used = Vec::new();
+    let mut scanned = 0;
+    for name in ["horch-core", "horch"] {
+        let root = crate_src(name);
+        let mut files = Vec::new();
+        rust_files(&root, &mut files);
+        scanned += files.len();
+        for path in &files {
+            let rel = format!("{name}/{}", relative(path, &root));
+            for (n, line) in code_lines(path) {
+                let Some(needle) = error_text_match(&line) else {
+                    continue;
+                };
+                if let Some(entry) = ALLOWED
+                    .iter()
+                    .find(|(file, text)| *file == rel && line.contains(text))
+                {
+                    allowed_used.push(*entry);
+                    continue;
+                }
+                found.push(format!("{rel}:{n}: {needle}: {}", line.trim()));
+            }
+        }
+    }
+    assert!(scanned > 40, "scanned only {scanned} files");
+    assert!(
+        found.is_empty(),
+        "matching on error text outside tests:\n{}",
+        found.join("\n")
+    );
+    for entry in ALLOWED {
+        assert!(
+            allowed_used.contains(entry),
+            "ALLOWED entry {entry:?} matches nothing any more; remove it"
+        );
+    }
+}
+
+/// The ARC-22 matcher's own cases.
+#[test]
+fn arc_22_matcher_finds_error_text_checks() {
+    for hit in [
+        "if e.to_string().contains(\"not found\") {",
+        "if format!(\"{e:#}\").contains(\"locked\") {",
+        "if err.to_string() == \"boom\" {",
+        "Err(why) if why.to_string() == \"x\" => {}",
+        "if msg.contains(\"error: no such pane\") {",
+    ] {
+        assert!(error_text_match(hit).is_some(), "missed: {hit}");
+    }
+    for miss in [
+        "if role.to_string() == wanted {",
+        "reason: why.to_string(),",
+        "if line.contains(\"not installed\") {",
+    ] {
+        assert_eq!(error_text_match(miss), None, "false hit: {miss}");
+    }
+}
