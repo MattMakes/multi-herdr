@@ -1450,3 +1450,50 @@ fn mea_11_fake_lifecycle_replays_identical_worker_run() {
         "WorkerRun 1.0.0 changed. Never re-bless: a format change bumps schema_version"
     );
 }
+
+// ─── CMP-02: the domain has no adapters ─────────────────────────────────────
+
+#[test]
+fn cmp_02_domain_has_no_adapter_imports() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let forbidden = [
+        "std::process",
+        "Command",
+        "herdr",
+        "workspace::",
+        "launch::",
+        "vcs::",
+        "std::env",
+        "std::fs",
+    ];
+    // store.rs and recorder.rs are adapters and are exempt.
+    for file in [
+        "competition/model.rs",
+        "measure/event.rs",
+        "measure/projection.rs",
+        "measure/worker_run.rs",
+    ] {
+        let text = std::fs::read_to_string(src.join(file)).unwrap();
+        for word in forbidden {
+            assert!(!text.contains(word), "{file} contains {word:?}");
+        }
+    }
+}
+
+#[test]
+fn candidate_labels_are_anonymous_letters() {
+    use horch_core::competition::model::CandidateLabel;
+    let got: Vec<String> = [0, 1, 25, 26, 27, 701, 702]
+        .into_iter()
+        .map(|i| CandidateLabel::from_index(i).to_string())
+        .collect();
+    assert_eq!(got, ["A", "B", "Z", "AA", "AB", "ZZ", "AAA"]);
+    for bad in ["", "a", "A1", "sonnet"] {
+        assert!(CandidateLabel::new(bad).is_err(), "{bad:?}");
+    }
+    assert!(serde_json::from_str::<CandidateLabel>(r#""opus""#).is_err());
+    assert_eq!(
+        serde_json::to_string(&CandidateLabel::new("C").unwrap()).unwrap(),
+        r#""C""#
+    );
+}
