@@ -172,8 +172,23 @@ impl<'a, G: GitClient> WorktreeManager<'a, G> {
         };
         let message = format!("candidate {} frozen", spec.label);
         self.git.commit_all(&path, &message, &id)?;
+        // The candidate controls its worktree, including its `.git` file, so
+        // everything recorded is read from the main repository: the branch
+        // tip there must be what the worktree reports.
         let head_sha = self.git.head(&path)?;
-        if !self.git.is_ancestor(&path, &spec.base_sha, &head_sha)? {
+        let tip = self
+            .git
+            .rev_parse(&spec.repo, &format!("refs/heads/{branch}"))?;
+        if tip.as_deref() != Some(head_sha.as_str()) {
+            bail!(
+                "candidate {} worktree reports {head_sha}, but {branch} in {} is at {}",
+                spec.label,
+                spec.repo.display(),
+                tip.as_deref().unwrap_or("nothing")
+            );
+        }
+        let repo = &spec.repo;
+        if !self.git.is_ancestor(repo, &spec.base_sha, &head_sha)? {
             bail!(
                 "candidate {} head {head_sha} does not contain base {}",
                 spec.label,
@@ -186,8 +201,8 @@ impl<'a, G: GitClient> WorktreeManager<'a, G> {
             worktree: path.clone(),
             branch,
             base_sha: spec.base_sha.clone(),
-            numstat: self.git.diff_numstat(&path, &spec.base_sha, &head_sha)?,
-            diff_digest: self.git.diff_digest(&path, &spec.base_sha, &head_sha)?,
+            numstat: self.git.diff_numstat(repo, &spec.base_sha, &head_sha)?,
+            diff_digest: self.git.diff_digest(repo, &spec.base_sha, &head_sha)?,
             head_sha,
             frozen_at,
         })
