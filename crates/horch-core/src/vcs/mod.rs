@@ -3,3 +3,4 @@
 //! built on it.
 
 pub mod git;
+pub mod worktree;
