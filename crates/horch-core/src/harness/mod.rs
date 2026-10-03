@@ -179,6 +179,36 @@ pub fn generic_validate<H: Harness + ?Sized>(harness: &H, t: &Teammate) -> Vec<&
     out
 }
 
+/// A workdir as session discovery compares it: equal as written, or equal
+/// after resolving symlinks. A herdr pane's cwd and the path an agent
+/// records can differ by `/var` versus `/private/var` (or `/tmp` versus
+/// `/private/tmp`) on macOS, and a string compare would silently find
+/// nothing.
+#[derive(Debug, Clone)]
+pub struct Workdir {
+    raw: PathBuf,
+    canonical: Option<PathBuf>,
+}
+
+impl Workdir {
+    pub fn new(path: impl Into<PathBuf>) -> Workdir {
+        let raw = path.into();
+        let canonical = std::fs::canonicalize(&raw).ok();
+        Workdir { raw, canonical }
+    }
+
+    /// Whether `recorded`, a directory an agent wrote down, is this one.
+    pub fn matches(&self, recorded: &Path) -> bool {
+        if recorded == self.raw {
+            return true;
+        }
+        match (&self.canonical, std::fs::canonicalize(recorded).ok()) {
+            (Some(a), Some(b)) => *a == b,
+            _ => false,
+        }
+    }
+}
+
 /// Which CLI a teammate launches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

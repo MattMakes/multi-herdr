@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 
 use super::launch::model_for;
-use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session};
+use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, Workdir};
 use crate::runtime::RuntimeContext;
 use crate::teammates::Teammate;
 
@@ -29,7 +29,8 @@ pub struct SessionCandidate {
 /// newest first.
 ///
 /// The directory check is what keeps two projects' concurrent OpenCode sessions
-/// apart, exactly as the cwd check does for codex rollouts.
+/// apart, exactly as the cwd check does for codex rollouts. Directories
+/// compare canonically ([`Workdir`]).
 pub fn find_sessions(bin: &Path, project_dir: &str, since: SystemTime) -> Vec<SessionCandidate> {
     let output = Command::new(bin)
         .args(["session", "list", "--format", "json"])
@@ -54,9 +55,14 @@ pub fn parse_sessions(json: &str, project_dir: &str, since: SystemTime) -> Vec<S
     // filesystems while OpenCode records milliseconds, so a session created in
     // the same second as the marker would otherwise be missed.
     let since = since - Duration::from_secs(1);
+    let workdir = Workdir::new(project_dir);
     let mut found: Vec<SessionCandidate> = records
         .iter()
-        .filter(|r| same_directory(r.get("directory").and_then(|d| d.as_str()), project_dir))
+        .filter(|r| {
+            r.get("directory")
+                .and_then(|d| d.as_str())
+                .is_some_and(|d| workdir.matches(Path::new(d)))
+        })
         .filter_map(|r| {
             let created = millis(r.get("created")?)?;
             Some(SessionCandidate {
@@ -68,25 +74,6 @@ pub fn parse_sessions(json: &str, project_dir: &str, since: SystemTime) -> Vec<S
         .collect();
     found.sort_by_key(|c| std::cmp::Reverse(c.created));
     found
-}
-
-/// Whether a record's directory is the project this worker runs in.
-///
-/// Compared after resolving symlinks when possible: a herdr pane's cwd and the
-/// path OpenCode records can differ by `/tmp` versus `/private/tmp` on macOS,
-/// and a string compare would silently find nothing.
-fn same_directory(recorded: Option<&str>, project_dir: &str) -> bool {
-    let Some(recorded) = recorded else {
-        return false;
-    };
-    if recorded == project_dir {
-        return true;
-    }
-    let canonical = |p: &str| std::fs::canonicalize(Path::new(p)).ok();
-    match (canonical(recorded), canonical(project_dir)) {
-        (Some(a), Some(b)) => a == b,
-        _ => false,
-    }
 }
 
 fn millis(value: &serde_json::Value) -> Option<SystemTime> {

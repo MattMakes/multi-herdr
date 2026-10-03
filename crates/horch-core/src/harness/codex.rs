@@ -28,7 +28,7 @@ use anyhow::{bail, Context, Result};
 use super::launch::model_for;
 use super::{
     generic_validate, CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared,
-    Session,
+    Session, Workdir,
 };
 use crate::prompts;
 use crate::runtime::RuntimeContext;
@@ -336,22 +336,28 @@ pub struct RolloutCandidate {
 /// Rollout files created after `since` whose head names `project_dir` as its cwd,
 /// newest first.
 ///
-/// The cwd check is what keeps two projects' concurrent codex sessions apart; the
-/// bash version grepped the first 16KB for the same JSON fragment.
+/// The cwd check is what keeps two projects' concurrent codex sessions apart.
+/// Each `"cwd"` value in the first 16KB is compared canonically
+/// ([`Workdir`]), so `/var/...` finds a session recorded as `/private/var/...`.
 pub fn find_rollouts(
     sessions_dir: &Path,
     project_dir: &str,
     since: SystemTime,
 ) -> Vec<RolloutCandidate> {
-    let needle = format!("\"cwd\":{}", serde_json::Value::from(project_dir));
+    let workdir = Workdir::new(project_dir);
     let mut found = Vec::new();
-    collect_rollouts(sessions_dir, since, &needle, &mut found);
+    collect_rollouts(sessions_dir, since, &workdir, &mut found);
     // Newest first, matching `ls -t`.
     found.sort_by(|a, b| b.modified.cmp(&a.modified));
     found
 }
 
-fn collect_rollouts(dir: &Path, since: SystemTime, needle: &str, out: &mut Vec<RolloutCandidate>) {
+fn collect_rollouts(
+    dir: &Path,
+    since: SystemTime,
+    workdir: &Workdir,
+    out: &mut Vec<RolloutCandidate>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -359,7 +365,7 @@ fn collect_rollouts(dir: &Path, since: SystemTime, needle: &str, out: &mut Vec<R
         let path = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_dir() {
-            collect_rollouts(&path, since, needle, out);
+            collect_rollouts(&path, since, workdir, out);
             continue;
         }
         if !meta.is_file() {
@@ -377,7 +383,7 @@ fn collect_rollouts(dir: &Path, since: SystemTime, needle: &str, out: &mut Vec<R
         let Some(session_id) = session_id_from_rollout(name) else {
             continue;
         };
-        if !head_contains(&path, needle) {
+        if !head_names_cwd(&path, workdir) {
             continue;
         }
         out.push(RolloutCandidate {
@@ -388,8 +394,8 @@ fn collect_rollouts(dir: &Path, since: SystemTime, needle: &str, out: &mut Vec<R
     }
 }
 
-/// Does the first 16KB of `path` contain `needle`?
-fn head_contains(path: &Path, needle: &str) -> bool {
+/// Does the first 16KB of `path` record `workdir` as a `"cwd"`?
+fn head_names_cwd(path: &Path, workdir: &Workdir) -> bool {
     use std::io::Read;
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;
@@ -399,7 +405,15 @@ fn head_contains(path: &Path, needle: &str) -> bool {
         return false;
     };
     buf.truncate(read);
-    String::from_utf8_lossy(&buf).contains(needle)
+    let head = String::from_utf8_lossy(&buf);
+    head.match_indices("\"cwd\":").any(|(i, key)| {
+        let rest = head[i + key.len()..].trim_start();
+        serde_json::Deserializer::from_str(rest)
+            .into_iter::<String>()
+            .next()
+            .and_then(|v| v.ok())
+            .is_some_and(|cwd| workdir.matches(Path::new(&cwd)))
+    })
 }
 
 /// The codex adapter.
