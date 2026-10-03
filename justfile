@@ -121,6 +121,11 @@ verify:
     rustfmt --edition 2021 --check $(git diff --name-only --diff-filter=AM main -- '*.rs')
     HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check
 
+# The per-commit gate for the arch-refactor-dataset branch
+# (ai_docs/plans/arch-refactor-dataset/00-master-plan.md, section 5).
+gate:
+    ./scripts/phase-gate.sh
+
 # NFR-02: the collector's tick and cold-start budgets over a generated 1 GB
 # corpus. Slow; not part of `verify`.
 verify-perf:

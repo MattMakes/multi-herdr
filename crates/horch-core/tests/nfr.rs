@@ -180,6 +180,32 @@ fn nfr_11_no_proptest() {
     assert_no_workspace_dep(&["proptest", "quickcheck"], &[], "NFR-11: in-repo PRNG");
 }
 
+/// NFR-08: `just gate` (scripts/phase-gate.sh) runs every check of the
+/// master plan's section 5, in order.
+#[test]
+fn nfr_08_phase_gate_runs_every_check() {
+    let gate = std::fs::read_to_string(repo().join("scripts/phase-gate.sh")).unwrap();
+    let mut from = 0;
+    for check in [
+        "cargo fmt --all --check",
+        "cargo build --workspace --all-targets",
+        "cargo build --workspace --bins",
+        "cargo test --workspace",
+        "HORCH_TEAMMATES_DIR=teammates",
+        "teammates --check",
+        "scripts/check-req-coverage.sh",
+        "scripts/check-deps.sh",
+        "scripts/verify-telemetry-e2e.sh",
+        "GATE GREEN",
+    ] {
+        let at = gate[from..]
+            .find(check)
+            .unwrap_or_else(|| panic!("phase-gate.sh lacks '{check}' (in order)"));
+        from += at + check.len();
+    }
+    assert!(gate.contains("set -euo pipefail"));
+}
+
 /// NFR-02: a steady-state tick over 50 live sessions under 200 ms, and a cold
 /// start under 30 s. Generates a corpus of `HORCH_PERF_MB` (default 1024) MB.
 /// Run with `just verify-perf`.
