@@ -10,8 +10,8 @@ use horch_core::herdr::Herdr;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::arrange;
 
-/// `horch spawn` and `horch layout` still reach these through this module.
-pub use horch_core::workspace::arrange::{after_change, settle_after_close, workspace_of};
+/// `horch spawn` still reaches this through this module.
+pub use horch_core::workspace::arrange::after_change;
 
 use crate::output;
 
@@ -27,7 +27,7 @@ pub fn tile(
         std::thread::sleep(Duration::from_millis(settle_ms));
     }
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let workspace_id = workspace_of(ctx, &herdr, pane, workspace)?;
+    let workspace_id = arrange::workspace_of(ctx, &herdr, pane, workspace)?;
     let out = arrange::run(ctx, &herdr, &workspace_id, None, plan_only)?;
     output::print(&out);
     Ok(())

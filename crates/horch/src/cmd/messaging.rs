@@ -8,12 +8,14 @@
 //! switched panes and typed it by hand.
 
 use anyhow::{bail, Context, Result};
+use horch_core::execution::lifecycle::{self, DoneRequest, DoneSteps, ReportTarget};
 use horch_core::herdr::Herdr;
 use horch_core::ledger::Ledger;
 use horch_core::mailbox::Mailbox;
 use horch_core::message;
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
+use horch_core::workspace::arrange;
 
 use crate::output;
 
@@ -99,11 +101,8 @@ pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
 }
 
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
-/// while waiting on a question).
-///
-/// Ordering matters: the ledger write, the DONE report and the mailbox cleanup all
-/// happen BEFORE the pane close, because closing the pane kills this very process
-/// tree. The underlying agent session stays on disk and resumable.
+/// while waiting on a question). The order of the steps is
+/// [`lifecycle::done`]'s.
 pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
     let record_id = require_env("HORCH_RECORD_ID", worker_var(ctx, |w| &w.record_id))?;
     let role = require_env("HORCH_ROLE", worker_var(ctx, |w| &w.role))?;
@@ -112,40 +111,44 @@ pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
         ctx.herdr.pane.as_ref().map(|p| p.to_string()),
     )
     .context("horch done must run inside a herdr pane")?;
-
-    // `done` adds the tag and keyword itself; a summary that repeats them would
-    // arrive as `[r] DONE: [r] DONE: ...`.
-    let summary = message::strip_done_prefix(summary, &role);
-    Ledger::open_in(ctx)?.done(&record_id, summary)?;
+    let workspace = ctx.herdr.workspace.as_ref().map(|w| w.to_string());
 
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    if let Err(e) = tell(ctx, "orchestrator", &format!("[{role}] DONE: {summary}")) {
-        eprintln!(
-            "horch done: could not reach orchestrator ({e:#}); ledger is updated, \
-             shutting down anyway"
-        );
+    lifecycle::done(
+        &herdr,
+        &CliDone { ctx },
+        &DoneRequest {
+            record_id: &record_id,
+            role: &role,
+            pane: &pane_env,
+            workspace: workspace.as_deref(),
+            summary,
+            report_to: ReportTarget::Orchestrator,
+        },
+    )
+}
+
+/// The `done` steps against this process's ledger, mailbox and workspace.
+struct CliDone<'a> {
+    ctx: &'a RuntimeContext,
+}
+
+impl DoneSteps for CliDone<'_> {
+    fn mark_done(&self, record_id: &str, summary: &str) -> Result<()> {
+        Ledger::open_in(self.ctx)?.done(record_id, summary)
     }
 
-    let pane = herdr.pane_get(&pane_env)?;
-    let workspace = ctx
-        .herdr
-        .workspace
-        .as_ref()
-        .map(|w| w.to_string())
-        .or_else(|| pane.workspace_id.clone())
-        .context("could not resolve this pane's workspace")?;
+    fn report(&self, line: &str) -> Result<()> {
+        tell(self.ctx, "orchestrator", line)
+    }
 
-    Mailbox::in_context(ctx, &workspace).unregister(&role);
+    fn unregister(&self, workspace: &str, role: &str) {
+        Mailbox::in_context(self.ctx, workspace).unregister(role);
+    }
 
-    // A departing worker leaves a hole and hands its width to whichever neighbour
-    // happens to be its split sibling, which lumps the grid rather than spreading
-    // it. Hand the tidy to a detached child: the close below kills this process
-    // tree, so by the time the hole exists, this process is gone. The child pulls
-    // the last worker into the free slot, and an overflow tab that lost its last
-    // worker closes itself.
-    crate::cmd::tilecmd::settle_after_close(ctx, &workspace);
-
-    herdr.pane_close(&pane.pane_id)
+    fn settle(&self, workspace: &str) {
+        arrange::settle_after_close(self.ctx, workspace);
+    }
 }
 
 /// Record this pane's public id under `role` so other panes can address it.
