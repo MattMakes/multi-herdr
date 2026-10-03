@@ -76,7 +76,7 @@ fn oracles() -> PathBuf {
 /// Teammates added after the A0 freeze. They have no oracle file and the
 /// oracle loop skips them; a missing file for any other teammate still
 /// fails. Never give one of these an oracle file.
-const SKIP_NEW_TEAMMATES: &[&str] = &["judge"];
+const SKIP_NEW_TEAMMATES: &[&str] = &["antigravity", "judge"];
 
 fn is_hex(s: &str) -> bool {
     s.bytes()

@@ -1,6 +1,6 @@
 //! End-to-end: a worker's whole life through the real `horch` binary.
 //!
-//! - ARC-26: for each of the 5 harnesses, a fresh spawn, the session found
+//! - ARC-26: for each of the 6 harnesses, a fresh spawn, the session found
 //!   (minted by horch or discovered from the harness), `horch done`, then
 //!   `horch spawn --resume` reusing that session.
 //! - ARC-16: a failed pane split and a crash after the insert leave no
@@ -121,7 +121,11 @@ fn launch_naming(h: &Harness, fake: &str, needle: &str) -> Option<Value> {
 /// Fresh spawn → session known → done → resume on the same session.
 fn lifecycle(harness: &str, teammate: &str, fake: &str) {
     let h = fleet(&format!("arc26-{harness}"), "exec,stay");
+    lifecycle_in(h, harness, teammate, fake);
+}
 
+/// [`lifecycle`] in a harness the caller has set up.
+fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
     let pane = spawn(&h, &[teammate, "build the thing"]);
     let fresh = records(&h)
         .into_iter()
@@ -190,6 +194,71 @@ fn arc_26_e2e_lifecycle_matrix_pi() {
 #[test]
 fn arc_26_e2e_lifecycle_matrix_prime() {
     lifecycle("prime", "prime", "prime");
+}
+
+/// `fake-antigravity` as `agy` in this harness's `bin/`, named by
+/// `HORCH_ANTIGRAVITY_BIN`.
+fn with_agy(h: &mut Harness) {
+    let name = format!("agy{}", std::env::consts::EXE_SUFFIX);
+    let built =
+        horch_e2e::bin_dir().join(format!("fake-antigravity{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(&built, h.bin.join(&name)).expect("fake-antigravity is built");
+    let bin = h.bin.join(name).to_string_lossy().into_owned();
+    h.set("HORCH_ANTIGRAVITY_BIN", bin);
+}
+
+/// agy mints its own conversation id; horch reads it back from the session
+/// cache and resumes it with `--conversation`.
+#[test]
+fn arc_26_e2e_lifecycle_matrix_antigravity() {
+    let mut h = fleet("arc26-antigravity", "exec,stay");
+    with_agy(&mut h);
+    lifecycle_in(h, "antigravity", "antigravity", "antigravity");
+}
+
+/// The keys that move agy off the operator's Google login never reach an
+/// agy child, even when the worker's own environment holds them.
+#[test]
+fn antigravity_child_never_receives_a_forbidden_key() {
+    const KEYS: [&str; 4] = [
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GEMINI_BASE_URL",
+    ];
+    let mut h = fleet("agy-env", "default");
+    with_agy(&mut h);
+    let pane = spawn(&h, &["antigravity", "build the thing"]);
+    let role = records(&h)[0]["role"].as_str().unwrap().to_string();
+    let mut worker = h.horch(&["worker", &role]);
+    worker.env("HERDR_PANE_ID", &pane);
+    for key in KEYS {
+        worker.env(key, "must-not-leak");
+    }
+    let out = worker.output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+
+    let agy = h
+        .calls_of("antigravity")
+        .into_iter()
+        .last()
+        .expect("the worker launched agy");
+    let keys: Vec<String> = serde_json::from_value(agy["env_keys"].clone()).unwrap();
+    for key in KEYS {
+        assert!(
+            !keys.iter().any(|k| k == key),
+            "{key} reached agy: {keys:?}"
+        );
+    }
+    // fake-antigravity flags each of them as a violation too.
+    assert_eq!(agy["violations"], serde_json::json!([]), "{agy}");
+    let argv: Vec<String> = serde_json::from_value(agy["argv"].clone()).unwrap();
+    assert_eq!(&argv[..2], ["--model", "gemini-3-1-pro"], "{argv:?}");
+    assert!(
+        argv.windows(2).any(|w| w == ["--effort", "medium"]),
+        "{argv:?}"
+    );
+    assert_eq!(argv[argv.len() - 2], "--prompt-interactive", "{argv:?}");
 }
 
 // ─── ARC-16 ─────────────────────────────────────────────────────────────────

@@ -141,6 +141,24 @@ pub(crate) const PRIME: Capabilities = Capabilities {
     local_model: false,
 };
 
+/// Antigravity CLI (`agy`). It mints its own conversation ids and has no
+/// flag or environment variable that points it at a skills directory: it
+/// reads only the operator's global skills and the workspace `.agents/`, both
+/// shared state. So it exposes no bundled skills.
+pub(crate) const ANTIGRAVITY: Capabilities = Capabilities {
+    caller_minted_session: false,
+    resumes: true,
+    effort: &["low", "medium", "high"],
+    daemon: false,
+    exec_policy: false,
+    skill_exposure: SkillExposure::None,
+    tool_lists: false,
+    tool_denylist: false,
+    headless: false,
+    footprint_bytes: HARNESS_FOOTPRINT_BYTES,
+    local_model: false,
+};
+
 pub(crate) const NONE: Capabilities = Capabilities {
     caller_minted_session: false,
     resumes: false,

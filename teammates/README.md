@@ -155,6 +155,7 @@ confidentiality as much as on capability:
 |---|---|---|
 | `sonnet` `opus` `codex-*` `prime` | money | anything the project already trusts these providers with |
 | `opencode-*` | **your prompts** | public and open-source work only |
+| `antigravity` | **your prompts**, until the operator confirms the opt-out | public and open-source work only |
 | `pi` | your own GPU | anything, including what must not leave the machine |
 
 ## Effort: set by role, stated in every file

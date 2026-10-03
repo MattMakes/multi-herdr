@@ -595,7 +595,7 @@ mod tests {
                             .any(|p| p == &serde_json::json!(bundle.skills_dir())));
                     }
                     HarnessKind::Codex => assert!(!args.contains(&"--skill".into())),
-                    HarnessKind::None => unreachable!(),
+                    HarnessKind::Antigravity | HarnessKind::None => unreachable!(),
                 }
             }
         }

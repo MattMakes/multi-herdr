@@ -210,6 +210,39 @@ fn skl_06_e2e_exposure_prime() {
     assert_eq!(strings(&r["flags"]).len(), 2, "1 --skill: {r}");
 }
 
+/// agy has no way to be pointed at a skills directory, so horch exposes
+/// none to it. A teammate that names skills is refused before any pane
+/// exists, instead of launching a worker that silently lacks them.
+#[test]
+fn skl_06_e2e_exposure_antigravity() {
+    let h = world(
+        "skl06ag",
+        "skl-antigravity",
+        "antigravity",
+        "gemini-3-1-pro",
+        &["tdd", "debug"],
+    );
+    let out = h.run(&[
+        "spawn",
+        "skl-antigravity",
+        "x",
+        "--from-pane",
+        "w1:p1",
+        "--no-tile",
+    ]);
+    assert!(!out.status.success(), "{}", text(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("selected skills cannot load"),
+        "{}",
+        text(&out)
+    );
+    assert!(h.calls_of("antigravity").is_empty());
+    assert!(!h
+        .calls_of("herdr")
+        .iter()
+        .any(|c| c["argv"].to_string().contains("split")));
+}
+
 fn git(h: &Harness, dir: &Path, args: &[&str]) {
     let mut full = vec!["-C", dir.to_str().unwrap()];
     full.extend_from_slice(args);
