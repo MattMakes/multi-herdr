@@ -16,7 +16,6 @@ use horch_core::ids::{ExecutionId, SessionId, TeammateName};
 use horch_core::mailbox::Mailbox;
 use horch_core::routing::decision::GateFlags;
 use horch_core::runtime::RuntimeContext;
-use horch_core::skills::SkillCatalog;
 use horch_core::teammates::Phase;
 
 pub struct SpawnArgs {
@@ -112,7 +111,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         execution: ExecutionId::new(horch_core::mint_uuid())?,
         session: SessionId::new(horch_core::mint_uuid())?,
     };
-    let catalog = SkillCatalog::bundled()?;
+    let catalog = roster.skill_catalog()?;
     let inputs = PlanInputs {
         roster: &roster,
         catalog: &catalog,

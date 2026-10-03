@@ -51,6 +51,8 @@ pub struct MintedIds {
 #[derive(Debug, Clone, Copy)]
 pub struct PlanInputs<'a> {
     pub roster: &'a Roster,
+    /// The roster's catalog (`Roster::skill_catalog`): bundled skills plus
+    /// the installed marketplace lock.
     pub catalog: &'a SkillCatalog,
     /// `Some` when [`needs_gate`] said so.
     pub gate: Option<GateInputs<'a>>,
@@ -341,7 +343,7 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
         }
     }
     // Unusable catalogs fail before a role or a record exists.
-    crate::skills::ensure_supported(&draft.teammate)
+    crate::skills::ensure_supported_in(&draft.teammate, inputs.catalog)
         .map_err(|e| PlanError::SkillUnsupported(format!("{e:#}")))?;
     let skills = plan_activation(&draft.teammate, draft.teammate.phase, inputs.catalog)
         .map_err(|e| PlanError::SkillUnsupported(format!("{e:#}")))?;

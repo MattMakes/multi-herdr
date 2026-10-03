@@ -151,9 +151,17 @@ store.find_by_idempotency("spawn:<round>:<label>")?  // Option<Execution>
 
 ## Gotchas
 
-- U28 adds `skills::ensure_supported_in(teammate, catalog)`. When it merges,
-  `plan_launch` must call it in place of `skills::ensure_supported`
-  (U28 does the switch if this unit merges first).
+- After the rebase onto U28: `plan_launch` calls
+  `skills::ensure_supported_in(teammate, inputs.catalog)`, and `horch spawn`
+  passes `roster.skill_catalog()` as `PlanInputs.catalog`. `plan_activation`
+  uses the same catalog.
+- U28 asked to name the skill bundle after the real execution id
+  (`bundle_name` in `harness/launch.rs`). No change is needed: the spawn
+  plan writes the execution id as the ledger `record_id`, and the brief and
+  `DiscoveryTarget.record_id` carry that id. A resume reuses the record's
+  id; `bundle_name` mints a fresh id only when that directory still exists.
+- fake-codex keeps both U28's `inspect_skills` and this unit's `stay`.
+  `inspect_skills` runs first, because `stay` never returns.
 - `cmd/spawn.rs` is 242 lines: 175 of code and 67 of tests. Of the code,
   about 45 lines are `SpawnArgs` and `resolve_positionals`, which
   `main.rs` calls and which I kept unchanged.
