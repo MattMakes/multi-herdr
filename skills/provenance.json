@@ -102,6 +102,82 @@
       "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase."
     },
     {
+      "name": "ui-redesign",
+      "sources": [
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/SKILL.md",
+          "sha256": "59469635bbbd21acddbc664d95e8d97147f454b2d8f4a0a89c7d2c5afbe67577",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/contract.md",
+          "sha256": "2923a056b95da63d04100ac56bc8cdff6bc0a717ac3e5da5cef69eb5feb4619c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/design-md.md",
+          "sha256": "a9368b64dd9b6e53e8c707830ce28fd8601d3195a81647ea46b6995aa3556b3c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/slop-test.md",
+          "sha256": "6eb49fc64ca54929d2c1600e2a6014268f1a7593787c0ed3f6ecb4ac8390ad86",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/study.md",
+          "sha256": "021fe4d001b38ee87414c1bb69321d2e44b67df8ede76ecec225c41a634aab20",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/verbs/audit.md",
+          "sha256": "0a5b484453f1697a8675a7020df9159d0b4ce22f059b873501bfd82c26d6a31a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/verbs/redesign.md",
+          "sha256": "c2830f3b7d68e9622f55d376048a5a454c5ef59d309a211e716d1142e86acbdf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill/SKILL.md",
+          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/redesign-skill/SKILL.md",
+          "sha256": "98ad3e5b051bfb71b2795f7e8a6aa0d32b51ee095606c098a4b2822ac07926c9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/output-skill/SKILL.md",
+          "sha256": "e5bf48b1ae561511439cf71672209a10a88cee0968cc925909ff861dfa0a96a7",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged hallmark's redesign, audit and study verbs with taste-skill's redesign skill and redesign protocol into a staged, non-destructive workflow with a standalone audit checklist, safe design extraction from a URL or screenshot, and a new before/after evidence protocol; dropped hallmark stamps, logs, theme catalog and interactive gates."
+    },
+    {
       "name": "ui-taste",
       "sources": [
         {
