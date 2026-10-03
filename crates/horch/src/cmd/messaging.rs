@@ -9,6 +9,7 @@
 
 use anyhow::{bail, Context, Result};
 use horch_core::execution::lifecycle::{self, DoneRequest, DoneSteps, ReportTarget};
+use horch_core::harness::launch;
 use horch_core::herdr::Herdr;
 use horch_core::ledger::Ledger;
 use horch_core::mailbox::Mailbox;
@@ -157,6 +158,15 @@ impl DoneSteps for CliDone<'_> {
 
     fn settle(&self, workspace: &str) {
         arrange::settle_after_close(self.ctx, workspace);
+    }
+
+    fn record_session(&self, workspace: &str, role: &str, record_id: &str) -> Result<()> {
+        launch::discover_now(
+            self.ctx,
+            &Mailbox::in_context(self.ctx, workspace),
+            role,
+            record_id,
+        )
     }
 }
 

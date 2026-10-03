@@ -379,6 +379,82 @@ impl Discovery {
     }
 }
 
+/// The waits before each discovery poll: 0.5 s, 1 s, 2 s, then 3 s up to a
+/// total of about 3 minutes. A short agent run can end within 3 s.
+const POLL_SCHEDULE: [Duration; 62] = {
+    let mut schedule = [Duration::from_secs(3); 62];
+    schedule[0] = Duration::from_millis(500);
+    schedule[1] = Duration::from_secs(1);
+    schedule[2] = Duration::from_secs(2);
+    schedule
+};
+
+/// One discovery attempt: herdr's native `agent_session_id` for the pane,
+/// else the harness's own records for `workdir`, newest first, skipping ids
+/// already claimed by a concurrently spawned worker.
+#[allow(clippy::too_many_arguments)]
+fn discover_once(
+    ctx: &RuntimeContext,
+    agent: HarnessKind,
+    herdr: &Herdr,
+    pane: &str,
+    ledger: &Ledger,
+    workdir: &Path,
+    since: SystemTime,
+    sessions_dir: Option<&Path>,
+) -> Option<String> {
+    (!pane.is_empty())
+        .then(|| herdr.pane_get(pane).ok())
+        .flatten()
+        .and_then(|p| p.agent_session_id())
+        .or_else(|| {
+            agent
+                .adapter()
+                .discover_sessions(ctx, workdir, since, sessions_dir)
+                .into_iter()
+                .find(|id| !ledger.has_session(id).unwrap_or(false))
+        })
+}
+
+/// The last discovery attempt, for `horch done` to run before it closes the
+/// pane (which kills the discovery thread). Does nothing when the record
+/// already has a session id, the harness mints its id at launch, the launch
+/// was a resume, or the launch marker is gone. `sessions_dir` is not known
+/// here, so a harness that needs it (Prime) is left to the thread.
+pub fn discover_now(
+    ctx: &RuntimeContext,
+    mailbox: &Mailbox,
+    role: &str,
+    record_id: &str,
+) -> Result<()> {
+    let brief = mailbox.read_brief(role)?;
+    let agent = brief.agent()?;
+    if !agent.adapter().capabilities().discovers_session() || brief.session.is_resume() {
+        return Ok(());
+    }
+    let ledger = Ledger::open_in(ctx)?;
+    if ledger.get(record_id)?.session_id.is_some() {
+        return Ok(());
+    }
+    let marker = mailbox.launch_marker(role);
+    let since = std::fs::metadata(&marker).and_then(|m| m.modified())?;
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let pane = ctx
+        .herdr
+        .pane
+        .as_ref()
+        .map(|p| p.to_string())
+        .unwrap_or_default();
+    let workdir = PathBuf::from(brief.workdir_or_project());
+    if let Some(session_id) =
+        discover_once(ctx, agent, &herdr, &pane, &ledger, &workdir, since, None)
+    {
+        ledger.set_session(record_id, &session_id)?;
+        let _ = std::fs::remove_file(&marker);
+    }
+    Ok(())
+}
+
 /// Poll for the session id the agent minted and record it against the
 /// target's ledger record.
 ///
@@ -416,28 +492,23 @@ fn start_discovery(
     let ctx = ctx.clone();
 
     std::thread::spawn(move || {
-        for _ in 0..60 {
-            std::thread::sleep(Duration::from_secs(3));
+        for delay in POLL_SCHEDULE {
+            std::thread::sleep(delay);
             if flag.load(Ordering::Relaxed) {
                 return;
             }
 
-            let mut session_id = (!pane.is_empty())
-                .then(|| herdr.pane_get(&pane).ok())
-                .flatten()
-                .and_then(|p| p.agent_session_id());
-
-            if session_id.is_none() {
-                // Newest first, skipping ids already claimed by a concurrently
-                // spawned worker.
-                session_id = agent
-                    .adapter()
-                    .discover_sessions(&ctx, &workdir, since, sessions_dir.as_deref())
-                    .into_iter()
-                    .find(|id| !ledger.has_session(id).unwrap_or(false));
-            }
-
-            if let Some(session_id) = session_id {
+            let found = discover_once(
+                &ctx,
+                agent,
+                &herdr,
+                &pane,
+                &ledger,
+                &workdir,
+                since,
+                sessions_dir.as_deref(),
+            );
+            if let Some(session_id) = found {
                 if let Err(e) = ledger.set_session(&record_id, &session_id) {
                     eprintln!("horch worker[{role}]: recording session id failed: {e:#}");
                     return;

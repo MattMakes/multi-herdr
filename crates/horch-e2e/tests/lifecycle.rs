@@ -194,6 +194,32 @@ fn arc_26_e2e_lifecycle_matrix_prime() {
 
 // ─── ARC-16 ─────────────────────────────────────────────────────────────────
 
+/// An agent that ends within 1 s of launch still gets its session id
+/// recorded: `horch done` runs one last discovery before it closes the pane.
+#[test]
+fn tel_session_recorded_when_agent_ends_fast() {
+    let h = fleet("tel-fast-end", "exec,stay");
+    let pane = spawn(&h, &["codex-sol", "build the thing"]);
+    let fresh = records(&h)
+        .into_iter()
+        .find(|r| r["tier"] == "codex-sol")
+        .expect("the spawn wrote a record");
+    let id = fresh["record_id"].as_str().unwrap().to_string();
+    let role = fresh["role"].as_str().unwrap().to_string();
+
+    // The fake has written its rollout; `done` follows at once.
+    let minted = wait_for("the fake's session id", || {
+        h.calls_of("codex")
+            .iter()
+            .find_map(|c| c["session_id"].as_str().map(str::to_owned))
+    });
+    done(&h, &pane, &role, &id);
+
+    let r = record(&h, &id);
+    assert_eq!(r["status"], "done", "{r}");
+    assert_eq!(r["session_id"], minted.as_str(), "{r}");
+}
+
 #[test]
 fn arc_16_e2e_fail_split() {
     let h = fleet("arc16-split", "fail_split");
