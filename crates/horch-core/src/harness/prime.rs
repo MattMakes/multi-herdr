@@ -179,7 +179,7 @@ impl Harness for Prime {
     }
 
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
-        super::launch::pi_family_command(
+        super::pi::pi_family_command(
             env.bins.prime.clone(),
             spec.teammate,
             spec.session,

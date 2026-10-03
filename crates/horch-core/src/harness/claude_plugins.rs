@@ -233,6 +233,38 @@ fn read_skills(root: &Path) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
+/// Narrow each `plugin_skills` plugin to the skills the teammate names: its
+/// other skills go off as `"<plugin>:<skill>": "off"`, and an installed
+/// plugin is kept enabled even where `inherit_plugins: false` switched the
+/// operator's plugins off. Must run after that switch-off, so it wins.
+pub(crate) fn overlay_plugin_skills(
+    teammate: &Teammate,
+    overlay: &mut serde_json::Map<String, serde_json::Value>,
+    home: Option<&Path>,
+) -> Result<()> {
+    for (plugin, wanted) in resolve_all_in(teammate, home)? {
+        if let Some(key) = &plugin.installed_key {
+            overlay
+                .entry("enabledPlugins")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .context("enabledPlugins must be an object")?
+                .insert(key.clone(), serde_json::Value::Bool(true));
+        }
+        let overrides = overlay
+            .entry("skillOverrides")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .context("skillOverrides must be an object")?;
+        for (skill, _) in &plugin.skills {
+            if !wanted.contains(skill) {
+                overrides.insert(format!("{}:{skill}", plugin.name), "off".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

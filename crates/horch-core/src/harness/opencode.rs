@@ -11,10 +11,12 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 
-use super::{CommandSpec, Harness, HarnessKind, LaunchEnv};
+use super::launch::model_for;
+use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session};
 use crate::runtime::RuntimeContext;
+use crate::teammates::Teammate;
 
 /// A session that could belong to this worker.
 #[derive(Debug, Clone, PartialEq)]
@@ -108,7 +110,7 @@ impl Harness for OpenCode {
     }
 
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
-        super::launch::opencode_command(
+        opencode_command(
             env,
             spec.teammate,
             spec.session,
@@ -134,6 +136,86 @@ impl Harness for OpenCode {
         .map(|c| c.session_id)
         .collect()
     }
+}
+
+/// OpenCode: `opencode --model provider/model --prompt "..."`.
+///
+/// The prompt is a FLAG here, not a trailing positional, so it cannot be eaten
+/// by a variadic - but `args` still goes before it, to keep every builder in
+/// this file ordered the same way.
+pub(super) fn opencode_command(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+) -> Result<Command> {
+    let mut cmd = Command::new(&env.bins.opencode);
+    cmd.arg("--model").arg(model_for(teammate, model_override)?);
+
+    // OpenCode calls reasoning effort a model "variant". The TUI horch
+    // launches has no `--variant` flag - 1.18.2 swallows it silently
+    // (ai_docs/reports/env-research/codex-opencode.md) - so the level goes
+    // through the config overlay instead, as the default agent's `variant`.
+    if let Some(effort) = &teammate.effort {
+        let inherited = teammate
+            .env
+            .get("OPENCODE_CONFIG_CONTENT")
+            .cloned()
+            .or_else(|| env.opencode_config_content.clone());
+        cmd.env(
+            "OPENCODE_CONFIG_CONTENT",
+            opencode_variant_config(inherited.as_deref(), effort)?,
+        );
+    }
+    if let Some(mode) = teammate.permission_mode {
+        match mode.opencode_args() {
+            Some(args) => {
+                cmd.args(args);
+            }
+            None => bail!(
+                "teammate '{}' sets permission_mode '{}', which has no opencode equivalent",
+                teammate.name,
+                mode.as_str()
+            ),
+        }
+    }
+    // `--pure` drops external plugins while leaving the operator's providers and
+    // credentials alone - the same intent as `inherit_plugins: false` on claude.
+    if !teammate.inherit_plugins {
+        cmd.arg("--pure");
+    }
+    // Resume only. OpenCode mints its own `ses_...` ids, so a fresh session is
+    // started by saying nothing and harvested afterwards.
+    if let Session::Resume(id) = session {
+        cmd.arg("--session").arg(id);
+    }
+    cmd.args(&teammate.args);
+    cmd.arg("--prompt").arg(prompt);
+    Ok(cmd)
+}
+
+/// Merge `agent.build.variant` into an OpenCode config overlay. `build` is
+/// the primary agent the TUI starts in, and a variant set there applies to
+/// that agent's model, which is the one horch passes with `--model`.
+pub(crate) fn opencode_variant_config(inherited: Option<&str>, effort: &str) -> Result<String> {
+    let mut value: serde_json::Value = match inherited {
+        Some(s) => serde_json::from_str(s).context("invalid OPENCODE_CONFIG_CONTENT JSON")?,
+        None => serde_json::json!({}),
+    };
+    let build = value
+        .as_object_mut()
+        .context("OPENCODE_CONFIG_CONTENT must be an object")?
+        .entry("agent")
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+        .context("agent config must be an object")?
+        .entry("build")
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+        .context("agent.build config must be an object")?;
+    build.insert("variant".into(), serde_json::json!(effort));
+    Ok(value.to_string())
 }
 
 #[cfg(test)]

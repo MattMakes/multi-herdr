@@ -23,10 +23,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
+use super::launch::model_for;
 use super::{
     generic_validate, CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared,
+    Session,
 };
 use crate::prompts;
 use crate::runtime::RuntimeContext;
@@ -446,7 +448,7 @@ impl Harness for Codex {
     }
 
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
-        super::launch::codex_command(
+        codex_command(
             env,
             spec.teammate,
             spec.session,
@@ -473,6 +475,58 @@ impl Harness for Codex {
         .map(|c| c.session_id)
         .collect()
     }
+}
+
+pub(super) fn codex_command(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+) -> Result<Command> {
+    let bin = env.bins.codex.clone();
+    let model = format!("model=\"{}\"", model_for(teammate, model_override)?);
+    let mut cmd = Command::new(&bin);
+
+    // `resume` is a subcommand, so it has to lead.
+    if let Session::Resume(_) = session {
+        cmd.arg("resume");
+    }
+    cmd.arg("-c").arg(&model);
+    // Fleet panes must reach their briefing without startup dialogs. Keep
+    // sandbox/command approval policy separate from trust for enabled hooks.
+    cmd.args(["-c", "check_for_update_on_startup=false"]);
+    cmd.args(["-c", "tui.resume_cwd=\"current\""]);
+    if !teammate
+        .args
+        .iter()
+        .any(|arg| arg == "--dangerously-bypass-hook-trust")
+    {
+        cmd.arg("--dangerously-bypass-hook-trust");
+    }
+
+    if let Some(mode) = teammate.permission_mode {
+        match mode.codex_args() {
+            Some(args) => {
+                cmd.args(args);
+            }
+            None => bail!(
+                "teammate '{}' sets permission_mode '{}', which has no codex equivalent",
+                teammate.name,
+                mode.as_str()
+            ),
+        }
+    }
+    if let Some(effort) = &teammate.effort {
+        cmd.arg("-c")
+            .arg(format!("model_reasoning_effort=\"{effort}\""));
+    }
+    cmd.args(&teammate.args);
+    if let Session::Resume(id) = session {
+        cmd.arg(id);
+    }
+    cmd.arg(prompt);
+    Ok(cmd)
 }
 
 #[cfg(test)]
