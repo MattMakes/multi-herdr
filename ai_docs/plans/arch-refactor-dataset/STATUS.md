@@ -85,3 +85,4 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Merged U34 tel02-flake (guard + retrying read; flake not reproduced).
 - Merged U31 b4-judge-job (B4 landed; full-round e2e and B4 crash points pending on U30). Gotchas in b4-judge-job.md 'Gotchas for U30 and U32'.
 - U30 now also owns jdg_e2e_round_decided and the B4 crash points (no judging stub).
+- Merged U30 b3-coordinator (B3 landed). Kernel gaps: worker dying before set_running leaves Starting+live pane (deadline only); CommandValidator gets no HORCH_FAULT set (fail-gate unreachable from run) -> U35.

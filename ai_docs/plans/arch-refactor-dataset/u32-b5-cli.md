@@ -46,6 +46,17 @@ telemetry count candidate and judge executions.
   target; integration and revalidation share 1 temp worktree on branch
   `mh/promote/<round>/a<attempt>`.
 
+- From U30 (`b3-coordinator.md`): `run` now drives the whole round and
+  waits for the judge; `resume <exp>` exists. Eligible = completed and
+  every gate passed. `run.json` holds the redacted run arguments (store
+  `--promote-to` there so `resume` keeps it). Labels follow slot order (in
+  the pair fixtures A is codex-sol, B is sonnet). The fake judge ranks
+  eligible labels first. Judge bundle dirs are 0500 (`assert_clean` in the
+  e2e lib makes them 0700). The judge-job fault kills both attempts (the
+  job inherits `HORCH_FAULT`). `horch sessions --json` hides candidate and
+  judge records; use `--all` or `horch ledger list --json`. Reuse the
+  e2e helpers U30 added to `crates/horch-e2e/src/lib.rs`.
+
 ## FILES
 
 own:
