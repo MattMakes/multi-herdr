@@ -12,6 +12,7 @@ use horch_core::herdr::Herdr;
 use horch_core::ledger::Ledger;
 use horch_core::mailbox::Mailbox;
 use horch_core::message;
+use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 
 use crate::output;
@@ -56,7 +57,7 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     } else {
         text
     };
-    herdr.send_line(&target, &line)
+    delivery::send_line(&herdr, &target, &line)
 }
 
 /// List roles registered - and so reachable via `horch tell` - in this workspace.
