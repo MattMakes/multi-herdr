@@ -142,6 +142,9 @@ pub fn start(env: &JudgeEnv, round_id: &RoundId) -> Result<()> {
 
 /// One tick of the judging step. Safe to call again at any point, also
 /// after a crash at any fault point.
+///
+/// `now` must be wall-clock time, not a pinned `HORCH_NOW`: it is compared
+/// with the job's heartbeat and the job dir's file times.
 pub fn poll(env: &JudgeEnv, round_id: &RoundId, now: DateTime<Utc>) -> Result<JudgingStatus> {
     let round = view(env, round_id)?;
     if let Some(done) = settled(&round) {
@@ -173,6 +176,16 @@ pub fn poll(env: &JudgeEnv, round_id: &RoundId, now: DateTime<Utc>) -> Result<Ju
         JobState::Running { pid } => {
             if pid != 0 && !round.judge.started {
                 mark_started(env, round_id, &round, attempt, pid)?;
+            }
+            // The job kills the judge at the timeout. A job that is stuck
+            // itself while its heartbeat thread still beats is killed here.
+            let limit = env.timeout + env.stale_after * 2;
+            let overdue = job_facts(&job_dir).spawned_at.is_some_and(|at| {
+                chrono::Duration::from_std(limit).is_ok_and(|limit| now - at > limit)
+            });
+            if overdue {
+                kill_job(pid);
+                return fail(env, round_id, &round, attempt, JudgeFailure::TimedOut, None);
             }
             Ok(JudgingStatus::Waiting)
         }

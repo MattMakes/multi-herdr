@@ -1034,3 +1034,62 @@ fn jdg_09_schedule_detaches_and_strips_env() {
         "{log}"
     );
 }
+
+/// JDG-08: a job that still beats but runs far past its timeout is killed
+/// by the coordinator and recorded as `timed_out`.
+#[cfg(unix)]
+#[test]
+fn jdg_08_overdue_job_times_out() {
+    let w = World::new();
+    w.round(true);
+    // The fake job writes only job.log and a heartbeat; a `sleep` child
+    // stands in for the stuck job process.
+    let launcher = FakeLauncher::new(Vec::new());
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+    start(&env, &round_id()).unwrap();
+    let mut stuck = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let job_dir = w.paths.job_dir(&round_id(), 1).unwrap();
+    let beat = |at: DateTime<Utc>| {
+        let hb = Heartbeat {
+            pid: stuck.id(),
+            at: horch_core::clock::stamp(at),
+        };
+        write(
+            &job_dir,
+            HEARTBEAT_FILE,
+            &serde_json::to_string(&hb).unwrap(),
+        );
+    };
+    beat(Utc::now());
+    assert_eq!(
+        poll(&env, &round_id(), Utc::now()).unwrap(),
+        JudgingStatus::Waiting
+    );
+    assert!(w.kinds().iter().all(|k| k != "judge.failed"));
+
+    // 10 minutes on, the heartbeat is fresh but the job is overdue
+    // (timeout 60 s + 2 × 30 s): killed, failed, retried.
+    let later = Utc::now() + chrono::Duration::minutes(10);
+    beat(later);
+    assert_eq!(
+        poll(&env, &round_id(), later).unwrap(),
+        JudgingStatus::Waiting
+    );
+    let failed: Vec<Value> = w
+        .events()
+        .iter()
+        .filter(|e| e.kind == "judge.failed")
+        .map(|e| e.payload.clone())
+        .collect();
+    assert_eq!(
+        failed,
+        [json!({"attempt": 1, "cause": {"kind": "timed_out"}})]
+    );
+    assert_eq!(launcher.launched.borrow().len(), 2);
+    let status = stuck.wait().unwrap();
+    assert!(!status.success(), "the stuck job was not killed");
+}

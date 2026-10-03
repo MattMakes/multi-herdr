@@ -95,7 +95,9 @@ fn heartbeat(dir: std::path::PathBuf, stop: Arc<AtomicBool>) -> std::thread::Joi
             if Instant::now() >= next {
                 let hb = Heartbeat {
                     pid,
-                    at: horch_core::clock::now_stamp(),
+                    // Wall-clock, never a pinned HORCH_NOW: the coordinator
+                    // compares it with real file times.
+                    at: horch_core::clock::stamp(chrono::Utc::now()),
                 };
                 if let Ok(bytes) = serde_json::to_vec(&hb) {
                     let _ = fsx::write_atomic(&dir.join(HEARTBEAT_FILE), &bytes, fsx::PRIVATE_FILE);
