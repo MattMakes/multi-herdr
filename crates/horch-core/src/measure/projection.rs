@@ -7,9 +7,9 @@
 //! [`Anomaly`] and never applied.
 //!
 //! The full transition table is CMP-03 (B3). This fold applies only what the
-//! events themselves say. Two moves have no event yet:
-//! SPEC-TODO(Spec B round states): no event marks CLEANUP or COMPLETE, and
-//! none marks a judged round whose winner outcome is NeedsIntervention.
+//! events themselves say. `round.needs_intervention`, `round.cleanup_started`
+//! and `round.completed` reach NEEDS_INTERVENTION, CLEANUP and COMPLETE
+//! (SPEC-TODO(Spec B event list): the orchestrator added these 3 kinds).
 
 use std::collections::BTreeMap;
 
@@ -20,9 +20,10 @@ use crate::competition::model::RoundState;
 use crate::ids::{EventId, ExecutionId, ExperimentId, JudgmentId, RoundId};
 use crate::measure::event::{
     CandidateCompleted, CandidateFailed, CandidateFrozen, CandidatePlanned, CandidateSpawned,
-    EventEnvelope, EventKind, ExperimentAborted, ExperimentCreated, OutcomeRecorded,
-    PromotionCompleted, PromotionConflicted, PromotionIntent, PromotionRolledBack,
-    PromotionStarted, RoundCreated, WinnerSelected, WorktreeCleanupFailed, WorktreeCreated,
+    EventEnvelope, EventKind, ExperimentAborted, ExperimentCreated, FinalOutcome,
+    InterventionSource, OutcomeRecorded, PromotionCompleted, PromotionConflicted, PromotionIntent,
+    PromotionRolledBack, PromotionStarted, RoundCreated, RoundNeedsIntervention, WinnerSelected,
+    WorktreeCleanupFailed, WorktreeCreated,
 };
 
 /// A failed judge attempt with this number ends the judging (design §5).
@@ -66,6 +67,10 @@ pub struct RoundView {
     // B4: typed once RejectReason lands.
     pub rejected: Option<Value>,
     pub promotion: PromotionView,
+    pub needs_intervention: Option<RoundNeedsIntervention>,
+    /// The state the round held when cleanup started.
+    pub cleaned_from: Option<RoundState>,
+    pub final_outcome: Option<FinalOutcome>,
     pub cleanup_failures: Vec<WorktreeCleanupFailed>,
     pub outcomes: Vec<OutcomeRecorded>,
 }
@@ -207,6 +212,9 @@ impl Projection {
                         winner: None,
                         rejected: None,
                         promotion: PromotionView::default(),
+                        needs_intervention: None,
+                        cleaned_from: None,
+                        final_outcome: None,
                         cleanup_failures: Vec::new(),
                         outcomes: Vec::new(),
                     },
@@ -442,6 +450,52 @@ fn apply_round(r: &mut RoundView, env: &EventEnvelope, kind: EventKind) -> Resul
                 &name,
             )?;
             r.outcomes.push(o);
+        }
+        EventKind::RoundNeedsIntervention(n) => {
+            let allowed: &[S] = match n.source {
+                InterventionSource::Judge => &[S::JudgingBackground],
+                InterventionSource::Promotion => &[S::Revalidating, S::Promoting],
+                InterventionSource::Operator => &[
+                    S::Running,
+                    S::Validating,
+                    S::JudgingBackground,
+                    S::Decided,
+                    S::Revalidating,
+                    S::Promoting,
+                ],
+            };
+            expect_state(r.state, allowed, &name)?;
+            if n.source == InterventionSource::Judge && r.judge.judgment_id.is_none() {
+                return Err(format!("{name} from the judge before a judgment"));
+            }
+            r.needs_intervention = Some(n);
+            r.state = S::NeedsIntervention;
+        }
+        EventKind::RoundCleanupStarted(_) => {
+            expect_state(
+                r.state,
+                &[S::Decided, S::Rejected, S::Promoted, S::NeedsIntervention],
+                &name,
+            )?;
+            r.cleaned_from = Some(r.state);
+            r.state = S::Cleanup;
+        }
+        EventKind::RoundCompleted(c) => {
+            expect_state(r.state, &[S::Cleanup], &name)?;
+            let want = match r.cleaned_from {
+                Some(S::Decided) => FinalOutcome::Winner,
+                Some(S::Rejected) => FinalOutcome::Rejected,
+                Some(S::Promoted) => FinalOutcome::Promoted,
+                _ => FinalOutcome::NeedsIntervention,
+            };
+            if c.final_outcome != want {
+                return Err(format!(
+                    "{name} says {:?}, cleanup started from {:?}",
+                    c.final_outcome, r.cleaned_from
+                ));
+            }
+            r.final_outcome = Some(c.final_outcome);
+            r.state = S::Complete;
         }
         EventKind::ExperimentCreated(_)
         | EventKind::PreflightCompleted(_)

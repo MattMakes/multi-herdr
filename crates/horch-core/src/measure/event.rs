@@ -184,6 +184,13 @@ event_kinds! {
     PromotionRolledBack => "promotion.rolled_back",
     WorktreeCleanupFailed => "worktree.cleanup_failed",
     OutcomeRecorded => "outcome.recorded",
+    /// SPEC-TODO(Spec B event list): added by the orchestrator so a rebuild
+    /// reaches NEEDS_INTERVENTION without a failed judge or promotion event.
+    RoundNeedsIntervention => "round.needs_intervention",
+    /// SPEC-TODO(Spec B event list): added so a rebuild reaches CLEANUP.
+    RoundCleanupStarted => "round.cleanup_started",
+    /// SPEC-TODO(Spec B event list): added so a rebuild reaches COMPLETE.
+    RoundCompleted => "round.completed",
 }
 
 // ─── payloads ───────────────────────────────────────────────────────────────
@@ -402,4 +409,38 @@ pub enum OutcomeKind {
     Regression,
     Revert,
     Verified,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoundNeedsIntervention {
+    pub reason: String,
+    pub source: InterventionSource,
+}
+
+/// Who stopped the round for the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterventionSource {
+    Judge,
+    Promotion,
+    Operator,
+}
+
+/// Cleanup begins: worktrees are removed, branches are kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoundCleanupStarted {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoundCompleted {
+    pub final_outcome: FinalOutcome,
+}
+
+/// How a completed round ended: the state it held when cleanup started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalOutcome {
+    Winner,
+    Rejected,
+    NeedsIntervention,
+    Promoted,
 }

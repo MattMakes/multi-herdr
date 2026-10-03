@@ -201,6 +201,14 @@ fn sample_kinds() -> Vec<EventKind> {
             post_merge_score: 0.75,
             note: None,
         }),
+        EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
+            reason: "tie".into(),
+            source: InterventionSource::Judge,
+        }),
+        EventKind::RoundCleanupStarted(RoundCleanupStarted {}),
+        EventKind::RoundCompleted(RoundCompleted {
+            final_outcome: FinalOutcome::Winner,
+        }),
     ]
 }
 
@@ -688,7 +696,7 @@ struct Fate {
 /// A whole round: created, run, validated, judged (with `judge_fails`
 /// failed attempts first), then a winner or a rejection, and an optional
 /// promotion.
-fn lifecycle(fates: &[Fate], judge_fails: u32, promote: bool) -> Script {
+fn decide(fates: &[Fate], judge_fails: u32, promote: bool) -> (Script, FinalOutcome) {
     let labels: Vec<String> = (0..fates.len())
         .map(|i| ((b'A' + i as u8) as char).to_string())
         .collect();
@@ -773,7 +781,7 @@ fn lifecycle(fates: &[Fate], judge_fails: u32, promote: bool) -> Script {
             }),
             None,
         );
-        return s;
+        return (s, FinalOutcome::Rejected);
     };
     for attempt in 1..=judge_fails + 1 {
         s.push(
@@ -801,7 +809,7 @@ fn lifecycle(fates: &[Fate], judge_fails: u32, promote: bool) -> Script {
                 None,
             );
             if attempt >= 2 {
-                return s;
+                return (s, FinalOutcome::NeedsIntervention);
             }
         }
     }
@@ -848,6 +856,22 @@ fn lifecycle(fates: &[Fate], judge_fails: u32, promote: bool) -> Script {
             None,
         );
     }
+    let outcome = if promote {
+        FinalOutcome::Promoted
+    } else {
+        FinalOutcome::Winner
+    };
+    (s, outcome)
+}
+
+/// [`decide`], then cleanup and completion.
+fn lifecycle(fates: &[Fate], judge_fails: u32, promote: bool) -> Script {
+    let (mut s, final_outcome) = decide(fates, judge_fails, promote);
+    s.push(EventKind::RoundCleanupStarted(RoundCleanupStarted {}), None);
+    s.push(
+        EventKind::RoundCompleted(RoundCompleted { final_outcome }),
+        None,
+    );
     s
 }
 
@@ -916,21 +940,89 @@ fn mea_05_full_lifecycles_fold_without_anomalies() {
         completes: false,
         eligible: false,
     };
-    let cases: Vec<(Script, RoundState)> = vec![
-        (lifecycle(&[ok, bad], 0, false), RoundState::Decided),
-        (lifecycle(&[ok], 1, true), RoundState::Promoted),
+    let cases = vec![
         (
-            lifecycle(&[ok, ok], 2, false),
-            RoundState::NeedsIntervention,
+            (vec![ok, bad], 0, false),
+            RoundState::Decided,
+            FinalOutcome::Winner,
         ),
-        (lifecycle(&[bad, bad], 0, false), RoundState::Rejected),
+        (
+            (vec![ok], 1, true),
+            RoundState::Promoted,
+            FinalOutcome::Promoted,
+        ),
+        (
+            (vec![ok, ok], 2, false),
+            RoundState::NeedsIntervention,
+            FinalOutcome::NeedsIntervention,
+        ),
+        (
+            (vec![bad, bad], 0, false),
+            RoundState::Rejected,
+            FinalOutcome::Rejected,
+        ),
     ];
-    for (script, want) in cases {
-        let p = fold(&script.events);
+    for ((fates, fails, promote), decided, outcome) in cases {
+        let (s, _) = decide(&fates, fails, promote);
+        let p = fold(&s.events);
         assert_eq!(p.anomalies, vec![]);
-        assert_eq!(p.rounds[&round_id()].state, want);
+        assert_eq!(p.rounds[&round_id()].state, decided);
+
+        let s = lifecycle(&fates, fails, promote);
+        let p = fold(&s.events);
+        assert_eq!(p.anomalies, vec![]);
+        let r = &p.rounds[&round_id()];
+        assert_eq!(r.state, RoundState::Complete);
+        assert_eq!(r.cleaned_from, Some(decided));
+        assert_eq!(r.final_outcome, Some(outcome));
         assert_eq!(p.experiments[&exp_id()].state, RoundState::Planned);
     }
+}
+
+#[test]
+fn mea_05_round_needs_intervention_and_completion_checks() {
+    let ok = Fate {
+        completes: true,
+        eligible: true,
+    };
+    // The judge answered, but the winner policy found no clear winner.
+    let (mut s, _) = decide(&[ok, ok], 0, false);
+    s.events.pop(); // winner.selected
+    s.push(
+        EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
+            reason: "tie".into(),
+            source: InterventionSource::Judge,
+        }),
+        None,
+    );
+    let p = fold(&s.events);
+    assert_eq!(p.anomalies, vec![]);
+    assert_eq!(p.rounds[&round_id()].state, RoundState::NeedsIntervention);
+
+    // A completion that contradicts the state cleanup started from.
+    s.push(EventKind::RoundCleanupStarted(RoundCleanupStarted {}), None);
+    s.push(
+        EventKind::RoundCompleted(RoundCompleted {
+            final_outcome: FinalOutcome::Winner,
+        }),
+        None,
+    );
+    let p = fold(&s.events);
+    assert_eq!(p.anomalies.len(), 1, "{:?}", p.anomalies);
+    assert_eq!(p.rounds[&round_id()].state, RoundState::Cleanup);
+
+    // The promotion source is invalid before any promotion.
+    let (mut s, _) = decide(&[ok], 0, false);
+    s.push(
+        EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
+            reason: "dirty".into(),
+            source: InterventionSource::Promotion,
+        }),
+        None,
+    );
+    let p = fold(&s.events);
+    assert_eq!(p.anomalies.len(), 1);
+    assert_eq!(p.rounds[&round_id()].state, RoundState::Decided);
 }
 
 #[test]
