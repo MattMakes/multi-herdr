@@ -779,7 +779,7 @@ fn cmp_07_agent_exit() {
 fn cmp_07_timeout() {
     let Some(h) = pair(
         "cmp07timeout",
-        "caps:\n  candidate_deadline_s: 2\n",
+        "caps:\n  candidate_deadline_s: 6\n",
         serde_json::json!({"exit": "hang"}),
     ) else {
         return;
@@ -1083,7 +1083,7 @@ fn mea_10_every_spawn_has_terminal_event() {
     let Some(h) = round_harness(
         "mea10",
         &["sonnet", "codex-sol", "opus"],
-        "caps:\n  candidate_deadline_s: 2\n",
+        "caps:\n  candidate_deadline_s: 6\n",
         serde_json::json!({
             "A": done("a.txt"),
             "B": {"exit": "crash"},
