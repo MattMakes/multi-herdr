@@ -262,16 +262,6 @@ fn candidate_branches(h: &Harness) -> Vec<String> {
     .collect()
 }
 
-/// Start the next round in this repo: new candidate behavior, and the last
-/// round's candidate branches deleted. Two experiments minted in the same
-/// minute share `exp8`, so their branch names would collide (PRE-01).
-fn next_round(h: &Harness, candidates: Value) {
-    for branch in candidate_branches(h) {
-        git(h, &["update-ref", "-d", &branch]);
-    }
-    set_candidates(h, candidates);
-}
-
 /// The worktrees git lists, the main checkout included.
 fn worktree_count(h: &Harness) -> usize {
     git(h, &["worktree", "list", "--porcelain"])
@@ -404,7 +394,7 @@ fn pro_08_promote_to_and_promote_cmd() {
 
     // 2. A round collected first (other files, so its commits pick
     //    cleanly onto the moved target), then `promote <round> --to`.
-    next_round(&h, json!({"A": done("c.txt"), "B": done("d.txt")}));
+    set_candidates(&h, json!({"A": done("c.txt"), "B": done("d.txt")}));
     let out = run_round(&h, &[], &[]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let second = rounds(&h)[1].clone();
@@ -492,7 +482,7 @@ fn pro_02_e2e_only_valid_candidate_promotable() {
 
     // `fail-gate:<name>` reaches the gates from `run`: no candidate is
     // eligible, the judge is skipped, nothing is promoted (exit 6).
-    next_round(&h, json!({"A": done("c.txt"), "B": done("d.txt")}));
+    set_candidates(&h, json!({"A": done("c.txt"), "B": done("d.txt")}));
     let promoted = tip(&h, TARGET);
     let out = run_round(
         &h,
@@ -558,7 +548,7 @@ fn pro_rollback_e2e() {
     assert_eq!(round_state(&h, &round), "COMPLETE");
 
     // A round that was never promoted has nothing to roll back.
-    next_round(&h, json!({"A": done("c.txt"), "B": done("d.txt")}));
+    set_candidates(&h, json!({"A": done("c.txt"), "B": done("d.txt")}));
     let out = run_round(&h, &[], &[]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let second = rounds(&h)[1].clone();

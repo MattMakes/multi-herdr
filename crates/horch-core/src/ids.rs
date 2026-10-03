@@ -189,6 +189,17 @@ impl WorkerId {
     }
 }
 
+impl ExperimentId {
+    /// The experiment's 8-character prefix in candidate branch names
+    /// (`mh/exp/<exp8>/...`): the last 8 letters and digits of the id. A
+    /// UUIDv7 starts with its millisecond timestamp, so the head is shared by
+    /// experiments started close together; the tail is random.
+    pub fn short(&self) -> String {
+        let plain: Vec<char> = self.0.chars().filter(char::is_ascii_alphanumeric).collect();
+        plain[plain.len().saturating_sub(8)..].iter().collect()
+    }
+}
+
 macro_rules! mintable {
     ($($name:ident),*) => {$(
         impl $name {
@@ -304,6 +315,22 @@ mod tests {
         ] {
             assert_eq!(uuid::Uuid::parse_str(&s).unwrap().get_version_num(), 7);
         }
+    }
+
+    #[test]
+    fn pre_01_experiment_short_is_the_random_tail() {
+        let at = DateTime::from_timestamp_millis(1_790_000_000_123).unwrap();
+        let a = ExperimentId::mint(at);
+        let b = ExperimentId::mint(at);
+        assert_eq!(a.short().len(), 8);
+        assert!(a.short().bytes().all(|c| c.is_ascii_hexdigit()));
+        assert!(a.as_str().ends_with(&a.short()));
+        assert_ne!(
+            a.short(),
+            b.short(),
+            "the same millisecond, different tails"
+        );
+        assert_eq!(ExperimentId::new("exp-1").unwrap().short(), "exp1");
     }
 
     #[test]
