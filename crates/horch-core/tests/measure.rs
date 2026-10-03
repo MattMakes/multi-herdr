@@ -636,6 +636,17 @@ fn mea_04_prop_duplicates_no_effect() {
 }
 
 #[test]
+fn store_options_from_faults() {
+    use horch_core::runtime::fault::Faults;
+    let on = StoreOptions::from_faults(&Faults::parse(Some("x,abort-after-event-append")));
+    assert!(on.abort_after_append);
+    assert_eq!(
+        StoreOptions::from_faults(&Faults::parse(None)),
+        StoreOptions::default()
+    );
+}
+
+#[test]
 fn noop_recorder_writes_nothing() {
     let out = NoopRecorder
         .append(new_event(judge_started(1, 1), "k", t0()))

@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use crate::fsx::{self, DirLock, DirLockGuard};
 use crate::measure::event::EventEnvelope;
 use crate::measure::paths::DatasetPaths;
+use crate::runtime::fault::Faults;
 use crate::telemetry::cursor::{poll_lines, Cursor};
 
 /// The `DirLock` name under the dataset root: `<root>/events.lock/`.
@@ -27,12 +28,23 @@ const LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
 /// How long an append waits for the lock.
 const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Fault injection for crash tests. The B3 coordinator maps
-/// `HORCH_FAULT=abort-after-event-append` onto `abort_after_append`.
+/// Fault injection for crash tests: `HORCH_FAULT=abort-after-event-append`
+/// sets `abort_after_append` (see [`StoreOptions::from_faults`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StoreOptions {
     /// Abort the process right after an event line is durable.
     pub abort_after_append: bool,
+}
+
+/// The `HORCH_FAULT` point that aborts right after an event append.
+pub const ABORT_AFTER_EVENT_APPEND: &str = "abort-after-event-append";
+
+impl StoreOptions {
+    pub fn from_faults(faults: &Faults) -> StoreOptions {
+        StoreOptions {
+            abort_after_append: faults.has(ABORT_AFTER_EVENT_APPEND),
+        }
+    }
 }
 
 /// Every readable event, in file (day) order then line order.
