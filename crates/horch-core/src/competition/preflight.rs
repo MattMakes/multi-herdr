@@ -123,7 +123,7 @@ pub struct PreflightPlan {
     pub artifacts_bytes: u64,
     /// Memory of the local model a `pi` candidate loads.
     pub local_model_bytes: u64,
-    /// Expected tokens per candidate label; [`DEFAULT_TOKEN_ESTIMATE`] otherwise.
+    /// Expected tokens per candidate label; `DEFAULT_TOKEN_ESTIMATE` otherwise.
     pub expected_tokens: BTreeMap<String, TokenEstimate>,
     /// Directories whose children the harnesses already trust.
     pub trusted_parents: Vec<PathBuf>,
@@ -863,7 +863,7 @@ fn pre_11_storage(probe: StorageProbe) -> CheckResult {
 
 /// Probe `dir` the way the dataset store uses it: create a private file,
 /// write and fsync it, rename it, delete it, and take and release a
-/// [`DirLock`]. Each step that fails sets its flag to `false`; the probe
+/// `DirLock`. Each step that fails sets its flag to `false`; the probe
 /// never errors. It leaves nothing behind.
 pub fn storage_probe(dir: &Path) -> StorageProbe {
     let nonce = uuid::Uuid::new_v4().simple().to_string();

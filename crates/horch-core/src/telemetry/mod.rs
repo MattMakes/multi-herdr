@@ -8,7 +8,7 @@
 //! | module | job |
 //! |---|---|
 //! | [`readers`] | one incremental reader per harness |
-//! | [`cursor`] | where each reader stopped, and file identity |
+//! | `cursor` | where each reader stopped, and file identity |
 //! | [`store`] | the event files, the dedupe index, rollups |
 //! | [`collect`] | one tick: ledgers -> readers -> store -> snapshot |
 //! | [`lock`] | one collector per state root |

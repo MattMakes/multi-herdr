@@ -20,14 +20,14 @@
 //!
 //! | module         | holds |
 //! |----------------|-------|
-//! | [`teammate`]   | the frontmatter types and the orchestrator-only constants |
-//! | [`phase`]      | [`Phase`] |
-//! | [`effort`]     | [`Effort`] and the per-agent effort checks |
-//! | [`permission`] | [`PermissionMode`] |
-//! | [`parser`]     | frontmatter splitting and parsing |
-//! | [`repository`] | [`Roster`]: built-ins and overlays |
+//! | `teammate`   | the frontmatter types and the orchestrator-only constants |
+//! | `phase`      | [`Phase`] |
+//! | `effort`     | [`Effort`] and the per-agent effort checks |
+//! | `permission` | [`PermissionMode`] |
+//! | `parser`     | frontmatter splitting and parsing |
+//! | `repository` | [`Roster`]: built-ins and overlays |
 //! | [`validation`] | `--check`: [`Roster::check`] and the fallback rules |
-//! | [`operator`]   | the operator's `~/.claude/settings.json` and effort overrides |
+//! | `operator`   | the operator's `~/.claude/settings.json` and effort overrides |
 //!
 //! Nothing here reads the process environment: the home directory and the
 //! roster override arrive as parameters.

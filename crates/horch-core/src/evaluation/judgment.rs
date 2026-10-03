@@ -41,7 +41,7 @@ pub(crate) const VERDICTS: &[&str] = &["winner", "tie", "abstain", "reject_all"]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Judgment {
-    /// [`JUDGMENT_SCHEMA_VERSION`].
+    /// `JUDGMENT_SCHEMA_VERSION`.
     pub schema_version: String,
     pub verdict: JudgmentVerdict,
     /// A label; required when the verdict is `winner`, absent otherwise.

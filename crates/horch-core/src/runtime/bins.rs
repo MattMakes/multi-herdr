@@ -79,7 +79,7 @@ impl BinOverrides {
         }
     }
 
-    /// `(variable, value)` for every override that is set, in [`Self::VARS`]
+    /// `(variable, value)` for every override that is set, in `Self::VARS`
     /// order.
     pub fn env_pairs(&self) -> Vec<(&'static str, PathBuf)> {
         let mut copy = self.clone();

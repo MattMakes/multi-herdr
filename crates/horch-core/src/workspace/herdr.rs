@@ -155,7 +155,7 @@ impl Herdr {
 
     /// `herdr pane run` submits text and Enter atomically. Safe for launching a
     /// command into a fresh shell; not safe for a TUI in raw mode, which is why
-    /// [`Self::send_line`] exists.
+    /// [`crate::messaging::delivery::send_line`] exists.
     pub fn pane_run(&self, pane: &str, command: &str) -> Result<()> {
         self.output(&["pane", "run", pane, command])?;
         Ok(())
@@ -223,7 +223,7 @@ impl Herdr {
     /// Note that herdr starts the new tab with a shell pane, whose id comes back
     /// as `root_pane_id`. A caller that wanted an empty tab has to close it - so
     /// a caller moving an existing pane somewhere new is better served by
-    /// [`Self::pane_move_new_tab`], which creates the tab around that pane and
+    /// `Self::pane_move_new_tab`, which creates the tab around that pane and
     /// adds no shell.
     pub fn tab_create(&self, workspace_id: &str, label: &str, focus: bool) -> Result<NewTab> {
         let mut args: Vec<&str> = vec![

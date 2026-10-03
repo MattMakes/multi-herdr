@@ -92,7 +92,7 @@ impl ReadinessThresholds {
         Ok(policy.readiness)
     }
 
-    /// The built-in thresholds ([`DEFAULT_POLICY`]).
+    /// The built-in thresholds (`DEFAULT_POLICY`).
     pub fn builtin() -> ReadinessThresholds {
         Self::from_policy_json(DEFAULT_POLICY).expect("the built-in dataset policy parses")
     }
@@ -120,7 +120,7 @@ pub enum ReadinessVerdict {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadinessReport {
-    /// [`ArmKey::key`] → coverage.
+    /// `ArmKey::key` → coverage.
     pub arms: BTreeMap<String, ArmCoverage>,
     /// Rows with a judgment.
     pub judged_rounds: u32,

@@ -10,7 +10,7 @@
 //!
 //! SPEC-TODO(Spec B WorkerRun): the field list verbatim. The golden
 //! `tests/golden/worker-run-1.0.0.json` (MEA-11) freezes this shape; a
-//! change bumps [`WORKER_RUN_SCHEMA_VERSION`].
+//! change bumps `WORKER_RUN_SCHEMA_VERSION`.
 
 use std::collections::BTreeMap;
 use std::fmt;

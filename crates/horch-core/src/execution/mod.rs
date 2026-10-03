@@ -1,6 +1,6 @@
 //! Executions: one run of one worker, orchestrator, candidate or judge.
 //!
-//! [`model`] holds the vocabulary (A1) and the spawn types (A6). [`legacy`]
+//! `model` holds the vocabulary (A1) and the spawn types (A6). [`legacy`]
 //! is the on-disk ledger record, [`store`] reads and writes it, and
 //! [`records`] holds the ledger's lifecycle rules. [`plan`]
 //! turns a spawn request into a plan with no I/O, and [`service`] applies

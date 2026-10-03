@@ -5,7 +5,7 @@
 //! directory so the rename itself is on disk. [`create_immutable`] is the
 //! write-once variant for content-addressed files.
 //!
-//! [`DirLock`] generalizes the ledger's mkdir spinlock and the telemetry pid
+//! `DirLock` generalizes the ledger's mkdir spinlock and the telemetry pid
 //! lock: `create_dir` is atomic on every platform, the holder records who it
 //! is in an `owner` file, and a lock whose owner is dead or that is older
 //! than `stale_after` is broken.
@@ -221,7 +221,7 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
     set_mode(path, PRIVATE_DIR)
 }
 
-/// Whether process `pid` exists. [`DirLock`] and the telemetry collector
+/// Whether process `pid` exists. `DirLock` and the telemetry collector
 /// lock both decide liveness with this.
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {

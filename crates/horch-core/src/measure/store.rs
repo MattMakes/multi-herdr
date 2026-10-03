@@ -1,7 +1,7 @@
 //! The event log on disk (dataset design §4.2, MEA-03, MEA-04).
 //!
 //! `events/YYYY-MM-DD.jsonl`, one [`EventEnvelope`] per `\n`-terminated
-//! line, files 0600. Appends happen under the `events.lock` [`DirLock`]
+//! line, files 0600. Appends happen under the `events.lock` `DirLock`
 //! and are `sync_data`'d one by one. A crash can leave a torn last line;
 //! readers skip and count it, and the next append terminates it first so it
 //! never swallows a whole event.

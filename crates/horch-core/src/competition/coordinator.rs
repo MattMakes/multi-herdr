@@ -28,7 +28,7 @@
 //! and the judge step runs (`judging::start`, then `judging::poll` each
 //! tick) until the round is decided. Without a requested promotion, cleanup
 //! then removes the worktrees (OD5: collect only). With `--promote-to` or an
-//! operator `promote`, the round goes through [`RoundPromoter`] (REVALIDATING
+//! operator `promote`, the round goes through `RoundPromoter` (REVALIDATING
 //! → PROMOTING → PROMOTED) and is cleaned up once the receipt is on disk.
 //!
 //! Fault points (each fires after its event, as [`FaultFired`]):

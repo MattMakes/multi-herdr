@@ -2,7 +2,7 @@
 //!
 //! One JSON array of [`LedgerRecordV1`] at `<state_root>/<slug>.json`, the
 //! path, slug rule and pretty-printed format the bash implementation and
-//! every earlier binary used. A read-modify-write holds [`DirLock`] on
+//! every earlier binary used. A read-modify-write holds `DirLock` on
 //! `<slug>.json.lock/`, the directory the old mkdir spinlock created, so an
 //! old binary and a new one still exclude each other. Writes go through
 //! [`fsx::write_atomic`]: temp file, fsync, rename, directory fsync.
@@ -307,7 +307,7 @@ impl ExecutionStore {
             .with_context(|| format!("parsing ledger {}", self.path.display()))
     }
 
-    /// The bytes [`ExecutionStore::write`] puts on disk for `records`:
+    /// The bytes `ExecutionStore::write` puts on disk for `records`:
     /// `to_string_pretty`, no trailing newline, as every earlier version.
     pub fn render_json(records: &[LedgerRecordV1]) -> Result<String> {
         Ok(serde_json::to_string_pretty(records)?)

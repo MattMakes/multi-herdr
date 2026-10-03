@@ -26,7 +26,7 @@ use crate::clock;
 use crate::routing::quota::Window;
 use crate::usage::{find_codex_rollout, find_pi_session, Locations};
 
-/// The cursors of every input, keyed by [`input_key`].
+/// The cursors of every input, keyed by `input_key`.
 pub type Cursors = BTreeMap<String, Cursor>;
 
 /// Why a record yields no events (section 7.3).

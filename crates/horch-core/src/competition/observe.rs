@@ -1,6 +1,6 @@
 //! Candidate observation (B3, CMP-07, CMP-10, SEC-03).
 //!
-//! [`classify`] turns what the execution store and the workspace say about
+//! `classify` turns what the execution store and the workspace say about
 //! one candidate into what the coordinator records:
 //!
 //! | Observation | Outcome |

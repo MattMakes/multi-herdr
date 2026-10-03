@@ -1,7 +1,7 @@
 //! Exact integer money (MEA-07).
 //!
 //! Dataset rows store cost as whole micro-dollars ([`MicroUsd`]). Sums are
-//! taken in nano-dollars ([`NanoUsd`]), where token count × price is exact:
+//! taken in nano-dollars (`NanoUsd`), where token count × price is exact:
 //! a price in $/MTok × 1000 is n$/token, a whole number for every built-in
 //! price. The total is rounded to µ$ once, half-even, so the order in which
 //! terms are added never changes the stored cost.

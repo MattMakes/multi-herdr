@@ -93,7 +93,7 @@ pub struct JudgeInputManifest {
     pub schema_digest: Digest,
     /// The bundle labels, in order.
     pub labels: Vec<String>,
-    /// Bundle labels whose `diff.patch` was cut at [`DIFF_CAP_BYTES`].
+    /// Bundle labels whose `diff.patch` was cut at `DIFF_CAP_BYTES`.
     pub truncated_diffs: Vec<String>,
     /// Relative path → sha256 of the file bytes.
     pub files: BTreeMap<String, Digest>,

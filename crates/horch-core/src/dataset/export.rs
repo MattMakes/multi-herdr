@@ -57,7 +57,7 @@ pub struct ExportRow {
     pub round_id: RoundId,
     pub task_id: TaskId,
     pub state: ExportState,
-    /// [`BEST_WORKER`]: a choice over the validated candidates' config ids;
+    /// `BEST_WORKER`: a choice over the validated candidates' config ids;
     /// `quality:<config_id>`: a score per candidate config.
     pub questions: BTreeMap<String, Question>,
     /// The empirical answers; `null` where the round gives none (abstain,

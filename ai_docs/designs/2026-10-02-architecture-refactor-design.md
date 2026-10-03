@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted for implementation. Phase A0 in progress. Spec A verbatim is pending (Appendix A). |
+| Status | Implemented. Phases A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 and A12 landed on `arch-refactor-dataset`. Spec A verbatim is pending (Appendix A). |
 | Date | 2026-10-02 |
 | Author | The fleet (unit `a0-designs`), from the operator's master plan |
 | Source of truth | `ai_docs/plans/arch-refactor-dataset/00-master-plan.md` until Appendix A holds Spec A |

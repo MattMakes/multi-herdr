@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// How much a teammate may do without stopping to ask.
 ///
 /// Claude takes these directly. Codex has no single equivalent, so
-/// [`PermissionMode::codex_args`] maps them onto its sandbox/approval pair.
+/// `PermissionMode::codex_args` maps them onto its sandbox/approval pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionMode {
     #[serde(rename = "acceptEdits")]

@@ -25,7 +25,7 @@ pub struct Pane {
     pub tab_id: Option<String>,
     /// Present when herdr's claude/codex integration is installed. Either a bare
     /// string or an object carrying the id under one of several keys, hence
-    /// `Value`; use [`Pane::agent_session_id`] to read it.
+    /// `Value`; use `Pane::agent_session_id` to read it.
     #[serde(default)]
     pub agent_session: Option<serde_json::Value>,
 }

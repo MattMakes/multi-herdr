@@ -139,7 +139,7 @@ macro_rules! event_kinds {
             }
 
             /// The payload as JSON. Panics only on a payload that cannot be
-            /// JSON, such as a non-UTF-8 path; writers use [`Self::try_payload`].
+            /// JSON, such as a non-UTF-8 path; writers use `Self::try_payload`.
             pub fn payload(&self) -> Value {
                 self.try_payload().expect("event payload serializes")
             }
