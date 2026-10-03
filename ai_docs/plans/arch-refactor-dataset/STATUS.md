@@ -57,3 +57,9 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Merged also: U14 b2-vcs, U15 b4-evaluation, U17 b2-preflight, U16 a9a-skills (SKL-04 open → A6/A9b).
 - B2 binary unit: PRE-06, PRE-07, PRE-12, CMP-01 tests. worktree_root must be absolute. safe_n is one wave size for all candidates (1 pi lowers it). PreflightCandidate replaces CandidatePlanned; JudgeConfig.policy is Value until WinnerPolicy (now merged) → type it. PreflightPlan.pools Vec<PoolFacts>. harness_versions keyed by as_str (add Ord to HarnessKind in a later unit).
 - B4 rest: parser gives NotJson for fences; use --json-schema. Utility tie-break = highest component-score sum among acceptable tied labels, then lexical.
+- A10/A11 (from a9a): materialize refuses marketplace entries (copy from store is A10/A11 work); marketplace entries have empty description; validate lock version before using it in a path; Bundle::install writes .claude-plugin/plugin.json and uses mint_uuid as dir name (switch to execution_id); ExecutionId accepts / and .. (materialize rejects path-like ids). Lock override: bundled:<id> never replaces compiled-in; git/local with same id replaces; new id adds. plan_activation(teammate, phase, catalog) 3 args.
+- A2 merged. U18 a4-harness spawned (pane pP).
+- A6: Settings.faults has only has(); add indexed/abort_if. Brief.workdir unset; workdir_or_project() ready.
+- A7b: settle_after_close keeps own setsid → runtime::process::spawn_detached; Herdr resolves bin via agent::herdr_bin() → give ctx.bins.harness.herdr.
+- B2 bin: settings.machine_file read but unused. e2e fake-herdr exec passes spawner env to pane.
+- ProcessEnv shims remain (remove later): workspace/herdr.rs (A7b), opencode.rs + prime.rs (A4), telemetry/readers.rs (A6c), message.rs (A7b), roster/validation.rs (A12). set_current_dir kept in worker.rs/recipes.rs.
