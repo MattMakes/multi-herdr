@@ -80,3 +80,4 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Merged U27 b5-promotion. Engine API and gotchas: ai_docs/reports/arch-refactor-dataset/b5-promotion.md
 - Merged U29 b2-binary (CLI in dataset/cli.rs, dispatch dataset/mod.rs).
 - Merged U28 a10-exposure (A10 landed).
+- Merged U26 a6b-service (A6 landed). spawn.rs 241 lines (target ~150), worker.rs 27.
