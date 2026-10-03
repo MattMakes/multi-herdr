@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "readiness": {
+    "clef_judged_rounds": 50,
+    "clef_min_arms": 4,
+    "clef_runs_per_arm": 10,
+    "clef_distinct_tasks": 30,
+    "laya_judged_rounds": 500,
+    "laya_runs_per_arm": 50
+  }
+}
