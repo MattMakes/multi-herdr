@@ -296,6 +296,13 @@ enum Command {
         json: bool,
     },
 
+    /// The installed marketplace skills under
+    /// `${XDG_DATA_HOME:-~/.local/share}/horch/`.
+    Marketplace {
+        #[command(subcommand)]
+        command: cmd::marketplacecmd::MarketplaceCommand,
+    },
+
     /// Check that herdr is installed and its server is reachable.
     Doctor,
 
@@ -554,6 +561,7 @@ fn run() -> Result<std::process::ExitCode> {
             settle_ms,
         )?,
         Command::Ledger { command } => return cmd::ledgercmd::run(ctx, command),
+        Command::Marketplace { command } => return cmd::marketplacecmd::run(ctx, command),
         Command::Doctor => cmd::doctor::doctor(ctx)?,
         Command::Install { dir } => cmd::install::install(ctx, dir.as_deref())?,
         Command::Smoke { command } => return cmd::smoke::run(ctx, command),

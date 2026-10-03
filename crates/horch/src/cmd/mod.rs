@@ -4,6 +4,7 @@ pub mod doctor;
 pub mod install;
 pub mod layoutcmd;
 pub mod ledgercmd;
+pub mod marketplacecmd;
 pub mod messaging;
 pub mod quotacmd;
 pub mod recipes;

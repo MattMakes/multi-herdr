@@ -2,13 +2,20 @@
 //! immutable resolved identity.
 //!
 //! Bundled skills come from the compiled-in `skills/` tree and are versioned
-//! `bundled+<digest12>`. Marketplace lock entries merge in on top. Nothing
-//! here reads the filesystem or the environment.
+//! `bundled+<digest12>`. Marketplace lock entries merge in on top. Only
+//! [`SkillCatalog::installed`] and [`check_store`] read the filesystem: the
+//! marketplace store under the data root (OD3). Nothing here reads the
+//! environment.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use horch_marketplace::LockEntry;
+use anyhow::{anyhow, bail, Context, Result};
+use horch_marketplace::{
+    BundledFile, BundledSkill, Catalog, GitRunner, Installer, LockEntry, Lockfile, SkillManifest,
+    Store,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -16,6 +23,8 @@ use super::{BUNDLED_PROVENANCE, BUNDLED_SKILL_FILES};
 use crate::ids::SkillId;
 use crate::measure::digest::Digest;
 
+/// The marketplace API, for the `horch` binary, which depends on core only.
+pub use horch_marketplace as marketplace;
 pub use horch_marketplace::SkillVersion;
 
 /// Where a catalog entry's files come from.
@@ -82,6 +91,9 @@ impl CatalogEntry {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillCatalog {
     entries: BTreeMap<String, CatalogEntry>,
+    /// The marketplace store root (`<data_root>`) that marketplace entries'
+    /// files live under. `None` for a catalog built from a lock in memory.
+    store_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,7 +175,71 @@ impl SkillCatalog {
                 },
             );
         }
-        Ok(SkillCatalog { entries })
+        Ok(SkillCatalog {
+            entries,
+            store_root: None,
+        })
+    }
+
+    /// The catalog a launch sees: the bundled skills plus the marketplace
+    /// lock under `data_root` (`${XDG_DATA_HOME:-~/.local/share}/horch/`),
+    /// when it exists. A marketplace entry gets its description from the
+    /// installed SKILL.md; a missing version directory leaves it empty, and
+    /// materializing that entry fails.
+    pub fn installed(data_root: &Path) -> Result<SkillCatalog> {
+        let lock_path = Store::new(data_root).lock_path();
+        let lock =
+            Lockfile::read(&lock_path).map_err(|e| anyhow!("{}: {e}", lock_path.display()))?;
+        let mut catalog = Self::bundled()?.with_lock(&lock.skills)?;
+        catalog.store_root = Some(data_root.to_path_buf());
+        for entry in catalog.entries.values_mut() {
+            if entry.source == CatalogSource::Bundled {
+                continue;
+            }
+            let dir = version_dir(data_root, entry.id.as_str(), &entry.version.0)?;
+            if let Ok(manifest) = SkillManifest::read(&dir, Some(entry.id.as_str())) {
+                entry.description = manifest.description;
+                entry.skill_file_bytes = std::fs::metadata(dir.join("SKILL.md"))
+                    .map(|m| m.len() as usize)
+                    .unwrap_or(0);
+            }
+        }
+        Ok(catalog)
+    }
+
+    /// `<data_root>/skills/<id>/<version>/` of a marketplace entry. `None`
+    /// for a bundled entry, or when this catalog has no store root.
+    pub fn store_dir(&self, entry: &CatalogEntry) -> Result<Option<PathBuf>> {
+        match (&entry.source, &self.store_root) {
+            (CatalogSource::Marketplace { .. }, Some(root)) => {
+                version_dir(root, entry.id.as_str(), &entry.version.0).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// The bundled skills as the installer's catalog, so a `bundled:<id>`
+    /// source installs the compiled-in copy.
+    pub fn marketplace_catalog(&self) -> Result<Catalog> {
+        let mut out = Catalog::new();
+        for entry in self.entries.values() {
+            if entry.source != CatalogSource::Bundled {
+                continue;
+            }
+            out = out.with_bundled(BundledSkill {
+                id: horch_marketplace::SkillId::parse(entry.id.as_str())
+                    .map_err(|e| anyhow!("{e}"))?,
+                files: entry
+                    .files
+                    .iter()
+                    .map(|(path, bytes)| BundledFile {
+                        path: (*path).to_owned(),
+                        bytes: Cow::Borrowed(*bytes),
+                    })
+                    .collect(),
+            });
+        }
+        Ok(out)
     }
 
     /// Merge marketplace lock entries in.
@@ -230,6 +306,67 @@ impl SkillCatalog {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+}
+
+/// The marketplace installer over the store at `data_root`, running `git`
+/// (the caller resolves `$HORCH_GIT_BIN`), with the bundled skills as its
+/// catalog.
+pub fn installer(data_root: &Path, git: &Path) -> Result<Installer> {
+    Ok(Installer::new(data_root.to_path_buf(), GitRunner::new(git))
+        .with_catalog(SkillCatalog::bundled()?.marketplace_catalog()?))
+}
+
+/// What `horch skills doctor` found for one lock entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreState {
+    /// The version directory exists and matches the locked digest.
+    Ok,
+    /// The version directory does not exist.
+    Missing,
+    /// The files on disk have a different digest, or fail the store's
+    /// tree rules (`actual` says why).
+    Tampered { actual: String },
+    /// The lock entry cannot name a directory.
+    Invalid(String),
+}
+
+/// Check every lock entry under `data_root` against the files on disk.
+/// Needs no network. An absent lock is an empty store.
+pub fn check_store(data_root: &Path) -> Result<Vec<(LockEntry, PathBuf, StoreState)>> {
+    let lock_path = Store::new(data_root).lock_path();
+    let lock = Lockfile::read(&lock_path).map_err(|e| anyhow!("{}: {e}", lock_path.display()))?;
+    let mut out = Vec::new();
+    for entry in lock.skills {
+        let (dir, state) = match version_dir(data_root, &entry.id, &entry.version) {
+            Err(e) => (PathBuf::new(), StoreState::Invalid(format!("{e:#}"))),
+            Ok(dir) if !dir.is_dir() => (dir, StoreState::Missing),
+            Ok(dir) => {
+                let state = match horch_marketplace::integrity::tree_digest(&dir) {
+                    Ok(actual) if actual == entry.digest => StoreState::Ok,
+                    Ok(actual) => StoreState::Tampered { actual },
+                    Err(e) => StoreState::Tampered {
+                        actual: e.to_string(),
+                    },
+                };
+                (dir, state)
+            }
+        };
+        out.push((entry, dir, state));
+    }
+    Ok(out)
+}
+
+/// `<root>/skills/<id>/<version>/`, after checking that `id` and `version`
+/// are plain path segments: the lock is an operator-writable file.
+fn version_dir(root: &Path, id: &str, version: &str) -> Result<PathBuf> {
+    horch_marketplace::SkillId::parse(id).map_err(|e| anyhow!("marketplace.lock: {e}"))?;
+    if version.is_empty()
+        || matches!(version, "." | "..")
+        || version.contains(['/', '\\', '\0', ':'])
+    {
+        bail!("marketplace.lock: '{id}' version '{version}' cannot name a directory");
+    }
+    Ok(root.join("skills").join(id).join(version))
 }
 
 /// The SKILL.md rules: YAML frontmatter whose `name` equals the directory
