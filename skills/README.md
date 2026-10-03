@@ -45,3 +45,4 @@ A skill may combine several upstream files, from several repositories. Its entry
 
 | Skill | Upstream sources |
 | --- | --- |
+| [brand-identity](brand-identity/SKILL.md) | `nextlevelbuilder/ui-ux-pro-max-skill`: `.claude/skills/brand/` (SKILL.md, references, starter template), `.claude/skills/design/` (logo style guide, logo color psychology, logo industries data); `leonxlnx/taste-skill`: `skills/brandkit/SKILL.md` (non-image parts) |
