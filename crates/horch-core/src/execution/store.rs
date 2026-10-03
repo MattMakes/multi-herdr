@@ -313,6 +313,32 @@ impl ExecutionStore {
         Ok(serde_json::to_string_pretty(records)?)
     }
 
+    /// The ledger for people and the orchestrator LLM, newest first: what
+    /// `horch sessions` prints. Every line it needs to weigh relevance and
+    /// pick a resumable session id. Orchestrators come first, in their own
+    /// section: they are never resumed with `horch spawn`, so they must not
+    /// read as candidates among the workers. A ledger with no orchestrator
+    /// record renders as before.
+    pub fn render_text(records: &[LedgerRecordV1]) -> String {
+        let mut records = records.to_vec();
+        if records.is_empty() {
+            return "no sessions recorded for this project yet\n".to_string();
+        }
+        records.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+        records.reverse();
+        let (orchestrators, workers): (Vec<LedgerRecordV1>, Vec<LedgerRecordV1>) = records
+            .into_iter()
+            .partition(LedgerRecordV1::is_orchestrator);
+        let mut out = String::new();
+        if !orchestrators.is_empty() {
+            out.push_str("== orchestrators (restart with horch fleet, never resume) ==\n\n");
+            render_records(&orchestrators, &mut out);
+            out.push_str("== workers ==\n\n");
+        }
+        render_records(&workers, &mut out);
+        out
+    }
+
     /// Replace the file with `records`, durably. A record's `status` is
     /// brought in line with its `state` first.
     fn write(&self, records: &mut [LedgerRecordV1]) -> Result<()> {
@@ -496,5 +522,44 @@ impl ExecutionStore {
             .into_iter()
             .filter(|r| r.execution_status().is_live())
             .collect())
+    }
+}
+
+/// The text of each record, in the given order.
+fn render_records(records: &[LedgerRecordV1], out: &mut String) {
+    for r in records {
+        let session = r.session_id.as_deref().unwrap_or("not-yet-known");
+        out.push_str(&format!(
+            "[{}] {} ({})  session={}  record={}\n",
+            r.status, r.tier, r.role, session, r.record_id
+        ));
+        let effort = r
+            .effort
+            .as_deref()
+            .map(|e| format!(" effort={e}"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  agent={} model={}{effort}  updated={}\n",
+            r.agent, r.model, r.updated_at
+        ));
+        if let Some(phase) = r.phase {
+            out.push_str(&format!("  phase={phase}\n"));
+        }
+        if let Some(via) = &r.via {
+            out.push_str(&format!(
+                "  ran via {via}: {}\n",
+                r.substitution_reason.as_deref().unwrap_or("substituted")
+            ));
+        }
+        out.push_str(&format!("  task: {}\n", r.task));
+        let notable: Vec<&crate::execution::legacy::HistoryEntry> = r
+            .history
+            .iter()
+            .filter(|h| h.event == "done" || h.event == "note")
+            .collect();
+        for h in notable.iter().rev().take(3).rev() {
+            out.push_str(&format!("  {} @ {}: {}\n", h.event, h.at, h.text));
+        }
+        out.push('\n');
     }
 }

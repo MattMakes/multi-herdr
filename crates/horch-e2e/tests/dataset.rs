@@ -285,11 +285,14 @@ fn pre_07_probe_no_secret_persisted() {
             ("HORCH_CLAUDE_BIN", fake.to_str().unwrap()),
             // A dummy value, never a real key: it proves nothing persists it.
             ("ANTHROPIC_API_KEY", "SENTINEL"),
+            // B3: a passed preflight starts the round. This test is about
+            // preflight only, so it stops there (exit 86).
+            ("HORCH_FAULT", "abort-after-preflight"),
         ],
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        matches!(out.status.code(), Some(0) | Some(4)),
+        matches!(out.status.code(), Some(4) | Some(86)),
         "{stdout}\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -321,4 +324,243 @@ fn pre_07_probe_no_secret_persisted() {
     let claude = manifest["harness_versions"]["claude"].as_str().unwrap();
     assert!(claude.contains("[REDACTED]"), "{claude}");
     assert_no_worktree(&h);
+}
+
+// ── B3: whole rounds through the coordinator ─────────────────────────────
+
+/// Every teammate in the repo roster except `keep`: the `exclude` list that
+/// leaves the planner only `keep` to pick from.
+fn exclude_all_but(keep: &[&str]) -> Vec<String> {
+    let dir = horch_e2e::harness::repo_root().join("teammates");
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".md").map(str::to_string)
+        })
+        .filter(|n| n != "README" && !n.starts_with('_') && !keep.contains(&n.as_str()))
+        .collect();
+    out.sort();
+    out
+}
+
+/// A round harness: git repo with a committed `.multi-herdr/dataset.yaml`,
+/// fake-herdr in `exec` (pane commands really run), every quota pool ok, a
+/// machine with room, and the candidates' behavior keyed by label.
+fn round_harness(name: &str, keep: &[&str], yaml: &str, candidates: Value) -> Option<Harness> {
+    let mut h = harness(name)?;
+    let machine = machine_fixture(&h, 500_000_000_000);
+    h.set("HORCH_MACHINE_FILE", machine.to_string_lossy());
+    h.set("HORCH_FAKE_SCENARIO", "exec");
+    h.set(
+        "HORCH_QUOTA_FILE",
+        horch_e2e::harness::fixtures()
+            .join("quota/all-ok.json")
+            .to_string_lossy(),
+    );
+    let dir = h.project.join(".multi-herdr");
+    std::fs::create_dir_all(&dir).unwrap();
+    let exclude: Vec<Value> = exclude_all_but(keep).into_iter().map(Value::from).collect();
+    std::fs::write(
+        dir.join("dataset.yaml"),
+        format!("exclude: {}\n{yaml}", Value::from(exclude)),
+    )
+    .unwrap();
+    for args in [
+        &["add", "-A"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "dataset config"],
+    ] {
+        let out = h.git_cmd(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let mut file = h.log.clone().into_os_string();
+    file.push(".candidates.json");
+    std::fs::write(file, candidates.to_string()).unwrap();
+    Some(h)
+}
+
+fn dataset(h: &Harness, args: &[&str], extra: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(dataset_bin());
+    cmd.args(args);
+    h.seal(&mut cmd);
+    cmd.envs(extra.iter().copied());
+    cmd.output().expect("running multi-herdr-dataset")
+}
+
+fn run_round(h: &Harness, n: u32, extra: &[(&str, &str)]) -> Output {
+    let n = n.to_string();
+    dataset(
+        h,
+        &[
+            "run",
+            "add a greeting",
+            "--candidates",
+            &n,
+            "--budget-usd",
+            "100",
+        ],
+        extra,
+    )
+}
+
+fn text(o: &Output) -> String {
+    format!(
+        "status: {}\nstdout: {}\nstderr: {}",
+        o.status,
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
+}
+
+/// The project's execution records.
+fn records(h: &Harness) -> Vec<Value> {
+    let slug: String = h
+        .project
+        .to_string_lossy()
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                b as char
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    std::fs::read_to_string(h.state.join(format!("{slug}.json")))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn candidate_records(h: &Harness) -> Vec<Value> {
+    records(h)
+        .into_iter()
+        .filter(|r| r["experiment_id"].is_string())
+        .collect()
+}
+
+/// The events of one kind.
+fn of_kind<'a>(events: &'a [Value], kind: &str) -> Vec<&'a Value> {
+    events.iter().filter(|e| e["kind"] == kind).collect()
+}
+
+/// The payload of `candidate.failed` for `label`.
+fn failure_of(events: &[Value], label: &str) -> Value {
+    of_kind(events, "candidate.failed")
+        .into_iter()
+        .find(|e| e["payload"]["label"] == label)
+        .map(|e| e["payload"]["failure"].clone())
+        .unwrap_or(Value::Null)
+}
+
+/// The final state of the only round, from `status`.
+fn round_state(h: &Harness) -> String {
+    let out = dataset(h, &["status"], &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("round "))
+        .and_then(|l| l.split_whitespace().nth(3))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `rebuild <exp>` exits 0: the fold equals the event-by-event projection.
+fn assert_rebuild_equal(h: &Harness) {
+    let events = events(h);
+    let exp = events[0]["experiment_id"].as_str().unwrap();
+    let out = dataset(h, &["rebuild", exp], &[]);
+    assert!(out.status.success(), "{}", text(&out));
+}
+
+/// No violation, and no fake process left running after the round.
+fn assert_clean(h: &Harness) {
+    assert!(h.violations().is_empty(), "{:?}", h.violations());
+}
+
+#[test]
+fn cmp_05_e2e_candidates_in_dataset_workspace() {
+    let Some(h) = round_harness(
+        "cmp05",
+        &["sonnet", "codex-sol"],
+        "",
+        serde_json::json!({
+            "A": {"write": {"greeting.txt": "hello A\n"}, "commit": true, "exit": "done"},
+            "B": {"write": {"greeting.txt": "hello B\n"}, "exit": "done"},
+        }),
+    ) else {
+        return;
+    };
+    let out = run_round(&h, 2, &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let events = events(&h);
+    assert_eq!(
+        of_kind(&events, "candidate.spawned").len(),
+        2,
+        "{}",
+        text(&out)
+    );
+    assert_eq!(of_kind(&events, "candidate.completed").len(), 2);
+    assert_eq!(round_state(&h), "JUDGING_BACKGROUND", "{}", text(&out));
+
+    // Each candidate ran in its own worktree.
+    let worktrees: Vec<(String, String)> = of_kind(&events, "worktree.created")
+        .iter()
+        .map(|e| {
+            (
+                e["payload"]["label"].as_str().unwrap().to_string(),
+                e["payload"]["path"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    for (label, path) in &worktrees {
+        let launch = h
+            .calls()
+            .into_iter()
+            .find(|c| c["candidate"] == label.as_str())
+            .unwrap_or_else(|| panic!("no launch of {label}"));
+        let cwd = std::fs::canonicalize(launch["cwd"].as_str().unwrap()).unwrap();
+        assert_eq!(cwd, std::fs::canonicalize(path).unwrap(), "{label}");
+    }
+
+    // The panes were split in the dataset workspace, from its root pane, and
+    // no pane registered as orchestrator.
+    let herdr = h.calls_of("herdr");
+    let create = herdr
+        .iter()
+        .find(|c| c["argv"][0] == "workspace" && c["argv"][1] == "create")
+        .expect("a workspace was created");
+    let argv: Vec<&str> = create["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let label = argv[argv.iter().position(|a| *a == "--label").unwrap() + 1];
+    assert!(label.starts_with("multi-herdr-dataset "), "{argv:?}");
+    assert!(argv.contains(&"--no-focus"), "{argv:?}");
+    let splits: Vec<&Value> = herdr
+        .iter()
+        .filter(|c| c["argv"][0] == "pane" && c["argv"][1] == "split")
+        .collect();
+    assert_eq!(splits.len(), 2);
+    for s in &splits {
+        assert_eq!(s["argv"][2], "w1:p1", "{s}");
+    }
+    let mailbox = h.tmp.join("horch-mailbox");
+    let registered = files_under(&h.tmp)
+        .into_iter()
+        .any(|f| f.file_name().is_some_and(|n| n == "orchestrator"));
+    assert!(!registered, "{}", mailbox.display());
+    for r in candidate_records(&h) {
+        assert_eq!(r["workspace_id"], "w1", "{r}");
+        assert!(r["workdir"].is_string(), "{r}");
+    }
+    assert_rebuild_equal(&h);
+    assert_clean(&h);
 }

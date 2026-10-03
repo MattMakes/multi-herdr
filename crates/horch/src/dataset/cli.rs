@@ -34,6 +34,12 @@ pub enum Command {
     /// Plan a round, run preflight, and start the candidates.
     Run(RunArgs),
 
+    /// Re-enter an experiment where its events stop (after a crash or kill).
+    Resume {
+        #[arg(value_name = "EXPERIMENT")]
+        experiment: String,
+    },
+
     /// Show the experiments and rounds with their state.
     Status {
         /// Only this experiment.
@@ -87,8 +93,22 @@ pub enum Command {
     Rollback(Placeholder),
     #[command(hide = true)]
     Cleanup(Placeholder),
+    /// The dataset workspace's root pane: print the round status every few
+    /// seconds until the candidates are done. Reads no input.
     #[command(hide = true)]
-    Watch(Placeholder),
+    Watch(WatchArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct WatchArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    pub experiment: String,
+    /// The state root of the dataset (a pane does not inherit the env).
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
+    /// The project whose dataset this is.
+    #[arg(long, value_name = "DIR")]
+    pub project: Option<PathBuf>,
 }
 
 /// `judge-job`: one judge attempt (`evaluation::scheduler::job_args`).

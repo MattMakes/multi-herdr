@@ -24,6 +24,10 @@
 //!   `HERDR_PANE_ID` set, the way a real pane would. Output goes to
 //!   `$HORCH_FAKE_LOG.pane-<id>.out`. The process group id is stored in the
 //!   state, and `pane close` kills that group.
+//!
+//! Dataset workspaces (label `multi-herdr-dataset ...`) are exempt from the
+//! violation rule: their coordinator splits and closes panes there.
+//! `workspace close` removes a workspace and kills every pane command in it.
 
 use std::path::PathBuf;
 
@@ -72,14 +76,17 @@ fn run(call: &mut Call) -> i32 {
         say("herdr 0.8.2 (fake)");
         return 0;
     }
+    let mut state = load();
     // Any verb that changes what the operator sees is a violation, whatever
-    // noun it is attached to.
+    // noun it is attached to, except inside a dataset workspace: the
+    // coordinator owns that one and splits and closes in it by design.
     if let Some(verb) = args.get(1) {
-        if MUTATING.contains(verb) || (args.first() == Some(&"tab") && *verb == "focus") {
+        if (MUTATING.contains(verb) || (args.first() == Some(&"tab") && *verb == "focus"))
+            && !in_dataset_workspace(&state, &args)
+        {
             call.violate(format!("mutating call: herdr {}", args.join(" ")));
         }
     }
-    let mut state = load();
     match args.as_slice() {
         ["workspace", "list", ..] => ok(json!({
             "type": "workspace_list",
@@ -161,6 +168,11 @@ fn run(call: &mut Call) -> i32 {
             save(&state);
             ok(json!({"type": "ok"}))
         }
+        ["workspace", "close", ws] => {
+            close_workspace(&mut state, ws);
+            save(&state);
+            ok(json!({"type": "ok"}))
+        }
         ["session", "list", ..] => ok(json!({
             "type": "session_list",
             "sessions": [{"name": "default", "current": true}],
@@ -236,6 +248,48 @@ fn remove_pane(state: &mut Value, pane: &str) -> bool {
         }
     }
     found
+}
+
+/// The label prefix of the workspaces `multi-herdr-dataset` creates.
+const DATASET_LABEL: &str = "multi-herdr-dataset";
+
+/// Whether the call targets a pane or workspace of a dataset workspace
+/// (its third argument names it).
+fn in_dataset_workspace(state: &Value, args: &[&str]) -> bool {
+    let Some(target) = args.get(2) else {
+        return false;
+    };
+    state["workspaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|w| {
+            w["label"]
+                .as_str()
+                .is_some_and(|l| l.starts_with(DATASET_LABEL))
+                && (w["workspace_id"].as_str() == Some(target)
+                    || w["panes"]
+                        .as_array()
+                        .is_some_and(|p| p.iter().any(|p| p["pane_id"].as_str() == Some(target))))
+        })
+}
+
+/// Remove a workspace and kill every pane command in it.
+fn close_workspace(state: &mut Value, ws: &str) {
+    let panes: Vec<String> = state["workspaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|w| w["workspace_id"].as_str() == Some(ws))
+        .flat_map(|w| w["panes"].as_array().cloned().unwrap_or_default())
+        .filter_map(|p| p["pane_id"].as_str().map(str::to_string))
+        .collect();
+    for pane in panes {
+        remove_pane(state, &pane);
+    }
+    if let Some(all) = state["workspaces"].as_array_mut() {
+        all.retain(|w| w["workspace_id"].as_str() != Some(ws));
+    }
 }
 
 /// Kill the process group of a pane's command.

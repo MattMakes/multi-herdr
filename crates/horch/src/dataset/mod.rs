@@ -19,6 +19,7 @@ pub mod readiness;
 pub mod rebuild;
 pub mod run;
 pub mod status;
+pub mod watch;
 
 use cli::Command;
 
@@ -48,6 +49,7 @@ pub fn dispatch(
 ) -> Result<u8> {
     match command {
         Command::Run(args) => run::run(ctx, env, &args),
+        Command::Resume { experiment } => run::resume(ctx, env, &experiment),
         Command::Status { experiment } => status::status(ctx, experiment.as_deref()),
         Command::Export { label_policy } => export::export(ctx, label_policy.as_deref()),
         Command::Readiness {
@@ -71,7 +73,7 @@ pub fn dispatch(
         Command::Promote(_) => not_implemented("promote"),
         Command::Rollback(_) => not_implemented("rollback"),
         Command::Cleanup(_) => not_implemented("cleanup"),
-        Command::Watch(_) => not_implemented("watch"),
+        Command::Watch(args) => watch::watch(ctx, &args),
     }
 }
 

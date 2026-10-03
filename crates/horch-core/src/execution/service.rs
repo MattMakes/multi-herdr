@@ -227,6 +227,7 @@ impl ExecutionService<'_> {
             teammates_dir: text(ctx.bins.roster_override.as_deref()),
             workdir: text(e.workdir.as_deref()),
             bin_overrides: Default::default(),
+            report_to: plan.report_to,
         };
         brief.set_overrides(ctx.bins.overrides.clone());
         let dir = self.mailbox.dir();

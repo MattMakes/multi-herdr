@@ -91,6 +91,9 @@ enum Command {
         /// Print the raw ledger JSON instead of the readable summary.
         #[arg(long)]
         json: bool,
+        /// Also list competition candidates and judges (multi-herdr-dataset).
+        #[arg(long)]
+        all: bool,
     },
 
     /// Inspect, validate, or scaffold the roster in `teammates/`.
@@ -419,7 +422,7 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Assign { role, task } => cmd::messaging::assign(ctx, &role, &joined(&task))?,
         Command::Note { text } => cmd::messaging::note(ctx, &joined(&text))?,
         Command::Done { summary } => cmd::messaging::done(ctx, &joined(&summary))?,
-        Command::Sessions { json } => cmd::ledgercmd::sessions(ctx, json)?,
+        Command::Sessions { json, all } => cmd::ledgercmd::sessions(ctx, json, all)?,
         Command::Skills {
             command,
             phase,

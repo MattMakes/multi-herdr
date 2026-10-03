@@ -218,3 +218,101 @@ pub fn bin_dir() -> PathBuf {
     }
     dir
 }
+
+/// The competition-candidate behavior for this launch, from
+/// `$HORCH_FAKE_LOG.candidates.json`, when the file names this process's
+/// working directory or its last component (the candidate label, because a
+/// candidate runs in `<worktree root>/<label>`):
+///
+/// ```json
+/// {"A": {"write": {"greeting.txt": "hi\n"}, "commit": true, "exit": "done",
+///        "usage": {"model": "claude-opus-5-5", "input": 1000, "output": 500}}}
+/// ```
+///
+/// `exit` is one of `done` (run `horch done`, as a real agent would),
+/// `crash` (exit 3), `exit0` (exit 0 without `horch done`), `hang` (block
+/// until killed) and `vanish` (close the own pane through herdr).
+pub fn candidate_spec() -> Option<(String, Value)> {
+    let log = std::env::var_os("HORCH_FAKE_LOG")?;
+    let mut path = log;
+    path.push(".candidates.json");
+    let all: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let cwd = std::env::current_dir().ok()?;
+    let canonical = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+    let label = cwd.file_name()?.to_string_lossy().into_owned();
+    for key in [
+        cwd.to_string_lossy().into_owned(),
+        canonical.to_string_lossy().into_owned(),
+        label.clone(),
+    ] {
+        if let Some(spec) = all.get(&key) {
+            return Some((label, spec.clone()));
+        }
+    }
+    None
+}
+
+/// Act out a candidate: write its files, commit them when asked, record the
+/// call, then end the way `spec.exit` says. `usage` writes the harness's
+/// transcript for `spec.usage`, when the fake has one to write. Never
+/// returns.
+pub fn run_candidate(call: &mut Call, label: &str, spec: &Value, usage: impl Fn(&Value)) -> ! {
+    if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
+        call.violate("ANTHROPIC_API_KEY present in a candidate's environment");
+    }
+    call.extra.insert("candidate".into(), json!(label));
+    let cwd = std::env::current_dir().unwrap_or_default();
+    call.extra
+        .insert("cwd".into(), json!(cwd.to_string_lossy()));
+    if let Some(files) = spec["write"].as_object() {
+        for (path, content) in files {
+            let file = cwd.join(path);
+            if let Some(dir) = file.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&file, content.as_str().unwrap_or_default());
+        }
+    }
+    if !spec["usage"].is_null() {
+        usage(&spec["usage"]);
+    }
+    if spec["commit"].as_bool() == Some(true) {
+        if let Some(git) = std::env::var_os("HORCH_GIT_BIN") {
+            for args in [
+                &["add", "-A"][..],
+                &["commit", "--quiet", "--no-gpg-sign", "-m", "candidate work"],
+            ] {
+                let _ = std::process::Command::new(&git).args(args).status();
+            }
+        }
+    }
+    let exit = spec["exit"].as_str().unwrap_or("done").to_string();
+    call.extra.insert("exit".into(), json!(exit));
+    call.flush();
+    match exit.as_str() {
+        "crash" => std::process::exit(3),
+        "exit0" => std::process::exit(0),
+        "hang" => hang(),
+        "vanish" => {
+            let herdr = std::env::var_os("HORCH_HERDR_BIN").unwrap_or_else(|| "herdr".into());
+            let pane = std::env::var("HERDR_PANE_ID").unwrap_or_default();
+            let _ = std::process::Command::new(herdr)
+                .args(["pane", "close", &pane])
+                .status();
+            hang()
+        }
+        _ => {
+            // `horch done` closes this pane, which ends this process.
+            let ok = std::process::Command::new("horch")
+                .args(["done", &format!("candidate {label} finished")])
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                call.violate("horch done failed");
+                call.flush();
+                std::process::exit(1);
+            }
+            hang()
+        }
+    }
+}

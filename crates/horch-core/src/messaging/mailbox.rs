@@ -249,6 +249,7 @@ mod tests {
             teammates_dir: None,
             workdir: None,
             bin_overrides: BinOverrides::default(),
+            report_to: crate::execution::ReportTarget::Orchestrator,
         }
     }
 

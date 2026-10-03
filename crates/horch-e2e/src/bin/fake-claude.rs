@@ -27,7 +27,9 @@
 use std::io::BufRead;
 use std::path::Path;
 
-use horch_e2e::{hang, say, scenario, scenario_has, write_skills_report, Call};
+use horch_e2e::{
+    candidate_spec, hang, run_candidate, say, scenario, scenario_has, write_skills_report, Call,
+};
 use serde_json::{json, Value};
 
 fn main() {
@@ -55,6 +57,10 @@ fn main() {
         .windows(2)
         .any(|w| w[0] == "--input-format" && w[1] == "stream-json");
     if !probe {
+        if let Some((label, spec)) = candidate_spec() {
+            let argv = call.argv.clone();
+            run_candidate(&mut call, &label, &spec, |u| write_transcript(&argv, u));
+        }
         if scenario_has("inspect_skills") {
             inspect_skills(&call.argv);
         }
@@ -261,4 +267,38 @@ fn judgment(labels: &[String]) -> String {
         "rationale": "The first candidate is best.",
     })
     .to_string()
+}
+
+/// A transcript at `$HOME/.claude/projects/<cwd slug>/<session>.jsonl` with
+/// one assistant message using `usage` (`model`, `input`, `output`), so
+/// horch's telemetry readers price the session.
+fn write_transcript(argv: &[String], usage: &Value) {
+    let Some(sid) = argv
+        .windows(2)
+        .find(|w| w[0] == "--session-id")
+        .map(|w| w[1].clone())
+    else {
+        return;
+    };
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let slug: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let dir = home.join(".claude/projects").join(slug);
+    let _ = std::fs::create_dir_all(&dir);
+    let line = json!({
+        "type": "assistant",
+        "sessionId": sid,
+        "timestamp": "2026-10-02T12:00:00.000Z",
+        "message": {"id": "msg_candidate", "model": usage["model"], "role": "assistant",
+            "content": [{"type": "text", "text": "working"}],
+            "usage": {"input_tokens": usage["input"], "output_tokens": usage["output"],
+                      "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+    });
+    let _ = std::fs::write(dir.join(format!("{sid}.jsonl")), format!("{line}\n"));
 }

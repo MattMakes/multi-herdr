@@ -96,6 +96,19 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     let store = ExecutionStore::open_in(ctx)?;
 
     let existing = req.resume.as_deref().and_then(|key| store.get(key).ok());
+    if let Some(r) = existing.as_ref().filter(|r| r.round_id.is_some()) {
+        anyhow::bail!(
+            "record {} is a competition {} (round {}); multi-herdr-dataset owns it, \
+             so horch spawn --resume refuses it",
+            r.record_id,
+            if r.experiment_id.is_some() {
+                "candidate"
+            } else {
+                "judge"
+            },
+            r.round_id.as_deref().unwrap_or_default()
+        );
+    }
     let root = &ctx.paths.state_root;
     let gated = match plan::needs_gate(&req, &roster) {
         true => {

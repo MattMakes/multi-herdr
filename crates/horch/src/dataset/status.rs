@@ -2,8 +2,9 @@
 //! from the events, with their state.
 
 use anyhow::{bail, Result};
+use horch_core::execution::FailureKind;
 use horch_core::ids::ExperimentId;
-use horch_core::measure::projection::{fold, Projection};
+use horch_core::measure::projection::{fold, CandidateView, Projection};
 use horch_core::measure::store;
 use horch_core::runtime::RuntimeContext;
 
@@ -63,6 +64,9 @@ pub fn render(projection: &Projection, only: Option<&ExperimentId>, torn_lines: 
                 r.state.as_str(),
                 r.candidates.len(),
             ));
+            for (label, c) in &r.candidates {
+                out.push_str(&format!("    {label} {}\n", candidate_line(c)));
+            }
         }
     }
     if !projection.anomalies.is_empty() {
@@ -75,6 +79,51 @@ pub fn render(projection: &Projection, only: Option<&ExperimentId>, torn_lines: 
         out.push_str(&format!("{torn_lines} torn lines skipped\n"));
     }
     out
+}
+
+/// One candidate: its teammate and how far it got.
+fn candidate_line(c: &CandidateView) -> String {
+    let who = c
+        .planned
+        .as_ref()
+        .map(|p| p.teammate.to_string())
+        .unwrap_or_else(|| "?".into());
+    let state = if let Some(v) = &c.validation {
+        format!(
+            "validated score {:.2}{}",
+            v.mechanical_score,
+            if c.is_eligible() { " eligible" } else { "" }
+        )
+    } else if c.frozen.is_some() {
+        "frozen".to_string()
+    } else if let Some(f) = &c.failed {
+        format!("failed {}", failure(&f.failure))
+    } else if c.completed.is_some() {
+        "completed".to_string()
+    } else if c.spawned.is_some() {
+        "running".to_string()
+    } else if c.worktree.is_some() {
+        "waiting".to_string()
+    } else {
+        "planned".to_string()
+    };
+    let ended = match (&c.failed, &c.completed, &c.validation) {
+        (Some(f), _, Some(_)) => format!(" (failed {})", failure(&f.failure)),
+        (_, Some(_), Some(_)) => " (completed)".to_string(),
+        _ => String::new(),
+    };
+    format!("{who} {state}{ended}")
+}
+
+fn failure(f: &FailureKind) -> String {
+    match f {
+        FailureKind::AgentExited { code: Some(c) } => format!("agent_exited {c}"),
+        FailureKind::AgentExited { code: None } => "agent_exited".into(),
+        FailureKind::PaneVanished => "pane_vanished".into(),
+        FailureKind::TimedOut => "timed_out".into(),
+        FailureKind::Cancelled { reason } => format!("cancelled ({reason})"),
+        FailureKind::Crashed => "crashed".into(),
+    }
 }
 
 fn short(sha: &str) -> &str {

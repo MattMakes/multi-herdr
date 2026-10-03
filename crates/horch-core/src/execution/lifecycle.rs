@@ -400,6 +400,7 @@ mod tests {
             teammates_dir: Some("/roster".into()),
             workdir: None,
             bin_overrides: BinOverrides::default(),
+            report_to: crate::execution::ReportTarget::Orchestrator,
         };
         let mut env = MapEnv::new("/");
         for key in BinOverrides::VARS {

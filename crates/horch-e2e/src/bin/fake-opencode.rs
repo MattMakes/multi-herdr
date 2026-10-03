@@ -27,7 +27,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use horch_e2e::{hang, opencode_session_id, say, scenario_has, write_skills_report, Call};
+use horch_e2e::{
+    candidate_spec, hang, opencode_session_id, run_candidate, say, scenario_has,
+    write_skills_report, Call,
+};
 use serde_json::json;
 
 fn main() {
@@ -62,6 +65,9 @@ fn main() {
             }
             if scenario_has("inspect_skills") {
                 inspect_skills();
+            }
+            if let Some((label, spec)) = candidate_spec() {
+                run_candidate(&mut call, &label, &spec, |_| {});
             }
             // Eager: a `stay` launch is killed, so nothing is written after it.
             call.flush();

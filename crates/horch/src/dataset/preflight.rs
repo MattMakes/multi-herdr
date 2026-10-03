@@ -29,6 +29,7 @@ use horch_core::measure::recorder::{NewEvent, Recorder};
 use horch_core::measure::redact::redact;
 use horch_core::routing::quota::{pool_for, QuotaView};
 use horch_core::routing::quota_probe::harness_version;
+use horch_core::runtime::fault::Faults;
 use horch_core::runtime::machine::{self, MachineSnapshot};
 use horch_core::runtime::RuntimeContext;
 use horch_core::vcs::git::{GitCli, GitClient};
@@ -281,6 +282,7 @@ pub fn record(
     recorder: &dyn Recorder,
     paths: &DatasetPaths,
     f: &ExperimentFacts<'_>,
+    faults: &Faults,
 ) -> Result<Vec<String>> {
     let task_digest = sha256_bytes(f.task.as_bytes());
     let task_id = TaskId::new(format!("task-{}", task_digest.short12()))?;
@@ -315,6 +317,7 @@ pub fn record(
         }),
         "experiment.created",
     ))?;
+    faults.abort_if("abort-after-experiment-created");
     recorder.append(event(
         EventKind::PreflightCompleted(PreflightCompleted {
             report: f.report.clone(),
