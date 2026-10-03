@@ -352,6 +352,75 @@
       "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase."
     },
     {
+      "name": "landing-page",
+      "sources": [
+        {
+          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
+          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
+          "path": "SKILL.md",
+          "sha256": "f06be455f7e5ebd35f9fbf8e0ad23dfdca6a8eb14b540c93b8ea50a4886b0f13",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
+          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
+          "path": "design_prompt.txt",
+          "sha256": "45d37e38625cc57d2338d336fbba34d4889602520ff0fea68ec13192bb3f5c2d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
+          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
+          "path": "generate_landing.sh",
+          "sha256": "3c089063a9e2db5e519964f1d4afdc8814c96530a34955935356d0bb40f78ee4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/banner-design/SKILL.md",
+          "sha256": "ccb89ddc848f60bfe630cb19dfe3e062df94a029467a9b15259f2761019ac5c4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/banner-design/references/banner-sizes-and-styles.md",
+          "sha256": "c8906fb1073a576ee8c680d9bc8586249cbc4ed36690da960d65a1c9c37143b7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/landing.csv",
+          "sha256": "9a2edd3bb676c2a58f00ade7a062e285222d4297bfd847c8d5b056f0dbbf52d0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/products.csv",
+          "sha256": "42473f75e8dde5987bdf89ce55d8c168091b80a356cae691dd60247d80720b70",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/references/quick-reference.md",
+          "sha256": "0609bc7c89dacb40472465d8fc14257b56b2c43439660fc8d6fa3b8c022e1876",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill/SKILL.md",
+          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged the felix-huber generate-and-review pipeline (run in one session, no nested CLI), banner-design, the landing patterns of ui-ux-pro-max and the landing rules of taste-skill; rewrote as a checkable workflow and dropped random styles, scripts and invented proof."
+    },
+    {
       "name": "ui-redesign",
       "sources": [
         {
