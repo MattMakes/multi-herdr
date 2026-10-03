@@ -3,9 +3,10 @@
 //!
 //! The functions below are the old zero-argument forms of the roster calls
 //! that now take the home directory and the roster override as parameters.
-//! They read the process environment so callers that A3 does not own
-//! (`launch.rs`, `skills.rs`, `plugins.rs`, the commands) keep compiling.
-//! A4 or A12 moves those callers to `RuntimeContext` and deletes them.
+//! They read the process environment for callers that do not take a
+//! `RuntimeContext` yet (the oracle and NFR tests). A2 moved `launch.rs`,
+//! `skills.rs`, `plugins.rs` and the commands to the parameterized forms and
+//! deleted the operator and `expand_home` wrappers. A12 deletes the rest.
 
 use std::path::PathBuf;
 
@@ -30,30 +31,4 @@ impl Roster {
         let roster_override = std::env::var_os("HORCH_TEAMMATES_DIR").map(PathBuf::from);
         Roster::load_layered(home().as_deref(), roster_override.as_deref(), explicit)
     }
-}
-
-/// [`crate::roster::operator_status_line`] under `$HOME`.
-pub fn operator_status_line() -> Option<serde_json::Value> {
-    crate::roster::operator_status_line(home().as_deref())
-}
-
-/// [`crate::roster::operator_enabled_plugins`] under `$HOME`.
-pub fn operator_enabled_plugins() -> Vec<String> {
-    crate::roster::operator_enabled_plugins(home().as_deref())
-}
-
-/// [`crate::roster::operator_effort_warnings`] under `$HOME`, `$CODEX_HOME`
-/// and `$CLAUDE_CODE_EFFORT_LEVEL`.
-pub fn operator_effort_warnings() -> Vec<String> {
-    crate::roster::operator_effort_warnings(
-        home().as_deref(),
-        &crate::codex::codex_home(&crate::agent::home_dir()),
-        // A2: from RuntimeContext
-        std::env::var("CLAUDE_CODE_EFFORT_LEVEL").ok().as_deref(),
-    )
-}
-
-/// [`crate::roster::expand_home`] against `$HOME`.
-pub fn expand_home(path: &str) -> PathBuf {
-    crate::roster::expand_home(path, home().as_deref())
 }

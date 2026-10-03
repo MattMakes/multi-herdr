@@ -14,6 +14,7 @@ use horch_core::ledger::{Ledger, Record, STATUS_WORKING};
 use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::paneshell::PaneShell;
 use horch_core::routing::decision::{self, Decision, GateFlags, RoutingMode, RoutingProvenance};
+use horch_core::runtime::RuntimeContext;
 use horch_core::teammates::{effort_problem, Phase, Roster, Teammate};
 
 pub struct SpawnArgs {
@@ -76,24 +77,23 @@ pub fn resolve_positionals(
 }
 
 /// Spawn a worker pane, returning its pane id so callers can chain splits.
-pub fn spawn(args: SpawnArgs) -> Result<String> {
+pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     if args.teammate.is_none() && args.resume.is_none() {
         bail!("give a teammate (e.g. `horch spawn sonnet \"task\"`) or --resume <id>");
     }
-    let roster = Roster::load_with(env_override("HORCH_TEAMMATES_DIR").as_deref())?;
+    let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
+    let roster = super::load_roster(ctx, roster_dir.as_deref())?;
 
     let herdr = Herdr::new();
-    let mailbox = Mailbox::resolve(&herdr)
+    let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane")?;
     std::fs::create_dir_all(mailbox.dir())?;
 
-    // Pin the project dir so the ledger this process writes and the ledger the
-    // worker later reads resolve to the same file.
-    let project_dir = horch_core::ledger::project_dir()?;
-    let project_dir = project_dir.to_string_lossy().into_owned();
-    std::env::set_var("HORCH_PROJECT_DIR", &project_dir);
+    // The project dir is read once, so the ledger this process writes and the
+    // ledger the worker later reads (its brief carries it) are the same file.
+    let project_dir = ctx.paths.project()?.to_string_lossy().into_owned();
 
-    let ledger = Ledger::open()?;
+    let ledger = Ledger::open_in(ctx)?;
     let mut plan = match &args.resume {
         // Resuming: teammate, model and session all come from the record.
         Some(key) => {
@@ -186,14 +186,14 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     // any role, ledger or pane side effect. A resume keeps the harness it
     // ran on, so only a fresh spawn is gated; the smoke fake spends nothing.
     if !plan.session.is_resume() && plan.teammate.agent != horch_core::teammates::Agent::None {
-        let root = horch_core::ledger::state_root();
-        let policy = super::quotacmd::load_policy(&root)?;
+        let root = ctx.paths.state_root.clone();
+        let policy = super::quotacmd::load_policy(ctx, &root)?;
         let view = horch_core::routing::snapshot::obtain(
             &root,
             horch_core::clock::now(),
             &policy,
             true,
-            &super::quotacmd::quota_env(),
+            &super::quotacmd::quota_env(ctx),
         )?;
         let flags = GateFlags {
             exact: args.exact,
@@ -280,7 +280,13 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
         ledger.set_routing(&plan.record_id, Some(&plan.routing))?;
     }
 
-    mailbox.write_brief(&Brief {
+    // A spawned pane is a fresh shell started by the herdr server, so it
+    // inherits the user's profile - not the environment `horch spawn` was run
+    // with. Without the brief, `HORCH_CLAUDE_BIN=claude horch fleet` would
+    // silently have no effect on the workers it spawns, which is exactly when
+    // the override is needed most.
+    let mut brief = Brief {
+        schema: horch_core::messaging::brief::SCHEMA,
         role: role.clone(),
         teammate: plan.teammate.name.clone(),
         agent: plan.teammate.agent.as_str().to_string(),
@@ -289,28 +295,31 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
         session: plan.session.clone(),
         task: args.task.clone(),
         project_dir,
-        state_dir: std::env::var("HORCH_STATE_DIR")
-            .ok()
-            .filter(|s| !s.is_empty()),
-        claude_bin: env_override("HORCH_CLAUDE_BIN"),
-        codex_bin: env_override("HORCH_CODEX_BIN"),
+        state_dir: super::path_text(ctx.paths.state_override.as_deref()),
+        claude_bin: None,
+        codex_bin: None,
         resolved: Some(plan.teammate.clone()),
-        teammates_dir: env_override("HORCH_TEAMMATES_DIR"),
-    })?;
+        teammates_dir: roster_dir,
+        workdir: None,
+        bin_overrides: Default::default(),
+    };
+    brief.set_overrides(ctx.bins.overrides.clone());
+    mailbox.write_brief(&brief)?;
 
     let from_pane = match args.from_pane {
         Some(p) => p,
         None => {
-            let internal = std::env::var("HERDR_PANE_ID")
-                .ok()
-                .filter(|s| !s.is_empty())
+            let internal = ctx
+                .herdr
+                .pane
+                .as_ref()
                 .context("horch spawn needs --from-pane when not run inside a herdr pane")?;
-            herdr.pane_get(&internal)?.pane_id
+            herdr.pane_get(internal.as_str())?.pane_id
         }
     };
 
     let new_pane = herdr.pane_split(&from_pane, args.direction)?;
-    let exe = std::env::current_exe().context("locating the horch binary")?;
+    let exe = ctx.bins.exe()?;
     let command = PaneShell::host().command_line(&exe, &["worker", role.as_str()]);
     herdr.pane_run(&new_pane, &command)?;
 
@@ -325,10 +334,10 @@ pub fn spawn(args: SpawnArgs) -> Result<String> {
     // worker is already running.
     if args.tiling == TilingMode::Disabled {
         if let Ok(layout) = herdr.pane_layout(Some(&new_pane)) {
-            crate::cmd::balancecmd::equalize_quietly(&herdr, layout);
+            crate::cmd::balancecmd::equalize_quietly(ctx, &herdr, layout);
         }
     } else {
-        crate::cmd::tilecmd::after_change(&herdr, mailbox.workspace_id(), Some(&new_pane));
+        crate::cmd::tilecmd::after_change(ctx, &herdr, mailbox.workspace_id(), Some(&new_pane));
     }
 
     match &plan.session {
@@ -360,16 +369,6 @@ fn resolve_phase(
     default: Option<Phase>,
 ) -> Option<Phase> {
     explicit.or(recorded).or(default)
-}
-
-/// A non-empty environment override, to carry into the worker's brief.
-///
-/// A spawned pane is a fresh shell started by the herdr server, so it inherits
-/// the user's profile - not the environment `horch spawn` was run with. Without
-/// this, `HORCH_CLAUDE_BIN=claude horch fleet` would silently have no effect on
-/// the workers it spawns, which is exactly when the override is needed most.
-fn env_override(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|s| !s.is_empty())
 }
 
 /// A fresh session, with an id minted now when the agent accepts one.

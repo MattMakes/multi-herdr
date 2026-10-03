@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
 use horch_core::clock;
-use horch_core::ledger::state_root;
+use horch_core::runtime::RuntimeContext;
 use horch_core::telemetry::collect::{self, Collector, Probing, Snapshot};
 use horch_core::telemetry::store::{self, RollupRow, GROUPS};
 use horch_core::telemetry::{lock, Event, TokenClasses};
@@ -69,13 +69,13 @@ pub struct RecordTotal {
 
 /// Run one collector tick unless a live collector does that already.
 /// Returns the snapshot, and where it came from.
-pub fn catch_up() -> Result<(Snapshot, String)> {
-    let root = state_root();
+pub fn catch_up(ctx: &RuntimeContext) -> Result<(Snapshot, String)> {
+    let root = ctx.paths.state_root.clone();
     let now = clock::now();
     if !lock::collector_live(&root) {
-        let me = lock::this_process(&clock::stamp(now));
+        let me = lock::this_process(&clock::stamp(now), ctx);
         if let Ok(Ok(held)) = lock::acquire(&root, &me) {
-            let mut c = Collector::open_at(&root, Locations::from_env(), Probing::Never, now)?;
+            let mut c = Collector::open_in(ctx, Locations::from_context(ctx), Probing::Never, now)?;
             let snap = c.tick(now)?;
             held.release();
             return Ok((snap, "catch-up tick".into()));
@@ -86,7 +86,7 @@ pub fn catch_up() -> Result<(Snapshot, String)> {
     Ok((snap, "live collector".into()))
 }
 
-pub fn usage(args: UsageArgs) -> Result<()> {
+pub fn usage(ctx: &RuntimeContext, args: UsageArgs) -> Result<()> {
     if !GROUPS.contains(&args.by.as_str()) {
         bail!("--by takes one of: {}", GROUPS.join(", "));
     }
@@ -102,8 +102,8 @@ pub fn usage(args: UsageArgs) -> Result<()> {
             ),
             (None, None) => None,
         };
-    let (snap, source) = catch_up()?;
-    let events: Vec<Event> = store::read_all(&horch_core::telemetry::dir(&state_root()))
+    let (snap, source) = catch_up(ctx)?;
+    let events: Vec<Event> = store::read_all(&horch_core::telemetry::dir(&ctx.paths.state_root))
         .into_iter()
         .filter(|e| since.as_deref().is_none_or(|s| e.ts.as_str() >= s))
         .filter(|e| {
@@ -112,7 +112,15 @@ pub fn usage(args: UsageArgs) -> Result<()> {
                 .is_none_or(|p| e.project.as_deref() == Some(p))
         })
         .collect();
-    let report = build(&args, &events, snap, since, source, now);
+    let report = build(
+        &ctx.paths.state_root,
+        &args,
+        &events,
+        snap,
+        since,
+        source,
+        now,
+    );
     if args.json {
         output::println(&serde_json::to_string_pretty(&report)?);
     } else {
@@ -122,6 +130,7 @@ pub fn usage(args: UsageArgs) -> Result<()> {
 }
 
 pub fn build(
+    state_root: &std::path::Path,
     args: &UsageArgs,
     events: &[Event],
     snap: Snapshot,
@@ -129,7 +138,7 @@ pub fn build(
     source: String,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Report {
-    let done: std::collections::BTreeSet<String> = collect::read_ledgers(&state_root())
+    let done: std::collections::BTreeSet<String> = collect::read_ledgers(state_root)
         .into_iter()
         .filter(|r| r.status == horch_core::ledger::STATUS_DONE)
         .map(|r| r.record_id)

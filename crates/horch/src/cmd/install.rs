@@ -9,23 +9,28 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use horch_core::agent;
+use horch_core::runtime::{process, RuntimeContext};
 
 /// Where to put the binary when the caller does not say.
-pub fn default_dir() -> PathBuf {
+pub fn default_dir(ctx: &RuntimeContext) -> PathBuf {
     if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA")
-            .filter(|v| !v.is_empty())
-            .map(|base| Path::new(&base).join("Programs").join("horch"))
-            .unwrap_or_else(|| agent::home_dir().join("horch"))
+        ctx.inherited
+            .local_app_data
+            .as_ref()
+            .map(|base| Path::new(base).join("Programs").join("horch"))
+            .unwrap_or_else(|| ctx.paths.home.join("horch"))
     } else {
-        agent::home_dir().join(".local").join("bin")
+        ctx.paths.home.join(".local").join("bin")
     }
 }
 
-pub fn install(dir: Option<&str>) -> Result<()> {
-    let dir = dir.map(PathBuf::from).unwrap_or_else(default_dir);
-    let source = std::env::current_exe().context("locating the running horch binary")?;
+pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
+    let dir = dir.map(PathBuf::from).unwrap_or_else(|| default_dir(ctx));
+    let source = ctx
+        .bins
+        .current_exe
+        .clone()
+        .context("locating the running horch binary")?;
     let file_name = source
         .file_name()
         .context("the running binary has no file name")?;
@@ -40,7 +45,12 @@ pub fn install(dir: Option<&str>) -> Result<()> {
         println!("installed horch to {}", target.display());
     }
 
-    if agent::on_path(&dir) {
+    if ctx
+        .inherited
+        .path
+        .as_ref()
+        .is_some_and(|path| process::on_path_in(path, &dir))
+    {
         println!("\nReady. cd into a project and run: horch fleet");
         println!("(needs a running herdr server: launch the herdr app, or `herdr server`)");
     } else {
@@ -81,7 +91,7 @@ fn place_binary(source: &Path, target: &Path) -> Result<()> {
     let staged = dir.join(format!(".{}.new", file_name.to_string_lossy()));
     std::fs::copy(&source, &staged)
         .with_context(|| format!("copying {} to {}", source.display(), staged.display()))?;
-    agent::make_executable(&staged)?;
+    process::make_executable(&staged)?;
     std::fs::rename(&staged, target).with_context(|| {
         format!(
             "installing to {} (is a horch process running from there?)",
@@ -146,7 +156,13 @@ mod tests {
 
     #[test]
     fn default_dir_is_platform_appropriate() {
-        let dir = default_dir();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with("HOME", "/h")
+                .with("USERPROFILE", "/h"),
+        )
+        .unwrap();
+        let dir = default_dir(&ctx);
         if cfg!(windows) {
             assert!(dir.ends_with("horch"), "{}", dir.display());
         } else {

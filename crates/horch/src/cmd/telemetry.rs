@@ -19,8 +19,8 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use horch_core::clock;
 use horch_core::herdr::Herdr;
-use horch_core::ledger::state_root;
 use horch_core::quota::{self, PoolReading, POOLS};
+use horch_core::runtime::RuntimeContext;
 use horch_core::telemetry::collect::{self, Collector, LiveRow, Probing, Snapshot};
 use horch_core::telemetry::lock::{self, Holder};
 use horch_core::telemetry::store::{self, RollupRow, GROUPS};
@@ -517,14 +517,14 @@ pub enum TelemetryCommand {
     },
 }
 
-pub fn run(command: TelemetryCommand) -> Result<ExitCode> {
+pub fn run(ctx: &RuntimeContext, command: TelemetryCommand) -> Result<ExitCode> {
     match command {
-        TelemetryCommand::Run => space(),
+        TelemetryCommand::Run => space(ctx),
         TelemetryCommand::Ensure => {
-            ensure(&Herdr::new(), false)?;
+            ensure(ctx, &Herdr::new(), false)?;
             Ok(ExitCode::SUCCESS)
         }
-        TelemetryCommand::CollectOnce => collect_once(),
+        TelemetryCommand::CollectOnce => collect_once(ctx),
         TelemetryCommand::Render {
             snapshot,
             size,
@@ -533,7 +533,7 @@ pub fn run(command: TelemetryCommand) -> Result<ExitCode> {
         } => {
             let path = snapshot
                 .map(PathBuf::from)
-                .unwrap_or_else(|| collect::snapshot_path(&state_root()));
+                .unwrap_or_else(|| collect::snapshot_path(&ctx.paths.state_root));
             let snap = Snapshot::read(&path)?;
             let (w, h) = size
                 .split_once('x')
@@ -548,20 +548,20 @@ pub fn run(command: TelemetryCommand) -> Result<ExitCode> {
 
 /// `horch telemetry collect --once`: one tick, no screen. Exit 2 when a live
 /// collector holds the lock.
-fn collect_once() -> Result<ExitCode> {
-    let root = state_root();
+fn collect_once(ctx: &RuntimeContext) -> Result<ExitCode> {
+    let root = ctx.paths.state_root.clone();
     let now = clock::now();
-    let held = match lock::acquire(&root, &lock::this_process(&clock::stamp(now)))? {
+    let held = match lock::acquire(&root, &lock::this_process(&clock::stamp(now), ctx))? {
         Ok(held) => held,
         Err(other) => {
             eprintln!(
                 "horch: a live collector (pid {}) holds the telemetry lock",
                 other.pid
             );
-            return Ok(ExitCode::from(2));
+            return Ok(ExitCode::from(horch::exit::COLLECTOR_HELD));
         }
     };
-    let mut c = Collector::open_at(&root, Locations::from_env(), Probing::Scheduled, now)?;
+    let mut c = Collector::open_in(ctx, Locations::from_context(ctx), Probing::Scheduled, now)?;
     let snap = c.tick(now);
     held.release();
     let snap = snap?;
@@ -582,11 +582,17 @@ enum Source {
 }
 
 impl Source {
-    fn refresh(&mut self, root: &Path) -> Result<Snapshot> {
+    fn refresh(&mut self, ctx: &RuntimeContext, root: &Path) -> Result<Snapshot> {
         // A viewer whose collector died takes over (the next `ensure` would).
         if matches!(self, Source::Viewer) && !lock::collector_live(root) {
-            if let Ok(Ok(held)) = lock::acquire(root, &lock::this_process(&clock::now_stamp())) {
-                let c = Collector::open(root, Locations::from_env(), Probing::Scheduled)?;
+            if let Ok(Ok(held)) = lock::acquire(root, &lock::this_process(&clock::now_stamp(), ctx))
+            {
+                let c = Collector::open_in(
+                    ctx,
+                    Locations::from_context(ctx),
+                    Probing::Scheduled,
+                    clock::now(),
+                )?;
                 *self = Source::Collector(Box::new(c), held);
             }
         }
@@ -598,13 +604,18 @@ impl Source {
 }
 
 /// `horch telemetry`: the collector with its screen, or a viewer.
-fn space() -> Result<ExitCode> {
+fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
     install_signal_handlers();
-    let root = state_root();
-    let me = lock::this_process(&clock::now_stamp());
+    let root = ctx.paths.state_root.clone();
+    let me = lock::this_process(&clock::now_stamp(), ctx);
     let mut source = match lock::acquire(&root, &me)? {
         Ok(held) => {
-            let c = Collector::open(&root, Locations::from_env(), Probing::Scheduled)?;
+            let c = Collector::open_in(
+                ctx,
+                Locations::from_context(ctx),
+                Probing::Scheduled,
+                clock::now(),
+            )?;
             Source::Collector(Box::new(c), held)
         }
         Err(other) => {
@@ -616,17 +627,17 @@ fn space() -> Result<ExitCode> {
         }
     };
     let tick = Duration::from_millis(
-        super::quotacmd::load_policy(&root)
+        super::quotacmd::load_policy(ctx, &root)
             .map(|p| p.tick_ms)
             .unwrap_or(2000),
     );
     if std::io::stdout().is_terminal() {
-        screen(&root, &mut source, tick)?;
+        screen(ctx, &root, &mut source, tick)?;
     } else {
         // No terminal (a pane started by a test, or output to a file): keep
         // collecting until told to stop.
         while !SHUTDOWN.load(Ordering::SeqCst) {
-            if let Err(e) = source.refresh(&root) {
+            if let Err(e) = source.refresh(ctx, &root) {
                 eprintln!("horch telemetry: {e:#}");
             }
             sleep_until_shutdown(tick);
@@ -657,7 +668,7 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn screen(root: &Path, source: &mut Source, tick: Duration) -> Result<()> {
+fn screen(ctx: &RuntimeContext, root: &Path, source: &mut Source, tick: Duration) -> Result<()> {
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
     crossterm::terminal::enable_raw_mode()?;
@@ -668,7 +679,7 @@ fn screen(root: &Path, source: &mut Source, tick: Duration) -> Result<()> {
         crossterm::cursor::Hide
     )?;
     let mut view = ViewState::default();
-    let mut snap = source.refresh(root).unwrap_or_default();
+    let mut snap = source.refresh(ctx, root).unwrap_or_default();
     let mut last = Instant::now();
     loop {
         let (w, h) = crossterm::terminal::size().unwrap_or((120, 40));
@@ -707,7 +718,7 @@ fn screen(root: &Path, source: &mut Source, tick: Duration) -> Result<()> {
             break;
         }
         if last.elapsed() >= tick {
-            match source.refresh(root) {
+            match source.refresh(ctx, root) {
                 Ok(s) => {
                     snap = s;
                     view.status = None;
@@ -770,8 +781,8 @@ fn filtered(snap: &Snapshot, view: &ViewState, root: &Path) -> Snapshot {
 /// `horch telemetry ensure` (SPC-03): nothing when a live collector exists;
 /// else a new workspace, never focused, running `horch telemetry`. Only
 /// `workspace create --no-focus` and `pane run` touch herdr.
-pub fn ensure(herdr: &Herdr, quiet: bool) -> Result<()> {
-    let root = state_root();
+pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
+    let root = ctx.paths.state_root.clone();
     if let Holder::Live(info) = lock::holder(&root) {
         if !quiet {
             output::println(&format!(
@@ -792,14 +803,12 @@ pub fn ensure(herdr: &Herdr, quiet: bool) -> Result<()> {
     let ws = herdr
         .workspace_create(WORKSPACE_LABEL, None, false)
         .context("creating the telemetry workspace")?;
-    let exe = std::env::current_exe().context("locating the horch binary")?;
+    let exe = ctx.bins.exe()?;
     let mut args = vec!["telemetry".to_string()];
     // A pane does not inherit this process's environment.
-    if let Ok(dir) = std::env::var("HORCH_STATE_DIR") {
-        if !dir.is_empty() {
-            args.push("--state-dir".into());
-            args.push(dir);
-        }
+    if let Some(dir) = super::path_text(ctx.paths.state_override.as_deref()) {
+        args.push("--state-dir".into());
+        args.push(dir);
     }
     let command = horch_core::paneshell::PaneShell::host().command_line(&exe, &args);
     herdr.pane_run(&ws.root_pane_id, &command)?;

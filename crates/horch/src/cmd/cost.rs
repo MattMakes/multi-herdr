@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use horch_core::ledger::{Ledger, Record};
+use horch_core::runtime::RuntimeContext;
 use horch_core::teammates::{Phase, Roster};
 use horch_core::usage::{self, Locations, Missing, Price, Tokens};
 use serde::Serialize;
@@ -86,8 +87,8 @@ pub struct Report {
     pub total: Rollup,
 }
 
-pub fn cost(args: CostArgs) -> Result<()> {
-    let ledger = Ledger::open()?;
+pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
+    let ledger = Ledger::open_in(ctx)?;
     let mut records = ledger.read()?;
     if let Some(since) = &args.since {
         records.retain(|r| r.created_at.as_str() >= since.as_str());
@@ -131,11 +132,11 @@ pub fn cost(args: CostArgs) -> Result<()> {
         },
         None => None,
     };
-    let roster = Roster::load().ok();
+    let roster: Option<Roster> = super::load_roster(ctx, None).ok();
     let report = build(
         &records,
         roster.as_ref(),
-        &Locations::from_env(),
+        &Locations::from_context(ctx),
         &prices,
         reprice.as_ref().map(|(m, p)| (m.as_str(), p)),
     );

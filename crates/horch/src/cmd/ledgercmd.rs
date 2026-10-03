@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Subcommand;
 use horch_core::ledger::Ledger;
+use horch_core::runtime::RuntimeContext;
 
 use crate::output;
 
@@ -78,12 +79,12 @@ pub enum LedgerCommand {
 /// Read this before spawning: a `[done]` session whose task or history overlaps
 /// the new task is a resume candidate
 /// (`horch spawn --resume <session-or-record-id> "task"`).
-pub fn sessions(json: bool) -> Result<()> {
-    print_list(json)
+pub fn sessions(ctx: &RuntimeContext, json: bool) -> Result<()> {
+    print_list(ctx, json)
 }
 
-fn print_list(json: bool) -> Result<()> {
-    let ledger = Ledger::open()?;
+fn print_list(ctx: &RuntimeContext, json: bool) -> Result<()> {
+    let ledger = Ledger::open_in(ctx)?;
     if json {
         output::println(&serde_json::to_string_pretty(&ledger.read()?)?);
     } else {
@@ -92,8 +93,8 @@ fn print_list(json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn run(command: LedgerCommand) -> Result<ExitCode> {
-    let ledger = Ledger::open()?;
+pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
+    let ledger = Ledger::open_in(ctx)?;
     match command {
         LedgerCommand::Add {
             record_id,
@@ -129,7 +130,7 @@ pub fn run(command: LedgerCommand) -> Result<ExitCode> {
         LedgerCommand::Get { key } => {
             output::println(&serde_json::to_string_pretty(&ledger.get(&key)?)?)
         }
-        LedgerCommand::List { json } => print_list(json)?,
+        LedgerCommand::List { json } => print_list(ctx, json)?,
         LedgerCommand::Path => output::println(&ledger.path().display().to_string()),
     }
     Ok(ExitCode::SUCCESS)

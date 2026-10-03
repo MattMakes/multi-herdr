@@ -16,8 +16,10 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
+use horch_core::execution::TilingMode;
 use horch_core::herdr::{Herdr, Layout};
 use horch_core::mailbox::Mailbox;
+use horch_core::runtime::RuntimeContext;
 use horch_core::tile::{self, Fleet, FocusState, Op, Plan, TabRef, TabShape, Worker};
 
 use crate::output;
@@ -124,7 +126,7 @@ impl Snapshot {
 /// One `tab list` plus one `pane list` plus one `pane layout` per tab: `pane
 /// layout` reports the whole tab that holds the pane it is asked about, and every
 /// pane in `pane list` carries its `tab_id`, so one pane per tab is enough.
-fn gather(herdr: &Herdr, workspace_id: &str) -> Result<Snapshot> {
+fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Snapshot> {
     // The telemetry space holds no fleet, and its pane must stay where the
     // operator left it (design 12.3).
     if is_telemetry_space(herdr, workspace_id) {
@@ -153,7 +155,7 @@ fn gather(herdr: &Herdr, workspace_id: &str) -> Result<Snapshot> {
     // is the same guess `horch layout` has always made. Never a silent third
     // option: tiling a workspace whose orchestrator cannot be identified would
     // file it as a worker and move it.
-    let registered = Mailbox::new(workspace_id)
+    let registered = Mailbox::in_context(ctx, workspace_id)
         .panes_to_roles()
         .into_iter()
         .find(|(_, role)| role == "orchestrator")
@@ -389,8 +391,8 @@ struct TileLock {
 }
 
 impl TileLock {
-    fn acquire(workspace_id: &str) -> Result<Option<Self>> {
-        let dir = Mailbox::new(workspace_id).dir().to_path_buf();
+    fn acquire(ctx: &RuntimeContext, workspace_id: &str) -> Result<Option<Self>> {
+        let dir = Mailbox::in_context(ctx, workspace_id).dir().to_path_buf();
         std::fs::create_dir_all(&dir)?;
         Self::at(dir.join("tile.lock"), LOCK_STALE)
     }
@@ -433,18 +435,9 @@ impl Drop for TileLock {
     }
 }
 
-/// Is automatic tiling on? `HORCH_TILE=0` turns it off and puts `horch spawn` and
-/// `horch done` back to only evening out the columns.
-pub fn enabled() -> bool {
-    !matches!(
-        std::env::var("HORCH_TILE").unwrap_or_default().as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
 /// Roles by pane id, for labelling a report.
-fn roles(workspace_id: &str) -> HashMap<String, String> {
-    Mailbox::new(workspace_id)
+fn roles(ctx: &RuntimeContext, workspace_id: &str) -> HashMap<String, String> {
+    Mailbox::in_context(ctx, workspace_id)
         .panes_to_roles()
         .into_iter()
         .collect()
@@ -455,12 +448,13 @@ fn roles(workspace_id: &str) -> HashMap<String, String> {
 /// `newcomer` is a pane that must be placed last whatever its rectangle says;
 /// `horch spawn` passes the pane it just made.
 fn run(
+    ctx: &RuntimeContext,
     herdr: &Herdr,
     workspace_id: &str,
     newcomer: Option<&str>,
     plan_only: bool,
 ) -> Result<String> {
-    let snapshot = gather(herdr, workspace_id)?;
+    let snapshot = gather(ctx, herdr, workspace_id)?;
     let fleet = snapshot.fleet(newcomer);
     let plan = tile::plan(&fleet);
     let workers = plan.placement.len();
@@ -494,7 +488,7 @@ fn run(
         out.push_str(&tile::render_target(
             &plan,
             &snapshot.orchestrator,
-            &roles(workspace_id),
+            &roles(ctx, workspace_id),
         ));
         return Ok(out);
     }
@@ -506,7 +500,7 @@ fn run(
         );
     }
 
-    let Some(_lock) = TileLock::acquire(workspace_id)? else {
+    let Some(_lock) = TileLock::acquire(ctx, workspace_id)? else {
         bail!(
             "another tile is still running in workspace {workspace_id} (waited {}s). Try again",
             LOCK_WAIT.as_secs()
@@ -530,7 +524,7 @@ fn run(
         moved = apply(herdr, &plan)?;
         // Tabs have appeared and disappeared; read it all again for the balance
         // and the report.
-        gather(herdr, workspace_id)?
+        gather(ctx, herdr, workspace_id)?
     };
 
     let resized = balance_all(herdr, &snapshot)?;
@@ -557,12 +551,13 @@ fn run(
         out.push_str("the grid was already laid out; only the columns needed evening\n");
     }
     out.push('\n');
-    out.push_str(&crate::cmd::layoutcmd::report(herdr, workspace_id)?);
+    out.push_str(&crate::cmd::layoutcmd::report(ctx, herdr, workspace_id)?);
     Ok(out)
 }
 
 /// `horch tile`.
 pub fn tile(
+    ctx: &RuntimeContext,
     pane: Option<&str>,
     workspace: Option<&str>,
     plan_only: bool,
@@ -572,15 +567,20 @@ pub fn tile(
         std::thread::sleep(Duration::from_millis(settle_ms));
     }
     let herdr = Herdr::new();
-    let workspace_id = workspace_of(&herdr, pane, workspace)?;
-    let out = run(&herdr, &workspace_id, None, plan_only)?;
+    let workspace_id = workspace_of(ctx, &herdr, pane, workspace)?;
+    let out = run(ctx, &herdr, &workspace_id, None, plan_only)?;
     output::print(&out);
     Ok(())
 }
 
 /// Which workspace to work on: one named explicitly, the one holding a named
 /// pane, else this pane's own.
-pub fn workspace_of(herdr: &Herdr, pane: Option<&str>, workspace: Option<&str>) -> Result<String> {
+pub fn workspace_of(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    pane: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<String> {
     if let Some(ws) = workspace.filter(|s| !s.is_empty()) {
         return Ok(ws.to_string());
     }
@@ -590,7 +590,7 @@ pub fn workspace_of(herdr: &Herdr, pane: Option<&str>, workspace: Option<&str>) 
             .workspace_id
             .with_context(|| format!("herdr did not say which workspace holds {pane}"));
     }
-    Ok(Mailbox::resolve(herdr)
+    Ok(Mailbox::resolve_in(herdr, ctx)
         .context(
             "horch needs --workspace, or to run inside a herdr pane (HERDR_PANE_ID) or with \
              HORCH_WORKSPACE_ID set",
@@ -603,16 +603,23 @@ pub fn workspace_of(herdr: &Herdr, pane: Option<&str>, workspace: Option<&str>) 
 ///
 /// `horch spawn` calls this once the new pane is running. A grid that will not
 /// lay out must never fail a spawn, so problems are reported and life goes on.
-pub fn after_change(herdr: &Herdr, workspace_id: &str, newcomer: Option<&str>) {
-    if !enabled() {
+/// `HORCH_TILE=0` (`settings.tiling`) turns automatic tiling off and puts this
+/// back to only evening out the columns.
+pub fn after_change(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    workspace_id: &str,
+    newcomer: Option<&str>,
+) {
+    if ctx.settings.tiling == TilingMode::Disabled {
         // The operator asked for the old behaviour: even the columns and nothing
         // else.
         if let Ok(layout) = herdr.pane_layout(newcomer) {
-            crate::cmd::balancecmd::equalize_quietly(herdr, layout);
+            crate::cmd::balancecmd::equalize_quietly(ctx, herdr, layout);
         }
         return;
     }
-    match run(herdr, workspace_id, newcomer, false) {
+    match run(ctx, herdr, workspace_id, newcomer, false) {
         Ok(_) => {}
         Err(e) => eprintln!("horch: could not lay the grid out ({e:#}); carrying on"),
     }
@@ -625,12 +632,16 @@ pub fn after_change(herdr: &Herdr, workspace_id: &str, newcomer: Option<&str>) {
 /// leaves exists, it has been killed. This hands the job to a detached child that
 /// outlives the pane, which fills the hole and lets herdr close an emptied
 /// overflow tab.
-pub fn settle_after_close(workspace_id: &str) {
-    let Ok(exe) = std::env::current_exe() else {
+pub fn settle_after_close(ctx: &RuntimeContext, workspace_id: &str) {
+    let Some(exe) = ctx.bins.current_exe.clone() else {
         return;
     };
     let mut cmd = std::process::Command::new(exe);
-    let subcommand = if enabled() { "tile" } else { "balance" };
+    let subcommand = if ctx.settings.tiling == TilingMode::Automatic {
+        "tile"
+    } else {
+        "balance"
+    };
     cmd.args([
         subcommand,
         "--workspace",
@@ -663,24 +674,6 @@ pub fn settle_after_close(workspace_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn tiling_is_on_unless_the_operator_switches_it_off() {
-        for (value, on) in [
-            ("", true),
-            ("1", true),
-            ("yes", true),
-            ("0", false),
-            ("false", false),
-            ("no", false),
-            ("off", false),
-        ] {
-            std::env::set_var("HORCH_TILE", value);
-            assert_eq!(enabled(), on, "HORCH_TILE={value}");
-        }
-        std::env::remove_var("HORCH_TILE");
-        assert!(enabled(), "on by default");
-    }
 
     #[test]
     fn a_declined_move_names_the_command_and_says_nothing_was_lost() {

@@ -483,18 +483,26 @@ pub struct Locations {
 }
 
 impl Locations {
-    pub fn from_env() -> Self {
-        Self::under_home(&crate::agent::home_dir())
+    /// Every location for the context's home, with the environment overrides
+    /// it read applied.
+    pub fn from_context(ctx: &crate::runtime::RuntimeContext) -> Self {
+        Self::under_home(&ctx.paths.home, &ctx.inherited)
     }
 
-    /// Every location for a given home directory, with the environment
-    /// overrides applied. Tests pass a temp dir.
-    pub fn under_home(home: &Path) -> Self {
-        let codex_sessions = crate::codex::codex_home(home).join("sessions");
-        let pi_sessions = env_dir("PI_CODING_AGENT_SESSION_DIR")
+    /// Every location for a given home directory, with the overrides in
+    /// `inherited` applied: `CODEX_HOME`, `PI_CODING_AGENT_SESSION_DIR`,
+    /// `HORCH_OPENCODE_DB` and `XDG_DATA_HOME`. Tests pass a temp dir.
+    pub fn under_home(home: &Path, inherited: &crate::runtime::Inherited) -> Self {
+        let codex_sessions =
+            crate::codex::codex_home(home, inherited.codex_home.as_deref()).join("sessions");
+        let pi_sessions = inherited
+            .pi_session_dir
+            .clone()
             .unwrap_or_else(|| home.join(".pi/agent/sessions"));
-        let opencode_db = env_dir("HORCH_OPENCODE_DB").unwrap_or_else(|| {
-            env_dir("XDG_DATA_HOME")
+        let opencode_db = inherited.opencode_db.clone().unwrap_or_else(|| {
+            inherited
+                .xdg_data_home
+                .clone()
                 .unwrap_or_else(|| home.join(".local/share"))
                 .join("opencode/opencode.db")
         });
@@ -506,12 +514,6 @@ impl Locations {
             opencode_db,
         }
     }
-}
-
-fn env_dir(key: &str) -> Option<PathBuf> {
-    std::env::var_os(key)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
 }
 
 /// Why a session has no usage row.

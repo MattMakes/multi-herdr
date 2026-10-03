@@ -6,10 +6,10 @@
 //! agent CLI a worker pane launches.
 
 mod cmd;
-mod output;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use horch::{bootstrap, exit, output};
 use horch_core::execution::TilingMode;
 use horch_core::herdr::Direction;
 
@@ -381,7 +381,7 @@ fn main() -> std::process::ExitCode {
         // The REFUSED line is already on stdout; exit 3 says why (design 13.4).
         Err(e) if e.downcast_ref::<cmd::spawn::Refused>().is_some() => {
             eprintln!("horch: {e}");
-            std::process::ExitCode::from(3)
+            std::process::ExitCode::from(exit::REFUSED)
         }
         Err(e) => {
             eprintln!("horch: {e:#}");
@@ -392,15 +392,19 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<std::process::ExitCode> {
     let cli = Cli::parse();
+    // The one read of the process environment. Every command takes its
+    // values from this context.
+    let mut ctx = bootstrap::context()?;
+    let ctx = &mut ctx;
     match cli.command {
-        Command::Fleet { cwd, flavor } => cmd::recipes::fleet(cwd.as_deref(), flavor)?,
-        Command::Orchestration { cwd } => cmd::recipes::orchestration(cwd.as_deref())?,
-        Command::Tell { role, message } => cmd::messaging::tell(&role, &joined(&message))?,
-        Command::Inbox => cmd::messaging::inbox()?,
-        Command::Assign { role, task } => cmd::messaging::assign(&role, &joined(&task))?,
-        Command::Note { text } => cmd::messaging::note(&joined(&text))?,
-        Command::Done { summary } => cmd::messaging::done(&joined(&summary))?,
-        Command::Sessions { json } => cmd::ledgercmd::sessions(json)?,
+        Command::Fleet { cwd, flavor } => cmd::recipes::fleet(ctx, cwd.as_deref(), flavor)?,
+        Command::Orchestration { cwd } => cmd::recipes::orchestration(ctx, cwd.as_deref())?,
+        Command::Tell { role, message } => cmd::messaging::tell(ctx, &role, &joined(&message))?,
+        Command::Inbox => cmd::messaging::inbox(ctx)?,
+        Command::Assign { role, task } => cmd::messaging::assign(ctx, &role, &joined(&task))?,
+        Command::Note { text } => cmd::messaging::note(ctx, &joined(&text))?,
+        Command::Done { summary } => cmd::messaging::done(ctx, &joined(&summary))?,
+        Command::Sessions { json } => cmd::ledgercmd::sessions(ctx, json)?,
         Command::Skills { phase, json } => {
             let catalog = horch_core::skills::describe(phase)?;
             if json {
@@ -436,19 +440,22 @@ fn run() -> Result<std::process::ExitCode> {
             force,
         } => {
             let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())?;
-            let pane = cmd::spawn::spawn(cmd::spawn::SpawnArgs {
-                teammate,
-                task,
-                resume,
-                phase,
-                effort,
-                role,
-                from_pane,
-                direction,
-                tiling: TilingMode::from_no_tile(untiled),
-                exact,
-                force,
-            })?;
+            let pane = cmd::spawn::spawn(
+                ctx,
+                cmd::spawn::SpawnArgs {
+                    teammate,
+                    task,
+                    resume,
+                    phase,
+                    effort,
+                    role,
+                    from_pane,
+                    direction,
+                    tiling: TilingMode::from_no_tile(untiled),
+                    exact,
+                    force,
+                },
+            )?;
             output::println(&pane);
         }
         Command::Usage {
@@ -457,23 +464,26 @@ fn run() -> Result<std::process::ExitCode> {
             project,
             by,
             window,
-        } => cmd::usagecmd::usage(cmd::usagecmd::UsageArgs {
-            json,
-            since,
-            project,
-            by,
-            window,
-        })?,
-        Command::Quota { json, refresh } => cmd::quotacmd::quota(json, refresh)?,
+        } => cmd::usagecmd::usage(
+            ctx,
+            cmd::usagecmd::UsageArgs {
+                json,
+                since,
+                project,
+                by,
+                window,
+            },
+        )?,
+        Command::Quota { json, refresh } => cmd::quotacmd::quota(ctx, json, refresh)?,
         Command::Route {
             teammate,
             json,
             exact,
             force,
-        } => return cmd::route::route(&teammate, json, exact, force),
+        } => return cmd::route::route(ctx, &teammate, json, exact, force),
         Command::Telemetry { command, state_dir } => {
             if let Some(dir) = state_dir {
-                std::env::set_var("HORCH_STATE_DIR", dir);
+                ctx.paths.set_state_dir(dir);
             }
             use cmd::telemetry::TelemetryCommand as T;
             let command = match command {
@@ -500,7 +510,7 @@ fn run() -> Result<std::process::ExitCode> {
                     window,
                 },
             };
-            return cmd::telemetry::run(command);
+            return cmd::telemetry::run(ctx, command);
         }
         Command::Cost {
             json,
@@ -509,14 +519,17 @@ fn run() -> Result<std::process::ExitCode> {
             since,
             records,
             sessions,
-        } => cmd::cost::cost(cmd::cost::CostArgs {
-            json,
-            reprice,
-            pricing,
-            since,
-            records,
-            sessions,
-        })?,
+        } => cmd::cost::cost(
+            ctx,
+            cmd::cost::CostArgs {
+                json,
+                reprice,
+                pricing,
+                since,
+                records,
+                sessions,
+            },
+        )?,
         Command::Teammates {
             json,
             check,
@@ -525,35 +538,41 @@ fn run() -> Result<std::process::ExitCode> {
             dir,
         } => {
             if let Some(name) = new {
-                cmd::teammatescmd::new(&name, dir.as_deref())?;
+                cmd::teammatescmd::new(ctx, &name, dir.as_deref())?;
             } else if matrix {
-                cmd::teammatescmd::matrix(json)?;
+                cmd::teammatescmd::matrix(ctx, json)?;
             } else if check {
-                return Ok(cmd::teammatescmd::check()?);
+                return Ok(cmd::teammatescmd::check(ctx)?);
             } else {
-                cmd::teammatescmd::list(json)?;
+                cmd::teammatescmd::list(ctx, json)?;
             }
         }
         Command::Layout { pane, workspace } => {
-            cmd::layoutcmd::layout(pane.as_deref(), workspace.as_deref())?
+            cmd::layoutcmd::layout(ctx, pane.as_deref(), workspace.as_deref())?
         }
         Command::Tile {
             plan,
             pane,
             workspace,
             settle_ms,
-        } => cmd::tilecmd::tile(pane.as_deref(), workspace.as_deref(), plan, settle_ms)?,
+        } => cmd::tilecmd::tile(ctx, pane.as_deref(), workspace.as_deref(), plan, settle_ms)?,
         Command::Balance {
             pane,
             workspace,
             dry_run,
             settle_ms,
-        } => cmd::balancecmd::balance(pane.as_deref(), workspace.as_deref(), dry_run, settle_ms)?,
-        Command::Ledger { command } => return cmd::ledgercmd::run(command),
-        Command::Doctor => cmd::doctor::doctor()?,
-        Command::Install { dir } => cmd::install::install(dir.as_deref())?,
-        Command::Smoke { command } => return cmd::smoke::run(command),
-        Command::Worker { role } => return cmd::worker::worker(&role),
+        } => cmd::balancecmd::balance(
+            ctx,
+            pane.as_deref(),
+            workspace.as_deref(),
+            dry_run,
+            settle_ms,
+        )?,
+        Command::Ledger { command } => return cmd::ledgercmd::run(ctx, command),
+        Command::Doctor => cmd::doctor::doctor(ctx)?,
+        Command::Install { dir } => cmd::install::install(ctx, dir.as_deref())?,
+        Command::Smoke { command } => return cmd::smoke::run(ctx, command),
+        Command::Worker { role } => return cmd::worker::worker(ctx, &role),
         Command::PaneLaunch {
             role,
             kind,
@@ -564,6 +583,7 @@ fn run() -> Result<std::process::ExitCode> {
             state_dir,
         } => {
             return cmd::recipes::pane_launch(
+                ctx,
                 &role,
                 kind,
                 model.as_deref(),
@@ -575,7 +595,7 @@ fn run() -> Result<std::process::ExitCode> {
                 },
             )
         }
-        Command::Register { role } => cmd::messaging::register(&role)?,
+        Command::Register { role } => cmd::messaging::register(ctx, &role)?,
     }
     Ok(std::process::ExitCode::SUCCESS)
 }

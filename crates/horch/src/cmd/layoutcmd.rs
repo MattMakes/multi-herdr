@@ -10,6 +10,7 @@ use anyhow::Result;
 use horch_core::herdr::{Herdr, Layout};
 use horch_core::layout::{self, Orchestrator};
 use horch_core::mailbox::Mailbox;
+use horch_core::runtime::RuntimeContext;
 use horch_core::tile;
 
 use crate::output;
@@ -19,11 +20,11 @@ use crate::output;
 /// The orchestrator is only sought on the tab that actually holds it. On the
 /// others every pane is a worker, and the positional guess - leftmost full-height
 /// pane - would quietly drop a worker column from the report.
-pub fn report(herdr: &Herdr, workspace_id: &str) -> Result<String> {
+pub fn report(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<String> {
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
 
-    let roles: HashMap<String, String> = Mailbox::new(workspace_id)
+    let roles: HashMap<String, String> = Mailbox::in_context(ctx, workspace_id)
         .panes_to_roles()
         .into_iter()
         .collect();
@@ -94,9 +95,9 @@ fn verdict(layout: &Layout, orchestrator: Option<&str>, expected: usize) -> Stri
     }
 }
 
-pub fn layout(pane: Option<&str>, workspace: Option<&str>) -> Result<()> {
+pub fn layout(ctx: &RuntimeContext, pane: Option<&str>, workspace: Option<&str>) -> Result<()> {
     let herdr = Herdr::new();
-    let workspace_id = crate::cmd::tilecmd::workspace_of(&herdr, pane, workspace)?;
-    output::print(&report(&herdr, &workspace_id)?);
+    let workspace_id = crate::cmd::tilecmd::workspace_of(ctx, &herdr, pane, workspace)?;
+    output::print(&report(ctx, &herdr, &workspace_id)?);
     Ok(())
 }

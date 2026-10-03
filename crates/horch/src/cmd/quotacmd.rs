@@ -5,42 +5,24 @@
 //! `probe_on_demand_age_min` (QUO-07); with a live collector it reads what
 //! the collector last wrote.
 
-use std::path::PathBuf;
-use std::time::Duration;
-
 use anyhow::Result;
 use horch_core::clock;
-use horch_core::ledger::state_root;
 use horch_core::routing::policy::Policy;
 use horch_core::routing::quota::{QuotaFile, QuotaView};
 use horch_core::routing::snapshot::{self, QuotaEnv};
+use horch_core::runtime::RuntimeContext;
 
 use crate::output;
 
-/// `HORCH_BALANCE`, the balance mode over `policy.json`.
-// A2: from RuntimeContext
-pub fn balance_override() -> Option<String> {
-    std::env::var("HORCH_BALANCE").ok()
+/// `policy.json` with `HORCH_BALANCE` (`settings.balance_override`) applied.
+pub fn load_policy(ctx: &RuntimeContext, root: &std::path::Path) -> Result<Policy> {
+    Policy::load(root, ctx.settings.balance_override.as_deref())
 }
 
-/// `policy.json` with `HORCH_BALANCE` applied.
-pub fn load_policy(root: &std::path::Path) -> Result<Policy> {
-    Policy::load(root, balance_override().as_deref())
-}
-
-/// `HORCH_QUOTA_FILE`, `HORCH_PROBE_TIMEOUT_MS` and the temp dir.
-// A2: from RuntimeContext
-pub fn quota_env() -> QuotaEnv {
-    QuotaEnv {
-        quota_file: std::env::var_os("HORCH_QUOTA_FILE")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from),
-        probe_timeout: std::env::var("HORCH_PROBE_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_millis),
-        temp_root: std::env::temp_dir(),
-    }
+/// `HORCH_QUOTA_FILE`, `HORCH_PROBE_TIMEOUT_MS`, the temp dir and the probe
+/// programs.
+pub fn quota_env(ctx: &RuntimeContext) -> QuotaEnv {
+    QuotaEnv::from_context(ctx)
 }
 
 /// `quota.json` with each pool's state assessed at `view.now`.
@@ -55,10 +37,10 @@ pub fn assessed(view: &QuotaView) -> QuotaFile {
     file
 }
 
-pub fn quota(json: bool, refresh: bool) -> Result<()> {
-    let root = state_root();
-    let policy = load_policy(&root)?;
-    let view = snapshot::obtain(&root, clock::now(), &policy, refresh, &quota_env())?;
+pub fn quota(ctx: &RuntimeContext, json: bool, refresh: bool) -> Result<()> {
+    let root = ctx.paths.state_root.clone();
+    let policy = load_policy(ctx, &root)?;
+    let view = snapshot::obtain(&root, clock::now(), &policy, refresh, &quota_env(ctx))?;
     if json {
         output::println(&serde_json::to_string_pretty(&assessed(&view))?);
     } else {

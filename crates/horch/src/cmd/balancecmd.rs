@@ -12,6 +12,7 @@ use anyhow::Result;
 use horch_core::balance;
 use horch_core::herdr::{Herdr, Layout};
 use horch_core::mailbox::Mailbox;
+use horch_core::runtime::RuntimeContext;
 
 use crate::output;
 
@@ -21,8 +22,8 @@ const MAX_OPS: usize = 24;
 
 /// Whichever pane the mailbox registered as the orchestrator. `None` lets the
 /// planner fall back to the leftmost full-height pane, matching `horch layout`.
-fn orchestrator_of(layout: &Layout) -> Option<String> {
-    Mailbox::new(&layout.workspace_id)
+fn orchestrator_of(ctx: &RuntimeContext, layout: &Layout) -> Option<String> {
+    Mailbox::in_context(ctx, &layout.workspace_id)
         .panes_to_roles()
         .into_iter()
         .find(|(_, role)| role == "orchestrator")
@@ -36,8 +37,8 @@ fn orchestrator_of(layout: &Layout) -> Option<String> {
 /// off target. Two things stop the loop: herdr reporting `changed: false`, which
 /// is how the minimum pane width announces itself, and a divider that is asked
 /// to move from the same place twice, which means the previous op did not land.
-pub fn equalize(herdr: &Herdr, mut layout: Layout) -> Result<usize> {
-    let orch = orchestrator_of(&layout);
+pub fn equalize(ctx: &RuntimeContext, herdr: &Herdr, mut layout: Layout) -> Result<usize> {
+    let orch = orchestrator_of(ctx, &layout);
     let mut applied = 0;
     let mut last: Option<(String, i64)> = None;
 
@@ -64,13 +65,14 @@ pub fn equalize(herdr: &Herdr, mut layout: Layout) -> Result<usize> {
 ///
 /// A grid that will not even out must never fail a spawn or a worker's shutdown,
 /// so this reports the problem and returns.
-pub fn equalize_quietly(herdr: &Herdr, layout: Layout) {
-    if let Err(e) = equalize(herdr, layout) {
+pub fn equalize_quietly(ctx: &RuntimeContext, herdr: &Herdr, layout: Layout) {
+    if let Err(e) = equalize(ctx, herdr, layout) {
         eprintln!("horch: could not even out the worker columns ({e:#}); carrying on");
     }
 }
 
 pub fn balance(
+    ctx: &RuntimeContext,
     pane: Option<&str>,
     workspace: Option<&str>,
     dry_run: bool,
@@ -87,14 +89,14 @@ pub fn balance(
     let target: Option<String> = match (pane, workspace) {
         (Some(p), _) => Some(p.to_string()),
         (None, Some(ws)) => herdr.pane_list(ws)?.first().map(|p| p.pane_id.clone()),
-        (None, None) => match std::env::var("HERDR_PANE_ID") {
-            Ok(internal) if !internal.is_empty() => Some(herdr.pane_get(&internal)?.pane_id),
-            _ => None,
+        (None, None) => match &ctx.herdr.pane {
+            Some(internal) => Some(herdr.pane_get(internal.as_str())?.pane_id),
+            None => None,
         },
     };
 
     let layout = herdr.pane_layout(target.as_deref())?;
-    let orch = orchestrator_of(&layout);
+    let orch = orchestrator_of(ctx, &layout);
 
     // Distinguish "level already" from "not a shape worth touching": a column that
     // is half built or half drained leaves the rows with different column counts,
@@ -131,7 +133,7 @@ pub fn balance(
         return Ok(());
     }
 
-    let applied = equalize(&herdr, layout)?;
+    let applied = equalize(ctx, &herdr, layout)?;
     output::print(&match applied {
         0 => "worker columns are already even; nothing to do\n".to_string(),
         1 => "evened out the worker columns (1 resize)\n".to_string(),

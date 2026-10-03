@@ -141,6 +141,9 @@ impl Record {
 #[derive(Debug, Clone)]
 pub struct Ledger {
     path: PathBuf,
+    /// What [`Ledger::insert`] fills into a record that leaves them empty.
+    project: Option<String>,
+    workspace_id: Option<String>,
 }
 
 /// Held for the duration of a read-modify-write. Released on drop.
@@ -179,46 +182,60 @@ pub fn slug(project: &str) -> String {
 }
 
 /// Root directory for ledger files: `$HORCH_STATE_DIR`, else
-/// `${XDG_STATE_HOME:-$HOME/.local/state}/horch`.
+/// `${XDG_STATE_HOME:-$HOME/.local/state}/horch`. Reads the process
+/// environment; a command uses `RuntimeContext::paths` instead.
 pub fn state_root() -> PathBuf {
-    if let Some(dir) = std::env::var_os("HORCH_STATE_DIR").filter(|v| !v.is_empty()) {
-        return PathBuf::from(dir);
-    }
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".local").join("state"));
-    base.join("horch")
+    let env = crate::runtime::ProcessEnv;
+    crate::runtime::paths::state_root(&env, &crate::runtime::paths::home_dir(&env))
 }
 
 /// The project dir a ledger belongs to: `$HORCH_PROJECT_DIR`, else the cwd.
+/// Reads the process environment; a command uses `RuntimeContext::paths`.
 pub fn project_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("HORCH_PROJECT_DIR").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(dir));
-    }
-    std::env::current_dir().context("resolving the current directory")
-}
-
-fn home_dir() -> PathBuf {
-    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(key)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    crate::runtime::paths::project_dir(&crate::runtime::ProcessEnv)
 }
 
 impl Ledger {
     /// The ledger for the ambient project, honouring `HORCH_STATE_DIR` and
-    /// `HORCH_PROJECT_DIR`.
+    /// `HORCH_PROJECT_DIR`. Reads the process environment; a command uses
+    /// [`Ledger::open_in`].
     pub fn open() -> Result<Self> {
         let project = project_dir()?;
-        Ok(Self::for_project(state_root(), &project.to_string_lossy()))
+        let workspace =
+            crate::runtime::EnvSource::var(&crate::runtime::ProcessEnv, "HORCH_WORKSPACE_ID")
+                .filter(|s| !s.is_empty());
+        Ok(Self::for_project(state_root(), &project.to_string_lossy())
+            .with_project(Some(project.to_string_lossy().into_owned()))
+            .with_workspace(workspace))
+    }
+
+    /// The ledger for the context's project, under its state root. Records
+    /// inserted here default to that project and the context's workspace.
+    pub fn open_in(ctx: &crate::runtime::RuntimeContext) -> Result<Self> {
+        let project = ctx.paths.project()?.to_string_lossy().into_owned();
+        Ok(Self::for_project(&ctx.paths.state_root, &project)
+            .with_project(Some(project))
+            .with_workspace(ctx.herdr.workspace.as_ref().map(|w| w.to_string())))
+    }
+
+    /// The project [`Ledger::insert`] fills into a record without one.
+    pub fn with_project(mut self, project: Option<String>) -> Self {
+        self.project = project;
+        self
+    }
+
+    /// The workspace [`Ledger::insert`] fills into a record without one.
+    pub fn with_workspace(mut self, workspace_id: Option<String>) -> Self {
+        self.workspace_id = workspace_id;
+        self
     }
 
     /// The ledger for an explicit state root and project path.
     pub fn for_project(state_root: impl AsRef<Path>, project: &str) -> Self {
         Self {
             path: state_root.as_ref().join(format!("{}.json", slug(project))),
+            project: None,
+            workspace_id: None,
         }
     }
 
@@ -361,12 +378,10 @@ impl Ledger {
             record.plan = crate::telemetry::plan_slug(&record.task);
         }
         if record.project.is_none() {
-            record.project = project_dir().ok().map(|p| p.to_string_lossy().into_owned());
+            record.project = self.project.clone();
         }
         if record.workspace_id.is_none() {
-            record.workspace_id = std::env::var("HORCH_WORKSPACE_ID")
-                .ok()
-                .filter(|s| !s.is_empty());
+            record.workspace_id = self.workspace_id.clone();
         }
         record.history = vec![HistoryEntry {
             at: at.clone(),
@@ -956,7 +971,7 @@ mod tests {
     #[test]
     fn tel_08_insert_fills_plan_project_and_workspace() {
         let (_t, l) = ledger();
-        std::env::set_var("HORCH_WORKSPACE_ID", "w7");
+        let l = l.with_workspace(Some("w7".into()));
         l.insert(Record {
             record_id: "r1".into(),
             session_id: Some("s1".into()),
@@ -970,7 +985,6 @@ mod tests {
             ..Record::default()
         })
         .unwrap();
-        std::env::remove_var("HORCH_WORKSPACE_ID");
         let r = l.get("r1").unwrap();
         assert_eq!(r.kind, KIND_WORKER);
         assert_eq!(r.plan.as_deref(), Some("golden-prompts-whitespace"));

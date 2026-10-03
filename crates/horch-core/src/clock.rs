@@ -5,29 +5,52 @@
 //! ledger, the telemetry collector, the quota states and the spawn gate. A
 //! pinned clock is announced once on stderr, so it cannot go unnoticed in a
 //! real run.
+//!
+//! This module does not read `HORCH_NOW` itself. The binary's bootstrap reads
+//! it into `RuntimeContext::settings` and passes it to [`install`] once.
 
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 
 use chrono::{DateTime, SecondsFormat, Utc};
+
+/// What [`install`] was given: the pinned time, or the value that did not
+/// parse.
+#[derive(Debug)]
+enum Pin {
+    At(DateTime<Utc>),
+    Unparsable(String),
+}
+
+static PIN: OnceLock<Pin> = OnceLock::new();
+
+/// Pin the clock for this process: `now` is `HORCH_NOW` parsed, and
+/// `unparsable` is its raw value when it did not parse. The first call wins;
+/// later calls change nothing. Without a call the clock is the system's.
+pub fn install(now: Option<DateTime<Utc>>, unparsable: Option<&str>) {
+    let pin = match (now, unparsable) {
+        (Some(t), _) => Pin::At(t),
+        (None, Some(raw)) => Pin::Unparsable(raw.to_string()),
+        (None, None) => return,
+    };
+    let _ = PIN.set(pin);
+}
 
 /// The current time, or `HORCH_NOW` when it is set.
 pub fn now() -> DateTime<Utc> {
     pinned().unwrap_or_else(Utc::now)
 }
 
-/// `HORCH_NOW`, parsed. An unparsable value is ignored with a warning rather
-/// than silently treated as "now".
+/// The installed `HORCH_NOW`. An unparsable value is ignored with a warning
+/// rather than silently treated as "now".
 fn pinned() -> Option<DateTime<Utc>> {
-    let raw = std::env::var("HORCH_NOW")
-        .ok()
-        .filter(|s| !s.trim().is_empty())?;
+    let pin = PIN.get()?;
     static ANNOUNCE: Once = Once::new();
-    match parse(&raw) {
-        Some(t) => {
+    match pin {
+        Pin::At(t) => {
             ANNOUNCE.call_once(|| eprintln!("horch: HORCH_NOW is set"));
-            Some(t)
+            Some(*t)
         }
-        None => {
+        Pin::Unparsable(raw) => {
             ANNOUNCE.call_once(|| {
                 eprintln!("horch: HORCH_NOW='{raw}' is not an RFC 3339 time; ignoring it")
             });

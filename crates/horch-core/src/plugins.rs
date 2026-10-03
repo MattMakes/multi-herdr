@@ -19,7 +19,9 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::teammates::{expand_home, Teammate};
+use crate::roster::expand_home;
+use crate::runtime::{EnvSource, ProcessEnv};
+use crate::teammates::Teammate;
 
 /// One plugin, resolved to its skills.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,19 +45,34 @@ impl Plugin {
     }
 }
 
-/// Resolve `plugin` for `teammate`, reading the operator's installed plugins.
-pub fn resolve(teammate: &Teammate, plugin: &str) -> Result<Plugin> {
+/// `$HOME` as the process has it. A2: `roster/validation.rs` still calls
+/// [`resolve_all`]; home comes from RuntimeContext once it takes it.
+fn process_home() -> Option<PathBuf> {
+    ProcessEnv.var_os("HOME").map(PathBuf::from)
+}
+
+/// Resolve `plugin` for `teammate`, reading the operator's installed plugins
+/// under `home` (`$HOME`).
+pub fn resolve(teammate: &Teammate, plugin: &str, home: Option<&Path>) -> Result<Plugin> {
     let dirs: Vec<PathBuf> = teammate
         .plugin_dirs
         .iter()
-        .map(|d| expand_home(d))
+        .map(|d| expand_home(d, home))
         .collect();
-    resolve_in(&dirs, installed_plugins().as_ref(), plugin)
+    resolve_in(&dirs, installed_plugins_in(home).as_ref(), plugin, home)
+}
+
+/// [`resolve_all_in`] under the process's `$HOME`.
+pub fn resolve_all(teammate: &Teammate) -> Result<Vec<(Plugin, Vec<String>)>> {
+    resolve_all_in(teammate, process_home().as_deref())
 }
 
 /// Every `plugin_skills` entry of `teammate`, resolved and checked: each
-/// plugin exists and ships each named skill.
-pub fn resolve_all(teammate: &Teammate) -> Result<Vec<(Plugin, Vec<String>)>> {
+/// plugin exists and ships each named skill. `home` is `$HOME`.
+pub fn resolve_all_in(
+    teammate: &Teammate,
+    home: Option<&Path>,
+) -> Result<Vec<(Plugin, Vec<String>)>> {
     let mut out = Vec::new();
     for (plugin, wanted) in &teammate.plugin_skills {
         if wanted.is_empty() {
@@ -64,7 +81,7 @@ pub fn resolve_all(teammate: &Teammate) -> Result<Vec<(Plugin, Vec<String>)>> {
                  plugin off, leave it out of plugin_skills"
             );
         }
-        let resolved = resolve(teammate, plugin)?;
+        let resolved = resolve(teammate, plugin, home)?;
         for skill in wanted {
             if resolved.description(skill).is_none() {
                 let have: Vec<&str> = resolved.skills.iter().map(|(n, _)| n.as_str()).collect();
@@ -81,8 +98,13 @@ pub fn resolve_all(teammate: &Teammate) -> Result<Vec<(Plugin, Vec<String>)>> {
 }
 
 /// The pure half of [`resolve`]: explicit plugin directories and the parsed
-/// `installed_plugins.json`.
-pub fn resolve_in(dirs: &[PathBuf], installed: Option<&Value>, plugin: &str) -> Result<Plugin> {
+/// `installed_plugins.json`, whose `~/` paths expand against `home`.
+pub fn resolve_in(
+    dirs: &[PathBuf],
+    installed: Option<&Value>,
+    plugin: &str,
+    home: Option<&Path>,
+) -> Result<Plugin> {
     for dir in dirs {
         if plugin_name(dir).as_deref() == Some(plugin) {
             return Ok(Plugin {
@@ -93,7 +115,7 @@ pub fn resolve_in(dirs: &[PathBuf], installed: Option<&Value>, plugin: &str) -> 
             });
         }
     }
-    if let Some((key, root)) = installed.and_then(|v| installed_root(v, plugin)) {
+    if let Some((key, root)) = installed.and_then(|v| installed_root(v, plugin, home)) {
         return Ok(Plugin {
             name: plugin.to_string(),
             installed_key: Some(key),
@@ -117,17 +139,21 @@ fn plugin_name(dir: &Path) -> Option<String> {
         .or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
 }
 
-/// The operator's installed-plugins registry, if it exists and parses.
-pub fn installed_plugins() -> Option<Value> {
-    let home = std::env::var_os("HOME")?;
-    let path = PathBuf::from(home).join(".claude/plugins/installed_plugins.json");
+/// The operator's installed-plugins registry under `home` (`$HOME`), if it
+/// exists and parses.
+pub fn installed_plugins_in(home: Option<&Path>) -> Option<Value> {
+    let path = home?.join(".claude/plugins/installed_plugins.json");
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
 /// Find `plugin` in `installed_plugins.json`. Keys are `name@marketplace`;
 /// the value is an install record, or (version 2 of the file) a list of them,
 /// each carrying an `installPath`.
-fn installed_root(installed: &Value, plugin: &str) -> Option<(String, PathBuf)> {
+fn installed_root(
+    installed: &Value,
+    plugin: &str,
+    home: Option<&Path>,
+) -> Option<(String, PathBuf)> {
     let plugins = installed.get("plugins")?.as_object()?;
     for (key, value) in plugins {
         let name = key.split('@').next().unwrap_or(key);
@@ -140,7 +166,7 @@ fn installed_root(installed: &Value, plugin: &str) -> Option<(String, PathBuf)> 
         };
         for record in records {
             if let Some(path) = record.get("installPath").and_then(|p| p.as_str()) {
-                return Some((key.clone(), expand_home(path)));
+                return Some((key.clone(), expand_home(path, home)));
             }
         }
     }
@@ -239,7 +265,7 @@ mod tests {
             "code",
             &[("review", "Review a diff."), ("lint", "Lint.")],
         );
-        let found = resolve_in(&[local.clone()], None, "code").unwrap();
+        let found = resolve_in(&[local.clone()], None, "code", None).unwrap();
         assert_eq!(found.installed_key, None);
         assert_eq!(
             found.skills,
@@ -254,12 +280,12 @@ mod tests {
             serde_json::json!({"plugins": {"dev@market": {"installPath": installed_dir}}}),
             serde_json::json!({"version": 2, "plugins": {"dev@market": [{"scope": "user", "installPath": installed_dir}]}}),
         ] {
-            let found = resolve_in(&[local.clone()], Some(&registry), "dev").unwrap();
+            let found = resolve_in(&[local.clone()], Some(&registry), "dev", None).unwrap();
             assert_eq!(found.installed_key.as_deref(), Some("dev@market"));
             assert_eq!(found.description("tdd"), Some("Red, green."));
         }
 
-        let err = resolve_in(&[local], None, "missing")
+        let err = resolve_in(&[local], None, "missing", None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("plugin 'missing' is neither"), "{err}");

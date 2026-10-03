@@ -6,14 +6,61 @@
 //! nowhere in any file. Everything below is derived from the teammate's
 //! frontmatter; nothing is hard-coded per call site.
 
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-use crate::agent;
-use crate::teammates::{
-    expand_home, operator_enabled_plugins, operator_status_line, Agent, Teammate,
-};
+use crate::roster::{operator_enabled_plugins, operator_status_line};
+use crate::runtime::{BinOverrides, EnvSource, HarnessBins, ProcessEnv, RuntimeContext};
+use crate::teammates::{Agent, Teammate};
+
+/// What a launch reads from its environment: the programs to run, the home
+/// the operator's Claude settings live under, and the inherited OpenCode
+/// config. Built from a [`RuntimeContext`].
+#[derive(Debug, Clone)]
+pub struct LaunchEnv {
+    pub bins: HarnessBins,
+    /// `$HOME` exactly as set (`Inherited::home_var`).
+    pub home: Option<PathBuf>,
+    /// `$OPENCODE_CONFIG_CONTENT`.
+    pub opencode_config_content: Option<String>,
+}
+
+impl LaunchEnv {
+    pub fn from_context(ctx: &RuntimeContext) -> LaunchEnv {
+        LaunchEnv {
+            bins: ctx.bins.harness.clone(),
+            home: ctx.inherited.home_var.as_ref().map(PathBuf::from),
+            opencode_config_content: ctx.inherited.opencode_config_content.clone(),
+        }
+    }
+
+    /// The same values read from the process environment, for the callers
+    /// that take no context yet. A4 or A12 removes it.
+    pub fn from_process() -> LaunchEnv {
+        let env = ProcessEnv;
+        LaunchEnv {
+            bins: HarnessBins::resolve(
+                &BinOverrides::from_env(&env),
+                env.var_os("PATH").as_deref(),
+                env.var("PATHEXT").as_deref(),
+            ),
+            home: env.var_os("HOME").map(PathBuf::from),
+            opencode_config_content: env.var("OPENCODE_CONFIG_CONTENT"),
+        }
+    }
+
+    pub fn home(&self) -> Option<&Path> {
+        self.home.as_deref()
+    }
+
+    /// `~/` in a teammate path, expanded against [`LaunchEnv::home`].
+    pub fn expand_home(&self, path: &str) -> PathBuf {
+        crate::roster::expand_home(path, self.home())
+    }
+}
 
 /// How a launch relates to an agent session.
 #[derive(Debug, Clone, Copy)]
@@ -27,16 +74,20 @@ pub enum Session<'a> {
     Unmanaged,
 }
 
-/// Environment a teammate needs exported before its CLI starts.
-///
-/// Applied to this process, because the agent runs as a child and inherits it.
-pub fn apply_env(teammate: &Teammate) {
+/// Environment a teammate's CLI starts with: its `subagent_model` and its
+/// `env` block, the latter winning. The caller gives it to the child command
+/// with [`crate::runtime::process::inherit_env`], so a value the builder set
+/// on the command still wins, as it did when this was exported into the
+/// parent's environment.
+pub fn teammate_env(teammate: &Teammate) -> Vec<(String, String)> {
+    let mut out = BTreeMap::new();
     if let Some(sub) = &teammate.subagent_model {
-        std::env::set_var("CLAUDE_CODE_SUBAGENT_MODEL", sub);
+        out.insert("CLAUDE_CODE_SUBAGENT_MODEL".to_string(), sub.clone());
     }
     for (key, value) in &teammate.env {
-        std::env::set_var(key, value);
+        out.insert(key.clone(), value.clone());
     }
+    out.into_iter().collect()
 }
 
 /// Environment variables no agent CLI ever receives. The operator's rule
@@ -55,29 +106,51 @@ pub fn command(
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
-    let mut cmd = agent_command(teammate, session, prompt, model_override)?;
-    for key in FORBIDDEN_ENV {
-        cmd.env_remove(key);
-    }
+    command_in(
+        &LaunchEnv::from_process(),
+        teammate,
+        session,
+        prompt,
+        model_override,
+    )
+}
+
+/// [`command`] with the launch environment given.
+pub fn command_in(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+) -> Result<Command> {
+    let mut cmd = agent_command(env, teammate, session, prompt, model_override)?;
+    crate::runtime::process::strip_forbidden(&mut cmd);
     Ok(cmd)
 }
 
 fn agent_command(
+    env: &LaunchEnv,
     teammate: &Teammate,
     session: Session<'_>,
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
     match teammate.agent {
-        Agent::Claude => claude_command(teammate, session, prompt, model_override),
-        Agent::Codex => codex_command(teammate, session, prompt, model_override),
-        Agent::OpenCode => opencode_command(teammate, session, prompt, model_override),
+        Agent::Claude => claude_command(env, teammate, session, prompt, model_override),
+        Agent::Codex => codex_command(env, teammate, session, prompt, model_override),
+        Agent::OpenCode => opencode_command(env, teammate, session, prompt, model_override),
         // pi and Prime Agent share a CLI surface - Prime is a fork of pi - but
         // they have drifted where it matters most: pi can be told its session
         // id, Prime cannot, and Prime runs a daemon. One builder, two dialects.
-        Agent::Pi => pi_family_command(agent::pi_bin(), teammate, session, prompt, model_override),
+        Agent::Pi => pi_family_command(
+            env.bins.pi.clone(),
+            teammate,
+            session,
+            prompt,
+            model_override,
+        ),
         Agent::Prime => pi_family_command(
-            agent::prime_bin(),
+            env.bins.prime.clone(),
             teammate,
             session,
             prompt,
@@ -99,13 +172,32 @@ pub fn command_with_skills(
     model_override: Option<&str>,
     bundle: Option<&crate::skills::Bundle>,
 ) -> Result<Command> {
+    command_with_skills_in(
+        &LaunchEnv::from_process(),
+        teammate,
+        session,
+        prompt,
+        model_override,
+        bundle,
+    )
+}
+
+/// [`command_with_skills`] with the launch environment given.
+pub fn command_with_skills_in(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+    bundle: Option<&crate::skills::Bundle>,
+) -> Result<Command> {
     let Some(bundle) = bundle else {
-        return command(teammate, session, prompt, model_override);
+        return command_in(env, teammate, session, prompt, model_override);
     };
-    let adjusted = bundle.configure(teammate)?;
-    let prompt = format!("{}\n{prompt}", bundle.briefing(teammate));
-    let mut cmd = command(&adjusted, session, &prompt, model_override)?;
-    bundle.apply_env(&mut cmd, teammate)?;
+    let adjusted = bundle.configure(teammate, env.home())?;
+    let prompt = format!("{}\n{prompt}", bundle.briefing_in(teammate, env.home()));
+    let mut cmd = command_in(env, &adjusted, session, &prompt, model_override)?;
+    bundle.apply_env(&mut cmd, teammate, env.opencode_config_content.as_deref())?;
     Ok(cmd)
 }
 
@@ -115,12 +207,13 @@ pub fn command_with_skills(
 /// by a variadic - but `args` still goes before it, to keep every builder in
 /// this file ordered the same way.
 fn opencode_command(
+    env: &LaunchEnv,
     teammate: &Teammate,
     session: Session<'_>,
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
-    let mut cmd = Command::new(agent::opencode_bin());
+    let mut cmd = Command::new(&env.bins.opencode);
     cmd.arg("--model").arg(model_for(teammate, model_override)?);
 
     // OpenCode calls reasoning effort a model "variant". The TUI horch
@@ -132,7 +225,7 @@ fn opencode_command(
             .env
             .get("OPENCODE_CONFIG_CONTENT")
             .cloned()
-            .or_else(|| std::env::var("OPENCODE_CONFIG_CONTENT").ok());
+            .or_else(|| env.opencode_config_content.clone());
         cmd.env(
             "OPENCODE_CONFIG_CONTENT",
             opencode_variant_config(inherited.as_deref(), effort)?,
@@ -267,12 +360,13 @@ fn model_for<'a>(teammate: &'a Teammate, override_: Option<&'a str>) -> Result<&
 }
 
 fn claude_command(
+    env: &LaunchEnv,
     teammate: &Teammate,
     session: Session<'_>,
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
-    let bin = agent::claude_bin();
+    let bin = env.bins.claude.clone();
     let mut cmd = Command::new(&bin);
 
     // ORDERING MATTERS. `--mcp-config`, `--tools`, `--allowedTools` and
@@ -289,13 +383,13 @@ fn claude_command(
         let config = serde_json::json!({ "mcpServers": servers });
         cmd.arg("--mcp-config").arg(config.to_string());
         for file in &teammate.mcp_config_files {
-            cmd.arg("--mcp-config").arg(expand_home(file));
+            cmd.arg("--mcp-config").arg(env.expand_home(file));
         }
         cmd.arg("--strict-mcp-config");
     } else if !teammate.mcp_config_files.is_empty() {
         cmd.arg("--mcp-config");
         for file in &teammate.mcp_config_files {
-            cmd.arg(expand_home(file));
+            cmd.arg(env.expand_home(file));
         }
     }
     // `Some([])` means "no tools", which is `--tools ""`, not "omit the flag".
@@ -336,14 +430,14 @@ fn claude_command(
         cmd.arg("--disable-slash-commands");
     }
     for dir in &teammate.plugin_dirs {
-        cmd.arg("--plugin-dir").arg(expand_home(dir));
+        cmd.arg("--plugin-dir").arg(env.expand_home(dir));
     }
 
     // `--settings` takes a path OR a JSON string, and is not repeatable, so
     // everything horch wants to overlay has to be assembled into one object.
     if let Some(settings) = &teammate.settings {
         // The teammate named its own file; that file owns the overlay.
-        cmd.arg("--settings").arg(expand_home(settings));
+        cmd.arg("--settings").arg(env.expand_home(settings));
     } else {
         let mut overlay = serde_json::Map::new();
         // Switch the operator's globally-enabled plugins off, by name, for this
@@ -351,21 +445,22 @@ fn claude_command(
         // verified against a live launch: "Found 3 plugins (0 enabled,
         // 3 disabled)" with every other setting intact.
         if !teammate.inherit_plugins {
-            let off: serde_json::Map<String, serde_json::Value> = operator_enabled_plugins()
-                .into_iter()
-                .map(|name| (name, serde_json::Value::Bool(false)))
-                .collect();
+            let off: serde_json::Map<String, serde_json::Value> =
+                operator_enabled_plugins(env.home())
+                    .into_iter()
+                    .map(|name| (name, serde_json::Value::Bool(false)))
+                    .collect();
             if !off.is_empty() {
                 overlay.insert("enabledPlugins".into(), serde_json::Value::Object(off));
             }
         }
         // Whatever inherit_plugins says: the generic tiers inherit plugins, but
         // no pane has a use for the operator's claude.ai skills.
-        overlay_skill_switches(teammate, &mut overlay)?;
+        overlay_skill_switches(teammate, &mut overlay, env.home())?;
         // Restricting settings would take the status line with it. Every pane
         // in a fleet keeps the operator's, so a worker reads like any session.
         if teammate.setting_sources.is_some() {
-            if let Some(status_line) = operator_status_line() {
+            if let Some(status_line) = operator_status_line(env.home()) {
                 overlay.insert("statusLine".into(), status_line);
             }
         }
@@ -405,6 +500,7 @@ fn claude_command(
 pub(crate) fn overlay_skill_switches(
     teammate: &Teammate,
     overlay: &mut serde_json::Map<String, serde_json::Value>,
+    home: Option<&Path>,
 ) -> Result<()> {
     if !teammate.inherit_claudeai_skills {
         overlay
@@ -436,7 +532,7 @@ pub(crate) fn overlay_skill_switches(
     for name in AMBIENT_SKILL_CREATOR {
         overrides.insert(name.to_string(), "off".into());
     }
-    overlay_plugin_skills(teammate, overlay)?;
+    overlay_plugin_skills(teammate, overlay, home)?;
     // A plugin skill ignores skillOverrides, in every key form (Claude Code
     // 2.1.283, tested live), so the official plugin goes off as a plugin.
     let plugins = overlay
@@ -445,7 +541,7 @@ pub(crate) fn overlay_skill_switches(
         .as_object_mut()
         .context("enabledPlugins must be an object")?;
     for key in crate::plugins::installed_keys(
-        crate::plugins::installed_plugins().as_ref(),
+        crate::plugins::installed_plugins_in(home).as_ref(),
         "skill-creator",
         "skill-creator@claude-plugins-official",
     ) {
@@ -466,8 +562,9 @@ pub(crate) const AMBIENT_SKILL_CREATOR: [&str; 2] =
 fn overlay_plugin_skills(
     teammate: &Teammate,
     overlay: &mut serde_json::Map<String, serde_json::Value>,
+    home: Option<&Path>,
 ) -> Result<()> {
-    for (plugin, wanted) in crate::plugins::resolve_all(teammate)? {
+    for (plugin, wanted) in crate::plugins::resolve_all_in(teammate, home)? {
         if let Some(key) = &plugin.installed_key {
             overlay
                 .entry("enabledPlugins")
@@ -491,12 +588,13 @@ fn overlay_plugin_skills(
 }
 
 fn codex_command(
+    env: &LaunchEnv,
     teammate: &Teammate,
     session: Session<'_>,
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
-    let bin = agent::codex_bin();
+    let bin = env.bins.codex.clone();
     let model = format!("model=\"{}\"", model_for(teammate, model_override)?);
     let mut cmd = Command::new(&bin);
 
@@ -627,9 +725,16 @@ mod tests {
 
     #[test]
     fn claude_fresh_carries_session_and_mode() {
-        let (_home, _g) = fake_home("{}");
+        let (_home, env) = fake_home("{}");
         let r = Roster::builtin().unwrap();
-        let cmd = command(r.require("opus").unwrap(), Session::Fresh("sid"), "p", None).unwrap();
+        let cmd = command_in(
+            &env,
+            r.require("opus").unwrap(),
+            Session::Fresh("sid"),
+            "p",
+            None,
+        )
+        .unwrap();
         let a = argv(&cmd);
         assert_eq!(
             a,
@@ -1010,12 +1115,17 @@ mod tests {
         assert!(err.contains("no opencode equivalent"), "{err}");
     }
 
-    fn fake_home(settings_json: &str) -> (tempfile::TempDir, HomeGuard) {
+    /// A home holding `settings_json` as the operator's Claude settings, and
+    /// the launch environment that points at it.
+    fn fake_home(settings_json: &str) -> (tempfile::TempDir, LaunchEnv) {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join(".claude")).unwrap();
         std::fs::write(home.path().join(".claude/settings.json"), settings_json).unwrap();
-        let guard = HomeGuard::set(home.path());
-        (home, guard)
+        let env = LaunchEnv {
+            home: Some(home.path().to_path_buf()),
+            ..LaunchEnv::from_process()
+        };
+        (home, env)
     }
 
     const OPERATOR: &str = r#"{
@@ -1036,9 +1146,10 @@ mod tests {
     /// `/config`, and there is no way to keep just those two.
     #[test]
     fn the_orchestrator_sheds_plugins_and_mcp_but_keeps_settings_and_builtins() {
-        let (_home, _g) = fake_home(OPERATOR);
+        let (_home, env) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
-        let cmd = command(
+        let cmd = command_in(
+            &env,
             r.require("orchestrator").unwrap(),
             Session::Unmanaged,
             "p",
@@ -1137,7 +1248,7 @@ mod tests {
     /// after `--model` could reach it; a live probe lost the prompt this way.
     #[test]
     fn variadic_flags_are_fenced_off_from_the_prompt_by_model() {
-        let (_home, _g) = fake_home(OPERATOR);
+        let (_home, env) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
         let mut t = r.require("frontend-developer").unwrap().clone();
         t.tools = Some(vec!["Read".into(), "Bash".into()]);
@@ -1146,7 +1257,7 @@ mod tests {
         t.mcp_config_files = vec!["/tmp/extra.json".into()];
         t.effort = None;
         t.permission_mode = None;
-        let cmd = command(&t, Session::Unmanaged, "PROMPT", None).unwrap();
+        let cmd = command_in(&env, &t, Session::Unmanaged, "PROMPT", None).unwrap();
         let a = argv(&cmd);
         let model_at = a.iter().position(|x| x == "--model").unwrap();
         for flag in [
@@ -1192,11 +1303,11 @@ mod tests {
     /// `disabled_skills`, which name the stale external herdr briefings.
     #[test]
     fn unset_isolation_fields_add_no_flags() {
-        let (_home, _g) = fake_home(OPERATOR);
+        let (_home, env) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
         let sonnet = r.require("sonnet").unwrap();
         assert!(sonnet.inherit_plugins);
-        let cmd = command(sonnet, Session::Unmanaged, "p", None).unwrap();
+        let cmd = command_in(&env, sonnet, Session::Unmanaged, "p", None).unwrap();
         let a = argv(&cmd);
         for flag in [
             "--setting-sources",
@@ -1231,11 +1342,11 @@ mod tests {
     /// place; what must be absent is the `syncClaudeAiSkills` key itself.
     #[test]
     fn opting_in_to_claudeai_skills_leaves_the_switch_out() {
-        let (_home, _g) = fake_home(OPERATOR);
+        let (_home, env) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
         let mut sonnet = r.require("sonnet").unwrap().clone();
         sonnet.inherit_claudeai_skills = true;
-        let a = argv(&command(&sonnet, Session::Unmanaged, "p", None).unwrap());
+        let a = argv(&command_in(&env, &sonnet, Session::Unmanaged, "p", None).unwrap());
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(
             overlay,
@@ -1255,7 +1366,7 @@ mod tests {
         // Opting in touches only this switch: the plugin off-map stays.
         let mut orch = r.require("orchestrator").unwrap().clone();
         orch.inherit_claudeai_skills = true;
-        let a = argv(&command(&orch, Session::Unmanaged, "p", None).unwrap());
+        let a = argv(&command_in(&env, &orch, Session::Unmanaged, "p", None).unwrap());
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert!(overlay.get("syncClaudeAiSkills").is_none(), "{overlay}");
         assert_eq!(overlay["enabledPlugins"]["herdr@m"], false);
@@ -1266,11 +1377,11 @@ mod tests {
     /// Claude merges settings per key, so they still apply.
     #[test]
     fn disabled_skills_become_skill_overrides() {
-        let (_home, _g) = fake_home(OPERATOR);
+        let (_home, env) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
         let mut t = r.require("sonnet").unwrap().clone();
         t.disabled_skills = vec!["dev-prime".into(), "code:core".into()];
-        let a = argv(&command(&t, Session::Unmanaged, "p", None).unwrap());
+        let a = argv(&command_in(&env, &t, Session::Unmanaged, "p", None).unwrap());
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(
             overlay,
@@ -1293,12 +1404,12 @@ mod tests {
     /// path in `skills.rs` merges into the file instead.)
     #[test]
     fn a_teammate_settings_file_replaces_the_plain_overlay() {
-        let (_home, _g) = fake_home(OPERATOR);
+        let (_home, env) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
         let mut t = r.require("sonnet").unwrap().clone();
         t.settings = Some("/tmp/worker-settings.json".into());
         t.disabled_skills = vec!["dev-prime".into()];
-        let a = argv(&command(&t, Session::Unmanaged, "p", None).unwrap());
+        let a = argv(&command_in(&env, &t, Session::Unmanaged, "p", None).unwrap());
         assert!(
             a.windows(2)
                 .any(|w| w == ["--settings", "/tmp/worker-settings.json"]),
@@ -1312,12 +1423,12 @@ mod tests {
     /// and cost, exactly where that information matters most.
     #[test]
     fn restricted_settings_keep_the_operator_status_line() {
-        let (_home, _g) = fake_home(OPERATOR);
+        let (_home, env) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
         let mut t = r.require("sonnet").unwrap().clone();
         t.setting_sources = Some(vec![]);
         t.disable_skills = true;
-        let cmd = command(&t, Session::Unmanaged, "p", None).unwrap();
+        let cmd = command_in(&env, &t, Session::Unmanaged, "p", None).unwrap();
         let a = argv(&cmd);
         assert!(
             a.windows(2).any(|w| w == ["--setting-sources", ""]),
@@ -1325,31 +1436,6 @@ mod tests {
         );
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(overlay["statusLine"]["command"], "bash sl.sh");
-    }
-
-    /// Serialises HOME across tests that touch it.
-    struct HomeGuard {
-        prev: Option<std::ffi::OsString>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl HomeGuard {
-        fn set(dir: &std::path::Path) -> Self {
-            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-            let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let prev = std::env::var_os("HOME");
-            std::env::set_var("HOME", dir);
-            HomeGuard { prev, _lock: lock }
-        }
-    }
-
-    impl Drop for HomeGuard {
-        fn drop(&mut self) {
-            match &self.prev {
-                Some(p) => std::env::set_var("HOME", p),
-                None => std::env::remove_var("HOME"),
-            }
-        }
     }
 
     #[test]

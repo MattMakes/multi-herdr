@@ -166,18 +166,16 @@ pub fn acquire(
     Ok(Err(read_info(state_root).unwrap_or_default()))
 }
 
-/// This process's lock info.
-pub fn this_process(now: &str) -> LockInfo {
-    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+/// This process's lock info: its host, herdr session, workspace and pane
+/// come from the context.
+pub fn this_process(now: &str, ctx: &crate::runtime::RuntimeContext) -> LockInfo {
     LockInfo {
         pid: std::process::id(),
         started_at: now.to_string(),
-        host: env("HOSTNAME")
-            .or_else(|| env("COMPUTERNAME"))
-            .unwrap_or_default(),
-        herdr_session: env("HERDR_SESSION"),
-        workspace_id: env("HORCH_WORKSPACE_ID"),
-        pane_id: env("HERDR_PANE_ID"),
+        host: ctx.inherited.hostname.clone().unwrap_or_default(),
+        herdr_session: ctx.inherited.herdr_session.clone(),
+        workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.to_string()),
+        pane_id: ctx.herdr.pane.as_ref().map(|p| p.to_string()),
     }
 }
 
@@ -185,10 +183,14 @@ pub fn this_process(now: &str) -> LockInfo {
 mod tests {
     use super::*;
 
+    fn test_ctx() -> crate::runtime::RuntimeContext {
+        crate::runtime::RuntimeContext::from_env(&crate::runtime::MapEnv::new("/")).unwrap()
+    }
+
     #[test]
     fn spc_01_second_collector_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
-        let me = this_process("2026-09-28T18:00:00Z");
+        let me = this_process("2026-09-28T18:00:00Z", &test_ctx());
         let held = acquire(tmp.path(), &me).unwrap().expect("first taker wins");
         let second = acquire(tmp.path(), &me).unwrap();
         assert_eq!(second.unwrap_err().pid, std::process::id());
@@ -213,7 +215,7 @@ mod tests {
         };
         std::fs::write(info_path(tmp.path()), serde_json::to_string(&dead).unwrap()).unwrap();
         assert!(matches!(holder(tmp.path()), Holder::Stale(Some(_))));
-        let lock = acquire(tmp.path(), &this_process("now")).unwrap();
+        let lock = acquire(tmp.path(), &this_process("now", &test_ctx())).unwrap();
         assert!(lock.is_ok(), "the stale lock is broken and taken");
         assert_eq!(read_info(tmp.path()).unwrap().pid, std::process::id());
     }

@@ -9,9 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::teammates::{
-    expand_home, operator_enabled_plugins, operator_status_line, Agent, Phase, Teammate,
-};
+use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
+use crate::teammates::{Agent, Phase, Teammate};
 
 pub mod activation;
 pub mod briefing;
@@ -124,7 +123,8 @@ impl Bundle {
     }
 
     /// Add native discovery flags before the builder appends its positional prompt.
-    pub fn configure(&self, teammate: &Teammate) -> Result<Teammate> {
+    /// `home` is `$HOME`, where the operator's Claude settings live.
+    pub fn configure(&self, teammate: &Teammate, home: Option<&Path>) -> Result<Teammate> {
         let mut adjusted = teammate.clone();
         match teammate.agent {
             Agent::Claude => {
@@ -133,7 +133,7 @@ impl Bundle {
                 adjusted
                     .plugin_dirs
                     .push(self.root.to_string_lossy().into_owned());
-                let settings = self.claude_settings(teammate)?;
+                let settings = self.claude_settings(teammate, home)?;
                 adjusted.settings = Some(settings.to_string());
             }
             Agent::Pi | Agent::Prime => adjusted
@@ -145,13 +145,13 @@ impl Bundle {
         Ok(adjusted)
     }
 
-    fn claude_settings(&self, teammate: &Teammate) -> Result<Value> {
+    fn claude_settings(&self, teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
         let mut settings = match &teammate.settings {
             Some(source) => {
                 let text = if source.trim_start().starts_with('{') {
                     source.clone()
                 } else {
-                    std::fs::read_to_string(expand_home(source))
+                    std::fs::read_to_string(expand_home(source, home))
                         .context("reading teammate settings")?
                 };
                 serde_json::from_str::<Value>(&text).context("invalid teammate settings JSON")?
@@ -169,21 +169,28 @@ impl Bundle {
                 .or_insert(json!({}))
                 .as_object_mut()
                 .context("enabledPlugins must be an object")?;
-            for name in operator_enabled_plugins() {
+            for name in operator_enabled_plugins(home) {
                 plugins.insert(name, json!(false));
             }
         }
         // After the plugin switch-off: a plugin_skills plugin stays enabled.
-        crate::launch::overlay_skill_switches(teammate, obj)?;
+        crate::launch::overlay_skill_switches(teammate, obj, home)?;
         if teammate.setting_sources.is_some() && !obj.contains_key("statusLine") {
-            if let Some(status) = operator_status_line() {
+            if let Some(status) = operator_status_line(home) {
                 obj.insert("statusLine".into(), status);
             }
         }
         Ok(settings)
     }
 
-    pub fn apply_env(&self, cmd: &mut std::process::Command, teammate: &Teammate) -> Result<()> {
+    /// Point an OpenCode child at the bundle. `inherited` is the
+    /// `$OPENCODE_CONFIG_CONTENT` the launch would otherwise pass through.
+    pub fn apply_env(
+        &self,
+        cmd: &mut std::process::Command,
+        teammate: &Teammate,
+        inherited: Option<&str>,
+    ) -> Result<()> {
         if teammate.agent == Agent::OpenCode {
             // The builder may already have set it (the effort variant); build
             // on that rather than on the teammate's or the operator's value.
@@ -192,7 +199,7 @@ impl Bundle {
                 .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
                 .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
                 .or_else(|| teammate.env.get("OPENCODE_CONFIG_CONTENT").cloned())
-                .or_else(|| std::env::var("OPENCODE_CONFIG_CONTENT").ok());
+                .or_else(|| inherited.map(str::to_owned));
             cmd.env(
                 "OPENCODE_CONFIG_CONTENT",
                 opencode_config(inherited.as_deref(), &self.skills_dir())?,
@@ -204,12 +211,20 @@ impl Bundle {
     /// The skill paragraph prepended to a worker's briefing; see
     /// `briefing::render`.
     pub fn briefing(&self, teammate: &Teammate) -> String {
+        // A2: home comes from RuntimeContext once every caller passes it.
+        let home = crate::runtime::EnvSource::var_os(&crate::runtime::ProcessEnv, "HOME")
+            .map(PathBuf::from);
+        self.briefing_in(teammate, home.as_deref())
+    }
+
+    /// [`Bundle::briefing`], with plugin skills resolved under `home`.
+    pub fn briefing_in(&self, teammate: &Teammate, home: Option<&Path>) -> String {
         let claude = teammate.agent == Agent::Claude;
         let mut plugin_lines = Vec::new();
         // A plugin that does not resolve is reported by `--check`; the
         // briefing must not fail a launch over a description.
         if claude {
-            if let Ok(plugins) = crate::plugins::resolve_all(teammate) {
+            if let Ok(plugins) = crate::plugins::resolve_all_in(teammate, home) {
                 for (plugin, wanted) in plugins {
                     for skill in wanted {
                         let description = plugin.description(&skill).unwrap_or_default();
@@ -454,7 +469,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let t = Teammate { phase: Some(Phase::Plan), settings: Some(r#"{"permissions":{"deny":["Bash(rm *)"]},"statusLine":{"type":"command","command":"keep"}}"#.into()), ..Teammate::default() };
         let bundle = Bundle::install(tmp.path(), &t).unwrap().unwrap();
-        let configured = bundle.configure(&t).unwrap();
+        let configured = bundle.configure(&t, None).unwrap();
         let value: Value = serde_json::from_str(configured.settings.as_ref().unwrap()).unwrap();
         assert_eq!(value["permissions"]["deny"], json!(["Bash(rm *)"]));
         assert_eq!(value["statusLine"]["command"], "keep");
@@ -504,8 +519,15 @@ mod tests {
         };
         assert!(t.inherit_plugins, "the switch must not depend on plugins");
         let bundle = Bundle::install(tmp.path(), &t).unwrap().unwrap();
-        let value: Value =
-            serde_json::from_str(bundle.configure(&t).unwrap().settings.as_ref().unwrap()).unwrap();
+        let value: Value = serde_json::from_str(
+            bundle
+                .configure(&t, None)
+                .unwrap()
+                .settings
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(value["syncClaudeAiSkills"], false);
         assert_eq!(value["remoteControlAtStartup"], false);
         assert_eq!(
@@ -525,7 +547,7 @@ mod tests {
         };
         let value: Value = serde_json::from_str(
             bundle
-                .configure(&opted_in)
+                .configure(&opted_in, None)
                 .unwrap()
                 .settings
                 .as_ref()

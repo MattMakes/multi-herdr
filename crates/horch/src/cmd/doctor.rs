@@ -4,14 +4,14 @@
 //! reachable. The old `jq` check is gone: nothing shells out to jq any more.
 
 use anyhow::{bail, Result};
-use horch_core::agent;
 use horch_core::herdr::Herdr;
-use horch_core::teammates::{operator_effort_warnings, Roster};
+use horch_core::roster::operator_effort_warnings;
+use horch_core::runtime::{process, RuntimeContext};
 
-pub fn doctor() -> Result<()> {
-    check()?;
+pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
+    check(ctx)?;
     println!("herdr is installed and its server is reachable.");
-    let roster = Roster::load()?;
+    let roster = super::load_roster(ctx, None)?;
     let problems = roster.check();
     if problems.is_empty() {
         println!(
@@ -31,7 +31,14 @@ pub fn doctor() -> Result<()> {
         }
     }
     // Settings that quietly override the effort in every teammate file.
-    for w in operator_effort_warnings() {
+    let home = ctx.inherited.home_var.as_deref().map(std::path::Path::new);
+    let codex_home =
+        horch_core::codex::codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref());
+    for w in operator_effort_warnings(
+        home,
+        &codex_home,
+        ctx.inherited.claude_code_effort_level.as_deref(),
+    ) {
         eprintln!("warning: {w}");
     }
     Ok(())
@@ -39,12 +46,17 @@ pub fn doctor() -> Result<()> {
 
 /// The precondition every recipe shares. Deliberately does NOT validate the
 /// roster: a roster warning must not stop a fleet from launching.
-pub fn check() -> Result<()> {
-    let herdr_bin = agent::herdr_bin();
+pub fn check(ctx: &RuntimeContext) -> Result<()> {
+    let herdr_bin = ctx.bins.harness.herdr.clone();
     let found = if herdr_bin.components().count() > 1 {
         herdr_bin.is_file()
     } else {
-        agent::which(&herdr_bin.to_string_lossy()).is_some()
+        process::which(
+            ctx.inherited.path.as_deref(),
+            ctx.inherited.pathext.as_deref(),
+            &herdr_bin.to_string_lossy(),
+        )
+        .is_some()
     };
     if !found {
         bail!(

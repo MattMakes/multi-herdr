@@ -305,7 +305,7 @@ impl RuntimeContext {
             quota_file: nonempty_path(env, "HORCH_QUOTA_FILE"),
             machine_file: nonempty_path(env, "HORCH_MACHINE_FILE"),
             probe_timeout: nonempty("HORCH_PROBE_TIMEOUT_MS")
-                .and_then(|ms| ms.trim().parse::<u64>().ok())
+                .and_then(|ms| ms.parse::<u64>().ok())
                 .map(Duration::from_millis),
             faults: Faults::parse(env.var("HORCH_FAULT").as_deref()),
         };
@@ -424,6 +424,7 @@ mod tests {
     fn arc_05_context_from_map_env() {
         let ctx = RuntimeContext::from_env(&full_env()).unwrap();
 
+        assert_eq!(ctx.paths.cwd, Some(PathBuf::from("/cwd")));
         assert_eq!(ctx.paths.project_dir, Some(PathBuf::from("/proj")));
         assert_eq!(ctx.paths.state_root, PathBuf::from("/state"));
         assert_eq!(ctx.paths.state_override, Some(PathBuf::from("/state")));
@@ -478,6 +479,7 @@ mod tests {
 
         // An empty environment gives the defaults.
         let ctx = RuntimeContext::from_env(&MapEnv::default()).unwrap();
+        assert_eq!(ctx.paths.cwd, None);
         assert_eq!(ctx.paths.project_dir, None);
         assert_eq!(ctx.paths.home, PathBuf::from("."));
         assert_eq!(ctx.paths.state_root, PathBuf::from("./.local/state/horch"));

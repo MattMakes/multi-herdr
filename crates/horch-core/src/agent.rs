@@ -83,13 +83,3 @@ pub fn on_path(dir: &Path) -> bool {
 pub fn home_dir() -> PathBuf {
     paths::home_dir(&ProcessEnv)
 }
-
-/// Put this binary's own directory first on this process's PATH.
-#[deprecated(note = "A2: put RuntimeContext::prepend_own_dir_to_path on the child command")]
-pub fn prepend_own_dir_to_path() -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
-    if let Some(next) = process::path_with_own_dir(&exe, ProcessEnv.var_os("PATH").as_deref()) {
-        std::env::set_var("PATH", next);
-    }
-    Ok(())
-}

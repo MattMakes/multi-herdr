@@ -9,8 +9,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use anyhow::{Context, Result};
-use horch_core::agent;
+use anyhow::Result;
 use horch_core::codex;
 use horch_core::execution::SessionMode;
 use horch_core::herdr::{Direction, Herdr};
@@ -20,7 +19,8 @@ use horch_core::mailbox::{Brief, Mailbox};
 use horch_core::paneshell::PaneShell;
 use horch_core::prompts;
 use horch_core::quota::{self, QuotaView, State};
-use horch_core::teammates::{Agent, Roster};
+use horch_core::runtime::{process, RuntimeContext};
+use horch_core::teammates::Agent;
 
 use super::doctor;
 
@@ -162,17 +162,22 @@ impl std::fmt::Display for FleetFlavor {
 }
 
 /// Resolve the project directory a recipe should root its workspace at.
-fn resolve_cwd(cwd: Option<&str>) -> Result<String> {
+fn resolve_cwd(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<String> {
     let dir = match cwd {
         Some(c) => PathBuf::from(c),
-        None => std::env::current_dir().context("resolving the current directory")?,
+        None => ctx.paths.current_dir()?,
     };
     Ok(dir.to_string_lossy().into_owned())
 }
 
 /// The command line that turns a pane into `kind`.
-fn pane_command(role: &str, kind: PaneKind, model: Option<&str>) -> Result<String> {
-    pane_command_for(role, kind, model, None)
+fn pane_command(
+    ctx: &RuntimeContext,
+    role: &str,
+    kind: PaneKind,
+    model: Option<&str>,
+) -> Result<String> {
+    pane_command_for(ctx, role, kind, model, None)
 }
 
 /// The ledger identity an orchestrator pane runs under.
@@ -183,12 +188,13 @@ struct PaneRecord<'a> {
 
 /// [`pane_command`], carrying a ledger record for the pane.
 fn pane_command_for(
+    ctx: &RuntimeContext,
     role: &str,
     kind: PaneKind,
     model: Option<&str>,
     record: Option<PaneRecord<'_>>,
 ) -> Result<String> {
-    let exe = std::env::current_exe().context("locating the horch binary")?;
+    let exe = ctx.bins.exe()?;
     let mut args = vec![
         "pane-launch".to_string(),
         "--role".to_string(),
@@ -202,11 +208,9 @@ fn pane_command_for(
     }
     // A pane does not inherit this process's environment, so the roster path
     // has to be written into the command line the herdr server will run.
-    if let Ok(dir) = std::env::var("HORCH_TEAMMATES_DIR") {
-        if !dir.is_empty() {
-            args.push("--teammates-dir".to_string());
-            args.push(dir);
-        }
+    if let Some(dir) = super::path_text(ctx.bins.roster_override.as_deref()) {
+        args.push("--teammates-dir".to_string());
+        args.push(dir);
     }
     if let Some(record) = record {
         args.push("--record-id".to_string());
@@ -217,11 +221,9 @@ fn pane_command_for(
         }
         // The same reason as the roster path: the ledger this record lives
         // in must be the one the pane writes.
-        if let Ok(dir) = std::env::var("HORCH_STATE_DIR") {
-            if !dir.is_empty() {
-                args.push("--state-dir".to_string());
-                args.push(dir);
-            }
+        if let Some(dir) = super::path_text(ctx.paths.state_override.as_deref()) {
+            args.push("--state-dir".to_string());
+            args.push(dir);
         }
     }
     Ok(PaneShell::host().command_line(&exe, &args))
@@ -237,22 +239,22 @@ fn pane_command_for(
 /// Earlier versions pre-spawned a fixed 2x2 grid of idle workers. That decided
 /// the shape of the team before anyone knew what the work was, and burned four
 /// agent sessions holding a greeting.
-pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
-    doctor::check()?;
+pub fn fleet(ctx: &RuntimeContext, cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
+    doctor::check(ctx)?;
     let herdr = Herdr::new();
-    let cwd = resolve_cwd(cwd)?;
+    let cwd = resolve_cwd(ctx, cwd)?;
 
     warn_about_missing_integrations(&herdr);
 
     let flavor = if flavor == FleetFlavor::Auto {
-        let state_root = horch_core::ledger::state_root();
-        let policy = super::quotacmd::load_policy(&state_root)?;
+        let state_root = ctx.paths.state_root.clone();
+        let policy = super::quotacmd::load_policy(ctx, &state_root)?;
         let view = horch_core::routing::snapshot::obtain(
             &state_root,
             horch_core::clock::now(),
             &policy,
             true,
-            &super::quotacmd::quota_env(),
+            &super::quotacmd::quota_env(ctx),
         )?;
         let (chosen, why) = auto_flavor(&view);
         println!("fleet: auto chose {chosen} - {why}.");
@@ -262,20 +264,24 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
     };
 
     println!("Creating fleet workspace rooted at {cwd}...");
-    let ws = herdr.workspace_create(&workspace_label(Path::new(&cwd)), Some(&cwd), true)?;
-    std::env::set_var("HORCH_WORKSPACE_ID", &ws.workspace_id);
-    std::env::set_var("HORCH_PROJECT_DIR", &cwd);
+    let label = workspace_label(Path::new(&cwd), ctx.paths.cwd.as_deref());
+    let ws = herdr.workspace_create(&label, Some(&cwd), true)?;
+    // The rest of this command works in the new workspace and its project.
+    let mut ctx = ctx.clone();
+    ctx.herdr.workspace = Some(horch_core::ids::WorkspaceId::new(ws.workspace_id.as_str())?);
+    ctx.paths.project_dir = Some(PathBuf::from(&cwd));
+    let ctx = &ctx;
 
     // The orchestrator is a ledger record like any worker (TEL-02), so its
     // spend is counted. Orchestrators of workspaces that are gone are
     // retired first: an orchestrator never runs `horch done`.
-    let ledger = Ledger::open()?;
+    let ledger = Ledger::open_in(ctx)?;
     if let Ok(open) = herdr.workspace_list() {
         let open: Vec<String> = open.into_iter().map(|w| w.workspace_id).collect();
         ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
     }
     let kind = flavor.pane_kind();
-    let roster = Roster::load()?;
+    let roster = super::load_roster(ctx, None)?;
     let teammate = roster.require(orchestrator_teammate(kind))?;
     let record_id = horch_core::mint_uuid();
     let session_id = teammate
@@ -302,6 +308,7 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
     herdr.pane_run(
         &ws.root_pane_id,
         &pane_command_for(
+            ctx,
             "orchestrator",
             kind,
             Some(flavor.model()),
@@ -313,7 +320,7 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
     )?;
 
     // The telemetry space (SPC-06). Never a reason for the fleet to fail.
-    if let Err(e) = super::telemetry::ensure(&herdr, true) {
+    if let Err(e) = super::telemetry::ensure(ctx, &herdr, true) {
         println!("warning: telemetry space not started: {e:#}");
     }
 
@@ -321,7 +328,7 @@ pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
         "\nDone. Fleet workspace {} is live with one orchestrator pane.",
         ws.workspace_id
     );
-    println!("Session ledger: {}", Ledger::open()?.path().display());
+    println!("Session ledger: {}", Ledger::open_in(ctx)?.path().display());
     println!("Orchestrator commands: horch sessions | horch assign | horch spawn [--resume]");
     println!("Workers are spawned on demand: horch spawn <teammate> \"task\"");
     Ok(())
@@ -386,8 +393,10 @@ fn auto_flavor(view: &QuotaView) -> (FleetFlavor, String) {
 /// The fleet workspace is named after the project folder; a path with no final
 /// component (such as `/`) keeps the old fixed label. The path is resolved
 /// first, because `.` and `..` have no final component of their own.
-fn workspace_label(cwd: &Path) -> String {
-    resolved_path(cwd)
+/// `current` is the process's current directory, which a relative path is
+/// resolved against.
+fn workspace_label(cwd: &Path, current: Option<&Path>) -> String {
+    resolved_path(cwd, current)
         .as_deref()
         .and_then(Path::file_name)
         .map(|name| name.to_string_lossy().into_owned())
@@ -398,14 +407,14 @@ fn workspace_label(cwd: &Path) -> String {
 /// `path` as an absolute path with no `.` or `..` in it: `canonicalize` when the
 /// path exists, otherwise the current directory joined with it and normalised by
 /// hand. An empty path resolves to nothing rather than to the current directory.
-fn resolved_path(path: &Path) -> Option<PathBuf> {
+fn resolved_path(path: &Path, current: Option<&Path>) -> Option<PathBuf> {
     if path.as_os_str().is_empty() {
         return None;
     }
     if let Ok(resolved) = std::fs::canonicalize(path) {
         return Some(resolved);
     }
-    let absolute = std::env::current_dir().ok()?.join(path);
+    let absolute = current?.join(path);
     let mut resolved = PathBuf::new();
     for component in absolute.components() {
         match component {
@@ -442,10 +451,10 @@ fn warn_about_missing_integrations(herdr: &Herdr) {
 /// 1 orchestrator (Claude, Fable) + 4 workers (2x Claude Sonnet xhigh, 1x Claude
 /// Opus xhigh, 1x Codex CLI), laid out as orchestrator-left with a 2x2 worker grid
 /// on the right, wired for two-way messaging via `horch tell`.
-pub fn orchestration(cwd: Option<&str>) -> Result<()> {
-    doctor::check()?;
+pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<()> {
+    doctor::check(ctx)?;
     let herdr = Herdr::new();
-    let cwd = resolve_cwd(cwd)?;
+    let cwd = resolve_cwd(ctx, cwd)?;
 
     println!("Creating workspace rooted at {cwd}...");
     let ws = herdr.workspace_create("Herdr Orchestration", Some(&cwd), true)?;
@@ -486,7 +495,7 @@ pub fn orchestration(cwd: Option<&str>) -> Result<()> {
     ];
     for (pane, role, kind, model) in panes {
         println!("Launching {role}...");
-        herdr.pane_run(pane, &pane_command(role, kind, model)?)?;
+        herdr.pane_run(pane, &pane_command(ctx, role, kind, model)?)?;
     }
 
     println!(
@@ -514,6 +523,7 @@ pub struct PaneIdentity {
 }
 
 pub fn pane_launch(
+    ctx: &mut RuntimeContext,
     role: &str,
     kind: PaneKind,
     model: Option<&str>,
@@ -521,33 +531,49 @@ pub fn pane_launch(
     identity: PaneIdentity,
 ) -> Result<ExitCode> {
     let herdr = Herdr::new();
-    let (mailbox, _pane) = Mailbox::register(&herdr, role)?;
+    let (mailbox, _pane) = Mailbox::register_in(&herdr, ctx, role)?;
+    // What the agent inherits on top of this process's environment. A pane
+    // is a fresh shell, so everything `horch fleet` knew travels here.
+    let mut child_env: Vec<(String, String)> = vec![(
+        "HORCH_WORKSPACE_ID".into(),
+        mailbox.workspace_id().to_string(),
+    )];
     if let Some(dir) = &identity.state_dir {
-        std::env::set_var("HORCH_STATE_DIR", dir);
+        ctx.paths.set_state_dir(dir);
+        child_env.push(("HORCH_STATE_DIR".into(), dir.clone()));
     }
     // Like a worker, the orchestrator knows its own record.
     if let Some(record_id) = &identity.record_id {
-        std::env::set_var("HORCH_RECORD_ID", record_id);
+        child_env.push(("HORCH_RECORD_ID".into(), record_id.clone()));
     }
 
     // Re-export it: the orchestrator runs `horch spawn` from this pane, and
     // those spawns must resolve the same roster this pane was launched with.
     if let Some(dir) = teammates_dir {
-        std::env::set_var("HORCH_TEAMMATES_DIR", dir);
+        child_env.push(("HORCH_TEAMMATES_DIR".into(), dir.to_string()));
     }
-    if let Ok(project) = std::env::var("HORCH_PROJECT_DIR") {
-        if !project.is_empty() {
-            let _ = std::env::set_current_dir(&project);
+    // `HORCH_PROJECT_DIR`, when it names another directory, is where this
+    // pane works. The process's working directory, not an environment
+    // variable, so the agent and a relative roster path both see it.
+    if let Some(project) = ctx
+        .paths
+        .project_dir
+        .clone()
+        .filter(|p| Some(p) != ctx.paths.cwd.as_ref())
+    {
+        if std::env::set_current_dir(&project).is_ok() {
+            ctx.paths.cwd = Some(project);
         }
     }
     // Both orchestrator and worker briefings name `horch` as an on-PATH command.
-    if let Err(e) = agent::prepend_own_dir_to_path() {
-        eprintln!("horch pane-launch[{role}]: could not add horch to PATH: {e}");
+    if let Some(path) = ctx.prepend_own_dir_to_path() {
+        child_env.push(("PATH".into(), path.to_string_lossy().into_owned()));
     }
+    let ctx: &RuntimeContext = ctx;
     // Which teammate file backs this pane. The model, effort level and
     // permission mode all come from that file - a pane kind selects a file, it
     // does not carry launch settings of its own.
-    let roster = Roster::load_with(teammates_dir)?;
+    let roster = super::load_roster(ctx, teammates_dir)?;
     let name = match kind {
         PaneKind::FleetOrchestrator => "orchestrator",
         PaneKind::FleetCodexOrchestrator => "orchestrator-codex",
@@ -580,8 +606,7 @@ pub fn pane_launch(
     }
 
     let prompt = prompts::agent_prompt(&roster, &teammate, role)?;
-    launch::apply_env(&teammate);
-    let skills = horch_core::skills::Bundle::install(&horch_core::ledger::state_root(), &teammate)?;
+    let skills = horch_core::skills::Bundle::install(&ctx.paths.state_root, &teammate)?;
     let rules = if teammate.agent.uses_execpolicy() {
         // An orchestrator runs a different set of commands than a worker, and
         // codex refuses anything its execpolicy does not name. Install the set
@@ -590,7 +615,13 @@ pub fn pane_launch(
             PaneKind::FleetCodexOrchestrator => roster.orchestrator_exec_rules(),
             _ => roster.exec_rules(),
         };
-        Some(codex::Rules::install(&agent::home_dir(), role, needed)?)
+        Some(codex::Rules::install(
+            &ctx.paths.home,
+            &codex::codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref()),
+            &ctx.paths.state_root,
+            role,
+            needed,
+        )?)
     } else {
         None
     };
@@ -601,7 +632,16 @@ pub fn pane_launch(
         (Some(sid), true) => Session::Fresh(sid.as_str()),
         _ => Session::Unmanaged,
     };
-    let mut cmd = launch::command_with_skills(&teammate, session, &prompt, model, skills.as_ref())?;
+    let mut cmd = launch::command_with_skills_in(
+        &launch::LaunchEnv::from_context(ctx),
+        &teammate,
+        session,
+        &prompt,
+        model,
+        skills.as_ref(),
+    )?;
+    process::inherit_env(&mut cmd, launch::teammate_env(&teammate));
+    process::inherit_env(&mut cmd, child_env);
     if let Some(rules) = &rules {
         if let Some(skills) = &skills {
             rules.attach_skills(&skills.skills_dir())?;
@@ -611,10 +651,9 @@ pub fn pane_launch(
     let name = format!("{:?}", cmd.get_program());
     let harvest = match &identity.record_id {
         Some(record_id) if teammate.agent.harvests_session_id() => {
-            let project_dir = horch_core::ledger::project_dir()?
-                .to_string_lossy()
-                .into_owned();
+            let project_dir = ctx.paths.project()?.to_string_lossy().into_owned();
             let brief = Brief {
+                schema: horch_core::messaging::brief::SCHEMA,
                 role: role.to_string(),
                 teammate: teammate.name.clone(),
                 agent: teammate.agent.as_str().to_string(),
@@ -628,8 +667,10 @@ pub fn pane_launch(
                 codex_bin: None,
                 resolved: None,
                 teammates_dir: teammates_dir.map(str::to_owned),
+                workdir: None,
+                bin_overrides: Default::default(),
             };
-            super::worker::start_harvest(&mailbox, &brief, teammate.agent, None).ok()
+            super::worker::start_harvest(ctx, &mailbox, &brief, teammate.agent, None).ok()
         }
         _ => None,
     };
@@ -664,6 +705,19 @@ fn run(mut cmd: Command, name: &str) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A context with a known binary path and nothing else.
+    fn test_ctx() -> RuntimeContext {
+        RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/").with_exe("/opt/horch/bin/horch"),
+        )
+        .unwrap()
+    }
+
+    /// [`workspace_label`] against the test process's current directory.
+    fn label(path: &Path) -> String {
+        workspace_label(path, std::env::current_dir().ok().as_deref())
+    }
 
     #[test]
     fn pane_kinds_round_trip() {
@@ -734,8 +788,13 @@ mod tests {
         ] {
             assert_eq!(flavor.pane_kind(), kind, "{flavor}");
             assert_eq!(flavor.model(), model, "{flavor}");
-            let cmd =
-                pane_command("orchestrator", flavor.pane_kind(), Some(flavor.model())).unwrap();
+            let cmd = pane_command(
+                &test_ctx(),
+                "orchestrator",
+                flavor.pane_kind(),
+                Some(flavor.model()),
+            )
+            .unwrap();
             assert!(cmd.contains(kind.as_str()), "{cmd}");
             assert!(cmd.contains(model), "{cmd}");
         }
@@ -757,7 +816,7 @@ mod tests {
     /// up, fails to resolve its briefing, and dies where nobody is watching.
     #[test]
     fn every_pane_kind_names_a_teammate_that_exists() {
-        let roster = Roster::builtin().unwrap();
+        let roster = horch_core::teammates::Roster::builtin().unwrap();
         for (kind, name) in [
             (PaneKind::FleetOrchestrator, "orchestrator"),
             (PaneKind::FleetCodexOrchestrator, "orchestrator-codex"),
@@ -776,18 +835,25 @@ mod tests {
 
     #[test]
     fn pane_command_includes_the_model_only_when_given() {
-        let with = pane_command("sonnet-1", PaneKind::OrchestrationClaude, Some("sonnet")).unwrap();
+        let with = pane_command(
+            &test_ctx(),
+            "sonnet-1",
+            PaneKind::OrchestrationClaude,
+            Some("sonnet"),
+        )
+        .unwrap();
         assert!(with.contains("--model"), "{with}");
         assert!(with.contains("sonnet-1"), "{with}");
 
-        let without = pane_command("codex-1", PaneKind::OrchestrationCodex, None).unwrap();
+        let without =
+            pane_command(&test_ctx(), "codex-1", PaneKind::OrchestrationCodex, None).unwrap();
         assert!(!without.contains("--model"), "{without}");
     }
 
     #[test]
     fn workspace_label_is_the_project_folder_name() {
         assert_eq!(
-            workspace_label(Path::new("/Users/me/projects/multi-herdr")),
+            label(Path::new("/Users/me/projects/multi-herdr")),
             "multi-herdr"
         );
     }
@@ -795,15 +861,15 @@ mod tests {
     #[test]
     fn workspace_label_ignores_a_trailing_slash() {
         assert_eq!(
-            workspace_label(Path::new("/Users/me/projects/multi-herdr/")),
+            label(Path::new("/Users/me/projects/multi-herdr/")),
             "multi-herdr"
         );
     }
 
     #[test]
     fn workspace_label_falls_back_when_the_path_has_no_folder_name() {
-        assert_eq!(workspace_label(Path::new("/")), "Herdr Fleet");
-        assert_eq!(workspace_label(Path::new("")), "Herdr Fleet");
+        assert_eq!(label(Path::new("/")), "Herdr Fleet");
+        assert_eq!(label(Path::new("")), "Herdr Fleet");
     }
 
     fn folder_name(path: &Path) -> String {
@@ -818,26 +884,26 @@ mod tests {
     /// component until it is resolved against the current directory.
     #[test]
     fn workspace_label_resolves_dot_to_the_current_directory_name() {
-        assert_eq!(workspace_label(Path::new(".")), folder_name(&current_dir()));
+        assert_eq!(label(Path::new(".")), folder_name(&current_dir()));
     }
 
     #[test]
     fn workspace_label_resolves_dot_dot_to_the_parent_directory_name() {
         let parent = current_dir().parent().unwrap().to_path_buf();
-        assert_eq!(workspace_label(Path::new("..")), folder_name(&parent));
+        assert_eq!(label(Path::new("..")), folder_name(&parent));
     }
 
     /// These paths do not exist, so `canonicalize` fails and the label helper
     /// has to normalise `.` and `..` itself.
     #[test]
     fn workspace_label_normalises_a_path_that_does_not_exist() {
-        assert_eq!(workspace_label(Path::new("some/dir/.")), "dir");
+        assert_eq!(label(Path::new("some/dir/.")), "dir");
         assert_eq!(
-            workspace_label(Path::new("no-such-dir/..")),
+            label(Path::new("no-such-dir/..")),
             folder_name(&current_dir())
         );
         assert_eq!(
-            workspace_label(Path::new("/Users/me/projects/multi-herdr/../other")),
+            label(Path::new("/Users/me/projects/multi-herdr/../other")),
             "other"
         );
     }
@@ -848,11 +914,8 @@ mod tests {
         let project = tmp.path().join("my-project");
         std::fs::create_dir_all(project.join("sub")).unwrap();
 
-        assert_eq!(workspace_label(&project), "my-project");
-        assert_eq!(workspace_label(&project.join(".")), "my-project");
-        assert_eq!(
-            workspace_label(&project.join("sub").join("..")),
-            "my-project"
-        );
+        assert_eq!(label(&project), "my-project");
+        assert_eq!(label(&project.join(".")), "my-project");
+        assert_eq!(label(&project.join("sub").join("..")), "my-project");
     }
 }

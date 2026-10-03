@@ -5,26 +5,32 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use horch_core::clock;
-use horch_core::ledger::state_root;
 use horch_core::routing::balance::touched_pools;
 use horch_core::routing::decision::{self, Decision, GateFlags};
 use horch_core::routing::snapshot;
-use horch_core::teammates::Roster;
+use horch_core::runtime::RuntimeContext;
 use serde_json::json;
 
 use crate::output;
 
-pub fn route(name: &str, json_out: bool, exact: bool, force: bool) -> Result<ExitCode> {
-    let roster = Roster::load_with(std::env::var("HORCH_TEAMMATES_DIR").ok().as_deref())?;
+pub fn route(
+    ctx: &RuntimeContext,
+    name: &str,
+    json_out: bool,
+    exact: bool,
+    force: bool,
+) -> Result<ExitCode> {
+    let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
+    let roster = super::load_roster(ctx, roster_dir.as_deref())?;
     let teammate = roster.require(name)?.clone();
-    let root = state_root();
-    let policy = super::quotacmd::load_policy(&root)?;
+    let root = ctx.paths.state_root.clone();
+    let policy = super::quotacmd::load_policy(ctx, &root)?;
     let view = snapshot::obtain(
         &root,
         clock::now(),
         &policy,
         true,
-        &super::quotacmd::quota_env(),
+        &super::quotacmd::quota_env(ctx),
     )?;
     let decision = decision::decide(
         &teammate,
@@ -65,7 +71,7 @@ pub fn route(name: &str, json_out: bool, exact: bool, force: bool) -> Result<Exi
         }
     }
     Ok(if refused {
-        ExitCode::from(3)
+        ExitCode::from(horch::exit::REFUSED)
     } else {
         ExitCode::SUCCESS
     })

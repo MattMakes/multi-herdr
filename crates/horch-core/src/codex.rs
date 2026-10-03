@@ -38,11 +38,12 @@ pub fn sessions_dir(home: &Path) -> PathBuf {
     home.join(".codex").join("sessions")
 }
 
-/// The codex home a launch inherits: `$CODEX_HOME`, else `<home>/.codex`.
-pub fn codex_home(home: &Path) -> PathBuf {
-    std::env::var_os("CODEX_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
+/// The codex home a launch inherits: `codex_home_var` (`$CODEX_HOME`, empty
+/// counting as unset), else `<home>/.codex`.
+pub fn codex_home(home: &Path, codex_home_var: Option<&Path>) -> PathBuf {
+    codex_home_var
+        .filter(|v| !v.as_os_str().is_empty())
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| home.join(".codex"))
 }
 
@@ -65,8 +66,17 @@ impl Rules {
     /// `home` is the user's home directory, not the codex home - the same value
     /// [`sessions_dir`] takes. `role` only names the directory, so that anything
     /// left behind says which pane it belonged to.
-    pub fn install(home: &Path, role: &str, rules: &[ExecRule]) -> Result<Rules> {
-        install_rules(home, role, rules)
+    ///
+    /// `codex_home` is the inherited codex home ([`codex_home`]) the private
+    /// one mirrors, and `state_root` is where the private one is built.
+    pub fn install(
+        home: &Path,
+        codex_home: &Path,
+        state_root: &Path,
+        role: &str,
+        rules: &[ExecRule],
+    ) -> Result<Rules> {
+        install_rules(home, codex_home, state_root, role, rules)
     }
 
     /// Point the agent's command at these rules.
@@ -165,8 +175,14 @@ fn render(rules: &[ExecRule]) -> String {
 }
 
 #[cfg(not(windows))]
-fn install_rules(home: &Path, role: &str, rules: &[ExecRule]) -> Result<Rules> {
-    let dir = build_private_home(&codex_home(home), &crate::ledger::state_root(), role)?;
+fn install_rules(
+    _home: &Path,
+    codex_home: &Path,
+    state_root: &Path,
+    role: &str,
+    rules: &[ExecRule],
+) -> Result<Rules> {
+    let dir = build_private_home(codex_home, state_root, role)?;
     std::fs::write(dir.join("rules").join("horch.rules"), render(rules))
         .with_context(|| format!("writing this launch's rules under {}", dir.display()))?;
     Ok(Rules::Private { dir })
@@ -223,7 +239,13 @@ fn build_private_home(source: &Path, state_root: &Path, role: &str) -> Result<Pa
 /// worse than a shared rules file. So the rules go where they always went, and
 /// the pane says so rather than implying an isolation it does not have.
 #[cfg(windows)]
-fn install_rules(home: &Path, _role: &str, rules: &[ExecRule]) -> Result<Rules> {
+fn install_rules(
+    home: &Path,
+    _codex_home: &Path,
+    _state_root: &Path,
+    _role: &str,
+    rules: &[ExecRule],
+) -> Result<Rules> {
     ensure_rules(home, rules)?;
     eprintln!(
         "horch: codex execpolicy rules were added to the shared {} - on Windows they \

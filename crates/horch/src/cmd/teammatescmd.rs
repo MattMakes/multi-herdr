@@ -7,15 +7,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
-use horch_core::teammates::{model_takes_effort, Agent, Roster, Teammate, TEMPLATE};
+use horch_core::runtime::RuntimeContext;
+use horch_core::teammates::{model_takes_effort, Agent, Teammate, TEMPLATE};
 use horch_core::usage;
 use serde::Serialize;
 
 use crate::output;
 
 /// Human-readable table: what the orchestrator can pick, and what it cannot.
-pub fn list(json: bool) -> Result<()> {
-    let roster = Roster::load()?;
+pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
+    let roster = super::load_roster(ctx, None)?;
     if json {
         let all: Vec<_> = roster
             .names()
@@ -167,8 +168,8 @@ pub fn matrix_row(t: &Teammate) -> MatrixRow {
 }
 
 /// The roster as a tuning table.
-pub fn matrix(json: bool) -> Result<()> {
-    let roster = Roster::load()?;
+pub fn matrix(ctx: &RuntimeContext, json: bool) -> Result<()> {
+    let roster = super::load_roster(ctx, None)?;
     let rows: Vec<MatrixRow> = roster
         .names()
         .iter()
@@ -225,8 +226,8 @@ pub fn matrix(json: bool) -> Result<()> {
 }
 
 /// Validate the roster. Exit code is what CI and `horch doctor` care about.
-pub fn check() -> Result<ExitCode> {
-    let roster = Roster::load()?;
+pub fn check(ctx: &RuntimeContext) -> Result<ExitCode> {
+    let roster = super::load_roster(ctx, None)?;
     let problems = roster.check();
     // Warnings (design 13.3 rule 6) never fail the check.
     for w in horch_core::balance_policy::fallback_warnings(&roster) {
@@ -253,14 +254,14 @@ pub fn check() -> Result<ExitCode> {
 ///
 /// The template is the schema's documentation, so it is also what a new file is
 /// cut from - there is no second, drifting copy of the field list in here.
-pub fn new(name: &str, dir: Option<&str>) -> Result<()> {
+pub fn new(ctx: &RuntimeContext, name: &str, dir: Option<&str>) -> Result<()> {
     if name.starts_with('_') {
         bail!("a leading '_' means 'not parsed as a teammate'; pick another name");
     }
     let dir = match dir {
         Some(d) => PathBuf::from(d),
-        None => match std::env::var_os("HORCH_TEAMMATES_DIR") {
-            Some(d) => PathBuf::from(d),
+        None => match &ctx.bins.roster_override {
+            Some(d) => d.clone(),
             None => bail!(
                 "no target directory: pass --dir, or set HORCH_TEAMMATES_DIR to the \
                  teammates/ folder you want to add to"

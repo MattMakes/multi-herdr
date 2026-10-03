@@ -275,7 +275,8 @@ fn collect_rollouts(dir: &Path, out: &mut Vec<(std::time::SystemTime, PathBuf)>)
     }
 }
 
-/// Where probes come from. Tests pass fakes through the usual `HORCH_*_BIN`.
+/// Where probes come from. Tests pass fakes through the usual `HORCH_*_BIN`,
+/// which the binary reads into `RuntimeContext::bins`.
 #[derive(Debug, Clone)]
 pub struct ProbeBins {
     pub claude: PathBuf,
@@ -286,14 +287,26 @@ pub struct ProbeBins {
 }
 
 impl ProbeBins {
-    pub fn from_env() -> Self {
+    /// The probe programs from resolved [`HarnessBins`], and the codex
+    /// sessions directory the fallback signal reads.
+    ///
+    /// [`HarnessBins`]: crate::runtime::HarnessBins
+    pub fn new(bins: &crate::runtime::HarnessBins, codex_sessions: PathBuf) -> Self {
         ProbeBins {
-            claude: crate::agent::claude_bin(),
-            codex: crate::agent::codex_bin(),
-            pi: crate::agent::pi_bin(),
-            ollama: crate::agent::ollama_bin(),
-            codex_sessions: crate::usage::Locations::from_env().codex_sessions,
+            claude: bins.claude.clone(),
+            codex: bins.codex.clone(),
+            pi: bins.pi.clone(),
+            ollama: bins.ollama.clone(),
+            codex_sessions,
         }
+    }
+
+    /// The context's programs and codex sessions directory.
+    pub fn from_context(ctx: &crate::runtime::RuntimeContext) -> Self {
+        Self::new(
+            &ctx.bins.harness,
+            crate::usage::Locations::from_context(ctx).codex_sessions,
+        )
     }
 }
 

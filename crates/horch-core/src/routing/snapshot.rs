@@ -12,8 +12,8 @@ use crate::routing::policy::{self, Policy};
 use crate::routing::quota::{probe_due, quota_path, QuotaFile, QuotaView};
 use crate::routing::quota_probe::{probe_all, ProbeBins};
 
-/// The process settings a snapshot depends on. The caller reads them; A2
-/// moves them into `RuntimeContext`.
+/// The process settings a snapshot depends on, taken from a
+/// `RuntimeContext` ([`QuotaEnv::from_context`]).
 #[derive(Debug, Clone)]
 pub struct QuotaEnv {
     /// `HORCH_QUOTA_FILE`: pool readings from a file, never probed (tests,
@@ -23,6 +23,19 @@ pub struct QuotaEnv {
     pub probe_timeout: Option<StdDuration>,
     /// Where a probe makes its scratch dir.
     pub temp_root: PathBuf,
+    /// The programs a probe runs.
+    pub bins: ProbeBins,
+}
+
+impl QuotaEnv {
+    pub fn from_context(ctx: &crate::runtime::RuntimeContext) -> QuotaEnv {
+        QuotaEnv {
+            quota_file: ctx.settings.quota_file.clone(),
+            probe_timeout: ctx.settings.probe_timeout,
+            temp_root: ctx.paths.temp_root.clone(),
+            bins: ProbeBins::from_context(ctx),
+        }
+    }
 }
 
 impl Policy {
@@ -113,13 +126,7 @@ pub fn obtain(
         && !crate::telemetry::lock::collector_live(state_root)
         && probe_due(&file, now, policy.probe_on_demand_age_min)
     {
-        probe_all(
-            &mut file,
-            &ProbeBins::from_env(),
-            now,
-            env.probe_timeout,
-            &env.temp_root,
-        );
+        probe_all(&mut file, &env.bins, now, env.probe_timeout, &env.temp_root);
         file.write(state_root, now, policy)?;
     }
     Ok(QuotaView::new(file, now, policy.clone(), false))

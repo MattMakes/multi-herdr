@@ -33,6 +33,7 @@ pub mod ledger;
 pub mod mailbox;
 pub mod measure;
 pub mod message;
+pub mod messaging;
 pub mod opencode;
 pub mod paneshell;
 pub mod plugins;

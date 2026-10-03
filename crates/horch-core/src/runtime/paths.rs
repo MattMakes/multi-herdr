@@ -12,6 +12,8 @@ use super::context::EnvSource;
 /// The directories a command works with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
+    /// The current directory at bootstrap, when the platform can say.
+    pub cwd: Option<PathBuf>,
     /// `$HORCH_PROJECT_DIR`, else the current directory. `None` when neither
     /// is available; [`Paths::project`] reports that.
     pub project_dir: Option<PathBuf>,
@@ -32,6 +34,7 @@ impl Paths {
     pub fn from_env(env: &dyn EnvSource) -> Paths {
         let home = home_dir(env);
         Paths {
+            cwd: env.current_dir(),
             project_dir: project_dir(env).ok(),
             state_root: state_root(env, &home),
             state_override: nonempty_path(env, "HORCH_STATE_DIR"),
@@ -46,6 +49,11 @@ impl Paths {
         self.project_dir
             .clone()
             .context("resolving the current directory")
+    }
+
+    /// The current directory, or the error the ambient lookup gave.
+    pub fn current_dir(&self) -> Result<PathBuf> {
+        self.cwd.clone().context("resolving the current directory")
     }
 
     /// Point every state lookup at `dir`, as `HORCH_STATE_DIR=<dir>` would.

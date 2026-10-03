@@ -175,15 +175,60 @@ impl Collector {
     }
 
     /// As [`Collector::open`], at an explicit time (retention is relative).
+    ///
+    /// These two read no environment: no `HORCH_BALANCE`, no quota file, the
+    /// default probe timeout, and the plain program names. The binary opens
+    /// its collector with [`Collector::open_in`].
     pub fn open_at(
         state_root: &Path,
         loc: Locations,
         probing: Probing,
         now: DateTime<Utc>,
     ) -> Result<Collector> {
-        // A2: from RuntimeContext
-        let balance = std::env::var("HORCH_BALANCE").ok();
-        let policy = Policy::load(state_root, balance.as_deref())?;
+        let quota_env = QuotaEnv {
+            quota_file: None,
+            probe_timeout: None,
+            temp_root: state_root.to_path_buf(),
+            bins: ProbeBins::new(
+                &crate::runtime::HarnessBins::resolve(
+                    &crate::runtime::BinOverrides::default(),
+                    None,
+                    None,
+                ),
+                loc.codex_sessions.clone(),
+            ),
+        };
+        Self::open_with(state_root, loc, probing, now, None, quota_env)
+    }
+
+    /// The collector the binary runs: `HORCH_BALANCE`, the quota settings,
+    /// the programs and the fault points all come from `ctx`.
+    pub fn open_in(
+        ctx: &crate::runtime::RuntimeContext,
+        loc: Locations,
+        probing: Probing,
+        now: DateTime<Utc>,
+    ) -> Result<Collector> {
+        let c = Self::open_with(
+            &ctx.paths.state_root,
+            loc,
+            probing,
+            now,
+            ctx.settings.balance_override.as_deref(),
+            QuotaEnv::from_context(ctx),
+        )?;
+        Ok(c.with_faults(&ctx.settings.faults))
+    }
+
+    fn open_with(
+        state_root: &Path,
+        loc: Locations,
+        probing: Probing,
+        now: DateTime<Utc>,
+        balance: Option<&str>,
+        quota_env: QuotaEnv,
+    ) -> Result<Collector> {
+        let policy = Policy::load(state_root, balance)?;
         let dir = super::dir(state_root);
         let store = Store::open(&dir, now, policy.retention_days)?;
         let cursors = store::load_cursors(&dir);
@@ -191,9 +236,9 @@ impl Collector {
             state_root: state_root.to_path_buf(),
             bins: ProbeBins {
                 codex_sessions: loc.codex_sessions.clone(),
-                ..ProbeBins::from_env()
+                ..quota_env.bins.clone()
             },
-            quota_env: quota_env_from_process(),
+            quota_env,
             loc,
             prices: usage::builtin_prices(),
             policy,
@@ -206,10 +251,16 @@ impl Collector {
                 started_at: clock::stamp(now),
             },
             last_good: BTreeMap::new(),
-            fail_after_append: std::env::var("HORCH_FAULT").ok().as_deref() == Some("after-append"),
-            abort_after_append: std::env::var("HORCH_FAULT").ok().as_deref()
-                == Some("abort-after-append"),
+            fail_after_append: false,
+            abort_after_append: false,
         })
+    }
+
+    /// Arm the test hooks that `HORCH_FAULT` names (`RuntimeContext::settings`).
+    pub fn with_faults(mut self, faults: &crate::runtime::Faults) -> Collector {
+        self.fail_after_append = faults.has("after-append");
+        self.abort_after_append = faults.has("abort-after-append");
+        self
     }
 
     /// Every ledger's records, keeping the last good copy of one that does
@@ -336,21 +387,6 @@ impl Collector {
         }
         file.write(&self.state_root, now, &self.policy)?;
         Ok(QuotaView::new(file, now, self.policy.clone(), false))
-    }
-}
-
-/// `HORCH_QUOTA_FILE`, `HORCH_PROBE_TIMEOUT_MS` and the temp dir.
-// A2: from RuntimeContext
-fn quota_env_from_process() -> QuotaEnv {
-    QuotaEnv {
-        quota_file: std::env::var_os("HORCH_QUOTA_FILE")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from),
-        probe_timeout: std::env::var("HORCH_PROBE_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(std::time::Duration::from_millis),
-        temp_root: std::env::temp_dir(),
     }
 }
 

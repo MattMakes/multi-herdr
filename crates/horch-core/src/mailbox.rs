@@ -6,102 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
-
-use crate::execution::SessionMode;
 use crate::herdr::Herdr;
-use crate::teammates::{Agent, Teammate};
+use crate::runtime::RuntimeContext;
+use anyhow::{bail, Context, Result};
 
-/// Everything a worker pane needs to know about itself, written by
-/// `horch spawn` and read by `horch worker`.
-///
-/// The bash implementation wrote a shell fragment of `export`s quoted with
-/// `printf %q`; JSON avoids that quoting problem entirely and has the same
-/// meaning on Windows.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Brief {
-    pub role: String,
-    /// The teammate's name, i.e. the `teammates/<name>.md` this worker is.
-    pub teammate: String,
-    pub agent: String,
-    pub model: String,
-    pub record_id: String,
-    /// Fresh or resumed, and the session id when it is known at spawn. Claude
-    /// session ids are minted at spawn; codex only reveals its id after launch.
-    /// On disk this is still the `session_id` string (empty until known) and
-    /// the `resume` flag.
-    #[serde(flatten, with = "session_wire")]
-    pub session: SessionMode,
-    #[serde(default)]
-    pub task: String,
-    pub project_dir: String,
-    /// Set only when the caller overrode the ledger location.
-    #[serde(default)]
-    pub state_dir: Option<String>,
-    /// Agent-CLI overrides captured at spawn time. A pane is a fresh shell that
-    /// does not inherit the spawning process's environment, so these have to
-    /// travel in the brief to reach the worker at all.
-    #[serde(default)]
-    pub claude_bin: Option<String>,
-    #[serde(default)]
-    pub codex_bin: Option<String>,
-    /// The teammate resolved at spawn time, carried so the worker renders the
-    /// briefing the spawner actually chose. A worker's cwd is the target
-    /// project, not this repo, so re-reading the roster in the pane could
-    /// resolve a different file - or none at all.
-    #[serde(default)]
-    pub resolved: Option<Teammate>,
-    /// Where the roster was read from at spawn time. A pane does not inherit
-    /// `$HORCH_TEAMMATES_DIR`, so the path travels here or the worker falls
-    /// back to the compiled-in copies and silently ignores local edits.
-    #[serde(default)]
-    pub teammates_dir: Option<String>,
-}
-
-impl Brief {
-    pub fn agent(&self) -> Result<Agent> {
-        self.agent.parse().map_err(anyhow::Error::msg)
-    }
-}
-
-/// The brief's on-disk session fields, which predate [`SessionMode`].
-mod session_wire {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use crate::execution::SessionMode;
-    use crate::ids::SessionId;
-
-    #[derive(Serialize, Deserialize)]
-    struct Wire {
-        #[serde(default)]
-        session_id: String,
-        #[serde(rename = "resume")]
-        resuming: bool,
-    }
-
-    pub fn serialize<S: Serializer>(session: &SessionMode, s: S) -> Result<S::Ok, S::Error> {
-        Wire {
-            session_id: session.id().map(|id| id.to_string()).unwrap_or_default(),
-            resuming: session.is_resume(),
-        }
-        .serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SessionMode, D::Error> {
-        let wire = Wire::deserialize(d)?;
-        let id = match wire.session_id.as_str() {
-            "" => None,
-            _ => Some(SessionId::new(wire.session_id).map_err(D::Error::custom)?),
-        };
-        match (wire.resuming, id) {
-            (true, Some(id)) => Ok(SessionMode::Resume(id)),
-            (true, None) => Err(D::Error::custom("a resume brief needs a session_id")),
-            (false, id) => Ok(SessionMode::Fresh(id)),
-        }
-    }
-}
+/// The brief moved to [`crate::messaging::brief`] in A2.
+pub use crate::messaging::brief::Brief;
 
 /// The mailbox directory for one herdr workspace.
 #[derive(Debug, Clone)]
@@ -111,12 +21,8 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
-    /// Build a mailbox handle for `workspace_id` under the system temp dir.
-    pub fn new(workspace_id: &str) -> Self {
-        Self::under(std::env::temp_dir(), workspace_id)
-    }
-
-    /// Same, but rooted at an explicit temp dir. Exists for tests.
+    /// A mailbox handle for `workspace_id` under the system temp dir
+    /// (`RuntimeContext::paths.temp_root`).
     pub fn under(temp_root: impl AsRef<Path>, workspace_id: &str) -> Self {
         Self {
             dir: temp_root
@@ -126,32 +32,47 @@ impl Mailbox {
         }
     }
 
+    /// [`Mailbox::under`] the context's temp dir.
+    pub fn in_context(ctx: &RuntimeContext, workspace_id: &str) -> Self {
+        Self::under(&ctx.paths.temp_root, workspace_id)
+    }
+
     /// Resolve the workspace this process belongs to, then open its mailbox.
     ///
-    /// `HORCH_WORKSPACE_ID` is exported by [`Mailbox::register`], so a registered
-    /// pane hits the cheap path. Otherwise fall back to this pane's own
-    /// `HERDR_PANE_ID` - herdr exports an internal id there (`p_2`), which
-    /// `herdr pane get` upgrades to the public workspace id. That fallback is what
-    /// lets these commands also work from an unregistered pane.
-    pub fn resolve(herdr: &Herdr) -> Result<Self> {
-        if let Ok(ws) = std::env::var("HORCH_WORKSPACE_ID") {
-            if !ws.is_empty() {
-                return Ok(Self::new(&ws));
-            }
+    /// `workspace` is `HORCH_WORKSPACE_ID`, which a registered pane hands to
+    /// its children, so they hit the cheap path. Otherwise fall back to this
+    /// pane's own `HERDR_PANE_ID` (`pane`) - herdr exports an internal id there
+    /// (`p_2`), which `herdr pane get` upgrades to the public workspace id. That
+    /// fallback is what lets these commands also work from an unregistered pane.
+    pub fn resolve(
+        herdr: &Herdr,
+        temp_root: &Path,
+        workspace: Option<&str>,
+        pane: Option<&str>,
+    ) -> Result<Self> {
+        if let Some(ws) = workspace.filter(|ws| !ws.is_empty()) {
+            return Ok(Self::under(temp_root, ws));
         }
-        let pane_id = std::env::var("HERDR_PANE_ID")
-            .ok()
-            .filter(|s| !s.is_empty());
-        let Some(pane_id) = pane_id else {
+        let Some(pane_id) = pane.filter(|p| !p.is_empty()) else {
             bail!(
                 "not inside a herdr pane (HERDR_PANE_ID is unset) and HORCH_WORKSPACE_ID is not set"
             )
         };
-        let pane = herdr.pane_get(&pane_id)?;
+        let pane = herdr.pane_get(pane_id)?;
         let ws = pane
             .workspace_id
             .with_context(|| format!("herdr did not report a workspace_id for pane {pane_id}"))?;
-        Ok(Self::new(&ws))
+        Ok(Self::under(temp_root, &ws))
+    }
+
+    /// [`Mailbox::resolve`] with the context's temp dir, workspace and pane.
+    pub fn resolve_in(herdr: &Herdr, ctx: &RuntimeContext) -> Result<Self> {
+        Self::resolve(
+            herdr,
+            &ctx.paths.temp_root,
+            ctx.herdr.workspace.as_ref().map(|w| w.as_str()),
+            ctx.herdr.pane.as_ref().map(|p| p.as_str()),
+        )
     }
 
     pub fn workspace_id(&self) -> &str {
@@ -176,25 +97,45 @@ impl Mailbox {
 
     /// Record this pane's public id under `role` so other panes can address it.
     ///
-    /// Returns the resolved public pane id. Also sets `HORCH_WORKSPACE_ID` in this
-    /// process so child processes inherit it.
-    pub fn register(herdr: &Herdr, role: &str) -> Result<(Self, String)> {
-        let internal = std::env::var("HERDR_PANE_ID")
-            .ok()
+    /// `pane` is this pane's `HERDR_PANE_ID`. Returns the mailbox and the
+    /// resolved public pane id. The caller hands [`Mailbox::workspace_id`] to
+    /// its children as `HORCH_WORKSPACE_ID`; this process's environment is
+    /// left alone.
+    pub fn register(
+        herdr: &Herdr,
+        temp_root: &Path,
+        pane: Option<&str>,
+        role: &str,
+    ) -> Result<(Self, String)> {
+        let internal = pane
             .filter(|s| !s.is_empty())
             .context("must run inside a herdr pane (HERDR_PANE_ID is unset)")?;
-        let pane = herdr.pane_get(&internal)?;
+        let pane = herdr.pane_get(internal)?;
         let ws = pane
             .workspace_id
             .clone()
             .with_context(|| format!("herdr did not report a workspace_id for pane {internal}"))?;
-        let mailbox = Self::new(&ws);
+        let mailbox = Self::under(temp_root, &ws);
         std::fs::create_dir_all(&mailbox.dir)
             .with_context(|| format!("creating mailbox {}", mailbox.dir.display()))?;
         std::fs::write(mailbox.id_path(role), &pane.pane_id)
             .with_context(|| format!("registering role '{role}'"))?;
-        std::env::set_var("HORCH_WORKSPACE_ID", &ws);
         Ok((mailbox, pane.pane_id))
+    }
+
+    /// [`Mailbox::register`] this context's pane, then record the workspace
+    /// in the context, so everything this process does next, and every child
+    /// it starts, belongs to that workspace.
+    pub fn register_in(
+        herdr: &Herdr,
+        ctx: &mut RuntimeContext,
+        role: &str,
+    ) -> Result<(Self, String)> {
+        let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
+        let (mailbox, pane_id) =
+            Self::register(herdr, &ctx.paths.temp_root, pane.as_deref(), role)?;
+        ctx.herdr.workspace = Some(crate::ids::WorkspaceId::new(mailbox.workspace_id())?);
+        Ok((mailbox, pane_id))
     }
 
     /// The pane id registered for `role`, if any.
@@ -245,7 +186,7 @@ impl Mailbox {
                 path.display()
             )
         })?;
-        serde_json::from_str(&raw).with_context(|| format!("parsing brief {}", path.display()))
+        Brief::from_json(&raw).with_context(|| format!("parsing brief {}", path.display()))
     }
 
     /// True when anything already claims this role in this workspace.
@@ -286,9 +227,13 @@ impl Mailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution::SessionMode;
+    use crate::runtime::BinOverrides;
+    use crate::teammates::Agent;
 
     fn brief(role: &str) -> Brief {
         Brief {
+            schema: crate::messaging::brief::SCHEMA,
             role: role.into(),
             teammate: "sonnet".into(),
             agent: "claude".into(),
@@ -302,6 +247,8 @@ mod tests {
             codex_bin: None,
             resolved: None,
             teammates_dir: None,
+            workdir: None,
+            bin_overrides: BinOverrides::default(),
         }
     }
 
