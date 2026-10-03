@@ -169,6 +169,8 @@ fn inspect_skills(argv: &[String]) {
 }
 
 /// The headless judge: one prompt on stdin, one json envelope on stdout.
+/// `$HORCH_FAKE_LOG.judge.json` holds `attempts` (one scenario per attempt)
+/// and, optionally, `usage` for the transcript.
 fn judge_mode(mut call: Call) {
     let mut prompt = String::new();
     let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut prompt);
@@ -207,6 +209,11 @@ fn judge_mode(mut call: Call) {
         .unwrap_or_else(|| "valid".into());
     call.extra.insert("judge_scenario".into(), json!(mode));
     call.flush();
+    // `"usage"` in the script: write the session's transcript, as a real
+    // `claude -p --session-id` does, so `horch cost` prices the judge.
+    if !script["usage"].is_null() {
+        write_transcript(&call.argv, &script["usage"]);
+    }
     let session = call
         .argv
         .windows(2)
