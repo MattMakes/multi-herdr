@@ -43,6 +43,47 @@ pub fn slug(project: &str) -> String {
         .collect()
 }
 
+/// Every ledger file directly under `state_root`, sorted: each `*.json` file
+/// except `policy.json`. Directories are never ledgers, so the dataset tree
+/// under `<state_root>/multi-herdr/` is never read (OD3).
+pub fn ledger_paths(state_root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(state_root) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension().and_then(|e| e.to_str()) == Some("json")
+                && p.file_name().and_then(|n| n.to_str()) != Some("policy.json")
+        })
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// One ledger file's records, or `None` when it cannot be read or does not
+/// parse right now (a write by an old binary may be in flight). An empty
+/// file is an empty ledger.
+pub fn read_ledger_file(path: &Path) -> Option<Vec<LedgerRecordV1>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    if text.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    serde_json::from_str(&text).ok()
+}
+
+/// Every ledger under `state_root` that reads right now, with its path, in
+/// path order. A ledger that does not parse is left out; a reader that runs
+/// across ticks keeps its last good copy itself (the telemetry collector).
+pub fn read_all_ledgers(state_root: &Path) -> Vec<(PathBuf, Vec<LedgerRecordV1>)> {
+    ledger_paths(state_root)
+        .into_iter()
+        .filter_map(|p| read_ledger_file(&p).map(|records| (p, records)))
+        .collect()
+}
+
 /// A project's executions on disk.
 #[derive(Debug, Clone)]
 pub struct ExecutionStore {

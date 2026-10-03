@@ -19,6 +19,7 @@ use super::readers::{poll_record, Cursors};
 use super::store::{self, Rollup, Store};
 use super::{Event, Observation, QuotaSignal, TokenClasses, Unread};
 use crate::clock;
+use crate::execution::store as execution_store;
 use crate::ledger::{Record, KIND_ORCHESTRATOR, STATUS_DONE, STATUS_WORKING};
 use crate::policy::Policy;
 use crate::quota::{self, ProbeBins, QuotaEnv, QuotaFile, QuotaView};
@@ -27,24 +28,9 @@ use crate::usage::{self, Locations, Price};
 /// Every record in every ledger under `state_root`, skipping a ledger that
 /// does not parse right now. For readers outside the collector.
 pub fn read_ledgers(state_root: &Path) -> Vec<Record> {
-    let Ok(entries) = std::fs::read_dir(state_root) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.extension().and_then(|e| e.to_str()) == Some("json")
-                && p.file_name().and_then(|n| n.to_str()) != Some("policy.json")
-        })
-        .collect();
-    paths.sort();
-    paths
-        .iter()
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .filter_map(|t| serde_json::from_str::<Vec<Record>>(&t).ok())
-        .flatten()
+    execution_store::read_all_ledgers(state_root)
+        .into_iter()
+        .flat_map(|(_, records)| records)
         .collect()
 }
 
@@ -267,30 +253,10 @@ impl Collector {
     /// not parse right now.
     pub fn ledgers(&mut self) -> Vec<Record> {
         let mut out = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&self.state_root) else {
-            return out;
-        };
-        let mut paths: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.is_file()
-                    && p.extension().and_then(|e| e.to_str()) == Some("json")
-                    && p.file_name().and_then(|n| n.to_str()) != Some("policy.json")
-            })
-            .collect();
-        paths.sort();
-        for path in paths {
-            let parsed = std::fs::read_to_string(&path).ok().and_then(|t| {
-                if t.trim().is_empty() {
-                    Some(Vec::new())
-                } else {
-                    serde_json::from_str::<Vec<Record>>(&t).ok()
-                }
-            });
-            match parsed {
+        for path in execution_store::ledger_paths(&self.state_root) {
+            match execution_store::read_ledger_file(&path) {
                 Some(records) => {
-                    self.last_good.insert(path.clone(), records.clone());
+                    self.last_good.insert(path, records.clone());
                     out.extend(records);
                 }
                 None => {
