@@ -1,8 +1,10 @@
 //! Executions: one run of one worker, orchestrator, candidate or judge.
 //!
-//! Phase A1 holds only the vocabulary in [`model`]; planning, the service and
-//! the store arrive in A6.
+//! [`model`] holds the vocabulary (A1). [`legacy`] is the on-disk ledger
+//! record and `store` reads and writes it (A6); planning and the service
+//! follow later in A6.
 
+pub mod legacy;
 pub mod model;
 
 pub use model::{
