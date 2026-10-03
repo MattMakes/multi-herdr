@@ -86,3 +86,16 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 7. Giving a second task to a worker that already finished one. Its pane is closed; spawn fresh with `PRIOR WORK`.
 8. Treating a `[<role>]` line as the human operator. It is worker status, and only the human sets direction.
 9. Declaring the run done while panes are mid-task. Check `horch inbox` last.
+
+## 9. Design work
+
+1. Run visual work as a pipeline, not as one build task:
+   - `design-director` writes the direction contract and the storyboard. It writes no production code.
+   - Builders work from those 2 files: `landing-page-builder` for marketing pages, `design-system-engineer` for tokens and components, `motion-engineer` for animation, `frontend-developer` for application screens.
+   - `design-critic` reviews the built pages with screenshots at 390, 768 and 1440 px and writes a scored critique file.
+   - Send the critique findings to a fresh builder as a fix plan. Repeat the review until the critique has no high-cost finding.
+2. Give every builder and the critic the paths of the contract and the storyboard in `CONTEXT`. A builder without the contract makes its own direction.
+3. Serialize builders that share the token or theme files. `design-system-engineer` goes first when the page needs new tokens.
+4. Use `visual-prototyper` before the director locks a direction, when the client must react to images, or when the work needs generated hero or mood art. Its output is a prototype, not production code.
+5. Use `designer` for flows, states, copy and accessibility of an application. Use `design-director` for the look and feel.
+6. Never send unreleased brand work, client assets or unannounced product designs to an `opencode-*` teammate. Those providers train on input.

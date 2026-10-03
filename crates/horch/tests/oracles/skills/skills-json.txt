@@ -52,7 +52,7 @@
     {
       "description": "Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.",
       "name": "orchestrate",
-      "skill_file_bytes": 6992
+      "skill_file_bytes": 8385
     },
     {
       "description": "Use before executing a plan to verify wiring, contracts, preservation, configuration, and prerequisites against source.",

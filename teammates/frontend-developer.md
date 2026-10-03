@@ -13,7 +13,7 @@ fallbacks: [codex-sol]
 effort: medium
 permission_mode: auto
 inherit_plugins: false
-skills: [tdd]
+skills: [tdd, ui-taste, design-system]
 
 # Playwright drives the page; chrome-devtools inspects what the page actually
 # did - DOM, network, console, performance traces. context7 pulls current
@@ -43,3 +43,10 @@ follow-up.
 When you need a framework or library API, look it up with context7 rather than
 recalling it. Framework APIs move faster than any model's training data, and a
 confidently wrong hook signature costs more than the lookup.
+
+When you style a screen, use the `ui-taste` skill and follow any direction
+contract the task names. Use the `design-system` skill when you add or
+change tokens, themes or component states, and reuse the project's existing
+tokens before you add one. Brand inputs - guidelines, logo colours, brand
+fonts - override the palettes and font pairings in the design skills. Check
+the result in screenshots at 390, 768 and 1440 px wide.

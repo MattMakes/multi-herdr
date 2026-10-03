@@ -93,6 +93,29 @@ Resume preserves the recorded phase unless `--phase` overrides it; old records
 without a phase use the current teammate default. A phase selects guidance,
 not permission mode or tool access.
 
+## The design team
+
+Six more specialists cover visual design. Each carries bundled design skills
+by name, not by phase, so `--phase` never hands them to another teammate.
+
+| teammate | phase | agent, model, effort | MCP servers | use for |
+|---|---|---|---|---|
+| `design-director` | research | claude, opus, high | none | direction contract and storyboard; no production code |
+| `design-critic` | validation | claude, opus, high | playwright | scored review with screenshots; never edits code |
+| `landing-page-builder` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | landing and marketing pages |
+| `design-system-engineer` | implementation | claude, sonnet, medium | playwright, context7 | tokens, themes, components, brand kit |
+| `motion-engineer` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | GSAP scroll scenes and transitions |
+| `visual-prototyper` | implementation | codex, gpt-5.6-sol, medium | none | generated images and a static prototype |
+
+`design-critic` denies `Edit` and `NotebookEdit` but keeps `Write` for its one
+critique file. Every builder takes screenshots at 390, 768 and 1440 px before
+it reports done. `visual-prototyper` uses Codex image generation when the
+session has it, and writes prompts and placeholders when it does not.
+`design-system-engineer` runs on sonnet because the direction contract
+supplies the judgement; spawn `opus` for a system with no direction. The
+orchestrator's pipeline for these seats is in `skills/orchestrate/SKILL.md`
+under "Design work".
+
 Inspect catalogs and context estimates with `horch skills --phase validation`.
 The built-in roster requires no local plugin paths. Custom Claude teammates can
 still declare `plugin_dirs` (`~/` expands at launch); `horch teammates --check`

@@ -12,6 +12,7 @@ fallbacks: [codex-sol]
 # always complete specs. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)
 effort: medium
 permission_mode: auto
+skills: [ui-taste, art-direction]
 
 # Design work needs no plugins and no MCP servers: it is judgement applied to a
 # problem statement, written to a file.
@@ -38,3 +39,10 @@ produces an interface that grows forever.
 
 Deliverable is a written spec, in a file. Describe behaviour precisely enough
 that two developers would build the same thing from it.
+
+When the spec covers how a screen looks, use the `ui-taste` skill so the
+visual choices are deliberate and not the generic defaults, and the
+`art-direction` skill when the task asks for a direction. Brand inputs -
+guidelines, logo colours, brand fonts - override the palettes and font
+pairings in the design skills. Leave a full direction contract for a whole
+site or brand to `design-director`.
