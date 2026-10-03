@@ -23,7 +23,7 @@ use horch_core::execution::store::ExecutionStore;
 use horch_core::fsx;
 use horch_core::ids::{ExperimentId, RoundId, TeammateName};
 use horch_core::measure::paths::DatasetPaths;
-use horch_core::measure::projection::fold;
+use horch_core::measure::projection::{fold, RoundView};
 use horch_core::measure::recorder::JsonlRecorder;
 use horch_core::measure::redact::redact;
 use horch_core::measure::store::{self, StoreOptions};
@@ -260,7 +260,9 @@ fn coordinate(
             timeout: Duration::from_secs(g.timeout_s),
         })
         .collect();
-    let validator = CommandValidator::new(gates, artifacts, Default::default());
+    // `fail-gate:<name>` reaches the gates from `run` (and from promotion's
+    // revalidation, which uses this validator too).
+    let validator = CommandValidator::new(gates, artifacts, ctx.settings.faults.points().clone());
     let usage = TelemetryUsage {
         locations: Locations::from_context(ctx),
     };
@@ -340,19 +342,47 @@ fn coordinate(
         }
     };
     coordinator.close_workspace(&spec);
-    let (line, code) = match outcome {
-        RoundOutcome::Decided => ("DECIDED", exit::SUCCESS),
-        RoundOutcome::Rejected { budget: true } => (
-            "REJECTED: the budget stopped the candidates",
-            exit::BUDGET_REFUSED,
-        ),
-        RoundOutcome::Rejected { budget: false } => {
-            ("REJECTED: no eligible candidate", exit::REJECTED)
-        }
-        RoundOutcome::NeedsIntervention => ("NEEDS_INTERVENTION", exit::NEEDS_INTERVENTION),
-    };
+    let view = coordinator.view(&spec)?;
+    let (line, code) = outcome_line(&outcome, &view);
     println!("round {} {line}", r.round);
     Ok(code)
+}
+
+/// The last line `run`, `resume` and `promote` print, and the exit code:
+/// DECIDED, PROMOTED and COMPLETE 0; the budget 3; NEEDS_INTERVENTION 5;
+/// REJECTED 6.
+pub(super) fn outcome_line(outcome: &RoundOutcome, view: &RoundView) -> (String, u8) {
+    match outcome {
+        RoundOutcome::Decided => {
+            let p = &view.promotion;
+            let line = match (&p.started, &p.completed, &view.winner) {
+                (Some(started), Some(done), _) => {
+                    format!("PROMOTED: {} is at {}", started.target, done.dest_after)
+                }
+                (_, _, Some(w)) => format!("DECIDED: winner {}", w.label),
+                _ => "DECIDED".to_string(),
+            };
+            (line, exit::SUCCESS)
+        }
+        RoundOutcome::Rejected { budget: true } => (
+            "REJECTED: the budget stopped the candidates".to_string(),
+            exit::BUDGET_REFUSED,
+        ),
+        RoundOutcome::Rejected { budget: false } => (
+            match view.rejected {
+                Some(reason) => format!("REJECTED: {reason}"),
+                None => "REJECTED".to_string(),
+            },
+            exit::REJECTED,
+        ),
+        RoundOutcome::NeedsIntervention => (
+            match &view.needs_intervention {
+                Some(n) => format!("NEEDS_INTERVENTION: {}", n.reason),
+                None => "NEEDS_INTERVENTION".to_string(),
+            },
+            exit::NEEDS_INTERVENTION,
+        ),
+    }
 }
 
 /// How often the coordinator looks at its candidates.

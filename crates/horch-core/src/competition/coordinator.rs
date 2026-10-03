@@ -26,7 +26,10 @@
 //!
 //! With at least 1 eligible candidate the round goes to JUDGING_BACKGROUND
 //! and the judge step runs (`judging::start`, then `judging::poll` each
-//! tick) until the round is decided; then cleanup removes the worktrees.
+//! tick) until the round is decided. Without a requested promotion, cleanup
+//! then removes the worktrees (OD5: collect only). With `--promote-to` or an
+//! operator `promote`, the round goes through [`RoundPromoter`] (REVALIDATING
+//! → PROMOTING → PROMOTED) and is cleaned up once the receipt is on disk.
 //!
 //! Fault points (each fires after its event, as [`FaultFired`]):
 //! `abort-after-worktree:<n>`, `abort-after-candidate-spawned:<n>`,
@@ -41,7 +44,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::competition::budget::{BudgetAction, BudgetPolicy, UsageMeter, UsageSource};
-use crate::competition::cleanup::{CleanupOptions, RoundCleanup};
+use crate::competition::cleanup::{CleanupOptions, CleanupOutcome, RoundCleanup};
 use crate::competition::config::DatasetConfig;
 use crate::competition::judging::{self, JobLauncher, JudgeEnv, JudgingStatus};
 use crate::competition::model::RoundState;
@@ -49,7 +52,9 @@ use crate::competition::observe::{
     self, classify, deadline_passed, Observed, TelemetryUsage, CANCELLED_BUDGET, CANCELLED_DISK,
 };
 use crate::competition::planner::{candidate_planned_payload, round_created_payload, RoundPlan};
-use crate::competition::promotion::FaultFired;
+use crate::competition::promotion::{
+    BranchRef, FaultFired, GitPromotionEngine, PromotionEngine, PromotionPlan, PromotionResult,
+};
 use crate::evaluation::scheduler::DEFAULT_STALE_AFTER;
 use crate::evaluation::validator::{ValidationReport, Validator};
 use crate::evaluation::winner::RejectReason;
@@ -65,7 +70,7 @@ use crate::ids::{ExecutionId, ExperimentId, PaneId, RoundId, SessionId};
 use crate::measure::digest::sha256_bytes;
 use crate::measure::event::{
     Actor, CandidateCompleted, CandidateFailed, CandidateFrozen, CandidatePlanned,
-    CandidateSpawned, EventKind, FinalOutcome, InterventionSource, PromotionIntent,
+    CandidateSpawned, EventEnvelope, EventKind, FinalOutcome, InterventionSource, PromotionIntent,
     RoundNeedsIntervention, ValidationCompleted, WinnerRejected, WorktreeCreated,
 };
 use crate::measure::paths::DatasetPaths;
@@ -77,8 +82,10 @@ use crate::runtime::fault::Faults;
 use crate::runtime::RuntimeContext;
 use crate::teammates::Roster;
 use crate::usage::money::MicroUsd;
-use crate::vcs::git::GitClient;
-use crate::vcs::worktree::{FrozenCandidate, WorktreeManager, WorktreeSpec};
+use crate::vcs::git::{GitClient, GitIdentity};
+use crate::vcs::worktree::{
+    FrozenCandidate, WorktreeManager, WorktreeSpec, FREEZE_EMAIL, FREEZE_NAME,
+};
 use crate::workspace::client::WorkspaceClient;
 
 /// The `_base/` file whose body is every candidate's task text (CMP-15).
@@ -984,19 +991,16 @@ impl<G: GitClient> Coordinator<'_, G> {
                     )?;
                 }
                 RoundState::JudgingBackground => return self.judge(spec),
-                RoundState::Rejected | RoundState::Cleanup => {
+                // DECIDED holds a round only without a requested promotion:
+                // `winner.selected{requested}` moves on to REVALIDATING at once.
+                RoundState::Rejected
+                | RoundState::Cleanup
+                | RoundState::Decided
+                | RoundState::Promoted => {
                     self.cleanup(spec, &view)?;
                 }
-                RoundState::Decided => {
-                    if view.promotion.started.is_some()
-                        || matches!(
-                            view.winner.as_ref().map(|w| &w.promotion),
-                            Some(crate::measure::event::PromotionIntent::Requested { .. })
-                        )
-                    {
-                        return Ok(RoundOutcome::Decided);
-                    }
-                    self.cleanup(spec, &view)?;
+                RoundState::Revalidating | RoundState::Promoting => {
+                    self.promoter(spec).advance(&spec.round, &view)?;
                 }
                 RoundState::Complete => {
                     return Ok(match view.final_outcome {
@@ -1008,16 +1012,15 @@ impl<G: GitClient> Coordinator<'_, G> {
                     })
                 }
                 RoundState::NeedsIntervention => return Ok(RoundOutcome::NeedsIntervention),
-                RoundState::Revalidating | RoundState::Promoting | RoundState::Promoted => {
-                    return Ok(RoundOutcome::Decided)
-                }
                 other => bail!("round {} cannot be decided in state {other}", spec.round),
             }
         }
     }
 
+    /// Clean up a round that reached its end. A skipped cleanup stops the
+    /// loop: the round would never move on.
     fn cleanup(&self, spec: &RoundSpec, view: &RoundView) -> Result<()> {
-        RoundCleanup {
+        let outcome = RoundCleanup {
             git: self.git,
             recorder: self.recorder,
             paths: self.paths,
@@ -1032,7 +1035,22 @@ impl<G: GitClient> Coordinator<'_, G> {
                 force: false,
             },
         )?;
+        if let CleanupOutcome::Skipped { reason } = outcome {
+            bail!("{reason}");
+        }
         Ok(())
+    }
+
+    fn promoter(&self, spec: &RoundSpec) -> RoundPromoter<'_, G> {
+        RoundPromoter {
+            git: self.git,
+            validator: self.validator,
+            recorder: self.recorder,
+            paths: self.paths,
+            faults: self.faults,
+            repo: spec.repo.clone(),
+            integration_root: integration_root(&spec.worktree_root),
+        }
     }
 
     /// JUDGING_BACKGROUND: start the judge job, then poll it each tick
@@ -1141,6 +1159,135 @@ impl<G: GitClient> Coordinator<'_, G> {
             return Err(FaultFired(point.to_string()).into());
         }
         Ok(())
+    }
+}
+
+// ── promotion (B5) ──────────────────────────────────────────────────────
+
+/// The parent of a round's temp promotion worktrees: `<worktree root>/_promote`.
+/// Labels are plain letters, so no candidate worktree has this name.
+pub fn integration_root(worktree_root: &std::path::Path) -> PathBuf {
+    worktree_root.join("_promote")
+}
+
+/// The promotion a round's events ask for: the target branch and the
+/// attempt number. The last `operator.promote` wins over the
+/// `winner.selected{requested}` target. The attempt is 1, plus 1 per
+/// `operator.promote`.
+pub fn promotion_request(
+    events: &[EventEnvelope],
+    round: &RoundId,
+    view: &RoundView,
+) -> Result<(String, u32)> {
+    let mut target = match view.winner.as_ref().map(|w| &w.promotion) {
+        Some(PromotionIntent::Requested { target }) => Some(target.clone()),
+        _ => None,
+    };
+    let mut attempt = 1;
+    for e in events {
+        if e.round_id.as_ref() != Some(round) {
+            continue;
+        }
+        if let Ok(EventKind::OperatorPromote(p)) = e.event() {
+            target = Some(p.target);
+            attempt += 1;
+        }
+    }
+    let target = target.with_context(|| format!("round {round} has no promotion target"))?;
+    Ok((target, attempt))
+}
+
+/// The judged winner as the promotion engine takes it. Its worktree may be
+/// gone (a round cleaned up before `promote <round>`): the engine then
+/// checks the branch alone.
+pub fn frozen_winner(view: &RoundView, at: DateTime<Utc>) -> Result<FrozenCandidate> {
+    let winner = view.winner.as_ref().context("the round has no winner")?;
+    let c = view
+        .candidates
+        .get(&winner.label)
+        .with_context(|| format!("the winner {} is not a candidate", winner.label))?;
+    let wt = c.worktree.as_ref().context("the winner has no worktree")?;
+    let frozen = c.frozen.as_ref().context("the winner was not frozen")?;
+    Ok(FrozenCandidate {
+        label: winner.label.clone(),
+        execution_id: c
+            .execution_id
+            .clone()
+            .context("the winner has no execution id")?,
+        worktree: wt.path.clone(),
+        branch: wt.branch.clone(),
+        base_sha: wt.base_sha.clone(),
+        head_sha: frozen.head_sha.clone(),
+        numstat: frozen.numstat.clone(),
+        diff_digest: frozen.diff_digest.clone(),
+        frozen_at: crate::clock::stamp(at),
+    })
+}
+
+/// Promotion of a decided round: what the coordinator and the operator's
+/// `promote <round>` share. The caller has brought the round to
+/// REVALIDATING (`winner.selected{requested}` or `operator.promote`).
+pub struct RoundPromoter<'a, G: GitClient> {
+    pub git: &'a G,
+    pub validator: &'a dyn Validator,
+    pub recorder: &'a JsonlRecorder,
+    pub paths: &'a DatasetPaths,
+    pub faults: &'a Faults,
+    /// The main repository; the target branch is in it.
+    pub repo: PathBuf,
+    pub integration_root: PathBuf,
+}
+
+impl<G: GitClient> RoundPromoter<'_, G> {
+    /// REVALIDATING: run the engine. PROMOTING: finish the publish that a
+    /// stopped run started (`resume_promotion`, the target moves at most
+    /// once). A fault point returns [`FaultFired`].
+    pub fn advance(&self, round: &RoundId, view: &RoundView) -> Result<PromotionResult> {
+        let events = self.recorder.read_all()?.events;
+        let (target, attempt) = promotion_request(&events, round, view)?;
+        let now = crate::clock::now();
+        let candidate = frozen_winner(view, now)?;
+        let winner = view.winner.as_ref().context("the round has no winner")?;
+        let target = BranchRef {
+            repo: self.repo.clone(),
+            name: target,
+        };
+        let plan = PromotionPlan {
+            experiment: view.experiment_id.clone(),
+            round: round.clone(),
+            judgment_id: winner.judgment_id.clone(),
+            identity: GitIdentity {
+                name: FREEZE_NAME.to_owned(),
+                email: FREEZE_EMAIL.to_owned(),
+                date: crate::clock::stamp(now),
+            },
+            integration_root: self.integration_root.clone(),
+            attempt,
+        };
+        let validator = DynValidator(self.validator);
+        let engine = GitPromotionEngine {
+            git: self.git,
+            validator: &validator,
+            recorder: self.recorder,
+            paths: self.paths,
+            faults: self.faults,
+        };
+        match (&view.state, &view.promotion.started) {
+            (RoundState::Revalidating, _) => engine.promote(&candidate, &target, &plan),
+            (RoundState::Promoting, Some(started)) => {
+                engine.resume_promotion(&candidate, &target, &plan, started)
+            }
+            (state, _) => bail!("round {round} cannot promote in state {state}"),
+        }
+    }
+}
+
+/// The engine takes a sized validator; the coordinator holds a `dyn` one.
+struct DynValidator<'a>(&'a dyn Validator);
+
+impl Validator for DynValidator<'_> {
+    fn validate(&self, candidate: &FrozenCandidate) -> Result<ValidationReport> {
+        self.0.validate(candidate)
     }
 }
 

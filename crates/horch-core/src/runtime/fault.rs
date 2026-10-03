@@ -39,6 +39,12 @@ impl Faults {
         self.0.is_empty()
     }
 
+    /// Every armed point. `CommandValidator` takes the set, for its
+    /// `fail-gate:<name>` points.
+    pub fn points(&self) -> &BTreeSet<String> {
+        &self.0
+    }
+
     /// The index of an armed `<prefix>:<n>` point, for example `Some("2")`
     /// for `abort-after-worktree:2` and the prefix `abort-after-worktree`.
     pub fn indexed(&self, prefix: &str) -> Option<String> {
@@ -73,6 +79,7 @@ mod tests {
         assert!(many.has("abort-after-append"));
         assert!(many.has("x"));
         assert!(!many.has(""));
+        assert_eq!(many.points().len(), 2);
 
         assert!(Faults::parse(None).is_empty());
         assert!(Faults::parse(Some("")).is_empty());
