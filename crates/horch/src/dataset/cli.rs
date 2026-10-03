@@ -78,8 +78,9 @@ pub enum Command {
     },
 
     // Filled by later units. Each prints "not implemented in this build".
+    /// The detached judge run of one attempt. The coordinator starts it.
     #[command(hide = true, name = "judge-job")]
-    JudgeJob(Placeholder),
+    JudgeJob(JudgeJobArgs),
     #[command(hide = true)]
     Promote(Placeholder),
     #[command(hide = true)]
@@ -88,6 +89,26 @@ pub enum Command {
     Cleanup(Placeholder),
     #[command(hide = true)]
     Watch(Placeholder),
+}
+
+/// `judge-job`: one judge attempt (`evaluation::scheduler::job_args`).
+#[derive(Debug, clap::Args)]
+pub struct JudgeJobArgs {
+    #[arg(long)]
+    pub round: String,
+    #[arg(long)]
+    pub attempt: u32,
+    /// The sealed judge-input bundle; the judge runs in it.
+    #[arg(long)]
+    pub input_dir: PathBuf,
+    #[arg(long)]
+    pub session_id: String,
+    #[arg(long)]
+    pub model: String,
+    #[arg(long)]
+    pub effort: String,
+    #[arg(long)]
+    pub timeout_s: u64,
 }
 
 /// The arguments of a command that a later unit implements.
