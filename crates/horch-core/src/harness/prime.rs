@@ -27,21 +27,23 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared};
-use crate::agent;
+use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
-use crate::teammates::Teammate;
 
 /// One Prime Agent launch's private daemon socket and session directory.
 #[derive(Debug, Clone)]
 pub struct Daemon {
     socket: PathBuf,
     sessions: PathBuf,
+    /// The `prime-agent` program that answers `status` for [`Daemon::finish`].
+    bin: PathBuf,
 }
 
 impl Daemon {
     /// Reserve a socket and session directory for the pane running `role`.
-    pub fn install(state_root: &Path, role: &str) -> Result<Daemon> {
+    /// `bin` is the `prime-agent` program the launch runs.
+    pub fn install(state_root: &Path, role: &str, bin: &Path) -> Result<Daemon> {
         let slug: String = role
             .chars()
             .map(|c| {
@@ -63,6 +65,7 @@ impl Daemon {
             // this stays a short name in an already-short state directory.
             socket: base.join("d.sock"),
             sessions,
+            bin: bin.to_path_buf(),
         })
     }
 
@@ -76,7 +79,7 @@ impl Daemon {
 
     /// Stop this launch's daemon, and only this one.
     pub fn finish(&self) {
-        if let Some(pid) = daemon_pid(&self.socket) {
+        if let Some(pid) = daemon_pid(&self.bin, &self.socket) {
             terminate(pid);
         }
         let _ = std::fs::remove_file(&self.socket);
@@ -84,11 +87,8 @@ impl Daemon {
 }
 
 /// The pid of the Prime daemon listening on `socket`, from `prime-agent status`.
-fn daemon_pid(socket: &Path) -> Option<i32> {
-    let output = Command::new(agent::prime_bin())
-        .args(["status", "--json"])
-        .output()
-        .ok()?;
+fn daemon_pid(bin: &Path, socket: &Path) -> Option<i32> {
+    let output = Command::new(bin).args(["status", "--json"]).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -97,7 +97,7 @@ fn daemon_pid(socket: &Path) -> Option<i32> {
 
 /// Split out from [`daemon_pid`] so the matching is testable without Prime
 /// installed.
-pub fn pid_for_socket(json: &str, socket: &Path) -> Option<i32> {
+pub(crate) fn pid_for_socket(json: &str, socket: &Path) -> Option<i32> {
     let records: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
     records
         .iter()
@@ -160,7 +160,7 @@ impl Harness for Prime {
     /// otherwise `horch done` would leave its daemon running and the fleet
     /// would accumulate one per spawn.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
-        let daemon = Daemon::install(&ctx.paths.state_root, req.role)?;
+        let daemon = Daemon::install(&ctx.paths.state_root, req.role, &ctx.bins.harness.prime)?;
         let mut prepared = Prepared {
             // pi-family builders append `--` before the prompt. These go into
             // the teammate's args, which come before that delimiter, or Prime
@@ -256,8 +256,8 @@ mod tests {
     #[test]
     fn each_launch_reserves_its_own_socket_and_sessions() {
         let state = tempfile::tempdir().unwrap();
-        let a = Daemon::install(state.path(), "prime-1").unwrap();
-        let b = Daemon::install(state.path(), "prime-1").unwrap();
+        let a = Daemon::install(state.path(), "prime-1", Path::new("prime-agent")).unwrap();
+        let b = Daemon::install(state.path(), "prime-1", Path::new("prime-agent")).unwrap();
         assert_ne!(a.socket(), b.socket());
         assert!(a.sessions_dir().is_dir());
         assert!(a.socket().to_string_lossy().contains("prime-1"));

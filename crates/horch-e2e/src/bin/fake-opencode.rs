@@ -3,7 +3,7 @@
 //! Three kinds of call:
 //! - `--version` prints a fixed version.
 //! - `session list [--format json]` prints the JSON array that
-//!   `horch_core::opencode` parses: one session whose `directory` is the
+//!   `horch_core::harness::opencode` parses: one session whose `directory` is the
 //!   process cwd and whose `created` is now. Its id is
 //!   `horch_e2e::opencode_session_id(cwd)`: `ses_` and 16 hex digits.
 //! - Any other argv is a launch (`--model m [--session id] --prompt p`). The

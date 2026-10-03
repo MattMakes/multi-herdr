@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Agent, PermissionMode, Phase};
+use super::{PermissionMode, Phase};
+use crate::harness::HarnessKind;
 
 // `TEMPLATE` comes from the generated file above: the annotated `_template.md`,
 // used both to scaffold new teammates and to hold the documented field list to
@@ -22,24 +23,25 @@ use super::{Agent, PermissionMode, Phase};
 /// Opus and Sol flavors (`horch fleet opus|sol`) hold no reserved tier, so the
 /// fleet then has none; their workers may share the orchestrator's model. The
 /// orchestrator writes every brief for an Opus/Codex-Sol reader either way.
-pub const ORCHESTRATOR_TIERS: [(&str, &str); 2] = [("fable", "opus"), ("astra", "codex-sol")];
+pub(crate) const ORCHESTRATOR_TIERS: [(&str, &str); 2] =
+    [("fable", "opus"), ("astra", "codex-sol")];
 
 /// The teammate files `horch fleet` launches as the orchestrator.
-pub const FLEET_ORCHESTRATORS: [&str; 2] = ["orchestrator", "orchestrator-codex"];
+pub(crate) const FLEET_ORCHESTRATORS: [&str; 2] = ["orchestrator", "orchestrator-codex"];
 
 /// Bundled skills only a fleet orchestrator may carry. `check` fails any other
 /// teammate that names one in `skills:`, and none is in a phase catalog.
-pub const ORCHESTRATOR_ONLY_SKILLS: [&str; 2] = ["orchestrate", "skill-creator"];
+pub(crate) const ORCHESTRATOR_ONLY_SKILLS: [&str; 2] = ["orchestrate", "skill-creator"];
 
 /// Tools the Claude orchestrator must deny: `Agent` starts a subagent, in the
 /// foreground or the background, and `RemoteTrigger` starts a cloud agent.
 /// Workers are the orchestrator's only way to delegate.
-pub const ORCHESTRATOR_DENIED_TOOLS: [&str; 2] = ["Agent", "RemoteTrigger"];
+pub(crate) const ORCHESTRATOR_DENIED_TOOLS: [&str; 2] = ["Agent", "RemoteTrigger"];
 
 /// Teammates that run only as a headless `claude -p` job the dataset
 /// coordinator starts, never in a fleet pane. `horch spawn` refuses them: the
 /// judge must see the anonymous bundle and nothing else (JDG-01, SEC-04).
-pub const HEADLESS_ONLY: [&str; 1] = ["judge"];
+pub(crate) const HEADLESS_ONLY: [&str; 1] = ["judge"];
 
 /// The reserved tier a model belongs to, if any.
 ///
@@ -60,7 +62,7 @@ pub fn reserved_tier(model: &str) -> Option<(&'static str, &'static str)> {
 /// Longest a `brief_description` may be. Every non-hidden teammate's
 /// description is concatenated into the orchestrator's briefing on every run,
 /// so this is a direct, permanent tax on the orchestrator's context.
-pub const BRIEF_DESCRIPTION_MAX: usize = 120;
+pub(crate) const BRIEF_DESCRIPTION_MAX: usize = 120;
 
 /// One team member: the frontmatter of a `teammates/*.md` file, plus its body.
 ///
@@ -80,7 +82,7 @@ pub struct Teammate {
     /// Names a file in `_base/`. When absent, the body IS the whole prompt.
     #[serde(default)]
     pub base: Option<String>,
-    pub agent: Agent,
+    pub agent: HarnessKind,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -204,7 +206,7 @@ impl Default for Teammate {
             generic: false,
             hidden: false,
             base: None,
-            agent: Agent::Claude,
+            agent: HarnessKind::Claude,
             model: None,
             effort: None,
             subagent_model: None,

@@ -32,7 +32,7 @@ pub struct NewEvent {
 
 impl NewEvent {
     /// The envelope, with a fresh v7 id minted at `occurred_at`.
-    pub fn into_envelope(self) -> Result<EventEnvelope> {
+    pub(crate) fn into_envelope(self) -> Result<EventEnvelope> {
         if self.idempotency_key.is_empty() {
             bail!("event '{}' has an empty idempotency key", self.kind.name());
         }

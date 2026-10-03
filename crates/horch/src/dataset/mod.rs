@@ -10,19 +10,19 @@ use anyhow::Result;
 use horch_core::measure::paths::DatasetPaths;
 use horch_core::runtime::RuntimeContext;
 
-pub mod cleanup;
+pub(crate) mod cleanup;
 pub mod cli;
-pub mod export;
-pub mod judge_job;
+pub(crate) mod export;
+pub(crate) mod judge_job;
 pub mod outcome;
-pub mod preflight;
-pub mod promote;
-pub mod readiness;
-pub mod rebuild;
-pub mod rollback;
-pub mod run;
-pub mod status;
-pub mod watch;
+pub(crate) mod preflight;
+pub(crate) mod promote;
+pub(crate) mod readiness;
+pub(crate) mod rebuild;
+pub(crate) mod rollback;
+pub(crate) mod run;
+pub(crate) mod status;
+pub(crate) mod watch;
 
 use cli::Command;
 
@@ -34,9 +34,9 @@ pub mod exit {
     /// A hidden command that a later build fills.
     pub const NOT_IMPLEMENTED: u8 = 2;
     /// The budget or the quota refused the run.
-    pub const BUDGET_REFUSED: u8 = 3;
+    pub(crate) const BUDGET_REFUSED: u8 = 3;
     /// Preflight failed: no worktree was created and no model was called.
-    pub const PREFLIGHT_FAILED: u8 = 4;
+    pub(crate) const PREFLIGHT_FAILED: u8 = 4;
     /// The round needs the operator.
     pub const NEEDS_INTERVENTION: u8 = 5;
     /// The round was rejected.
@@ -81,7 +81,7 @@ pub fn dispatch(
 }
 
 /// The dataset of the context's project (OD3).
-pub fn dataset_paths(ctx: &RuntimeContext) -> Result<DatasetPaths> {
+pub(crate) fn dataset_paths(ctx: &RuntimeContext) -> Result<DatasetPaths> {
     Ok(DatasetPaths::new(
         &ctx.paths.state_root,
         &ctx.paths.project()?,

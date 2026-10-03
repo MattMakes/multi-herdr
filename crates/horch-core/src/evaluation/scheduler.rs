@@ -39,7 +39,7 @@ pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(2);
 
 /// A heartbeat older than this, or a job that never wrote one this long
 /// after its spawn, is lost.
-pub const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(30);
+pub(crate) const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(30);
 
 /// The dataset binary, a sibling of `horch`.
 pub const DATASET_BIN: &str = "multi-herdr-dataset";
@@ -152,7 +152,7 @@ pub fn decide(facts: &JobFacts, now: DateTime<Utc>, stale_after: Duration) -> Jo
 }
 
 /// Read the facts of `job_dir`. Never writes.
-pub fn job_facts(job_dir: &Path) -> JobFacts {
+pub(crate) fn job_facts(job_dir: &Path) -> JobFacts {
     let heartbeat: Option<Heartbeat> = std::fs::read(job_dir.join(HEARTBEAT_FILE))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
@@ -183,7 +183,7 @@ pub fn discover(job_dir: &Path, now: DateTime<Utc>, stale_after: Duration) -> Jo
 
 /// The dataset binary: this process when it is the dataset binary, else its
 /// sibling next to the current executable.
-pub fn dataset_exe(ctx: &RuntimeContext) -> Result<PathBuf> {
+pub(crate) fn dataset_exe(ctx: &RuntimeContext) -> Result<PathBuf> {
     let exe = ctx.bins.exe()?;
     if exe.file_stem().and_then(|s| s.to_str()) == Some(DATASET_BIN) {
         return Ok(exe);
@@ -260,7 +260,7 @@ fn open_log(path: &Path) -> Result<std::fs::File> {
 
 /// Kill a lost job and everything it started. The job leads its own session
 /// and process group, so the group id is its pid.
-pub fn kill_job(pid: u32) {
+pub(crate) fn kill_job(pid: u32) {
     if pid == 0 {
         return;
     }

@@ -22,16 +22,16 @@ use horch_core::evaluation::scheduler::{
 use horch_core::fsx;
 use horch_core::harness::headless::{headless_command, judge_prompt, supports_json_schema};
 use horch_core::ids::{RoundId, SessionId};
+use horch_core::roster::Roster;
 use horch_core::runtime::RuntimeContext;
-use horch_core::teammates::Roster;
 
 use super::cli::JudgeJobArgs;
 use super::exit;
 
 /// Inside the job, after the judge answered and before `output.json`.
-pub const ABORT_BEFORE_OUTPUT: &str = "abort-in-judge-job-before-output";
+pub(crate) const ABORT_BEFORE_OUTPUT: &str = "abort-in-judge-job-before-output";
 /// Inside the job, after `output.json` and before `exit.json`.
-pub const ABORT_AFTER_OUTPUT: &str = "abort-after-judge-output";
+pub(crate) const ABORT_AFTER_OUTPUT: &str = "abort-after-judge-output";
 
 /// What one judge CLI run gave.
 enum RunResult {
@@ -40,7 +40,7 @@ enum RunResult {
     Failed(JobExit),
 }
 
-pub fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8> {
+pub(crate) fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8> {
     let round: RoundId = args.round.parse().context("--round")?;
     let job_dir = super::dataset_paths(ctx)?.job_dir(&round, args.attempt)?;
     if !job_dir.is_dir() {

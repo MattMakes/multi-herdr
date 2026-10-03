@@ -182,7 +182,7 @@ fn fake_opencode_session_list_matches_cwd() {
         std::fs::canonicalize(dir).unwrap(),
         std::fs::canonicalize(&h.project).unwrap()
     );
-    // The fields `horch_core::opencode::parse_sessions` reads: `created` is
+    // The fields `horch_core::harness::opencode::parse_sessions` reads: `created` is
     // milliseconds since the epoch and is recent, so the "after launch" filter
     // keeps it.
     let created = records[0]["created"].as_u64().unwrap();

@@ -26,8 +26,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::execution::model::ExecutionStatus;
+use crate::roster::Phase;
 use crate::skills::activation::ResolvedSkillRef;
-use crate::teammates::Phase;
 
 /// One entry in a record's history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +36,11 @@ pub struct HistoryEntry {
     pub event: String,
     pub text: String,
 }
+
+/// `Record::status` of a live worker session (the legacy status word).
+pub const STATUS_WORKING: &str = "working";
+/// `Record::status` of a finished session (the legacy status word).
+pub const STATUS_DONE: &str = "done";
 
 /// `Record::kind` of a worker pane.
 pub const KIND_WORKER: &str = "worker";
@@ -196,7 +201,7 @@ impl LedgerRecordV1 {
     /// typed `state` follows it, so the two never disagree: `"working"`
     /// reopens a terminal state as running, and anything else closes a
     /// non-terminal one as done. A record without `state` keeps none.
-    pub fn set_legacy_status(&mut self, status: &str) {
+    pub(crate) fn set_legacy_status(&mut self, status: &str) {
         self.status = status.to_string();
         if let Some(state) = &self.state {
             let working = status == ExecutionStatus::Running.legacy_status();
@@ -207,7 +212,7 @@ impl LedgerRecordV1 {
     }
 
     /// Make `status` agree with `state` before a write.
-    pub fn sync_legacy_status(&mut self) {
+    pub(crate) fn sync_legacy_status(&mut self) {
         if let Some(state) = &self.state {
             self.status = state.legacy_status().to_string();
         }

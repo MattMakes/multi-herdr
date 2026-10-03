@@ -10,7 +10,7 @@
 //!
 //! SPEC-TODO(Spec B WorkerRun): the field list verbatim. The golden
 //! `tests/golden/worker-run-1.0.0.json` (MEA-11) freezes this shape; a
-//! change bumps [`WORKER_RUN_SCHEMA_VERSION`].
+//! change bumps `WORKER_RUN_SCHEMA_VERSION`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -31,7 +31,7 @@ use crate::skills::activation::ResolvedSkillRef;
 use crate::usage::money::{CostSource, MicroUsd};
 use crate::usage::Tokens;
 
-pub const WORKER_RUN_SCHEMA_VERSION: &str = "1.0.0";
+pub(crate) const WORKER_RUN_SCHEMA_VERSION: &str = "1.0.0";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

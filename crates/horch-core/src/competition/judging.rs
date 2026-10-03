@@ -45,17 +45,17 @@ use crate::measure::event::{
 use crate::measure::paths::DatasetPaths;
 use crate::measure::projection::{fold, RoundView, MAX_JUDGE_ATTEMPTS};
 use crate::measure::recorder::{JsonlRecorder, NewEvent, Recorder};
+use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
-use crate::teammates::Teammate;
 use crate::vcs::git::GitClient;
 use crate::vcs::worktree::FrozenCandidate;
 
 /// After `judge.scheduled` and the spawn of that attempt.
-pub const ABORT_AFTER_JUDGE_SCHEDULED: &str = "abort-after-judge-scheduled";
+pub(crate) const ABORT_AFTER_JUDGE_SCHEDULED: &str = "abort-after-judge-scheduled";
 /// After `judgements/<round>.json` is written.
-pub const ABORT_AFTER_JUDGMENT_WRITTEN: &str = "abort-after-judgment-written";
+pub(crate) const ABORT_AFTER_JUDGMENT_WRITTEN: &str = "abort-after-judgment-written";
 /// After `winner.selected`.
-pub const ABORT_AFTER_WINNER_SELECTED: &str = "abort-after-winner-selected";
+pub(crate) const ABORT_AFTER_WINNER_SELECTED: &str = "abort-after-winner-selected";
 
 /// The longest one judge attempt may run, unless the config says otherwise.
 pub const DEFAULT_JUDGE_TIMEOUT: Duration = Duration::from_secs(20 * 60);

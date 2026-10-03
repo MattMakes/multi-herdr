@@ -18,13 +18,13 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use horch_core::clock;
-use horch_core::herdr::Herdr;
-use horch_core::quota::{self, PoolReading, POOLS};
+use horch_core::routing::quota::{self, PoolReading, POOLS};
 use horch_core::runtime::RuntimeContext;
 use horch_core::telemetry::collect::{self, Collector, LiveRow, Probing, Snapshot};
 use horch_core::telemetry::lock::{self, Holder};
 use horch_core::telemetry::store::{self, RollupRow, GROUPS};
 use horch_core::usage::Locations;
+use horch_core::workspace::herdr::Herdr;
 
 use crate::output;
 
@@ -421,7 +421,7 @@ pub fn render(snap: &Snapshot, view: &ViewState, width: u16, height: u16) -> Vec
         .collect();
     let fleets = live
         .iter()
-        .filter(|r| r.kind == horch_core::ledger::KIND_ORCHESTRATOR)
+        .filter(|r| r.kind == horch_core::execution::legacy::KIND_ORCHESTRATOR)
         .count();
     let left = format!(
         "horch telemetry · {fleets} fleet{} · {} live pane{} · {}",
@@ -806,7 +806,7 @@ pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
         args.push("--state-dir".into());
         args.push(dir);
     }
-    let command = horch_core::paneshell::PaneShell::host().command_line(&exe, &args);
+    let command = horch_core::workspace::paneshell::PaneShell::host().command_line(&exe, &args);
     herdr.pane_run(&ws.root_pane_id, &command)?;
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until {

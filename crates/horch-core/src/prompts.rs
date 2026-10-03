@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Result};
 
 use crate::execution::SessionMode;
-use crate::teammates::{ExecRule, Roster, Teammate};
+use crate::roster::{ExecRule, Roster, Teammate};
 
 /// Substitute `{name}` spans in `template`.
 ///

@@ -6,9 +6,9 @@
 //! [`horch_core::workspace::arrange::report`].
 
 use anyhow::Result;
-use horch_core::herdr::Herdr;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::arrange;
+use horch_core::workspace::herdr::Herdr;
 
 use crate::output;
 

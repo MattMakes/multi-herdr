@@ -10,12 +10,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use horch_core::execution::records::Ledger;
 use horch_core::execution::TilingMode;
-use horch_core::herdr::{Direction, Herdr, Layout, Rect};
-use horch_core::ledger::Ledger;
-use horch_core::mailbox::Mailbox;
-use horch_core::paneshell::PaneShell;
+use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
+use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::model::{Direction, Layout, Rect};
+use horch_core::workspace::paneshell::PaneShell;
 
 use super::doctor;
 use super::spawn::{spawn, SpawnArgs};
@@ -98,7 +99,7 @@ fn messaging(ctx: &RuntimeContext) -> Result<ExitCode> {
 
     println!("Sending a test message a -> b via horch tell...");
     let target = mailbox.pane_for("b").expect("just polled");
-    herdr.send_line(&target, arithmetic_echo(shell))?;
+    horch_core::messaging::delivery::send_line(&herdr, &target, arithmetic_echo(shell))?;
 
     if herdr.wait_output(&b, "SMOKE_TEST_42", 15_000)? {
         println!(
@@ -745,7 +746,7 @@ fn smoke_session_done(ledger: &Ledger) -> bool {
         return false;
     };
     let events: Vec<&str> = record.history.iter().map(|h| h.event.as_str()).collect();
-    record.status == horch_core::ledger::STATUS_DONE
+    record.status == horch_core::execution::legacy::STATUS_DONE
         && events.contains(&"note")
         && events.contains(&"done")
 }

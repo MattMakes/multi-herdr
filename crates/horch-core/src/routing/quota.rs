@@ -34,8 +34,8 @@ use crate::telemetry::QuotaSignal;
 pub const POOL_CLAUDE: &str = "claude";
 pub const POOL_CODEX: &str = "codex";
 pub const POOL_ZEN: &str = "opencode-zen";
-pub const POOL_LOCAL: &str = "local";
-pub const POOL_UNKNOWN: &str = "unknown";
+pub(crate) const POOL_LOCAL: &str = "local";
+pub(crate) const POOL_UNKNOWN: &str = "unknown";
 
 /// The pools, in display order.
 pub const POOLS: [&str; 4] = [POOL_CLAUDE, POOL_CODEX, POOL_ZEN, POOL_LOCAL];
@@ -96,7 +96,7 @@ impl Window {
     }
 
     /// Hours until reset, if known and in the future.
-    pub fn left_h(&self, now: DateTime<Utc>) -> Option<f64> {
+    pub(crate) fn left_h(&self, now: DateTime<Utc>) -> Option<f64> {
         let r = self.resets()?;
         (r > now).then(|| (r - now).num_seconds() as f64 / 3600.0)
     }
@@ -107,7 +107,7 @@ impl Window {
     }
 
     /// `used / elapsed`, elapsed clamped to [0.01, 1] (section 11.4).
-    pub fn pace(&self, now: DateTime<Utc>) -> Option<f64> {
+    pub(crate) fn pace(&self, now: DateTime<Utc>) -> Option<f64> {
         let left = self.left_h(now)?;
         let elapsed = (1.0 - left / (self.minutes as f64 / 60.0)).clamp(0.01, 1.0);
         Some(self.used_at(now) / elapsed)
@@ -144,7 +144,7 @@ pub fn pool_for(agent: &str, model: &str) -> &'static str {
 }
 
 /// The model family a scoped window can limit, from a model name.
-pub fn model_family(model: &str) -> Option<&'static str> {
+pub(crate) fn model_family(model: &str) -> Option<&'static str> {
     let m = model.to_ascii_lowercase();
     [
         "opus", "sonnet", "haiku", "fable", "astra", "sol", "terra", "luna",
@@ -212,14 +212,14 @@ impl Default for QuotaFile {
     }
 }
 
-pub fn quota_path(state_root: &Path) -> PathBuf {
+pub(crate) fn quota_path(state_root: &Path) -> PathBuf {
     crate::telemetry::dir(state_root).join("quota.json")
 }
 
 impl QuotaFile {
     /// Fold transcript signals in (QUO-03, QUO-06): refusals, and Codex
     /// snapshots that are newer than what the file holds.
-    pub fn apply_signals(&mut self, signals: &[QuotaSignal], policy: &Policy) {
+    pub(crate) fn apply_signals(&mut self, signals: &[QuotaSignal], policy: &Policy) {
         for s in signals {
             match s {
                 QuotaSignal::Refusal { pool, at, what } => {
@@ -573,7 +573,7 @@ fn refusal_in_force(
 
 /// What a successful probe read.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Probed {
+pub(crate) struct Probed {
     pub windows: Vec<Window>,
     pub ordinary_usage_allowed: Option<bool>,
 }
@@ -603,7 +603,7 @@ fn reset_stamp(v: Option<&Value>) -> Option<String> {
 
 /// Parse a `get_usage` reply ([Q] 1a). `utilization` is 0-100 and resets
 /// are ISO. Only window fields are read; everything else is dropped.
-pub fn parse_claude_usage(reply: &Value) -> Result<Probed, String> {
+pub(crate) fn parse_claude_usage(reply: &Value) -> Result<Probed, String> {
     if reply.pointer("/response/subtype").and_then(Value::as_str) == Some("error") {
         let e = reply
             .pointer("/response/error")
@@ -712,7 +712,7 @@ pub fn parse_claude_usage(reply: &Value) -> Result<Probed, String> {
 
 /// Parse an `account/rateLimits/read` result ([Q] 2). `usedPercent` is
 /// 0-100 and `resetsAt` epoch seconds; windows by `windowDurationMins`.
-pub fn parse_codex_limits(reply: &Value) -> Result<Probed, String> {
+pub(crate) fn parse_codex_limits(reply: &Value) -> Result<Probed, String> {
     if let Some(e) = reply.get("error") {
         let msg = e.get("message").and_then(Value::as_str).unwrap_or("error");
         return Err(format!("account/rateLimits/read error: {msg}"));
@@ -752,7 +752,7 @@ pub fn parse_codex_limits(reply: &Value) -> Result<Probed, String> {
 }
 
 /// The newest time any pool was probed.
-pub fn last_probe(file: &QuotaFile) -> Option<DateTime<Utc>> {
+pub(crate) fn last_probe(file: &QuotaFile) -> Option<DateTime<Utc>> {
     file.pools
         .values()
         .filter_map(|r| r.probed_at.as_deref().and_then(clock::parse))
@@ -762,7 +762,7 @@ pub fn last_probe(file: &QuotaFile) -> Option<DateTime<Utc>> {
 /// Whether a probe is due (QUO-07): when the last probe is older than
 /// `age_min`. A file override is never probed; the caller checks for one
 /// first (it is a parameter, not an environment read, since A5).
-pub fn probe_due(file: &QuotaFile, now: DateTime<Utc>, age_min: i64) -> bool {
+pub(crate) fn probe_due(file: &QuotaFile, now: DateTime<Utc>, age_min: i64) -> bool {
     last_probe(file).is_none_or(|t| now - t >= Duration::minutes(age_min))
 }
 

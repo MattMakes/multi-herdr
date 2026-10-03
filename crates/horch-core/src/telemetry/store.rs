@@ -28,7 +28,7 @@ pub struct Store {
 }
 
 /// Create (or truncate) a file readable by its owner only (section 15).
-pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut f = private_options()
         .write(true)
         .create(true)
@@ -39,7 +39,7 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Replace `path` atomically: write a private temp file, then rename.
-pub fn replace_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn replace_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     write_private(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
@@ -160,7 +160,7 @@ impl Store {
 }
 
 /// Every event in one file. A torn last line (a crash mid-append) is skipped.
-pub fn read_file(path: &Path) -> Vec<Event> {
+pub(crate) fn read_file(path: &Path) -> Vec<Event> {
     std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
@@ -185,7 +185,7 @@ pub fn read_all(dir: &Path) -> Vec<Event> {
 
 // ─── cursors ────────────────────────────────────────────────────────────────
 
-pub fn cursors_path(dir: &Path) -> PathBuf {
+pub(crate) fn cursors_path(dir: &Path) -> PathBuf {
     dir.join("cursors.json")
 }
 
@@ -196,7 +196,7 @@ pub fn load_cursors(dir: &Path) -> Cursors {
         .unwrap_or_default()
 }
 
-pub fn save_cursors(dir: &Path, cursors: &Cursors) -> Result<()> {
+pub(crate) fn save_cursors(dir: &Path, cursors: &Cursors) -> Result<()> {
     let json = serde_json::to_vec(cursors)?;
     replace_private(&cursors_path(dir), &json)
         .with_context(|| format!("saving {}", cursors_path(dir).display()))
@@ -248,7 +248,7 @@ impl Rollup {
 pub const GROUPS: [&str; 6] = ["teammate", "phase", "agent", "project", "plan", "kind"];
 
 /// The group key of an event.
-pub fn group_key(e: &Event, group: &str) -> String {
+pub(crate) fn group_key(e: &Event, group: &str) -> String {
     let dash = || "-".to_string();
     match group {
         "teammate" => e.teammate.clone(),

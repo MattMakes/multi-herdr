@@ -1,6 +1,6 @@
 //! Candidate observation (B3, CMP-07, CMP-10, SEC-03).
 //!
-//! [`classify`] turns what the execution store and the workspace say about
+//! `classify` turns what the execution store and the workspace say about
 //! one candidate into what the coordinator records:
 //!
 //! | Observation | Outcome |
@@ -34,13 +34,13 @@ use crate::usage::money::MicroUsd;
 use crate::usage::{read_session, Locations, Tokens, Usage};
 
 /// The reason a budget cancel records.
-pub const CANCELLED_BUDGET: &str = "budget";
+pub(crate) const CANCELLED_BUDGET: &str = "budget";
 /// The reason a candidate that disk pressure kept from launching records.
-pub const CANCELLED_DISK: &str = "disk";
+pub(crate) const CANCELLED_DISK: &str = "disk";
 
 /// What one look at a candidate found.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Observed {
+pub(crate) enum Observed {
     /// The agent may still be working.
     Live,
     Completed {
@@ -52,7 +52,7 @@ pub enum Observed {
 /// Classify a candidate's execution. `pane_alive` is `None` when the record
 /// has no pane to look at. A record that is not live yet (`Planned`) is
 /// `Live`: its spawn is in flight.
-pub fn classify(record: &Execution, pane_alive: Option<bool>) -> Observed {
+pub(crate) fn classify(record: &Execution, pane_alive: Option<bool>) -> Observed {
     match &record.status {
         ExecutionStatus::Done => Observed::Completed {
             exit_code: record.exit_code,
@@ -68,7 +68,11 @@ pub fn classify(record: &Execution, pane_alive: Option<bool>) -> Observed {
 }
 
 /// Whether a candidate spawned at `spawned_at` is past its deadline.
-pub fn deadline_passed(spawned_at: DateTime<Utc>, now: DateTime<Utc>, deadline_s: u64) -> bool {
+pub(crate) fn deadline_passed(
+    spawned_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    deadline_s: u64,
+) -> bool {
     let deadline = i64::try_from(deadline_s).unwrap_or(i64::MAX);
     now.signed_duration_since(spawned_at).num_seconds() >= deadline
 }
@@ -116,14 +120,18 @@ pub struct UsageRecord {
 }
 
 /// The usage directory of a round.
-pub fn usage_dir(paths: &DatasetPaths, exp: &ExperimentId, round: &RoundId) -> Result<PathBuf> {
+pub(crate) fn usage_dir(
+    paths: &DatasetPaths,
+    exp: &ExperimentId,
+    round: &RoundId,
+) -> Result<PathBuf> {
     Ok(paths.artifacts_dir(exp, round)?.join("usage"))
 }
 
 /// Build the usage record of one finished candidate, and copy its transcript
 /// into the dataset only when `retain` is set.
 #[allow(clippy::too_many_arguments)]
-pub fn usage_record(
+pub(crate) fn usage_record(
     source: &TelemetryUsage,
     meter: &UsageMeter,
     paths: &DatasetPaths,
@@ -168,7 +176,7 @@ pub fn usage_record(
 
 /// Write `record` under the round's usage dir (0600). A restart rewrites
 /// it with the same facts.
-pub fn write_usage_record(
+pub(crate) fn write_usage_record(
     paths: &DatasetPaths,
     exp: &ExperimentId,
     round: &RoundId,
@@ -212,7 +220,7 @@ pub fn load_usage_records(paths: &DatasetPaths) -> BTreeMap<String, UsageRecord>
 }
 
 /// The session id of a record, when it is known.
-pub fn session_of(record: &Execution) -> Option<String> {
+pub(crate) fn session_of(record: &Execution) -> Option<String> {
     match &record.session {
         crate::execution::SessionState::Known(id) => Some(id.to_string()),
         _ => None,

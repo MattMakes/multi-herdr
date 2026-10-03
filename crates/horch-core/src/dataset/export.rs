@@ -36,15 +36,15 @@ use crate::usage::money::{MicroUsd, NanoUsd};
 pub const EXPORT_SCHEMA: &str = "mh.export/1.0.0";
 
 /// The question key of the round's empirical winner.
-pub const BEST_WORKER: &str = "best_worker";
+pub(crate) const BEST_WORKER: &str = "best_worker";
 
 /// The prefix of the per-config quality question keys: `quality:<config_id>`.
-pub const QUALITY_PREFIX: &str = "quality:";
+pub(crate) const QUALITY_PREFIX: &str = "quality:";
 
 /// The probability key of a `score` answer.
 // SPEC-TODO(System One score answers): the wire shape of a score answer is
 // unknown; the summed judge score goes under this key.
-pub const SCORE_KEY: &str = "score";
+pub(crate) const SCORE_KEY: &str = "score";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExportRow {
@@ -57,7 +57,7 @@ pub struct ExportRow {
     pub round_id: RoundId,
     pub task_id: TaskId,
     pub state: ExportState,
-    /// [`BEST_WORKER`]: a choice over the validated candidates' config ids;
+    /// `BEST_WORKER`: a choice over the validated candidates' config ids;
     /// `quality:<config_id>`: a score per candidate config.
     pub questions: BTreeMap<String, Question>,
     /// The empirical answers; `null` where the round gives none (abstain,

@@ -45,7 +45,7 @@ impl PaneShell {
     }
 
     /// Quote one argument for this dialect.
-    pub fn quote(self, arg: &str) -> String {
+    pub(crate) fn quote(self, arg: &str) -> String {
         match self {
             PaneShell::Posix => format!("'{}'", arg.replace('\'', r"'\''")),
             PaneShell::PowerShell => format!("'{}'", arg.replace('\'', "''")),

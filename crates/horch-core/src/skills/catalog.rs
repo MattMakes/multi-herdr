@@ -25,7 +25,7 @@ use crate::measure::digest::Digest;
 
 /// The marketplace API, for the `horch` binary, which depends on core only.
 pub use horch_marketplace as marketplace;
-pub use horch_marketplace::SkillVersion;
+use horch_marketplace::SkillVersion;
 
 /// Where a catalog entry's files come from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,7 +220,7 @@ impl SkillCatalog {
 
     /// The bundled skills as the installer's catalog, so a `bundled:<id>`
     /// source installs the compiled-in copy.
-    pub fn marketplace_catalog(&self) -> Result<Catalog> {
+    pub(crate) fn marketplace_catalog(&self) -> Result<Catalog> {
         let mut out = Catalog::new();
         for entry in self.entries.values() {
             if entry.source != CatalogSource::Bundled {

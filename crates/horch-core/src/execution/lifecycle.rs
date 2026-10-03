@@ -11,11 +11,12 @@ use serde::{Deserialize, Serialize};
 use crate::execution::model::ExecutionStatus;
 use crate::execution::store::ExecutionStore;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
+use crate::harness::HarnessKind;
 use crate::messaging::brief::Brief;
 use crate::messaging::mailbox::Mailbox;
 use crate::messaging::message::strip_done_prefix;
+use crate::roster::Roster;
 use crate::runtime::{process, RuntimeContext};
-use crate::teammates::{Agent, Roster};
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::herdr::Herdr;
 
@@ -294,7 +295,7 @@ impl WorkerSteps for PaneWorker<'_> {
                 .with_context(|| format!("entering workdir {workdir}"))?;
         }
         let env = child_env(mailbox, brief, self.path.clone());
-        if teammate.agent == Agent::None {
+        if teammate.agent == HarnessKind::None {
             return run_smoke(&env).map(|()| Some(0));
         }
         // Every flag comes from the teammate file, and every harness

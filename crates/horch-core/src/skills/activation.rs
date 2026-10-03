@@ -6,13 +6,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
+use horch_marketplace::SkillVersion;
 use serde::{Deserialize, Serialize};
 
-use super::catalog::{CatalogEntry, SkillCatalog, SkillVersion};
+use super::catalog::{CatalogEntry, SkillCatalog};
 use super::selection::{check, phase_skills};
 use crate::ids::SkillId;
 use crate::measure::digest::Digest;
-use crate::teammates::{Phase, Teammate};
+use crate::roster::{Phase, Teammate};
 
 /// Why a skill is in a plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

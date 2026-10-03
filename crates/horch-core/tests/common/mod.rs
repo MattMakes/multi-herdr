@@ -3,10 +3,17 @@
 
 use std::path::{Path, PathBuf};
 
+use horch_core::runtime::bins::{self, BinOverrides};
+use horch_core::runtime::{process, EnvSource, ProcessEnv};
 use horch_core::usage::Locations;
 
 pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/telemetry")
+}
+
+/// The `sqlite3` program: `$HORCH_SQLITE3_BIN`, else the bare name.
+fn sqlite3_bin() -> PathBuf {
+    bins::sqlite3_bin(&BinOverrides::from_env(&ProcessEnv))
 }
 
 pub struct World {
@@ -30,7 +37,7 @@ pub fn locations(home: &Path) -> Locations {
         codex_sessions: home.join(".codex/sessions"),
         pi_sessions: home.join(".pi/agent/sessions"),
         opencode_db: home.join(".local/share/opencode/opencode.db"),
-        sqlite3: horch_core::agent::sqlite3_bin(),
+        sqlite3: sqlite3_bin(),
     }
 }
 
@@ -103,11 +110,15 @@ pub fn first_half(text: &str) -> String {
 
 /// `sqlite3` on PATH or at `HORCH_SQLITE3_BIN`.
 pub fn sqlite3() -> Option<PathBuf> {
-    let bin = horch_core::agent::sqlite3_bin();
+    let bin = sqlite3_bin();
     if bin.components().count() > 1 {
         return bin.is_file().then_some(bin);
     }
-    horch_core::agent::which(&bin.to_string_lossy())
+    process::which(
+        ProcessEnv.var_os("PATH").as_deref(),
+        ProcessEnv.var("PATHEXT").as_deref(),
+        &bin.to_string_lossy(),
+    )
 }
 
 /// Build `opencode.db` from the SQL fixture. `None` without `sqlite3`.

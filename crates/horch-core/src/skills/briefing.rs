@@ -5,7 +5,7 @@ use std::path::Path;
 
 use super::activation::{InvocationPolicy, SkillActivationPlan};
 use super::catalog::SkillCatalog;
-use crate::teammates::Phase;
+use crate::roster::Phase;
 
 /// What the paragraph needs besides the plan.
 pub struct BriefingContext<'a> {

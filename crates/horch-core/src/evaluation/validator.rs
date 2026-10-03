@@ -18,14 +18,14 @@ use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 
 use crate::fsx;
-use crate::launch::FORBIDDEN_ENV;
+use crate::harness::launch::FORBIDDEN_ENV;
 use crate::measure::digest::{sha256_bytes, Digest};
 use crate::measure::redact::redact;
 use crate::vcs::git::cut_utf8;
 use crate::vcs::worktree::FrozenCandidate;
 
 /// The most bytes of one gate's output that are stored.
-pub const LOG_CAP: usize = 256 * 1024;
+pub(crate) const LOG_CAP: usize = 256 * 1024;
 
 /// How often a running gate is polled for exit or timeout.
 const POLL: Duration = Duration::from_millis(10);

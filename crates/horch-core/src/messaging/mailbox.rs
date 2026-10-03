@@ -11,7 +11,7 @@ use crate::workspace::herdr::Herdr;
 use anyhow::{bail, Context, Result};
 
 /// The brief moved to [`crate::messaging::brief`] in A2.
-pub use crate::messaging::brief::Brief;
+use crate::messaging::brief::Brief;
 
 /// The mailbox directory for one herdr workspace.
 #[derive(Debug, Clone)]
@@ -167,7 +167,7 @@ impl Mailbox {
     }
 
     /// Map of pane id -> role, for labelling layout output.
-    pub fn panes_to_roles(&self) -> Vec<(String, String)> {
+    pub(crate) fn panes_to_roles(&self) -> Vec<(String, String)> {
         self.roles().into_iter().map(|(r, p)| (p, r)).collect()
     }
 
@@ -201,7 +201,7 @@ impl Mailbox {
     }
 
     /// Next per-teammate ordinal for auto-naming a role `<teammate>-<n>`.
-    pub fn next_seq(&self, teammate: &str) -> Result<u32> {
+    pub(crate) fn next_seq(&self, teammate: &str) -> Result<u32> {
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(format!(".seq-{teammate}"));
         let current: u32 = std::fs::read_to_string(&path)
@@ -215,11 +215,11 @@ impl Mailbox {
 
     /// Marker file used to bound the codex rollout-file search to sessions
     /// created after this worker launched.
-    pub fn launch_marker(&self, role: &str) -> PathBuf {
+    pub(crate) fn launch_marker(&self, role: &str) -> PathBuf {
         self.dir.join(format!(".{role}.launch-marker"))
     }
 
-    pub fn harvest_log(&self, role: &str) -> PathBuf {
+    pub(crate) fn harvest_log(&self, role: &str) -> PathBuf {
         self.dir.join(format!("{role}.harvest.log"))
     }
 }
@@ -228,8 +228,8 @@ impl Mailbox {
 mod tests {
     use super::*;
     use crate::execution::SessionMode;
+    use crate::harness::HarnessKind;
     use crate::runtime::BinOverrides;
-    use crate::teammates::Agent;
 
     fn brief(role: &str) -> Brief {
         Brief {
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(back.task, b.task);
         assert_eq!(back.project_dir, b.project_dir);
         assert_eq!(back.teammate, "sonnet");
-        assert_eq!(back.agent().unwrap(), Agent::Claude);
+        assert_eq!(back.agent().unwrap(), HarnessKind::Claude);
     }
 
     #[test]

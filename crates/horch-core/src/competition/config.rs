@@ -16,20 +16,20 @@ use crate::evaluation::winner::WinnerPolicy;
 use crate::ids::TeammateName;
 
 /// The config file, relative to the project root.
-pub const CONFIG_FILE: &str = ".multi-herdr/dataset.yaml";
+pub(crate) const CONFIG_FILE: &str = ".multi-herdr/dataset.yaml";
 
 /// Candidates per round when neither the file nor `--candidates` says.
-pub const DEFAULT_CANDIDATES: u32 = 3;
+pub(crate) const DEFAULT_CANDIDATES: u32 = 3;
 /// The soft limit, in percent of the hard ceiling, when only the ceiling is set.
-pub const DEFAULT_SOFT_PERCENT: i64 = 80;
+pub(crate) const DEFAULT_SOFT_PERCENT: i64 = 80;
 /// The judge reserve, in percent of the hard ceiling, when the file does not set it.
-pub const DEFAULT_JUDGE_RESERVE_PERCENT: i64 = 10;
-pub const DEFAULT_JUDGE_TIMEOUT_S: u64 = 900;
-pub const DEFAULT_CANDIDATE_DEADLINE_S: u64 = 3600;
+pub(crate) const DEFAULT_JUDGE_RESERVE_PERCENT: i64 = 10;
+pub(crate) const DEFAULT_JUDGE_TIMEOUT_S: u64 = 900;
+pub(crate) const DEFAULT_CANDIDATE_DEADLINE_S: u64 = 3600;
 /// 10 GiB of disk left free after every worktree and build is counted.
-pub const DEFAULT_DISK_HEADROOM_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-pub const DEFAULT_LOG_CAP_BYTES: u64 = 262_144;
-pub const DEFAULT_OUTPUT_CAP_BYTES: u64 = 1_048_576;
+pub(crate) const DEFAULT_DISK_HEADROOM_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+pub(crate) const DEFAULT_LOG_CAP_BYTES: u64 = 262_144;
+pub(crate) const DEFAULT_OUTPUT_CAP_BYTES: u64 = 1_048_576;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -11,7 +11,7 @@ use horch_core::runtime::RuntimeContext;
 use super::{dataset_paths, exit};
 use crate::output;
 
-pub fn status(ctx: &RuntimeContext, experiment: Option<&str>) -> Result<u8> {
+pub(crate) fn status(ctx: &RuntimeContext, experiment: Option<&str>) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let read = store::read_all(&paths)?;
     let projection = fold(&read.events);
@@ -26,7 +26,11 @@ pub fn status(ctx: &RuntimeContext, experiment: Option<&str>) -> Result<u8> {
 }
 
 /// The text `status` prints.
-pub fn render(projection: &Projection, only: Option<&ExperimentId>, torn_lines: u32) -> String {
+pub(crate) fn render(
+    projection: &Projection,
+    only: Option<&ExperimentId>,
+    torn_lines: u32,
+) -> String {
     let mut out = String::new();
     if projection.experiments.is_empty() {
         out.push_str("no experiments\n");

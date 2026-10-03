@@ -32,7 +32,7 @@ use crate::measure::event::{
 };
 
 /// A failed judge attempt with this number ends the judging (design §5).
-pub const MAX_JUDGE_ATTEMPTS: u32 = 2;
+pub(crate) const MAX_JUDGE_ATTEMPTS: u32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Projection {

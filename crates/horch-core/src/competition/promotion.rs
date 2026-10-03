@@ -50,7 +50,7 @@ use crate::runtime::fault::Faults;
 use crate::vcs::git::{CheckoutLocation, CherryPick, GitClient, GitIdentity};
 use crate::vcs::worktree::FrozenCandidate;
 
-pub const RECEIPT_SCHEMA_VERSION: &str = "1.0.0";
+pub(crate) const RECEIPT_SCHEMA_VERSION: &str = "1.0.0";
 
 /// Fault: stop after `promotion.started`, before the publish.
 pub const ABORT_AFTER_PROMOTION_STARTED: &str = "abort-after-promotion-started";
@@ -86,7 +86,7 @@ pub enum PromotionStrategy {
 
 /// How the target branch moves.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PublishMode {
+pub(crate) enum PublishMode {
     /// No worktree has the target checked out.
     UpdateRefCas,
     /// The target is checked out, clean, in `checkout`.
@@ -95,7 +95,7 @@ pub enum PublishMode {
 
 impl PublishMode {
     /// The receipt's `publish` value.
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             PublishMode::UpdateRefCas => "update_ref_cas",
             PublishMode::MergeFfOnly { .. } => "merge_ff_only",

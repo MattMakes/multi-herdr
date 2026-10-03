@@ -7,12 +7,9 @@
 use std::path::{Path, PathBuf};
 
 /// Files that still read the process environment, with the phase that
-/// removes each entry. Do not add entries.
-///
-/// - `teammates.rs`: the zero-argument `Roster::load` / `Roster::load_with`
-///   wrappers over `Roster::load_layered`. A12 removes them once the oracle
-///   and NFR tests load the roster through a `RuntimeContext`.
-const PENDING: &[&str] = &["teammates.rs"];
+/// removes each entry. Do not add entries. The last one (`teammates.rs`) is
+/// gone.
+const PENDING: &[&str] = &[];
 
 /// Ambient environment access. `std::env::consts` is allowed.
 const AMBIENT: &[&str] = &[
@@ -394,4 +391,185 @@ fn skl_05_core_skill_model_has_no_harness_flags() {
         "harness exposure in the core skill model:\n{}",
         found.join("\n")
     );
+}
+
+// ─── ARC-25 ─────────────────────────────────────────────────────────────────
+
+/// `pub use` lines that re-export an item from outside the file's own child
+/// modules, each with the reason. Do not add entries without a reason.
+///
+/// - `skills/catalog.rs`, `horch_marketplace as marketplace`: the `horch`
+///   binary may depend on `horch-core` only (NFR-05), and it drives the
+///   marketplace through this path.
+const REEXPORT_ALLOWED: &[(&str, &str)] = &[(
+    "horch-core/skills/catalog.rs",
+    "horch_marketplace as marketplace",
+)];
+
+/// The top-level `horch-core` files that were re-export shims (or the
+/// `ledger.rs` facade) during the refactor. None may come back.
+const REMOVED_SHIM_FILES: [&str; 18] = [
+    "agent.rs",
+    "balance.rs",
+    "balance_policy.rs",
+    "codex.rs",
+    "herdr.rs",
+    "launch.rs",
+    "layout.rs",
+    "ledger.rs",
+    "mailbox.rs",
+    "message.rs",
+    "opencode.rs",
+    "paneshell.rs",
+    "plugins.rs",
+    "policy.rs",
+    "prime.rs",
+    "quota.rs",
+    "teammates.rs",
+    "tile.rs",
+];
+
+/// Signatures of the wrappers the refactor kept for old callers. Matched
+/// against code lines outside tests.
+const REMOVED_SHIM_ITEMS: [&str; 17] = [
+    "fn from_process(",
+    "fn send_line(&self",
+    "fn ensure_supported(",
+    "fn configure(&self, teammate",
+    "fn apply_env(",
+    "fn briefing(&self",
+    "fn resolve_all(",
+    "fn mints_session_id(",
+    "fn harvests_session_id(",
+    "fn runs_a_daemon(",
+    "fn uses_execpolicy(",
+    "fn load_with(",
+    "fn state_root()",
+    "fn project_dir()",
+    "pub fn command(",
+    "pub fn command_with_skills(",
+    "HarnessKind as Agent",
+];
+
+/// The child modules a file declares (`mod x;`, `pub mod x;`, ...).
+fn child_modules(lines: &[(usize, String)]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|(_, line)| {
+            let t = line.trim();
+            let rest = t.strip_prefix("pub ").unwrap_or(t);
+            let rest = rest
+                .strip_prefix("pub(crate) ")
+                .or_else(|| rest.strip_prefix("pub(super) "))
+                .unwrap_or(rest);
+            let name = rest.strip_prefix("mod ")?.strip_suffix(';')?;
+            Some(name.trim().to_string())
+        })
+        .collect()
+}
+
+/// The re-export on `line`, if it is a `pub use` (any visibility).
+fn reexport(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let rest = t.strip_prefix("pub ").or_else(|| {
+        t.strip_prefix("pub(")
+            .and_then(|r| r.split_once(") ").map(|(_, r)| r))
+    })?;
+    rest.strip_prefix("use ")
+}
+
+/// The refactor ends with no shim: no file only re-exports, every `pub use`
+/// names one of the file's own child modules, and none of the removed shim
+/// files or wrappers exist (ARC-25).
+#[test]
+fn arc_25_no_shim_modules() {
+    let core = crate_src("horch-core");
+    for file in REMOVED_SHIM_FILES {
+        assert!(!core.join(file).exists(), "horch-core/src/{file} is back");
+    }
+
+    let mut found = Vec::new();
+    let mut allowed_used = Vec::new();
+    let mut scanned = 0;
+    for name in ["horch-core", "horch", "horch-marketplace", "horch-e2e"] {
+        let root = crate_src(name);
+        let mut files = Vec::new();
+        rust_files(&root, &mut files);
+        scanned += files.len();
+        for path in &files {
+            let rel = format!("{name}/{}", relative(path, &root));
+            let lines = code_lines(path);
+            let children = child_modules(&lines);
+            let code: Vec<&str> = lines
+                .iter()
+                .map(|(_, l)| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with("#!") && !l.starts_with("#["))
+                .collect();
+            if children.is_empty()
+                && !code.is_empty()
+                && code
+                    .iter()
+                    .all(|l| l.starts_with("use ") || reexport(l).is_some())
+                && code.iter().any(|l| reexport(l).is_some())
+            {
+                found.push(format!("{rel}: the file only re-exports"));
+            }
+            for (n, line) in &lines {
+                for item in REMOVED_SHIM_ITEMS {
+                    if line.contains(item) {
+                        found.push(format!("{rel}:{n}: removed shim item `{item}`"));
+                    }
+                }
+                let Some(target) = reexport(line) else {
+                    continue;
+                };
+                let first = target
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or_default();
+                if children.iter().any(|c| c == first) || first == "self" {
+                    continue;
+                }
+                if let Some(entry) = REEXPORT_ALLOWED
+                    .iter()
+                    .find(|(file, text)| *file == rel && line.contains(text))
+                {
+                    allowed_used.push(*entry);
+                    continue;
+                }
+                found.push(format!(
+                    "{rel}:{n}: re-export from outside the file's modules: {}",
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(scanned > 60, "scanned only {scanned} files");
+    assert!(found.is_empty(), "shims left:\n{}", found.join("\n"));
+    for entry in REEXPORT_ALLOWED {
+        assert!(
+            allowed_used.contains(entry),
+            "REEXPORT_ALLOWED entry {entry:?} matches nothing any more; remove it"
+        );
+    }
+}
+
+/// The ARC-25 scan's own cases: a glob shim is caught, a module's own
+/// re-exports are not.
+#[test]
+fn arc_25_scan_tells_shims_from_module_apis() {
+    let lines = |src: &str| -> Vec<(usize, String)> {
+        src.lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        child_modules(&lines("pub mod a;\nmod b;\npub(crate) mod c;\nfn d() {}")),
+        ["a", "b", "c"]
+    );
+    assert_eq!(reexport("pub use crate::x::*;"), Some("crate::x::*;"));
+    assert_eq!(reexport("pub(crate) use a::B;"), Some("a::B;"));
+    assert_eq!(reexport("use a::B;"), None);
+    assert_eq!(reexport("pub fn used() {}"), None);
 }

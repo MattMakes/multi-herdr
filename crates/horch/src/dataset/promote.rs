@@ -31,7 +31,7 @@ use horch_core::vcs::git::{GitCli, GitClient};
 use super::cli::PromoteArgs;
 use super::{dataset_paths, exit, run};
 
-pub fn promote(
+pub(crate) fn promote(
     ctx: &mut RuntimeContext,
     env: &BTreeMap<String, String>,
     args: &PromoteArgs,

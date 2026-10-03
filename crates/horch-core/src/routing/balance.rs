@@ -1,9 +1,9 @@
 //! Gate glue that `horch route` shows: every pool a decision could touch.
 //! Named apart from the crate's `balance.rs`, which evens grid columns.
 
+use crate::roster::{Roster, Teammate};
 use crate::routing::decision::{summary, PoolLine};
 use crate::routing::quota::QuotaView;
-use crate::teammates::{Roster, Teammate};
 
 /// The teammate's pool, then each fallback's, once each, in `fallbacks:`
 /// order. Missing fallbacks are skipped.

@@ -8,13 +8,13 @@
 //! | module | job |
 //! |---|---|
 //! | [`readers`] | one incremental reader per harness |
-//! | [`cursor`] | where each reader stopped, and file identity |
+//! | `cursor` | where each reader stopped, and file identity |
 //! | [`store`] | the event files, the dedupe index, rollups |
 //! | [`collect`] | one tick: ledgers -> readers -> store -> snapshot |
 //! | [`lock`] | one collector per state root |
 
 pub mod collect;
-pub mod cursor;
+pub(crate) mod cursor;
 pub mod lock;
 pub mod readers;
 pub mod store;
@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::quota::Window;
+use crate::routing::quota::Window;
 use crate::usage::Tokens;
 
 /// Token counts, one field per class (TEL-03).
@@ -83,12 +83,12 @@ impl TokenClasses {
         }
     }
 
-    pub fn is_zero(&self) -> bool {
+    pub(crate) fn is_zero(&self) -> bool {
         self.total() == 0 && self.reasoning == 0
     }
 
     /// Per-class `self - earlier`, saturating. For corrections.
-    pub fn minus(&self, earlier: &TokenClasses) -> TokenClasses {
+    pub(crate) fn minus(&self, earlier: &TokenClasses) -> TokenClasses {
         TokenClasses {
             input: self.input.saturating_sub(earlier.input),
             cache_write_5m: self.cache_write_5m.saturating_sub(earlier.cache_write_5m),
@@ -215,7 +215,7 @@ pub fn dir(state_root: &std::path::Path) -> PathBuf {
 
 /// The plan slug in a task (section 6.1): the first
 /// `ai_docs/plans/<slug>.md` it names, without the extension.
-pub fn plan_slug(task: &str) -> Option<String> {
+pub(crate) fn plan_slug(task: &str) -> Option<String> {
     // The regex `ai_docs/plans/([A-Za-z0-9._-]+)\.md`, by hand: take the run
     // of name characters after the prefix, and cut it at its LAST `.md`,
     // which is where a greedy match backtracks to.

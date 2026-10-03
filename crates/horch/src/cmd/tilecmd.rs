@@ -6,12 +6,9 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use horch_core::herdr::Herdr;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::arrange;
-
-/// `horch spawn` still reaches this through this module.
-pub use horch_core::workspace::arrange::after_change;
+use horch_core::workspace::herdr::Herdr;
 
 use crate::output;
 

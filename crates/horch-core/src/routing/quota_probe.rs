@@ -75,7 +75,11 @@ impl Drop for Child {
 /// Ask Claude Code for its plan limits (QUO-01). One stdin line, a
 /// `get_usage` control request; no user message; no `ANTHROPIC_API_KEY`.
 /// The scratch dir goes under `temp_root`.
-pub fn probe_claude(bin: &Path, timeout: StdDuration, temp_root: &Path) -> Result<Probed, String> {
+pub(crate) fn probe_claude(
+    bin: &Path,
+    timeout: StdDuration,
+    temp_root: &Path,
+) -> Result<Probed, String> {
     let dir = temp_root.join(format!("horch-quota-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let mut cmd = Command::new(bin);
@@ -90,7 +94,7 @@ pub fn probe_claude(bin: &Path, timeout: StdDuration, temp_root: &Path) -> Resul
         "--verbose",
     ])
     .current_dir(&dir);
-    for key in crate::launch::FORBIDDEN_ENV {
+    for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
     let result = (|| {
@@ -119,10 +123,10 @@ pub fn probe_claude(bin: &Path, timeout: StdDuration, temp_root: &Path) -> Resul
 
 /// Ask Codex for its plan limits (QUO-02): `initialize`, `initialized`,
 /// `account/rateLimits/read`, and nothing else.
-pub fn probe_codex(bin: &Path, timeout: StdDuration) -> Result<Probed, String> {
+pub(crate) fn probe_codex(bin: &Path, timeout: StdDuration) -> Result<Probed, String> {
     let mut cmd = Command::new(bin);
     cmd.arg("app-server");
-    for key in crate::launch::FORBIDDEN_ENV {
+    for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
     let mut child = Child::spawn(cmd).map_err(|e| format!("starting {}: {e}", bin.display()))?;
@@ -166,7 +170,7 @@ fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, 
         args.join(" ")
     );
     let mut cmd = Command::new(bin);
-    for key in crate::launch::FORBIDDEN_ENV {
+    for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
     let mut child = cmd
@@ -209,7 +213,7 @@ fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, 
 }
 
 /// The local pool's health (QUO-06): `pi --version`, then `ollama list`.
-pub fn probe_local(pi: &Path, ollama: &Path) -> Result<Vec<String>, String> {
+pub(crate) fn probe_local(pi: &Path, ollama: &Path) -> Result<Vec<String>, String> {
     let t = StdDuration::from_secs(5);
     run_short(pi, &["--version"], t)?;
     let list = run_short(ollama, &["list"], t)?;
@@ -230,7 +234,7 @@ pub fn harness_version(bin: &Path) -> Option<String> {
 
 /// The newest `rate_limits` snapshot in any rollout under `sessions` (the
 /// Codex fallback, QUO-03), with the time it was written.
-pub fn newest_rollout_snapshot(sessions: &Path) -> Option<(String, Vec<Window>)> {
+pub(crate) fn newest_rollout_snapshot(sessions: &Path) -> Option<(String, Vec<Window>)> {
     let mut files = Vec::new();
     collect_rollouts(sessions, &mut files);
     files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
@@ -311,13 +315,13 @@ impl ProbeBins {
 }
 
 /// 10 s (section 11.2). `HORCH_PROBE_TIMEOUT_MS` shortens it for tests.
-pub const PROBE_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+pub(crate) const PROBE_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
 /// Probe every pool and fold the results into `file` (QUO-01..03, 06).
 /// A failed probe keeps the last windows, records the error, and falls back
 /// to the newest on-disk signal. `timeout` is `None` for [`PROBE_TIMEOUT`];
 /// the claude probe's scratch dir goes under `temp_root`.
-pub fn probe_all(
+pub(crate) fn probe_all(
     file: &mut QuotaFile,
     bins: &ProbeBins,
     now: DateTime<Utc>,

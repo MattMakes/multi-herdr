@@ -21,7 +21,7 @@ use super::cli::CleanupArgs;
 use super::promote::find_round;
 use super::{dataset_paths, exit};
 
-pub fn cleanup(ctx: &RuntimeContext, args: &CleanupArgs) -> Result<u8> {
+pub(crate) fn cleanup(ctx: &RuntimeContext, args: &CleanupArgs) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let (round, view, _) = find_round(&paths, &args.round)?;
     match view.state {

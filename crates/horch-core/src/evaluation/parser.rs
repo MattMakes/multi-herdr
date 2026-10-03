@@ -8,7 +8,7 @@
 //!
 //! The checks run in three passes, so that each failure gets its own
 //! [`ParseError`] variant without reading serde's error messages:
-//! 1. A [`Node`] tree keeps every object member, including duplicates,
+//! 1. A `Node` tree keeps every object member, including duplicates,
 //!    which `serde_json::Value` would silently drop.
 //! 2. A shape walk over the `serde_json::Value` compares field names and
 //!    enum spellings with the constants in [`super::judgment`].

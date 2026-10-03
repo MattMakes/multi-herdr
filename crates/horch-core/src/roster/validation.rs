@@ -7,12 +7,14 @@ use anyhow::{bail, Result};
 use super::operator::expand_home;
 use super::teammate::HEADLESS_ONLY;
 use super::{
-    effort_problem, reserved_tier, Agent, ExecRule, PermissionMode, Roster, Teammate,
+    effort_problem, reserved_tier, ExecRule, PermissionMode, Roster, Teammate,
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
     ORCHESTRATOR_ONLY_SKILLS,
 };
-use crate::balance_policy::{merge, trains_on_input};
-use crate::quota;
+use crate::harness::HarnessKind;
+use crate::routing::decision::merge;
+use crate::routing::eligible::trains_on_input;
+use crate::routing::quota;
 use crate::skills::SkillCatalog;
 
 impl Roster {
@@ -37,7 +39,7 @@ impl Roster {
     /// from the teammate file, so checking the file alone would leave a stale or
     /// hand-edited record able to start a second top-tier session behind an
     /// innocent-looking tier name.
-    pub fn model_is_spawnable(model: &str, who: &str) -> Result<()> {
+    pub(crate) fn model_is_spawnable(model: &str, who: &str) -> Result<()> {
         if let Some((tier, instead)) = reserved_tier(model) {
             bail!(
                 "'{who}' runs on {model}, and the {tier} tier is reserved for the \
@@ -67,7 +69,7 @@ impl Roster {
     /// Everything wrong with one teammate, judged against this roster (its
     /// bases, its rules, its skill catalog). Also run on a teammate merged
     /// with a fallback.
-    pub fn check_teammate(&self, t: &Teammate) -> Vec<String> {
+    pub(crate) fn check_teammate(&self, t: &Teammate) -> Vec<String> {
         let mut problems = Vec::new();
         let who = &t.name;
         let selected = match &self.skill_catalog {
@@ -98,7 +100,7 @@ impl Roster {
                 problems.push(format!("{e:#}"));
             }
         }
-        if t.agent != Agent::None && t.model.is_none() && t.name != "orchestration-worker" {
+        if t.agent != HarnessKind::None && t.model.is_none() && t.name != "orchestration-worker" {
             problems.push(format!("{who}: agent is {} but no model is set", t.agent));
         }
         if let Some(effort) = &t.effort {
@@ -108,13 +110,14 @@ impl Roster {
         }
         // Reinforced plugin skills must exist, or the briefing promises a
         // skill the pane cannot load.
-        if t.agent == Agent::Claude && !t.plugin_skills.is_empty() {
+        if t.agent == HarnessKind::Claude && !t.plugin_skills.is_empty() {
             if t.disable_skills {
                 problems.push(format!(
                     "{who}: plugin_skills cannot load with disable_skills: true"
                 ));
             }
-            if let Err(e) = crate::plugins::resolve_all(t) {
+            if let Err(e) = crate::harness::claude_plugins::resolve_all_in(t, self.home.as_deref())
+            {
                 problems.push(format!("{who}: {e:#}"));
             }
             // The kept skills are named in the skill-bundle briefing, and
@@ -132,7 +135,7 @@ impl Roster {
         // operator's ~/.codex/config.toml says (the pane's private
         // CODEX_HOME links it). That made two workers run at "medium"
         // nobody chose, so every offered codex teammate states its own.
-        if t.agent == Agent::Codex && !t.hidden && t.effort.is_none() {
+        if t.agent == HarnessKind::Codex && !t.hidden && t.effort.is_none() {
             problems.push(format!(
                 "{who}: a codex teammate must set effort; without it the pane \
                  inherits model_reasoning_effort from ~/.codex/config.toml"
@@ -155,7 +158,7 @@ impl Roster {
         // spawnable teammate and the orchestrator itself are covered.
         // Codex, OpenCode, pi and Prime are elsewhere; see
         // `ai_docs/reports/no-subagents.md`.
-        if t.agent == Agent::Claude
+        if t.agent == HarnessKind::Claude
             && (!t.hidden || t.name == "orchestrator")
             && !t.allow_subagents
             && !t.disallowed_tools.iter().any(|x| x == "Agent")
@@ -168,7 +171,7 @@ impl Roster {
         // The orchestrator delegates to workers and nothing else: no
         // subagent and no background or cloud agent. `allow_subagents`
         // does not waive this one.
-        if t.agent == Agent::Claude && FLEET_ORCHESTRATORS.contains(&who.as_str()) {
+        if t.agent == HarnessKind::Claude && FLEET_ORCHESTRATORS.contains(&who.as_str()) {
             for tool in ORCHESTRATOR_DENIED_TOOLS {
                 if !t.disallowed_tools.iter().any(|x| x == tool) {
                     problems.push(format!(
@@ -181,7 +184,7 @@ impl Roster {
         // The operator's rule (CLAUDE.md): no teammate uses
         // ANTHROPIC_API_KEY. The launch removes it; a file that sets it is
         // a mistake to report, not to hide.
-        for key in crate::launch::FORBIDDEN_ENV {
+        for key in crate::harness::launch::FORBIDDEN_ENV {
             if t.env.contains_key(key) {
                 problems.push(format!("{who}: env must not set {key}; never use it"));
             }
@@ -190,7 +193,7 @@ impl Roster {
         // worker with both can send code out, or pull code in and run it,
         // and nothing stops it. `codex-network` pairs the network with
         // acceptEdits (-a on-request).
-        if t.agent == Agent::Codex
+        if t.agent == HarnessKind::Codex
             && t.args
                 .iter()
                 .any(|a| a.replace(' ', "") == "sandbox_workspace_write.network_access=true")
@@ -227,13 +230,13 @@ impl Roster {
         }
         if let Some(mode) = t.permission_mode {
             let ok = match t.agent {
-                Agent::Codex => mode.codex_args().is_some(),
-                Agent::OpenCode => mode.opencode_args().is_some(),
+                HarnessKind::Codex => mode.codex_args().is_some(),
+                HarnessKind::OpenCode => mode.opencode_args().is_some(),
                 // pi and Prime run their tools without asking, so there is
                 // no gate for a mode to set. Saying nothing is correct;
                 // saying `acceptEdits` implies a restraint that is absent.
-                Agent::Pi | Agent::Prime => false,
-                Agent::Claude | Agent::None => true,
+                HarnessKind::Pi | HarnessKind::Prime => false,
+                HarnessKind::Claude | HarnessKind::None => true,
             };
             if !ok {
                 problems.push(format!(
@@ -246,7 +249,7 @@ impl Roster {
         // A plan-mode worker that cannot leave plan mode stalls in a pane
         // nobody is watching. Denies normally beat allows, so naming the
         // tool in allowed_tools is not accepted as proof on its own.
-        if t.permission_mode == Some(PermissionMode::Plan) && t.agent == Agent::Claude {
+        if t.permission_mode == Some(PermissionMode::Plan) && t.agent == HarnessKind::Claude {
             // `--setting-sources ""` loads no settings file, so a
             // `permissions.deny` written for an attended session cannot
             // reach this worker.
@@ -400,7 +403,7 @@ impl Roster {
         for t in self.teammates.values() {
             problems.extend(self.check_teammate(t));
         }
-        problems.extend(crate::balance_policy::fallback_problems(self));
+        problems.extend(fallback_problems(self));
         // Every command an agent is told to run must be allowed for codex, and
         // nothing more: a rule with no command behind it is standing permission
         // nobody asked for.
@@ -504,7 +507,7 @@ pub fn fallback_warnings(roster: &Roster) -> Vec<String> {
         let Some(t) = roster.get(name) else { continue };
         for fb in &t.fallbacks {
             let Some(f) = roster.get(fb) else { continue };
-            if f.agent == Agent::Claude {
+            if f.agent == HarnessKind::Claude {
                 continue;
             }
             for tool in CLAUDE_ONLY_TOOLS {
@@ -585,7 +588,9 @@ mod spawnable_tests {
         assert!(r.skill_catalog().unwrap().lookup("demo").is_some());
         assert!(r.check().is_empty(), "{:?}", r.check());
         let sonnet = r.require("sonnet").unwrap();
-        assert!(crate::skills::ensure_supported(sonnet).is_err());
+        assert!(
+            crate::skills::ensure_supported_in(sonnet, &SkillCatalog::bundled().unwrap()).is_err()
+        );
         crate::skills::ensure_supported_in(sonnet, &r.skill_catalog().unwrap()).unwrap();
     }
 
@@ -625,13 +630,13 @@ mod spawnable_tests {
     fn effort_is_checked_against_each_agents_own_levels() {
         // Valid on its own agent.
         for (agent, model, effort) in [
-            (Agent::Claude, "opus", "medium"),
-            (Agent::Claude, "sonnet", "max"),
-            (Agent::Codex, "gpt-5.6-sol", "none"),
-            (Agent::Codex, "gpt-6-astra", "xhigh"),
-            (Agent::OpenCode, "anthropic/claude-sonnet-5", "high"),
-            (Agent::Pi, "ollama/qwen3.8", "off"),
-            (Agent::Prime, "anthropic/claude-opus-5-5", "minimal"),
+            (HarnessKind::Claude, "opus", "medium"),
+            (HarnessKind::Claude, "sonnet", "max"),
+            (HarnessKind::Codex, "gpt-5.6-sol", "none"),
+            (HarnessKind::Codex, "gpt-6-astra", "xhigh"),
+            (HarnessKind::OpenCode, "anthropic/claude-sonnet-5", "high"),
+            (HarnessKind::Pi, "ollama/qwen3.8", "off"),
+            (HarnessKind::Prime, "anthropic/claude-opus-5-5", "minimal"),
         ] {
             assert_eq!(
                 effort_problem(agent, Some(model), effort),
@@ -642,36 +647,41 @@ mod spawnable_tests {
         // Refused, each with a reason that names the fix.
         for (agent, model, effort, says) in [
             (
-                Agent::Claude,
+                HarnessKind::Claude,
                 "opus",
                 "minimal",
                 "expected one of: low, medium",
             ),
-            (Agent::Claude, "haiku", "low", "no effort setting"),
+            (HarnessKind::Claude, "haiku", "low", "no effort setting"),
             (
-                Agent::Claude,
+                HarnessKind::Claude,
                 "claude-haiku-4-5-20251001",
                 "low",
                 "no effort setting",
             ),
-            (Agent::Codex, "gpt-5.6-sol", "minimal", "API error"),
-            (Agent::Codex, "gpt-5.6-sol", "ultra", "multiplies spend"),
-            (Agent::Codex, "gpt-6-astra", "none", "use low"),
+            (HarnessKind::Codex, "gpt-5.6-sol", "minimal", "API error"),
             (
-                Agent::OpenCode,
+                HarnessKind::Codex,
+                "gpt-5.6-sol",
+                "ultra",
+                "multiplies spend",
+            ),
+            (HarnessKind::Codex, "gpt-6-astra", "none", "use low"),
+            (
+                HarnessKind::OpenCode,
                 "opencode/big-pickle",
                 "high",
                 "no effort setting",
             ),
             (
-                Agent::OpenCode,
+                HarnessKind::OpenCode,
                 "opencode/nemotron-3-ultra-free",
                 "high",
                 "no effort setting",
             ),
-            (Agent::Pi, "ollama/qwen3.8", "ultra", "not a pi level"),
+            (HarnessKind::Pi, "ollama/qwen3.8", "ultra", "not a pi level"),
             (
-                Agent::Prime,
+                HarnessKind::Prime,
                 "anthropic/claude-opus-5-5",
                 "none",
                 "not a prime level",
@@ -799,9 +809,10 @@ mod spawnable_tests {
             let has = t.args.iter().any(|a| a == net);
             assert_eq!(has, name == "codex-network", "{name}");
         }
-        let cmd = crate::launch::command(
+        let cmd = crate::harness::launch::command_in(
+            &crate::harness::launch::LaunchEnv::for_test(),
             r.require("codex-network").unwrap(),
-            crate::launch::Session::Unmanaged,
+            crate::harness::launch::Session::Unmanaged,
             "p",
             None,
         )
@@ -887,7 +898,7 @@ mod spawnable_tests {
         let covered = r
             .teammates
             .values()
-            .filter(|t| t.agent == Agent::Claude && (!t.hidden || t.name == "orchestrator"))
+            .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
             .count();
         assert_eq!(covered, 19, "the rule should cover 19 claude teammates");
 
@@ -932,7 +943,7 @@ mod spawnable_tests {
 
         // Nor are the hidden orchestration-* panes, which run a fixed recipe.
         let worker = r.teammates.get_mut("orchestration-worker").unwrap();
-        assert_eq!(worker.agent, Agent::Claude);
+        assert_eq!(worker.agent, HarnessKind::Claude);
         assert!(worker.hidden);
         assert!(worker.disallowed_tools.is_empty());
         assert!(

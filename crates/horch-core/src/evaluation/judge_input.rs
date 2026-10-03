@@ -37,21 +37,21 @@ use crate::measure::testkit::{seed_from_digest, SplitMix64};
 use crate::vcs::git::GitClient;
 use crate::vcs::worktree::FrozenCandidate;
 
-pub const JUDGE_INPUT_SCHEMA_VERSION: &str = "1.0.0";
+pub(crate) const JUDGE_INPUT_SCHEMA_VERSION: &str = "1.0.0";
 
 /// The most bytes of one candidate's patch that enter the bundle. A longer
 /// patch is cut on a UTF-8 boundary and its label is listed in
 /// [`JudgeInputManifest::truncated_diffs`].
-pub const DIFF_CAP_BYTES: usize = 1024 * 1024;
+pub(crate) const DIFF_CAP_BYTES: usize = 1024 * 1024;
 
 /// Bundle files are read-only for the owner, and so are its directories once
 /// the manifest is written.
-pub const BUNDLE_FILE_MODE: u32 = 0o400;
-pub const BUNDLE_DIR_MODE: u32 = 0o500;
+pub(crate) const BUNDLE_FILE_MODE: u32 = 0o400;
+pub(crate) const BUNDLE_DIR_MODE: u32 = 0o500;
 
 /// Lowercase tokens that name a vendor, a harness or a model family. The
 /// blindness scan matches them case-insensitively anywhere in a diff.
-pub const BLINDNESS_TOKENS: [&str; 10] = [
+pub(crate) const BLINDNESS_TOKENS: [&str; 10] = [
     "claude",
     "anthropic",
     "codex",
@@ -93,7 +93,7 @@ pub struct JudgeInputManifest {
     pub schema_digest: Digest,
     /// The bundle labels, in order.
     pub labels: Vec<String>,
-    /// Bundle labels whose `diff.patch` was cut at [`DIFF_CAP_BYTES`].
+    /// Bundle labels whose `diff.patch` was cut at `DIFF_CAP_BYTES`.
     pub truncated_diffs: Vec<String>,
     /// Relative path → sha256 of the file bytes.
     pub files: BTreeMap<String, Digest>,
@@ -177,7 +177,7 @@ pub fn blind_labels(round_id: &RoundId, originals: &[String]) -> Vec<(String, St
 }
 
 /// Every vendor token in `patch`, once per changed file it appears under.
-pub fn scan_blindness(label: &str, patch: &str) -> Vec<BlindnessFlag> {
+pub(crate) fn scan_blindness(label: &str, patch: &str) -> Vec<BlindnessFlag> {
     let mut found = BTreeSet::new();
     let mut file = "diff.patch".to_string();
     for line in patch.lines() {

@@ -27,6 +27,7 @@ use horch_core::measure::projection::{fold, RoundView};
 use horch_core::measure::recorder::JsonlRecorder;
 use horch_core::measure::redact::redact;
 use horch_core::measure::store::{self, StoreOptions};
+use horch_core::roster::Roster;
 use horch_core::routing::eligible::EligibilityFilter;
 use horch_core::routing::policy::Policy;
 use horch_core::routing::quota::QuotaView;
@@ -34,7 +35,6 @@ use horch_core::routing::snapshot::{obtain, QuotaEnv};
 use horch_core::runtime::fault::ABORT_EXIT_CODE;
 use horch_core::runtime::machine::{self, Known};
 use horch_core::runtime::RuntimeContext;
-use horch_core::teammates::Roster;
 use horch_core::usage::Locations;
 use horch_core::vcs::git::GitCli;
 use horch_core::vcs::worktree::WorktreeSpec;
@@ -46,7 +46,11 @@ use super::cli::RunArgs;
 use super::preflight::{self, ExperimentFacts, GatherInput};
 use super::{dataset_paths, exit};
 
-pub fn run(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, args: &RunArgs) -> Result<u8> {
+pub(crate) fn run(
+    ctx: &mut RuntimeContext,
+    env: &BTreeMap<String, String>,
+    args: &RunArgs,
+) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let experiment = ExperimentId::mint(clock::now());
     let saved = SavedRun::from_args(args);
@@ -58,7 +62,11 @@ pub fn run(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, args: &RunA
 /// runs again when it never completed; a planned round is planned again with
 /// its own id; a running round is driven on, adopting every candidate that a
 /// killed coordinator started.
-pub fn resume(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, exp: &str) -> Result<u8> {
+pub(crate) fn resume(
+    ctx: &mut RuntimeContext,
+    env: &BTreeMap<String, String>,
+    exp: &str,
+) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let experiment = ExperimentId::new(exp)?;
     let projection = fold(&store::read_all(&paths)?.events);
@@ -461,7 +469,7 @@ fn existing_ancestor(path: &Path) -> PathBuf {
 /// any event, so `resume` can run preflight again. The task is redacted
 /// (SEC-01): a resumed round briefs its candidates with the redacted text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SavedRun {
+pub(crate) struct SavedRun {
     pub task: String,
     pub candidates: Option<u32>,
     pub strategy: Option<Strategy>,

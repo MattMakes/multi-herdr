@@ -5,15 +5,13 @@
 //! [`RuntimeContext`]: context::RuntimeContext
 
 pub mod bins;
-pub mod context;
+pub(crate) mod context;
 pub mod fault;
 pub mod machine;
-pub mod paths;
+pub(crate) mod paths;
 pub mod process;
 
 pub use bins::{BinOverrides, HarnessBins};
-pub use context::{
-    Bins, EnvSource, HerdrEnv, Inherited, MapEnv, ProcessEnv, RuntimeContext, Settings, WorkerEnv,
-};
+pub use context::{EnvSource, Inherited, MapEnv, ProcessEnv, RuntimeContext, Settings, WorkerEnv};
 pub use fault::Faults;
 pub use paths::Paths;

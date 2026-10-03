@@ -50,7 +50,7 @@ impl BudgetPolicy {
 }
 
 /// What one candidate session has used so far, read from its transcript.
-pub trait UsageSource {
+pub(crate) trait UsageSource {
     /// The session's usage, or `None` when nothing is readable yet (no
     /// session id, no transcript).
     fn usage(&self, harness: &str, session_id: Option<&str>) -> Option<Usage>;
@@ -97,7 +97,7 @@ impl UsageMeter {
 }
 
 /// The date of [`builtin_prices`].
-pub const PRICE_TABLE_DATE: &str = "2026-09-24";
+pub(crate) const PRICE_TABLE_DATE: &str = "2026-09-24";
 
 /// `t` at `p`, exactly, or `None` when a price is not a whole n$ per token.
 fn nano_cost(p: &Price, t: &Tokens) -> Option<NanoUsd> {

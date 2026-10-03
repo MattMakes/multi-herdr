@@ -8,11 +8,11 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Subcommand;
+use horch_core::roster::Phase;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::catalog::marketplace::{parse_source, InstallOptions, Lockfile, Store};
 use horch_core::skills::catalog::{self, StoreState};
 use horch_core::skills::{CatalogSource, SkillCatalog};
-use horch_core::teammates::Phase;
 use serde_json::json;
 
 use crate::output;

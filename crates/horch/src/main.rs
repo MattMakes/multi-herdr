@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use horch::{bootstrap, exit, output};
 use horch_core::execution::service::SpawnError;
 use horch_core::execution::TilingMode;
-use horch_core::herdr::Direction;
+use horch_core::workspace::model::Direction;
 
 #[derive(Parser)]
 #[command(
@@ -159,7 +159,7 @@ enum Command {
         resume: Option<String>,
         /// Select research, plan, implementation, or validation skills.
         #[arg(long)]
-        phase: Option<horch_core::teammates::Phase>,
+        phase: Option<horch_core::roster::Phase>,
         /// Override the teammate's effort for this one spawn (claude: low..max;
         /// codex: none..max; pi/prime: off..max). Validated per agent. A resume
         /// keeps the level it ran at unless this is given.
@@ -294,7 +294,7 @@ enum Command {
         #[command(subcommand)]
         command: Option<cmd::skillscmd::SkillsCommand>,
         #[arg(long)]
-        phase: Option<horch_core::teammates::Phase>,
+        phase: Option<horch_core::roster::Phase>,
         /// Emit machine-readable JSON (also the default catalog format).
         #[arg(long)]
         json: bool,
@@ -621,7 +621,7 @@ mod tests {
         ] {
             match Cli::try_parse_from(argv).unwrap().command {
                 Command::Spawn { phase, .. } => {
-                    assert_eq!(phase, Some(horch_core::teammates::Phase::Research))
+                    assert_eq!(phase, Some(horch_core::roster::Phase::Research))
                 }
                 _ => panic!("wrong command"),
             }
@@ -705,7 +705,7 @@ mod tests {
         match cli.command {
             Command::Spawn { args, resume, .. } => {
                 let (name, _) = cmd::spawn::resolve_positionals(&args, resume.as_deref()).unwrap();
-                let roster = horch_core::teammates::Roster::builtin().unwrap();
+                let roster = horch_core::roster::Roster::builtin().unwrap();
                 let err = roster
                     .require(name.as_deref().unwrap())
                     .unwrap_err()

@@ -115,7 +115,7 @@ fn oracle_cli_sessions_match() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../horch-core/tests/oracles/ledgers");
     for name in ["bash-era", "pre-effort", "pr14-substituted", "orchestrator"] {
         let w = World::new();
-        let ledger = horch_core::ledger::Ledger::for_project(w.state(), PROJECT);
+        let ledger = horch_core::execution::records::Ledger::for_project(w.state(), PROJECT);
         std::fs::copy(fixtures.join(format!("{name}.json")), ledger.path()).unwrap();
         check_oracle(
             &format!("sessions/sessions-{name}.txt"),

@@ -569,14 +569,45 @@ junction, so an update never overwrites a running `herdr.exe`.
 
 ```
 crates/
-  horch-core/         Shared machinery: herdr client, mailbox, ledger, layout,
-                      prompts, codex glue, pane-shell quoting
-  horch/              The horch CLI
+  horch-core/         The domain: roster, harnesses, routing, executions,
+                      messaging, workspace, telemetry, the dataset mode
+  horch/              The horch CLI and the multi-herdr-dataset binary
+  horch-marketplace/  Skill sources, installs and the lockfile
   horch-e2e/          Fake harness binaries and the hermetic end-to-end tests
   herdr-install/      The Herdr CLI installer
   herdr-docs-sync/    The documentation mirror
 herdr-docs/           The mirrored documentation
 ```
+
+## Architecture
+
+`horch` is a thin CLI over `horch-core`. Rust decides whatever can be decided
+deterministically; an agent decides only where semantic judgment is needed.
+
+- `horch/src/bootstrap.rs` reads the process environment once into a
+  `RuntimeContext`. Nothing else reads it: core code takes the context or
+  explicit parameters (`arc_05_no_ambient_env_in_core`).
+- A command parses its flags, calls core, and prints the result. It picks
+  an exit code (`horch/src/exit.rs`) from an error's type, never from its
+  message text (`arc_22_no_error_string_matching`).
+- Each `horch-core` module owns one part of the domain. Callers import an
+  item from the module that owns it; there are no re-export shims, and an
+  item nothing outside the crate uses is `pub(crate)` (`arc_25_no_shim_modules`).
+
+| module | owns |
+|---|---|
+| `runtime` | the process boundary: `RuntimeContext`, paths, binary overrides |
+| `roster`, `prompts` | `teammates/` files, layering, `--check`, briefing rendering |
+| `skills` | skill catalogs, activation plans, launch bundles |
+| `harness` | one adapter per agent CLI (claude, codex, OpenCode, pi, Prime) and the launch flow |
+| `routing` | quota-aware routing: policy, quota view, decisions |
+| `execution` | executions: model, the ledger record and store, spawn plan, lifecycle |
+| `messaging`, `workspace` | the brief, mailbox and delivery; the herdr client, tiling and balancing |
+| `telemetry`, `usage` | live token telemetry; what a run cost |
+| `vcs`, `measure`, `competition`, `evaluation`, `dataset` | the dataset mode: git, the event store, rounds, judging, promotion, export |
+
+The designs are `ai_docs/designs/2026-10-02-architecture-refactor-design.md`
+and `ai_docs/designs/2026-10-02-dataset-competition-design.md`.
 
 ## Tests
 

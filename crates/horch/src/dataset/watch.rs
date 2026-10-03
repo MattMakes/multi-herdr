@@ -23,7 +23,7 @@ use super::{exit, status};
 /// How often the status is printed.
 const EVERY: Duration = Duration::from_secs(3);
 
-pub fn watch(ctx: &RuntimeContext, args: &WatchArgs) -> Result<u8> {
+pub(crate) fn watch(ctx: &RuntimeContext, args: &WatchArgs) -> Result<u8> {
     let experiment = ExperimentId::new(args.experiment.as_str())?;
     let state_root = args
         .state_dir
@@ -65,7 +65,7 @@ pub fn watch(ctx: &RuntimeContext, args: &WatchArgs) -> Result<u8> {
 }
 
 /// Whether no candidate of `exp` can still run.
-pub fn settled(projection: &Projection, exp: &ExperimentId) -> bool {
+pub(crate) fn settled(projection: &Projection, exp: &ExperimentId) -> bool {
     let Some(x) = projection.experiments.get(exp) else {
         return false;
     };

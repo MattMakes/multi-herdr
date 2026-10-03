@@ -11,8 +11,8 @@ use horch_core::competition::config::{
 use horch_core::competition::preflight::{
     evaluate, footprint_bytes, parse_git_version, storage_probe, CheckStatus, GitFacts,
     PreflightCandidate, PreflightPlan, PreflightReport, StorageProbe, TokenEstimate,
-    HARNESS_FOOTPRINT_BYTES,
 };
+use horch_core::harness::capabilities::HARNESS_FOOTPRINT_BYTES;
 use horch_core::harness::HarnessKind;
 use horch_core::ids::{ModelId, TeammateName};
 use horch_core::runtime::machine::{GpuClass, Known, MachineSnapshot};

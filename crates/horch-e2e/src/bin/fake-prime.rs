@@ -2,7 +2,7 @@
 //!
 //! Three kinds of call:
 //! - `--version` prints a fixed version.
-//! - `status --json` prints the array `horch_core::prime` parses
+//! - `status --json` prints the array `horch_core::harness::prime` parses
 //!   (`[{"socketPath":..,"pid":..,"sessionCount":..}]`): one entry for each
 //!   launch whose process is still alive. `Daemon::finish` reads it to find
 //!   the pid to stop.

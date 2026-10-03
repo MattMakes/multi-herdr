@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted for implementation. Builds on the architecture refactor (A0 to A12). Spec B verbatim is pending (Appendix B). |
+| Status | Implemented. Phases B1, B2, B3, B4, B5 and B6 landed on `arch-refactor-dataset`, on top of the architecture refactor (A0 to A12). Spec B verbatim is pending (Appendix B). |
 | Date | 2026-10-02 |
 | Author | The fleet (unit `a0-designs`), from the operator's master plan |
 | Source of truth | `ai_docs/plans/arch-refactor-dataset/00-master-plan.md` until Appendix B holds Spec B |

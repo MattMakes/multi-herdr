@@ -116,7 +116,7 @@ fn emit(out: &mut String, ident: &str, dir: &Path, keep: fn(&str) -> bool) {
     // Sorted so the generated file is stable across filesystems.
     entries.sort();
 
-    writeln!(out, "pub static {ident}: &[(&str, &str)] = &[").unwrap();
+    writeln!(out, "pub(crate) static {ident}: &[(&str, &str)] = &[").unwrap();
     for (stem, path) in entries {
         writeln!(out, "    (\"{stem}\", include_str!(r\"{path}\")),").unwrap();
     }

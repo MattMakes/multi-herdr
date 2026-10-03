@@ -18,7 +18,7 @@ mod tests {
         "Herdr",
         "WorkspaceClient",
         "crate::workspace::herdr",
-        "crate::herdr",
+        "crate::workspace::herdr",
         "std::env",
     ];
 
@@ -51,9 +51,9 @@ mod tests {
 
     #[test]
     fn arc_27_scan_ignores_comment_lines_and_catches_code() {
-        let comment = "    /// [`crate::herdr::Herdr::pane_focus_walk`] steers by.";
+        let comment = "    /// [`crate::workspace::herdr::Herdr::pane_focus_walk`] steers by.";
         assert!(violations(comment).is_empty());
-        assert_eq!(violations("use crate::herdr::Herdr;").len(), 1);
+        assert_eq!(violations("use crate::workspace::herdr::Herdr;").len(), 1);
         assert_eq!(violations("let c = Command::new(\"x\");").len(), 1);
     }
 }

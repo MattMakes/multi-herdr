@@ -16,7 +16,7 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
-pub use crate::workspace::model::*;
+use crate::workspace::model::*;
 
 #[derive(Debug, Deserialize)]
 struct Envelope<T> {
@@ -155,7 +155,7 @@ impl Herdr {
 
     /// `herdr pane run` submits text and Enter atomically. Safe for launching a
     /// command into a fresh shell; not safe for a TUI in raw mode, which is why
-    /// [`Self::send_line`] exists.
+    /// [`crate::messaging::delivery::send_line`] exists.
     pub fn pane_run(&self, pane: &str, command: &str) -> Result<()> {
         self.output(&["pane", "run", pane, command])?;
         Ok(())
@@ -223,7 +223,7 @@ impl Herdr {
     /// Note that herdr starts the new tab with a shell pane, whose id comes back
     /// as `root_pane_id`. A caller that wanted an empty tab has to close it - so
     /// a caller moving an existing pane somewhere new is better served by
-    /// [`Self::pane_move_new_tab`], which creates the tab around that pane and
+    /// `Self::pane_move_new_tab`, which creates the tab around that pane and
     /// adds no shell.
     pub fn tab_create(&self, workspace_id: &str, label: &str, focus: bool) -> Result<NewTab> {
         let mut args: Vec<&str> = vec![
@@ -255,7 +255,7 @@ impl Herdr {
 
     /// `herdr tab focus <tab>`. The only way to focus a specific pane's tab:
     /// `pane focus` moves to a NEIGHBOUR, not to an id.
-    pub fn tab_focus(&self, tab_id: &str) -> Result<()> {
+    pub(crate) fn tab_focus(&self, tab_id: &str) -> Result<()> {
         self.output(&["tab", "focus", tab_id])?;
         Ok(())
     }
@@ -265,7 +265,7 @@ impl Herdr {
     /// One step to a neighbour. herdr answers with exit 0 and `changed: false,
     /// reason: "no_neighbor"` when nothing sits on that side, so a caller learns
     /// it has run out of room without an error.
-    pub fn pane_focus(&self, origin: &str, direction: FocusDir) -> Result<Focus> {
+    pub(crate) fn pane_focus(&self, origin: &str, direction: FocusDir) -> Result<Focus> {
         let r: FocusResult = self.json(&[
             "pane",
             "focus",
@@ -339,7 +339,7 @@ impl Herdr {
     /// A move into the tab the pane already occupies is refused with
     /// `changed: false, reason: "same_tab"`: repositioning a pane inside its own
     /// tab means moving it out and back.
-    pub fn pane_move(
+    pub(crate) fn pane_move(
         &self,
         pane: &str,
         tab: &str,
@@ -375,7 +375,7 @@ impl Herdr {
     /// The new tab holds only the moved pane, and its id comes back as
     /// `created_tab`. This form takes neither `--split` nor `--ratio`; the label
     /// flag is `--label`, not `--tab-label`.
-    pub fn pane_move_new_tab(&self, pane: &str, label: &str) -> Result<Move> {
+    pub(crate) fn pane_move_new_tab(&self, pane: &str, label: &str) -> Result<Move> {
         let r: MoveResult = self.json(&[
             "pane",
             "move",
@@ -396,7 +396,7 @@ impl Herdr {
     /// also carries `changed`, which goes false when herdr refuses the move -
     /// that is how a caller discovers the minimum pane width rather than
     /// hard-coding one.
-    pub fn pane_resize(&self, pane: &str, direction: &str, amount: f64) -> Result<Resize> {
+    pub(crate) fn pane_resize(&self, pane: &str, direction: &str, amount: f64) -> Result<Resize> {
         // herdr stores split ratios to four decimal places; matching that here
         // keeps the request and what it can actually honour in step.
         let amount = format!("{amount:.4}");
@@ -468,12 +468,6 @@ impl Herdr {
     pub fn agent_prompt(&self, pane: &str, text: &str) -> Result<()> {
         self.output(&["agent", "prompt", pane, text])?;
         Ok(())
-    }
-
-    /// Type a line into another pane's terminal and submit it. See
-    /// [`crate::messaging::delivery::send_line`].
-    pub fn send_line(&self, pane: &str, message: &str) -> Result<()> {
-        crate::messaging::delivery::send_line(self, pane, message)
     }
 }
 

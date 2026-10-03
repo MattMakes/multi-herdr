@@ -12,8 +12,8 @@ use horch_core::clock;
 use horch_core::execution::legacy::LedgerRecordV1;
 use horch_core::execution::store::{self, ExecutionStore};
 use horch_core::execution::{ExecutionStatus, FailureKind, LaunchStage};
-use horch_core::policy::Policy;
-use horch_core::quota::{QuotaFile, QuotaView};
+use horch_core::routing::policy::Policy;
+use horch_core::routing::quota::{QuotaFile, QuotaView};
 use horch_core::telemetry::collect::{
     build_snapshot, done_record_ids, read_ledgers, Collector, CollectorInfo, Probing,
 };

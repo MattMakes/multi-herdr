@@ -19,11 +19,13 @@ use super::readers::{poll_record, Cursors};
 use super::store::{self, Rollup, Store};
 use super::{Event, Observation, QuotaSignal, TokenClasses, Unread};
 use crate::clock;
+use crate::execution::legacy::{Record, KIND_ORCHESTRATOR};
 use crate::execution::model::ExecutionStatus;
 use crate::execution::store as execution_store;
-use crate::ledger::{Record, KIND_ORCHESTRATOR};
-use crate::policy::Policy;
-use crate::quota::{self, ProbeBins, QuotaEnv, QuotaFile, QuotaView};
+use crate::routing::policy::Policy;
+use crate::routing::quota::{self, QuotaFile, QuotaView};
+use crate::routing::quota_probe::{self, ProbeBins};
+use crate::routing::snapshot::QuotaEnv;
 use crate::usage::{self, Locations, Price};
 
 /// Every record in every ledger under `state_root`, skipping a ledger that
@@ -254,7 +256,7 @@ impl Collector {
     }
 
     /// Arm the test hooks that `HORCH_FAULT` names (`RuntimeContext::settings`).
-    pub fn with_faults(mut self, faults: &crate::runtime::Faults) -> Collector {
+    pub(crate) fn with_faults(mut self, faults: &crate::runtime::Faults) -> Collector {
         self.fail_after_append = faults.has("after-append");
         self.abort_after_append = faults.has("abort-after-append");
         self
@@ -354,7 +356,7 @@ impl Collector {
             Probing::OnDemand => quota::probe_due(&file, now, self.policy.probe_on_demand_age_min),
         };
         if due {
-            quota::probe_all(
+            quota_probe::probe_all(
                 &mut file,
                 &self.bins,
                 now,
@@ -368,7 +370,7 @@ impl Collector {
 }
 
 /// A reader's usage, stamped with the record it belongs to and priced.
-pub fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String, Price>) -> Event {
+pub(crate) fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String, Price>) -> Event {
     let model = if u.model.is_empty() {
         r.model.clone()
     } else {

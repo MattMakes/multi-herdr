@@ -11,7 +11,7 @@ use horch_core::runtime::RuntimeContext;
 use super::{dataset_paths, exit};
 use crate::output;
 
-pub fn readiness(
+pub(crate) fn readiness(
     ctx: &RuntimeContext,
     policy: Option<&Path>,
     label_policy: Option<&str>,
@@ -24,7 +24,7 @@ pub fn readiness(
 }
 
 /// The text `readiness` prints.
-pub fn render(report: &ReadinessReport) -> String {
+pub(crate) fn render(report: &ReadinessReport) -> String {
     let verdict = serde_json::to_value(report.verdict)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))

@@ -7,10 +7,10 @@ use std::process::Command;
 use anyhow::{bail, Result};
 
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv};
+use crate::roster::Teammate;
 use crate::skills::Bundle;
-use crate::teammates::Teammate;
 
-pub struct NoAgent;
+pub(crate) struct NoAgent;
 
 impl Harness for NoAgent {
     fn kind(&self) -> HarnessKind {

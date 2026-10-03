@@ -233,7 +233,7 @@ impl OutcomeArg {
 
     /// The score when `--score` is not given.
     // SPEC-TODO(Spec B §outcome): the default post-merge score per kind.
-    pub fn default_score(self) -> f64 {
+    pub(crate) fn default_score(self) -> f64 {
         match self {
             OutcomeArg::Verified => 1.0,
             OutcomeArg::Regression | OutcomeArg::Revert => 0.0,

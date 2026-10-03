@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use horch_core::harness::HarnessKind;
 use horch_core::ids::TeammateName;
+use horch_core::roster::{Roster, Teammate};
 use horch_core::routing::balance::touched_pools;
 use horch_core::routing::decision::{
     self, Decision, GateFlags, RoutingDecision, RoutingMode, RoutingProvenance,
@@ -16,7 +17,6 @@ use horch_core::routing::eligible::{
 };
 use horch_core::routing::policy::{BalanceMode, Policy};
 use horch_core::routing::quota::{QuotaFile, QuotaView};
-use horch_core::teammates::{Roster, Teammate};
 use serde_json::{json, Value};
 
 /// The time and policy the A0 routing oracle pinned.
@@ -338,7 +338,7 @@ fn arc_14_legacy_record_resumes_with_provenance() {
     assert_eq!(wire["pool_state"], "unknown");
 
     // A record from before A5 has no `routing` key and saves without one.
-    let rec: horch_core::ledger::Record = serde_json::from_value(json!({
+    let rec: horch_core::execution::legacy::Record = serde_json::from_value(json!({
         "record_id": "r1", "session_id": null, "agent": "claude", "tier": "opus",
         "model": "opus", "role": "opus-1", "status": "done", "task": "",
         "history": [], "created_at": "", "updated_at": ""

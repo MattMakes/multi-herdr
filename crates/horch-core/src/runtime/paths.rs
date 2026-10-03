@@ -66,7 +66,7 @@ impl Paths {
 
 /// Root directory for ledger files: `$HORCH_STATE_DIR`, else
 /// `${XDG_STATE_HOME:-$HOME/.local/state}/horch`.
-pub fn state_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
+pub(crate) fn state_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
     if let Some(dir) = nonempty_path(env, "HORCH_STATE_DIR") {
         return dir;
     }
@@ -76,14 +76,14 @@ pub fn state_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
 }
 
 /// horch's data directory: `${XDG_DATA_HOME:-$HOME/.local/share}/horch`.
-pub fn data_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
+pub(crate) fn data_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
     nonempty_path(env, "XDG_DATA_HOME")
         .unwrap_or_else(|| home.join(".local").join("share"))
         .join("horch")
 }
 
 /// The project dir a ledger belongs to: `$HORCH_PROJECT_DIR`, else the cwd.
-pub fn project_dir(env: &dyn EnvSource) -> Result<PathBuf> {
+pub(crate) fn project_dir(env: &dyn EnvSource) -> Result<PathBuf> {
     if let Some(dir) = nonempty_path(env, "HORCH_PROJECT_DIR") {
         return Ok(dir);
     }
@@ -91,7 +91,7 @@ pub fn project_dir(env: &dyn EnvSource) -> Result<PathBuf> {
 }
 
 /// The user's home directory: `$HOME` (`%USERPROFILE%` on Windows), else `.`.
-pub fn home_dir(env: &dyn EnvSource) -> PathBuf {
+pub(crate) fn home_dir(env: &dyn EnvSource) -> PathBuf {
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     nonempty_path(env, key).unwrap_or_else(|| PathBuf::from("."))
 }

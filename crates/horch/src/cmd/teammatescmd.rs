@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
+use horch_core::harness::HarnessKind;
+use horch_core::roster::{model_takes_effort, Teammate, TEMPLATE};
 use horch_core::runtime::RuntimeContext;
-use horch_core::teammates::{model_takes_effort, Agent, Teammate, TEMPLATE};
 use horch_core::usage;
 use serde::Serialize;
 
@@ -70,7 +71,7 @@ pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
         .max(5);
     out.push_str("OFFERED TO THE ORCHESTRATOR\n");
     let (specialists, generics): (Vec<_>, Vec<_>) = offered.iter().partition(|t| !t.generic);
-    let groups: [(&str, Vec<&&horch_core::teammates::Teammate>); 2] = [
+    let groups: [(&str, Vec<&&horch_core::roster::Teammate>); 2] = [
         ("specialists", specialists),
         ("generic fallbacks", generics),
     ];
@@ -142,7 +143,7 @@ pub fn matrix_row(t: &Teammate) -> MatrixRow {
     let effort = match &t.effort {
         Some(e) => e.clone(),
         None if !model_takes_effort(t.agent, &model) => "n/a".into(),
-        None if t.agent == Agent::Codex => "inherits config.toml".into(),
+        None if t.agent == HarnessKind::Codex => "inherits config.toml".into(),
         None => "agent default".into(),
     };
     let price = usage::price_for(&usage::builtin_prices(), &model);
@@ -174,7 +175,7 @@ pub fn matrix(ctx: &RuntimeContext, json: bool) -> Result<()> {
         .names()
         .iter()
         .filter_map(|n| roster.get(n))
-        .filter(|t| t.agent != Agent::None)
+        .filter(|t| t.agent != HarnessKind::None)
         .map(matrix_row)
         .collect();
     if json {
@@ -230,7 +231,7 @@ pub fn check(ctx: &RuntimeContext) -> Result<ExitCode> {
     let roster = super::load_roster(ctx, None)?;
     let problems = roster.check();
     // Warnings (design 13.3 rule 6) never fail the check.
-    for w in horch_core::balance_policy::fallback_warnings(&roster) {
+    for w in horch_core::roster::validation::fallback_warnings(&roster) {
         eprintln!("warning: {w}");
     }
     if problems.is_empty() {
@@ -284,7 +285,7 @@ pub fn new(ctx: &RuntimeContext, name: &str, dir: Option<&str>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use horch_core::teammates::{Roster, Teammate, TEMPLATE};
+    use horch_core::roster::{Roster, Teammate, TEMPLATE};
 
     /// The template is the schema's documentation. If a field is added to
     /// `Teammate` without being documented (or a documented key is removed),
@@ -346,7 +347,7 @@ mod tests {
         assert_eq!(row("prime").price_in, Some(4.0));
         for name in roster.names() {
             let t = roster.get(name).unwrap();
-            if t.agent == horch_core::teammates::Agent::Codex && !t.hidden {
+            if t.agent == horch_core::harness::HarnessKind::Codex && !t.hidden {
                 assert!(row(name).effort_is_explicit, "{name}");
             }
         }

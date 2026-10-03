@@ -33,7 +33,7 @@ pub fn ensure_tag(message: &str, role: &str) -> String {
 
 /// `summary` without a leading `[role]` and `DONE:`, which `horch done` adds
 /// itself. Workers are told to open every report with both, so they often do.
-pub fn strip_done_prefix<'a>(summary: &'a str, role: &str) -> &'a str {
+pub(crate) fn strip_done_prefix<'a>(summary: &'a str, role: &str) -> &'a str {
     let mut s = summary.trim_start();
     if let Some(rest) = s.strip_prefix(&format!("[{role}]")) {
         s = rest.trim_start();

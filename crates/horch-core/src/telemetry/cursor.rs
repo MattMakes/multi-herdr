@@ -17,7 +17,7 @@ use super::TokenClasses;
 
 /// How many recent Claude message ids a cursor remembers. Repeats of one id
 /// are adjacent (one line per content block), so a handful is plenty.
-pub const RECENT_IDS: usize = 8;
+pub(crate) const RECENT_IDS: usize = 8;
 
 /// One message id a reader has emitted, with what it has emitted so far.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +73,7 @@ fn is_zero(n: &i64) -> bool {
 
 /// A file's identity: `(dev, ino)` on Unix. Stable Rust has no file index on
 /// Windows, so there the creation time stands in for the inode.
-pub fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
+pub(crate) fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -93,7 +93,7 @@ pub fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
 
 impl Cursor {
     /// Remember `tokens` emitted for `id`, keeping the last [`RECENT_IDS`].
-    pub fn remember(&mut self, seen: Seen) {
+    pub(crate) fn remember(&mut self, seen: Seen) {
         self.recent.retain(|s| s.id != seen.id);
         self.recent.push(seen);
         if self.recent.len() > RECENT_IDS {
@@ -102,7 +102,7 @@ impl Cursor {
         }
     }
 
-    pub fn recalled(&self, id: &str) -> Option<&Seen> {
+    pub(crate) fn recalled(&self, id: &str) -> Option<&Seen> {
         self.recent.iter().find(|s| s.id == id)
     }
 }
@@ -111,7 +111,7 @@ impl Cursor {
 /// line starts at, and advance the cursor past it. Returns whether any line
 /// was consumed. A cursor for a different file identity, or past the end of
 /// a shrunken file, is reset first.
-pub fn poll_lines(
+pub(crate) fn poll_lines(
     path: &Path,
     cursor: &mut Cursor,
     mut f: impl FnMut(&mut Cursor, u64, &str),

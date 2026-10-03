@@ -1,4 +1,4 @@
-//! Persistent per-project session ledger.
+//! The lifecycle rules of the persistent per-project session ledger.
 //!
 //! One JSON file per project dir, so "what has been worked on here, by which
 //! session" survives pane close and workspace restarts - that is what lets the
@@ -9,22 +9,16 @@
 //! The on-disk format, file path, slug rule and timestamp format are unchanged
 //! from the bash implementation: existing ledgers stay readable and resumable.
 //!
-//! Since A6 this is a facade: the record is
-//! [`crate::execution::legacy::LedgerRecordV1`] and every read and write goes
-//! through [`ExecutionStore`]. Only the lifecycle rules live here.
+//! The record is [`crate::execution::legacy::LedgerRecordV1`] and every read
+//! and write goes through [`ExecutionStore`]. Only the lifecycle rules live
+//! here.
 
 use std::path::Path;
 
+use crate::execution::legacy::{HistoryEntry, Record, STATUS_DONE, STATUS_WORKING};
 use crate::execution::store::ExecutionStore;
-use crate::teammates::Phase;
+use crate::roster::Phase;
 use anyhow::{bail, Result};
-
-pub use crate::execution::legacy::{HistoryEntry, Record, KIND_ORCHESTRATOR, KIND_WORKER};
-pub use crate::execution::store::slug;
-
-/// A worker session's lifecycle state.
-pub const STATUS_WORKING: &str = "working";
-pub const STATUS_DONE: &str = "done";
 
 /// Placeholder task for a worker spawned with nothing assigned yet.
 const IDLE_TASK: &str = "(idle - awaiting assignment)";
@@ -48,34 +42,7 @@ fn now() -> String {
     crate::clock::now_stamp()
 }
 
-/// Root directory for ledger files: `$HORCH_STATE_DIR`, else
-/// `${XDG_STATE_HOME:-$HOME/.local/state}/horch`. Reads the process
-/// environment; a command uses `RuntimeContext::paths` instead.
-pub fn state_root() -> std::path::PathBuf {
-    let env = crate::runtime::ProcessEnv;
-    crate::runtime::paths::state_root(&env, &crate::runtime::paths::home_dir(&env))
-}
-
-/// The project dir a ledger belongs to: `$HORCH_PROJECT_DIR`, else the cwd.
-/// Reads the process environment; a command uses `RuntimeContext::paths`.
-pub fn project_dir() -> Result<std::path::PathBuf> {
-    crate::runtime::paths::project_dir(&crate::runtime::ProcessEnv)
-}
-
 impl Ledger {
-    /// The ledger for the ambient project, honouring `HORCH_STATE_DIR` and
-    /// `HORCH_PROJECT_DIR`. Reads the process environment; a command uses
-    /// [`Ledger::open_in`].
-    pub fn open() -> Result<Self> {
-        let project = project_dir()?;
-        let workspace =
-            crate::runtime::EnvSource::var(&crate::runtime::ProcessEnv, "HORCH_WORKSPACE_ID")
-                .filter(|s| !s.is_empty());
-        Ok(Self::for_project(state_root(), &project.to_string_lossy())
-            .with_project(Some(project.to_string_lossy().into_owned()))
-            .with_workspace(workspace))
-    }
-
     /// The ledger for the context's project, under its state root. Records
     /// inserted here default to that project and the context's workspace.
     pub fn open_in(ctx: &crate::runtime::RuntimeContext) -> Result<Self> {
@@ -86,7 +53,7 @@ impl Ledger {
     }
 
     /// The project [`Ledger::insert`] fills into a record without one.
-    pub fn with_project(mut self, project: Option<String>) -> Self {
+    pub(crate) fn with_project(mut self, project: Option<String>) -> Self {
         self.project = project;
         self
     }
@@ -138,7 +105,7 @@ impl Ledger {
 
     /// Record a fresh session with its resolved work phase.
     #[allow(clippy::too_many_arguments)]
-    pub fn add_with_phase(
+    pub(crate) fn add_with_phase(
         &self,
         record_id: &str,
         agent: &str,
@@ -264,7 +231,7 @@ impl Ledger {
     }
 
     /// Resume, preserving the phase unless an override is supplied.
-    pub fn resume_with_phase(
+    pub(crate) fn resume_with_phase(
         &self,
         key: &str,
         role: &str,
@@ -371,6 +338,8 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution::legacy::KIND_ORCHESTRATOR;
+    use crate::execution::store::slug;
 
     fn ledger() -> (tempfile::TempDir, Ledger) {
         let tmp = tempfile::tempdir().unwrap();

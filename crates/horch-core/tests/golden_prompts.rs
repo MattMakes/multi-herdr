@@ -31,7 +31,7 @@
 
 use horch_core::execution::SessionMode;
 use horch_core::prompts;
-use horch_core::teammates::Roster;
+use horch_core::roster::Roster;
 
 fn golden(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::harness::HarnessKind;
 use crate::ids::{ModelId, TeammateName};
+use crate::roster::{effort_problem, Roster, Teammate};
 use crate::routing::quota::{QuotaView, State, POOL_UNKNOWN};
-use crate::teammates::{effort_problem, Agent, Roster, Teammate};
 
 /// Why a teammate is not in the eligible set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -117,7 +117,7 @@ pub struct EligibilityFilter {
 /// Whether a teammate's provider trains on its input: every OpenCode one
 /// (BAL-09). Never chosen automatically.
 pub fn trains_on_input(t: &Teammate) -> bool {
-    t.trains_on_input || t.agent == Agent::OpenCode
+    t.trains_on_input || t.agent == HarnessKind::OpenCode
 }
 
 /// An entry for a roster teammate, with its pool assessed.
@@ -212,7 +212,7 @@ fn roster_rule(
         Some(ExclusionReason::ExcludedByConfig)
     } else if t.hidden {
         Some(ExclusionReason::Hidden)
-    } else if t.agent == Agent::None {
+    } else if t.agent == HarnessKind::None {
         Some(ExclusionReason::AgentNone)
     } else if Roster::is_spawnable(t).is_err() {
         Some(ExclusionReason::ReservedTier)

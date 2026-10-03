@@ -24,12 +24,12 @@ use crate::ids::{ModelId, RoundId, TeammateName};
 use crate::measure::digest::sha256_bytes;
 use crate::measure::event::{CandidatePlanned, RoundCreated, SlotKind};
 use crate::measure::testkit::{seed_from_digest, SplitMix64};
+use crate::roster::{Roster, Teammate};
 use crate::routing::decision::{decide, resolve, GateFlags, RoutingDecision};
 use crate::routing::eligible::{roster_eligibility, EligibilityFilter, EligibleEntry};
 use crate::routing::policy::BalanceMode;
 use crate::routing::quota::QuotaView;
 use crate::teacher::TeacherRef;
-use crate::teammates::{Roster, Teammate};
 
 /// Labels are `A`, `B`, … in slot order (`CandidateLabel::from_index`).
 ///

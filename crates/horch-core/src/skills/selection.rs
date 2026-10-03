@@ -7,9 +7,9 @@ use anyhow::{bail, Result};
 
 use super::catalog::SkillCatalog;
 use crate::harness::SkillExposure;
-use crate::teammates::{Phase, Teammate};
+use crate::roster::{Phase, Teammate};
 
-pub fn phase_skills(phase: Phase) -> &'static [&'static str] {
+pub(crate) fn phase_skills(phase: Phase) -> &'static [&'static str] {
     match phase {
         Phase::Research => &["brainstorm", "research-codebase", "trace", "handoff"],
         Phase::Plan => &["create-plan", "pre-flight", "handoff"],
@@ -32,7 +32,7 @@ pub fn selected(teammate: &Teammate) -> Result<Vec<String>> {
 
 /// [`selected`], checked against `catalog`, which may include installed
 /// marketplace skills.
-pub fn selected_in(teammate: &Teammate, catalog: &SkillCatalog) -> Result<Vec<String>> {
+pub(crate) fn selected_in(teammate: &Teammate, catalog: &SkillCatalog) -> Result<Vec<String>> {
     let mut names: BTreeSet<String> = teammate.skills.iter().cloned().collect();
     if let Some(phase) = teammate.phase {
         names.extend(phase_skills(phase).iter().map(|s| (*s).to_owned()));

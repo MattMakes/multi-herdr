@@ -13,18 +13,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{bail, Context};
 use horch_marketplace::git::{GitOutput, GitRunner};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::measure::digest::Digest;
-
-/// One line of `git diff --numstat`. A binary file has no line counts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NumstatLine {
-    pub added: Option<u32>,
-    pub deleted: Option<u32>,
-    pub path: String,
-}
+use crate::measure::NumstatLine;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CherryPick {

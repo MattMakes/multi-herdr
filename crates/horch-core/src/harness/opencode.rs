@@ -15,9 +15,9 @@ use anyhow::{bail, Context, Result};
 
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, Workdir};
+use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
-use crate::teammates::Teammate;
 
 /// A session that could belong to this worker.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +32,11 @@ pub struct SessionCandidate {
 /// The directory check is what keeps two projects' concurrent OpenCode sessions
 /// apart, exactly as the cwd check does for codex rollouts. Directories
 /// compare canonically ([`Workdir`]).
-pub fn find_sessions(bin: &Path, project_dir: &str, since: SystemTime) -> Vec<SessionCandidate> {
+pub(crate) fn find_sessions(
+    bin: &Path,
+    project_dir: &str,
+    since: SystemTime,
+) -> Vec<SessionCandidate> {
     let output = Command::new(bin)
         .args(["session", "list", "--format", "json"])
         .current_dir(project_dir)
@@ -46,7 +50,7 @@ pub fn find_sessions(bin: &Path, project_dir: &str, since: SystemTime) -> Vec<Se
     parse_sessions(&String::from_utf8_lossy(&output.stdout), project_dir, since)
 }
 
-/// Split out from [`find_sessions`] so the filtering is testable without an
+/// Split out from `find_sessions` so the filtering is testable without an
 /// OpenCode install.
 pub fn parse_sessions(json: &str, project_dir: &str, since: SystemTime) -> Vec<SessionCandidate> {
     let Ok(records) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {

@@ -5,17 +5,14 @@
 //! drifts it reports phantom columns and advises a split that makes the grid
 //! worse. Keeping the columns even keeps both rows on the same integers.
 //!
-//! The planning is pure and lives in [`horch_core::balance`]; the herdr calls
+//! The planning is pure and lives in [`horch_core::workspace::balance`]; the herdr calls
 //! live in [`horch_core::workspace::arrange`]. This is the command.
 
 use anyhow::Result;
-use horch_core::balance;
-use horch_core::herdr::Herdr;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::arrange;
-
-/// `horch spawn` still reaches this through this module.
-pub use horch_core::workspace::arrange::equalize_quietly;
+use horch_core::workspace::balance;
+use horch_core::workspace::herdr::Herdr;
 
 use crate::output;
 

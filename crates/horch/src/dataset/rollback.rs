@@ -18,7 +18,7 @@ use super::cli::RollbackArgs;
 use super::promote::find_round;
 use super::{dataset_paths, exit};
 
-pub fn rollback(ctx: &RuntimeContext, args: &RollbackArgs) -> Result<u8> {
+pub(crate) fn rollback(ctx: &RuntimeContext, args: &RollbackArgs) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let (round, view, _) = find_round(&paths, &args.round)?;
     let Some(completed) = &view.promotion.completed else {

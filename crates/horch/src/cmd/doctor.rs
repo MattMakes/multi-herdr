@@ -4,9 +4,9 @@
 //! reachable. The old `jq` check is gone: nothing shells out to jq any more.
 
 use anyhow::{bail, Result};
-use horch_core::herdr::Herdr;
 use horch_core::roster::operator_effort_warnings;
 use horch_core::runtime::{process, RuntimeContext};
+use horch_core::workspace::herdr::Herdr;
 
 pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     check(ctx)?;
@@ -32,8 +32,10 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     }
     // Settings that quietly override the effort in every teammate file.
     let home = ctx.inherited.home_var.as_deref().map(std::path::Path::new);
-    let codex_home =
-        horch_core::codex::codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref());
+    let codex_home = horch_core::harness::codex::codex_home(
+        &ctx.paths.home,
+        ctx.inherited.codex_home.as_deref(),
+    );
     for w in operator_effort_warnings(
         home,
         &codex_home,

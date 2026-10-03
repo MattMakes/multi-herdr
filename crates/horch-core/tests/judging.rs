@@ -197,10 +197,10 @@ use horch_core::measure::projection::fold;
 use horch_core::measure::recorder::{JsonlRecorder, NewEvent, Recorder};
 use horch_core::measure::store::StoreOptions;
 use horch_core::measure::NumstatLine;
+use horch_core::roster::{Roster, Teammate};
 use horch_core::routing::decision::RoutingProvenance;
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use horch_core::teacher::TeacherRef;
-use horch_core::teammates::{Roster, Teammate};
 use horch_core::vcs::git::{CheckoutLocation, CherryPick, GitClient, GitIdentity};
 use serde_json::{json, Value};
 

@@ -27,8 +27,9 @@ use crate::messaging::mailbox::Mailbox;
 use crate::runtime::process::spawn_detached;
 use crate::runtime::RuntimeContext;
 use crate::workspace::balance;
-use crate::workspace::herdr::{Herdr, Layout};
+use crate::workspace::herdr::Herdr;
 use crate::workspace::layout::{self, Orchestrator};
+use crate::workspace::model::Layout;
 use crate::workspace::tile::{self, Fleet, FocusState, Op, Plan, TabRef, TabShape, Worker};
 
 /// The label of the `horch telemetry` workspace, which tiling leaves alone.
@@ -814,7 +815,7 @@ mod tests {
         let op = Op::Move {
             pane: "w0:p2".into(),
             tab: TabRef::Existing("w0:t1".into()),
-            split: crate::workspace::herdr::Direction::Right,
+            split: crate::workspace::model::Direction::Right,
             target: "w0:p1".into(),
             ratio: Some(0.5),
         };

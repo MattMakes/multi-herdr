@@ -16,12 +16,12 @@ use horch_core::competition::state::{transition, RoundEvent, TABLE};
 use horch_core::ids::{RoundId, TeammateName};
 use horch_core::measure::event::{EventKind, InterventionSource, SlotKind};
 use horch_core::measure::testkit::{property, SplitMix64};
+use horch_core::roster::Roster;
 use horch_core::routing::decision::RoutingDecision;
 use horch_core::routing::eligible::{EligibilityFilter, Verdict};
 use horch_core::routing::policy::Policy;
 use horch_core::routing::quota::{QuotaFile, QuotaView};
 use horch_core::teacher::TeacherRef;
-use horch_core::teammates::Roster;
 use horch_core::usage::money::MicroUsd;
 
 // ─── CMP-03: the round state table ──────────────────────────────────────────
