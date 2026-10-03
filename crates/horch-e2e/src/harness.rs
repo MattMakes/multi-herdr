@@ -2,7 +2,8 @@
 //!
 //! Each [`Harness`] gets a fresh temp directory holding a fake home, a state
 //! root, a temp dir for mailboxes, and a `bin/` of fakes named like the real
-//! programs (`claude`, `codex`, `herdr`, `opencode`, `pi`, `ollama`). `horch` runs with a cleared environment whose PATH is that
+//! programs (`claude`, `codex`, `herdr`, `opencode`, `prime-agent`, `pi`,
+//! `ollama`). `horch` runs with a cleared environment whose PATH is that
 //! `bin/` alone, and every `HORCH_*_BIN` points into it, so no real harness, no
 //! real herdr and no file outside the temp dir can be reached (NFR-01).
 
@@ -15,12 +16,13 @@ use serde_json::Value;
 use crate::bin_dir;
 
 /// The fakes, by the name of the program each stands in for.
-pub const FAKES: [(&str, &str); 6] = [
+pub const FAKES: [(&str, &str); 7] = [
     ("claude", "fake-claude"),
     ("codex", "fake-codex"),
     ("herdr", "fake-herdr"),
     ("opencode", "fake-opencode"),
     ("pi", "fake-pi"),
+    ("prime-agent", "fake-prime"),
     ("ollama", "fake-ollama"),
 ];
 
@@ -147,6 +149,7 @@ impl Harness {
             ("herdr", "HORCH_HERDR_BIN"),
             ("opencode", "HORCH_OPENCODE_BIN"),
             ("pi", "HORCH_PI_BIN"),
+            ("prime-agent", "HORCH_PRIME_BIN"),
             ("ollama", "HORCH_OLLAMA_BIN"),
             ("sqlite3", "HORCH_SQLITE3_BIN"),
         ] {

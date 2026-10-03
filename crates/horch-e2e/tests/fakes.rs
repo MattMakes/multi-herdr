@@ -255,3 +255,96 @@ fn fake_opencode_writes_transcript_rows_when_asked() {
     let rows: Vec<Value> = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(rows[0]["n"], 1);
 }
+
+#[test]
+fn fake_prime_creates_session_file() {
+    let mut h = Harness::new("fakes-prime");
+    assert_eq!(
+        String::from_utf8_lossy(&fake(&h, "prime-agent", &["--version"]).stdout).trim(),
+        "0.9.4"
+    );
+    let base = h.state.join("prime/prime-1-abc");
+    let sessions = base.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let socket = base.join("d.sock");
+    let (socket_arg, sessions_arg) = (
+        socket.to_string_lossy().into_owned(),
+        sessions.to_string_lossy().into_owned(),
+    );
+    let launch_args = [
+        "--model",
+        "anthropic/claude-opus-5-5",
+        "--thinking",
+        "high",
+        "--daemon-socket",
+        &socket_arg,
+        "--session-dir",
+        &sessions_arg,
+        "--",
+        "do the work",
+    ];
+
+    h.set("HORCH_FAKE_TRANSCRIPTS", "1");
+    let launch = fake(&h, "prime-agent", &launch_args);
+    assert!(launch.status.success());
+    assert!(socket.is_file(), "the socket path exists");
+    let id = horch_e2e::prime_session_id(&sessions_arg);
+    assert!(id.starts_with("prime_") && id.len() == 6 + 16, "{id}");
+    // `find_session` takes the newest `.jsonl` in the directory.
+    let files: Vec<_> = std::fs::read_dir(&sessions)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(files, [sessions.join(format!("{id}.jsonl"))]);
+    let text = std::fs::read_to_string(&files[0]).unwrap();
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines[0]["type"], "session");
+    assert_eq!(lines[0]["id"], id.as_str());
+    assert_eq!(lines[1]["message"]["role"], "assistant");
+    let call = h.calls_of("prime").pop().unwrap();
+    assert_eq!(call["socket"], socket_arg.as_str());
+    assert_eq!(call["session_id"], id.as_str());
+    assert_eq!(call["model"], "anthropic/claude-opus-5-5");
+
+    // A resume reuses the file it is given and mints no second one.
+    let resume_file = files[0].to_string_lossy().into_owned();
+    let mut resume_args = launch_args.to_vec();
+    resume_args.splice(8..8, ["--resume", &resume_file]);
+    assert!(fake(&h, "prime-agent", &resume_args).status.success());
+    assert_eq!(std::fs::read_dir(&sessions).unwrap().count(), 1);
+    assert_eq!(
+        h.calls_of("prime").pop().unwrap()["resumed"],
+        resume_file.as_str()
+    );
+
+    // With no launch alive, `status --json` lists no daemon.
+    let status = |h: &Harness| -> Vec<Value> {
+        json(&fake(h, "prime-agent", &["status", "--json"]))
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    assert!(status(&h).is_empty());
+
+    // `stay`: the launch is the daemon for its socket until it is killed.
+    h.set("HORCH_FAKE_SCENARIO", "stay");
+    let mut cmd = Command::new(h.bin.join("prime-agent"));
+    cmd.args(launch_args);
+    h.seal(&mut cmd);
+    let mut child = cmd.spawn().unwrap();
+    let started = std::time::Instant::now();
+    while status(&h).is_empty() && started.elapsed().as_secs() < 10 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let daemons = status(&h);
+    assert_eq!(daemons.len(), 1, "{daemons:?}");
+    assert_eq!(daemons[0]["socketPath"], socket_arg.as_str());
+    assert_eq!(daemons[0]["pid"], child.id());
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(status(&h).is_empty(), "a killed launch is not listed");
+}
