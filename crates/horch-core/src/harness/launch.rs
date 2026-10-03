@@ -18,7 +18,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::execution::SessionMode;
 use crate::ledger::Ledger;
-use crate::mailbox::Mailbox;
+use crate::messaging::mailbox::Mailbox;
 use crate::runtime::{BinOverrides, EnvSource, HarnessBins, ProcessEnv, RuntimeContext};
 use crate::teammates::{ExecRule, Teammate};
 use crate::workspace::herdr::Herdr;

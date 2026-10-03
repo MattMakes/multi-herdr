@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use horch_core::clock;
-use horch_core::quota::{self, PoolReading, POOLS};
+use horch_core::routing::quota::{self, PoolReading, POOLS};
 use horch_core::runtime::RuntimeContext;
 use horch_core::telemetry::collect::{self, Collector, LiveRow, Probing, Snapshot};
 use horch_core::telemetry::lock::{self, Holder};

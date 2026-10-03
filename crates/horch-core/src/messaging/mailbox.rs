@@ -11,7 +11,7 @@ use crate::workspace::herdr::Herdr;
 use anyhow::{bail, Context, Result};
 
 /// The brief moved to [`crate::messaging::brief`] in A2.
-pub use crate::messaging::brief::Brief;
+use crate::messaging::brief::Brief;
 
 /// The mailbox directory for one herdr workspace.
 #[derive(Debug, Clone)]

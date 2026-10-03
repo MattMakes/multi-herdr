@@ -11,8 +11,9 @@ use super::{
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
     ORCHESTRATOR_ONLY_SKILLS,
 };
-use crate::balance_policy::{merge, trains_on_input};
-use crate::quota;
+use crate::routing::decision::merge;
+use crate::routing::eligible::trains_on_input;
+use crate::routing::quota;
 use crate::skills::SkillCatalog;
 
 impl Roster {
@@ -400,7 +401,7 @@ impl Roster {
         for t in self.teammates.values() {
             problems.extend(self.check_teammate(t));
         }
-        problems.extend(crate::balance_policy::fallback_problems(self));
+        problems.extend(fallback_problems(self));
         // Every command an agent is told to run must be allowed for codex, and
         // nothing more: a rule with no command behind it is standing permission
         // nobody asked for.

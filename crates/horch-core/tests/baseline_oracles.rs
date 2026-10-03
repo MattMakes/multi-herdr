@@ -9,13 +9,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use horch_core::balance_policy::{self, Decision, GateFlags, PoolLine};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::harness::CommandSpec;
 use horch_core::launch::{self, LaunchEnv, Session};
 use horch_core::ledger::{Ledger, Record};
-use horch_core::policy::{BalanceMode, Policy};
-use horch_core::quota::{QuotaFile, QuotaView};
+use horch_core::roster::validation::fallback_problems;
+use horch_core::routing::decision::{self, Decision, GateFlags, PoolLine};
+use horch_core::routing::policy::{BalanceMode, Policy};
+use horch_core::routing::quota::{QuotaFile, QuotaView};
 use horch_core::skills::Bundle;
 use horch_core::teammates::{Phase, Roster, Teammate};
 use serde_json::{json, Value};
@@ -390,7 +391,7 @@ fn route_json(
             pools.push(PoolLine {
                 pool: a.pool.clone(),
                 state: a.state.to_string(),
-                detail: balance_policy::summary(&a, view),
+                detail: decision::summary(&a, view),
             });
         }
     }
@@ -445,8 +446,8 @@ fn oracle_routing_matches() {
             let t = roster.get(&name).unwrap();
             for (flag_label, flag) in flags {
                 for (mode_label, mode) in modes {
-                    let decision = balance_policy::decide(t, &roster, &view, mode, flag);
-                    let resolved = balance_policy::resolve(t, &roster, &decision).map(|r| {
+                    let decision = decision::decide(t, &roster, &view, mode, flag);
+                    let resolved = decision::resolve(t, &roster, &decision).map(|r| {
                         json!({
                             "name": r.name,
                             "agent": r.agent.as_str(),
@@ -474,7 +475,7 @@ fn oracle_routing_matches() {
     }
     check_oracle(
         "routing/fallback_problems.json",
-        &pretty(&json!(balance_policy::fallback_problems(&roster))),
+        &pretty(&json!(fallback_problems(&roster))),
     );
 }
 

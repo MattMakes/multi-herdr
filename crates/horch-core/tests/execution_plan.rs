@@ -18,8 +18,9 @@ use horch_core::execution::{
     SpawnRequest, TilingMode,
 };
 use horch_core::ids::{ExecutionId, RoleName, SessionId, WorkspaceId};
-use horch_core::mailbox::{Brief, Mailbox};
+use horch_core::messaging::brief::Brief;
 use horch_core::messaging::brief::SCHEMA;
+use horch_core::messaging::mailbox::Mailbox;
 use horch_core::routing::decision::{GateFlags, RoutingMode};
 use horch_core::routing::policy::{BalanceMode, Policy};
 use horch_core::routing::quota::{QuotaFile, QuotaView};

@@ -23,7 +23,7 @@ use serde_json::Value;
 use super::cursor::{poll_lines, Cursor, Seen};
 use super::{Observation, QuotaSignal, RawUsage, TokenClasses};
 use crate::clock;
-use crate::quota::Window;
+use crate::routing::quota::Window;
 use crate::usage::{find_codex_rollout, find_pi_session, Locations};
 
 /// The cursors of every input, keyed by [`input_key`].

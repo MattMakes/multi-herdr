@@ -12,7 +12,7 @@ use horch_core::execution::service::{ExecutionService, SpawnError};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{SessionMode, SpawnRequest, TilingMode};
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
-use horch_core::mailbox::Mailbox;
+use horch_core::messaging::mailbox::Mailbox;
 use horch_core::routing::decision::GateFlags;
 use horch_core::runtime::RuntimeContext;
 use horch_core::teammates::Phase;

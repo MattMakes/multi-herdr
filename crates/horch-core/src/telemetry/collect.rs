@@ -22,8 +22,10 @@ use crate::clock;
 use crate::execution::model::ExecutionStatus;
 use crate::execution::store as execution_store;
 use crate::ledger::{Record, KIND_ORCHESTRATOR};
-use crate::policy::Policy;
-use crate::quota::{self, ProbeBins, QuotaEnv, QuotaFile, QuotaView};
+use crate::routing::policy::Policy;
+use crate::routing::quota::{self, QuotaFile, QuotaView};
+use crate::routing::quota_probe::{self, ProbeBins};
+use crate::routing::snapshot::QuotaEnv;
 use crate::usage::{self, Locations, Price};
 
 /// Every record in every ledger under `state_root`, skipping a ledger that
@@ -354,7 +356,7 @@ impl Collector {
             Probing::OnDemand => quota::probe_due(&file, now, self.policy.probe_on_demand_age_min),
         };
         if due {
-            quota::probe_all(
+            quota_probe::probe_all(
                 &mut file,
                 &self.bins,
                 now,

@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use horch_core::execution::TilingMode;
 use horch_core::ledger::Ledger;
-use horch_core::mailbox::Mailbox;
+use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::{Direction, Layout, Rect};

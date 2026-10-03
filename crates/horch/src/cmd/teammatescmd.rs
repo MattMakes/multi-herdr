@@ -230,7 +230,7 @@ pub fn check(ctx: &RuntimeContext) -> Result<ExitCode> {
     let roster = super::load_roster(ctx, None)?;
     let problems = roster.check();
     // Warnings (design 13.3 rule 6) never fail the check.
-    for w in horch_core::balance_policy::fallback_warnings(&roster) {
+    for w in horch_core::roster::validation::fallback_warnings(&roster) {
         eprintln!("warning: {w}");
     }
     if problems.is_empty() {

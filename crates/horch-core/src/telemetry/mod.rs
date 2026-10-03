@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::quota::Window;
+use crate::routing::quota::Window;
 use crate::usage::Tokens;
 
 /// Token counts, one field per class (TEL-03).
