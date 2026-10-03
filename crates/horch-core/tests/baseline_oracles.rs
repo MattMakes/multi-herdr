@@ -60,6 +60,25 @@ fn check_oracle(rel: &str, actual: &str) {
     }
 }
 
+/// Teammates added after the A0 freeze. They have no oracle file and the
+/// oracle loops skip them; a missing file for any other teammate still
+/// fails. Never give one of these an oracle file.
+const SKIP_NEW_TEAMMATES: &[&str] = &["judge"];
+
+/// The roster names the oracles cover: every teammate except a listed new
+/// one with no launch oracle.
+fn oracle_names(roster: &Roster) -> Vec<String> {
+    roster
+        .names()
+        .into_iter()
+        .filter(|name| {
+            !(SKIP_NEW_TEAMMATES.contains(name)
+                && !oracles().join(format!("launch/{name}.json")).exists())
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 fn pretty(v: &Value) -> String {
     let mut s = serde_json::to_string_pretty(v).unwrap();
     s.push('\n');
@@ -254,8 +273,8 @@ fn launch_oracle(world: &World, t: &Teammate) -> Value {
 fn oracle_launch_matches() {
     let world = World::new();
     let roster = world.roster();
-    for name in roster.names() {
-        let t = roster.get(name).unwrap();
+    for name in oracle_names(&roster) {
+        let t = roster.get(&name).unwrap();
         check_oracle(
             &format!("launch/{name}.json"),
             &pretty(&launch_oracle(&world, t)),
@@ -354,8 +373,8 @@ fn oracle_routing_matches() {
     for (fixture, path) in quota_fixtures() {
         let view = quota_view(&path);
         let mut out = BTreeMap::new();
-        for name in roster.names() {
-            let t = roster.get(name).unwrap();
+        for name in oracle_names(&roster) {
+            let t = roster.get(&name).unwrap();
             for (flag_label, flag) in flags {
                 for (mode_label, mode) in modes {
                     let decision = balance_policy::decide(t, &roster, &view, mode, flag);
@@ -449,9 +468,9 @@ fn oracle_ledgers_match() {
 fn oracle_skills_match() {
     let world = World::new();
     let roster = world.roster();
-    for name in roster.names() {
+    for name in oracle_names(&roster) {
         for phase in PHASES {
-            let mut t = roster.get(name).unwrap().clone();
+            let mut t = roster.get(&name).unwrap().clone();
             t.phase = Some(phase);
             let text = match Bundle::install(&world.state, &t) {
                 Ok(Some(bundle)) => {
