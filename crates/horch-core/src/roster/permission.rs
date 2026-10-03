@@ -53,6 +53,23 @@ impl PermissionMode {
         }
     }
 
+    /// Antigravity CLI (`agy`) flags for this mode.
+    ///
+    /// `agy` has `--mode plan|accept-edits` and one bypass,
+    /// `--dangerously-skip-permissions`. `Auto` adds `--sandbox`, which
+    /// confines terminal commands, to the bypass: approve everything, inside
+    /// the sandbox. `Manual` and `DontAsk` have no analogue.
+    pub(crate) fn antigravity_args(self) -> Option<Vec<String>> {
+        let args: &[&str] = match self {
+            PermissionMode::Plan => &["--mode", "plan"],
+            PermissionMode::AcceptEdits => &["--mode", "accept-edits"],
+            PermissionMode::Auto => &["--sandbox", "--dangerously-skip-permissions"],
+            PermissionMode::BypassPermissions => &["--dangerously-skip-permissions"],
+            PermissionMode::Manual | PermissionMode::DontAsk => return None,
+        };
+        Some(args.iter().map(|s| s.to_string()).collect())
+    }
+
     /// Codex sandbox + approval flags for this mode.
     ///
     /// `Manual` and `DontAsk` have no codex analogue. Returning `None` lets the

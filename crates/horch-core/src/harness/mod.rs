@@ -5,6 +5,7 @@
 //! each harness can do is [`Capabilities`] data, read through
 //! [`HarnessKind::capabilities`].
 
+pub mod antigravity;
 pub mod capabilities;
 pub(crate) mod claude;
 pub(crate) mod claude_plugins;
@@ -265,6 +266,7 @@ pub enum HarnessKind {
     OpenCode,
     Pi,
     Prime,
+    Antigravity,
     /// No real agent: the smoke teammate exercises the machinery only.
     None,
 }
@@ -287,6 +289,7 @@ impl HarnessKind {
             HarnessKind::OpenCode => "opencode",
             HarnessKind::Pi => "pi",
             HarnessKind::Prime => "prime",
+            HarnessKind::Antigravity => "antigravity",
             HarnessKind::None => "none",
         }
     }
@@ -300,6 +303,7 @@ impl HarnessKind {
             HarnessKind::OpenCode => Some(bins.opencode.clone()),
             HarnessKind::Pi => Some(bins.pi.clone()),
             HarnessKind::Prime => Some(bins.prime.clone()),
+            HarnessKind::Antigravity => Some(bins.antigravity.clone()),
             HarnessKind::None => None,
         }
     }
@@ -312,6 +316,7 @@ impl HarnessKind {
             HarnessKind::OpenCode => &opencode::OpenCode,
             HarnessKind::Pi => &pi::Pi,
             HarnessKind::Prime => &prime::Prime,
+            HarnessKind::Antigravity => &antigravity::Antigravity,
             HarnessKind::None => &none::NoAgent,
         }
     }
@@ -324,6 +329,7 @@ impl HarnessKind {
             HarnessKind::OpenCode => &capabilities::OPENCODE,
             HarnessKind::Pi => &capabilities::PI,
             HarnessKind::Prime => &capabilities::PRIME,
+            HarnessKind::Antigravity => &capabilities::ANTIGRAVITY,
             HarnessKind::None => &capabilities::NONE,
         }
     }
@@ -372,9 +378,10 @@ impl FromStr for HarnessKind {
             "opencode" => Ok(HarnessKind::OpenCode),
             "pi" => Ok(HarnessKind::Pi),
             "prime" => Ok(HarnessKind::Prime),
+            "antigravity" => Ok(HarnessKind::Antigravity),
             "none" => Ok(HarnessKind::None),
             other => Err(format!(
-                "unknown agent '{other}' (claude, codex, opencode, pi, prime, none)"
+                "unknown agent '{other}' (claude, codex, opencode, pi, prime, antigravity, none)"
             )),
         }
     }
@@ -386,12 +393,13 @@ mod tests {
     use crate::harness::HarnessKind;
     use crate::roster::Roster;
 
-    const ALL: [HarnessKind; 6] = [
+    const ALL: [HarnessKind; 7] = [
         HarnessKind::Claude,
         HarnessKind::Codex,
         HarnessKind::OpenCode,
         HarnessKind::Pi,
         HarnessKind::Prime,
+        HarnessKind::Antigravity,
         HarnessKind::None,
     ];
 
@@ -407,6 +415,7 @@ mod tests {
                 Some(bins.opencode.clone()),
                 Some(bins.pi.clone()),
                 Some(bins.prime.clone()),
+                Some(bins.antigravity.clone()),
                 None,
             ]
         );
@@ -419,7 +428,7 @@ mod tests {
         use HarnessKind as A;
         (
             matches!(kind, A::Claude | A::Pi),
-            matches!(kind, A::Codex | A::OpenCode | A::Prime),
+            matches!(kind, A::Codex | A::OpenCode | A::Prime | A::Antigravity),
             kind == A::Prime,
             kind == A::Codex,
             matches!(kind, A::Claude | A::Pi | A::Prime),
@@ -429,6 +438,7 @@ mod tests {
                 A::Codex => &["none", "low", "medium", "high", "xhigh", "max"],
                 A::OpenCode => &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
                 A::Pi | A::Prime => &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+                A::Antigravity => &["low", "medium", "high"],
                 A::None => &[],
             },
         )
@@ -453,7 +463,7 @@ mod tests {
                 HarnessKind::Codex => SkillExposure::CodexHome,
                 HarnessKind::OpenCode => SkillExposure::ConfigPaths,
                 HarnessKind::Pi | HarnessKind::Prime => SkillExposure::SkillFlag,
-                HarnessKind::None => SkillExposure::None,
+                HarnessKind::Antigravity | HarnessKind::None => SkillExposure::None,
             };
             assert_eq!(c.skill_exposure, exposure, "{kind}");
             assert_eq!(kind.takes_tool_lists(), tools, "{kind}");
@@ -484,6 +494,7 @@ mod tests {
             (HarnessKind::OpenCode, "opencode"),
             (HarnessKind::Pi, "pi"),
             (HarnessKind::Prime, "prime"),
+            (HarnessKind::Antigravity, "antigravity"),
             (HarnessKind::None, "none"),
         ] {
             assert_eq!(kind.as_str(), old);

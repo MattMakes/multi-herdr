@@ -29,6 +29,8 @@ pub struct BinOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prime: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub antigravity: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub herdr: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlite3: Option<PathBuf>,
@@ -40,12 +42,13 @@ pub struct BinOverrides {
 
 impl BinOverrides {
     /// Every override variable, in a fixed order.
-    pub(crate) const VARS: [&'static str; 9] = [
+    pub(crate) const VARS: [&'static str; 10] = [
         "HORCH_CLAUDE_BIN",
         "HORCH_CODEX_BIN",
         "HORCH_OPENCODE_BIN",
         "HORCH_PI_BIN",
         "HORCH_PRIME_BIN",
+        "HORCH_ANTIGRAVITY_BIN",
         "HORCH_HERDR_BIN",
         "HORCH_SQLITE3_BIN",
         "HORCH_OLLAMA_BIN",
@@ -71,6 +74,7 @@ impl BinOverrides {
             "HORCH_OPENCODE_BIN" => &mut self.opencode,
             "HORCH_PI_BIN" => &mut self.pi,
             "HORCH_PRIME_BIN" => &mut self.prime,
+            "HORCH_ANTIGRAVITY_BIN" => &mut self.antigravity,
             "HORCH_HERDR_BIN" => &mut self.herdr,
             "HORCH_SQLITE3_BIN" => &mut self.sqlite3,
             "HORCH_OLLAMA_BIN" => &mut self.ollama,
@@ -112,6 +116,7 @@ pub struct HarnessBins {
     pub opencode: PathBuf,
     pub pi: PathBuf,
     pub prime: PathBuf,
+    pub antigravity: PathBuf,
     pub herdr: PathBuf,
     pub sqlite3: PathBuf,
     pub ollama: PathBuf,
@@ -127,6 +132,7 @@ impl HarnessBins {
             opencode: opencode_bin(o),
             pi: pi_bin(o),
             prime: prime_bin(o),
+            antigravity: antigravity_bin(o),
             herdr: herdr_bin(o),
             sqlite3: sqlite3_bin(o),
             ollama: ollama_bin(o),
@@ -175,6 +181,11 @@ pub(crate) fn pi_bin(o: &BinOverrides) -> PathBuf {
 /// Which Prime Agent CLI to launch. `$HORCH_PRIME_BIN` overrides.
 pub(crate) fn prime_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.prime, "prime-agent")
+}
+
+/// Which Antigravity CLI to launch. `$HORCH_ANTIGRAVITY_BIN` overrides.
+pub(crate) fn antigravity_bin(o: &BinOverrides) -> PathBuf {
+    or_default(&o.antigravity, "agy")
 }
 
 /// Which herdr CLI to drive. `$HORCH_HERDR_BIN` overrides, which is how the
@@ -228,6 +239,7 @@ mod tests {
         let b = HarnessBins::resolve(&BinOverrides::default(), None, None);
         assert_eq!(b.claude, PathBuf::from("claude"));
         assert_eq!(b.prime, PathBuf::from("prime-agent"));
+        assert_eq!(b.antigravity, PathBuf::from("agy"));
         assert_eq!(b.git, PathBuf::from("git"));
     }
 
@@ -251,7 +263,7 @@ mod tests {
         }
         let all = BinOverrides::from_env(&env);
         let pairs = all.env_pairs();
-        assert_eq!(pairs.len(), 9);
+        assert_eq!(pairs.len(), 10);
         for (key, value) in &pairs {
             assert_eq!(value, &PathBuf::from(format!("/fake/{key}")));
         }

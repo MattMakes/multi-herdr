@@ -289,7 +289,7 @@ plugin_skills:
 
 `horch cost` then reports which expected skills each worker actually loaded.
 
-### Five harnesses, one roster
+### Six harnesses, one roster
 
 A teammate's `agent:` picks which CLI its pane runs. They differ in almost
 everything - how a prompt is passed, whether horch can name the session before
@@ -304,6 +304,7 @@ scattered through the code.
 | `opencode` | `--prompt` flag | `--model provider/model` | build agent `variant` via `OPENCODE_CONFIG_CONTENT` | harvested from `opencode session list --format json` |
 | `pi`       | after `--` | `--model provider/id` | `--thinking` | horch mints `--session-id` |
 | `prime`    | after `--` | `--model provider/id` | `--thinking` | horch owns the `--session-dir` and reads it back |
+| `antigravity` | `--prompt-interactive` flag | `--model <slug>` | `--effort` (`low` `medium` `high`) | harvested from `~/.gemini/antigravity-cli/cache/last_conversations.json` |
 
 Two of those need more than flags:
 

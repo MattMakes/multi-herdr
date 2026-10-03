@@ -189,6 +189,17 @@ impl Roster {
                 problems.push(format!("{who}: env must not set {key}; never use it"));
             }
         }
+        // An agy child signs in with the operator's Google login. These keys
+        // bypass it, and the launch removes them from an agy child.
+        if t.agent == HarnessKind::Antigravity {
+            for key in crate::harness::antigravity::ANTIGRAVITY_FORBIDDEN_ENV {
+                if t.env.contains_key(key) {
+                    problems.push(format!(
+                        "{who}: env must not set {key}; antigravity uses the Google login"
+                    ));
+                }
+            }
+        }
         // Network access and "never ask" do not go together: a codex
         // worker with both can send code out, or pull code in and run it,
         // and nothing stops it. `codex-network` pairs the network with
@@ -232,6 +243,7 @@ impl Roster {
             let ok = match t.agent {
                 HarnessKind::Codex => mode.codex_args().is_some(),
                 HarnessKind::OpenCode => mode.opencode_args().is_some(),
+                HarnessKind::Antigravity => mode.antigravity_args().is_some(),
                 // pi and Prime run their tools without asking, so there is
                 // no gate for a mode to set. Saying nothing is correct;
                 // saying `acceptEdits` implies a restraint that is absent.
@@ -604,7 +616,8 @@ mod spawnable_tests {
                 t.name
             );
             let expected = match t.name.as_str() {
-                "smoke" | "judge" => None,
+                // antigravity exposes no skills, so it can have no phase.
+                "smoke" | "judge" | "antigravity" => None,
                 "researcher" | "product-lead" | "designer" => Some(Phase::Research),
                 "staff-engineer"
                 | "opus-architect"
@@ -839,6 +852,37 @@ mod spawnable_tests {
             "{:?}",
             r.check()
         );
+    }
+
+    /// An agy teammate that sets a Google key would leave the operator's
+    /// login. Another agent may set it: only agy children lose it.
+    #[test]
+    fn an_antigravity_teammate_cannot_set_a_google_key() {
+        let mut r = Roster::builtin().unwrap();
+        let t = r.teammates.get_mut("sonnet").unwrap();
+        t.env.insert("GEMINI_API_KEY".into(), "x".into());
+        assert!(!r.check().iter().any(|p| p.contains("GEMINI_API_KEY")));
+        let t = r.teammates.get_mut("sonnet").unwrap();
+        t.agent = HarnessKind::Antigravity;
+        t.model = Some("gemini-3-1-pro".into());
+        t.effort = None;
+        for key in crate::harness::antigravity::ANTIGRAVITY_FORBIDDEN_ENV {
+            r.teammates
+                .get_mut("sonnet")
+                .unwrap()
+                .env
+                .insert(key.into(), "x".into());
+        }
+        let problems = r.check();
+        for key in crate::harness::antigravity::ANTIGRAVITY_FORBIDDEN_ENV {
+            assert!(
+                problems.iter().any(|p| p
+                    == &format!(
+                        "sonnet: env must not set {key}; antigravity uses the Google login"
+                    )),
+                "{key}: {problems:?}"
+            );
+        }
     }
 
     /// skill-creator, orchestrate and Remote Control are the orchestrator's.

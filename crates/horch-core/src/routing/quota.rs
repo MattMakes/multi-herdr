@@ -34,6 +34,9 @@ use crate::telemetry::QuotaSignal;
 pub const POOL_CLAUDE: &str = "claude";
 pub const POOL_CODEX: &str = "codex";
 pub const POOL_ZEN: &str = "opencode-zen";
+/// The operator's Google account, which every Antigravity model draws on,
+/// whoever made the model. No probe reads it yet, so it assesses `unknown`.
+pub const POOL_GOOGLE: &str = "google";
 pub(crate) const POOL_LOCAL: &str = "local";
 pub(crate) const POOL_UNKNOWN: &str = "unknown";
 
@@ -131,6 +134,7 @@ pub fn pool_for(agent: &str, model: &str) -> &'static str {
     match agent {
         "claude" => POOL_CLAUDE,
         "codex" => POOL_CODEX,
+        "antigravity" => POOL_GOOGLE,
         "opencode" if provider == Some("opencode") => POOL_ZEN,
         "pi" | "prime" => match provider {
             Some("ollama") => POOL_LOCAL,
@@ -1083,6 +1087,11 @@ mod tests {
         assert_eq!(pool_for("claude", "opus"), POOL_CLAUDE);
         assert_eq!(pool_for("codex", "gpt-5.6-sol"), POOL_CODEX);
         assert_eq!(pool_for("opencode", "opencode/big-pickle"), POOL_ZEN);
+        assert_eq!(pool_for("antigravity", "gemini-3-1-pro"), POOL_GOOGLE);
+        assert_eq!(
+            pool_for("antigravity", "claude-opus-4-6-thinking"),
+            POOL_GOOGLE
+        );
         assert_eq!(pool_for("pi", "ollama/qwen3.8"), POOL_LOCAL);
         assert_eq!(pool_for("prime", "anthropic/claude-opus-5-5"), POOL_CLAUDE);
         assert_eq!(pool_for("pi", "mystery/x"), POOL_UNKNOWN);
