@@ -83,16 +83,19 @@ pub enum Command {
         experiment: String,
     },
 
-    // Filled by later units. Each prints "not implemented in this build".
     /// The detached judge run of one attempt. The coordinator starts it.
     #[command(hide = true, name = "judge-job")]
     JudgeJob(JudgeJobArgs),
+    /// Promote a round's winner onto a branch: from COMPLETE, or from
+    /// NEEDS_INTERVENTION when the round has a winner.
     #[command(hide = true)]
-    Promote(Placeholder),
+    Promote(PromoteArgs),
+    /// Move a promoted round's target branch back to where it was.
     #[command(hide = true)]
-    Rollback(Placeholder),
+    Rollback(RollbackArgs),
+    /// Remove a round's worktrees. NEEDS_INTERVENTION needs `--force`.
     #[command(hide = true)]
-    Cleanup(Placeholder),
+    Cleanup(CleanupArgs),
     /// The dataset workspace's root pane: print the round status every few
     /// seconds until the candidates are done. Reads no input.
     #[command(hide = true)]
@@ -131,11 +134,35 @@ pub struct JudgeJobArgs {
     pub timeout_s: u64,
 }
 
-/// The arguments of a command that a later unit implements.
+/// `promote <round> --to <branch>`.
 #[derive(Debug, clap::Args)]
-pub struct Placeholder {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
+pub struct PromoteArgs {
+    #[arg(value_name = "ROUND")]
+    pub round: String,
+    /// The branch the winner goes onto.
+    #[arg(long, value_name = "BRANCH")]
+    pub to: String,
+}
+
+/// `rollback <round>`.
+#[derive(Debug, clap::Args)]
+pub struct RollbackArgs {
+    #[arg(value_name = "ROUND")]
+    pub round: String,
+}
+
+/// `cleanup <round> [--force] [--prune-branches]`.
+#[derive(Debug, clap::Args)]
+pub struct CleanupArgs {
+    #[arg(value_name = "ROUND")]
+    pub round: String,
+    /// Clean up a round that needs the operator. Its worktrees go; its
+    /// branches stay.
+    #[arg(long)]
+    pub force: bool,
+    /// Also delete each candidate branch after its worktree.
+    #[arg(long)]
+    pub prune_branches: bool,
 }
 
 #[derive(Debug, clap::Args)]

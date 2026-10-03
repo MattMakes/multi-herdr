@@ -10,13 +10,16 @@ use anyhow::Result;
 use horch_core::measure::paths::DatasetPaths;
 use horch_core::runtime::RuntimeContext;
 
+pub mod cleanup;
 pub mod cli;
 pub mod export;
 pub mod judge_job;
 pub mod outcome;
 pub mod preflight;
+pub mod promote;
 pub mod readiness;
 pub mod rebuild;
+pub mod rollback;
 pub mod run;
 pub mod status;
 pub mod watch;
@@ -70,16 +73,11 @@ pub fn dispatch(
         ),
         Command::Rebuild { experiment } => rebuild::rebuild(ctx, &experiment),
         Command::JudgeJob(args) => judge_job::judge_job(ctx, &args),
-        Command::Promote(_) => not_implemented("promote"),
-        Command::Rollback(_) => not_implemented("rollback"),
-        Command::Cleanup(_) => not_implemented("cleanup"),
+        Command::Promote(args) => promote::promote(ctx, env, &args),
+        Command::Rollback(args) => rollback::rollback(ctx, &args),
+        Command::Cleanup(args) => cleanup::cleanup(ctx, &args),
         Command::Watch(args) => watch::watch(ctx, &args),
     }
-}
-
-fn not_implemented(name: &str) -> Result<u8> {
-    eprintln!("multi-herdr-dataset: {name} is not implemented in this build");
-    Ok(exit::NOT_IMPLEMENTED)
 }
 
 /// The dataset of the context's project (OD3).

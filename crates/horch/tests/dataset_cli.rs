@@ -152,14 +152,25 @@ fn cmp_01_cli_args() {
         assert!(!help.contains(hidden), "{hidden}: {help}");
     }
 
-    // A placeholder parses and exits 2 without touching anything.
-    let out = Command::new(BIN)
-        .args(["promote", "r1"])
-        .env_remove("ANTHROPIC_API_KEY")
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not implemented in this build"));
+    // The operator commands refuse a round that does not exist (exit 1).
+    let tmp = tempfile::tempdir().unwrap();
+    for args in [
+        &["promote", "r1", "--to", "main"][..],
+        &["rollback", "r1"],
+        &["cleanup", "r1"],
+    ] {
+        let out = Command::new(BIN)
+            .args(args)
+            .env_remove("ANTHROPIC_API_KEY")
+            .env("HORCH_STATE_DIR", tmp.path().join("state"))
+            .env("HORCH_PROJECT_DIR", tmp.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {stderr}");
+        assert!(stderr.contains("no such round r1"), "{args:?}: {stderr}");
+        assert!(!stderr.contains("not implemented"), "{args:?}: {stderr}");
+    }
 }
 
 // ─── EXP-06 ─────────────────────────────────────────────────────────────────
