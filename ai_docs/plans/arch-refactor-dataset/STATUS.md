@@ -42,7 +42,7 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Spec A / Spec B verbatim text: requested from operator. Needed for design appendices, judge.md (§10), Judgment schema (§11), event list, CHECKLIST (§16), final audit.
 - SPEC-TODO from U29: Spec B §3 build_bytes estimate, local_model_bytes, trusted_parents (PRE-13 warns every run); outcome default score per kind.
 
-- Running: U30 b3-coordinator (opus-19). Queued: U32 (after U30+U31), U33 last.
+- Running: U32 b5-cli (p15), U35 worker-startup-failure (p16). Queued: U33 last.
 
 ## Gotchas carried forward (put into later plans)
 - A4: launch oracle does not cover codex Rules or Prime daemon args; smoke (agent none) and orchestration-worker (no model) record errors. Tests iterate the roster: a new teammate (judge.md in B4) must be skipped by oracle tests, not given oracle files.
@@ -86,3 +86,4 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Merged U31 b4-judge-job (B4 landed; full-round e2e and B4 crash points pending on U30). Gotchas in b4-judge-job.md 'Gotchas for U30 and U32'.
 - U30 now also owns jdg_e2e_round_decided and the B4 crash points (no judging stub).
 - Merged U30 b3-coordinator (B3 landed). Kernel gaps: worker dying before set_running leaves Starting+live pane (deadline only); CommandValidator gets no HORCH_FAULT set (fail-gate unreachable from run) -> U35.
+- SPEC-TODO from U30: Spec B §budget expected spend of a running candidate (committed = 0).
