@@ -97,7 +97,7 @@ fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
     output::println(&format!("version:      {}", entry.version));
     output::println(&format!("source:       {}", entry.source_label()));
     output::println(&format!("digest:       {}", entry.digest));
-    output::println(&format!("description:  {}", entry.description));
+    output::println(&format!("description:  {}", printable(&entry.description)));
     if let Some(p) = &entry.provenance {
         output::println(&format!(
             "provenance:   {}@{} {}",
@@ -130,7 +130,8 @@ fn install(ctx: &RuntimeContext, spec: &str, subdir: Option<&str>) -> Result<()>
     }
     let entry = installer
         .install(&source, &opts, None)
-        .map_err(|e| anyhow!("install {spec}: {e}"))?;
+        // Not the spec: a rejected one can hold a credential.
+        .map_err(|e| anyhow!("install: {e}"))?;
     let unchanged = before
         .get(&entry.id)
         .is_some_and(|old| old.version == entry.version && old.digest == entry.digest);
@@ -200,6 +201,14 @@ fn doctor(ctx: &RuntimeContext) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// SKILL.md text from an installed source, safe for a terminal: control
+/// characters become `?`.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
 }
 
 fn read_lock(data_root: &std::path::Path) -> Result<Lockfile> {
