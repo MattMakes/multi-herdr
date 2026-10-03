@@ -463,15 +463,19 @@ impl ExecutionStore {
     /// which did. A `Planned` record is never live, so until this runs only
     /// the legacy `status` (`working`) is stale.
     pub fn recover_abandoned(&self, now: DateTime<Utc>) -> Result<Vec<LedgerRecordV1>> {
+        let abandoned = |r: &LedgerRecordV1| {
+            r.state == Some(ExecutionStatus::Planned)
+                && r.pane_id.is_none()
+                && crate::clock::parse(&r.updated_at).is_some_and(|t| now - t >= ABANDONED_AFTER)
+        };
+        // Read first: most spawns find nothing, and then write nothing.
+        if !self.read()?.iter().any(abandoned) {
+            return Ok(Vec::new());
+        }
         let at = crate::clock::stamp(now);
         self.update(|records| {
             let mut closed = Vec::new();
-            for r in records.iter_mut().filter(|r| {
-                r.state == Some(ExecutionStatus::Planned)
-                    && r.pane_id.is_none()
-                    && crate::clock::parse(&r.updated_at)
-                        .is_some_and(|t| now - t >= ABANDONED_AFTER)
-            }) {
+            for r in records.iter_mut().filter(|r| abandoned(r)) {
                 r.set_state(ExecutionStatus::LaunchFailed {
                     stage: LaunchStage::Split,
                     reason: "abandoned: the spawner stopped before the worker's pane ran"

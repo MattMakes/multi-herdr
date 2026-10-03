@@ -259,6 +259,12 @@ impl WorkerSteps for PaneWorker<'_> {
             &brief.task,
             &brief.session,
         )?;
+        // The agent starts in its workdir (a candidate's worktree), once the
+        // roster has resolved from the project.
+        if let Some(workdir) = &brief.workdir {
+            (self.enter_dir)(Path::new(workdir))
+                .with_context(|| format!("entering workdir {workdir}"))?;
+        }
         let env = child_env(mailbox, brief, self.path.clone());
         if teammate.agent == Agent::None {
             return run_smoke(&env).map(|()| Some(0));
