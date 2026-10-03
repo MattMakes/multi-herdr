@@ -54,7 +54,7 @@ The orchestrator chose option 1. `teammates.rs` re-exports `crate::roster::*`
 and keeps the old zero-argument forms, which read the env:
 `Roster::load`, `Roster::load_with`, `operator_status_line`,
 `operator_enabled_plugins`, `operator_effort_warnings`, `expand_home`.
-Each env read has the comment `// A2: from RuntimeContext`. The file has 58
+Each env read has the comment `// A2: from RuntimeContext`. The file has 59
 lines, not under 40.
 
 The local functions shadow the glob re-export. So
