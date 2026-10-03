@@ -373,11 +373,13 @@ fn resolve_phase(
 
 /// A fresh session, with an id minted now when the agent accepts one.
 fn fresh_session(agent: horch_core::teammates::Agent) -> Result<SessionMode> {
-    Ok(SessionMode::Fresh(if agent.mints_session_id() {
-        Some(SessionId::new(horch_core::mint_uuid())?)
-    } else {
-        None
-    }))
+    Ok(SessionMode::Fresh(
+        if agent.capabilities().caller_minted_session {
+            Some(SessionId::new(horch_core::mint_uuid())?)
+        } else {
+            None
+        },
+    ))
 }
 
 /// The ledger's `session_id`: empty until known.

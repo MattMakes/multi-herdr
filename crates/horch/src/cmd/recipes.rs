@@ -7,19 +7,19 @@
 //! itself through the session ledger.
 
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use anyhow::Result;
-use horch_core::codex;
 use horch_core::execution::SessionMode;
+use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use horch_core::herdr::{Direction, Herdr};
-use horch_core::launch::{self, Session};
+use horch_core::ids::SessionId;
 use horch_core::ledger::{Ledger, Record, KIND_ORCHESTRATOR, ORCHESTRATING_TASK};
-use horch_core::mailbox::{Brief, Mailbox};
+use horch_core::mailbox::Mailbox;
 use horch_core::paneshell::PaneShell;
 use horch_core::prompts;
 use horch_core::quota::{self, QuotaView, State};
-use horch_core::runtime::{process, RuntimeContext};
+use horch_core::runtime::RuntimeContext;
 use horch_core::teammates::Agent;
 
 use super::doctor;
@@ -286,7 +286,8 @@ pub fn fleet(ctx: &RuntimeContext, cwd: Option<&str>, flavor: FleetFlavor) -> Re
     let record_id = horch_core::mint_uuid();
     let session_id = teammate
         .agent
-        .mints_session_id()
+        .capabilities()
+        .caller_minted_session
         .then(horch_core::mint_uuid);
     ledger.insert(Record {
         record_id: record_id.clone(),
@@ -606,100 +607,39 @@ pub fn pane_launch(
     }
 
     let prompt = prompts::agent_prompt(&roster, &teammate, role)?;
-    let skills = horch_core::skills::Bundle::install(&ctx.paths.state_root, &teammate)?;
-    let rules = if teammate.agent.uses_execpolicy() {
-        // An orchestrator runs a different set of commands than a worker, and
-        // codex refuses anything its execpolicy does not name. Install the set
-        // this pane actually needs, not both.
-        let needed = match kind {
-            PaneKind::FleetCodexOrchestrator => roster.orchestrator_exec_rules(),
-            _ => roster.exec_rules(),
-        };
-        Some(codex::Rules::install(
-            &ctx.paths.home,
-            &codex::codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref()),
-            &ctx.paths.state_root,
-            role,
-            needed,
-        )?)
-    } else {
-        None
+    // An orchestrator runs a different set of commands than a worker, and
+    // codex refuses anything its execpolicy does not name. Install the set
+    // this pane actually needs, not both.
+    let exec_rules = match kind {
+        PaneKind::FleetCodexOrchestrator => roster.orchestrator_exec_rules(),
+        _ => roster.exec_rules(),
     };
-
     // A managed session when `horch fleet` minted an id (claude); a codex
-    // orchestrator's id is harvested after launch, as a worker's is.
-    let session = match (&identity.session_id, teammate.agent.mints_session_id()) {
-        (Some(sid), true) => Session::Fresh(sid.as_str()),
-        _ => Session::Unmanaged,
+    // orchestrator's id is discovered after launch, as a worker's is.
+    let session = SessionMode::Fresh(identity.session_id.map(SessionId::new).transpose()?);
+    let workdir = match &identity.record_id {
+        Some(_) => Some(ctx.paths.project()?.to_string_lossy().into_owned()),
+        None => None,
     };
-    let mut cmd = launch::command_with_skills_in(
-        &launch::LaunchEnv::from_context(ctx),
-        &teammate,
-        session,
-        &prompt,
-        model,
-        skills.as_ref(),
-    )?;
-    process::inherit_env(&mut cmd, launch::teammate_env(&teammate));
-    process::inherit_env(&mut cmd, child_env);
-    if let Some(rules) = &rules {
-        if let Some(skills) = &skills {
-            rules.attach_skills(&skills.skills_dir())?;
-        }
-        rules.apply(&mut cmd);
-    }
-    let name = format!("{:?}", cmd.get_program());
-    let harvest = match &identity.record_id {
-        Some(record_id) if teammate.agent.harvests_session_id() => {
-            let project_dir = ctx.paths.project()?.to_string_lossy().into_owned();
-            let brief = Brief {
-                schema: horch_core::messaging::brief::SCHEMA,
-                role: role.to_string(),
-                teammate: teammate.name.clone(),
-                agent: teammate.agent.as_str().to_string(),
-                model: model.unwrap_or_default().to_string(),
-                record_id: record_id.clone(),
-                session: SessionMode::Fresh(None),
-                task: String::new(),
-                project_dir,
-                state_dir: identity.state_dir.clone(),
-                claude_bin: None,
-                codex_bin: None,
-                resolved: None,
-                teammates_dir: teammates_dir.map(str::to_owned),
-                workdir: None,
-                bin_overrides: Default::default(),
-            };
-            super::worker::start_harvest(ctx, &mailbox, &brief, teammate.agent, None).ok()
-        }
-        _ => None,
-    };
-    let code = run(cmd, name.trim_matches('"'));
-    if let Some(h) = harvest {
-        h.stop();
-    }
-    if let Some(rules) = rules {
-        rules.finish();
-    }
-    code
-}
-
-fn run(mut cmd: Command, name: &str) -> Result<ExitCode> {
-    let status = cmd.status().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            anyhow::anyhow!(
-                "agent CLI '{name}' not found on PATH. Set HORCH_CLAUDE_BIN or \
-                 HORCH_CODEX_BIN to point at it."
-            )
-        } else {
-            anyhow::Error::new(e).context(format!("launching {name}"))
-        }
-    })?;
-    Ok(match status.code() {
-        Some(0) => ExitCode::SUCCESS,
-        Some(code) => ExitCode::from(code.clamp(1, 255) as u8),
-        None => ExitCode::FAILURE,
-    })
+    launch::run_flow(
+        ctx,
+        LaunchRequest {
+            role,
+            teammate: &teammate,
+            session: &session,
+            prompt: &prompt,
+            model_override: model,
+            exec_rules,
+            child_env,
+            record: identity.record_id.as_deref().zip(workdir.as_deref()).map(
+                |(record_id, workdir)| DiscoveryTarget {
+                    mailbox: &mailbox,
+                    record_id,
+                    workdir,
+                },
+            ),
+        },
+    )
 }
 
 #[cfg(test)]

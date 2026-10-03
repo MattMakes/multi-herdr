@@ -7,16 +7,24 @@
 //! frontmatter; nothing is hard-coded per call site.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
+use crate::execution::SessionMode;
+use crate::herdr::Herdr;
+use crate::ledger::Ledger;
+use crate::mailbox::Mailbox;
 use crate::runtime::{BinOverrides, EnvSource, HarnessBins, ProcessEnv, RuntimeContext};
-use crate::teammates::Teammate;
+use crate::teammates::{ExecRule, Teammate};
 
 pub(crate) use super::claude::overlay_skill_switches;
-use super::CommandSpec;
+use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest};
 
 /// What a launch reads from its environment: the programs to run, the home
 /// the operator's Claude settings live under, and the inherited OpenCode
@@ -182,6 +190,261 @@ pub(super) fn model_for<'a>(teammate: &'a Teammate, override_: Option<&'a str>) 
             teammate.name
         ),
     }
+}
+
+// ─── the launch flow ────────────────────────────────────────────────────────
+
+/// One agent launch in a pane, as `horch worker` and `horch pane-launch`
+/// both describe it.
+pub struct LaunchRequest<'a> {
+    /// The pane's role. It names the codex home, the Prime daemon and the
+    /// launch marker this launch leaves on disk.
+    pub role: &'a str,
+    pub teammate: &'a Teammate,
+    pub session: &'a SessionMode,
+    pub prompt: &'a str,
+    /// The pane's model, when it is not the teammate file's.
+    pub model_override: Option<&'a str>,
+    /// The execpolicy rules this pane needs; read only by a harness with
+    /// [`Capabilities::exec_policy`](super::Capabilities::exec_policy).
+    pub exec_rules: &'a [ExecRule],
+    /// What the agent inherits on top of this process's environment.
+    pub child_env: Vec<(String, String)>,
+    /// The ledger record a discovered session id is written to. `None`:
+    /// nothing is recorded, so nothing is discovered.
+    pub record: Option<DiscoveryTarget<'a>>,
+}
+
+/// Where a discovered session id goes, and which sessions are candidates.
+pub struct DiscoveryTarget<'a> {
+    pub mailbox: &'a Mailbox,
+    pub record_id: &'a str,
+    /// The directory the agent works in. Only sessions recorded for this
+    /// directory, compared canonically, are candidates.
+    pub workdir: &'a str,
+}
+
+/// The [`Session`] a launch passes for `mode` on a harness with `caps`.
+///
+/// A fresh session carries its id only where horch mints it; a harness
+/// that mints its own starts with nothing and is discovered afterwards.
+pub fn session_for<'a>(caps: &Capabilities, mode: &'a SessionMode) -> Session<'a> {
+    match mode {
+        SessionMode::Resume(id) => Session::Resume(id.as_str()),
+        SessionMode::Fresh(Some(id)) if caps.caller_minted_session => Session::Fresh(id.as_str()),
+        SessionMode::Fresh(_) => Session::Unmanaged,
+    }
+}
+
+/// Run one agent CLI in this pane and propagate its exit status.
+///
+/// prepare (codex rules, Prime daemon, skills bundle) → build → a session
+/// discovery thread unless horch minted the id → wait → clean up.
+pub fn run_flow(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<ExitCode> {
+    let adapter = req.teammate.agent.adapter();
+    let caps = adapter.capabilities();
+    // Held across the launch, so lazy reads of the bundle remain valid.
+    let skills = crate::skills::Bundle::install(&ctx.paths.state_root, req.teammate)?;
+    let prepared = adapter.prepare(
+        ctx,
+        &PrepareRequest {
+            role: req.role,
+            exec_rules: req.exec_rules,
+            skills: skills.as_ref(),
+        },
+    )?;
+
+    let mut teammate = req.teammate.clone();
+    // The pane's model goes on the teammate: the builders read an override
+    // first and the teammate's model second, so the argv is the same.
+    if let Some(model) = req.model_override {
+        teammate.model = Some(model.to_string());
+    }
+    teammate.args.extend(prepared.extra_args.iter().cloned());
+    let session = session_for(caps, req.session);
+    let mut cmd = agent_command(
+        ctx,
+        &teammate,
+        session,
+        req.prompt,
+        skills.as_ref(),
+        req.child_env,
+    )?;
+    // Last, so a value the harness prepared (codex's private home) wins.
+    for (key, value) in &prepared.env {
+        cmd.env(key, value);
+    }
+    crate::runtime::process::strip_forbidden(&mut cmd);
+    let name = format!("{:?}", cmd.get_program());
+
+    // Discovery runs only for a fresh session the agent mints itself, in the
+    // background, while the agent holds the foreground.
+    let discovery = match &req.record {
+        Some(target) if caps.discovers_session() && !req.session.is_resume() => {
+            match start_discovery(
+                ctx,
+                req.role,
+                req.teammate.agent,
+                target,
+                prepared.sessions_dir.clone(),
+            ) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    eprintln!(
+                        "horch[{}]: session discovery did not start: {e:#}",
+                        req.role
+                    );
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let code = run_agent(cmd, name.trim_matches('"'));
+    // Discovery is best-effort: a finished agent needs no session id captured.
+    if let Some(d) = discovery {
+        d.stop();
+    }
+    prepared.finish();
+    code
+}
+
+/// The agent's command: the teammate's launch line, its own environment, then
+/// `child_env`. Nothing here touches this process's environment, and
+/// `FORBIDDEN_ENV` stays removed.
+pub fn agent_command(
+    ctx: &RuntimeContext,
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    skills: Option<&crate::skills::Bundle>,
+    child_env: Vec<(String, String)>,
+) -> Result<Command> {
+    let mut cmd = command_with_skills_in(
+        &LaunchEnv::from_context(ctx),
+        teammate,
+        session,
+        prompt,
+        None,
+        skills,
+    )?;
+    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate));
+    crate::runtime::process::inherit_env(&mut cmd, child_env);
+    crate::runtime::process::strip_forbidden(&mut cmd);
+    Ok(cmd)
+}
+
+/// Handle to the background session discovery.
+pub struct Discovery {
+    done: Arc<AtomicBool>,
+}
+
+impl Discovery {
+    pub fn stop(&self) {
+        self.done.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Poll for the session id the agent minted and record it against the
+/// target's ledger record.
+///
+/// Prefers herdr's native `agent_session` (available when the agent's herdr
+/// integration is installed), falling back to the harness's own records for
+/// the target's workdir.
+fn start_discovery(
+    ctx: &RuntimeContext,
+    role: &str,
+    agent: HarnessKind,
+    target: &DiscoveryTarget<'_>,
+    sessions_dir: Option<PathBuf>,
+) -> Result<Discovery> {
+    let marker = target.mailbox.launch_marker(role);
+    std::fs::write(&marker, b"")
+        .with_context(|| format!("writing launch marker {}", marker.display()))?;
+    let since = std::fs::metadata(&marker)
+        .and_then(|m| m.modified())
+        .unwrap_or_else(|_| SystemTime::now());
+
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
+    let pane = ctx
+        .herdr
+        .pane
+        .as_ref()
+        .map(|p| p.to_string())
+        .unwrap_or_default();
+    let log_path = target.mailbox.harvest_log(role);
+    let role = role.to_string();
+    let record_id = target.record_id.to_string();
+    let workdir = PathBuf::from(target.workdir);
+    let ledger = Ledger::open_in(ctx)?;
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let ctx = ctx.clone();
+
+    std::thread::spawn(move || {
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_secs(3));
+            if flag.load(Ordering::Relaxed) {
+                return;
+            }
+
+            let mut session_id = (!pane.is_empty())
+                .then(|| herdr.pane_get(&pane).ok())
+                .flatten()
+                .and_then(|p| p.agent_session_id());
+
+            if session_id.is_none() {
+                // Newest first, skipping ids already claimed by a concurrently
+                // spawned worker.
+                session_id = agent
+                    .adapter()
+                    .discover_sessions(&ctx, &workdir, since, sessions_dir.as_deref())
+                    .into_iter()
+                    .find(|id| !ledger.has_session(id).unwrap_or(false));
+            }
+
+            if let Some(session_id) = session_id {
+                if let Err(e) = ledger.set_session(&record_id, &session_id) {
+                    eprintln!("horch worker[{role}]: recording session id failed: {e:#}");
+                    return;
+                }
+                let _ = std::fs::remove_file(&marker);
+                return;
+            }
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = writeln!(
+                file,
+                "horch worker[{role}]: could not capture the {agent} session id \
+                 (resume disabled for this session)"
+            );
+        }
+    });
+
+    Ok(Discovery { done })
+}
+
+/// Run the agent as a child process and propagate its exit status.
+fn run_agent(mut cmd: Command, name: &str) -> Result<ExitCode> {
+    let status = cmd.status().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!(
+                "agent CLI '{name}' not found on PATH. Set HORCH_CLAUDE_BIN or \
+                 HORCH_CODEX_BIN to point at it."
+            )
+        } else {
+            anyhow::Error::new(e).context(format!("launching {name}"))
+        }
+    })?;
+    Ok(match status.code() {
+        Some(0) => ExitCode::SUCCESS,
+        Some(code) => ExitCode::from(code.clamp(1, 255) as u8),
+        None => ExitCode::FAILURE,
+    })
 }
 
 #[cfg(test)]
