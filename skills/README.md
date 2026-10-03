@@ -1,6 +1,11 @@
 # Integrated worker skills
 
-All but one of these repo-owned bundles are curated adaptations of the local public-skills collection, upstream [MattMakes/skill-marketplace](https://github.com/MattMakes/skill-marketplace) at revision `d47670328c59a3311a9b4149bc5f8f33f0a92754`. They are deliberately maintained copies, not links to a developer machine and not byte-for-byte upstream mirrors. [provenance.json](provenance.json) records the exact source path and SHA-256 of each original SKILL.md, and a null source for the one bundle that has no upstream.
+These repo-owned bundles are curated adaptations from 2 upstream families:
+
+- Process skills (planning, implementation, review, handoff) adapt the local public-skills collection, upstream [MattMakes/skill-marketplace](https://github.com/MattMakes/skill-marketplace) at revision `d47670328c59a3311a9b4149bc5f8f33f0a92754`. Each one adapts one upstream SKILL.md.
+- Design skills combine and rewrite files from 7 MIT-licensed design repositories: `akseolabs-seo/cinematic-ui`, `greensock/gsap-skills`, `nutlope/hallmark`, `stevembarclay/pencilplaybook`, `leonxlnx/taste-skill`, `felix-huber/ui-landingpage-generator-skill` and `nextlevelbuilder/ui-ux-pro-max-skill`. One design skill can draw on several repositories. The upstream LICENSE files are not copied.
+
+Two bundles are outside both families: `orchestrate` is original to this repository, and `skill-creator` is a verbatim copy from `anthropics/claude-plugins-official`. All bundles are deliberately maintained copies, not links to a developer machine and not byte-for-byte upstream mirrors (except `skill-creator`). [provenance.json](provenance.json) records, for each adapted file, the repository, the pinned revision, the path, the SHA-256 of the original and the license. A repo-original bundle has no sources.
 
 Each folder contains a self-contained Agent Skills entrypoint with a name, a targeted discovery description, and the complete adapted workflow. Only the selected phase's fleet-owned catalog is materialized; harnesses may also discover ambient skills. Workers load relevant bodies on demand. None requires runtime downloads, another skill, an upstream script, a particular model, or a particular harness tool API.
 
@@ -17,6 +22,8 @@ Each folder contains a self-contained Agent Skills entrypoint with a name, a tar
 - `tdd` retains red/green/refactor for meaningful behavior changes and removes unrelated skill-authoring machinery and destructive instructions to delete existing work. Structural checks are appropriate for low-impact prose/config changes.
 
 ## Source mapping
+
+A source path with no repository name is a path in `MattMakes/skill-marketplace`. The [Design skills](#design-skills) table lists more design bundles.
 
 | Bundle | Upstream source |
 | --- | --- |

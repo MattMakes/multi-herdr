@@ -41,7 +41,7 @@ pub(crate) const POOL_LOCAL: &str = "local";
 pub(crate) const POOL_UNKNOWN: &str = "unknown";
 
 /// The pools, in display order.
-pub const POOLS: [&str; 4] = [POOL_CLAUDE, POOL_CODEX, POOL_ZEN, POOL_LOCAL];
+pub const POOLS: [&str; 5] = [POOL_CLAUDE, POOL_CODEX, POOL_ZEN, POOL_GOOGLE, POOL_LOCAL];
 
 /// One limit window, normalized (QUO-04).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

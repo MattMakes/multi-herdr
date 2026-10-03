@@ -214,7 +214,7 @@ enum Command {
         no_probe: bool,
     },
 
-    /// The usage pools (claude, codex, opencode-zen, local) and their state.
+    /// The usage pools (claude, codex, opencode-zen, google, local) and their state.
     Quota {
         #[arg(long)]
         json: bool,

@@ -264,19 +264,14 @@ fn pre_12_e2e_refuses_before_worktree_or_model() {
 #[cfg(unix)]
 #[test]
 fn pre_07_probe_no_secret_persisted() {
-    use std::os::unix::fs::PermissionsExt;
-
     let Some(h) = harness("pre07") else { return };
     const TOKEN: &str = "sk-ant-api03-PRE07leakedTOKENabcdefghij";
     // A claude whose `--version` prints a token. It uses only `echo`, a
     // shell builtin, because the sealed PATH has no system programs.
-    let fake = h.bin.join("claude-leaky");
-    std::fs::write(
-        &fake,
-        format!("#!/bin/sh\necho \"9.9.9 (Claude Code) {TOKEN}\"\n"),
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let fake = h.write_bin(
+        "claude-leaky",
+        format!("#!/bin/sh\necho \"9.9.9 (Claude Code) {TOKEN}\"\n").as_bytes(),
+    );
     let machine = machine_fixture(&h, 500_000_000_000);
 
     let out = run(

@@ -327,6 +327,10 @@ enum FakeJob {
     Answer(String),
     /// Writes `job.log`, a heartbeat and `exit.json{crash}`.
     Crash,
+    /// As `Answer`, but with no heartbeat: the job ended before its first.
+    AnswerNoHeartbeat(String),
+    /// As `Crash`, but with no heartbeat.
+    CrashNoHeartbeat,
 }
 
 /// Plays the detached job in-process: it writes the job files at once.
@@ -350,17 +354,25 @@ impl JobLauncher for FakeLauncher {
         std::fs::create_dir_all(&spec.job_dir)?;
         let dir = &spec.job_dir;
         write(dir, LOG_FILE, "");
-        let hb = Heartbeat {
-            pid: std::process::id(),
-            at: horch_core::clock::stamp(Utc::now()),
-        };
-        write(dir, HEARTBEAT_FILE, &serde_json::to_string(&hb)?);
-        match self.script.borrow_mut().pop_front() {
-            Some(FakeJob::Answer(text)) => {
+        let job = self.script.borrow_mut().pop_front();
+        if !matches!(
+            job,
+            Some(FakeJob::AnswerNoHeartbeat(_) | FakeJob::CrashNoHeartbeat)
+        ) {
+            let hb = Heartbeat {
+                pid: std::process::id(),
+                at: horch_core::clock::stamp(Utc::now()),
+            };
+            write(dir, HEARTBEAT_FILE, &serde_json::to_string(&hb)?);
+        }
+        match job {
+            Some(FakeJob::Answer(text) | FakeJob::AnswerNoHeartbeat(text)) => {
                 write(dir, OUTPUT_FILE, &text);
                 write(dir, EXIT_FILE, r#"{"reason":"ok","code":0}"#);
             }
-            Some(FakeJob::Crash) => write(dir, EXIT_FILE, r#"{"reason":"crash","code":3}"#),
+            Some(FakeJob::Crash | FakeJob::CrashNoHeartbeat) => {
+                write(dir, EXIT_FILE, r#"{"reason":"crash","code":3}"#)
+            }
             None => {}
         }
         Ok(std::process::id())
@@ -732,6 +744,54 @@ fn jdg_04_parent_writes_judgment_atomically() {
     assert_eq!(w.events().len(), before);
     assert_eq!(std::fs::read(&file).unwrap(), bytes);
     assert_eq!(launcher.launched.borrow().len(), 1);
+}
+
+/// A job that ends before its first heartbeat still gets `judge.started`,
+/// once, before `judge.completed` or `judge.failed`, with pid 0.
+#[test]
+fn jdg_started_recorded_when_the_job_left_no_heartbeat() {
+    let w = World::new();
+    w.round(true);
+    let launcher = FakeLauncher::new(vec![
+        FakeJob::CrashNoHeartbeat,
+        FakeJob::AnswerNoHeartbeat(answer()),
+    ]);
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+
+    start(&env, &round_id()).unwrap();
+    poll(&env, &round_id(), Utc::now()).unwrap();
+    let status = poll(&env, &round_id(), Utc::now()).unwrap();
+    assert!(matches!(status, JudgingStatus::Decided(_)), "{status:?}");
+    assert_eq!(
+        w.kinds(),
+        [
+            "judge.scheduled",
+            "judge.started",
+            "judge.failed",
+            "judge.scheduled",
+            "judge.started",
+            "judge.completed",
+            "winner.selected"
+        ]
+    );
+    let pids: Vec<Value> = w
+        .events()
+        .iter()
+        .filter(|e| e.kind == "judge.started")
+        .map(|e| e.payload["pid"].clone())
+        .collect();
+    assert_eq!(pids, [Value::from(0), Value::from(0)]);
+    let projection = fold(&w.events());
+    assert!(
+        projection.anomalies.is_empty(),
+        "{:?}",
+        projection.anomalies
+    );
+    // Re-entry adds no second `judge.started`.
+    let before = w.events().len();
+    poll(&env, &round_id(), Utc::now()).unwrap();
+    assert_eq!(w.events().len(), before);
 }
 
 /// JDG-04 re-entry: a coordinator that stopped after `judge.completed` and

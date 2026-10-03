@@ -36,7 +36,32 @@ use serde_json::{json, Value};
 
 const MUTATING: [&str; 7] = ["focus", "tile", "split", "move", "close", "swap", "resize"];
 
+/// Set in the copy of this call that runs in its own process group.
+const DETACHED: &str = "HORCH_FAKE_HERDR_DETACHED";
+
 fn main() {
+    // A real herdr call is a request to a server, which finishes it even
+    // when the client is killed. Here the state lock is held by the calling
+    // process, and `pane close` kills a pane's whole process group, which
+    // can hold a call of its own. So the call runs in a copy of this process
+    // in a new process group: a kill of the caller's group cannot leave the
+    // lock stale or the state half written.
+    #[cfg(unix)]
+    if std::env::var_os(DETACHED).is_none() {
+        use std::os::unix::process::CommandExt;
+        let code = std::env::current_exe()
+            .and_then(|exe| {
+                std::process::Command::new(exe)
+                    .args(std::env::args_os().skip(1))
+                    .env(DETACHED, "1")
+                    .process_group(0)
+                    .status()
+            })
+            .map(|s| s.code().unwrap_or(1))
+            .unwrap_or(1);
+        std::process::exit(code);
+    }
+    std::env::remove_var(DETACHED);
     let mut call = Call::start("herdr");
     // One call at a time reads and writes the state: concurrent calls (a
     // coordinator and its workers) would otherwise lose each other's panes.
@@ -106,9 +131,15 @@ fn load() -> Value {
         .unwrap_or_else(|| json!({"workspaces": [], "next": 1}))
 }
 
+/// Write the state to a temp file, then rename it into place, so a reader
+/// never sees a half-written state.
 fn save(state: &Value) {
     if let Some(p) = state_path() {
-        let _ = std::fs::write(p, state.to_string());
+        let mut tmp = p.clone().into_os_string();
+        tmp.push(format!(".tmp-{}", std::process::id()));
+        if std::fs::write(&tmp, state.to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, &p);
+        }
     }
 }
 

@@ -16,7 +16,8 @@ use serde_json::Value;
 use crate::bin_dir;
 
 /// The fakes, by the name of the program each stands in for.
-pub const FAKES: [(&str, &str); 7] = [
+pub const FAKES: [(&str, &str); 8] = [
+    ("agy", "fake-antigravity"),
     ("claude", "fake-claude"),
     ("codex", "fake-codex"),
     ("herdr", "fake-herdr"),
@@ -70,15 +71,18 @@ impl Harness {
         for dir in [&h.home, &h.state, &h.tmp, &h.bin, &h.project] {
             std::fs::create_dir_all(dir).expect("creating harness dirs");
         }
+        check_built_fakes();
         let built = bin_dir();
         for (name, fake) in FAKES {
             let from = built.join(exe(fake));
-            assert!(
-                from.is_file(),
-                "{} is not built; run `cargo build --workspace --bins` first",
-                from.display()
-            );
-            std::fs::copy(&from, h.bin.join(exe(name))).expect("copying a fake");
+            // A hard link, not a copy: macOS scans every new executable on
+            // its first run, and under load many fresh copies at once take
+            // seconds to start. A link to the built file is scanned once.
+            // So nothing may write through these names: use `write_bin`.
+            let to = h.bin.join(exe(name));
+            if std::fs::hard_link(&from, &to).is_err() {
+                std::fs::copy(&from, &to).expect("copying a fake");
+            }
         }
         // The one real program the tests use, on a fixture database only.
         // A symlink, not a copy: macOS kills a copied system binary (137).
@@ -268,6 +272,22 @@ impl Harness {
         cmd.envs(env);
     }
 
+    /// Put an executable `name` with `contents` in `bin/` and return its
+    /// path. An existing entry is removed first, never written through: it
+    /// can be a hard link to a built fake.
+    pub fn write_bin(&self, name: &str, contents: &[u8]) -> PathBuf {
+        let path = self.bin.join(name);
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, contents).expect("writing a harness bin");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("making a harness bin executable");
+        }
+        path
+    }
+
     pub fn set(&mut self, key: &str, value: impl Into<String>) -> &mut Self {
         self.env.insert(key.to_string(), value.into());
         self
@@ -319,9 +339,48 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
+        if !std::thread::panicking() {
+            check_built_fakes();
+        }
         if std::env::var_os("HORCH_E2E_KEEP").is_none() {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+}
+
+/// The size of each built fake when this test process first saw it.
+static BUILT_SIZES: std::sync::OnceLock<Vec<(PathBuf, u64)>> = std::sync::OnceLock::new();
+
+/// Every built fake exists, is not empty, and has the size it had when this
+/// test process started. The harness hard-links them into `bin/`, so a test
+/// that writes through a linked name changes the built file itself; this
+/// fails that test instead of letting later tests run a broken fake.
+fn check_built_fakes() {
+    let built = bin_dir();
+    let size = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let sizes = BUILT_SIZES.get_or_init(|| {
+        FAKES
+            .iter()
+            .map(|(_, fake)| {
+                let path = built.join(exe(fake));
+                assert!(
+                    path.is_file(),
+                    "{} is not built; run `cargo build --workspace --bins` first",
+                    path.display()
+                );
+                let len = size(&path);
+                (path, len)
+            })
+            .collect()
+    });
+    for (path, len) in sizes {
+        let now = size(path);
+        assert!(
+            now == *len && now > 0,
+            "built fake {} changed from {len} to {now} bytes: a test wrote \
+             through a hard-linked name in a harness bin/; use Harness::write_bin",
+            path.display()
+        );
     }
 }
 

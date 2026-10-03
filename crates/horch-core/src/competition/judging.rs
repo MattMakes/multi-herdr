@@ -210,7 +210,7 @@ pub fn poll(env: &JudgeEnv, round_id: &RoundId, now: DateTime<Utc>) -> Result<Ju
                 .map(|(b, _)| b)
                 .collect::<Vec<_>>();
             match parse_judgment(&raw, &labels, OUTPUT_CAP_BYTES) {
-                Ok(_) => complete(env, round_id, &round, attempt, &job_dir, &raw),
+                Ok(_) => complete(env, round_id, &round, attempt, &raw),
                 Err(ParseError::TooLarge(_)) => fail(
                     env,
                     round_id,
@@ -513,6 +513,24 @@ fn mark_started(
         .set_state(execution.as_str(), ExecutionStatus::Running)
 }
 
+/// `judge.started` for an attempt that ends before any look saw it run, so
+/// every `judge.completed` and `judge.failed` follows one. The pid is the
+/// heartbeat's, or 0 when the job left none. The idempotency key makes it
+/// happen once.
+fn ensure_started(
+    env: &JudgeEnv,
+    round_id: &RoundId,
+    round: &RoundView,
+    attempt: u32,
+) -> Result<()> {
+    if round.judge.started {
+        return Ok(());
+    }
+    let job_dir = env.paths.job_dir(round_id, attempt)?;
+    let pid = job_facts(&job_dir).heartbeat.map_or(0, |hb| hb.pid);
+    mark_started(env, round_id, round, attempt, pid)
+}
+
 /// `judge.failed`, the record Failed, then attempt 2 or NEEDS_INTERVENTION.
 fn fail(
     env: &JudgeEnv,
@@ -522,6 +540,7 @@ fn fail(
     cause: JudgeFailure,
     code: Option<i32>,
 ) -> Result<JudgingStatus> {
+    ensure_started(env, round_id, round, attempt)?;
     let execution = record_of(env, round_id, attempt)?;
     let failure = match &cause {
         JudgeFailure::TimedOut => FailureKind::TimedOut,
@@ -558,15 +577,10 @@ fn complete(
     round_id: &RoundId,
     round: &RoundView,
     attempt: u32,
-    job_dir: &Path,
     raw: &[u8],
 ) -> Result<JudgingStatus> {
+    ensure_started(env, round_id, round, attempt)?;
     let execution = record_of(env, round_id, attempt)?;
-    if !round.judge.started {
-        if let Some(hb) = job_facts(job_dir).heartbeat {
-            mark_started(env, round_id, round, attempt, hb.pid)?;
-        }
-    }
     let judgment_id = JudgmentId::mint((env.clock)());
     emit(
         env,

@@ -196,13 +196,10 @@ fn arc_26_e2e_lifecycle_matrix_prime() {
     lifecycle("prime", "prime", "prime");
 }
 
-/// `fake-antigravity` as `agy` in this harness's `bin/`, named by
+/// `fake-antigravity` as `agy` (the harness installs it in `bin/`), named by
 /// `HORCH_ANTIGRAVITY_BIN`.
 fn with_agy(h: &mut Harness) {
     let name = format!("agy{}", std::env::consts::EXE_SUFFIX);
-    let built =
-        horch_e2e::bin_dir().join(format!("fake-antigravity{}", std::env::consts::EXE_SUFFIX));
-    std::fs::copy(&built, h.bin.join(&name)).expect("fake-antigravity is built");
     let bin = h.bin.join(name).to_string_lossy().into_owned();
     h.set("HORCH_ANTIGRAVITY_BIN", bin);
 }
