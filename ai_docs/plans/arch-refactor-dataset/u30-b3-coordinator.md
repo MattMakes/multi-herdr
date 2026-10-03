@@ -71,7 +71,7 @@ stops in JUDGING_BACKGROUND and exits 0.
 ## FILES
 
 own:
-- `crates/horch-core/src/competition/{coordinator,observe}.rs` (new), `competition/judging.rs` (the stub only; U31 replaces its body), `competition/mod.rs` (your lines)
+- `crates/horch-core/src/competition/{coordinator,observe}.rs` (new), `competition/mod.rs` (your lines)
 - `crates/horch-core/src/competition/budget.rs` (only to add the live `UsageMeter`)
 - `crates/horch-core/src/routing/decision.rs` (only `RoutingMode::Pinned`)
 - `crates/horch/src/dataset/run.rs` (replace the `// B3:` tail), `dataset/watch.rs` (new) and the `Watch` arm plus a new `Resume` subcommand in `dataset/cli.rs` and `dataset/mod.rs` (only those lines), `dataset/status.rs` (extend), `dataset/export.rs` (only `StoreFacts::facts_of`: fill tokens and cost from the usage meter or telemetry), `crates/horch/src/cmd/ledgercmd.rs` (`--all`), `crates/horch/src/cmd/spawn.rs` (resume refusal line only), `crates/horch/src/main.rs` (`sessions --all` flag only)
@@ -109,12 +109,13 @@ do not touch: oracle and golden data, `execution/{service,plan,lifecycle}.rs`
    JUDGING_BACKGROUND → call `competition::judging::start(&env, &round)`
    and, each tick, `competition::judging::poll(&env, &round, now)`
    returning `JudgingStatus { Waiting, Decided(WinnerOutcome), NeedsIntervention }`.
-   U31 `b4-judge-job` writes `competition/judging.rs`. You add only a stub
-   file with these 2 functions (`start` records nothing and returns Ok;
-   `poll` returns Waiting) and a `JudgeEnv` struct holding what the judge
-   needs (recorder, paths, git, ctx, clock, faults). `run` exits 0 while
-   `poll` says Waiting and the judge stub is in use (B4 replaces this:
-   `run` then waits for the job).
+   U31 `b4-judge-job` writes `competition/judging.rs` in full (`JudgeEnv`,
+   `JudgingStatus`, `start(&JudgeEnv, &RoundId)`, `poll(&JudgeEnv, &RoundId, now)`).
+   Do NOT create `competition/judging.rs`. If U31 has merged, call it. If
+   not, put a private `mod judging_stub` inside `coordinator.rs` with the same
+   signatures (`start` returns Ok, `poll` returns Waiting) and say so in
+   your report; the second unit to merge swaps the stub for the real calls.
+   With the stub, `run` exits 0 in JUDGING_BACKGROUND.
    Every fault point in CONTEXT is checked after its event.
 4. `competition/observe.rs`: per tick, per live candidate: execution state
    Done → `candidate.completed`; pane gone while live →
