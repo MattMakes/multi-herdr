@@ -4,6 +4,194 @@
   "format": "Curated adaptations; source_sha256 hashes the full original SKILL.md bytes.",
   "skills": [
     {
+      "name": "art-direction",
+      "sources": [
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "SKILL.md",
+          "sha256": "d14490c0cad019522ac3b087b0f2d509517285238a0df3233227b063324dd709",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "directors-library.md",
+          "sha256": "662dda241f322a135c20c4713d2d47477fe161559a182738726f44f22b59c127",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/anti-convergence.md",
+          "sha256": "c66feb1dd8b8dc8665226db1a54e9e1e69c688a53439bc2facccfee3c24e7d25",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/anti-garbage.md",
+          "sha256": "55d547cddadb0095e4800f932c5aa06a4d4637a3363ba5086f5acca805245108",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/premium-calibration.md",
+          "sha256": "349c35e474fb0ace98ef7e9d067d3c4f93399b5a33107e68f87eb46dc6fb637a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/reference-protocol.md",
+          "sha256": "3cfdb0bff2b2d2cf8f37aed186df276bb1bd6e9bd2e5c357007b846175e771ab",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/implementation-guardrails.md",
+          "sha256": "fb4f6e0be13651b92db423de9dc20c77668ec6e8893b3cfc215f07e4dc67bf38",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/output-templates.md",
+          "sha256": "2323dac4cdd3207c202fb0ca9641179ca00f9f0d59ca41d909e32041fae15715",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/narrative-beats.md",
+          "sha256": "b478e06dd5dfc4bf21a3b8fea7a3a6f864d19c14277fddddfe6a6ec0045bbcbd",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/section-functions.md",
+          "sha256": "2ee98b84bfff4f5a381940c0aeee53d8faebe3128e320adcc78d643352e42f9c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/compositions.md",
+          "sha256": "415b15d7d85b2b5e22e3f1dcca49da0d18a8577b910b4cb8be82355af0cd681f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/camera-shots-50.md",
+          "sha256": "c36c56402570a7c36ae10b18609e15c033f751976e2cb0e53264144c3d0cba20",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/color-grades.md",
+          "sha256": "1a2177a5abdfb9fd5dd97257541104c6bccea344570bb7e2071d88857bd0b731",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/visual-styles.md",
+          "sha256": "c7bf4a438db84c90a2e4f0705874628b189e2c4ef775cc5b44e49f5756b6b016",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/image-direction.md",
+          "sha256": "97da36d5525268b382c408c0fc8c2f98b7a7905f1056f3ca65a2fa3f94989c61",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/minimalist-skill/SKILL.md",
+          "sha256": "36bc7328f085405f43b476938e62460fa573bf7e984e949e072bcf014831a44c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/brutalist-skill/SKILL.md",
+          "sha256": "fffbaac8597f07679e9d87145533567658aedba3b5eca6f16a7075a333048caa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/soft-skill/SKILL.md",
+          "sha256": "e1e32f5e2d420872c6c7332b53d5ff7721946766b78c4822b424c2d512c8fdbc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "SKILL.md",
+          "sha256": "880345da12e31cedfa19660395733e2ae7e7a49b2e359adde67bbf3bd22cfd34",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "references/tool-reference.md",
+          "sha256": "50070a7e790a4d5d0af3885d6a859ccaef64d825290c4cbed1af0f2ab6bd079c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/bloom.json",
+          "sha256": "0b7bc8161444e61b55edbfef113dec5890fa6aa2bb652aabf2c18dad78470303",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/ember.json",
+          "sha256": "a0ddcaa604d8ee2770921c59848868a77c2c43328737c71eb4618ead0b85b630",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/grove.json",
+          "sha256": "120873af8ff3574741615309653da2c4f86d8873fc24e20e29817330b7d52bbc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/midnight.json",
+          "sha256": "8dc7e9e23359d636d76711d82bc3ff489e137129643d93db8104ef8d80827552",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/minimal.json",
+          "sha256": "b3211612051dfe02f0d32488966b0d4d944143da16deec8aaeff76fc478c12d7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/volt.json",
+          "sha256": "648246a84da15fc5df26af77be9dcc58a5e51355d21a3f8a7bca0a99747f2b2b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Combined and rewritten: the cinematic-ui director workflow (decisions, storyboard, signature composition before shared system) without its questionnaire, sub-agents, compiled-spec phase or data dumps; 13 directions merged from taste-skill styles, pencilplaybook presets and 6 film-director temperaments; pencilplaybook perceptual defaults as floors; Pencil canvas rules in one optional reference; a DESIGN-DIRECTION.md contract replaces interactive approval."
+    },
+    {
       "name": "brainstorm",
       "source_path": "plugins/dev/skills/brainstorm/SKILL.md",
       "source_sha256": "56c53d04fa2e2ee15a092a9a237a696f5f678edd8b4accca08a66e1ee96bdaa0",

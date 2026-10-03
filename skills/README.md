@@ -20,6 +20,7 @@ Each folder contains a self-contained Agent Skills entrypoint with a name, a tar
 
 | Bundle | Upstream source |
 | --- | --- |
+| [art-direction](art-direction/SKILL.md) | `akseolabs-seo/cinematic-ui`, `leonxlnx/taste-skill` (`minimalist`, `brutalist`, `soft`), `stevembarclay/pencilplaybook` (combined and rewritten; files in `provenance.json`) |
 | [brainstorm](brainstorm/SKILL.md) | `plugins/dev/skills/brainstorm/SKILL.md` |
 | [research-codebase](research-codebase/SKILL.md) | `plugins/dev/skills/research-codebase/SKILL.md` |
 | [trace](trace/SKILL.md) | `plugins/dev/skills/trace/SKILL.md` |
