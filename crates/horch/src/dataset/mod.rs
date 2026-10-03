@@ -12,6 +12,7 @@ use horch_core::runtime::RuntimeContext;
 
 pub mod cli;
 pub mod export;
+pub mod judge_job;
 pub mod outcome;
 pub mod preflight;
 pub mod readiness;
@@ -66,7 +67,7 @@ pub fn dispatch(
             note,
         ),
         Command::Rebuild { experiment } => rebuild::rebuild(ctx, &experiment),
-        Command::JudgeJob(_) => not_implemented("judge-job"),
+        Command::JudgeJob(args) => judge_job::judge_job(ctx, &args),
         Command::Promote(_) => not_implemented("promote"),
         Command::Rollback(_) => not_implemented("rollback"),
         Command::Cleanup(_) => not_implemented("cleanup"),

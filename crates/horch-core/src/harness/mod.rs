@@ -9,6 +9,7 @@ pub mod capabilities;
 pub mod claude;
 pub mod claude_plugins;
 pub mod codex;
+pub mod headless;
 pub mod launch;
 pub mod none;
 pub mod opencode;

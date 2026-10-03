@@ -40,4 +40,6 @@ path = "src/bin/fake-ollama.rs"
 serde_json.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+horch-core.workspace = true
 tempfile = "3"
