@@ -86,6 +86,9 @@ pub const CANDIDATE_TEMPLATE: &str = "competition-candidate";
 /// The label of a round's herdr workspace: `multi-herdr-dataset <exp8>`.
 pub const WORKSPACE_LABEL: &str = "multi-herdr-dataset";
 
+/// How often the budget meter and the disk probe run.
+pub const CHECK_EVERY: Duration = Duration::from_secs(5);
+
 /// The hidden teammate that judges a round.
 pub const JUDGE_TEAMMATE: &str = "judge";
 
@@ -373,7 +376,13 @@ impl<G: GitClient> Coordinator<'_, G> {
     /// Launch, observe and end candidates until every one is terminal.
     fn run_candidates(&self, spec: &RoundSpec, ws: &DatasetWorkspace) -> Result<()> {
         let mut stop: Option<Stop> = None;
+        // The meter reads whole transcripts and the probe starts processes:
+        // both run on the first tick and then once per CHECK_EVERY.
+        let every = (CHECK_EVERY.as_millis() / spec.tick.as_millis().max(1)).max(1);
+        let mut tick: u128 = 0;
         loop {
+            let check = tick % every == 0;
+            tick += 1;
             let view = self.view(spec)?;
             if view.candidates.values().all(CandidateView::is_terminal) {
                 return Ok(());
@@ -391,10 +400,17 @@ impl<G: GitClient> Coordinator<'_, G> {
                 }
             }
 
-            // The live budget (CMP-10).
+            // The live budget (CMP-10). The SPEC-TODO(Spec B §budget): no
+            // per-candidate spend estimate exists, so `committed` is 0 and
+            // StopLaunches only comes from the policy's own rule.
             let records = self.records()?;
-            let spent = self.spent(spec, &view, &records);
+            let spent = if check {
+                self.spent(spec, &view, &records)
+            } else {
+                MicroUsd(0)
+            };
             match BudgetPolicy::check(spent, MicroUsd(0), &spec.config.budget) {
+                _ if !check => {}
                 BudgetAction::Continue => {}
                 BudgetAction::StopLaunches => {
                     stop.get_or_insert(Stop::Budget);
@@ -406,9 +422,12 @@ impl<G: GitClient> Coordinator<'_, G> {
             }
 
             // Disk pressure (CMP-11): below the preflight headroom, nothing
-            // new starts. Running candidates go on.
+            // new starts. Running candidates go on. Checked before every
+            // launch, too.
             let floor = spec.config.caps.disk_headroom_bytes;
-            if let Some(free) = (self.disk_free)() {
+            let view = self.view(spec)?;
+            let launching = stop.is_none() && self.next_launch(spec, &view, &records).is_some();
+            if let Some(free) = (check || launching).then(|| (self.disk_free)()).flatten() {
                 if free < floor && stop.is_none() {
                     eprintln!(
                         "multi-herdr-dataset: disk pressure ({free} bytes free, floor {floor}); \
@@ -669,6 +688,29 @@ impl<G: GitClient> Coordinator<'_, G> {
             )?;
         }
         Ok(())
+    }
+
+    /// The candidate that would launch now, if `safe_n` allows one.
+    fn next_launch<'v>(
+        &self,
+        spec: &RoundSpec,
+        view: &'v RoundView,
+        records: &BTreeMap<String, Execution>,
+    ) -> Option<&'v String> {
+        let live = view
+            .candidates
+            .iter()
+            .filter(|(l, c)| !c.is_terminal() && records.contains_key(&self.key(spec, l)))
+            .count() as u32;
+        if live >= spec.safe_n.max(1) {
+            return None;
+        }
+        view.candidates
+            .iter()
+            .find(|(l, c)| {
+                !c.is_terminal() && c.spawned.is_none() && !records.contains_key(&self.key(spec, l))
+            })
+            .map(|(l, _)| l)
     }
 
     /// Start candidates until `safe_n` are live.
