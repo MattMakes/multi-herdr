@@ -102,7 +102,12 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
     // worker closes itself.
     steps.settle(&workspace);
 
-    ws.pane_close(&pane.pane_id)
+    // The dataset coordinator closes the pane of a candidate whose record is
+    // done, so it can close this pane first. A pane that is gone is closed.
+    match ws.pane_close(&pane.pane_id) {
+        Err(e) if ws.pane_get(&pane.pane_id).is_ok() => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// The steps of [`run_worker`]. [`PaneWorker`] runs them for real; a test
@@ -396,6 +401,7 @@ mod tests {
     use crate::harness::launch::{agent_command, Session};
     use crate::messaging::brief::SCHEMA;
     use crate::runtime::{BinOverrides, MapEnv};
+    use crate::workspace::testing::FakeWorkspace;
 
     fn process_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         let mut vars: Vec<_> = std::env::vars_os().collect();
@@ -486,5 +492,66 @@ mod tests {
             std::ffi::OsStr::new("/fake/HORCH_CLAUDE_BIN")
         );
         assert_eq!(process_env(), before, "the test process env did not change");
+    }
+
+    /// `done` steps that close the pane during `settle`, the way the dataset
+    /// coordinator can close it while `horch done` runs.
+    struct ClosedElsewhere<'a> {
+        ws: &'a FakeWorkspace,
+        pane: String,
+    }
+
+    impl DoneSteps for ClosedElsewhere<'_> {
+        fn mark_done(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn report(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn unregister(&self, _: &str, _: &str) {}
+        fn settle(&self, _: &str) {
+            if !self.pane.is_empty() {
+                self.ws.pane_close(&self.pane).unwrap();
+            }
+        }
+    }
+
+    /// A failed close is success when the pane is gone, and an error when
+    /// the pane is still there.
+    #[test]
+    fn done_close_is_idempotent() {
+        fn request(pane: &str) -> DoneRequest<'_> {
+            DoneRequest {
+                record_id: "r1",
+                role: "candidate-A",
+                pane,
+                workspace: None,
+                summary: "finished",
+                report_to: ReportTarget::None,
+            }
+        }
+        fn one_pane() -> (FakeWorkspace, String) {
+            let ws = FakeWorkspace::new();
+            let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+            (ws, pane)
+        }
+
+        let (ws, pane) = one_pane();
+        let steps = ClosedElsewhere {
+            ws: &ws,
+            pane: pane.clone(),
+        };
+        done(&ws, &steps, &request(&pane)).expect("the pane is gone, so it is closed");
+        assert!(ws.pane_ids().is_empty());
+
+        let (ws, pane) = one_pane();
+        let steps = ClosedElsewhere {
+            ws: &ws,
+            pane: String::new(),
+        };
+        ws.fail_next("pane_close", "herdr is down");
+        let err = done(&ws, &steps, &request(&pane)).unwrap_err();
+        assert!(err.to_string().contains("herdr is down"), "{err}");
+        assert_eq!(ws.pane_ids(), [pane]);
     }
 }
