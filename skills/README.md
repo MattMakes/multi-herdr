@@ -45,3 +45,4 @@ A skill may combine several upstream files, from several repositories. Its entry
 
 | Skill | Upstream sources |
 | --- | --- |
+| [ui-taste](ui-taste/SKILL.md) | `nutlope/hallmark`: `skills/hallmark/SKILL.md` and 17 rule references; `leonxlnx/taste-skill`: `skills/taste-skill/`, `skills/taste-skill-v1/`, `skills/gpt-tasteskill/`, `skills/output-skill/`, `skills/redesign-skill/` |

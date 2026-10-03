@@ -100,6 +100,173 @@
       "source_path": "plugins/skill-creator/skills/skill-creator/SKILL.md",
       "source_sha256": "dcd4803e61e913e6fc27294184cd3a71f09f5e924ff20c8a9a20173e7b3c2bcf",
       "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase."
+    },
+    {
+      "name": "ui-taste",
+      "sources": [
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/SKILL.md",
+          "sha256": "59469635bbbd21acddbc664d95e8d97147f454b2d8f4a0a89c7d2c5afbe67577",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/anti-patterns.md",
+          "sha256": "a36eb346ad59cafaa26119ed1e7c0bbb8aca6637209ee110eb630dd1a9307070",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/assets.md",
+          "sha256": "60929b3dc2258b69caf3012d99d174e1ad73da9645263db81a9b271cd6fd7d61",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/color.md",
+          "sha256": "31c470d16ceb17ccce290cbdd00b9e9a88f2094df8eaaefb67c86ec1e1cdb876",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/component-cookbook.md",
+          "sha256": "4d9ff4eeb675b9d668516ce5d098031d3552453b3671e50da30fb38cb9ab58bb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/contract.md",
+          "sha256": "2923a056b95da63d04100ac56bc8cdff6bc0a717ac3e5da5cef69eb5feb4619c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/copy.md",
+          "sha256": "703cdbf81fbef6f71d90596a32041d2a33a46fb71ba07ccf5ede6b4b1471d347",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/custom-theme.md",
+          "sha256": "da0fb051689bf9d100e50e67209566623c1fbe72e09b943248c458985c39e780",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/hero-enrichment.md",
+          "sha256": "63c14cc2c256dd78a69a1c36f4bcb764940aa7f1ba2e6dd40ca36013f8884a83",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/interaction-and-states.md",
+          "sha256": "e816eb2d067ba9f6f288a3831549da95624a05f432ed2a50f54136f27dd2d67f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/layout-and-space.md",
+          "sha256": "987f3a45f5dbe81547117a77987bcedf5376608a6412067e04337047e0c7c839",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/microinteractions.md",
+          "sha256": "613ca56c2c16e40aeb594af21fabd651732d9de63c848aee51113602525f6e64",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/motion.md",
+          "sha256": "330d056810315f65819579f8207afe402703a9192bc76a2009558a59b7c84ccf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/responsive.md",
+          "sha256": "2bf18d72af704ca5dd3c220359a4c77c718efa19c40f62d9bff61ac4a90209b0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/slop-test.md",
+          "sha256": "6eb49fc64ca54929d2c1600e2a6014268f1a7593787c0ed3f6ecb4ac8390ad86",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/structure.md",
+          "sha256": "ca5c0296ae428f8c4c5214407d431bbda5c453f98f2e7abdec03d644271af32b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/themes/hum.md",
+          "sha256": "bbdd1e89a32d6b15e99493ba9497816a0915bd4e9bf150b95868db597c20e1d5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/typography.md",
+          "sha256": "94d7b2d2b138bd8687e09dc3dd618eaafff500b0497a6d69cb4c29b764e94b9c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill/SKILL.md",
+          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill-v1/SKILL.md",
+          "sha256": "033d45af1ed23832730642f95f40ab49db7fb5222848489a6c5656144bfc6dae",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/gpt-tasteskill/SKILL.md",
+          "sha256": "2e64c269953f2656c21bf5a0fa6b4568e82fe0c72b36e8f84758e090349966a5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/output-skill/SKILL.md",
+          "sha256": "e5bf48b1ae561511439cf71672209a10a88cee0968cc925909ff861dfa0a96a7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/redesign-skill/SKILL.md",
+          "sha256": "98ad3e5b051bfb71b2795f7e8a6aa0d32b51ee095606c098a4b2822ac07926c9",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged hallmark and four taste-skill variants into one stack-neutral taste skill: rules per topic, ripgrep searches for named tells, measured hard gates and a six-axis rubric for review, and output-skill's complete-output rule; dropped theme and layout catalogs, dials, randomization rituals, stack-specific code and persuasion; conflicts resolved in ai_docs/reports/design-skills/skill-taste.md."
     }
   ]
 }
