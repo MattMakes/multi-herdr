@@ -42,7 +42,7 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Spec A / Spec B verbatim text: requested from operator. Needed for design appendices, judge.md (§10), Judgment schema (§11), event list, CHECKLIST (§16), final audit.
 - SPEC-TODO from U29: Spec B §3 build_bytes estimate, local_model_bytes, trusted_parents (PRE-13 warns every run); outcome default score per kind.
 
-- Running: U30 b3-coordinator (opus-19), U31 b4-judge-job (opus-18). Queued: U32 (after U30+U31), U33 last.
+- Running: U30 b3-coordinator (opus-19), U31 b4-judge-job (opus-18), U34 tel02-flake (sonnet-3). Queued: U32 (after U30+U31), U33 last.
 
 ## Gotchas carried forward (put into later plans)
 - A4: launch oracle does not cover codex Rules or Prime daemon args; smoke (agent none) and orchestration-worker (no model) record errors. Tests iterate the roster: a new teammate (judge.md in B4) must be skipped by oracle tests, not given oracle files.
@@ -81,3 +81,4 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Merged U29 b2-binary (CLI in dataset/cli.rs, dispatch dataset/mod.rs).
 - Merged U28 a10-exposure (A10 landed).
 - Merged U26 a6b-service (A6 landed). spawn.rs 241 lines (target ~150), worker.rs 27.
+- SPEC-TODO from U26: Spec A §4 Execution fields; Spec A §8 SpawnRequest fields and worker startup order; Spec B judge attempt key (label judge:N).
