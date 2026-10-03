@@ -436,6 +436,14 @@ impl Harness for Codex {
         out
     }
 
+    /// Skills reach codex only through a private home, which needs symlinks.
+    fn ensure_skills_supported(&self) -> Result<()> {
+        if cfg!(windows) {
+            anyhow::bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows, or explicitly set phase: null and skills: [] for the legacy shared-rules launcher");
+        }
+        Ok(())
+    }
+
     /// A private `CODEX_HOME` holding only this pane's rules, with the
     /// skills bundle linked in. Finished once the CLI has exited.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {

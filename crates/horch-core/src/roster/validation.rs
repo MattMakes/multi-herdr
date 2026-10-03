@@ -13,6 +13,7 @@ use super::{
 };
 use crate::balance_policy::{merge, trains_on_input};
 use crate::quota;
+use crate::skills::SkillCatalog;
 
 impl Roster {
     /// Whether this teammate may be started by `horch spawn`. Orchestrators
@@ -47,12 +48,33 @@ impl Roster {
         Ok(())
     }
 
+    /// Judge skill names against `catalog`, which may include installed
+    /// marketplace skills, instead of the compiled-in catalog.
+    pub fn with_skill_catalog(mut self, catalog: SkillCatalog) -> Roster {
+        self.skill_catalog = Some(catalog);
+        self
+    }
+
+    /// The skills teammates may name: the attached catalog, else the
+    /// compiled-in one.
+    pub fn skill_catalog(&self) -> Result<SkillCatalog> {
+        match &self.skill_catalog {
+            Some(catalog) => Ok(catalog.clone()),
+            None => SkillCatalog::bundled(),
+        }
+    }
+
     /// Everything wrong with one teammate, judged against this roster (its
-    /// bases, its rules). Also run on a teammate merged with a fallback.
+    /// bases, its rules, its skill catalog). Also run on a teammate merged
+    /// with a fallback.
     pub fn check_teammate(&self, t: &Teammate) -> Vec<String> {
         let mut problems = Vec::new();
         let who = &t.name;
-        if let Err(error) = crate::skills::selected(t) {
+        let selected = match &self.skill_catalog {
+            Some(catalog) => crate::skills::selected_in(t, catalog),
+            None => crate::skills::selected(t),
+        };
+        if let Err(error) = selected {
             problems.push(format!("{error:#}"));
         }
         if t.brief_description.trim().is_empty() {
@@ -535,6 +557,36 @@ mod spawnable_tests {
         )
         .unwrap();
         assert_eq!(t.phase, None);
+    }
+
+    /// A teammate may name an installed marketplace skill once the roster
+    /// carries a catalog that holds it; without one, the name is unknown.
+    #[test]
+    fn marketplace_skills_pass_the_check_with_the_installed_catalog() {
+        let lock = crate::skills::catalog::marketplace::LockEntry {
+            id: "demo".into(),
+            source: "https://example.com/r.git".into(),
+            requested_revision: Some("v1".into()),
+            resolved_commit: Some("ab".repeat(20)),
+            version: "git+abababababab".into(),
+            digest: format!("sha256:{}", "cd".repeat(32)),
+            installed_at: "2026-10-02T12:00:00Z".into(),
+        };
+        let mut r = Roster::builtin().unwrap();
+        r.teammates
+            .get_mut("sonnet")
+            .unwrap()
+            .skills
+            .push("demo".into());
+        let unknown = "teammate 'sonnet': unknown bundled skill 'demo'";
+        assert!(r.check().iter().any(|p| p == unknown), "{:?}", r.check());
+        let catalog = SkillCatalog::bundled().unwrap().with_lock(&[lock]).unwrap();
+        let r = r.with_skill_catalog(catalog);
+        assert!(r.skill_catalog().unwrap().lookup("demo").is_some());
+        assert!(r.check().is_empty(), "{:?}", r.check());
+        let sonnet = r.require("sonnet").unwrap();
+        assert!(crate::skills::ensure_supported(sonnet).is_err());
+        crate::skills::ensure_supported_in(sonnet, &r.skill_catalog().unwrap()).unwrap();
     }
 
     #[test]

@@ -171,6 +171,43 @@ pub fn violations(path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The `inspect_skills` scenario's report, written to
+/// `$HORCH_FAKE_LOG.skills.json` (the last launch wins): what one launch
+/// exposed. `dirs` are the skill directories the fake was pointed at; each
+/// is one skill (it holds `SKILL.md`) or a directory of skills. `skills` is
+/// every skill id found there, sorted. `extra` adds the fake's flags and env.
+/// Written while the agent runs, because horch removes the bundle after it.
+pub fn write_skills_report(fake: &str, dirs: &[PathBuf], extra: Value) {
+    let Some(log) = std::env::var_os("HORCH_FAKE_LOG") else {
+        return;
+    };
+    let mut skills = Vec::new();
+    for dir in dirs {
+        if dir.join("SKILL.md").is_file() {
+            skills.extend(dir.file_name().map(|n| n.to_string_lossy().into_owned()));
+            continue;
+        }
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if entry.path().join("SKILL.md").is_file() {
+                skills.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+    skills.sort();
+    skills.dedup();
+    let mut report = json!({
+        "fake": fake,
+        "dirs": dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>(),
+        "skills": skills,
+    });
+    if let (Value::Object(map), Value::Object(more)) = (&mut report, extra) {
+        map.extend(more);
+    }
+    let mut path = log;
+    path.push(".skills.json");
+    let _ = std::fs::write(path, report.to_string());
+}
+
 /// The directory the fake binaries were built into (next to `horch`).
 pub fn bin_dir() -> PathBuf {
     let exe = std::env::current_exe().expect("current exe");

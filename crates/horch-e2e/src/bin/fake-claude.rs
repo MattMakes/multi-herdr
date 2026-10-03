@@ -12,10 +12,14 @@
 //!
 //! Scenarios: `usage_ok`, `usage_exhausted` (the default for a probe),
 //! `usage_scoped`, `usage_hang` (or `hang`), `usage_garbage` (or `error`).
+//! `inspect_skills`: a pane launch also writes the `skills/` dir of each
+//! `--plugin-dir`, the plugin manifest names and the `--settings` value to
+//! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
 
 use std::io::BufRead;
+use std::path::Path;
 
-use horch_e2e::{hang, say, scenario, Call};
+use horch_e2e::{hang, say, scenario, scenario_has, write_skills_report, Call};
 use serde_json::{json, Value};
 
 fn main() {
@@ -34,6 +38,9 @@ fn main() {
         .windows(2)
         .any(|w| w[0] == "--input-format" && w[1] == "stream-json");
     if !probe {
+        if scenario_has("inspect_skills") {
+            inspect_skills(&call.argv);
+        }
         call.flush();
         return;
     }
@@ -112,4 +119,28 @@ fn payload(scenario: &str) -> Value {
         "account_uuid": "acct_SENTINEL",
         "email": "sentinel@example.invalid"
     })
+}
+
+fn inspect_skills(argv: &[String]) {
+    let mut dirs = Vec::new();
+    let mut flags = Vec::new();
+    let mut plugins = Vec::new();
+    for pair in argv.windows(2).filter(|w| w[0] == "--plugin-dir") {
+        let dir = Path::new(&pair[1]);
+        dirs.push(dir.join("skills"));
+        flags.extend(pair.iter().cloned());
+        let manifest = std::fs::read_to_string(dir.join(".claude-plugin/plugin.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        plugins.push(manifest.map_or(Value::Null, |m| m["name"].clone()));
+    }
+    let settings = argv
+        .windows(2)
+        .find(|w| w[0] == "--settings")
+        .map(|w| w[1].clone());
+    write_skills_report(
+        "claude",
+        &dirs,
+        json!({"flags": flags, "plugins": plugins, "settings": settings}),
+    );
 }

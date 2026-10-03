@@ -16,6 +16,7 @@ use anyhow::{bail, Context, Result};
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, Workdir};
 use crate::runtime::RuntimeContext;
+use crate::skills::Bundle;
 use crate::teammates::Teammate;
 
 /// A session that could belong to this worker.
@@ -94,6 +95,30 @@ impl Harness for OpenCode {
     fn model_takes_effort(&self, model: &str) -> bool {
         !(model.starts_with("opencode/")
             && (model.ends_with("-free") || model == "opencode/big-pickle"))
+    }
+
+    /// `skills.paths` in `OPENCODE_CONFIG_CONTENT` gains the bundle's
+    /// `skills/` directory, which holds exactly the activated skills.
+    fn expose_skills_env(
+        &self,
+        cmd: &mut Command,
+        teammate: &Teammate,
+        skills: &Bundle,
+        inherited: Option<&str>,
+    ) -> Result<()> {
+        // The builder may already have set it (the effort variant); build
+        // on that rather than on the teammate's or the operator's value.
+        let inherited = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
+            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+            .or_else(|| teammate.env.get("OPENCODE_CONFIG_CONTENT").cloned())
+            .or_else(|| inherited.map(str::to_owned));
+        cmd.env(
+            "OPENCODE_CONFIG_CONTENT",
+            skills_config(inherited.as_deref(), &skills.skills_dir())?,
+        );
+        Ok(())
     }
 
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
@@ -205,9 +230,62 @@ pub(crate) fn opencode_variant_config(inherited: Option<&str>, effort: &str) -> 
     Ok(value.to_string())
 }
 
+/// Add `skills` to `skills.paths` in an OpenCode config overlay, keeping
+/// everything else in it.
+fn skills_config(inherited: Option<&str>, skills: &Path) -> Result<String> {
+    let mut value: serde_json::Value = match inherited {
+        Some(s) => serde_json::from_str(s).context("invalid OPENCODE_CONFIG_CONTENT JSON")?,
+        None => serde_json::json!({}),
+    };
+    let object = value
+        .as_object_mut()
+        .context("OPENCODE_CONFIG_CONTENT must be an object")?;
+    let config = object
+        .entry("skills")
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+        .context("skills config must be an object")?;
+    let paths = config
+        .entry("paths")
+        .or_insert(serde_json::json!([]))
+        .as_array_mut()
+        .context("skills.paths must be an array")?;
+    let path = serde_json::json!(skills);
+    if !paths.contains(&path) {
+        paths.push(path);
+    }
+    Ok(value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skills_opencode_overlay_preserves_provider_and_denials() {
+        let before = r#"{"provider":{"private":{"name":"keep"}},"permission":{"bash":"deny"},"skills":{"paths":["old"],"urls":["https://example.com"]}}"#;
+        let actual: serde_json::Value =
+            serde_json::from_str(&skills_config(Some(before), Path::new("/new skills")).unwrap())
+                .unwrap();
+        assert_eq!(actual["provider"]["private"]["name"], "keep");
+        assert_eq!(actual["permission"]["bash"], "deny");
+        assert_eq!(
+            actual["skills"]["paths"],
+            serde_json::json!(["old", "/new skills"])
+        );
+        assert_eq!(
+            actual["skills"]["urls"],
+            serde_json::json!(["https://example.com"])
+        );
+        for invalid in [
+            "oops",
+            "[]",
+            r#"{"skills":false}"#,
+            r#"{"skills":{"paths":false}}"#,
+        ] {
+            assert!(skills_config(Some(invalid), Path::new("/x")).is_err());
+        }
+    }
 
     fn at(ms: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_millis(ms)

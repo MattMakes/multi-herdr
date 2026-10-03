@@ -260,11 +260,9 @@ fn arc_22_matcher_finds_error_text_checks() {
 }
 
 /// Files outside `harness/` that still match on a harness variant, with the
-/// phase that removes each entry. Do not add entries.
-///
-/// - `skills.rs`: skill exposure per harness (`Bundle::configure`,
-///   `native_args`). Removed by A10.
-const HARNESS_MATCH_PENDING: &[&str] = &["skills.rs"];
+/// phase that removes each entry. Do not add entries. A10 removed the last
+/// one (`skills.rs`).
+const HARNESS_MATCH_PENDING: &[&str] = &[];
 
 /// Whether `line` is a match arm (or a `matches!`) on a `HarnessKind` /
 /// `Agent` variant. A comparison such as `t.agent == Agent::None` or an
@@ -360,4 +358,40 @@ fn arc_10_scan_tells_matches_from_comparisons() {
         "        None if t.agent == Agent::Codex => 1,"
     ));
     assert!(!harness_match("    SubAgent::Claude => 1,"));
+}
+
+/// The core skill model knows no harness: no file under `skills/` (nor
+/// `skills.rs`) names a harness variant or one harness's way of exposing
+/// skills. Each adapter's `expose_skills` owns that (SKL-05). The whole text
+/// is scanned, tests and comments included.
+#[test]
+fn skl_05_core_skill_model_has_no_harness_flags() {
+    const FORBIDDEN: [&str; 6] = [
+        "HarnessKind",
+        "Agent::",
+        "--plugin-dir",
+        "--skill",
+        "OPENCODE_CONFIG_CONTENT",
+        "CODEX_HOME",
+    ];
+    let root = crate_src("horch-core");
+    let mut files = vec![root.join("skills.rs")];
+    rust_files(&root.join("skills"), &mut files);
+    assert!(files.len() >= 6, "scanned only {files:?}");
+    let mut found = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            for needle in FORBIDDEN {
+                if line.contains(needle) {
+                    found.push(format!("{}:{}: {needle}", relative(path, &root), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "harness exposure in the core skill model:\n{}",
+        found.join("\n")
+    );
 }

@@ -10,9 +10,15 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 use super::launch::model_for;
+use serde_json::{json, Value};
+
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session};
-use crate::roster::{operator_enabled_plugins, operator_status_line};
+use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
+use crate::skills::Bundle;
 use crate::teammates::Teammate;
+
+/// The plugin the skills bundle loads as. Its skills show as `horch:<id>`.
+pub const SKILLS_PLUGIN: &str = "horch";
 
 pub struct Claude;
 
@@ -31,6 +37,35 @@ impl Harness for Claude {
         !model
             .split(|c: char| !c.is_ascii_alphanumeric())
             .any(|seg| seg.eq_ignore_ascii_case("haiku"))
+    }
+
+    fn skill_namespace(&self) -> Option<&'static str> {
+        Some(SKILLS_PLUGIN)
+    }
+
+    /// The bundle loads as a plugin: `--plugin-dir <bundle>` with a plugin
+    /// manifest, plus a `--settings` overlay merged into the teammate's own.
+    fn expose_skills(
+        &self,
+        teammate: &Teammate,
+        skills: &Bundle,
+        home: Option<&Path>,
+    ) -> Result<Teammate> {
+        let manifest = skills.root().join(".claude-plugin");
+        std::fs::create_dir_all(&manifest)?;
+        std::fs::write(
+            manifest.join("plugin.json"),
+            json!({"name": SKILLS_PLUGIN, "description": "Phase-selected fleet skills", "version": "0.1.0"})
+                .to_string(),
+        )?;
+        let mut adjusted = teammate.clone();
+        // plugin_dirs precede scalar flags in the Claude builder, which
+        // fences variadic --plugin-dir parsing away from the briefing.
+        adjusted
+            .plugin_dirs
+            .push(skills.root().to_string_lossy().into_owned());
+        adjusted.settings = Some(skills_settings(teammate, home)?.to_string());
+        Ok(adjusted)
     }
 
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
@@ -171,9 +206,49 @@ pub(super) fn claude_command(
     Ok(cmd)
 }
 
+/// The `--settings` overlay of a launch with a skills bundle: the teammate's
+/// own settings (inline JSON or a file), with horch's switches merged in.
+fn skills_settings(teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
+    let mut settings = match &teammate.settings {
+        Some(source) => {
+            let text = if source.trim_start().starts_with('{') {
+                source.clone()
+            } else {
+                std::fs::read_to_string(expand_home(source, home))
+                    .context("reading teammate settings")?
+            };
+            serde_json::from_str::<Value>(&text).context("invalid teammate settings JSON")?
+        }
+        None => json!({}),
+    };
+    let obj = settings
+        .as_object_mut()
+        .context("teammate settings must be a JSON object")?;
+    obj.entry("disableBundledSkills").or_insert(json!(true));
+    obj.entry("disableWorkflows").or_insert(json!(true));
+    if !teammate.inherit_plugins {
+        let plugins = obj
+            .entry("enabledPlugins")
+            .or_insert(json!({}))
+            .as_object_mut()
+            .context("enabledPlugins must be an object")?;
+        for name in operator_enabled_plugins(home) {
+            plugins.insert(name, json!(false));
+        }
+    }
+    // After the plugin switch-off: a plugin_skills plugin stays enabled.
+    overlay_skill_switches(teammate, obj, home)?;
+    if teammate.setting_sources.is_some() && !obj.contains_key("statusLine") {
+        if let Some(status) = operator_status_line(home) {
+            obj.insert("statusLine".into(), status);
+        }
+    }
+    Ok(settings)
+}
+
 /// Add the skill switches every Claude launch overlays on the operator's
-/// settings. Shared by the plain overlay above and the skill-bundle one in
-/// `skills.rs`, which is the path fleet panes take.
+/// settings. Shared by the plain overlay above and [`skills_settings`], which
+/// is the path fleet panes take.
 ///
 /// The skills synced from claude.ai (`anthropic-skills:<name>`) go off unless
 /// the teammate opts back in. `syncClaudeAiSkills: false` given through

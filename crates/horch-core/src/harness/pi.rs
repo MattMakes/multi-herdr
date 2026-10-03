@@ -3,12 +3,14 @@
 //! pi's `--session-id` creates the session if it is missing, so horch mints
 //! the id and nothing is discovered after launch.
 
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::Result;
 
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session};
+use crate::skills::Bundle;
 use crate::teammates::Teammate;
 
 pub struct Pi;
@@ -16,6 +18,15 @@ pub struct Pi;
 impl Harness for Pi {
     fn kind(&self) -> HarnessKind {
         HarnessKind::Pi
+    }
+
+    fn expose_skills(
+        &self,
+        teammate: &Teammate,
+        skills: &Bundle,
+        _home: Option<&Path>,
+    ) -> Result<Teammate> {
+        Ok(with_skill_flag(teammate, skills))
     }
 
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
@@ -27,6 +38,18 @@ impl Harness for Pi {
             spec.model_override,
         )
     }
+}
+
+/// pi and Prime Agent read skills from `--skill <dir>`. One flag names the
+/// bundle's `skills/` directory, which holds exactly the activated skills; it
+/// goes into `args`, before the `--` that fences off the prompt.
+pub(super) fn with_skill_flag(teammate: &Teammate, skills: &Bundle) -> Teammate {
+    let mut adjusted = teammate.clone();
+    adjusted.args.extend([
+        "--skill".to_owned(),
+        skills.skills_dir().to_string_lossy().into_owned(),
+    ]);
+    adjusted
 }
 
 /// pi and Prime Agent: `<bin> --model <pattern> --thinking <level> -- "<prompt>"`.

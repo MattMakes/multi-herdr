@@ -20,6 +20,8 @@ pub struct Roster {
     /// The home directory this roster was loaded under, for `~/` paths in
     /// teammate files. `None` for the built-ins alone.
     pub(crate) home: Option<PathBuf>,
+    /// The skills teammates may name. `None`: the compiled-in catalog.
+    pub(crate) skill_catalog: Option<crate::skills::SkillCatalog>,
 }
 
 impl Roster {
