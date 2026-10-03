@@ -27,6 +27,27 @@ blessed in their own commit, and `BASELINE.md` records the baseline results.
   requirement tables with no Phase column, and it repeats IDs in a later
   test-mapping table (for example NFR-01 at line 107 and line 725).
 
+## BASELINE FACTS (found by the orchestrator)
+
+- `575c2c2` did not build: `crates/horch` used `chrono` without declaring it.
+  Commit `8de1f0a` on the integration branch adds it to
+  `crates/horch/Cargo.toml`, `scripts/check-deps.sh` and `nfr_05`.
+- After that fix, `cargo test --workspace` fails 3 tests in the `horch` crate:
+  - `cmd::telemetry::tests::spc_04_render_goldens` (the goldens are missing; step 3 fixes it)
+  - `cmd::telemetry::tests::spc_04_render_every_group_and_window_fits` (panics at `crates/horch/src/cmd/telemetry.rs:891`)
+  - `cmd::teammatescmd::tests::the_template_documents_exactly_the_teammate_fields` (panics at `crates/horch/src/cmd/teammatescmd.rs:314`)
+  `cargo test` stops at the first failing test binary, so run
+  `cargo test --workspace --no-fail-fast` to see every failure.
+- You own the baseline fixes. Find the root cause of each failure. Make the
+  smallest fix that restores the intended behavior, in its own commit
+  `A0: Fix baseline <test name>`. You may edit the file that the root cause
+  is in (for example `teammates/_template.md` or the telemetry renderer).
+  Do not weaken a test. Record each failure and fix in `BASELINE.md`. If a fix
+  needs a behavior decision, send `QUESTION:`.
+- The baseline is red until your fixes merge. Other units are blocked on a
+  green gate, so do the baseline fixes and the allowlist (step 4) first, and
+  send `NOTE: baseline fixes ready <sha>` as soon as they are green.
+
 ## FILES
 
 own:
