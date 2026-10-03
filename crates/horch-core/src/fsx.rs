@@ -221,9 +221,9 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
     set_mode(path, PRIVATE_DIR)
 }
 
-/// Whether process `pid` exists. A copy of `telemetry::lock::pid_alive`,
-/// which phase A6 folds into this one.
-fn pid_alive(pid: u32) -> bool {
+/// Whether process `pid` exists. [`DirLock`] and the telemetry collector
+/// lock both decide liveness with this.
+pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }

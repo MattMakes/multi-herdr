@@ -36,30 +36,8 @@ pub fn info_path(state_root: &Path) -> PathBuf {
     super::dir(state_root).join("collector.json")
 }
 
-/// Whether process `pid` exists.
-pub fn pid_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        // Signal 0 checks existence and permission without sending anything.
-        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-    #[cfg(windows)]
-    {
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-            .unwrap_or(false)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        true
-    }
-}
+/// Whether process `pid` exists. Shared with [`crate::fsx::DirLock`].
+pub use crate::fsx::pid_alive;
 
 /// Who holds the lock, if anyone.
 #[derive(Debug, Clone, PartialEq, Eq)]

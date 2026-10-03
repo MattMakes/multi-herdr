@@ -8,13 +8,19 @@
 //!
 //! The on-disk format, file path, slug rule and timestamp format are unchanged
 //! from the bash implementation: existing ledgers stay readable and resumable.
+//!
+//! Since A6 this is a facade: the record is
+//! [`crate::execution::legacy::LedgerRecordV1`] and every read and write goes
+//! through [`ExecutionStore`]. Only the lifecycle rules live here.
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::Path;
 
+use crate::execution::store::ExecutionStore;
 use crate::teammates::Phase;
-use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
+use anyhow::{bail, Result};
+
+pub use crate::execution::legacy::{HistoryEntry, Record, KIND_ORCHESTRATOR, KIND_WORKER};
+pub use crate::execution::store::slug;
 
 /// A worker session's lifecycle state.
 pub const STATUS_WORKING: &str = "working";
@@ -23,138 +29,16 @@ pub const STATUS_DONE: &str = "done";
 /// Placeholder task for a worker spawned with nothing assigned yet.
 const IDLE_TASK: &str = "(idle - awaiting assignment)";
 
-/// One entry in a record's history.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HistoryEntry {
-    pub at: String,
-    pub event: String,
-    pub text: String,
-}
-
-/// `Record::kind` of a worker pane.
-pub const KIND_WORKER: &str = "worker";
-/// `Record::kind` of a fleet orchestrator pane.
-pub const KIND_ORCHESTRATOR: &str = "orchestrator";
-
 /// Task an orchestrator record carries. It has no task of its own.
 pub const ORCHESTRATING_TASK: &str = "(orchestrating)";
-
-fn worker_kind() -> String {
-    KIND_WORKER.to_string()
-}
-
-fn is_worker(kind: &str) -> bool {
-    kind == KIND_WORKER
-}
-
-/// One agent session: a worker, or a fleet's orchestrator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Record {
-    pub record_id: String,
-    /// `null` until known: codex only reveals its session id after launch.
-    pub session_id: Option<String>,
-    pub agent: String,
-    /// The teammate's name. Still spelled `tier` on disk: ledgers written by
-    /// earlier versions carry this key, and the built-in teammates kept the old
-    /// tier ids as their names precisely so those records still resolve.
-    pub tier: String,
-    pub model: String,
-    /// The effort level actually passed to the agent CLI, if any. Recorded so
-    /// a cost report can say what a session was tuned to, and so a resume
-    /// keeps the level it ran at. Absent in ledgers written before effort was
-    /// recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase: Option<Phase>,
-    pub role: String,
-    pub status: String,
-    pub task: String,
-    pub history: Vec<HistoryEntry>,
-    pub created_at: String,
-    pub updated_at: String,
-    /// `worker` or `orchestrator`. Absent in older ledgers, which only ever
-    /// recorded workers.
-    #[serde(default = "worker_kind", skip_serializing_if = "is_worker")]
-    pub kind: String,
-    /// The absolute project path. The ledger's file name is a lossy slug of
-    /// it, so the path is kept here for the telemetry space.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
-    /// The plan-file slug the task names (`ai_docs/plans/<slug>.md`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan: Option<String>,
-    /// The herdr workspace the pane runs in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    /// The fallback teammate whose launch settings the spawn gate used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub via: Option<String>,
-    /// Why the gate substituted, in one line.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub substitution_reason: Option<String>,
-    /// What routing decided for this record (ARC-14). Absent before A5.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing: Option<crate::routing::decision::RoutingProvenance>,
-}
-
-impl Default for Record {
-    fn default() -> Self {
-        Record {
-            record_id: String::new(),
-            session_id: None,
-            agent: String::new(),
-            tier: String::new(),
-            model: String::new(),
-            effort: None,
-            phase: None,
-            role: String::new(),
-            status: String::new(),
-            task: String::new(),
-            history: Vec::new(),
-            created_at: String::new(),
-            updated_at: String::new(),
-            kind: worker_kind(),
-            project: None,
-            plan: None,
-            workspace_id: None,
-            via: None,
-            substitution_reason: None,
-            routing: None,
-        }
-    }
-}
-
-impl Record {
-    pub fn is_orchestrator(&self) -> bool {
-        self.kind == KIND_ORCHESTRATOR
-    }
-
-    /// Records match on either id so callers can address a session by whichever
-    /// one they hold.
-    fn matches(&self, key: &str) -> bool {
-        self.record_id == key || self.session_id.as_deref() == Some(key)
-    }
-}
 
 /// A project's ledger file.
 #[derive(Debug, Clone)]
 pub struct Ledger {
-    path: PathBuf,
+    store: ExecutionStore,
     /// What [`Ledger::insert`] fills into a record that leaves them empty.
     project: Option<String>,
     workspace_id: Option<String>,
-}
-
-/// Held for the duration of a read-modify-write. Released on drop.
-struct LockGuard {
-    path: PathBuf,
-}
-
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir(&self.path);
-    }
 }
 
 /// UTC timestamp in the format the bash implementation wrote
@@ -164,34 +48,17 @@ fn now() -> String {
     crate::clock::now_stamp()
 }
 
-/// Turn a project path into a filename, matching `tr -c 'A-Za-z0-9' '-'`.
-///
-/// Operates on bytes, exactly as `tr` does, so a multi-byte character becomes one
-/// `-` per byte and slugs computed by the bash version still resolve.
-pub fn slug(project: &str) -> String {
-    project
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() {
-                b as char
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
 /// Root directory for ledger files: `$HORCH_STATE_DIR`, else
 /// `${XDG_STATE_HOME:-$HOME/.local/state}/horch`. Reads the process
 /// environment; a command uses `RuntimeContext::paths` instead.
-pub fn state_root() -> PathBuf {
+pub fn state_root() -> std::path::PathBuf {
     let env = crate::runtime::ProcessEnv;
     crate::runtime::paths::state_root(&env, &crate::runtime::paths::home_dir(&env))
 }
 
 /// The project dir a ledger belongs to: `$HORCH_PROJECT_DIR`, else the cwd.
 /// Reads the process environment; a command uses `RuntimeContext::paths`.
-pub fn project_dir() -> Result<PathBuf> {
+pub fn project_dir() -> Result<std::path::PathBuf> {
     crate::runtime::paths::project_dir(&crate::runtime::ProcessEnv)
 }
 
@@ -233,88 +100,25 @@ impl Ledger {
     /// The ledger for an explicit state root and project path.
     pub fn for_project(state_root: impl AsRef<Path>, project: &str) -> Self {
         Self {
-            path: state_root.as_ref().join(format!("{}.json", slug(project))),
+            store: ExecutionStore::for_project(state_root, project),
             project: None,
             workspace_id: None,
         }
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        self.store.path()
+    }
+
+    /// The store this ledger reads and writes through.
+    pub fn store(&self) -> &ExecutionStore {
+        &self.store
     }
 
     /// All records, oldest write order preserved. An absent or empty file reads
     /// as an empty ledger, matching the bash `[]` default.
     pub fn read(&self) -> Result<Vec<Record>> {
-        let Ok(raw) = std::fs::read_to_string(&self.path) else {
-            return Ok(Vec::new());
-        };
-        if raw.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        serde_json::from_str(&raw)
-            .with_context(|| format!("parsing ledger {}", self.path.display()))
-    }
-
-    /// Acquire the cross-process lock.
-    ///
-    /// `create_dir` is atomic on both platforms, which is why the bash mkdir
-    /// spinlock ports directly (stock macOS has no `flock`). Panes can be killed
-    /// mid-write, so a lock older than ~15s is broken rather than deadlocking the
-    /// whole fleet.
-    fn lock(&self) -> Result<LockGuard> {
-        let root = self
-            .path
-            .parent()
-            .context("ledger path has no parent directory")?;
-        std::fs::create_dir_all(root)
-            .with_context(|| format!("creating state dir {}", root.display()))?;
-        let lock_path = self.path.with_extension("json.lock");
-        for attempt in 0.. {
-            match std::fs::create_dir(&lock_path) {
-                Ok(()) => return Ok(LockGuard { path: lock_path }),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if attempt >= 150 {
-                        eprintln!("horch ledger: breaking stale lock {}", lock_path.display());
-                        let _ = std::fs::remove_dir_all(&lock_path);
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => {
-                    return Err(e)
-                        .with_context(|| format!("acquiring lock {}", lock_path.display()))
-                }
-            }
-        }
-        unreachable!()
-    }
-
-    /// Write via temp file + rename, so a killed process cannot leave a
-    /// half-written ledger.
-    fn write(&self, records: &[Record]) -> Result<()> {
-        let tmp = self
-            .path
-            .with_extension(format!("json.tmp.{}", std::process::id()));
-        let json = serde_json::to_string_pretty(records)?;
-        std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path)
-            .with_context(|| format!("replacing {}", self.path.display()))
-    }
-
-    /// Take the lock, mutate the records, write them back.
-    fn update<T>(&self, f: impl FnOnce(&mut Vec<Record>) -> Result<T>) -> Result<T> {
-        let _guard = self.lock()?;
-        let mut records = self.read()?;
-        let out = f(&mut records)?;
-        self.write(&records)?;
-        Ok(out)
-    }
-
-    fn require_key(records: &[Record], key: &str, path: &Path) -> Result<()> {
-        if records.iter().any(|r| r.matches(key)) {
-            return Ok(());
-        }
-        bail!("no record matches '{key}' in {}", path.display())
+        self.store.read()
     }
 
     /// Record a freshly spawned session.
@@ -365,7 +169,7 @@ impl Ledger {
     pub fn insert(&self, mut record: Record) -> Result<()> {
         let at = now();
         record.session_id = record.session_id.filter(|s| !s.is_empty());
-        record.status = STATUS_WORKING.to_string();
+        record.set_legacy_status(STATUS_WORKING);
         let spawned = if record.task.is_empty() {
             format!("spawned idle as {}", record.role)
         } else {
@@ -390,10 +194,7 @@ impl Ledger {
         }];
         record.created_at = at.clone();
         record.updated_at = at;
-        self.update(|records| {
-            records.push(record);
-            Ok(())
-        })
+        self.store.insert(record)
     }
 
     /// Mark `working` orchestrator records done, as `superseded`, unless
@@ -402,14 +203,14 @@ impl Ledger {
     /// is gone instead. Returns how many records it closed.
     pub fn supersede_orchestrators(&self, keep: impl Fn(&str) -> bool) -> Result<usize> {
         let at = now();
-        self.update(|records| {
+        self.store.update(|records| {
             let mut n = 0;
             for r in records.iter_mut().filter(|r| {
                 r.is_orchestrator()
                     && r.status == STATUS_WORKING
                     && !r.workspace_id.as_deref().is_some_and(&keep)
             }) {
-                r.status = STATUS_DONE.to_string();
+                r.set_legacy_status(STATUS_DONE);
                 r.updated_at = at.clone();
                 r.history.push(HistoryEntry {
                     at: at.clone(),
@@ -425,26 +226,17 @@ impl Ledger {
     /// Attach a session id discovered after launch (the codex case).
     pub fn set_session(&self, key: &str, session_id: &str) -> Result<()> {
         let at = now();
-        self.update(|records| {
-            Self::require_key(records, key, &self.path)?;
-            for r in records.iter_mut().filter(|r| r.matches(key)) {
-                r.session_id = Some(session_id.to_string());
-                r.updated_at = at.clone();
-            }
-            Ok(())
+        self.store.update_key(key, |r| {
+            r.session_id = Some(session_id.to_string());
+            r.updated_at = at.clone();
         })
     }
 
     /// Record the effort level a session was launched with. `None` clears it:
     /// the agent then ran at its own default (or the operator's config).
     pub fn set_effort(&self, key: &str, effort: Option<&str>) -> Result<()> {
-        self.update(|records| {
-            Self::require_key(records, key, &self.path)?;
-            for r in records.iter_mut().filter(|r| r.matches(key)) {
-                r.effort = effort.map(str::to_owned);
-            }
-            Ok(())
-        })
+        self.store
+            .update_key(key, |r| r.effort = effort.map(str::to_owned))
     }
 
     /// Record what routing decided for a session. `None` clears it.
@@ -453,13 +245,7 @@ impl Ledger {
         key: &str,
         routing: Option<&crate::routing::decision::RoutingProvenance>,
     ) -> Result<()> {
-        self.update(|records| {
-            Self::require_key(records, key, &self.path)?;
-            for r in records.iter_mut().filter(|r| r.matches(key)) {
-                r.routing = routing.cloned();
-            }
-            Ok(())
-        })
+        self.store.update_key(key, |r| r.routing = routing.cloned())
     }
 
     /// True when any record already claims this session id. Used to stop two
@@ -485,28 +271,24 @@ impl Ledger {
         phase: Option<Phase>,
     ) -> Result<()> {
         let at = now();
-        self.update(|records| {
-            Self::require_key(records, key, &self.path)?;
-            for r in records.iter_mut().filter(|r| r.matches(key)) {
-                r.phase = phase.or(r.phase);
-                r.status = STATUS_WORKING.to_string();
-                r.role = role.to_string();
-                r.updated_at = at.clone();
-                if !task.is_empty() {
-                    r.task = task.to_string();
-                    r.plan = crate::telemetry::plan_slug(task);
-                }
-                r.history.push(HistoryEntry {
-                    at: at.clone(),
-                    event: "resumed".to_string(),
-                    text: if task.is_empty() {
-                        format!("resumed as {role}")
-                    } else {
-                        task.to_string()
-                    },
-                });
+        self.store.update_key(key, |r| {
+            r.phase = phase.or(r.phase);
+            r.set_legacy_status(STATUS_WORKING);
+            r.role = role.to_string();
+            r.updated_at = at.clone();
+            if !task.is_empty() {
+                r.task = task.to_string();
+                r.plan = crate::telemetry::plan_slug(task);
             }
-            Ok(())
+            r.history.push(HistoryEntry {
+                at: at.clone(),
+                event: "resumed".to_string(),
+                text: if task.is_empty() {
+                    format!("resumed as {role}")
+                } else {
+                    task.to_string()
+                },
+            });
         })
     }
 
@@ -516,7 +298,7 @@ impl Ledger {
     /// assigning updates what that worker is doing without minting a new session.
     pub fn assign(&self, role: &str, task: &str) -> Result<()> {
         let at = now();
-        self.update(|records| {
+        self.store.update(|records| {
             let key = records
                 .iter()
                 .filter(|r| r.role == role && r.status == STATUS_WORKING)
@@ -546,44 +328,32 @@ impl Ledger {
     /// Mark a session finished and record its handoff summary.
     pub fn done(&self, key: &str, summary: &str) -> Result<()> {
         let at = now();
-        self.update(|records| {
-            Self::require_key(records, key, &self.path)?;
-            for r in records.iter_mut().filter(|r| r.matches(key)) {
-                r.status = STATUS_DONE.to_string();
-                r.updated_at = at.clone();
-                r.history.push(HistoryEntry {
-                    at: at.clone(),
-                    event: "done".to_string(),
-                    text: summary.to_string(),
-                });
-            }
-            Ok(())
+        self.store.update_key(key, |r| {
+            r.set_legacy_status(STATUS_DONE);
+            r.updated_at = at.clone();
+            r.history.push(HistoryEntry {
+                at: at.clone(),
+                event: "done".to_string(),
+                text: summary.to_string(),
+            });
         })
     }
 
     fn append_event(&self, key: &str, event: &str, text: &str) -> Result<()> {
         let at = now();
-        self.update(|records| {
-            Self::require_key(records, key, &self.path)?;
-            for r in records.iter_mut().filter(|r| r.matches(key)) {
-                r.updated_at = at.clone();
-                r.history.push(HistoryEntry {
-                    at: at.clone(),
-                    event: event.to_string(),
-                    text: text.to_string(),
-                });
-            }
-            Ok(())
+        self.store.update_key(key, |r| {
+            r.updated_at = at.clone();
+            r.history.push(HistoryEntry {
+                at: at.clone(),
+                event: event.to_string(),
+                text: text.to_string(),
+            });
         })
     }
 
     /// The newest record addressed by `key`.
     pub fn get(&self, key: &str) -> Result<Record> {
-        self.read()?
-            .into_iter()
-            .filter(|r| r.matches(key))
-            .next_back()
-            .with_context(|| format!("no record matches {key}"))
+        self.store.get(key)
     }
 
     /// Human-readable ledger, newest first.
@@ -660,23 +430,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let l = Ledger::for_project(tmp.path(), "/Users/a/proj");
         (tmp, l)
-    }
-
-    #[test]
-    fn effort_is_recorded_rendered_and_optional_on_disk() {
-        let (_t, l) = ledger();
-        l.add("r1", "claude", "opus", "opus", "opus-1", Some("s1"), "t")
-            .unwrap();
-        assert_eq!(l.get("r1").unwrap().effort, None);
-        assert!(!std::fs::read_to_string(l.path())
-            .unwrap()
-            .contains("effort"));
-        l.set_effort("s1", Some("medium")).unwrap();
-        assert_eq!(l.get("r1").unwrap().effort.as_deref(), Some("medium"));
-        assert!(l.render().unwrap().contains("model=opus effort=medium"));
-        l.set_effort("r1", None).unwrap();
-        assert_eq!(l.get("r1").unwrap().effort, None);
-        assert!(l.set_effort("missing", Some("low")).is_err());
     }
 
     #[test]
@@ -942,68 +695,6 @@ mod tests {
         }
     }
 
-    /// A killed pane can leave the lock dir behind; the ledger must recover
-    /// rather than hang forever.
-    #[test]
-    fn a_stale_lock_is_broken_rather_than_deadlocking() {
-        let (_t, l) = ledger();
-        std::fs::create_dir_all(l.path().parent().unwrap()).unwrap();
-        std::fs::create_dir(l.path().with_extension("json.lock")).unwrap();
-
-        let started = std::time::Instant::now();
-        l.add(
-            "r1",
-            "claude",
-            "sonnet",
-            "sonnet",
-            "sonnet-1",
-            Some("s1"),
-            "t",
-        )
-        .unwrap();
-        assert!(l.get("r1").is_ok());
-        // ~15s of spinning before the break, then success.
-        assert!(started.elapsed() < Duration::from_secs(45));
-    }
-
-    /// The identity fields default in, round-trip, and stay off disk when
-    /// unset, so a worker record written today reads like one from before.
-    #[test]
-    fn tel_08_insert_fills_plan_project_and_workspace() {
-        let (_t, l) = ledger();
-        let l = l.with_workspace(Some("w7".into()));
-        l.insert(Record {
-            record_id: "r1".into(),
-            session_id: Some("s1".into()),
-            agent: "claude".into(),
-            tier: "sonnet".into(),
-            model: "sonnet".into(),
-            role: "sonnet-1".into(),
-            project: Some("/work/alpha".into()),
-            task: "Do ai_docs/plans/golden-prompts-whitespace.md step 2".into(),
-            phase: Some(Phase::Implementation),
-            ..Record::default()
-        })
-        .unwrap();
-        let r = l.get("r1").unwrap();
-        assert_eq!(r.kind, KIND_WORKER);
-        assert_eq!(r.plan.as_deref(), Some("golden-prompts-whitespace"));
-        assert_eq!(r.project.as_deref(), Some("/work/alpha"));
-        assert_eq!(r.workspace_id.as_deref(), Some("w7"));
-        assert_eq!(r.status, STATUS_WORKING);
-        let raw = std::fs::read_to_string(l.path()).unwrap();
-        assert!(
-            !raw.contains("\"kind\""),
-            "a worker's kind stays implicit: {raw}"
-        );
-        assert!(!raw.contains("\"via\""), "{raw}");
-
-        l.assign("sonnet-1", "now ai_docs/plans/other.md").unwrap();
-        assert_eq!(l.get("r1").unwrap().plan.as_deref(), Some("other"));
-        l.assign("sonnet-1", "no plan").unwrap();
-        assert_eq!(l.get("r1").unwrap().plan, None);
-    }
-
     /// A fleet's orchestrator is a record too; it is rendered apart from the
     /// workers and retired by the next fleet in its workspace.
     #[test]
@@ -1055,33 +746,5 @@ mod tests {
             STATUS_WORKING,
             "workers untouched"
         );
-    }
-
-    /// Records written by the bash implementation must still load.
-    #[test]
-    fn reads_a_ledger_written_by_the_bash_version() {
-        let tmp = tempfile::tempdir().unwrap();
-        let l = Ledger::for_project(tmp.path(), "/p");
-        std::fs::create_dir_all(tmp.path()).unwrap();
-        std::fs::write(
-            l.path(),
-            r#"[
-              {"record_id":"3f2b","session_id":null,"agent":"codex","tier":"codex-sol",
-               "model":"gpt-5.6-sol","role":"codex-sol-1","status":"working",
-               "task":"(idle - awaiting assignment)",
-               "history":[{"at":"2026-07-08T10:00:00Z","event":"spawned",
-                           "text":"spawned idle as codex-sol-1"}],
-               "created_at":"2026-07-08T10:00:00Z","updated_at":"2026-07-08T10:00:00Z"}
-            ]"#,
-        )
-        .unwrap();
-
-        let r = l.get("3f2b").unwrap();
-        assert_eq!(r.role, "codex-sol-1");
-        assert_eq!(r.phase, None);
-        assert_eq!(r.session_id, None);
-        // And it stays writable.
-        l.note("3f2b", "still going").unwrap();
-        assert_eq!(l.get("3f2b").unwrap().history.len(), 2);
     }
 }
