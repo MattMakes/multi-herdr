@@ -122,10 +122,10 @@ fn normalize(p: &Path) -> OsString {
     }
 }
 
-/// Remove every [`FORBIDDEN_ENV`](crate::launch::FORBIDDEN_ENV) variable from
+/// Remove every [`FORBIDDEN_ENV`](crate::harness::launch::FORBIDDEN_ENV) variable from
 /// a child's environment.
 pub fn strip_forbidden(cmd: &mut Command) {
-    for key in crate::launch::FORBIDDEN_ENV {
+    for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
 }
@@ -144,7 +144,7 @@ where
     for (key, value) in vars {
         let key = key.as_ref();
         if taken.iter().any(|t| t == key)
-            || crate::launch::FORBIDDEN_ENV
+            || crate::harness::launch::FORBIDDEN_ENV
                 .iter()
                 .any(|f| OsStr::new(f) == key)
         {

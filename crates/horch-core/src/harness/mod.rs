@@ -320,47 +320,6 @@ impl HarnessKind {
         self.adapter().model_takes_effort(model)
     }
 
-    /// Whether horch can choose this agent's session id before it launches.
-    ///
-    /// Claude takes `--session-id`, and pi takes `--session-id` with "create it
-    /// if missing" semantics, so the ledger knows the resume handle before the
-    /// pane even starts. Codex, OpenCode and Prime Agent mint their own and only
-    /// reveal it afterwards - verified against `prime-agent --help` 0.9.4, which
-    /// has `--session-dir` but no `--session-id`.
-    ///
-    /// Kept until A12; read [`Capabilities::caller_minted_session`].
-    pub fn mints_session_id(self) -> bool {
-        self.capabilities().caller_minted_session
-    }
-
-    /// Whether the session id has to be recovered after launch, by watching
-    /// wherever this agent records its sessions.
-    ///
-    /// Kept until A12; read [`Capabilities::discovers_session`].
-    pub fn harvests_session_id(self) -> bool {
-        self.capabilities().discovers_session()
-    }
-
-    /// Whether this agent supervises its own sessions in a background service.
-    ///
-    /// Only Prime Agent does, and it is why a Prime pane gets its own daemon
-    /// socket: herdr already treats a pane as an agent's lifetime, so an
-    /// unscoped daemon would outlive `horch done` and accumulate one per spawn.
-    ///
-    /// Kept until A12; read [`Capabilities::daemon`].
-    pub fn runs_a_daemon(self) -> bool {
-        self.capabilities().daemon
-    }
-
-    /// Whether this agent's capability comes from an execpolicy allowlist rather
-    /// than from flags. Only codex works that way, and it is why a codex pane
-    /// gets a private `CODEX_HOME`.
-    ///
-    /// Kept until A12; read [`Capabilities::exec_policy`].
-    pub fn uses_execpolicy(self) -> bool {
-        self.capabilities().exec_policy
-    }
-
     /// Whether this agent takes `tools` / `allowed_tools` / `disallowed_tools`.
     ///
     /// Claude has `--tools` and the two `--*allowedTools` lists; pi and Prime
@@ -482,11 +441,6 @@ mod tests {
                 HarnessKind::None => SkillExposure::None,
             };
             assert_eq!(c.skill_exposure, exposure, "{kind}");
-            // The legacy methods now delegate; they still answer the same.
-            assert_eq!(kind.mints_session_id(), mints, "{kind}");
-            assert_eq!(kind.harvests_session_id(), harvests, "{kind}");
-            assert_eq!(kind.runs_a_daemon(), daemon, "{kind}");
-            assert_eq!(kind.uses_execpolicy(), execpolicy, "{kind}");
             assert_eq!(kind.takes_tool_lists(), tools, "{kind}");
             assert_eq!(kind.takes_tool_denylist(), denylist, "{kind}");
             assert_eq!(crate::roster::valid_efforts(kind), efforts, "{kind}");

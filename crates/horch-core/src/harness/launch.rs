@@ -19,7 +19,9 @@ use anyhow::{bail, Context, Result};
 use crate::execution::SessionMode;
 use crate::ledger::Ledger;
 use crate::messaging::mailbox::Mailbox;
-use crate::runtime::{BinOverrides, EnvSource, HarnessBins, ProcessEnv, RuntimeContext};
+#[cfg(test)]
+use crate::runtime::BinOverrides;
+use crate::runtime::{HarnessBins, RuntimeContext};
 use crate::teammates::{ExecRule, Teammate};
 use crate::workspace::herdr::Herdr;
 
@@ -46,18 +48,14 @@ impl LaunchEnv {
         }
     }
 
-    /// The same values read from the process environment, for the callers
-    /// that take no context yet. A4 or A12 removes it.
-    pub fn from_process() -> LaunchEnv {
-        let env = ProcessEnv;
+    /// The bare program names, no home and no inherited config: what a unit
+    /// test launches with, whatever the process environment holds.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> LaunchEnv {
         LaunchEnv {
-            bins: HarnessBins::resolve(
-                &BinOverrides::from_env(&env),
-                env.var_os("PATH").as_deref(),
-                env.var("PATHEXT").as_deref(),
-            ),
-            home: env.var_os("HOME").map(PathBuf::from),
-            opencode_config_content: env.var("OPENCODE_CONFIG_CONTENT"),
+            bins: HarnessBins::resolve(&BinOverrides::default(), None, None),
+            home: None,
+            opencode_config_content: None,
         }
     }
 
@@ -105,26 +103,11 @@ pub fn teammate_env(teammate: &Teammate) -> Vec<(String, String)> {
 /// fleet can export the key, so every launch removes it.
 pub const FORBIDDEN_ENV: [&str; 1] = ["ANTHROPIC_API_KEY"];
 
-/// Build the command for a teammate, whichever CLI it names.
+/// Build the command for a teammate, whichever CLI it names, in the launch
+/// environment `env`.
 ///
 /// `model_override` exists for the fixed `orchestration` recipe, where the
 /// model belongs to the pane rather than to the teammate file.
-pub fn command(
-    teammate: &Teammate,
-    session: Session<'_>,
-    prompt: &str,
-    model_override: Option<&str>,
-) -> Result<Command> {
-    command_in(
-        &LaunchEnv::from_process(),
-        teammate,
-        session,
-        prompt,
-        model_override,
-    )
-}
-
-/// [`command`] with the launch environment given.
 pub fn command_in(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -143,26 +126,9 @@ pub fn command_in(
     )
 }
 
-/// Native skill discovery plus a short routing instruction. The caller holds
-/// the bundle until the child exits so lazy reads remain valid throughout.
-pub fn command_with_skills(
-    teammate: &Teammate,
-    session: Session<'_>,
-    prompt: &str,
-    model_override: Option<&str>,
-    bundle: Option<&crate::skills::Bundle>,
-) -> Result<Command> {
-    command_with_skills_in(
-        &LaunchEnv::from_process(),
-        teammate,
-        session,
-        prompt,
-        model_override,
-        bundle,
-    )
-}
-
-/// [`command_with_skills`] with the launch environment given.
+/// Native skill discovery plus a short routing instruction, in the launch
+/// environment `env`. The caller holds the bundle until the child exits so
+/// lazy reads remain valid throughout.
 pub fn command_with_skills_in(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -174,10 +140,16 @@ pub fn command_with_skills_in(
     let Some(bundle) = bundle else {
         return command_in(env, teammate, session, prompt, model_override);
     };
-    let adjusted = bundle.configure(teammate, env.home())?;
+    let adapter = teammate.agent.adapter();
+    let adjusted = adapter.expose_skills(teammate, bundle, env.home())?;
     let prompt = format!("{}\n{prompt}", bundle.briefing_in(teammate, env.home()));
     let mut cmd = command_in(env, &adjusted, session, &prompt, model_override)?;
-    bundle.apply_env(&mut cmd, teammate, env.opencode_config_content.as_deref())?;
+    adapter.expose_skills_env(
+        &mut cmd,
+        teammate,
+        bundle,
+        env.opencode_config_content.as_deref(),
+    )?;
     Ok(cmd)
 }
 
@@ -584,8 +556,15 @@ mod tests {
                 .unwrap()
                 .unwrap();
             for session in [Session::Unmanaged, Session::Resume("sid")] {
-                let cmd =
-                    command_with_skills(&t, session, "BRIEFING", None, Some(&bundle)).unwrap();
+                let cmd = command_with_skills_in(
+                    &LaunchEnv::for_test(),
+                    &t,
+                    session,
+                    "BRIEFING",
+                    None,
+                    Some(&bundle),
+                )
+                .unwrap();
                 let args = argv(&cmd);
                 assert!(
                     args.last().unwrap().ends_with("BRIEFING"),
@@ -650,7 +629,14 @@ mod tests {
             if t.agent == Agent::None {
                 continue;
             }
-            let cmd = command(t, Session::Unmanaged, "p", Some("m")).unwrap();
+            let cmd = command_in(
+                &LaunchEnv::for_test(),
+                t,
+                Session::Unmanaged,
+                "p",
+                Some("m"),
+            )
+            .unwrap();
             assert!(
                 cmd.get_envs()
                     .any(|(k, v)| k == "ANTHROPIC_API_KEY" && v.is_none()),
@@ -698,7 +684,8 @@ mod tests {
     #[test]
     fn claude_resume_swaps_the_session_flag() {
         let r = Roster::builtin().unwrap();
-        let cmd = command(
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
             r.require("sonnet").unwrap(),
             Session::Resume("old"),
             "p",
@@ -712,7 +699,8 @@ mod tests {
     #[test]
     fn codex_resume_leads_with_the_subcommand() {
         let r = Roster::builtin().unwrap();
-        let cmd = command(
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
             r.require("codex-sol").unwrap(),
             Session::Resume("rid"),
             "p",
@@ -730,7 +718,8 @@ mod tests {
     #[test]
     fn codex_permission_mode_becomes_sandbox_and_approval() {
         let r = Roster::builtin().unwrap();
-        let cmd = command(
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
             r.require("codex-terra").unwrap(),
             Session::Unmanaged,
             "p",
@@ -751,7 +740,16 @@ mod tests {
         let mut t = r.require("orchestration-worker").unwrap().clone();
         t.agent = Agent::Codex;
         t.effort = None;
-        let a = argv(&command(&t, Session::Unmanaged, "p", Some("gpt-5.6-sol")).unwrap());
+        let a = argv(
+            &command_in(
+                &LaunchEnv::for_test(),
+                &t,
+                Session::Unmanaged,
+                "p",
+                Some("gpt-5.6-sol"),
+            )
+            .unwrap(),
+        );
         assert!(a.windows(2).any(|w| w == ["-s", "workspace-write"]));
         assert!(a.windows(2).any(|w| w == ["-a", "never"]));
     }
@@ -770,8 +768,17 @@ mod tests {
         let bundle = crate::skills::Bundle::install(tmp.path(), &t)
             .unwrap()
             .unwrap();
-        let a =
-            argv(&command_with_skills(&t, Session::Unmanaged, "p", None, Some(&bundle)).unwrap());
+        let a = argv(
+            &command_with_skills_in(
+                &LaunchEnv::for_test(),
+                &t,
+                Session::Unmanaged,
+                "p",
+                None,
+                Some(&bundle),
+            )
+            .unwrap(),
+        );
         let delimiter = a.iter().position(|s| s == "--").unwrap();
         for flag in ["--daemon-socket", "--session-dir", "--skill"] {
             assert!(a.iter().position(|s| s == flag).unwrap() < delimiter);
@@ -783,8 +790,16 @@ mod tests {
         let r = Roster::builtin().unwrap();
         for name in ["codex-sol", "codex-terra", "orchestrator-codex"] {
             for session in [Session::Unmanaged, Session::Resume("rid")] {
-                let a =
-                    argv(&command(r.require(name).unwrap(), session, "BRIEFING", None).unwrap());
+                let a = argv(
+                    &command_in(
+                        &LaunchEnv::for_test(),
+                        r.require(name).unwrap(),
+                        session,
+                        "BRIEFING",
+                        None,
+                    )
+                    .unwrap(),
+                );
                 assert!(
                     a.windows(2)
                         .any(|w| w == ["-c", "check_for_update_on_startup=false"]),
@@ -824,7 +839,14 @@ mod tests {
     fn the_codex_orchestrator_launches_with_astra_and_keeps_its_prompt_last() {
         let r = Roster::builtin().unwrap();
         let t = r.require("orchestrator-codex").unwrap();
-        let cmd = command(t, Session::Unmanaged, "BRIEFING", None).unwrap();
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
+            t,
+            Session::Unmanaged,
+            "BRIEFING",
+            None,
+        )
+        .unwrap();
         let a = argv(&cmd);
         assert!(a.contains(&r#"model="gpt-6-astra""#.to_string()), "{a:?}");
         assert!(
@@ -845,7 +867,8 @@ mod tests {
     #[test]
     fn opencode_passes_the_prompt_as_a_flag_and_auto_approves() {
         let r = Roster::builtin().unwrap();
-        let cmd = command(
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
             r.require("opencode-pickle").unwrap(),
             Session::Unmanaged,
             "BRIEFING",
@@ -889,7 +912,8 @@ mod tests {
         t.plugin_dirs = vec![root.to_string_lossy().into_owned()];
         t.plugin_skills.insert("code".into(), vec!["review".into()]);
 
-        let a = argv(&command(&t, Session::Unmanaged, "p", None).unwrap());
+        let a =
+            argv(&command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap());
         let at = a.iter().position(|x| x == "--settings").unwrap();
         let overlay: serde_json::Value = serde_json::from_str(&a[at + 1]).unwrap();
         let overrides = &overlay["skillOverrides"];
@@ -901,13 +925,13 @@ mod tests {
         let bundle = crate::skills::Bundle::install(tmp.path(), &t)
             .unwrap()
             .unwrap();
-        let brief = bundle.briefing(&t);
+        let brief = bundle.briefing_in(&t, None);
         assert!(brief.contains("- code:review: Does review."), "{brief}");
         assert!(!brief.contains("code:lint"), "{brief}");
 
         // A skill the plugin does not ship fails the launch and the check.
         t.plugin_skills.insert("code".into(), vec!["deploy".into()]);
-        let err = command(&t, Session::Unmanaged, "p", None)
+        let err = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no skill 'deploy'"), "{err}");
@@ -920,10 +944,20 @@ mod tests {
         let r = Roster::builtin().unwrap();
         let t = r.require("opus").unwrap();
         assert!(t.effort.is_some());
-        let a = argv(&command(t, Session::Unmanaged, "p", Some("haiku")).unwrap());
+        let a = argv(
+            &command_in(
+                &LaunchEnv::for_test(),
+                t,
+                Session::Unmanaged,
+                "p",
+                Some("haiku"),
+            )
+            .unwrap(),
+        );
         assert!(a.windows(2).any(|w| w == ["--model", "haiku"]), "{a:?}");
         assert!(!a.contains(&"--effort".to_string()), "{a:?}");
-        let a = argv(&command(t, Session::Unmanaged, "p", None).unwrap());
+        let a =
+            argv(&command_in(&LaunchEnv::for_test(), t, Session::Unmanaged, "p", None).unwrap());
         assert!(a.contains(&"--effort".to_string()), "{a:?}");
     }
 
@@ -949,7 +983,7 @@ mod tests {
             r#"{"mcp":{"playwright":{"enabled":false}}}"#.into(),
         );
 
-        let cmd = command(&t, Session::Unmanaged, "p", None).unwrap();
+        let cmd = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap();
         assert!(!argv(&cmd).contains(&"--variant".to_string()));
         let v = overlay(&cmd);
         assert_eq!(v["agent"]["build"]["variant"], "high", "{v}");
@@ -962,7 +996,15 @@ mod tests {
         let bundle = crate::skills::Bundle::install(tmp.path(), &t)
             .unwrap()
             .unwrap();
-        let cmd = command_with_skills(&t, Session::Unmanaged, "p", None, Some(&bundle)).unwrap();
+        let cmd = command_with_skills_in(
+            &LaunchEnv::for_test(),
+            &t,
+            Session::Unmanaged,
+            "p",
+            None,
+            Some(&bundle),
+        )
+        .unwrap();
         let v = overlay(&cmd);
         assert_eq!(v["agent"]["build"]["variant"], "high", "{v}");
         assert!(v["skills"]["paths"].as_array().unwrap().len() == 1, "{v}");
@@ -970,7 +1012,7 @@ mod tests {
         // No effort, no overlay from the builder.
         t.effort = None;
         t.env.clear();
-        let cmd = command(&t, Session::Unmanaged, "p", None).unwrap();
+        let cmd = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap();
         assert!(cmd.get_envs().all(|(k, _)| k != "OPENCODE_CONFIG_CONTENT"));
     }
 
@@ -980,9 +1022,27 @@ mod tests {
     fn opencode_only_names_a_session_when_resuming() {
         let r = Roster::builtin().unwrap();
         let t = r.require("opencode-ultra").unwrap();
-        let fresh = argv(&command(t, Session::Fresh("ignored"), "p", None).unwrap());
+        let fresh = argv(
+            &command_in(
+                &LaunchEnv::for_test(),
+                t,
+                Session::Fresh("ignored"),
+                "p",
+                None,
+            )
+            .unwrap(),
+        );
         assert!(!fresh.contains(&"--session".to_string()), "{fresh:?}");
-        let resumed = argv(&command(t, Session::Resume("ses_abc"), "p", None).unwrap());
+        let resumed = argv(
+            &command_in(
+                &LaunchEnv::for_test(),
+                t,
+                Session::Resume("ses_abc"),
+                "p",
+                None,
+            )
+            .unwrap(),
+        );
         assert!(
             resumed.windows(2).any(|w| w == ["--session", "ses_abc"]),
             "{resumed:?}"
@@ -995,7 +1055,8 @@ mod tests {
     #[test]
     fn pi_takes_a_caller_minted_session_and_fences_its_prompt() {
         let r = Roster::builtin().unwrap();
-        let cmd = command(
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
             r.require("pi").unwrap(),
             Session::Fresh("sid-1"),
             "-x BRIEF",
@@ -1027,10 +1088,28 @@ mod tests {
     fn prime_never_claims_to_set_a_session_id() {
         let r = Roster::builtin().unwrap();
         let t = r.require("prime").unwrap();
-        let fresh = argv(&command(t, Session::Fresh("sid-1"), "p", None).unwrap());
+        let fresh = argv(
+            &command_in(
+                &LaunchEnv::for_test(),
+                t,
+                Session::Fresh("sid-1"),
+                "p",
+                None,
+            )
+            .unwrap(),
+        );
         assert!(!fresh.contains(&"--session-id".to_string()), "{fresh:?}");
         assert!(!fresh.contains(&"sid-1".to_string()), "{fresh:?}");
-        let resumed = argv(&command(t, Session::Resume("/state/s.jsonl"), "p", None).unwrap());
+        let resumed = argv(
+            &command_in(
+                &LaunchEnv::for_test(),
+                t,
+                Session::Resume("/state/s.jsonl"),
+                "p",
+                None,
+            )
+            .unwrap(),
+        );
         assert!(
             resumed
                 .windows(2)
@@ -1046,7 +1125,7 @@ mod tests {
         let r = Roster::builtin().unwrap();
         let mut t = r.require("opencode-pickle").unwrap().clone();
         t.permission_mode = Some(crate::teammates::PermissionMode::Plan);
-        let err = command(&t, Session::Unmanaged, "p", None)
+        let err = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no opencode equivalent"), "{err}");
@@ -1060,7 +1139,7 @@ mod tests {
         std::fs::write(home.path().join(".claude/settings.json"), settings_json).unwrap();
         let env = LaunchEnv {
             home: Some(home.path().to_path_buf()),
-            ..LaunchEnv::from_process()
+            ..LaunchEnv::for_test()
         };
         (home, env)
     }
@@ -1158,7 +1237,8 @@ mod tests {
     #[test]
     fn declared_mcp_servers_are_strict_and_complete() {
         let r = Roster::builtin().unwrap();
-        let cmd = command(
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
             r.require("frontend-developer").unwrap(),
             Session::Unmanaged,
             "p",
@@ -1220,7 +1300,8 @@ mod tests {
     #[test]
     fn plugin_paths_are_expanded_before_launch() {
         let r = Roster::builtin().unwrap();
-        let cmd = command(
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
             r.require("staff-engineer").unwrap(),
             Session::Unmanaged,
             "p",
@@ -1378,9 +1459,15 @@ mod tests {
     #[test]
     fn a_none_agent_cannot_be_launched() {
         let r = Roster::builtin().unwrap();
-        let err = command(r.require("smoke").unwrap(), Session::Unmanaged, "p", None)
-            .unwrap_err()
-            .to_string();
+        let err = command_in(
+            &LaunchEnv::for_test(),
+            r.require("smoke").unwrap(),
+            Session::Unmanaged,
+            "p",
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("agent: none"), "{err}");
     }
 }

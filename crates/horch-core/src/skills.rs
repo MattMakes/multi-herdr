@@ -46,13 +46,7 @@ fn catalog() -> Result<BTreeMap<String, (Metadata, usize)>> {
 }
 
 /// Check platform support before allocating a pane or writing shared rules.
-/// Names are checked against the compiled-in catalog; see
-/// [`ensure_supported_in`].
-pub fn ensure_supported(teammate: &Teammate) -> Result<()> {
-    ensure_supported_in(teammate, &SkillCatalog::bundled()?)
-}
-
-/// [`ensure_supported`] against `catalog`, which may include installed
+/// Names are checked against `catalog`, which may include installed
 /// marketplace skills.
 pub fn ensure_supported_in(teammate: &Teammate, catalog: &SkillCatalog) -> Result<()> {
     if !selected_in(teammate, catalog)?.is_empty() {
@@ -89,8 +83,8 @@ pub fn describe(phase: Option<Phase>) -> Result<Value> {
 /// An owned launch directory. Dropping it only deletes files we created.
 ///
 /// It holds exactly the activated skills. How a CLI discovers them is the
-/// harness's business: [`Bundle::configure`] and [`Bundle::apply_env`] hand
-/// the bundle to the teammate's harness adapter.
+/// harness's business: the teammate's harness adapter exposes the bundle
+/// (`expose_skills`, `expose_skills_env`).
 #[derive(Debug)]
 pub struct Bundle {
     root: PathBuf,
@@ -151,37 +145,8 @@ impl Bundle {
         self.root.join("skills")
     }
 
-    /// The teammate as its harness launches it with these skills exposed.
-    /// `home` is `$HOME`, where the operator's settings live.
-    pub fn configure(&self, teammate: &Teammate, home: Option<&Path>) -> Result<Teammate> {
-        teammate.agent.adapter().expose_skills(teammate, self, home)
-    }
-
-    /// Expose these skills on the built command, where the harness reads
-    /// them from its environment. `inherited` is the value of that variable
-    /// the launch would otherwise pass through.
-    pub fn apply_env(
-        &self,
-        cmd: &mut std::process::Command,
-        teammate: &Teammate,
-        inherited: Option<&str>,
-    ) -> Result<()> {
-        teammate
-            .agent
-            .adapter()
-            .expose_skills_env(cmd, teammate, self, inherited)
-    }
-
-    /// The skill paragraph prepended to a worker's briefing; see
-    /// `briefing::render`.
-    pub fn briefing(&self, teammate: &Teammate) -> String {
-        // A2: home comes from RuntimeContext once every caller passes it.
-        let home = crate::runtime::EnvSource::var_os(&crate::runtime::ProcessEnv, "HOME")
-            .map(PathBuf::from);
-        self.briefing_in(teammate, home.as_deref())
-    }
-
-    /// [`Bundle::briefing`], with plugin skills resolved under `home`.
+    /// The skill paragraph prepended to a worker's briefing, with plugin
+    /// skills resolved under `home`; see `briefing::render`.
     pub fn briefing_in(&self, teammate: &Teammate, home: Option<&Path>) -> String {
         let namespace = teammate.agent.adapter().skill_namespace();
         let mut plugin_lines = Vec::new();
@@ -189,7 +154,7 @@ impl Bundle {
         // that does not resolve is reported by `--check`; the briefing must
         // not fail a launch over a description.
         if namespace.is_some() {
-            if let Ok(plugins) = crate::plugins::resolve_all_in(teammate, home) {
+            if let Ok(plugins) = crate::harness::claude_plugins::resolve_all_in(teammate, home) {
                 for (plugin, wanted) in plugins {
                     for skill in wanted {
                         let description = plugin.description(&skill).unwrap_or_default();
@@ -297,7 +262,7 @@ mod tests {
         assert_ne!(a.root, b.root);
         assert!(a.skills_dir().join("create-plan/SKILL.md").exists());
         assert!(!a.skills_dir().join("execute").exists());
-        let brief = a.briefing(&t);
+        let brief = a.briefing_in(&t, None);
         assert!(brief.contains("horch:create-plan"));
         assert!(!brief.contains("# Create"));
         assert!(
@@ -317,7 +282,7 @@ mod tests {
         let roster = crate::teammates::Roster::builtin().unwrap();
         let t = roster.require("backend-developer").unwrap();
         let bundle = Bundle::install(tmp.path(), t).unwrap().unwrap();
-        let brief = bundle.briefing(t);
+        let brief = bundle.briefing_in(t, None);
         let all = catalog().unwrap();
         for skill in ["tdd", "security-review"] {
             let description = all[skill]
@@ -349,7 +314,9 @@ mod tests {
         let codex = roster.require("codex-reviewer").unwrap();
         if !cfg!(windows) {
             let bundle = Bundle::install(tmp.path(), codex).unwrap().unwrap();
-            assert!(bundle.briefing(codex).contains("\n- code-review: "));
+            assert!(bundle
+                .briefing_in(codex, None)
+                .contains("\n- code-review: "));
         }
     }
 
@@ -358,7 +325,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let t = Teammate { phase: Some(Phase::Plan), settings: Some(r#"{"permissions":{"deny":["Bash(rm *)"]},"statusLine":{"type":"command","command":"keep"}}"#.into()), ..Teammate::default() };
         let bundle = Bundle::install(tmp.path(), &t).unwrap().unwrap();
-        let configured = bundle.configure(&t, None).unwrap();
+        let configured = t.agent.adapter().expose_skills(&t, &bundle, None).unwrap();
         let value: Value = serde_json::from_str(configured.settings.as_ref().unwrap()).unwrap();
         assert_eq!(value["permissions"]["deny"], json!(["Bash(rm *)"]));
         assert_eq!(value["statusLine"]["command"], "keep");
@@ -409,8 +376,9 @@ mod tests {
         assert!(t.inherit_plugins, "the switch must not depend on plugins");
         let bundle = Bundle::install(tmp.path(), &t).unwrap().unwrap();
         let value: Value = serde_json::from_str(
-            bundle
-                .configure(&t, None)
+            t.agent
+                .adapter()
+                .expose_skills(&t, &bundle, None)
                 .unwrap()
                 .settings
                 .as_ref()
@@ -435,8 +403,10 @@ mod tests {
             ..t
         };
         let value: Value = serde_json::from_str(
-            bundle
-                .configure(&opted_in, None)
+            opted_in
+                .agent
+                .adapter()
+                .expose_skills(&opted_in, &bundle, None)
                 .unwrap()
                 .settings
                 .as_ref()

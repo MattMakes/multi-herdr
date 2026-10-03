@@ -501,7 +501,8 @@ impl Locations {
     /// `sqlite3` is the plain program name.
     pub fn under_home(home: &Path, inherited: &crate::runtime::Inherited) -> Self {
         let codex_sessions =
-            crate::codex::codex_home(home, inherited.codex_home.as_deref()).join("sessions");
+            crate::harness::codex::codex_home(home, inherited.codex_home.as_deref())
+                .join("sessions");
         let pi_sessions = inherited
             .pi_session_dir
             .clone()

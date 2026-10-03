@@ -18,7 +18,7 @@ use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 
 use crate::fsx;
-use crate::launch::FORBIDDEN_ENV;
+use crate::harness::launch::FORBIDDEN_ENV;
 use crate::measure::digest::{sha256_bytes, Digest};
 use crate::measure::redact::redact;
 use crate::vcs::git::cut_utf8;

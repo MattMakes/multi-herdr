@@ -10,13 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use horch_core::execution::store::ExecutionStore;
+use horch_core::harness::launch::{self, LaunchEnv, Session};
 use horch_core::harness::CommandSpec;
-use horch_core::launch::{self, LaunchEnv, Session};
 use horch_core::ledger::{Ledger, Record};
 use horch_core::roster::validation::fallback_problems;
 use horch_core::routing::decision::{self, Decision, GateFlags, PoolLine};
 use horch_core::routing::policy::{BalanceMode, Policy};
 use horch_core::routing::quota::{QuotaFile, QuotaView};
+use horch_core::runtime::{ProcessEnv, RuntimeContext};
 use horch_core::skills::Bundle;
 use horch_core::teammates::{Phase, Roster, Teammate};
 use serde_json::{json, Value};
@@ -226,13 +227,20 @@ fn bundle_root(bundle: &Bundle) -> PathBuf {
 type Build =
     dyn Fn(&Teammate, Session<'_>, Option<&Bundle>) -> anyhow::Result<std::process::Command>;
 
-/// The public entry point every caller used at A0.
+/// The launch environment the process environment describes, as the
+/// binary's bootstrap builds it. [`World`] sets that environment.
+fn launch_env() -> LaunchEnv {
+    LaunchEnv::from_context(&RuntimeContext::from_env(&ProcessEnv).unwrap())
+}
+
+/// The public entry point every caller used at A0, with the launch
+/// environment now given.
 fn legacy_build(
     t: &Teammate,
     session: Session<'_>,
     bundle: Option<&Bundle>,
 ) -> anyhow::Result<std::process::Command> {
-    launch::command_with_skills(t, session, PROMPT, None, bundle)
+    launch::command_with_skills_in(&launch_env(), t, session, PROMPT, None, bundle)
 }
 
 /// The A4 path: the teammate's harness adapter builds the command, with the
@@ -242,10 +250,11 @@ fn adapter_build(
     session: Session<'_>,
     bundle: Option<&Bundle>,
 ) -> anyhow::Result<std::process::Command> {
-    let env = LaunchEnv::from_process();
+    let env = launch_env();
+    let adapter = t.agent.adapter();
     let (adjusted, prompt) = match bundle {
         Some(b) => (
-            b.configure(t, env.home())?,
+            adapter.expose_skills(t, b, env.home())?,
             format!("{}\n{PROMPT}", b.briefing_in(t, env.home())),
         ),
         None => (t.clone(), PROMPT.to_string()),
@@ -260,7 +269,7 @@ fn adapter_build(
         },
     )?;
     if let Some(b) = bundle {
-        b.apply_env(&mut cmd, t, env.opencode_config_content.as_deref())?;
+        adapter.expose_skills_env(&mut cmd, t, b, env.opencode_config_content.as_deref())?;
     }
     Ok(cmd)
 }
@@ -544,7 +553,7 @@ fn oracle_skills_match() {
             let text = match Bundle::install(&world.state, &t) {
                 Ok(Some(bundle)) => {
                     let root = bundle_root(&bundle);
-                    world.scrub(&bundle.briefing(&t), Some(&root))
+                    world.scrub(&bundle.briefing_in(&t, launch_env().home()), Some(&root))
                 }
                 Ok(None) => "NO BUNDLE\n".to_string(),
                 Err(e) => format!("ERROR: {}\n", world.scrub(&format!("{e:#}"), None)),

@@ -90,7 +90,7 @@ pub fn probe_claude(bin: &Path, timeout: StdDuration, temp_root: &Path) -> Resul
         "--verbose",
     ])
     .current_dir(&dir);
-    for key in crate::launch::FORBIDDEN_ENV {
+    for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
     let result = (|| {
@@ -122,7 +122,7 @@ pub fn probe_claude(bin: &Path, timeout: StdDuration, temp_root: &Path) -> Resul
 pub fn probe_codex(bin: &Path, timeout: StdDuration) -> Result<Probed, String> {
     let mut cmd = Command::new(bin);
     cmd.arg("app-server");
-    for key in crate::launch::FORBIDDEN_ENV {
+    for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
     let mut child = Child::spawn(cmd).map_err(|e| format!("starting {}: {e}", bin.display()))?;
@@ -166,7 +166,7 @@ fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, 
         args.join(" ")
     );
     let mut cmd = Command::new(bin);
-    for key in crate::launch::FORBIDDEN_ENV {
+    for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
     let mut child = cmd

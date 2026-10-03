@@ -17,7 +17,6 @@
 
 pub mod agent;
 pub mod clock;
-pub mod codex;
 pub mod competition;
 pub mod dataset;
 pub mod evaluation;
@@ -25,13 +24,9 @@ pub mod execution;
 pub mod fsx;
 pub mod harness;
 pub mod ids;
-pub mod launch;
 pub mod ledger;
 pub mod measure;
 pub mod messaging;
-pub mod opencode;
-pub mod plugins;
-pub mod prime;
 pub mod prompts;
 pub mod roster;
 pub mod routing;

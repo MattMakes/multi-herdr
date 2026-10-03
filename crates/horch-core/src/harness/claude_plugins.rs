@@ -20,7 +20,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::roster::expand_home;
-use crate::runtime::{EnvSource, ProcessEnv};
 use crate::teammates::Teammate;
 
 /// One plugin, resolved to its skills.
@@ -45,12 +44,6 @@ impl Plugin {
     }
 }
 
-/// `$HOME` as the process has it. A2: `roster/validation.rs` still calls
-/// [`resolve_all`]; home comes from RuntimeContext once it takes it.
-fn process_home() -> Option<PathBuf> {
-    ProcessEnv.var_os("HOME").map(PathBuf::from)
-}
-
 /// Resolve `plugin` for `teammate`, reading the operator's installed plugins
 /// under `home` (`$HOME`).
 pub fn resolve(teammate: &Teammate, plugin: &str, home: Option<&Path>) -> Result<Plugin> {
@@ -60,11 +53,6 @@ pub fn resolve(teammate: &Teammate, plugin: &str, home: Option<&Path>) -> Result
         .map(|d| expand_home(d, home))
         .collect();
     resolve_in(&dirs, installed_plugins_in(home).as_ref(), plugin, home)
-}
-
-/// [`resolve_all_in`] under the process's `$HOME`.
-pub fn resolve_all(teammate: &Teammate) -> Result<Vec<(Plugin, Vec<String>)>> {
-    resolve_all_in(teammate, process_home().as_deref())
 }
 
 /// Every `plugin_skills` entry of `teammate`, resolved and checked: each

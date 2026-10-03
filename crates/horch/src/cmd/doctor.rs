@@ -32,8 +32,10 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     }
     // Settings that quietly override the effort in every teammate file.
     let home = ctx.inherited.home_var.as_deref().map(std::path::Path::new);
-    let codex_home =
-        horch_core::codex::codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref());
+    let codex_home = horch_core::harness::codex::codex_home(
+        &ctx.paths.home,
+        ctx.inherited.codex_home.as_deref(),
+    );
     for w in operator_effort_warnings(
         home,
         &codex_home,

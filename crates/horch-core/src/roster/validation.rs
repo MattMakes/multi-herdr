@@ -115,7 +115,8 @@ impl Roster {
                     "{who}: plugin_skills cannot load with disable_skills: true"
                 ));
             }
-            if let Err(e) = crate::plugins::resolve_all(t) {
+            if let Err(e) = crate::harness::claude_plugins::resolve_all_in(t, self.home.as_deref())
+            {
                 problems.push(format!("{who}: {e:#}"));
             }
             // The kept skills are named in the skill-bundle briefing, and
@@ -182,7 +183,7 @@ impl Roster {
         // The operator's rule (CLAUDE.md): no teammate uses
         // ANTHROPIC_API_KEY. The launch removes it; a file that sets it is
         // a mistake to report, not to hide.
-        for key in crate::launch::FORBIDDEN_ENV {
+        for key in crate::harness::launch::FORBIDDEN_ENV {
             if t.env.contains_key(key) {
                 problems.push(format!("{who}: env must not set {key}; never use it"));
             }
@@ -586,7 +587,9 @@ mod spawnable_tests {
         assert!(r.skill_catalog().unwrap().lookup("demo").is_some());
         assert!(r.check().is_empty(), "{:?}", r.check());
         let sonnet = r.require("sonnet").unwrap();
-        assert!(crate::skills::ensure_supported(sonnet).is_err());
+        assert!(
+            crate::skills::ensure_supported_in(sonnet, &SkillCatalog::bundled().unwrap()).is_err()
+        );
         crate::skills::ensure_supported_in(sonnet, &r.skill_catalog().unwrap()).unwrap();
     }
 
@@ -800,9 +803,10 @@ mod spawnable_tests {
             let has = t.args.iter().any(|a| a == net);
             assert_eq!(has, name == "codex-network", "{name}");
         }
-        let cmd = crate::launch::command(
+        let cmd = crate::harness::launch::command_in(
+            &crate::harness::launch::LaunchEnv::for_test(),
             r.require("codex-network").unwrap(),
-            crate::launch::Session::Unmanaged,
+            crate::harness::launch::Session::Unmanaged,
             "p",
             None,
         )
