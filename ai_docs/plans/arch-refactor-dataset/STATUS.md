@@ -64,3 +64,6 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - B2 bin: settings.machine_file read but unused. e2e fake-herdr exec passes spawner env to pane.
 - ProcessEnv shims remain (remove later): workspace/herdr.rs (A7b), opencode.rs + prime.rs (A4), telemetry/readers.rs (A6c), message.rs (A7b), roster/validation.rs (A12). set_current_dir kept in worker.rs/recipes.rs.
 - A10 (from A11): roster/validation.rs:46 skills::selected rejects marketplace ids → accept catalog with lock; worker.rs/recipes.rs Bundle::install must use catalog with lock from data_root; add e2e spawn variant of mkt_08 no-network.
+- Merged U13 b1-measure (B1 landed). NumstatLine serializes `deleted` (golden frozen). occurred_at must be monotonic. fold needs execution_id on candidate.planned/spawned.
+## Wave 4 running: U18 a4-harness (opus-9), U19 a6a-store (pQ), U20 a11-marketplace-cli (backend-developer-6), U21 a7b-messaging (pS), U22 b3-planner (pT), U23 b4-judge-input (pV), U24 b6-export (pW)
+- Merged U19 a6a-store. A6b needs: Execution type + to/from, find_by_idempotency, set_skills call (SKL-04 wiring), ExecutionStore::open(paths, project). Store bytes = to_string_pretty no trailing newline, mode 0644. Lock <state_root>/<slug>.json.lock/.
