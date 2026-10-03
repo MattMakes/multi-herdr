@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/horch-core",
+    "crates/horch-marketplace",
     "crates/horch",
     "crates/horch-e2e",
     "crates/herdr-install",
@@ -15,6 +16,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 horch-core = { path = "crates/horch-core" }
+horch-marketplace = { path = "crates/horch-marketplace" }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
