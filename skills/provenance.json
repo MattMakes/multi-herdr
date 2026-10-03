@@ -52,6 +52,68 @@
       "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
     },
     {
+      "name": "design-imagery",
+      "sources": [
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/imagegen-frontend-web/SKILL.md",
+          "sha256": "6b5c2256522fdba1e3313eafa3d743b960a7b13ec029d3e6586e04b23327c1f8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/imagegen-frontend-mobile/SKILL.md",
+          "sha256": "8a33389979f3074fa0926678e266ad2eb9234624472254469fc1ad916b9caa24",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/image-to-code-skill/SKILL.md",
+          "sha256": "4c060a8064a8b13380bc2ef3d6e6a1d0b1e316aa093cd9807d0ce9e4eeb037fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/brandkit/SKILL.md",
+          "sha256": "b0c4837e1bd140ca816ae54948754ddd2ac1e2a4d3619363777a80caf00b2ede",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-style-guide.md",
+          "sha256": "611baa841eedab101f45c113c6bfbd4d7e16e859c9d6ebd2cf941827a6e8dd15",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-prompt-engineering.md",
+          "sha256": "e50f55bf323263eb27b4cd4c5172383a787fb894581d5d2befb3f6e0180b253e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/cip-prompt-engineering.md",
+          "sha256": "4bf3a0c858f38c230e43e872857b72d9eb692e066e8de5920da75aac733e753c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/scripts/logo/generate.py",
+          "sha256": "a72e25d49e48fac6a1059d681a39c3f334c085f54ab90a88d1c9726edd079940",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Combined web, mobile, image-to-code and brand-kit image skills into one harness-neutral generate, spec, build, and screenshot-compare workflow; provider scripts, API setup, dials and approval gates removed."
+    },
+    {
       "name": "check",
       "source_path": "plugins/dev/skills/check-implementation/SKILL.md",
       "source_sha256": "004ecef7d46f865854783bb689c1282cf1ccea01fb08ccec5613dbef13d260be",

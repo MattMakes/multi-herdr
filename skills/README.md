@@ -45,3 +45,4 @@ A skill may combine several upstream files, from several repositories. Its entry
 
 | Skill | Upstream sources |
 | --- | --- |
+| [design-imagery](design-imagery/SKILL.md) | `leonxlnx/taste-skill`: `skills/imagegen-frontend-web/`, `skills/imagegen-frontend-mobile/`, `skills/image-to-code-skill/`, `skills/brandkit/`; `nextlevelbuilder/ui-ux-pro-max-skill`: `.claude/skills/design/` logo and CIP prompt references, logo prompt template |
