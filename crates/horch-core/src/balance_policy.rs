@@ -291,87 +291,9 @@ pub fn resolve(req: &Teammate, roster: &Roster, decision: &Decision) -> Option<T
 
 // ─── roster rules ───────────────────────────────────────────────────────────
 
-/// Tools a Claude persona may lean on that no other agent has (rule 6).
-const CLAUDE_ONLY_TOOLS: [&str; 7] = [
-    "Agent",
-    "Task",
-    "TodoWrite",
-    "WebFetch",
-    "WebSearch",
-    "NotebookEdit",
-    "Skill",
-];
-
-/// Section 13.3 rules 1-5, as `horch teammates --check` errors (BAL-02).
-pub fn fallback_problems(roster: &Roster) -> Vec<String> {
-    let mut out = Vec::new();
-    for name in roster.names() {
-        let Some(t) = roster.get(name) else { continue };
-        let pool = quota::pool_for(t.agent.as_str(), t.model.as_deref().unwrap_or_default());
-        for fb in &t.fallbacks {
-            let who = &t.name;
-            let Some(f) = roster.get(fb) else {
-                out.push(format!("{who}: fallback '{fb}' does not exist"));
-                continue;
-            };
-            if f.hidden {
-                out.push(format!("{who}: fallback '{fb}' is hidden"));
-            }
-            if let Err(e) = Roster::is_spawnable(f) {
-                out.push(format!("{who}: fallback '{fb}' is not spawnable: {e:#}"));
-            }
-            let fpool = quota::pool_for(f.agent.as_str(), f.model.as_deref().unwrap_or_default());
-            if fpool == pool {
-                out.push(format!(
-                    "{who}: fallback '{fb}' draws from the same pool ({pool}), so it cannot help"
-                ));
-            }
-            if trains_on_input(f) {
-                out.push(format!(
-                    "{who}: fallback '{fb}' trains on its input; free tiers are chosen by \
-                     the orchestrator, never automatically"
-                ));
-            }
-            let merged = merge(t, f);
-            for p in roster.check_teammate(&merged) {
-                out.push(format!("{who} via {fb}: {p}"));
-            }
-        }
-    }
-    out
-}
-
-/// Rule 6: warnings, not errors. A persona that names a Claude-only tool,
-/// on a fallback whose agent lacks it.
-pub fn fallback_warnings(roster: &Roster) -> Vec<String> {
-    let mut out = Vec::new();
-    for name in roster.names() {
-        let Some(t) = roster.get(name) else { continue };
-        for fb in &t.fallbacks {
-            let Some(f) = roster.get(fb) else { continue };
-            if f.agent == Agent::Claude {
-                continue;
-            }
-            for tool in CLAUDE_ONLY_TOOLS {
-                if names_tool(&t.persona, tool) {
-                    out.push(format!(
-                        "{}: the persona names the {tool} tool, which {} (fallback {fb}) lacks",
-                        t.name, f.agent
-                    ));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Whether `text` names `tool` as a tool: the name in backticks, or followed
-/// by the word "tool". Plain English "Task" or "Agent" does not count.
-fn names_tool(text: &str, tool: &str) -> bool {
-    text.contains(&format!("`{tool}`"))
-        || text.contains(&format!("{tool} tool"))
-        || text.contains(&format!("{tool}("))
-}
+#[cfg(test)]
+use crate::roster::validation::names_tool;
+pub use crate::roster::validation::{fallback_problems, fallback_warnings};
 
 #[cfg(test)]
 mod tests {
