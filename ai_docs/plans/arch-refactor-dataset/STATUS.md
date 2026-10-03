@@ -49,3 +49,11 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Saved ledger oracle uses to_string_pretty (Ledger::write is private), no trailing newline.
 | U09 | a7a-workspace | sonnet-2 | MERGED |
 - A7b: design §4.7 wants PaneId newtypes, send_text/send_keys names, HerdrClient built from HarnessBins — not yet aligned. Herdr methods outside the trait: send_line, wait_output, integration_status, pane_focus*, pane_move*, pane_resize, tab_*. workspace_create(cwd: Option<&str>).
+| U17 | b2-preflight | opus-8? |
+- A4: Agent:: matches exist in roster/effort.rs and roster/validation.rs; arc_10 scan must allow roster/effort.rs too or move effort tables into harness capabilities.
+- A6: routing::decide still returns legacy Decision; switch spawn plan to RoutingDecision in A6. RoutingMode has Resume and Ungated (B3 adds Pinned). HarnessKind has no Ord (available_harnesses is a Vec).
+- A5 eligible API: eligible_fallbacks(req, roster, view), roster_eligibility(...) with EligibilityFilter; see a5-routing.md.
+- B3: 0 gates → eligible=true, score 0.0 (coordinator decides). Freeze uses git add -A: a second freeze after validation can commit target/ unless ignored → validator CARGO_TARGET_DIR must be outside the worktree or freeze must exclude target/. diff_patch callers pass the main repo. Gates get all env except FORBIDDEN_ENV (consider allowlist). setsid gates escape timeout kill. GitClient has diff_digest; GitCli/CommandValidator have with_env.
+- Merged also: U14 b2-vcs, U15 b4-evaluation, U17 b2-preflight, U16 a9a-skills (SKL-04 open → A6/A9b).
+- B2 binary unit: PRE-06, PRE-07, PRE-12, CMP-01 tests. worktree_root must be absolute. safe_n is one wave size for all candidates (1 pi lowers it). PreflightCandidate replaces CandidatePlanned; JudgeConfig.policy is Value until WinnerPolicy (now merged) → type it. PreflightPlan.pools Vec<PoolFacts>. harness_versions keyed by as_str (add Ord to HarnessKind in a later unit).
+- B4 rest: parser gives NotJson for fences; use --json-schema. Utility tie-break = highest component-score sum among acceptable tied labels, then lexical.
