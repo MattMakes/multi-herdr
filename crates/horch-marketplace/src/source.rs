@@ -7,11 +7,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::error::IntegrityViolation;
 use crate::error::{MarketplaceError, Result};
 use crate::fsx;
 use crate::git::GitRunner;
-use crate::integrity::{check_relative_path, MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES};
+use crate::integrity::{check_limits, check_relative_path};
 use crate::resolver::{ResolvedOrigin, ResolvedSource};
 
 /// Write the skill tree under `staging` and return the staged skill
@@ -99,42 +98,24 @@ fn check_listing(git: &GitRunner, repo: &Path, treeish: &str) -> Result<()> {
     let mut count = 0usize;
     let mut total = 0u64;
     for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-        let record = String::from_utf8(record.to_vec())
-            .map_err(|_| IntegrityViolation::InvalidPath("non-UTF-8 path".to_owned()))?;
-        let (meta, path) = record
-            .split_once('\t')
-            .ok_or_else(|| IntegrityViolation::InvalidPath(record.clone()))?;
+        let record = String::from_utf8_lossy(record);
+        let Some((meta, path)) = record.split_once('\t') else {
+            return Err(MarketplaceError::Traversal(PathBuf::from(&*record)));
+        };
         check_relative_path(path)?;
         let mut fields = meta.split_whitespace();
         let mode = fields.next().unwrap_or_default();
-        let size = fields.nth(2).unwrap_or_default();
         match mode {
-            "120000" => return Err(IntegrityViolation::Symlink(path.to_owned()).into()),
+            "120000" => return Err(MarketplaceError::Symlink(PathBuf::from(path))),
             "100644" | "100755" => {}
-            _ => return Err(IntegrityViolation::NotRegularFile(path.to_owned()).into()),
+            _ => return Err(MarketplaceError::NotRegularFile(PathBuf::from(path))),
         }
+        let bytes = fields
+            .nth(2)
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| MarketplaceError::NotRegularFile(PathBuf::from(path)))?;
         count += 1;
-        if count > MAX_FILES {
-            return Err(IntegrityViolation::TooManyFiles { limit: MAX_FILES }.into());
-        }
-        let bytes: u64 = size
-            .parse()
-            .map_err(|_| IntegrityViolation::InvalidPath(path.to_owned()))?;
-        if bytes > MAX_FILE_BYTES {
-            return Err(IntegrityViolation::FileTooLarge {
-                path: path.to_owned(),
-                bytes,
-                limit: MAX_FILE_BYTES,
-            }
-            .into());
-        }
-        total += bytes;
-        if total > MAX_TOTAL_BYTES {
-            return Err(IntegrityViolation::TotalTooLarge {
-                limit: MAX_TOTAL_BYTES,
-            }
-            .into());
-        }
+        check_limits(path, bytes, count, &mut total)?;
     }
     Ok(())
 }

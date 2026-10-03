@@ -1,36 +1,47 @@
 //! Tree checks and the tree digest of a staged skill directory.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::error::{IntegrityViolation, MarketplaceError, Result};
+use crate::error::{MarketplaceError, Result};
 
 pub const MAX_FILES: usize = 512;
-pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
-pub const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_FILE_BYTES: u64 = 1 << 20;
+pub const MAX_TOTAL_BYTES: u64 = 8 << 20;
 
 /// Reject a path that is absolute, has a `..` or empty component, or is
 /// not `/`-separated text. Used on every path that comes from outside
 /// before it is joined to a directory.
-pub fn check_relative_path(path: &str) -> std::result::Result<(), IntegrityViolation> {
+pub fn check_relative_path(path: &str) -> Result<()> {
     if path.starts_with('/') || path.starts_with('\\') {
-        return Err(IntegrityViolation::AbsolutePath(path.to_owned()));
+        return Err(MarketplaceError::AbsolutePath(PathBuf::from(path)));
     }
-    let mut parts = path.split('/').peekable();
-    if parts.peek().is_none() {
-        return Err(IntegrityViolation::InvalidPath(path.to_owned()));
+    let clean = path
+        .split('/')
+        .all(|part| !matches!(part, "" | "." | "..") && !part.contains(['\\', '\0']));
+    if clean {
+        Ok(())
+    } else {
+        Err(MarketplaceError::Traversal(PathBuf::from(path)))
     }
-    for part in parts {
-        match part {
-            ".." => return Err(IntegrityViolation::ParentComponent(path.to_owned())),
-            "" | "." => return Err(IntegrityViolation::InvalidPath(path.to_owned())),
-            p if p.contains('\\') || p.contains('\0') => {
-                return Err(IntegrityViolation::InvalidPath(path.to_owned()))
-            }
-            _ => {}
-        }
+}
+
+/// Apply the per-file and total limits to one more file of `bytes`.
+pub(crate) fn check_limits(path: &str, bytes: u64, count: usize, total: &mut u64) -> Result<()> {
+    if count > MAX_FILES {
+        return Err(MarketplaceError::TooManyFiles(MAX_FILES));
+    }
+    if bytes > MAX_FILE_BYTES {
+        return Err(MarketplaceError::FileTooLarge {
+            path: PathBuf::from(path),
+            bytes,
+        });
+    }
+    *total += bytes;
+    if *total > MAX_TOTAL_BYTES {
+        return Err(MarketplaceError::TotalTooLarge(MAX_TOTAL_BYTES));
     }
     Ok(())
 }
@@ -54,47 +65,29 @@ pub fn tree_digest(dir: &Path) -> Result<String> {
 }
 
 fn walk(dir: &Path, rel: &str, files: &mut Vec<(String, String)>, total: &mut u64) -> Result<()> {
-    let entries =
-        fs::read_dir(dir).map_err(|e| MarketplaceError::io(dir.display().to_string(), e))?;
+    let entries = fs::read_dir(dir).map_err(|e| MarketplaceError::io(dir.display(), e))?;
     for entry in entries {
-        let entry = entry.map_err(|e| MarketplaceError::io(dir.display().to_string(), e))?;
+        let entry = entry.map_err(|e| MarketplaceError::io(dir.display(), e))?;
         let name = entry.file_name();
-        let name = name
-            .to_str()
-            .ok_or_else(|| IntegrityViolation::InvalidPath(format!("{rel}{name:?}")))?;
+        let Some(name) = name.to_str() else {
+            return Err(MarketplaceError::Traversal(PathBuf::from(rel).join(name)));
+        };
         let child = format!("{rel}{name}");
         check_relative_path(&child)?;
-        let meta = fs::symlink_metadata(entry.path())
-            .map_err(|e| MarketplaceError::io(child.clone(), e))?;
+        let meta =
+            fs::symlink_metadata(entry.path()).map_err(|e| MarketplaceError::io(&child, e))?;
         let kind = meta.file_type();
         if kind.is_symlink() {
-            return Err(IntegrityViolation::Symlink(child).into());
+            return Err(MarketplaceError::Symlink(PathBuf::from(child)));
         } else if kind.is_dir() {
             walk(&entry.path(), &format!("{child}/"), files, total)?;
         } else if kind.is_file() {
-            if files.len() >= MAX_FILES {
-                return Err(IntegrityViolation::TooManyFiles { limit: MAX_FILES }.into());
-            }
-            if meta.len() > MAX_FILE_BYTES {
-                return Err(IntegrityViolation::FileTooLarge {
-                    path: child,
-                    bytes: meta.len(),
-                    limit: MAX_FILE_BYTES,
-                }
-                .into());
-            }
-            *total += meta.len();
-            if *total > MAX_TOTAL_BYTES {
-                return Err(IntegrityViolation::TotalTooLarge {
-                    limit: MAX_TOTAL_BYTES,
-                }
-                .into());
-            }
+            check_limits(&child, meta.len(), files.len() + 1, total)?;
             let bytes = fs::read(entry.path())
-                .map_err(|e| MarketplaceError::io(format!("read {child}"), e))?;
+                .map_err(|e| MarketplaceError::io(format_args!("read {child}"), e))?;
             files.push((child, hex(&Sha256::digest(&bytes))));
         } else {
-            return Err(IntegrityViolation::NotRegularFile(child).into());
+            return Err(MarketplaceError::NotRegularFile(PathBuf::from(child)));
         }
     }
     Ok(())
@@ -118,16 +111,18 @@ mod tests {
     fn relative_path_rules() {
         assert!(check_relative_path("SKILL.md").is_ok());
         assert!(check_relative_path("refs/a.md").is_ok());
-        assert_eq!(
+        assert!(matches!(
             check_relative_path("/etc/passwd"),
-            Err(IntegrityViolation::AbsolutePath("/etc/passwd".into()))
-        );
-        assert_eq!(
-            check_relative_path("a/../../x"),
-            Err(IntegrityViolation::ParentComponent("a/../../x".into()))
-        );
-        for bad in ["", "a//b", "./a", "a/"] {
-            assert!(check_relative_path(bad).is_err(), "{bad}");
+            Err(MarketplaceError::AbsolutePath(_))
+        ));
+        for bad in ["a/../../x", "..", "", "a//b", "./a", "a/"] {
+            assert!(
+                matches!(
+                    check_relative_path(bad),
+                    Err(MarketplaceError::Traversal(_))
+                ),
+                "{bad}"
+            );
         }
     }
 

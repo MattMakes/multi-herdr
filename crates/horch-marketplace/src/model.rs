@@ -19,7 +19,9 @@ impl SkillId {
         if is_valid_skill_name(s) {
             Ok(Self(s.to_owned()))
         } else {
-            Err(MarketplaceError::InvalidSkillId(s.to_owned()))
+            Err(MarketplaceError::BadSource(format!(
+                "invalid skill id '{s}': use lowercase ASCII letters, digits and single '-'"
+            )))
         }
     }
 
@@ -89,7 +91,7 @@ pub enum SkillSource {
 /// to a branch of the same name, because `owner/repo@name` does not say
 /// which it is. `Branch("HEAD")` is the remote's default branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum GitRevision {
     Branch(String),
     Tag(String),
@@ -105,12 +107,18 @@ impl GitRevision {
         }
     }
 
+    /// The revision for `@rev` text, as `parse_source` reads it. The lock's
+    /// `requested_revision` parses back to the same revision.
+    pub fn from_requested(rev: &str) -> Result<Self> {
+        Self::from_spec(Some(rev))
+    }
+
     fn from_spec(rev: Option<&str>) -> Result<Self> {
         match rev {
-            None => Ok(Self::Branch("HEAD".to_owned())),
+            None | Some("HEAD") => Ok(Self::Branch("HEAD".to_owned())),
             Some(r) if is_full_sha(r) => Ok(Self::Commit(r.to_ascii_lowercase())),
             Some(r) if is_safe_ref_name(r) => Ok(Self::Tag(r.to_owned())),
-            Some(r) => Err(MarketplaceError::InvalidSource(format!(
+            Some(r) => Err(MarketplaceError::BadSource(format!(
                 "'{r}' is not a valid revision"
             ))),
         }
@@ -146,53 +154,63 @@ impl SkillSource {
     /// A 40-hex `@rev` is a commit. Any other `@rev` resolves as a tag, then
     /// as a branch. Without `@rev` the remote's default branch is used. The
     /// last `@` in the path starts `@rev`, so a path that contains `@` needs
-    /// an explicit `@rev`. Use `with_subdir` for a skill inside a repository.
+    /// an explicit `@rev`. A git spec can end in `#<subdir>`; `with_subdir`
+    /// sets it too.
     pub fn parse(spec: &str) -> Result<Self> {
-        let spec = spec.trim();
-        if let Some(name) = spec.strip_prefix("bundled:") {
-            SkillId::parse(name)?;
-            return Ok(Self::Bundled {
-                name: name.to_owned(),
-            });
-        }
-        if spec.starts_with('/') {
-            return Ok(Self::Local {
-                path: PathBuf::from(spec),
-            });
-        }
-        if let Some((scheme, rest)) = spec.split_once("://") {
-            let scheme = scheme.to_ascii_lowercase();
-            check_url(spec)?;
-            let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-            let (path, rev) = match path.rsplit_once('@') {
-                Some((p, r)) => (p, Some(r)),
-                None => (path, None),
-            };
-            return Ok(Self::Git {
-                url: format!("{scheme}://{authority}{path}"),
-                revision: GitRevision::from_spec(rev)?,
-                subdir: None,
-            });
-        }
-        let (repo, rev) = match spec.split_once('@') {
+        parse_source(spec)
+    }
+}
+
+/// See `SkillSource::parse`. A git spec can end in `#<subdir>`, the skill
+/// directory inside the repository: `owner/repo@v1#skills/tdd`.
+pub fn parse_source(spec: &str) -> Result<SkillSource> {
+    let spec = spec.trim();
+    if let Some(name) = spec.strip_prefix("bundled:") {
+        SkillId::parse(name)?;
+        return Ok(SkillSource::Bundled {
+            name: name.to_owned(),
+        });
+    }
+    if spec.starts_with('/') {
+        return Ok(SkillSource::Local {
+            path: PathBuf::from(spec),
+        });
+    }
+    let (spec, subdir) = match spec.split_once('#') {
+        Some((s, d)) => (s, Some(d.to_owned())),
+        None => (spec, None),
+    };
+    if let Some((scheme, rest)) = spec.split_once("://") {
+        let scheme = scheme.to_ascii_lowercase();
+        check_url(spec)?;
+        let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+        let (path, rev) = match path.rsplit_once('@') {
             Some((p, r)) => (p, Some(r)),
-            None => (spec, None),
+            None => (path, None),
         };
-        let mut parts = repo.split('/');
-        match (parts.next(), parts.next(), parts.next()) {
-            (Some(owner), Some(name), None) if is_github_name(owner) && is_github_name(name) => {
-                let name = name.strip_suffix(".git").unwrap_or(name);
-                Ok(Self::Git {
-                    url: format!("https://github.com/{owner}/{name}.git"),
-                    revision: GitRevision::from_spec(rev)?,
-                    subdir: None,
-                })
-            }
-            _ => Err(MarketplaceError::InvalidSource(format!(
-                "'{spec}' is not owner/repo, an https:// or file:// URL, an absolute path, \
-                 or bundled:<name>"
-            ))),
+        return Ok(SkillSource::Git {
+            url: format!("{scheme}://{authority}{path}"),
+            revision: GitRevision::from_spec(rev)?,
+            subdir,
+        });
+    }
+    let (repo, rev) = match spec.split_once('@') {
+        Some((p, r)) => (p, Some(r)),
+        None => (spec, None),
+    };
+    let mut parts = repo.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(owner), Some(name), None) if is_github_name(owner) && is_github_name(name) => {
+            Ok(SkillSource::Git {
+                url: format!("https://github.com/{owner}/{name}"),
+                revision: GitRevision::from_spec(rev)?,
+                subdir,
+            })
         }
+        _ => Err(MarketplaceError::BadSource(format!(
+            "'{spec}' is not owner/repo, an https:// or file:// URL, an absolute path, \
+                 or bundled:<name>"
+        ))),
     }
 }
 
@@ -208,26 +226,30 @@ fn is_github_name(s: &str) -> bool {
 /// userinfo (`user:pass@host`, `token@host`), or a query with `token=`.
 pub fn check_url(url: &str) -> Result<()> {
     let Some((scheme, rest)) = url.split_once("://") else {
-        return Err(MarketplaceError::InvalidSource(
+        return Err(MarketplaceError::BadSource(
             "a git URL needs https:// or file://".to_owned(),
         ));
     };
     let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
     if authority.contains('@') {
-        return Err(MarketplaceError::CredentialsInUrl);
+        return Err(MarketplaceError::Credentials(
+            "userinfo in the URL authority".to_owned(),
+        ));
     }
     if let Some((_, query)) = url.split_once('?') {
         if query
             .split(['&', ';', '#'])
             .any(|kv| kv.to_ascii_lowercase().contains("token="))
         {
-            return Err(MarketplaceError::CredentialsInUrl);
+            return Err(MarketplaceError::Credentials(
+                "a token in the URL query".to_owned(),
+            ));
         }
     }
     match scheme.to_ascii_lowercase().as_str() {
         "https" if !authority.is_empty() => Ok(()),
         "file" if authority.is_empty() => Ok(()),
-        _ => Err(MarketplaceError::InvalidSource(format!(
+        _ => Err(MarketplaceError::BadSource(format!(
             "unsupported git URL scheme '{scheme}': use https:// or file:///"
         ))),
     }
@@ -243,7 +265,7 @@ mod tests {
         assert_eq!(
             SkillSource::parse(&format!("MattMakes/skill-marketplace@{sha}")).unwrap(),
             SkillSource::Git {
-                url: "https://github.com/MattMakes/skill-marketplace.git".into(),
+                url: "https://github.com/MattMakes/skill-marketplace".into(),
                 revision: GitRevision::Commit(sha.into()),
                 subdir: None,
             }
@@ -263,6 +285,18 @@ mod tests {
                 revision: GitRevision::Branch("HEAD".into()),
                 subdir: None,
             }
+        );
+        assert_eq!(
+            SkillSource::parse("o/r@HEAD#skills/tdd").unwrap(),
+            SkillSource::Git {
+                url: "https://github.com/o/r".into(),
+                revision: GitRevision::Branch("HEAD".into()),
+                subdir: Some("skills/tdd".into()),
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&GitRevision::Tag("v1".into())).unwrap(),
+            r#"{"type":"tag","value":"v1"}"#
         );
         assert_eq!(
             SkillSource::parse("/x/tdd").unwrap(),

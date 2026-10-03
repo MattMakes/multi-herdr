@@ -9,120 +9,85 @@ use crate::git::GitError;
 
 pub type Result<T> = std::result::Result<T, MarketplaceError>;
 
-/// A rule that a staged skill tree broke. See `integrity`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IntegrityViolation {
-    AbsolutePath(String),
-    ParentComponent(String),
-    InvalidPath(String),
-    Symlink(String),
-    NotRegularFile(String),
-    TooManyFiles {
-        limit: usize,
-    },
-    FileTooLarge {
-        path: String,
-        bytes: u64,
-        limit: u64,
-    },
-    TotalTooLarge {
-        limit: u64,
-    },
-}
-
-impl fmt::Display for IntegrityViolation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AbsolutePath(p) => write!(f, "absolute path '{p}'"),
-            Self::ParentComponent(p) => write!(f, "path '{p}' has a '..' component"),
-            Self::InvalidPath(p) => write!(f, "path '{p}' is not a clean relative UTF-8 path"),
-            Self::Symlink(p) => write!(f, "'{p}' is a symlink"),
-            Self::NotRegularFile(p) => write!(f, "'{p}' is not a regular file or directory"),
-            Self::TooManyFiles { limit } => write!(f, "more than {limit} files"),
-            Self::FileTooLarge { path, bytes, limit } => {
-                write!(f, "'{path}' is {bytes} bytes; the limit is {limit}")
-            }
-            Self::TotalTooLarge { limit } => write!(f, "total size is over {limit} bytes"),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum MarketplaceError {
-    InvalidSkillId(String),
-    InvalidSource(String),
-    /// The URL carried userinfo or a token. The URL itself is never stored
-    /// here, so the secret cannot reach a log.
-    CredentialsInUrl,
+    /// The source spec, skill id or revision is not usable, or the
+    /// catalog does not know the skill.
+    BadSource(String),
+    /// The URL carried userinfo or a token. The text says which, and never
+    /// holds the URL, so the secret cannot reach a log.
+    Credentials(String),
+    Git(GitError),
+    /// A branch or tag is not on the remote, or a commit could not be
+    /// fetched.
     RevisionNotFound {
         url: String,
         revision: String,
     },
-    UnknownBundled(String),
-    InvalidManifest {
+    /// SKILL.md is missing, not UTF-8, has no frontmatter, or has an
+    /// unknown key.
+    Manifest(String),
+    /// The SKILL.md name or description breaks a rule.
+    SkillMd(String),
+    /// A `..`, empty or otherwise unclean relative path.
+    Traversal(PathBuf),
+    AbsolutePath(PathBuf),
+    Symlink(PathBuf),
+    /// A device, socket, fifo or git submodule.
+    NotRegularFile(PathBuf),
+    TooManyFiles(usize),
+    FileTooLarge {
         path: PathBuf,
-        reason: String,
+        bytes: u64,
     },
-    Integrity(IntegrityViolation),
+    TotalTooLarge(u64),
     DigestMismatch {
-        id: String,
         expected: String,
         actual: String,
     },
-    Lockfile {
-        path: PathBuf,
-        reason: String,
-    },
+    /// `marketplace.lock` cannot be parsed or has another version.
+    Lock(String),
+    Io(io::Error),
     /// A `FaultPoint` fired. Only tests and crash drills set one.
     Fault(&'static str),
-    Git(GitError),
-    Io {
-        context: String,
-        source: io::Error,
-    },
 }
 
 impl MarketplaceError {
-    pub(crate) fn io(context: impl Into<String>, source: io::Error) -> Self {
-        Self::Io {
-            context: context.into(),
-            source,
-        }
+    /// An I/O error with the path or action in its message.
+    pub(crate) fn io(context: impl fmt::Display, e: io::Error) -> Self {
+        Self::Io(io::Error::new(e.kind(), format!("{context}: {e}")))
     }
 }
 
 impl fmt::Display for MarketplaceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidSkillId(id) => write!(
+            Self::BadSource(why) => write!(f, "invalid skill source: {why}"),
+            Self::Credentials(why) => write!(
                 f,
-                "invalid skill id '{id}': use lowercase ASCII letters, digits and single '-'"
+                "skill source URL carries credentials ({why}); remove them"
             ),
-            Self::InvalidSource(why) => write!(f, "invalid skill source: {why}"),
-            Self::CredentialsInUrl => write!(
-                f,
-                "skill source URL carries credentials; remove the user, password or token"
-            ),
+            Self::Git(e) => write!(f, "{e}"),
             Self::RevisionNotFound { url, revision } => {
                 write!(f, "revision '{revision}' not found in {url}")
             }
-            Self::UnknownBundled(name) => write!(f, "unknown bundled skill '{name}'"),
-            Self::InvalidManifest { path, reason } => {
-                write!(f, "{}: invalid SKILL.md: {reason}", path.display())
+            Self::Manifest(why) => write!(f, "invalid SKILL.md: {why}"),
+            Self::SkillMd(why) => write!(f, "invalid SKILL.md: {why}"),
+            Self::Traversal(p) => write!(f, "path '{}' is not a clean relative path", p.display()),
+            Self::AbsolutePath(p) => write!(f, "absolute path '{}'", p.display()),
+            Self::Symlink(p) => write!(f, "'{}' is a symlink", p.display()),
+            Self::NotRegularFile(p) => write!(f, "'{}' is not a regular file", p.display()),
+            Self::TooManyFiles(limit) => write!(f, "skill has more than {limit} files"),
+            Self::FileTooLarge { path, bytes } => {
+                write!(f, "'{}' is {bytes} bytes, over the limit", path.display())
             }
-            Self::Integrity(v) => write!(f, "skill tree rejected: {v}"),
-            Self::DigestMismatch {
-                id,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "skill '{id}': digest {actual} does not match locked {expected}"
-            ),
-            Self::Lockfile { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Self::TotalTooLarge(limit) => write!(f, "skill is over {limit} bytes in total"),
+            Self::DigestMismatch { expected, actual } => {
+                write!(f, "digest {actual} does not match the locked {expected}")
+            }
+            Self::Lock(why) => write!(f, "marketplace.lock: {why}"),
+            Self::Io(e) => write!(f, "{e}"),
             Self::Fault(point) => write!(f, "fault injected at {point}"),
-            Self::Git(e) => write!(f, "{e}"),
-            Self::Io { context, source } => write!(f, "{context}: {source}"),
         }
     }
 }
@@ -131,7 +96,7 @@ impl std::error::Error for MarketplaceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Git(e) => Some(e),
-            Self::Io { source, .. } => Some(source),
+            Self::Io(e) => Some(e),
             _ => None,
         }
     }
@@ -140,11 +105,5 @@ impl std::error::Error for MarketplaceError {
 impl From<GitError> for MarketplaceError {
     fn from(e: GitError) -> Self {
         Self::Git(e)
-    }
-}
-
-impl From<IntegrityViolation> for MarketplaceError {
-    fn from(v: IntegrityViolation) -> Self {
-        Self::Integrity(v)
     }
 }

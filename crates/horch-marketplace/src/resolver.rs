@@ -56,10 +56,9 @@ impl Resolver<'_> {
         let (origin, expected_name, requested_revision, resolved_commit) = match source {
             SkillSource::Bundled { name } => {
                 let id = SkillId::parse(name)?;
-                let skill = self
-                    .catalog
-                    .bundled(&id)
-                    .ok_or_else(|| MarketplaceError::UnknownBundled(name.clone()))?;
+                let skill = self.catalog.bundled(&id).ok_or_else(|| {
+                    MarketplaceError::BadSource(format!("unknown bundled skill '{name}'"))
+                })?;
                 (
                     ResolvedOrigin::Bundled(skill.clone()),
                     Some(name.clone()),
@@ -69,7 +68,7 @@ impl Resolver<'_> {
             }
             SkillSource::Local { path } => {
                 if !path.is_absolute() {
-                    return Err(MarketplaceError::InvalidSource(format!(
+                    return Err(MarketplaceError::BadSource(format!(
                         "local path '{}' is not absolute",
                         path.display()
                     )));
@@ -118,7 +117,7 @@ impl Resolver<'_> {
         let (wanted, name): (Vec<String>, &str) = match revision {
             GitRevision::Commit(sha) if is_full_sha(sha) => return Ok(sha.to_ascii_lowercase()),
             GitRevision::Commit(sha) => {
-                return Err(MarketplaceError::InvalidSource(format!(
+                return Err(MarketplaceError::BadSource(format!(
                     "commit '{sha}' is not 40 hex characters"
                 )))
             }
@@ -134,7 +133,7 @@ impl Resolver<'_> {
             ),
         };
         if name != "HEAD" && !crate::model::is_safe_ref_name(name) {
-            return Err(MarketplaceError::InvalidSource(format!(
+            return Err(MarketplaceError::BadSource(format!(
                 "'{name}' is not a valid revision"
             )));
         }
@@ -173,16 +172,32 @@ impl SkillSource {
         }
     }
 
-    /// The same source pinned to `commit`, for a rebuild from the lock.
-    /// Other sources are returned unchanged.
-    pub fn pinned(self, commit: Option<&str>) -> Self {
-        match (self, commit) {
-            (SkillSource::Git { url, subdir, .. }, Some(c)) => SkillSource::Git {
+    /// The same source at another revision: a pinned commit for a rebuild
+    /// from the lock, or the requested revision again for an update. Other
+    /// sources are returned unchanged.
+    pub fn with_revision(self, revision: GitRevision) -> Self {
+        match self {
+            SkillSource::Git { url, subdir, .. } => SkillSource::Git {
                 url,
-                revision: GitRevision::Commit(c.to_owned()),
+                revision,
                 subdir,
             },
-            (other, _) => other,
+            other => other,
+        }
+    }
+
+    /// The spec the lock stores as `source`, without the revision. It
+    /// parses back to this source at the default revision.
+    pub fn to_spec(&self) -> String {
+        match self {
+            SkillSource::Bundled { name } => format!("bundled:{name}"),
+            SkillSource::Local { path } => path.display().to_string(),
+            SkillSource::Git {
+                url,
+                subdir: Some(dir),
+                ..
+            } => format!("{url}#{dir}"),
+            SkillSource::Git { url, .. } => url.clone(),
         }
     }
 }

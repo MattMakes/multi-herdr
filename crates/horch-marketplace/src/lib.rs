@@ -17,11 +17,11 @@ pub mod source;
 pub mod store;
 
 pub use catalog::{BundledFile, BundledSkill, Catalog};
-pub use error::{IntegrityViolation, MarketplaceError, Result};
+pub use error::{MarketplaceError, Result};
 pub use git::{GitError, GitOutput, GitRunner};
-pub use installer::{FaultPoint, InstallOptions, InstalledSkill, Installer, ReinstallAction, Step};
+pub use installer::{FaultPoint, InstallOptions, InstalledSkill, Installer, Step};
 pub use lockfile::{LockEntry, Lockfile};
 pub use manifest::SkillManifest;
-pub use model::{GitRevision, SkillId, SkillSource, SkillVersion};
+pub use model::{parse_source, GitRevision, SkillId, SkillSource, SkillVersion};
 pub use resolver::{ResolvedOrigin, ResolvedSource, Resolver};
 pub use store::Store;

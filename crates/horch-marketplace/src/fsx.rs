@@ -4,11 +4,11 @@ use std::collections::hash_map::RandomState;
 use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::{IntegrityViolation, MarketplaceError, Result};
+use crate::error::{MarketplaceError, Result};
 
 /// 32 random hex characters. `RandomState` is seeded from the OS; the time,
 /// pid and a counter keep two calls in one process distinct.
@@ -84,22 +84,22 @@ fn copy_tree_at(from: &Path, to: &Path, rel: &str) -> Result<()> {
     for entry in entries {
         let entry = entry.map_err(|e| MarketplaceError::io(from.display().to_string(), e))?;
         let name = entry.file_name();
-        let name = name
-            .to_str()
-            .ok_or_else(|| IntegrityViolation::InvalidPath(format!("{rel}{name:?}")))?;
+        let Some(name) = name.to_str() else {
+            return Err(MarketplaceError::Traversal(PathBuf::from(rel).join(name)));
+        };
         let child_rel = format!("{rel}{name}");
         let meta = fs::symlink_metadata(entry.path())
             .map_err(|e| MarketplaceError::io(child_rel.clone(), e))?;
         let target = to.join(name);
         if meta.file_type().is_symlink() {
-            return Err(IntegrityViolation::Symlink(child_rel).into());
+            return Err(MarketplaceError::Symlink(PathBuf::from(child_rel)));
         } else if meta.is_dir() {
             copy_tree_at(&entry.path(), &target, &format!("{child_rel}/"))?;
         } else if meta.is_file() {
             fs::copy(entry.path(), &target)
                 .map_err(|e| MarketplaceError::io(format!("copy {child_rel}"), e))?;
         } else {
-            return Err(IntegrityViolation::NotRegularFile(child_rel).into());
+            return Err(MarketplaceError::NotRegularFile(PathBuf::from(child_rel)));
         }
     }
     Ok(())

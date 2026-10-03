@@ -16,49 +16,61 @@ installer lockfile integrity git fsx error`.
 
 ## Public API for A9 (catalog) and A11 (CLI)
 
+The API follows `ai_docs/designs/2026-10-02-architecture-refactor-design.md`
+§4.10. Additions to the design are marked "(extra)".
+
 ```rust
 // Construction. The caller resolves every path and binary.
-let store = Store::new(data_home.join("horch"));          // ${XDG_DATA_HOME:-~/.local/share}/horch/
 let git = GitRunner::new(git_bin);                         // caller maps HORCH_GIT_BIN
-let catalog = Catalog::new().with_bundled(BundledSkill { id, files: vec![BundledFile { path, bytes }] });
-let installer = Installer::new(store, git, catalog);
+let installer = Installer::new(data_home.join("horch"), git)   // ${XDG_DATA_HOME:-~/.local/share}/horch/
+    .with_catalog(Catalog::new().with_bundled(BundledSkill { id, files }));  // (extra)
 
 // Sources.
-SkillSource::parse("owner/repo@v1")?           // https://github.com/owner/repo.git
-SkillSource::parse("https://host/r.git@<sha>")?
-SkillSource::parse("file:///abs/repo.git@main")?
-SkillSource::parse("/abs/skill-dir")?          // Local
-SkillSource::parse("bundled:tdd")?             // Bundled
-    .with_subdir("skills/tdd")                 // A11 `--path`; git only
+parse_source("owner/repo@v1")?                 // https://github.com/owner/repo
+parse_source("owner/repo@v1#skills/tdd")?      // subdir (extra syntax)
+parse_source("https://host/r.git@<40 hex>")?
+parse_source("file:///abs/repo.git@main")?
+parse_source("/abs/skill-dir")?                // Local
+parse_source("bundled:tdd")?                   // Bundled (extra syntax)
+source.with_subdir("skills/tdd")               // A11 `--path` (extra)
 
-// Install, list, offline reinstall.
-installer.install(&source, &InstallOptions { fault: None })? -> LockEntry
-installer.install_observed(&source, &opts, Some(&mut steps))?  // Vec<Step>
-installer.installed()? -> Vec<InstalledSkill { entry, path }>  // lock entries whose dir exists
-installer.reinstall_from_lock()? -> Vec<(SkillId, ReinstallAction::{Verified, Rebuilt})>
-FaultPoint::parse("abort-after-materialize-before-lock")       // caller maps HORCH_FAULT
+// Install, update, list, offline reinstall.
+installer.install(&source, &InstallOptions::default(), None)? -> LockEntry
+installer.install(&source, &opts, Some(&mut steps))?        // observer: Vec<Step>
+installer.update(None | Some("tdd"))? -> Vec<LockEntry>     // re-resolve requested_revision
+installer.reinstall_from_lock()? -> Vec<LockEntry>          // verify or rebuild, lock unchanged
+installer.installed()? -> Vec<InstalledSkill { entry, path }>  // (extra) lock entries whose dir exists
+FaultPoint::parse("abort-after-materialize-before-lock")    // caller maps HORCH_FAULT
 ```
 
-Revision rules: a 40-hex `@rev` is `GitRevision::Commit`. Any other `@rev`
-parses to `GitRevision::Tag`, and resolve tries the peeled tag, the tag,
-then a branch of that name. No `@rev` is `Branch("HEAD")`, the remote
-default branch. The last `@` in a URL path starts the revision.
+Revision rules: a 40-hex `@rev` is `GitRevision::Commit`. `@HEAD` or no
+`@rev` is `Branch("HEAD")`, the remote default branch. Any other `@rev`
+parses to `GitRevision::Tag`; resolve tries the peeled tag, the tag, then
+a branch of that name. The last `@` in a URL path starts the revision.
+`GitRevision` serializes as `{"type":"tag","value":"v1"}`.
 
 `SkillManifest::parse(text, expected_name)` and `SkillManifest::read(dir,
 expected_name)` give A9 the SKILL.md rules (the rules of
-`horch-core/src/skills.rs::catalog()`, plus the key allowlist). A9 can
-build `BundledSkill` values from its compiled-in table (`bytes` is a
-`Cow<'static, [u8]>`).
+`horch-core/src/skills.rs::catalog()`, plus the key allowlist). Errors:
+`Manifest` for frontmatter and unknown keys, `SkillMd` for name and
+description rules. A9 can build `BundledSkill` values from its compiled-in
+table (`bytes` is a `Cow<'static, [u8]>`).
+
+`MarketplaceError` has the design variants plus 4 extras:
+`RevisionNotFound { url, revision }`, `NotRegularFile(PathBuf)` (device,
+fifo or submodule), `Lock(String)` (unparsable or wrong-version lock), and
+`Io` keeps the path in its message. `Credentials(String)` names the kind
+of credential, never the URL.
 
 ## Git module API for B2 (`horch_core::vcs::git`)
 
 ```rust
 pub struct GitRunner { bin, env }
-GitRunner::new(bin) / .with_env(key, value) / .bin()
-fn output(&self, dir: &Path, args: &[&str]) -> Result<GitOutput, GitError>  // any exit status
+GitRunner::new(bin) / .with_env(key, value) (extra) / .bin()
+fn output(&self, dir: &Path, args: &[&str]) -> Result<GitOutput, GitError>  // (extra) any exit status
 fn run(&self, dir: &Path, args: &[&str]) -> Result<GitOutput, GitError>     // non-zero exit = GitError::Failed
-pub struct GitOutput { status, stdout: Vec<u8>, stderr: Vec<u8> }  // .stdout_text()
-pub enum GitError { NoDir, Spawn { bin, source }, Failed { args, code, stderr } }
+pub struct GitOutput { status: i32 /* -1 = signal */, stdout: Vec<u8>, stderr: Vec<u8> }  // .stdout_text()
+pub enum GitError { NoDir, Spawn { bin, source }, Failed { args, status, stderr } }
 ```
 
 Every child: `current_dir(dir)` (an empty dir is `GitError::NoDir`), stdin
@@ -86,8 +98,7 @@ Older versions of a skill are not deleted after an update (no GC yet).
 ```json
 { "version": 1, "skills": [ {
     "id": "demo",
-    "source": { "kind": "git", "url": "file:///…/remote.git",
-                "revision": { "tag": "v1" }, "subdir": "skills/demo" },
+    "source": "file:///…/remote.git#skills/demo",
     "requested_revision": "v1",
     "resolved_commit": "<40 hex>",
     "version": "git+<12 hex>",
@@ -95,11 +106,13 @@ Older versions of a skill are not deleted after an update (no GC yet).
     "installed_at": "2026-10-02T12:00:00Z" } ] }
 ```
 
-Exactly 7 entry fields; `requested_revision` and `resolved_commit` are
-`null` for local and bundled. Sorted by id, one entry per id,
-`deny_unknown_fields`. Written by temp file, fsync, rename, dir fsync.
-`source` kinds: `{"kind":"bundled","name"}`, `{"kind":"local","path"}`,
-`{"kind":"git","url","revision":{"branch"|"tag"|"commit":…},"subdir"}`.
+Exactly 7 entry fields, all strings per the design. `source` is the spec
+without `@rev` (`SkillSource::to_spec`): `bundled:<name>`, `/abs/path`, or
+`<url>[#<subdir>]`; `parse_source` reads it back. `requested_revision` and
+`resolved_commit` are `null` for local and bundled. Sorted by id, one
+entry per id, `deny_unknown_fields`. Written by temp file, fsync, rename,
+dir fsync. Readers check the lock's `id` and `version` before they build a
+path from them.
 
 ## Pipeline and checks
 
@@ -139,8 +152,8 @@ horch-marketplace`: 22 of 22 pass.
   scan.
 - `mkt_10` finds pattern positions of `SkillSource::` and
   `ResolvedOrigin::` (followed by `=>`, `|`, `if`, or `=`) and allows
-  them only in `resolver.rs` and `source.rs`. `SkillSource::with_subdir`
-  and `pinned` live in `resolver.rs` for this reason.
+  them only in `resolver.rs` and `source.rs`. `SkillSource::with_subdir`,
+  `with_revision` and `to_spec` live in `resolver.rs` for this reason.
 
 ## Decisions and gotchas
 
@@ -150,6 +163,8 @@ horch-marketplace`: 22 of 22 pass.
   comments (`mkt_01`).
 - `reinstall_from_lock` stops at the first failing entry and does not
   change the lock. A rebuilt dir must match the locked digest.
+- `update` re-installs at `requested_revision`. It stops at the first
+  failing skill; skills before it are already updated.
 - No inter-process lock on the store yet. Two concurrent installs can race
   on `marketplace.lock` (last writer wins). Core's `DirLock` (A2+) can
   wrap `Installer` calls.
@@ -159,14 +174,14 @@ horch-marketplace`: 22 of 22 pass.
 - `fetch --depth=1` still downloads the whole commit tree before the
   listing check; the limits bound what is written, not what is fetched.
 
-## Gate (interim rule)
+## Gate
 
-fmt, `build --all-targets`, `build --bins`, `teammates --check` and
-`check-deps.sh` pass. `cargo test --workspace`: 47 failing tests, equal to
-the base count, 0 in this crate. `verify-telemetry-e2e.sh` fails in
-`horch-e2e/tests/scenario.rs::the_hermetic_story`: the golden
-`crates/horch-e2e/tests/golden/telemetry-e2e.txt` is missing. That test is
-one of the 47 workspace failures; this unit does not touch `horch-e2e`.
+On `arch-refactor-dataset` at 57fa0a4: `HORCH_REQUIRE_GIT=1
+HORCH_REQUIRE_SQLITE=1 just gate` exits 0 (fmt, builds, workspace tests,
+`teammates --check`, `check-deps.sh` with the marketplace allowlist,
+telemetry e2e). `./scripts/check-req-coverage.sh --phase A8`: MKT-01..08,
+MKT-10, NFR-06 and NFR-07 ok. `HORCH_REQUIRE_GIT=1 cargo test -p
+horch-marketplace`: 22 of 22 pass (14 integration, 8 unit).
 
 ## SPEC-TODO
 

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use horch_marketplace::{
     BundledFile, BundledSkill, Catalog, FaultPoint, GitError, GitRevision, GitRunner,
-    InstallOptions, Installer, IntegrityViolation, LockEntry, Lockfile, MarketplaceError,
-    ReinstallAction, SkillId, SkillSource, Step, Store,
+    InstallOptions, Installer, LockEntry, Lockfile, MarketplaceError, SkillId, SkillSource,
+    SkillVersion, Step, Store,
 };
 use tempfile::TempDir;
 
@@ -124,7 +124,15 @@ impl Repo {
 }
 
 fn installer_at(tmp: &Path, git: GitRunner) -> Installer {
-    Installer::new(Store::new(tmp.join("store")), git, Catalog::new())
+    Installer::new(tmp.join("store"), git)
+}
+
+/// `skills/<id>/<version>/` of a lock entry.
+fn entry_dir(store: &Store, entry: &LockEntry) -> PathBuf {
+    store.version_dir(
+        &SkillId::parse(&entry.id).unwrap(),
+        &SkillVersion(entry.version.clone()),
+    )
 }
 
 /// A runner whose binary does not exist: any git call fails to spawn.
@@ -166,10 +174,10 @@ fn assert_nothing_installed(store: &Store) {
     }
 }
 
-fn integrity_err(r: horch_marketplace::Result<LockEntry>) -> IntegrityViolation {
+fn install_err(r: horch_marketplace::Result<LockEntry>) -> MarketplaceError {
     match r {
-        Err(MarketplaceError::Integrity(v)) => v,
-        other => panic!("expected an integrity error, got {other:?}"),
+        Err(e) => e,
+        Ok(entry) => panic!("expected an error, got {entry:?}"),
     }
 }
 
@@ -216,50 +224,66 @@ fn mkt_02_branch_resolves_to_sha() {
     let installer = repo.installer();
 
     for rev in ["v1", "light", "main"] {
-        let entry = installer.install(&repo.source(rev), &opts()).unwrap();
+        let entry = installer.install(&repo.source(rev), &opts(), None).unwrap();
         assert_eq!(
             entry.resolved_commit.as_deref(),
             Some(first.as_str()),
             "{rev}"
         );
         assert_eq!(entry.requested_revision.as_deref(), Some(rev));
-        assert_eq!(entry.version.0, format!("git+{}", &first[..12]));
+        assert_eq!(entry.version, format!("git+{}", &first[..12]));
     }
     let default = SkillSource::parse(&repo.url())
         .unwrap()
         .with_subdir("skills/demo");
-    let entry = installer.install(&default, &opts()).unwrap();
+    let entry = installer.install(&default, &opts(), None).unwrap();
     assert_eq!(entry.resolved_commit.as_deref(), Some(first.as_str()));
     assert_eq!(entry.requested_revision.as_deref(), Some("HEAD"));
 
     // Move the branch. The installed entry and its files do not change.
-    let installed = installer.install(&repo.source("main"), &opts()).unwrap();
+    let installed = installer
+        .install(&repo.source("main"), &opts(), None)
+        .unwrap();
+    assert_eq!(installed.source, format!("{}#skills/demo", repo.url()));
     repo.write("skills/demo/extra.md", "new");
     let second = repo.commit("second");
     assert_ne!(first, second);
-    let locked = lock(&repo.store());
-    assert_eq!(locked.skills, vec![installed.clone()]);
-    let dir = repo.store().version_dir(&installed.id, &installed.version);
-    assert!(!dir.join("extra.md").exists());
+    assert_eq!(lock(&repo.store()).skills, vec![installed.clone()]);
+    let dir = entry_dir(&repo.store(), &installed);
+    assert!(dir.is_dir() && !dir.join("extra.md").exists());
+    assert_eq!(installer.reinstall_from_lock().unwrap(), vec![installed]);
 
-    // A new install resolves the moved branch; a pinned commit still works.
-    let moved = installer.install(&repo.source("main"), &opts()).unwrap();
-    assert_eq!(moved.resolved_commit.as_deref(), Some(second.as_str()));
-    let pinned = installer.install(&repo.source(&first), &opts()).unwrap();
+    // An update resolves the moved branch; a pinned commit still works.
+    let moved = installer.update(Some("demo")).unwrap();
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].resolved_commit.as_deref(), Some(second.as_str()));
+    assert_eq!(moved[0].requested_revision.as_deref(), Some("main"));
+    assert!(entry_dir(&repo.store(), &moved[0])
+        .join("extra.md")
+        .is_file());
+    let pinned = installer
+        .install(&repo.source(&first), &opts(), None)
+        .unwrap();
     assert_eq!(pinned.resolved_commit.as_deref(), Some(first.as_str()));
-    assert!(matches!(
-        &pinned.source,
-        SkillSource::Git { revision: GitRevision::Commit(c), .. } if c == &first
-    ));
+    assert_eq!(pinned.requested_revision.as_deref(), Some(first.as_str()));
+    assert_eq!(
+        installer.update(None).unwrap()[0]
+            .resolved_commit
+            .as_deref(),
+        Some(first.as_str())
+    );
 
-    let missing = installer.install(&repo.source("no-such-ref"), &opts());
+    let missing = installer.install(&repo.source("no-such-ref"), &opts(), None);
     assert!(matches!(
         missing,
         Err(MarketplaceError::RevisionNotFound { .. })
     ));
-    let absent = installer.install(&repo.source(&"0".repeat(40)), &opts());
+    let absent = installer.install(&repo.source(&"0".repeat(40)), &opts(), None);
     assert!(absent.is_err());
-    assert_eq!(lock(&repo.store()).skills, vec![pinned]);
+    assert!(installer.update(Some("other")).is_err());
+    let locked = lock(&repo.store()).skills;
+    assert_eq!(locked.len(), 1);
+    assert_eq!(locked[0].resolved_commit.as_deref(), Some(first.as_str()));
 }
 
 #[test]
@@ -269,7 +293,7 @@ fn mkt_03_lifecycle_order() {
     repo.commit("first");
     let mut steps = Vec::new();
     repo.installer()
-        .install_observed(&repo.source("main"), &opts(), Some(&mut steps))
+        .install(&repo.source("main"), &opts(), Some(&mut steps))
         .unwrap();
     assert_eq!(
         steps,
@@ -290,7 +314,7 @@ fn mkt_04_lock_entry_fields() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = local_skill(tmp.path(), "demo");
     let installer = installer_at(tmp.path(), no_git());
-    installer.install(&local(&dir), &opts()).unwrap();
+    installer.install(&local(&dir), &opts(), None).unwrap();
 
     let text = fs::read_to_string(installer.store().lock_path()).unwrap();
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -320,7 +344,7 @@ fn mkt_04_lock_entry_fields() {
 
     // Entries are sorted by id.
     installer
-        .install(&local(&local_skill(tmp.path(), "alpha")), &opts())
+        .install(&local(&local_skill(tmp.path(), "alpha")), &opts(), None)
         .unwrap();
     let ids: Vec<_> = lock(installer.store())
         .skills
@@ -339,7 +363,7 @@ fn mkt_05_install_is_transactional() {
         fault: FaultPoint::parse("abort-after-materialize-before-lock"),
     };
     assert!(faulted.fault.is_some());
-    let err = installer.install(&local(&dir), &faulted).unwrap_err();
+    let err = installer.install(&local(&dir), &faulted, None).unwrap_err();
     assert!(matches!(err, MarketplaceError::Fault(_)), "{err}");
     assert_nothing_installed(installer.store());
     // The orphan version dir exists, but readers ignore it.
@@ -351,7 +375,7 @@ fn mkt_05_install_is_transactional() {
     );
     assert!(installer.installed().unwrap().is_empty());
 
-    let entry = installer.install(&local(&dir), &opts()).unwrap();
+    let entry = installer.install(&local(&dir), &opts(), None).unwrap();
     let installed = installer.installed().unwrap();
     assert_eq!(installed.len(), 1);
     assert_eq!(installed[0].entry, entry);
@@ -368,18 +392,12 @@ fn mkt_05_install_is_transactional() {
 fn mkt_06_rejects_traversal() {
     let tmp = tempfile::tempdir().unwrap();
     for (path, expected) in [
-        (
-            "../escape.md",
-            IntegrityViolation::ParentComponent("../escape.md".into()),
-        ),
+        ("../escape.md", r#"Traversal("../escape.md")"#),
         (
             "refs/../../escape.md",
-            IntegrityViolation::ParentComponent("refs/../../escape.md".into()),
+            r#"Traversal("refs/../../escape.md")"#,
         ),
-        (
-            "/tmp/escape.md",
-            IntegrityViolation::AbsolutePath("/tmp/escape.md".into()),
-        ),
+        ("/tmp/escape.md", r#"AbsolutePath("/tmp/escape.md")"#),
     ] {
         let id = SkillId::parse("demo").unwrap();
         let catalog = Catalog::new().with_bundled(BundledSkill {
@@ -395,9 +413,9 @@ fn mkt_06_rejects_traversal() {
                 },
             ],
         });
-        let installer = Installer::new(Store::new(tmp.path().join("store")), no_git(), catalog);
-        let r = installer.install(&SkillSource::parse("bundled:demo").unwrap(), &opts());
-        assert_eq!(integrity_err(r), expected);
+        let installer = installer_at(tmp.path(), no_git()).with_catalog(catalog);
+        let r = installer.install(&SkillSource::parse("bundled:demo").unwrap(), &opts(), None);
+        assert_eq!(format!("{:?}", install_err(r)), expected);
         assert_nothing_installed(installer.store());
     }
     assert!(!tmp.path().join("store/escape.md").exists());
@@ -409,8 +427,8 @@ fn mkt_06_rejects_traversal() {
         .unwrap()
         .with_subdir("../outside");
     assert!(matches!(
-        integrity_err(installer.install(&source, &opts())),
-        IntegrityViolation::ParentComponent(_)
+        install_err(installer.install(&source, &opts(), None)),
+        MarketplaceError::Traversal(_)
     ));
 }
 
@@ -421,20 +439,26 @@ fn mkt_06_rejects_symlink() {
     std::os::unix::fs::symlink("/etc/hosts", dir.join("hosts")).unwrap();
     let installer = installer_at(tmp.path(), no_git());
     assert_eq!(
-        integrity_err(installer.install(&local(&dir), &opts())),
-        IntegrityViolation::Symlink("hosts".into())
+        format!(
+            "{:?}",
+            install_err(installer.install(&local(&dir), &opts(), None))
+        ),
+        r#"Symlink("hosts")"#
     );
     assert_nothing_installed(installer.store());
 
-    // A symlink committed to git is rejected at verify.
+    // A symlink committed to git is rejected before the checkout.
     let Some(repo) = Repo::new() else { return };
     repo.write("skills/demo/SKILL.md", &skill_md("demo"));
     std::os::unix::fs::symlink("/etc/hosts", repo.work().join("skills/demo/hosts")).unwrap();
     repo.commit("symlink");
     let installer = repo.installer();
     assert_eq!(
-        integrity_err(installer.install(&repo.source("main"), &opts())),
-        IntegrityViolation::Symlink("hosts".into())
+        format!(
+            "{:?}",
+            install_err(installer.install(&repo.source("main"), &opts(), None))
+        ),
+        r#"Symlink("hosts")"#
     );
     assert_nothing_installed(installer.store());
 }
@@ -447,26 +471,26 @@ fn mkt_06_rejects_oversize() {
     let big = local_skill(tmp.path(), "big");
     fs::write(big.join("blob"), vec![0u8; 1024 * 1024 + 1]).unwrap();
     assert!(matches!(
-        integrity_err(installer.install(&local(&big), &opts())),
-        IntegrityViolation::FileTooLarge { .. }
+        install_err(installer.install(&local(&big), &opts(), None)),
+        MarketplaceError::FileTooLarge { .. }
     ));
 
     let many = local_skill(tmp.path(), "many");
     for i in 0..512 {
         fs::write(many.join(format!("f{i}")), "x").unwrap();
     }
-    assert_eq!(
-        integrity_err(installer.install(&local(&many), &opts())),
-        IntegrityViolation::TooManyFiles { limit: 512 }
-    );
+    assert!(matches!(
+        install_err(installer.install(&local(&many), &opts(), None)),
+        MarketplaceError::TooManyFiles(512)
+    ));
 
     let total = local_skill(tmp.path(), "total");
     for i in 0..9 {
         fs::write(total.join(format!("f{i}")), vec![0u8; 1024 * 1024]).unwrap();
     }
     assert!(matches!(
-        integrity_err(installer.install(&local(&total), &opts())),
-        IntegrityViolation::TotalTooLarge { .. }
+        install_err(installer.install(&local(&total), &opts(), None)),
+        MarketplaceError::TotalTooLarge(_)
     ));
     assert_nothing_installed(installer.store());
 
@@ -481,8 +505,8 @@ fn mkt_06_rejects_oversize() {
     repo.commit("big");
     let installer = repo.installer();
     assert!(matches!(
-        integrity_err(installer.install(&repo.source("main"), &opts())),
-        IntegrityViolation::FileTooLarge { .. }
+        install_err(installer.install(&repo.source("main"), &opts(), None)),
+        MarketplaceError::FileTooLarge { .. }
     ));
     assert_nothing_installed(installer.store());
 }
@@ -508,19 +532,22 @@ fn mkt_06_rejects_invalid_skill_md() {
     ] {
         let dir = local_skill(tmp.path(), name);
         fs::write(dir.join("SKILL.md"), text).unwrap();
-        let r = installer.install(&local(&dir), &opts());
+        let r = installer.install(&local(&dir), &opts(), None);
         assert!(
-            matches!(r, Err(MarketplaceError::InvalidManifest { .. })),
+            matches!(
+                r,
+                Err(MarketplaceError::Manifest(_) | MarketplaceError::SkillMd(_))
+            ),
             "{name}: {r:?}"
         );
     }
     let bad_dir = tmp.path().join("src/Bad_Name");
     fs::create_dir_all(&bad_dir).unwrap();
     fs::write(bad_dir.join("SKILL.md"), skill_md("Bad_Name")).unwrap();
-    assert!(installer.install(&local(&bad_dir), &opts()).is_err());
+    assert!(installer.install(&local(&bad_dir), &opts(), None).is_err());
     let missing = tmp.path().join("src/missing");
     fs::create_dir_all(&missing).unwrap();
-    assert!(installer.install(&local(&missing), &opts()).is_err());
+    assert!(installer.install(&local(&missing), &opts(), None).is_err());
     assert_nothing_installed(installer.store());
 }
 
@@ -534,11 +561,11 @@ fn mkt_06_rejects_hooks() {
     )
     .unwrap();
     let installer = installer_at(tmp.path(), no_git());
-    match installer.install(&local(&dir), &opts()) {
-        Err(MarketplaceError::InvalidManifest { reason, .. }) => {
+    match installer.install(&local(&dir), &opts(), None) {
+        Err(MarketplaceError::Manifest(reason)) => {
             assert!(reason.contains("unknown field `hooks`"), "{reason}")
         }
-        other => panic!("expected InvalidManifest, got {other:?}"),
+        other => panic!("expected Manifest, got {other:?}"),
     }
     assert_nothing_installed(installer.store());
 }
@@ -553,7 +580,7 @@ fn mkt_07_rejects_credentials_in_url() {
     ];
     for url in secrets {
         let err = SkillSource::parse(url).unwrap_err();
-        assert!(matches!(err, MarketplaceError::CredentialsInUrl), "{url}");
+        assert!(matches!(err, MarketplaceError::Credentials(_)), "{url}");
         let shown = err.to_string();
         assert!(!shown.contains("hunter2") && !shown.contains("ghp_secret"));
     }
@@ -567,11 +594,8 @@ fn mkt_07_rejects_credentials_in_url() {
             revision: GitRevision::Branch("main".into()),
             subdir: None,
         };
-        let r = installer.install(&source, &opts());
-        assert!(
-            matches!(r, Err(MarketplaceError::CredentialsInUrl)),
-            "{r:?}"
-        );
+        let r = installer.install(&source, &opts(), None);
+        assert!(matches!(r, Err(MarketplaceError::Credentials(_))), "{r:?}");
     }
     assert_nothing_installed(installer.store());
 }
@@ -584,16 +608,15 @@ fn mkt_08_offline_reinstall_from_lock() {
     repo.commit("first");
     let entry = repo
         .installer()
-        .install(&repo.source("main"), &opts())
+        .install(&repo.source("main"), &opts(), None)
         .unwrap();
-    let dir = repo.store().version_dir(&entry.id, &entry.version);
+    let dir = entry_dir(&repo.store(), &entry);
 
     // A missing version dir is rebuilt from the pinned commit.
     fs::remove_dir_all(&dir).unwrap();
-    let demo = SkillId::parse("demo").unwrap();
     assert_eq!(
         repo.installer().reinstall_from_lock().unwrap(),
-        [(demo.clone(), ReinstallAction::Rebuilt)]
+        std::slice::from_ref(&entry)
     );
     assert_eq!(
         fs::read_to_string(dir.join("refs/a.md")).unwrap(),
@@ -606,7 +629,7 @@ fn mkt_08_offline_reinstall_from_lock() {
     let offline = installer_at(repo.tmp.path(), no_git());
     assert_eq!(
         offline.reinstall_from_lock().unwrap(),
-        [(demo, ReinstallAction::Verified)]
+        std::slice::from_ref(&entry)
     );
 
     fs::write(dir.join("refs/a.md"), "tampered").unwrap();

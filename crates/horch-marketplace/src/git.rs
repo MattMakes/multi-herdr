@@ -7,7 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 
 /// Removed from every git child. Git never needs the API key, and the
 /// operator's shell can carry an invalid, billed one.
@@ -43,7 +43,8 @@ pub struct GitRunner {
 
 #[derive(Debug, Clone)]
 pub struct GitOutput {
-    pub status: ExitStatus,
+    /// The exit code; -1 when a signal ended git.
+    pub status: i32,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
@@ -65,7 +66,7 @@ pub enum GitError {
     },
     Failed {
         args: Vec<String>,
-        code: Option<i32>,
+        status: i32,
         stderr: String,
     },
 }
@@ -75,10 +76,11 @@ impl fmt::Display for GitError {
         match self {
             Self::NoDir => write!(f, "git needs an explicit working directory"),
             Self::Spawn { bin, source } => write!(f, "cannot run {}: {source}", bin.display()),
-            Self::Failed { args, code, stderr } => {
-                let code = code.map_or_else(|| "signal".to_owned(), |c| c.to_string());
-                write!(f, "git {} failed ({code}): {stderr}", args.join(" "))
-            }
+            Self::Failed {
+                args,
+                status,
+                stderr,
+            } => write!(f, "git {} failed ({status}): {stderr}", args.join(" ")),
         }
     }
 }
@@ -142,7 +144,7 @@ impl GitRunner {
             source,
         })?;
         Ok(GitOutput {
-            status: out.status,
+            status: out.status.code().unwrap_or(-1),
             stdout: out.stdout,
             stderr: out.stderr,
         })
@@ -151,10 +153,10 @@ impl GitRunner {
     /// Run `git <args>` in `dir`; a non-zero exit is an error.
     pub fn run(&self, dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
         let out = self.output(dir, args)?;
-        if !out.status.success() {
+        if out.status != 0 {
             return Err(GitError::Failed {
                 args: args.iter().map(|a| (*a).to_owned()).collect(),
-                code: out.status.code(),
+                status: out.status,
                 stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
             });
         }

@@ -9,10 +9,10 @@ use crate::catalog::Catalog;
 use crate::error::{MarketplaceError, Result};
 use crate::fsx;
 use crate::git::GitRunner;
-use crate::integrity::tree_digest;
+use crate::integrity::{check_relative_path, tree_digest};
 use crate::lockfile::{LockEntry, Lockfile};
 use crate::manifest::SkillManifest;
-use crate::model::{SkillId, SkillSource};
+use crate::model::{parse_source, GitRevision, SkillId, SkillSource, SkillVersion};
 use crate::resolver::{ResolvedSource, Resolver};
 use crate::source::fetch;
 use crate::store::{Staging, Store};
@@ -53,15 +53,6 @@ pub struct InstallOptions {
     pub fault: Option<FaultPoint>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReinstallAction {
-    /// The version directory existed and its digest matched the lock.
-    Verified,
-    /// The version directory was missing and was rebuilt from the pinned
-    /// source.
-    Rebuilt,
-}
-
 #[derive(Debug, Clone)]
 pub struct InstalledSkill {
     pub entry: LockEntry,
@@ -90,24 +81,29 @@ fn record(observer: &mut Option<&mut Vec<Step>>, step: Step) {
 }
 
 impl Installer {
-    pub fn new(store: Store, git: GitRunner, catalog: Catalog) -> Self {
+    /// `store_root` is `${XDG_DATA_HOME:-~/.local/share}/horch/`; the caller
+    /// resolves it.
+    pub fn new(store_root: PathBuf, git: GitRunner) -> Self {
         Self {
-            store,
+            store: Store::new(store_root),
             git,
-            catalog,
+            catalog: Catalog::new(),
         }
+    }
+
+    /// The bundled skills a `bundled:<name>` source can install.
+    pub fn with_catalog(mut self, catalog: Catalog) -> Self {
+        self.catalog = catalog;
+        self
     }
 
     pub fn store(&self) -> &Store {
         &self.store
     }
 
-    pub fn install(&self, source: &SkillSource, opts: &InstallOptions) -> Result<LockEntry> {
-        self.install_observed(source, opts, None)
-    }
-
-    /// `install`, recording each step as it starts.
-    pub fn install_observed(
+    /// Install `source` and pin it in the lock. `observer` records each
+    /// step as it starts.
+    pub fn install(
         &self,
         source: &SkillSource,
         opts: &InstallOptions,
@@ -132,11 +128,11 @@ impl Installer {
         let lock_path = self.store.lock_path();
         let mut lock = Lockfile::read(&lock_path)?;
         let entry = LockEntry {
-            id: prepared.id,
-            source: prepared.resolved.source,
+            id: prepared.id.to_string(),
+            source: prepared.resolved.source.to_spec(),
             requested_revision: prepared.resolved.requested_revision,
             resolved_commit: prepared.resolved.resolved_commit,
-            version,
+            version: version.0,
             digest: prepared.digest,
             installed_at: fsx::now_rfc3339(),
         };
@@ -188,54 +184,94 @@ impl Installer {
             .skills
             .into_iter()
             .filter_map(|entry| {
-                let path = self.store.version_dir(&entry.id, &entry.version);
+                let path = self.entry_dir(&entry).ok()?;
                 path.is_dir().then_some(InstalledSkill { entry, path })
             })
             .collect())
     }
 
-    /// Make every locked skill present and verified. An existing version
-    /// directory is only digest-checked, with no network. A missing one is
-    /// rebuilt from the pinned source and must match the locked digest. The
-    /// lock is not changed.
-    pub fn reinstall_from_lock(&self) -> Result<Vec<(SkillId, ReinstallAction)>> {
+    /// Install the locked skills again at their requested revision: every
+    /// skill, or only `id`. A moved branch or tag gets its new commit; a
+    /// local or bundled source gets its current files.
+    pub fn update(&self, id: Option<&str>) -> Result<Vec<LockEntry>> {
         let lock = Lockfile::read(&self.store.lock_path())?;
+        if let Some(id) = id {
+            if lock.get(id).is_none() {
+                return Err(MarketplaceError::BadSource(format!(
+                    "skill '{id}' is not in the lock"
+                )));
+            }
+        }
         let mut out = Vec::new();
-        for entry in &lock.skills {
-            let dir = self.store.version_dir(&entry.id, &entry.version);
-            if dir.is_dir() {
-                self.check_digest(entry, &tree_digest(&dir)?)?;
-                out.push((entry.id.clone(), ReinstallAction::Verified));
-                continue;
+        for entry in lock
+            .skills
+            .iter()
+            .filter(|e| id.is_none_or(|id| e.id == id))
+        {
+            let mut source = parse_source(&entry.source)?;
+            if let Some(rev) = &entry.requested_revision {
+                source = source.with_revision(GitRevision::from_requested(rev)?);
             }
-            let source = entry
-                .source
-                .clone()
-                .pinned(entry.resolved_commit.as_deref());
-            let prepared = self.prepare(&source, &mut None)?;
-            if prepared.id != entry.id {
-                return Err(MarketplaceError::InvalidManifest {
-                    path: prepared.tree.join("SKILL.md"),
-                    reason: format!("name '{}' does not match the lock", prepared.id),
-                });
-            }
-            self.check_digest(entry, &prepared.digest)?;
-            self.store
-                .materialize(&prepared.tree, &prepared.staging, &entry.id, &entry.version)?;
-            out.push((entry.id.clone(), ReinstallAction::Rebuilt));
+            out.push(self.install(&source, &InstallOptions::default(), None)?);
         }
         Ok(out)
     }
 
-    fn check_digest(&self, entry: &LockEntry, actual: &str) -> Result<()> {
-        if actual == entry.digest {
-            Ok(())
-        } else {
-            Err(MarketplaceError::DigestMismatch {
-                id: entry.id.to_string(),
-                expected: entry.digest.clone(),
-                actual: actual.to_owned(),
-            })
+    /// Make every locked skill present and verified, and return the lock
+    /// entries. An existing version directory is only digest-checked, with
+    /// no network. A missing one is rebuilt from the pinned source and must
+    /// match the locked digest. The lock is not changed.
+    pub fn reinstall_from_lock(&self) -> Result<Vec<LockEntry>> {
+        let lock = Lockfile::read(&self.store.lock_path())?;
+        for entry in &lock.skills {
+            let dir = self.entry_dir(entry)?;
+            if dir.is_dir() {
+                check_digest(entry, &tree_digest(&dir)?)?;
+                continue;
+            }
+            let mut source = parse_source(&entry.source)?;
+            if let Some(commit) = &entry.resolved_commit {
+                source = source.with_revision(GitRevision::Commit(commit.clone()));
+            }
+            let prepared = self.prepare(&source, &mut None)?;
+            if prepared.id.as_str() != entry.id {
+                return Err(MarketplaceError::SkillMd(format!(
+                    "name '{}' does not match the locked id '{}'",
+                    prepared.id, entry.id
+                )));
+            }
+            check_digest(entry, &prepared.digest)?;
+            self.store.materialize(
+                &prepared.tree,
+                &prepared.staging,
+                &prepared.id,
+                &SkillVersion(entry.version.clone()),
+            )?;
         }
+        Ok(lock.skills)
+    }
+
+    /// `skills/<id>/<version>/` of a lock entry. The id and version are
+    /// checked, because the lock file is input.
+    fn entry_dir(&self, entry: &LockEntry) -> Result<PathBuf> {
+        let id = SkillId::parse(&entry.id)?;
+        check_relative_path(&entry.version)?;
+        if entry.version.contains('/') {
+            return Err(MarketplaceError::Traversal(PathBuf::from(&entry.version)));
+        }
+        Ok(self
+            .store
+            .version_dir(&id, &SkillVersion(entry.version.clone())))
+    }
+}
+
+fn check_digest(entry: &LockEntry, actual: &str) -> Result<()> {
+    if actual == entry.digest {
+        Ok(())
+    } else {
+        Err(MarketplaceError::DigestMismatch {
+            expected: entry.digest.clone(),
+            actual: actual.to_owned(),
+        })
     }
 }
