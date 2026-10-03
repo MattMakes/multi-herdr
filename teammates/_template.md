@@ -30,7 +30,7 @@ hidden: false
 base: fleet-worker
 
 # ─── which CLI, which model ──────────────────────────────────────────────────
-# agent: claude | codex | opencode | pi | prime | none
+# agent: claude | codex | opencode | pi | prime | antigravity | none
 #   ("none" = the smoke fake, spends no tokens)
 # Session handling is DERIVED from agent and is not configurable here:
 #   claude   -> horch mints the session id, passes --session-id / --resume
@@ -39,6 +39,8 @@ base: fleet-worker
 #   opencode -> harvested from `opencode session list --format json`
 #   prime    -> no --session-id at all; horch gives it a --session-dir it owns
 #               and reads back the session that appears there
+#   antigravity -> agy mints its own id; horch reads it back from
+#               ~/.gemini/antigravity-cli/cache/last_conversations.json
 agent: claude
 
 # claude:   a family alias (sonnet | opus) so it tracks the latest.

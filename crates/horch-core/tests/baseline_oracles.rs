@@ -67,7 +67,7 @@ fn check_oracle(rel: &str, actual: &str) {
 /// Teammates added after the A0 freeze. They have no oracle file and the
 /// oracle loops skip them; a missing file for any other teammate still
 /// fails. Never give one of these an oracle file.
-const SKIP_NEW_TEAMMATES: &[&str] = &["judge"];
+const SKIP_NEW_TEAMMATES: &[&str] = &["antigravity", "judge"];
 
 /// The roster names the oracles cover: every teammate except a listed new
 /// one with no launch oracle.
