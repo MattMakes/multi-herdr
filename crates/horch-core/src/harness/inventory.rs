@@ -43,7 +43,7 @@ pub struct ModelUse {
 pub struct CapabilitySummary {
     pub resume: bool,
     pub headless: bool,
-    /// How the CLI finds skills (`PluginDir`, `SkillFlag`, `None`, ...).
+    /// How the CLI finds skills (`plugin-dir`, `skill-flag`, `none`, ...).
     pub skills: String,
 }
 
@@ -139,7 +139,7 @@ fn row(
         capabilities: CapabilitySummary {
             resume: caps.resumes,
             headless: caps.headless,
-            skills: format!("{:?}", caps.skill_exposure),
+            skills: caps.skill_exposure.as_str().to_string(),
         },
         models,
         pools,

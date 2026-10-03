@@ -45,7 +45,7 @@ pub fn quota(ctx: &RuntimeContext, json: bool, refresh: bool) -> Result<()> {
         output::println(&serde_json::to_string_pretty(&assessed(&view))?);
     } else {
         let file = assessed(&view);
-        output::print(&super::telemetry::pool_table(&file.pools, view.now, 100).join("\n"));
+        output::print(&super::telemetry::pool_table(&file.pools, view.now, 100, &[]).join("\n"));
         output::println("");
         // A fallback reading says how old it is (QUO-03).
         for (name, r) in &file.pools {

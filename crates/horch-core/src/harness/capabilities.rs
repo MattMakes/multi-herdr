@@ -25,6 +25,19 @@ pub enum SkillExposure {
     CodexHome,
 }
 
+impl SkillExposure {
+    /// The kebab-case name `horch agent-list` prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkillExposure::None => "none",
+            SkillExposure::PluginDir => "plugin-dir",
+            SkillExposure::SkillFlag => "skill-flag",
+            SkillExposure::ConfigPaths => "config-paths",
+            SkillExposure::CodexHome => "codex-home",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     /// horch chooses the session id before launch (`--session-id`).
@@ -172,3 +185,22 @@ pub(crate) const NONE: Capabilities = Capabilities {
     footprint_bytes: NONE_FOOTPRINT_BYTES,
     local_model: false,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skill_exposure_names_are_kebab_case() {
+        let names = [
+            (SkillExposure::None, "none"),
+            (SkillExposure::PluginDir, "plugin-dir"),
+            (SkillExposure::SkillFlag, "skill-flag"),
+            (SkillExposure::ConfigPaths, "config-paths"),
+            (SkillExposure::CodexHome, "codex-home"),
+        ];
+        for (exposure, name) in names {
+            assert_eq!(exposure.as_str(), name);
+        }
+    }
+}

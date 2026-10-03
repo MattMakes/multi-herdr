@@ -128,10 +128,12 @@ fn pct(x: f64) -> String {
 }
 
 /// The POOL block (section 12.4), shared by the screen and `horch quota`.
+/// A pool in `only_with_reading` gets a row only when it has a reading.
 pub fn pool_table(
     pools: &std::collections::BTreeMap<String, PoolReading>,
     now: DateTime<Utc>,
     width: usize,
+    only_with_reading: &[&str],
 ) -> Vec<String> {
     let mut out = vec![clip(
         &format!(
@@ -146,7 +148,10 @@ pub fn pool_table(
         ),
         width,
     )];
-    let mut names: Vec<&str> = POOLS.to_vec();
+    let mut names: Vec<&str> = POOLS
+        .into_iter()
+        .filter(|p| !only_with_reading.contains(p) || pools.contains_key(*p))
+        .collect();
     for extra in pools.keys() {
         if !names.contains(&extra.as_str()) {
             names.push(extra);
@@ -444,7 +449,9 @@ pub fn render(snap: &Snapshot, view: &ViewState, width: u16, height: u16) -> Vec
         .saturating_sub(left.chars().count() + right.chars().count())
         .max(2);
     let mut lines = vec![clip(&format!("{left}{}{right}", " ".repeat(gap)), width)];
-    lines.extend(pool_table(&snap.pools, now, width));
+    // No probe reads the Google pool yet, so the screen shows it only when
+    // a reading exists; `horch quota` always lists it.
+    lines.extend(pool_table(&snap.pools, now, width, &[quota::POOL_GOOGLE]));
     lines.push(String::new());
 
     // What is left is shared by the live rows and the rollup.
@@ -832,6 +839,29 @@ pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `horch quota` lists the Google pool always; the screen lists it only
+    /// when it has a reading.
+    #[test]
+    fn google_pool_row_only_with_a_reading_on_the_screen() {
+        let mut pools = std::collections::BTreeMap::new();
+        let now = Utc::now();
+        let has_google = |rows: &[String]| rows.iter().any(|r| r.starts_with("google "));
+        assert!(has_google(&pool_table(&pools, now, 100, &[])));
+        assert!(!has_google(&pool_table(
+            &pools,
+            now,
+            100,
+            &[quota::POOL_GOOGLE]
+        )));
+        pools.insert(quota::POOL_GOOGLE.to_string(), PoolReading::default());
+        assert!(has_google(&pool_table(
+            &pools,
+            now,
+            100,
+            &[quota::POOL_GOOGLE]
+        )));
+    }
 
     fn fixture_snapshot() -> Snapshot {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/snapshot-fixture.json");

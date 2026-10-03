@@ -116,7 +116,7 @@ fn agent_list_json_reports_found_and_missing_binaries() {
         serde_json::json!(["low", "medium", "high", "xhigh", "max"])
     );
     assert_eq!(claude["capabilities"]["resume"], true);
-    assert_eq!(claude["capabilities"]["skills"], "PluginDir");
+    assert_eq!(claude["capabilities"]["skills"], "plugin-dir");
 
     let codex = row(&rows, "codex");
     assert_eq!(codex["version"], "codex-cli 1.2.3");

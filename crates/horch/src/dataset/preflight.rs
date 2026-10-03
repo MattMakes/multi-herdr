@@ -128,16 +128,10 @@ pub(crate) fn harness_versions(
 }
 
 fn kind_of(name: &str) -> Option<HarnessKind> {
-    [
-        HarnessKind::Claude,
-        HarnessKind::Codex,
-        HarnessKind::OpenCode,
-        HarnessKind::Pi,
-        HarnessKind::Prime,
-        HarnessKind::None,
-    ]
-    .into_iter()
-    .find(|k| k.as_str() == name)
+    HarnessKind::ALL
+        .iter()
+        .copied()
+        .find(|k| k.as_str() == name)
 }
 
 /// Each candidate's quota pool and its state, as the router sees it.
@@ -419,4 +413,19 @@ pub(crate) fn render(report: &PreflightReport) -> String {
         report.environment_digest.short12()
     ));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every harness kind resolves by name, so preflight shows its version.
+    #[test]
+    fn kind_of_names_every_harness() {
+        for kind in HarnessKind::ALL {
+            assert_eq!(kind_of(kind.as_str()), Some(*kind));
+        }
+        assert_eq!(kind_of("antigravity"), Some(HarnessKind::Antigravity));
+        assert_eq!(kind_of("nope"), None);
+    }
 }

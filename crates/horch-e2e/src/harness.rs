@@ -16,7 +16,8 @@ use serde_json::Value;
 use crate::bin_dir;
 
 /// The fakes, by the name of the program each stands in for.
-pub const FAKES: [(&str, &str); 7] = [
+pub const FAKES: [(&str, &str); 8] = [
+    ("agy", "fake-antigravity"),
     ("claude", "fake-claude"),
     ("codex", "fake-codex"),
     ("herdr", "fake-herdr"),
