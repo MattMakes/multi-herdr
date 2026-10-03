@@ -13,7 +13,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::execution::SessionMode;
+use crate::execution::{ReportTarget, SessionMode};
 use crate::runtime::BinOverrides;
 use crate::teammates::{Agent, Teammate};
 
@@ -72,6 +72,15 @@ pub struct Brief {
     /// Schema 2: every `HORCH_*_BIN` override the spawner ran with.
     #[serde(default, skip_serializing_if = "BinOverrides::is_empty")]
     pub bin_overrides: BinOverrides,
+    /// Who `horch done` reports to. A brief without the key reports to the
+    /// orchestrator, as every brief did before B3; a candidate reports to
+    /// nobody.
+    #[serde(default = "report_to_orchestrator")]
+    pub report_to: ReportTarget,
+}
+
+fn report_to_orchestrator() -> ReportTarget {
+    ReportTarget::Orchestrator
 }
 
 impl Brief {
@@ -215,6 +224,7 @@ mod tests {
             teammates_dir: Some("/roster".into()),
             workdir: None,
             bin_overrides: BinOverrides::default(),
+            report_to: crate::execution::ReportTarget::Orchestrator,
         }
     }
 

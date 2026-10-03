@@ -123,9 +123,18 @@ pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
             pane: &pane_env,
             workspace: workspace.as_deref(),
             summary,
-            report_to: ReportTarget::Orchestrator,
+            report_to: report_target(ctx, workspace.as_deref(), &role),
         },
     )
+}
+
+/// Who this worker reports to: its brief says. A candidate's brief says
+/// nobody. A worker whose brief cannot be read reports to the orchestrator,
+/// as every worker did before briefs carried it.
+fn report_target(ctx: &RuntimeContext, workspace: Option<&str>, role: &str) -> ReportTarget {
+    workspace
+        .and_then(|w| Mailbox::in_context(ctx, w).read_brief(role).ok())
+        .map_or(ReportTarget::Orchestrator, |b| b.report_to)
 }
 
 /// The `done` steps against this process's ledger, mailbox and workspace.

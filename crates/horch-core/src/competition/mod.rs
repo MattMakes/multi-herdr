@@ -4,9 +4,11 @@
 pub mod budget;
 pub mod cleanup;
 pub mod config;
+pub mod coordinator;
 pub mod diversity;
 pub mod judging;
 pub mod model;
+pub mod observe;
 pub mod planner;
 pub mod preflight;
 pub mod promotion;

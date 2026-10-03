@@ -80,21 +80,26 @@ pub enum LedgerCommand {
 /// Read this before spawning: a `[done]` session whose task or history overlaps
 /// the new task is a resume candidate
 /// (`horch spawn --resume <session-or-record-id> "task"`).
-pub fn sessions(ctx: &RuntimeContext, json: bool) -> Result<()> {
-    print_list(ctx, json)
+pub fn sessions(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
+    print_list(ctx, json, all)
 }
 
 /// The JSON form is the store's records as written: a record with a typed
 /// status carries it under `state` (additive), and `status` keeps the legacy
 /// word. The text form prints only the legacy words, which the orchestrator
-/// prompt reads (risk 5).
-fn print_list(ctx: &RuntimeContext, json: bool) -> Result<()> {
+/// prompt reads (risk 5). Competition candidates and judges belong to
+/// `multi-herdr-dataset`: both forms leave them out unless `all`.
+fn print_list(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
+    let store = ExecutionStore::open_in(ctx)?;
+    let records: Vec<_> = store
+        .read()?
+        .into_iter()
+        .filter(|r| all || r.round_id.is_none())
+        .collect();
     if json {
-        let store = ExecutionStore::open_in(ctx)?;
-        output::println(&ExecutionStore::render_json(&store.read()?)?);
+        output::println(&ExecutionStore::render_json(&records)?);
     } else {
-        let ledger = Ledger::open_in(ctx)?;
-        output::print(&ledger.render()?);
+        output::print(&ExecutionStore::render_text(&records));
     }
     Ok(())
 }
@@ -136,7 +141,7 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         LedgerCommand::Get { key } => {
             output::println(&serde_json::to_string_pretty(&ledger.get(&key)?)?)
         }
-        LedgerCommand::List { json } => print_list(ctx, json)?,
+        LedgerCommand::List { json } => print_list(ctx, json, true)?,
         LedgerCommand::Path => output::println(&ledger.path().display().to_string()),
     }
     Ok(ExitCode::SUCCESS)

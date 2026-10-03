@@ -364,63 +364,7 @@ impl Ledger {
     /// resume": every line it needs to weigh relevance and pick a resumable
     /// session id.
     pub fn render(&self) -> Result<String> {
-        let mut records = self.read()?;
-        if records.is_empty() {
-            return Ok("no sessions recorded for this project yet\n".to_string());
-        }
-        records.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
-        records.reverse();
-        // Orchestrators first, in their own section: they are never resumed
-        // with `horch spawn`, so they must not read as candidates among the
-        // workers. A ledger with no orchestrator record renders as before.
-        let (orchestrators, workers): (Vec<Record>, Vec<Record>) =
-            records.into_iter().partition(Record::is_orchestrator);
-        let mut out = String::new();
-        if !orchestrators.is_empty() {
-            out.push_str("== orchestrators (restart with horch fleet, never resume) ==\n\n");
-            Self::render_records(&orchestrators, &mut out);
-            out.push_str("== workers ==\n\n");
-        }
-        Self::render_records(&workers, &mut out);
-        Ok(out)
-    }
-
-    fn render_records(records: &[Record], out: &mut String) {
-        for r in records {
-            let session = r.session_id.as_deref().unwrap_or("not-yet-known");
-            out.push_str(&format!(
-                "[{}] {} ({})  session={}  record={}\n",
-                r.status, r.tier, r.role, session, r.record_id
-            ));
-            let effort = r
-                .effort
-                .as_deref()
-                .map(|e| format!(" effort={e}"))
-                .unwrap_or_default();
-            out.push_str(&format!(
-                "  agent={} model={}{effort}  updated={}\n",
-                r.agent, r.model, r.updated_at
-            ));
-            if let Some(phase) = r.phase {
-                out.push_str(&format!("  phase={phase}\n"));
-            }
-            if let Some(via) = &r.via {
-                out.push_str(&format!(
-                    "  ran via {via}: {}\n",
-                    r.substitution_reason.as_deref().unwrap_or("substituted")
-                ));
-            }
-            out.push_str(&format!("  task: {}\n", r.task));
-            let notable: Vec<&HistoryEntry> = r
-                .history
-                .iter()
-                .filter(|h| h.event == "done" || h.event == "note")
-                .collect();
-            for h in notable.iter().rev().take(3).rev() {
-                out.push_str(&format!("  {} @ {}: {}\n", h.event, h.at, h.text));
-            }
-            out.push('\n');
-        }
+        Ok(ExecutionStore::render_text(&self.read()?))
     }
 }
 
