@@ -298,7 +298,12 @@ mod tests {
             .next()
             .unwrap();
         let documented: serde_yaml::Mapping = serde_yaml::from_str(front).unwrap();
-        let actual = serde_yaml::to_value(Teammate::default()).unwrap();
+        // `fallbacks` is skipped when empty, so give it one entry to be listed.
+        let actual = serde_yaml::to_value(Teammate {
+            fallbacks: vec![String::new()],
+            ..Teammate::default()
+        })
+        .unwrap();
         let actual = actual.as_mapping().unwrap();
 
         let mut documented: Vec<String> = documented
