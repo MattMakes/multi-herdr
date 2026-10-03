@@ -6,5 +6,6 @@ pub mod judge_input;
 pub mod judgment;
 pub mod parser;
 pub mod rubric;
+pub mod scheduler;
 pub mod validator;
 pub mod winner;
