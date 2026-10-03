@@ -12,6 +12,9 @@
 //! Scenarios (a comma-separated list is allowed):
 //! - `default`: a launch exits 0 at once.
 //! - `stay`: a launch sleeps until killed, like a TUI in a pane.
+//! - `inspect_skills`: a launch also writes the `skills.paths` of
+//!   `$OPENCODE_CONFIG_CONTENT` to `$HORCH_FAKE_LOG.skills.json`
+//!   (`horch_e2e::write_skills_report`).
 //!
 //! `HORCH_FAKE_TRANSCRIPTS=1`: a launch also writes the rows horch's telemetry
 //! reader needs into `opencode.db` (`$HORCH_OPENCODE_DB`, else
@@ -24,7 +27,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use horch_e2e::{hang, opencode_session_id, say, scenario_has, Call};
+use horch_e2e::{hang, opencode_session_id, say, scenario_has, write_skills_report, Call};
 use serde_json::json;
 
 fn main() {
@@ -57,6 +60,9 @@ fn main() {
             if let Some(resumed) = flag(&args, "--session") {
                 call.extra.insert("resumed".into(), json!(resumed));
             }
+            if scenario_has("inspect_skills") {
+                inspect_skills();
+            }
             // Eager: a `stay` launch is killed, so nothing is written after it.
             call.flush();
             if std::env::var("HORCH_FAKE_TRANSCRIPTS").is_ok_and(|v| v == "1") {
@@ -69,6 +75,25 @@ fn main() {
         }
     }
     call.flush();
+}
+
+fn inspect_skills() {
+    let config = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
+    let value: serde_json::Value = config
+        .as_deref()
+        .and_then(|c| serde_json::from_str(c).ok())
+        .unwrap_or_default();
+    let dirs: Vec<PathBuf> = value["skills"]["paths"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.as_str().map(PathBuf::from))
+        .collect();
+    write_skills_report(
+        "opencode",
+        &dirs,
+        json!({"env": {"OPENCODE_CONFIG_CONTENT": config}}),
+    );
 }
 
 fn flag<'a>(args: &[&'a str], name: &str) -> Option<&'a str> {

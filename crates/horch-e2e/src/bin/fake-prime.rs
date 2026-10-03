@@ -16,6 +16,8 @@
 //! Scenarios (a comma-separated list is allowed):
 //! - `default`: a launch exits 0 at once. No daemon stays registered.
 //! - `stay`: a launch stays alive until killed, and is the registered daemon.
+//! - `inspect_skills`: a launch also writes its `--skill` dirs to
+//!   `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
 //!
 //! `HORCH_FAKE_TRANSCRIPTS=1`: the session file also gets one assistant
 //! message line that horch's telemetry reader counts.
@@ -25,7 +27,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use horch_e2e::{hang, prime_session_id, say, scenario_has, Call};
+use horch_e2e::{hang, prime_session_id, say, scenario_has, write_skills_report, Call};
 use serde_json::{json, Value};
 
 fn main() {
@@ -80,6 +82,10 @@ fn launch(call: &mut Call, args: &[&str]) {
             .insert("session_file".into(), json!(file.to_string_lossy()));
         write_session(file, resume.is_some());
     }
+    if scenario_has("inspect_skills") {
+        let (dirs, flags) = skill_flags(options);
+        write_skills_report("prime", &dirs, json!({ "flags": flags }));
+    }
     // Eager: a `stay` launch is killed, so nothing is written after it.
     call.flush();
     if scenario_has("stay") {
@@ -88,6 +94,17 @@ fn launch(call: &mut Call, args: &[&str]) {
         }
         hang();
     }
+}
+
+/// Every `--skill <dir>` among the options: the dirs, and the flag pairs.
+fn skill_flags(options: &[&str]) -> (Vec<PathBuf>, Vec<String>) {
+    let mut dirs = Vec::new();
+    let mut flags = Vec::new();
+    for pair in options.windows(2).filter(|w| w[0] == "--skill") {
+        dirs.push(PathBuf::from(pair[1]));
+        flags.extend([pair[0].to_string(), pair[1].to_string()]);
+    }
+    (dirs, flags)
 }
 
 fn flag<'a>(args: &[&'a str], name: &str) -> Option<&'a str> {

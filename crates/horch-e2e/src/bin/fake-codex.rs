@@ -8,11 +8,14 @@
 //! `account/rateLimits/read`. A thread or a turn is never allowed.
 //!
 //! Scenarios: `limits_weekly` (the default), `limits_5h_weekly`,
-//! `limits_not_allowed`, `hang`, `error`.
+//! `limits_not_allowed`, `hang`, `error`. `inspect_skills`: a pane launch
+//! also writes `$CODEX_HOME/skills` and the files under it to
+//! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
 
 use std::io::BufRead;
+use std::path::{Path, PathBuf};
 
-use horch_e2e::{hang, say, scenario, Call};
+use horch_e2e::{hang, say, scenario, scenario_has, write_skills_report, Call};
 use serde_json::{json, Value};
 
 const ALLOWED: [&str; 3] = ["initialize", "initialized", "account/rateLimits/read"];
@@ -25,6 +28,9 @@ fn main() {
         return;
     }
     if call.argv.first().map(String::as_str) != Some("app-server") {
+        if scenario_has("inspect_skills") {
+            inspect_skills();
+        }
         call.flush();
         return;
     }
@@ -95,4 +101,32 @@ fn result(scenario: &str) -> Value {
         "rateLimitResetCredits": null,
         "accountId": "acct_SENTINEL",
     })
+}
+
+/// The private home's `skills` entry, and every file under it, relative.
+fn inspect_skills() {
+    let home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
+    let skills = home.as_ref().map(|h| h.join("skills"));
+    let mut files = Vec::new();
+    if let Some(dir) = &skills {
+        list_files(dir, dir, &mut files);
+    }
+    files.sort();
+    write_skills_report(
+        "codex",
+        &skills.into_iter().collect::<Vec<_>>(),
+        json!({"env": {"CODEX_HOME": home.map(|h| h.to_string_lossy().into_owned())},
+               "files": files}),
+    );
+}
+
+fn list_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            list_files(root, &path, out);
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
 }
