@@ -14,11 +14,15 @@ use crate::teammates::{
 };
 
 pub mod activation;
+pub mod briefing;
 pub mod catalog;
+pub mod materialize;
 pub mod selection;
 
 pub use activation::{plan_activation, InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};
+pub use briefing::BriefingContext;
 pub use catalog::{CatalogEntry, CatalogSource, Provenance, SkillCatalog, SkillVersion};
+pub use materialize::MaterializedSkills;
 pub use selection::{phase_skills, selected};
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
@@ -81,36 +85,38 @@ pub fn describe(phase: Option<Phase>) -> Result<Value> {
 #[derive(Debug)]
 pub struct Bundle {
     root: PathBuf,
-    names: Vec<String>,
+    catalog: SkillCatalog,
+    plan: SkillActivationPlan,
+    _files: MaterializedSkills,
 }
 
 impl Bundle {
     pub fn install(state_root: &Path, teammate: &Teammate) -> Result<Option<Self>> {
         ensure_supported(teammate)?;
-        let names = selected(teammate)?;
-        if names.is_empty() {
+        let catalog = SkillCatalog::bundled()?;
+        let plan = plan_activation(teammate, teammate.phase, &catalog)?;
+        let Some(files) =
+            MaterializedSkills::materialize(&plan, &catalog, state_root, &crate::mint_uuid())?
+        else {
             return Ok(None);
-        }
-        let parent = state_root.join("skill-bundles");
-        std::fs::create_dir_all(&parent)?;
-        let root = parent.canonicalize()?.join(crate::mint_uuid());
-        std::fs::create_dir(&root)?;
-        let bundle = Self { root, names };
-        for (path, bytes) in BUNDLED_SKILL_FILES {
-            let name = path.split('/').next().unwrap_or_default();
-            if !bundle.names.iter().any(|s| s == name) {
-                continue;
-            }
-            let target = bundle.skills_dir().join(path);
-            std::fs::create_dir_all(target.parent().expect("skill path has parent"))?;
-            std::fs::write(target, bytes)?;
-        }
+        };
+        let bundle = Self {
+            root: files.root.clone(),
+            catalog,
+            plan,
+            _files: files,
+        };
         std::fs::create_dir_all(bundle.root.join(".claude-plugin"))?;
         std::fs::write(
             bundle.root.join(".claude-plugin/plugin.json"),
             r#"{"name":"horch","description":"Phase-selected fleet skills","version":"0.1.0"}"#,
         )?;
         Ok(Some(bundle))
+    }
+
+    /// The activation plan this bundle materialized.
+    pub fn plan(&self) -> &SkillActivationPlan {
+        &self.plan
     }
 
     pub fn skills_dir(&self) -> PathBuf {
@@ -195,93 +201,34 @@ impl Bundle {
         Ok(())
     }
 
-    /// The skill paragraph prepended to a worker's briefing.
-    ///
-    /// The teammate's own `skills:` and its `plugin_skills` are EXPECTED, and
-    /// each is named with its description, so the worker knows when its step
-    /// has come. A bare list of names read as optional, and workers skipped
-    /// them. The rest of the phase catalog stays available by name only,
-    /// which keeps the context cost of a broad phase small.
+    /// The skill paragraph prepended to a worker's briefing; see
+    /// `briefing::render`.
     pub fn briefing(&self, teammate: &Teammate) -> String {
-        let agent = teammate.agent;
-        let qualified = |s: &str| {
-            if agent == Agent::Claude {
-                format!("horch:{s}")
-            } else {
-                s.to_string()
-            }
-        };
-        let catalog = catalog().unwrap_or_default();
-        let mut expected: Vec<String> = teammate
-            .skills
-            .iter()
-            .filter(|s| self.names.contains(*s))
-            .map(|s| {
-                let description = catalog
-                    .get(s)
-                    .map(|(meta, _)| {
-                        meta.description
-                            .split_whitespace()
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .unwrap_or_default();
-                format!("- {}: {description}", qualified(s))
-            })
-            .collect();
+        let claude = teammate.agent == Agent::Claude;
+        let mut plugin_lines = Vec::new();
         // A plugin that does not resolve is reported by `--check`; the
         // briefing must not fail a launch over a description.
-        if agent == Agent::Claude {
+        if claude {
             if let Ok(plugins) = crate::plugins::resolve_all(teammate) {
                 for (plugin, wanted) in plugins {
                     for skill in wanted {
                         let description = plugin.description(&skill).unwrap_or_default();
-                        expected.push(format!("- {}:{skill}: {description}", plugin.name));
+                        plugin_lines.push(format!("- {}:{skill}: {description}", plugin.name));
                     }
                 }
             }
         }
-        let others: Vec<String> = self
-            .names
-            .iter()
-            .filter(|s| !teammate.skills.contains(*s))
-            .map(|s| qualified(s))
-            .collect();
-
-        let phase = teammate
-            .phase
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "custom".into());
-        let mut out = format!("\n\nFleet skill phase: {phase}.");
-        if !expected.is_empty() {
-            out.push_str(
-                " Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n",
-            );
-            out.push_str(&expected.join("\n"));
-            out.push('\n');
-            if !others.is_empty() {
-                out.push_str(&format!(
-                    "Also available in this phase: {}. Load one only when your current step matches it.",
-                    others.join(", ")
-                ));
-            }
-        } else {
-            out.push_str(&format!(
-                " Available native skills: {}. Load only the skill matching your current step; do not read every skill at startup.",
-                others.join(", ")
-            ));
-        }
-        out.push_str(&format!(
-            " If a same-named ambient skill exists, use the fleet copy under {}. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n",
-            self.skills_dir().display()
-        ));
-        out
-    }
-}
-
-impl Drop for Bundle {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        briefing::render(
+            &self.plan,
+            &self.catalog,
+            &BriefingContext {
+                phase: teammate.phase,
+                declared: &teammate.skills,
+                namespace: claude.then_some("horch"),
+                plugin_lines: &plugin_lines,
+                skills_dir: &self.skills_dir(),
+            },
+        )
     }
 }
 

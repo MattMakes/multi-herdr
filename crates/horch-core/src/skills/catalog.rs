@@ -177,6 +177,9 @@ impl SkillCatalog {
             if entry.source.starts_with("bundled:") {
                 continue;
             }
+            // The SKILL.md name rules: an id later names a directory.
+            horch_marketplace::SkillId::parse(&entry.id)
+                .map_err(|e| anyhow::anyhow!("marketplace.lock: {e}"))?;
             let id = SkillId::new(entry.id.as_str())
                 .with_context(|| format!("marketplace.lock: skill id '{}'", entry.id))?;
             let digest: Digest = entry
