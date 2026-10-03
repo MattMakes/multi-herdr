@@ -5,6 +5,7 @@
 use anyhow::{bail, Result};
 
 use super::operator::expand_home;
+use super::teammate::HEADLESS_ONLY;
 use super::{
     effort_problem, reserved_tier, Agent, ExecRule, PermissionMode, Roster, Teammate,
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
@@ -16,8 +17,16 @@ use crate::quota;
 impl Roster {
     /// Whether this teammate may be started by `horch spawn`. Orchestrators
     /// are launched by `pane-launch`, never spawned, so this is where the
-    /// one-top-tier-session rule bites.
+    /// one-top-tier-session rule bites. A headless-only teammate never gets
+    /// a pane at all.
     pub fn is_spawnable(t: &Teammate) -> Result<()> {
+        if HEADLESS_ONLY.contains(&t.name.as_str()) {
+            bail!(
+                "'{}' is headless only (HEADLESS_ONLY): the dataset coordinator runs it \
+                 as a `claude -p` job, and `horch spawn` never starts it in a pane",
+                t.name
+            );
+        }
         Roster::model_is_spawnable(t.model.as_deref().unwrap_or_default(), &t.name)
     }
 
