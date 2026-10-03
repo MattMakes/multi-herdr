@@ -258,3 +258,106 @@ fn arc_22_matcher_finds_error_text_checks() {
         assert_eq!(error_text_match(miss), None, "false hit: {miss}");
     }
 }
+
+/// Files outside `harness/` that still match on a harness variant, with the
+/// phase that removes each entry. Do not add entries.
+///
+/// - `skills.rs`: skill exposure per harness (`Bundle::configure`,
+///   `native_args`). Removed by A10.
+const HARNESS_MATCH_PENDING: &[&str] = &["skills.rs"];
+
+/// Whether `line` is a match arm (or a `matches!`) on a `HarnessKind` /
+/// `Agent` variant. A comparison such as `t.agent == Agent::None` or an
+/// assignment is not a match.
+fn harness_match(line: &str) -> bool {
+    for prefix in ["HarnessKind::", "Agent::"] {
+        for (i, _) in line.match_indices(prefix) {
+            // `Agent::` inside a longer path segment, e.g. `SubAgent::`.
+            if line[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            // The right side of a comparison, even inside a match guard.
+            let before = line[..i].trim_end();
+            if before.ends_with("==") || before.ends_with("!=") {
+                continue;
+            }
+            let rest = &line[i + prefix.len()..];
+            if !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+                continue;
+            }
+            let after = rest
+                .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_')
+                .trim_start();
+            if line.contains("matches!(")
+                || after.starts_with("=>")
+                || (after.starts_with('|') && !after.starts_with("||"))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Adding a harness is one new module: outside tests, harness variants are
+/// matched only under `harness/` and in `roster/validation.rs`.
+#[test]
+fn arc_10_harness_match_only_in_harness() {
+    let mut found = Vec::new();
+    let mut pending_used = Vec::new();
+    for name in ["horch-core", "horch"] {
+        let root = crate_src(name);
+        let mut files = Vec::new();
+        rust_files(&root, &mut files);
+        for path in &files {
+            let rel = relative(path, &root);
+            if name == "horch-core"
+                && (rel.starts_with("harness/") || rel == "roster/validation.rs")
+            {
+                continue;
+            }
+            for (n, line) in code_lines(path) {
+                if !harness_match(&line) {
+                    continue;
+                }
+                if name == "horch-core" && HARNESS_MATCH_PENDING.contains(&rel.as_str()) {
+                    pending_used.push(rel.clone());
+                    continue;
+                }
+                found.push(format!("{name}/{rel}:{n}: {}", line.trim()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "harness variant matches outside harness/:\n{}",
+        found.join("\n")
+    );
+    for entry in HARNESS_MATCH_PENDING {
+        assert!(
+            pending_used.iter().any(|p| p == entry),
+            "HARNESS_MATCH_PENDING entry {entry} matches no harness any more; remove it"
+        );
+    }
+}
+
+/// The scan's own filter: arms and `matches!` count, comparisons do not.
+#[test]
+fn arc_10_scan_tells_matches_from_comparisons() {
+    assert!(harness_match("        Agent::Claude => 1,"));
+    assert!(harness_match(
+        "        HarnessKind::Pi | HarnessKind::Prime => 2,"
+    ));
+    assert!(harness_match("    matches!(kind, Agent::Codex)"));
+    assert!(!harness_match("    if t.agent == Agent::None {"));
+    assert!(!harness_match("        teammate.agent = Agent::Codex;"));
+    assert!(!harness_match("    a == Agent::Pi || b"));
+    assert!(!harness_match(
+        "        None if t.agent == Agent::Codex => 1,"
+    ));
+    assert!(!harness_match("    SubAgent::Claude => 1,"));
+}

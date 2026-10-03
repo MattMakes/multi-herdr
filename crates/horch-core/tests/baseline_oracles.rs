@@ -11,7 +11,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use horch_core::balance_policy::{self, Decision, GateFlags, PoolLine};
 use horch_core::execution::store::ExecutionStore;
-use horch_core::launch::{self, Session};
+use horch_core::harness::CommandSpec;
+use horch_core::launch::{self, LaunchEnv, Session};
 use horch_core::ledger::{Ledger, Record};
 use horch_core::policy::{BalanceMode, Policy};
 use horch_core::quota::{QuotaFile, QuotaView};
@@ -220,7 +221,54 @@ fn bundle_root(bundle: &Bundle) -> PathBuf {
     bundle.skills_dir().parent().unwrap().to_path_buf()
 }
 
+/// How a launch oracle builds one command.
+type Build =
+    dyn Fn(&Teammate, Session<'_>, Option<&Bundle>) -> anyhow::Result<std::process::Command>;
+
+/// The public entry point every caller used at A0.
+fn legacy_build(
+    t: &Teammate,
+    session: Session<'_>,
+    bundle: Option<&Bundle>,
+) -> anyhow::Result<std::process::Command> {
+    launch::command_with_skills(t, session, PROMPT, None, bundle)
+}
+
+/// The A4 path: the teammate's harness adapter builds the command, with the
+/// skills bundle applied around it as `command_with_skills_in` does.
+fn adapter_build(
+    t: &Teammate,
+    session: Session<'_>,
+    bundle: Option<&Bundle>,
+) -> anyhow::Result<std::process::Command> {
+    let env = LaunchEnv::from_process();
+    let (adjusted, prompt) = match bundle {
+        Some(b) => (
+            b.configure(t, env.home())?,
+            format!("{}\n{PROMPT}", b.briefing_in(t, env.home())),
+        ),
+        None => (t.clone(), PROMPT.to_string()),
+    };
+    let mut cmd = adjusted.agent.adapter().build_command(
+        &env,
+        &CommandSpec {
+            teammate: &adjusted,
+            session,
+            prompt: &prompt,
+            model_override: None,
+        },
+    )?;
+    if let Some(b) = bundle {
+        b.apply_env(&mut cmd, t, env.opencode_config_content.as_deref())?;
+    }
+    Ok(cmd)
+}
+
 fn launch_oracle(world: &World, t: &Teammate) -> Value {
+    launch_oracle_with(world, t, &legacy_build)
+}
+
+fn launch_oracle_with(world: &World, t: &Teammate, build: &Build) -> Value {
     let bundle = Bundle::install(&world.state, t);
     let (bundle, bundle_note) = match bundle {
         Ok(b) => (b, Value::Null),
@@ -233,7 +281,7 @@ fn launch_oracle(world: &World, t: &Teammate) -> Value {
         ("resume", Session::Resume(RESUME_ID)),
         ("unmanaged", Session::Unmanaged),
     ] {
-        let built = launch::command_with_skills(t, session, PROMPT, None, bundle.as_ref());
+        let built = build(t, session, bundle.as_ref());
         let v = match built {
             Ok(cmd) => {
                 let scrub =
@@ -280,6 +328,26 @@ fn oracle_launch_matches() {
             &pretty(&launch_oracle(&world, t)),
         );
     }
+}
+
+/// ARC-09: every teammate's argv and env, built through its harness
+/// adapter, equal the frozen A0 launch oracle. Compare-only: this test never
+/// writes an oracle, even under `HORCH_BLESS=1`.
+#[test]
+fn arc_09_argv_matches_baseline() {
+    let world = World::new();
+    let roster = world.roster();
+    let mut checked = 0;
+    for name in roster.names() {
+        let t = roster.get(name).unwrap();
+        let path = oracles().join(format!("launch/{name}.json"));
+        let want =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let got = pretty(&launch_oracle_with(&world, t, &adapter_build));
+        assert_eq!(want, got, "{name}: adapter argv differs from the A0 oracle");
+        checked += 1;
+    }
+    assert!(checked >= 33, "only {checked} teammates checked");
 }
 
 // ─── oracle 2: routing decisions ────────────────────────────────────────────
