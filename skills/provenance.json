@@ -4,6 +4,104 @@
   "format": "Curated adaptations; source_sha256 hashes the full original SKILL.md bytes.",
   "skills": [
     {
+      "name": "brainstorm",
+      "source_path": "plugins/dev/skills/brainstorm/SKILL.md",
+      "source_sha256": "56c53d04fa2e2ee15a092a9a237a696f5f678edd8b4accca08a66e1ee96bdaa0",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "research-codebase",
+      "source_path": "plugins/dev/skills/research-codebase/SKILL.md",
+      "source_sha256": "092deb05eee4a2a30c0c750b0db6979db636bff39fd6cdbaec46a2e6864c6739",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "trace",
+      "source_path": "plugins/dev/skills/trace/SKILL.md",
+      "source_sha256": "607ff0e84ba435363e53287081b0f1979bdcfc7f01d24d69ab0f61a2339e0da0",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "create-plan",
+      "source_path": "plugins/dev/skills/create-plan/SKILL.md",
+      "source_sha256": "c2bbdd681afa98a41ef43f298494cb448e2b8219978715ab40135e1f38357c51",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "pre-flight",
+      "source_path": "plugins/tools/skills/pre-flight/SKILL.md",
+      "source_sha256": "2784572438d971643bb00755c49147839a736f7a27888777776ba8f65b1bf209",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "execute",
+      "source_path": "plugins/dev/skills/execute-plan/SKILL.md",
+      "source_sha256": "5f153f9ef33f67644afb0633188af04a9bc4faac592a06d1d3a36a7f74f5f258",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "tdd",
+      "source_path": "plugins/dev/skills/tdd/SKILL.md",
+      "source_sha256": "3e75572a66b7619b7557f82d3cb7ffac9d406970d2abb3c371426d9789060084",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "debug",
+      "source_path": "plugins/dev/skills/debug/SKILL.md",
+      "source_sha256": "7ecb31c6eb1c48a14eca6db85f4b4abf0d3b8b4455247478924b4b8a6a3300be",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "check",
+      "source_path": "plugins/dev/skills/check-implementation/SKILL.md",
+      "source_sha256": "004ecef7d46f865854783bb689c1282cf1ccea01fb08ccec5613dbef13d260be",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "code-analysis",
+      "source_path": "plugins/code/skills/complexity-sweep/SKILL.md",
+      "source_sha256": "1518af1001a596f50e96c7a7438b3ecbed9fd1ea1317d4448bbd2b3869f92d18",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "code-review",
+      "source_path": "plugins/dev/skills/review-git-changes/SKILL.md",
+      "source_sha256": "9af6722a59f2fab1fd9eab74496d8b196aa89aaba50ebfae9cfc9710e11da952",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "security-review",
+      "source_path": "plugins/code/skills/security-sweep/SKILL.md",
+      "source_sha256": "0657c72feacf53b91c407c3d8656425935d5ac7f582baf29a7de04ffcf7d57f5",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "handoff",
+      "source_path": "plugins/dev/skills/whats-next/SKILL.md",
+      "source_sha256": "7fdb41074e2868707e89c41d1f415f3422d6ce8718180d3076ba95b55e940814",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "document",
+      "source_path": "plugins/dev/skills/document-project/SKILL.md",
+      "source_sha256": "3b9a94ea7b7d48b52475236973399e555d61d3d181350604cc926e1f1d9f7849",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "orchestrate",
+      "source_path": null,
+      "source_sha256": null,
+      "adaptation": "Original to this repository. Reconciled from the retired external herdr-orchestrator and herdr-worker skills against the horch CLI."
+    },
+    {
+      "name": "skill-creator",
+      "source_repository": "https://github.com/anthropics/claude-plugins-official",
+      "source_revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+      "source_path": "plugins/skill-creator/skills/skill-creator/SKILL.md",
+      "source_sha256": "dcd4803e61e913e6fc27294184cd3a71f09f5e924ff20c8a9a20173e7b3c2bcf",
+      "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase."
+    },
+    {
       "name": "art-direction",
       "sources": [
         {
@@ -192,52 +290,122 @@
       "adaptation": "Combined and rewritten: the cinematic-ui director workflow (decisions, storyboard, signature composition before shared system) without its questionnaire, sub-agents, compiled-spec phase or data dumps; 13 directions merged from taste-skill styles, pencilplaybook presets and 6 film-director temperaments; pencilplaybook perceptual defaults as floors; Pencil canvas rules in one optional reference; a DESIGN-DIRECTION.md contract replaces interactive approval."
     },
     {
-      "name": "brainstorm",
-      "source_path": "plugins/dev/skills/brainstorm/SKILL.md",
-      "source_sha256": "56c53d04fa2e2ee15a092a9a237a696f5f678edd8b4accca08a66e1ee96bdaa0",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "research-codebase",
-      "source_path": "plugins/dev/skills/research-codebase/SKILL.md",
-      "source_sha256": "092deb05eee4a2a30c0c750b0db6979db636bff39fd6cdbaec46a2e6864c6739",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "trace",
-      "source_path": "plugins/dev/skills/trace/SKILL.md",
-      "source_sha256": "607ff0e84ba435363e53287081b0f1979bdcfc7f01d24d69ab0f61a2339e0da0",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "create-plan",
-      "source_path": "plugins/dev/skills/create-plan/SKILL.md",
-      "source_sha256": "c2bbdd681afa98a41ef43f298494cb448e2b8219978715ab40135e1f38357c51",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "pre-flight",
-      "source_path": "plugins/tools/skills/pre-flight/SKILL.md",
-      "source_sha256": "2784572438d971643bb00755c49147839a736f7a27888777776ba8f65b1bf209",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "execute",
-      "source_path": "plugins/dev/skills/execute-plan/SKILL.md",
-      "source_sha256": "5f153f9ef33f67644afb0633188af04a9bc4faac592a06d1d3a36a7f74f5f258",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "tdd",
-      "source_path": "plugins/dev/skills/tdd/SKILL.md",
-      "source_sha256": "3e75572a66b7619b7557f82d3cb7ffac9d406970d2abb3c371426d9789060084",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "debug",
-      "source_path": "plugins/dev/skills/debug/SKILL.md",
-      "source_sha256": "7ecb31c6eb1c48a14eca6db85f4b4abf0d3b8b4455247478924b4b8a6a3300be",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+      "name": "brand-identity",
+      "sources": [
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/SKILL.md",
+          "sha256": "1c24139633e2ebf11da4f97eaeb1c0564f8658a40b3ad779387a5b8c6cb76dbc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/voice-framework.md",
+          "sha256": "08c15ac79f81cd964c5efbe593131b61a093c7e1b060d5dd28b17f3cc5b331fb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/messaging-framework.md",
+          "sha256": "24b2500a72867b55dd10f4bf359178b0eb347fddd852659ce47b69d9f597d4e6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/visual-identity.md",
+          "sha256": "63f0cfc5d95403d8e12aca4d839cc28471515574d9a431334bfbb96c15407c31",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/consistency-checklist.md",
+          "sha256": "56d8b2d4852cda11e600adec4b9dd68fc89a1b8265382359953bec5c5e5e2c36",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/brand-guideline-template.md",
+          "sha256": "392db8cf10fef492221c15a86e68590074bf5716de1f2982f41c01fbe30567cc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/logo-usage-rules.md",
+          "sha256": "044c5ddf30cfe0eea047451cfce6ea654939198ffdd8968a19161c97066a5a26",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/color-palette-management.md",
+          "sha256": "c429298ffe3955edb8b22c9f51426fef75e83d02848cd4300e89c0d3fc34b44a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/typography-specifications.md",
+          "sha256": "921c3d9e6ddfde2677b9a3e32eee94c7922f54f22c1f380c5ed2eb25a7d5bfa9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/approval-checklist.md",
+          "sha256": "1cbf5f0fb3aa780c1a1406f56afe16f6af8e2e59165b8efc40038c7c0847f5b6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/asset-organization.md",
+          "sha256": "de98123417e9c5a1cc71a78131bba979c4c8ed2e5289e6c7a7f166576e488101",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/templates/brand-guidelines-starter.md",
+          "sha256": "d157a57b15f0b458c79636d11de42f3c89f03d8c0bbea1bdd3cf1c3542b2140d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-style-guide.md",
+          "sha256": "611baa841eedab101f45c113c6bfbd4d7e16e859c9d6ebd2cf941827a6e8dd15",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-color-psychology.md",
+          "sha256": "3fd0e93e24c3b2ea7f3be778e8f2d03b1c62c7c6eab3ade478c8fca332bff287",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/data/logo/industries.csv",
+          "sha256": "e58dda4b9d28851f70914f82c1d2a2cff626a991ca41076f64122f33cc8a6525",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/brandkit/SKILL.md",
+          "sha256": "b0c4837e1bd140ca816ae54948754ddd2ac1e2a4d3619363777a80caf00b2ede",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged the ui-ux-pro-max brand skill, the non-image logo and identity guidance from its design skill, and the strategy and logo-concept method of taste-skill brandkit into one strategy-first workflow with voice, visual identity and guidelines references; scripts, image generation, presets and approval sign-off rituals dropped."
     },
     {
       "name": "design-imagery",
@@ -302,40 +470,261 @@
       "adaptation": "Combined web, mobile, image-to-code and brand-kit image skills into one harness-neutral generate, spec, build, and screenshot-compare workflow; provider scripts, API setup, dials and approval gates removed."
     },
     {
-      "name": "check",
-      "source_path": "plugins/dev/skills/check-implementation/SKILL.md",
-      "source_sha256": "004ecef7d46f865854783bb689c1282cf1ccea01fb08ccec5613dbef13d260be",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+      "name": "design-system",
+      "sources": [
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/SKILL.md",
+          "sha256": "ea087c341bfb5b23195c7302027268ede86da802554c18a5c4896a6017b439f9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/references/quick-reference.md",
+          "sha256": "0609bc7c89dacb40472465d8fc14257b56b2c43439660fc8d6fa3b8c022e1876",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/references/pro-rules.md",
+          "sha256": "d28442d61c310b49c054a4ea736f89fb3008beebdbbc38c4b3a540b8f7fadf23",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/styles.csv",
+          "sha256": "a93a4d9d7025856575d7b7583bda020be9043013432c5af7c58af9dbdfb206b7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/colors.csv",
+          "sha256": "8162429222bce22df62b564085946a30d07cc9722c58d0a3a494bd0d1d00841c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/typography.csv",
+          "sha256": "321fc446e89024488ebae96dda93efc4d2307bd8bddb240857ad51364f6782c8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/ux-guidelines.csv",
+          "sha256": "ff81ec613f70ba9fc3fcce52dbe4ae35d44b2079dbe6dc066d2d6e38c28facd5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/stacks/shadcn.csv",
+          "sha256": "e56cfde5b74907836ac3582a4779d5b7f3d206a702ab81b8669a1b668c3eeb51",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/SKILL.md",
+          "sha256": "8aa5ff93320559a6e5289d37b6b06b3307737dbfb4a6f3fc44135c705613c511",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/token-architecture.md",
+          "sha256": "925f4049c4c4313d9fd5df98cdfd52004112aca49fba1664ad85e76bc9dce4d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/primitive-tokens.md",
+          "sha256": "91e6caa12646c08c8aadf8e09399aed65760a25c8d80595936d81a9131118fc3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/semantic-tokens.md",
+          "sha256": "97e16d8061bbc22e82b51966a7015e3fc990932902e4647843506669a1cdebcc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/component-tokens.md",
+          "sha256": "e27f8f5999badee425c98235eabbd2cb3ebe2a1a364766d5c7a6b3134ceaaec8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/component-specs.md",
+          "sha256": "b265d979a741dd748d4e595e6898ae430faeef4f6d13d7a634fa6241b91d2da4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/states-and-variants.md",
+          "sha256": "8dacb95d57d4bb37d8a99cc55515ff26da272056f837d29abc74aedcaa3ba104",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/tailwind-integration.md",
+          "sha256": "6d01092db1479dbd2060567b4232bb2b4bc16e89730ab07e1f87a3e7f5c406b9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/scripts/validate-tokens.cjs",
+          "sha256": "65f03a29290b9029d8cc27537701f226de7bcffc303b3bc361648fadfa09b77d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/SKILL.md",
+          "sha256": "625e302c60ee8f2e22d56cbe638c4a739e2657f566dae42689503ad517c30f1e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/shadcn-theming.md",
+          "sha256": "d17d641474221123ff0e0288043ca2f2dab3ac96908a19eed28d82f9e58865ed",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/shadcn-components.md",
+          "sha256": "79c4f91cbf68993a43fa3a95889c35db73de45bdd3dfd83a6830863c01aa598a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/shadcn-accessibility.md",
+          "sha256": "a22cd4ccf82b635b2b2c4f12416a0c4f7edcd825d219d6089450fa797a0d9511",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/tailwind-customization.md",
+          "sha256": "4c5adeed6263a274f74f6eb2c816ca420fd6ef4f35683582988bacd404799afe",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/tailwind-responsive.md",
+          "sha256": "8d00ae620df26daea4623c7bf996d6e612e09d359305fcfa2b40cab757ed840c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-color-psychology.md",
+          "sha256": "3fd0e93e24c3b2ea7f3be778e8f2d03b1c62c7c6eab3ade478c8fca332bff287",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/stitch-skill/SKILL.md",
+          "sha256": "46bdb08fee2dded38b6ba0a051230a502d6ac6e4044afd47592cb40c256028b5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/stitch-skill/DESIGN.md",
+          "sha256": "0ab6740c4ebb1966dbceddb823a66d4bf027e960efbd73faca56cbf8370ae2ad",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged the ui-ux-pro-max design-system, ui-styling and ui-ux-pro-max skills with the stitch-skill DESIGN.md format into a token-to-code workflow with checks; CSV data became curated, contrast-measured Markdown tables; search scripts, generators, slides, fonts and canvas art dropped."
     },
     {
-      "name": "code-analysis",
-      "source_path": "plugins/code/skills/complexity-sweep/SKILL.md",
-      "source_sha256": "1518af1001a596f50e96c7a7438b3ecbed9fd1ea1317d4448bbd2b3869f92d18",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "code-review",
-      "source_path": "plugins/dev/skills/review-git-changes/SKILL.md",
-      "source_sha256": "9af6722a59f2fab1fd9eab74496d8b196aa89aaba50ebfae9cfc9710e11da952",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "security-review",
-      "source_path": "plugins/code/skills/security-sweep/SKILL.md",
-      "source_sha256": "0657c72feacf53b91c407c3d8656425935d5ac7f582baf29a7de04ffcf7d57f5",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "handoff",
-      "source_path": "plugins/dev/skills/whats-next/SKILL.md",
-      "source_sha256": "7fdb41074e2868707e89c41d1f415f3422d6ce8718180d3076ba95b55e940814",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "document",
-      "source_path": "plugins/dev/skills/document-project/SKILL.md",
-      "source_sha256": "3b9a94ea7b7d48b52475236973399e555d61d3d181350604cc926e1f1d9f7849",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+      "name": "landing-page",
+      "sources": [
+        {
+          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
+          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
+          "path": "SKILL.md",
+          "sha256": "f06be455f7e5ebd35f9fbf8e0ad23dfdca6a8eb14b540c93b8ea50a4886b0f13",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
+          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
+          "path": "design_prompt.txt",
+          "sha256": "45d37e38625cc57d2338d336fbba34d4889602520ff0fea68ec13192bb3f5c2d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
+          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
+          "path": "generate_landing.sh",
+          "sha256": "3c089063a9e2db5e519964f1d4afdc8814c96530a34955935356d0bb40f78ee4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/banner-design/SKILL.md",
+          "sha256": "ccb89ddc848f60bfe630cb19dfe3e062df94a029467a9b15259f2761019ac5c4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/banner-design/references/banner-sizes-and-styles.md",
+          "sha256": "c8906fb1073a576ee8c680d9bc8586249cbc4ed36690da960d65a1c9c37143b7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/landing.csv",
+          "sha256": "9a2edd3bb676c2a58f00ade7a062e285222d4297bfd847c8d5b056f0dbbf52d0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/products.csv",
+          "sha256": "42473f75e8dde5987bdf89ce55d8c168091b80a356cae691dd60247d80720b70",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/references/quick-reference.md",
+          "sha256": "0609bc7c89dacb40472465d8fc14257b56b2c43439660fc8d6fa3b8c022e1876",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill/SKILL.md",
+          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged the felix-huber generate-and-review pipeline (run in one session, no nested CLI), banner-design, the landing patterns of ui-ux-pro-max and the landing rules of taste-skill; rewrote as a checkable workflow and dropped random styles, scripts and invented proof."
     },
     {
       "name": "motion-gsap",
@@ -461,89 +850,6 @@
         }
       ],
       "adaptation": "Merged the 8 GSAP skills and their examples into one workflow skill with 8 topic references; rewrote in our voice, fixed source API errors, added checks and a verification step; carried the cinematic-ui entrance map, interaction budget and camera vocabulary as GSAP recipes; dropped persuasion, duplicate lists and the cinematic research workflow."
-    },
-    {
-      "name": "orchestrate",
-      "source_path": null,
-      "source_sha256": null,
-      "adaptation": "Original to this repository. Reconciled from the retired external herdr-orchestrator and herdr-worker skills against the horch CLI."
-    },
-    {
-      "name": "skill-creator",
-      "source_repository": "https://github.com/anthropics/claude-plugins-official",
-      "source_revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-      "source_path": "plugins/skill-creator/skills/skill-creator/SKILL.md",
-      "source_sha256": "dcd4803e61e913e6fc27294184cd3a71f09f5e924ff20c8a9a20173e7b3c2bcf",
-      "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase."
-    },
-    {
-      "name": "landing-page",
-      "sources": [
-        {
-          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
-          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
-          "path": "SKILL.md",
-          "sha256": "f06be455f7e5ebd35f9fbf8e0ad23dfdca6a8eb14b540c93b8ea50a4886b0f13",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
-          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
-          "path": "design_prompt.txt",
-          "sha256": "45d37e38625cc57d2338d336fbba34d4889602520ff0fea68ec13192bb3f5c2d",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
-          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
-          "path": "generate_landing.sh",
-          "sha256": "3c089063a9e2db5e519964f1d4afdc8814c96530a34955935356d0bb40f78ee4",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/banner-design/SKILL.md",
-          "sha256": "ccb89ddc848f60bfe630cb19dfe3e062df94a029467a9b15259f2761019ac5c4",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/banner-design/references/banner-sizes-and-styles.md",
-          "sha256": "c8906fb1073a576ee8c680d9bc8586249cbc4ed36690da960d65a1c9c37143b7",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/data/landing.csv",
-          "sha256": "9a2edd3bb676c2a58f00ade7a062e285222d4297bfd847c8d5b056f0dbbf52d0",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/data/products.csv",
-          "sha256": "42473f75e8dde5987bdf89ce55d8c168091b80a356cae691dd60247d80720b70",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/references/quick-reference.md",
-          "sha256": "0609bc7c89dacb40472465d8fc14257b56b2c43439660fc8d6fa3b8c022e1876",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/taste-skill/SKILL.md",
-          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Merged the felix-huber generate-and-review pipeline (run in one session, no nested CLI), banner-design, the landing patterns of ui-ux-pro-max and the landing rules of taste-skill; rewrote as a checkable workflow and dropped random styles, scripts and invented proof."
     },
     {
       "name": "ui-redesign",
@@ -787,312 +1093,6 @@
         }
       ],
       "adaptation": "Merged hallmark and four taste-skill variants into one stack-neutral taste skill: rules per topic, ripgrep searches for named tells, measured hard gates and a six-axis rubric for review, and output-skill's complete-output rule; dropped theme and layout catalogs, dials, randomization rituals, stack-specific code and persuasion; conflicts resolved in ai_docs/reports/design-skills/skill-taste.md."
-    },
-    {
-      "name": "brand-identity",
-      "sources": [
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/SKILL.md",
-          "sha256": "1c24139633e2ebf11da4f97eaeb1c0564f8658a40b3ad779387a5b8c6cb76dbc",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/voice-framework.md",
-          "sha256": "08c15ac79f81cd964c5efbe593131b61a093c7e1b060d5dd28b17f3cc5b331fb",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/messaging-framework.md",
-          "sha256": "24b2500a72867b55dd10f4bf359178b0eb347fddd852659ce47b69d9f597d4e6",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/visual-identity.md",
-          "sha256": "63f0cfc5d95403d8e12aca4d839cc28471515574d9a431334bfbb96c15407c31",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/consistency-checklist.md",
-          "sha256": "56d8b2d4852cda11e600adec4b9dd68fc89a1b8265382359953bec5c5e5e2c36",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/brand-guideline-template.md",
-          "sha256": "392db8cf10fef492221c15a86e68590074bf5716de1f2982f41c01fbe30567cc",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/logo-usage-rules.md",
-          "sha256": "044c5ddf30cfe0eea047451cfce6ea654939198ffdd8968a19161c97066a5a26",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/color-palette-management.md",
-          "sha256": "c429298ffe3955edb8b22c9f51426fef75e83d02848cd4300e89c0d3fc34b44a",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/typography-specifications.md",
-          "sha256": "921c3d9e6ddfde2677b9a3e32eee94c7922f54f22c1f380c5ed2eb25a7d5bfa9",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/approval-checklist.md",
-          "sha256": "1cbf5f0fb3aa780c1a1406f56afe16f6af8e2e59165b8efc40038c7c0847f5b6",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/references/asset-organization.md",
-          "sha256": "de98123417e9c5a1cc71a78131bba979c4c8ed2e5289e6c7a7f166576e488101",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/brand/templates/brand-guidelines-starter.md",
-          "sha256": "d157a57b15f0b458c79636d11de42f3c89f03d8c0bbea1bdd3cf1c3542b2140d",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design/references/logo-style-guide.md",
-          "sha256": "611baa841eedab101f45c113c6bfbd4d7e16e859c9d6ebd2cf941827a6e8dd15",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design/references/logo-color-psychology.md",
-          "sha256": "3fd0e93e24c3b2ea7f3be778e8f2d03b1c62c7c6eab3ade478c8fca332bff287",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design/data/logo/industries.csv",
-          "sha256": "e58dda4b9d28851f70914f82c1d2a2cff626a991ca41076f64122f33cc8a6525",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/brandkit/SKILL.md",
-          "sha256": "b0c4837e1bd140ca816ae54948754ddd2ac1e2a4d3619363777a80caf00b2ede",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Merged the ui-ux-pro-max brand skill, the non-image logo and identity guidance from its design skill, and the strategy and logo-concept method of taste-skill brandkit into one strategy-first workflow with voice, visual identity and guidelines references; scripts, image generation, presets and approval sign-off rituals dropped."
-    },
-    {
-      "name": "design-system",
-      "sources": [
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/SKILL.md",
-          "sha256": "ea087c341bfb5b23195c7302027268ede86da802554c18a5c4896a6017b439f9",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/references/quick-reference.md",
-          "sha256": "0609bc7c89dacb40472465d8fc14257b56b2c43439660fc8d6fa3b8c022e1876",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/references/pro-rules.md",
-          "sha256": "d28442d61c310b49c054a4ea736f89fb3008beebdbbc38c4b3a540b8f7fadf23",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/data/styles.csv",
-          "sha256": "a93a4d9d7025856575d7b7583bda020be9043013432c5af7c58af9dbdfb206b7",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/data/colors.csv",
-          "sha256": "8162429222bce22df62b564085946a30d07cc9722c58d0a3a494bd0d1d00841c",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/data/typography.csv",
-          "sha256": "321fc446e89024488ebae96dda93efc4d2307bd8bddb240857ad51364f6782c8",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/data/ux-guidelines.csv",
-          "sha256": "ff81ec613f70ba9fc3fcce52dbe4ae35d44b2079dbe6dc066d2d6e38c28facd5",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-ux-pro-max/data/stacks/shadcn.csv",
-          "sha256": "e56cfde5b74907836ac3582a4779d5b7f3d206a702ab81b8669a1b668c3eeb51",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design-system/SKILL.md",
-          "sha256": "8aa5ff93320559a6e5289d37b6b06b3307737dbfb4a6f3fc44135c705613c511",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design-system/references/token-architecture.md",
-          "sha256": "925f4049c4c4313d9fd5df98cdfd52004112aca49fba1664ad85e76bc9dce4d3",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design-system/references/primitive-tokens.md",
-          "sha256": "91e6caa12646c08c8aadf8e09399aed65760a25c8d80595936d81a9131118fc3",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design-system/references/semantic-tokens.md",
-          "sha256": "97e16d8061bbc22e82b51966a7015e3fc990932902e4647843506669a1cdebcc",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design-system/references/component-tokens.md",
-          "sha256": "e27f8f5999badee425c98235eabbd2cb3ebe2a1a364766d5c7a6b3134ceaaec8",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design-system/references/component-specs.md",
-          "sha256": "b265d979a741dd748d4e595e6898ae430faeef4f6d13d7a634fa6241b91d2da4",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design-system/references/states-and-variants.md",
-          "sha256": "8dacb95d57d4bb37d8a99cc55515ff26da272056f837d29abc74aedcaa3ba104",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design-system/references/tailwind-integration.md",
-          "sha256": "6d01092db1479dbd2060567b4232bb2b4bc16e89730ab07e1f87a3e7f5c406b9",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design-system/scripts/validate-tokens.cjs",
-          "sha256": "65f03a29290b9029d8cc27537701f226de7bcffc303b3bc361648fadfa09b77d",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-styling/SKILL.md",
-          "sha256": "625e302c60ee8f2e22d56cbe638c4a739e2657f566dae42689503ad517c30f1e",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-styling/references/shadcn-theming.md",
-          "sha256": "d17d641474221123ff0e0288043ca2f2dab3ac96908a19eed28d82f9e58865ed",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-styling/references/shadcn-components.md",
-          "sha256": "79c4f91cbf68993a43fa3a95889c35db73de45bdd3dfd83a6830863c01aa598a",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-styling/references/shadcn-accessibility.md",
-          "sha256": "a22cd4ccf82b635b2b2c4f12416a0c4f7edcd825d219d6089450fa797a0d9511",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-styling/references/tailwind-customization.md",
-          "sha256": "4c5adeed6263a274f74f6eb2c816ca420fd6ef4f35683582988bacd404799afe",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/ui-styling/references/tailwind-responsive.md",
-          "sha256": "8d00ae620df26daea4623c7bf996d6e612e09d359305fcfa2b40cab757ed840c",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
-          "path": ".claude/skills/design/references/logo-color-psychology.md",
-          "sha256": "3fd0e93e24c3b2ea7f3be778e8f2d03b1c62c7c6eab3ade478c8fca332bff287",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/stitch-skill/SKILL.md",
-          "sha256": "46bdb08fee2dded38b6ba0a051230a502d6ac6e4044afd47592cb40c256028b5",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/stitch-skill/DESIGN.md",
-          "sha256": "0ab6740c4ebb1966dbceddb823a66d4bf027e960efbd73faca56cbf8370ae2ad",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Merged the ui-ux-pro-max design-system, ui-styling and ui-ux-pro-max skills with the stitch-skill DESIGN.md format into a token-to-code workflow with checks; CSV data became curated, contrast-measured Markdown tables; search scripts, generators, slides, fonts and canvas art dropped."
     }
   ]
 }
