@@ -25,13 +25,13 @@ const LEGACY_DONE: &str = "done";
 /// {"state":"launch_failed","stage":"split","reason":"no such pane"}
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "StatusWire", into = "StatusWire")]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum ExecutionStatus {
     Planned,
     Starting,
     Running,
     Done,
-    Failed(FailureKind),
+    Failed { failure: FailureKind },
     LaunchFailed { stage: LaunchStage, reason: String },
 }
 
@@ -58,45 +58,6 @@ pub enum LaunchStage {
     Run,
 }
 
-/// The serialized shape of [`ExecutionStatus`]. A newtype variant around an
-/// enum cannot be internally tagged, so the failure gets a named field here.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum StatusWire {
-    Planned,
-    Starting,
-    Running,
-    Done,
-    Failed { failure: FailureKind },
-    LaunchFailed { stage: LaunchStage, reason: String },
-}
-
-impl From<StatusWire> for ExecutionStatus {
-    fn from(w: StatusWire) -> Self {
-        match w {
-            StatusWire::Planned => Self::Planned,
-            StatusWire::Starting => Self::Starting,
-            StatusWire::Running => Self::Running,
-            StatusWire::Done => Self::Done,
-            StatusWire::Failed { failure } => Self::Failed(failure),
-            StatusWire::LaunchFailed { stage, reason } => Self::LaunchFailed { stage, reason },
-        }
-    }
-}
-
-impl From<ExecutionStatus> for StatusWire {
-    fn from(s: ExecutionStatus) -> Self {
-        match s {
-            ExecutionStatus::Planned => Self::Planned,
-            ExecutionStatus::Starting => Self::Starting,
-            ExecutionStatus::Running => Self::Running,
-            ExecutionStatus::Done => Self::Done,
-            ExecutionStatus::Failed(failure) => Self::Failed { failure },
-            ExecutionStatus::LaunchFailed { stage, reason } => Self::LaunchFailed { stage, reason },
-        }
-    }
-}
-
 impl ExecutionStatus {
     /// Whether an agent may be running for this execution right now.
     pub fn is_live(&self) -> bool {
@@ -107,7 +68,7 @@ impl ExecutionStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Done | Self::Failed(_) | Self::LaunchFailed { .. }
+            Self::Done | Self::Failed { .. } | Self::LaunchFailed { .. }
         )
     }
 
@@ -196,7 +157,10 @@ impl SessionMode {
 }
 
 /// What horch knows about an execution's agent session id.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialized as `{"session":"pending"}` or `{"session":"known","id":"..."}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "session", content = "id", rename_all = "snake_case")]
 pub enum SessionState {
     /// The agent mints it; it is not harvested yet.
     Pending,
@@ -233,14 +197,26 @@ mod tests {
             ExecutionStatus::Starting,
             ExecutionStatus::Running,
             ExecutionStatus::Done,
-            ExecutionStatus::Failed(FailureKind::AgentExited { code: Some(1) }),
-            ExecutionStatus::Failed(FailureKind::AgentExited { code: None }),
-            ExecutionStatus::Failed(FailureKind::PaneVanished),
-            ExecutionStatus::Failed(FailureKind::TimedOut),
-            ExecutionStatus::Failed(FailureKind::Cancelled {
-                reason: "operator".into(),
-            }),
-            ExecutionStatus::Failed(FailureKind::Crashed),
+            ExecutionStatus::Failed {
+                failure: FailureKind::AgentExited { code: Some(1) },
+            },
+            ExecutionStatus::Failed {
+                failure: FailureKind::AgentExited { code: None },
+            },
+            ExecutionStatus::Failed {
+                failure: FailureKind::PaneVanished,
+            },
+            ExecutionStatus::Failed {
+                failure: FailureKind::TimedOut,
+            },
+            ExecutionStatus::Failed {
+                failure: FailureKind::Cancelled {
+                    reason: "operator".into(),
+                },
+            },
+            ExecutionStatus::Failed {
+                failure: FailureKind::Crashed,
+            },
             ExecutionStatus::LaunchFailed {
                 stage: LaunchStage::Brief,
                 reason: "disk full".into(),
@@ -301,9 +277,9 @@ mod tests {
         );
 
         assert_eq!(
-            serde_json::to_string(&ExecutionStatus::Failed(FailureKind::AgentExited {
-                code: Some(1)
-            }))
+            serde_json::to_string(&ExecutionStatus::Failed {
+                failure: FailureKind::AgentExited { code: Some(1) }
+            })
             .unwrap(),
             r#"{"state":"failed","failure":{"kind":"agent_exited","code":1}}"#
         );
@@ -349,5 +325,14 @@ mod tests {
         assert_eq!(SessionMode::Fresh(Some(id.clone())).id(), Some(&id));
         assert_eq!(SessionMode::Fresh(None).id(), None);
         assert_eq!(SessionMode::Resume(id.clone()).id(), Some(&id));
+
+        assert_eq!(
+            serde_json::to_string(&SessionState::Known(id)).unwrap(),
+            r#"{"session":"known","id":"s1"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionState::Pending).unwrap(),
+            r#"{"session":"pending"}"#
+        );
     }
 }

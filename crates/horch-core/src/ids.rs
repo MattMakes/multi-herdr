@@ -3,8 +3,8 @@
 //! Every id the fleet passes around is a string on disk and on the wire, and
 //! most of them still are in memory. These newtypes are where that ends: a
 //! value of one of these types has been validated once, at the boundary, and
-//! cannot be confused with an id of another kind. Serialization is transparent,
-//! so a newtype field reads and writes exactly the string it replaces
+//! cannot be confused with an id of another kind. The serialized form is the
+//! bare string, so a newtype field reads and writes exactly the string it replaces
 //! (`serde(try_from, into)` rather than `transparent`, which cannot validate).
 
 use std::fmt;
@@ -12,17 +12,38 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 
-/// Why a string was rejected as an id.
+/// Why a string was rejected as an id. `kind` is the id type's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdError {
-    kind: &'static str,
-    value: String,
-    reason: &'static str,
+pub enum IdError {
+    Empty {
+        kind: &'static str,
+    },
+    ControlChar {
+        kind: &'static str,
+    },
+    /// A `RoleName` with `/`, `\` or `..`.
+    PathLike {
+        kind: &'static str,
+        value: String,
+    },
+    /// Not `<workspace>:<role>`.
+    BadWorkerId {
+        value: String,
+    },
 }
 
 impl fmt::Display for IdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid {} '{}': {}", self.kind, self.value, self.reason)
+        match self {
+            Self::Empty { kind } => write!(f, "{kind} must not be empty"),
+            Self::ControlChar { kind } => write!(f, "{kind} must not contain control characters"),
+            Self::PathLike { kind, value } => {
+                write!(f, "{kind} '{value}' must not contain '/', '\\' or '..'")
+            }
+            Self::BadWorkerId { value } => {
+                write!(f, "WorkerId '{value}' must be '<workspace>:<role>'")
+            }
+        }
     }
 }
 
@@ -30,36 +51,41 @@ impl std::error::Error for IdError {}
 
 /// The rule every id shares: non-empty, and nothing a terminal or a log line
 /// would interpret.
-fn basic(value: &str) -> Result<(), &'static str> {
+fn validate_plain(kind: &'static str, value: &str) -> Result<(), IdError> {
     if value.is_empty() {
-        return Err("must not be empty");
+        return Err(IdError::Empty { kind });
     }
     if value.chars().any(char::is_control) {
-        return Err("must not contain control characters");
+        return Err(IdError::ControlChar { kind });
     }
     Ok(())
 }
 
+/// Any UUID, or a legacy hand-made id such as `rec-o1` (OD7): the plain rule.
+fn validate_execution_id(kind: &'static str, value: &str) -> Result<(), IdError> {
+    validate_plain(kind, value)
+}
+
 /// A role names a mailbox file and a pane, so it must stay one path segment.
-fn role_name(value: &str) -> Result<(), &'static str> {
-    basic(value)?;
-    if value.contains('/') || value.contains('\\') {
-        return Err("must not contain a path separator");
-    }
-    if value.contains("..") {
-        return Err("must not contain '..'");
+fn validate_role_name(kind: &'static str, value: &str) -> Result<(), IdError> {
+    validate_plain(kind, value)?;
+    if value.contains('/') || value.contains('\\') || value.contains("..") {
+        return Err(IdError::PathLike {
+            kind,
+            value: value.to_string(),
+        });
     }
     Ok(())
 }
 
 /// `<workspace>:<role>`, with exactly one `:` between two non-empty parts.
-fn worker_id(value: &str) -> Result<(), &'static str> {
-    basic(value)?;
+fn validate_worker_id(kind: &'static str, value: &str) -> Result<(), IdError> {
+    validate_plain(kind, value)?;
     match value.split_once(':') {
-        Some((ws, role)) if !ws.is_empty() && !role.is_empty() && !role.contains(':') => {
-            role_name(role)
-        }
-        _ => Err("must be '<workspace>:<role>'"),
+        Some((ws, role)) if !ws.is_empty() && !role.is_empty() && !role.contains(':') => Ok(()),
+        _ => Err(IdError::BadWorkerId {
+            value: value.to_string(),
+        }),
     }
 }
 
@@ -76,14 +102,8 @@ macro_rules! string_id {
         impl $name {
             pub fn new(value: impl Into<String>) -> Result<Self, IdError> {
                 let value = value.into();
-                match $validate(&value) {
-                    Ok(()) => Ok(Self(value)),
-                    Err(reason) => Err(IdError {
-                        kind: stringify!($name),
-                        value,
-                        reason,
-                    }),
-                }
+                $validate(stringify!($name), &value)?;
+                Ok(Self(value))
             }
 
             pub fn as_str(&self) -> &str {
@@ -129,41 +149,43 @@ string_id!(
     /// One run of one worker or orchestrator: a ledger record id. New ids are
     /// UUIDv7; legacy records carry v4 UUIDs or hand-made ids such as `rec-o1`.
     ExecutionId,
-    basic
+    validate_execution_id
 );
-string_id!(TaskId, basic);
+string_id!(TaskId, validate_plain);
 string_id!(
     /// An agent CLI's own session handle, the one `--resume` takes.
     SessionId,
-    basic
+    validate_plain
 );
 string_id!(
     /// A worker within the fleet: `<workspace>:<role>`.
     WorkerId,
-    worker_id
+    validate_worker_id
 );
 string_id!(
     /// A worker's role in its workspace, such as `opus-2`.
     RoleName,
-    role_name
+    validate_role_name
 );
-string_id!(SkillId, basic);
-string_id!(ModelId, basic);
+string_id!(SkillId, validate_plain);
+string_id!(ModelId, validate_plain);
 string_id!(
     /// A `teammates/<name>.md` roster entry.
     TeammateName,
-    basic
+    validate_plain
 );
-string_id!(PaneId, basic);
-string_id!(WorkspaceId, basic);
-string_id!(ExperimentId, basic);
-string_id!(RoundId, basic);
-string_id!(EventId, basic);
-string_id!(JudgmentId, basic);
+string_id!(PaneId, validate_plain);
+string_id!(WorkspaceId, validate_plain);
+string_id!(ExperimentId, validate_plain);
+string_id!(RoundId, validate_plain);
+string_id!(EventId, validate_plain);
+string_id!(JudgmentId, validate_plain);
 
 impl WorkerId {
-    pub fn from_parts(workspace: &WorkspaceId, role: &RoleName) -> Result<Self, IdError> {
-        Self::new(format!("{workspace}:{role}"))
+    /// `<workspace>:<role>`. Both parts are validated already; a herdr
+    /// workspace id has no `:`, so the result is a well-formed `WorkerId`.
+    pub fn new_for(workspace: &WorkspaceId, role: &RoleName) -> Self {
+        Self(format!("{workspace}:{role}"))
     }
 }
 
@@ -213,9 +235,9 @@ mod tests {
         assert_eq!(role.to_string(), "opus-2");
 
         let ws = WorkspaceId::new("w1").unwrap();
-        let w = WorkerId::from_parts(&ws, &role).unwrap();
+        let w = WorkerId::new_for(&ws, &role);
         assert_eq!(w.as_str(), "w1:opus-2");
-        for bad in ["w1", ":r", "w1:", "w1:a:b", "w1:a/b"] {
+        for bad in ["w1", ":r", "w1:", "w1:a:b"] {
             assert!(WorkerId::new(bad).is_err(), "{bad:?} should be rejected");
         }
 
@@ -225,6 +247,22 @@ mod tests {
         assert_eq!(back, role);
         assert_eq!(serde_json::to_string(&role).unwrap(), r#""opus-2""#);
         assert_eq!("w1".parse::<WorkspaceId>().unwrap(), ws);
+        assert_eq!(TaskId::new(""), Err(IdError::Empty { kind: "TaskId" }));
+        assert_eq!(
+            SessionId::new("a\nb"),
+            Err(IdError::ControlChar { kind: "SessionId" })
+        );
+        assert_eq!(
+            RoleName::new("a/b"),
+            Err(IdError::PathLike {
+                kind: "RoleName",
+                value: "a/b".into()
+            })
+        );
+        assert_eq!(
+            WorkerId::new("w1"),
+            Err(IdError::BadWorkerId { value: "w1".into() })
+        );
         let err = RoleName::new("a/b").unwrap_err().to_string();
         assert!(err.contains("RoleName") && err.contains("a/b"), "{err}");
     }
