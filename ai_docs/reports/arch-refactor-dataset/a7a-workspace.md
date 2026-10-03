@@ -35,3 +35,16 @@ Branch `ard/a7a-workspace`. Requirements ARC-19 and ARC-27.
 - `tilecmd.rs` still imports through the shims (`horch_core::herdr`, `tile`, `balance`, `layout`).
 - `Herdr::send_line`, `wait_output`, `integration_status`, `pane_focus*`, `pane_move*`, `pane_resize` and `tab_*` are not in the trait. Add them when part b needs them.
 - `Herdr` calls `crate::agent::herdr_bin()`. A2 changes `agent.rs`.
+
+## Differences from the design doc (section 4.7)
+
+The base has no `PaneId`, `WorkspaceId` or `HarnessBins` yet. The trait therefore uses `&str`, as the unit plan says.
+- Design: `send_text`, `send_keys`. This unit: `pane_send_text`, `pane_send_keys`, the names of the `Herdr` methods.
+- Design: `HerdrClient { bin }` built from `HarnessBins`. This unit: `pub type HerdrClient = Herdr;`.
+- Design: `FakeWorkspace` with public `calls`, `fail_split`, `fail_run`, `panes`. This unit: private state with accessors and `fail_next(method, message)`.
+- Design: `cwd: Option<&Path>`. This unit: `cwd: Option<&str>`, as `Herdr::workspace_create` has it.
+A later unit aligns these after A1 and A2 land.
+
+## Final gate (after rebase on edbf2f9)
+
+fmt, both builds, `cargo test --workspace --no-fail-fast` (0 failures), `teammates --check`, `check-deps.sh` and `verify-telemetry-e2e.sh` all pass.
