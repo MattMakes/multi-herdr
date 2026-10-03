@@ -1,3 +1,4 @@
+pub mod agentlist;
 pub mod balancecmd;
 pub mod cost;
 pub mod doctor;
