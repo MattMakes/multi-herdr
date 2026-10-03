@@ -19,4 +19,5 @@ Gate: /tmp/igate-ds.sh
 
 Merge order: D00 first; then D01-D06 (tell each to rebase and add provenance), D09, D08; D07 last.
 Notes:
+- Oracle rule: new teammates go in SKIP_NEW_TEAMMATES (no new oracle files; arc_01 counts fixed). designer/frontend-developer skills oracles re-blessed on purpose.
 - Installed horch (~/.local/bin) is the old build; roster overlay from HORCH_TEAMMATES_DIR=v1 path in the orchestrator shell. No sonnet-feature there.
