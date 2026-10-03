@@ -1,4 +1,4 @@
-//! The readings a decision runs on: `quota.json` I/O and
+//! The readings a decision runs on: `policy.json` and `quota.json` I/O, and
 //! [`obtain`], the only routing path that probes (QUO-07).
 
 use std::path::{Path, PathBuf};
@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
 use crate::clock;
-use crate::routing::policy::Policy;
+use crate::routing::policy::{self, Policy};
 use crate::routing::quota::{probe_due, quota_path, QuotaFile, QuotaView};
 use crate::routing::quota_probe::{probe_all, ProbeBins};
 
@@ -23,6 +23,29 @@ pub struct QuotaEnv {
     pub probe_timeout: Option<StdDuration>,
     /// Where a probe makes its scratch dir.
     pub temp_root: PathBuf,
+}
+
+impl Policy {
+    /// `<state root>/policy.json` over the defaults, then `balance_override`
+    /// (the caller reads `HORCH_BALANCE`).
+    pub fn load(state_root: &Path, balance_override: Option<&str>) -> Result<Policy> {
+        let mut policy = match std::fs::read_to_string(policy::path(state_root)) {
+            Ok(text) => Self::parse(&text)
+                .with_context(|| format!("in {}", policy::path(state_root).display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Policy::default(),
+            Err(e) => {
+                return Err(e).context(format!("reading {}", policy::path(state_root).display()))
+            }
+        };
+        if let Some(mode) = balance_override {
+            if !mode.trim().is_empty() {
+                policy.balance_mode = mode
+                    .parse()
+                    .map_err(|e: String| anyhow::anyhow!("HORCH_BALANCE: {e}"))?;
+            }
+        }
+        Ok(policy)
+    }
 }
 
 impl QuotaFile {

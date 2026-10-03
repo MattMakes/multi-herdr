@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 /// How the spawn gate acts on pool states (OD1).
@@ -87,26 +87,6 @@ pub fn path(state_root: &Path) -> PathBuf {
 }
 
 impl Policy {
-    /// `<state root>/policy.json` over the defaults, then `balance_override`
-    /// (the caller reads `HORCH_BALANCE`).
-    pub fn load(state_root: &Path, balance_override: Option<&str>) -> Result<Policy> {
-        let mut policy = match std::fs::read_to_string(path(state_root)) {
-            Ok(text) => {
-                Self::parse(&text).with_context(|| format!("in {}", path(state_root).display()))?
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Policy::default(),
-            Err(e) => return Err(e).context(format!("reading {}", path(state_root).display())),
-        };
-        if let Some(mode) = balance_override {
-            if !mode.trim().is_empty() {
-                policy.balance_mode = mode
-                    .parse()
-                    .map_err(|e: String| anyhow::anyhow!("HORCH_BALANCE: {e}"))?;
-            }
-        }
-        Ok(policy)
-    }
-
     pub fn parse(text: &str) -> Result<Policy> {
         let policy: Policy = serde_json::from_str(text).map_err(|e| {
             // serde names the unknown field; keep its words.

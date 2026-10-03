@@ -476,3 +476,86 @@ impl From<&Decision> for RoutingDecision {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::routing::eligible::trains_on_input;
+    use crate::routing::policy::Policy;
+    use crate::routing::quota::QuotaFile;
+
+    /// `candidates()` as it was before A5, for the comparison.
+    fn old_candidates(req: &Teammate, roster: &Roster, view: &QuotaView) -> Vec<Candidate> {
+        req.fallbacks
+            .iter()
+            .filter_map(|name| roster.get(name))
+            .filter(|f| !f.hidden && Roster::is_spawnable(f).is_ok() && !trains_on_input(f))
+            .map(|f| {
+                let a = view.assess(f.agent.as_str(), f.model.as_deref().unwrap_or_default());
+                Candidate {
+                    name: f.name.clone(),
+                    state: a.state,
+                    assessment: a,
+                }
+            })
+            .collect()
+    }
+
+    fn summary_of(c: &[Candidate]) -> Vec<(String, State, Assessment)> {
+        c.iter()
+            .map(|c| (c.name.clone(), c.state, c.assessment.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn arc_13_candidates_equivalent() {
+        let mut roster = Roster::builtin().unwrap();
+        let mut reserved = roster.require("codex-sol").unwrap().clone();
+        reserved.name = "astra-worker".into();
+        reserved.model = Some("gpt-6-astra".into());
+        roster.insert_for_test(reserved);
+        let names: Vec<String> = roster.names().into_iter().map(str::to_owned).collect();
+        // Every drop rule in one list: missing, hidden, reserved, trains on
+        // input, and usable ones around them.
+        let mixed: Vec<String> = [
+            "ghost",
+            "codex-sol",
+            "smoke",
+            "astra-worker",
+            "opencode-pickle",
+            "sonnet",
+            "codex-terra",
+        ]
+        .map(String::from)
+        .to_vec();
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/telemetry/quota");
+        let mut fixtures = 0;
+        let mut compared = 0;
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let view = QuotaView::new(
+                QuotaFile::read(&entry.path()).unwrap(),
+                crate::clock::parse("2026-09-28T18:00:00Z").unwrap(),
+                Policy::default(),
+                true,
+            );
+            fixtures += 1;
+            for name in &names {
+                let t = roster.require(name).unwrap().clone();
+                let mut m = t.clone();
+                m.fallbacks = mixed.clone();
+                for req in [t, m] {
+                    assert_eq!(
+                        summary_of(&candidates(&req, &roster, &view)),
+                        summary_of(&old_candidates(&req, &roster, &view)),
+                        "{name} on {}",
+                        entry.path().display()
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(fixtures, 12);
+        assert!(compared >= 12 * 33 * 2);
+    }
+}
