@@ -86,6 +86,9 @@ below.
 - `tests/lifecycle.rs`: `lifecycle` now calls a new `lifecycle_in`, so the
   antigravity test can install its fake first. Behaviour is unchanged.
 - `README.md`: the harness table gains 1 row; "Five harnesses" is now "Six".
+- `harness/mod.rs`: `HarnessKind::ALL` (from D09) gains `Antigravity`, and the new
+  test `all_names_every_kind` keeps it complete. `horch agent-list` shows
+  `antigravity` (`unavailable` here, because `agy` is not installed).
 - No oracle or golden changed.
 
 ## Verified only with the fake

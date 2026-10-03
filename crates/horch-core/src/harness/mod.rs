@@ -279,6 +279,7 @@ impl HarnessKind {
         HarnessKind::OpenCode,
         HarnessKind::Pi,
         HarnessKind::Prime,
+        HarnessKind::Antigravity,
         HarnessKind::None,
     ];
 
@@ -402,6 +403,12 @@ mod tests {
         HarnessKind::Antigravity,
         HarnessKind::None,
     ];
+
+    /// `HarnessKind::ALL` (what `horch agent-list` iterates) names every kind.
+    #[test]
+    fn all_names_every_kind() {
+        assert_eq!(HarnessKind::ALL, &ALL[..]);
+    }
 
     #[test]
     fn binary_names_each_harness_cli() {
