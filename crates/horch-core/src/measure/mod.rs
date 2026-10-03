@@ -11,6 +11,7 @@ pub mod recorder;
 pub mod redact;
 pub mod store;
 pub mod testkit;
+pub mod worker_run;
 
 /// `git diff --numstat` lines, re-exported so the domain modules (events,
 /// projection, WorkerRun) name the value type without naming the git

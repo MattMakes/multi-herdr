@@ -1202,3 +1202,251 @@ fn sec_02_env_snapshot_presence_and_redaction() {
     assert!(!snap["HORCH_BALANCE"].contains("sk-ant"), "{snap:?}");
     assert_eq!(snap.len(), 4);
 }
+
+// ─── MEA-06, MEA-11: WorkerRun 1.0.0 ────────────────────────────────────────
+
+use horch_core::execution::ExecutionStatus;
+use horch_core::measure::digest::canonical_json;
+use horch_core::measure::worker_run::{ExecutionFacts, WorkerRun};
+use horch_core::usage::money::{CostSource, MicroUsd};
+use horch_core::usage::Tokens;
+
+/// One candidate, planned → spawned → completed → frozen → validated.
+fn one_candidate_lifecycle() -> Script {
+    let mut s = Script::new();
+    s.push(EventKind::ExperimentCreated(experiment_created(1)), None);
+    s.push(
+        EventKind::PreflightCompleted(PreflightCompleted {
+            report: preflight_report(),
+        }),
+        None,
+    );
+    s.push(EventKind::RoundCreated(round_created(&["A"])), None);
+    s.push(
+        EventKind::CandidatePlanned(candidate_planned("A")),
+        Some("A"),
+    );
+    s.push(
+        EventKind::WorktreeCreated(WorktreeCreated {
+            label: "A".into(),
+            path: "/wt/A".into(),
+            branch: "mh/exp/0199a5b0/r0/A".into(),
+            base_sha: "a".repeat(40),
+        }),
+        Some("A"),
+    );
+    s.push(
+        EventKind::CandidateSpawned(CandidateSpawned {
+            label: "A".into(),
+            pane: PaneId::new("p-A").unwrap(),
+            routing: routing("sonnet"),
+        }),
+        Some("A"),
+    );
+    s.push(
+        EventKind::CandidateCompleted(CandidateCompleted {
+            label: "A".into(),
+            exit_code: Some(0),
+        }),
+        Some("A"),
+    );
+    s.push(
+        EventKind::CandidateFrozen(CandidateFrozen {
+            label: "A".into(),
+            head_sha: "b".repeat(40),
+            numstat: numstat(),
+            diff_digest: dg("A"),
+        }),
+        Some("A"),
+    );
+    s.push(
+        EventKind::ValidationCompleted(ValidationCompleted {
+            label: "A".into(),
+            report: validation_report("A", true),
+        }),
+        Some("A"),
+    );
+    s
+}
+
+fn execution_facts() -> ExecutionFacts {
+    ExecutionFacts {
+        execution_id: exec_id("A"),
+        status: ExecutionStatus::Done,
+        session_id: Some(
+            horch_core::ids::SessionId::new("5d0c6c1e-0000-4000-8000-00000000000a").unwrap(),
+        ),
+        transcript_ref: Some("~/.claude/projects/-wt-A/5d0c6c1e.jsonl".into()),
+        transcript_digest: Some(dg("transcript")),
+        started_at: "2026-10-02T12:00:01.000Z".into(),
+        finished_at: Some("2026-10-02T12:07:31.250Z".into()),
+        tokens: Tokens {
+            input: 1200,
+            cache_write_5m: 3000,
+            cache_write_1h: 0,
+            cache_read: 45000,
+            output: 2100,
+        },
+        cost_microusd: MicroUsd(123_456),
+        cost_source: CostSource::PriceTable {
+            date: "2026-09-28".into(),
+        },
+        skills: typed(json!([{
+            "id": "tdd", "version": "bundled+0123456789ab",
+            "digest": dg("skill:tdd").to_string(), "source": "bundled", "policy": "explicit",
+        }])),
+        routing: None,
+    }
+}
+
+fn judge_components() -> Option<std::collections::BTreeMap<String, f64>> {
+    Some(
+        [("correctness", 0.9), ("scope", 0.75), ("tests", 1.0)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+    )
+}
+
+/// Sorted keys, pretty, `\n`-terminated: the golden file's form.
+fn golden_json(run: &WorkerRun) -> String {
+    let canonical = canonical_json(&serde_json::to_value(run).unwrap());
+    let value: Value = serde_json::from_str(&canonical).unwrap();
+    serde_json::to_string_pretty(&value).unwrap() + "\n"
+}
+
+fn keys(v: &Value) -> Vec<String> {
+    let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+    k.sort();
+    k
+}
+
+fn sorted(list: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = list.iter().map(|s| s.to_string()).collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn mea_06_worker_run_schema() {
+    let s = one_candidate_lifecycle();
+    let run = WorkerRun::project(&execution_facts(), &s.events, judge_components()).unwrap();
+    let v = serde_json::to_value(&run).unwrap();
+    assert_eq!(
+        keys(&v),
+        sorted(&[
+            "schema_version",
+            "worker_run_id",
+            "experiment_id",
+            "round_id",
+            "label",
+            "task_id",
+            "task_digest",
+            "config",
+            "facts",
+            "scores",
+        ])
+    );
+    assert_eq!(
+        keys(&v["config"]),
+        sorted(&[
+            "config_id",
+            "teammate",
+            "harness",
+            "model",
+            "effort",
+            "slot",
+            "propensity",
+            "skills",
+            "routing",
+        ])
+    );
+    assert_eq!(
+        keys(&v["facts"]),
+        sorted(&[
+            "status",
+            "base_sha",
+            "head_sha",
+            "numstat",
+            "diff_digest",
+            "session_id",
+            "transcript_ref",
+            "transcript_digest",
+            "started_at",
+            "finished_at",
+            "latency_ms",
+            "tokens",
+            "cost_microusd",
+            "cost_source",
+            "environment_digest",
+        ])
+    );
+    assert_eq!(
+        keys(&v["scores"]),
+        sorted(&["gates", "mechanical_score", "judge_components"])
+    );
+    assert_eq!(v["schema_version"], "1.0.0");
+    assert_eq!(v["worker_run_id"], exec_id("A").as_str());
+    assert_eq!(v["facts"]["latency_ms"], 450_250);
+    assert_eq!(v["facts"]["cost_source"], "price_table@2026-09-28");
+    let back: WorkerRun = serde_json::from_value(v).unwrap();
+    assert_eq!(back, run);
+}
+
+#[test]
+fn mea_06_no_winner_field() {
+    fn walk(v: &Value, path: &str) {
+        match v {
+            Value::Object(m) => {
+                for (k, child) in m {
+                    assert!(!k.contains("winner"), "{path}.{k}");
+                    walk(child, &format!("{path}.{k}"));
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|c| walk(c, path)),
+            _ => {}
+        }
+    }
+    let s = one_candidate_lifecycle();
+    let run = WorkerRun::project(&execution_facts(), &s.events, judge_components()).unwrap();
+    let mut v = serde_json::to_value(&run).unwrap();
+    walk(&v, "$");
+    // Facts and scores stay apart: no score inside facts.
+    assert!(v["facts"].get("mechanical_score").is_none());
+    assert!(v["facts"].get("gates").is_none());
+    v.as_object_mut()
+        .unwrap()
+        .insert("winner".into(), json!(true));
+    assert!(serde_json::from_value::<WorkerRun>(v).is_err());
+}
+
+#[test]
+fn mea_11_fake_lifecycle_replays_identical_worker_run() {
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/worker-run-1.0.0.json");
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, rec) = open_dataset(tmp.path());
+    for e in one_candidate_lifecycle().new_events() {
+        assert!(matches!(rec.append(e).unwrap(), Appended::Recorded(_)));
+    }
+    drop(rec);
+    let (_, rec) = open_dataset(tmp.path());
+    let read = rec.read_all().unwrap();
+    assert_eq!(read.torn_lines, 0);
+    let run = WorkerRun::project(&execution_facts(), &read.events, judge_components()).unwrap();
+    let actual = golden_json(&run);
+
+    if std::env::var("HORCH_BLESS").ok().as_deref() == Some("1") && !golden.exists() {
+        std::fs::write(&golden, &actual).unwrap();
+        return;
+    }
+    let want = std::fs::read_to_string(&golden).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e}. The WorkerRun 1.0.0 golden is frozen; it is blessed once only",
+            golden.display()
+        )
+    });
+    assert_eq!(
+        actual, want,
+        "WorkerRun 1.0.0 changed. Never re-bless: a format change bumps schema_version"
+    );
+}
