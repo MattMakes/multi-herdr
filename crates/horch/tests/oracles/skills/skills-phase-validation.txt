@@ -1,0 +1,8 @@
+Phase: validation
+  check              Use when verifying completed implementation against its plan, requirements, tests, and build.
+  code-analysis      Use when assessing changed code for complexity, maintainability, or configured static-analysis violations.
+  code-review        Use when reviewing a diff, branch, or completed feature for correctness, maintainability, and regression risk.
+  security-review    Use for an authorized security audit or focused review of trust boundaries, credentials, parsing, and dependencies.
+  document           Use when documenting actual architecture, developer workflows, or behavior changed by completed work.
+  handoff            Use when work must transfer to another worker or continue after context loss.
+Metadata: 661 bytes (~166 tokens, estimate only); workflows load on demand.

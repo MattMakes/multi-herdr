@@ -1,0 +1,129 @@
+//! A0 behavior oracles for the `horch` binary: `horch skills` and `horch
+//! sessions` output, frozen in `tests/oracles/` (ARC-01).
+//!
+//! The oracle files never change. `HORCH_BLESS=1` writes them; that is for
+//! the A0 baseline only, and a diff here means user-visible output changed.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn oracles() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oracles")
+}
+
+/// Write `actual` under `HORCH_BLESS=1`; otherwise compare it with the
+/// frozen file, which must exist.
+fn check_oracle(rel: &str, actual: &str) {
+    let path = oracles().join(rel);
+    if std::env::var("HORCH_BLESS").ok().as_deref() == Some("1") {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e}. Oracles are frozen at A0; an absent file is a failure",
+            path.display()
+        )
+    });
+    if want != actual {
+        let line = want
+            .lines()
+            .zip(actual.lines())
+            .position(|(a, b)| a != b)
+            .unwrap_or_else(|| want.lines().count().min(actual.lines().count()));
+        panic!(
+            "{rel} differs from the A0 oracle at line {}:\n  want: {:?}\n  got:  {:?}\n\
+             The oracle is frozen: fix the code, not the file.",
+            line + 1,
+            want.lines().nth(line),
+            actual.lines().nth(line)
+        );
+    }
+}
+
+const PHASES: [&str; 4] = ["research", "plan", "implementation", "validation"];
+
+/// The project path every session fixture is installed under.
+const PROJECT: &str = "/oracle/project";
+
+/// A temp home and state root, and a `horch` command that sees only them.
+struct World {
+    _tmp: tempfile::TempDir,
+    root: PathBuf,
+}
+
+impl World {
+    fn new() -> World {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        World { _tmp: tmp, root }
+    }
+
+    fn state(&self) -> PathBuf {
+        self.root.join("state")
+    }
+
+    fn horch(&self, args: &[&str]) -> String {
+        let teammates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
+        let out = Command::new(env!("CARGO_BIN_EXE_horch"))
+            .args(args)
+            .current_dir(&self.root)
+            .env("HOME", self.root.join("home"))
+            .env("HORCH_STATE_DIR", self.state())
+            .env("HORCH_PROJECT_DIR", PROJECT)
+            .env("HORCH_TEAMMATES_DIR", teammates)
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("HORCH_NOW")
+            .env_remove("HORCH_BALANCE")
+            .env_remove("HORCH_WORKSPACE_ID")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "horch {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8(out.stdout).unwrap();
+        text.replace(&*self.root.to_string_lossy(), "<TMP>")
+    }
+}
+
+#[test]
+fn oracle_cli_skills_match() {
+    let w = World::new();
+    check_oracle("skills/skills.txt", &w.horch(&["skills"]));
+    check_oracle("skills/skills-json.txt", &w.horch(&["skills", "--json"]));
+    for phase in PHASES {
+        check_oracle(
+            &format!("skills/skills-phase-{phase}.txt"),
+            &w.horch(&["skills", "--phase", phase]),
+        );
+        check_oracle(
+            &format!("skills/skills-phase-{phase}-json.txt"),
+            &w.horch(&["skills", "--phase", phase, "--json"]),
+        );
+    }
+}
+
+#[test]
+fn oracle_cli_sessions_match() {
+    let fixtures =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../horch-core/tests/oracles/ledgers");
+    for name in ["bash-era", "pre-effort", "pr14-substituted", "orchestrator"] {
+        let w = World::new();
+        let ledger = horch_core::ledger::Ledger::for_project(w.state(), PROJECT);
+        std::fs::copy(fixtures.join(format!("{name}.json")), ledger.path()).unwrap();
+        check_oracle(
+            &format!("sessions/sessions-{name}.txt"),
+            &w.horch(&["sessions"]),
+        );
+        check_oracle(
+            &format!("sessions/sessions-{name}-json.txt"),
+            &w.horch(&["sessions", "--json"]),
+        );
+    }
+}

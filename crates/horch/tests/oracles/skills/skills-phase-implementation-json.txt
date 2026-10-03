@@ -1,0 +1,33 @@
+{
+  "estimate_note": "Names and descriptions only; bytes/4 estimate excludes harness wrappers, paths, ambient skills and tools. Full bodies load on demand.",
+  "metadata_bytes": 468,
+  "metadata_tokens_estimate": 117,
+  "phase": "implementation",
+  "skills": [
+    {
+      "description": "Use when implementing an existing plan or resuming its unfinished tasks.",
+      "name": "execute",
+      "skill_file_bytes": 2757
+    },
+    {
+      "description": "Use when adding or changing behavior that needs a regression test, before implementing the change.",
+      "name": "tdd",
+      "skill_file_bytes": 2701
+    },
+    {
+      "description": "Use when a test, build, runtime behavior, or integration fails unexpectedly and the cause is unknown.",
+      "name": "debug",
+      "skill_file_bytes": 2638
+    },
+    {
+      "description": "Use when verifying completed implementation against its plan, requirements, tests, and build.",
+      "name": "check",
+      "skill_file_bytes": 2590
+    },
+    {
+      "description": "Use when work must transfer to another worker or continue after context loss.",
+      "name": "handoff",
+      "skill_file_bytes": 2518
+    }
+  ]
+}
