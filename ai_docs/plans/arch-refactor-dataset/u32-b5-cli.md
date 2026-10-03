@@ -36,6 +36,16 @@ telemetry count candidate and judge executions.
   DECIDED winner; candidate worktree dirs can be 0500 after freeze or bundle
   build: restore write permission before removal.
 
+- Engine decisions from U27 (read its report): `PromotionPlan` has
+  `experiment` and `attempt` (the CLI sets attempt 1, plus 1 per
+  `operator.promote`); the caller moves the round to REVALIDATING first
+  (`winner.selected{requested}` or `operator.promote`); a fault point
+  returns the error `FaultFired` and the binary must abort the process on
+  it; the stale check uses the branch alone when the worktree is gone, so
+  `promote <round>` works after COMPLETE; rollback refuses a checked-out
+  target; integration and revalidation share 1 temp worktree on branch
+  `mh/promote/<round>/a<attempt>`.
+
 ## FILES
 
 own:
