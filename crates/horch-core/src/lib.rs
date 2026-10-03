@@ -20,6 +20,7 @@ pub mod balance;
 pub mod balance_policy;
 pub mod clock;
 pub mod codex;
+pub mod evaluation;
 pub mod execution;
 pub mod fsx;
 pub mod harness;
