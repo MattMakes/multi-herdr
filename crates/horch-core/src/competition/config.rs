@@ -12,6 +12,7 @@ use std::str::FromStr;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::evaluation::winner::WinnerPolicy;
 use crate::ids::TeammateName;
 
 /// The config file, relative to the project root.
@@ -113,8 +114,7 @@ pub struct JudgeConfig {
     pub model: String,
     pub effort: String,
     pub timeout_s: u64,
-    // B4: typed once WinnerPolicy lands
-    pub policy: serde_json::Value,
+    pub policy: WinnerPolicy,
 }
 
 impl Default for JudgeConfig {
@@ -124,7 +124,7 @@ impl Default for JudgeConfig {
             model: "opus".to_string(),
             effort: "high".to_string(),
             timeout_s: DEFAULT_JUDGE_TIMEOUT_S,
-            policy: serde_json::Value::Null,
+            policy: WinnerPolicy::default(),
         }
     }
 }
