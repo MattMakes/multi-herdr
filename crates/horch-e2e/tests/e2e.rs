@@ -151,7 +151,8 @@ fn nfr_01_no_real_binaries() {
     }
     // Every binary horch is told to use is a fake.
     let mut cmd = std::process::Command::new("/bin/sh");
-    cmd.arg("-c").arg("env");
+    // By absolute path: the sealed PATH holds only the fakes.
+    cmd.arg("-c").arg("/usr/bin/env");
     h.seal(&mut cmd);
     let env = stdout(&cmd.output().unwrap());
     for key in [
