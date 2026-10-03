@@ -5,16 +5,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::teammates::{
     expand_home, operator_enabled_plugins, operator_status_line, Agent, Phase, Teammate,
 };
 
+pub mod catalog;
+
+pub use catalog::{CatalogEntry, CatalogSource, Provenance, SkillCatalog, SkillVersion};
+
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct Metadata {
     name: String,
     description: String,
@@ -36,40 +39,18 @@ pub fn phase_skills(phase: Phase) -> &'static [&'static str] {
     }
 }
 
+/// The bundled catalog in the shape the legacy callers read.
 fn catalog() -> Result<BTreeMap<String, (Metadata, usize)>> {
-    let mut out = BTreeMap::new();
-    for (path, bytes) in BUNDLED_SKILL_FILES {
-        let Some(name) = path.strip_suffix("/SKILL.md") else {
-            continue;
-        };
-        if name.contains('/') {
-            continue;
-        }
-        let text = std::str::from_utf8(bytes)
-            .context("skill is not UTF-8")?
-            .replace("\r\n", "\n");
-        let front = text
-            .strip_prefix("---\n")
-            .and_then(|s| s.split_once("\n---").map(|p| p.0))
-            .with_context(|| format!("{path}: missing YAML frontmatter"))?;
-        let meta: Metadata =
-            serde_yaml::from_str(front).with_context(|| format!("{path}: invalid metadata"))?;
-        if meta.name != name
-            || name.is_empty()
-            || name.starts_with('-')
-            || name.ends_with('-')
-            || name.contains("--")
-            || !name
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-            || meta.description.trim().is_empty()
-            || meta.description.len() > 1024
-        {
-            bail!("{path}: invalid skill name or description");
-        }
-        out.insert(name.to_owned(), (meta, bytes.len()));
-    }
-    Ok(out)
+    Ok(SkillCatalog::bundled()?
+        .entries()
+        .map(|e| {
+            let meta = Metadata {
+                name: e.id.to_string(),
+                description: e.description.clone(),
+            };
+            (e.id.to_string(), (meta, e.skill_file_bytes))
+        })
+        .collect())
 }
 
 pub fn selected(teammate: &Teammate) -> Result<Vec<String>> {
