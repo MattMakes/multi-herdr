@@ -9,10 +9,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{IdError, TeammateName};
+use crate::roster::{effort_problem, Roster, Teammate};
 use crate::routing::eligible::eligible_fallbacks;
 use crate::routing::policy::BalanceMode;
 use crate::routing::quota::{self, Assessment, QuotaView, State};
-use crate::teammates::{effort_problem, Roster, Teammate};
 
 /// Flags a spawn passes to the gate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

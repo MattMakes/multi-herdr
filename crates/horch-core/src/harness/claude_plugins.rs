@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::roster::expand_home;
-use crate::teammates::Teammate;
+use crate::roster::Teammate;
 
 /// One plugin, resolved to its skills.
 #[derive(Debug, Clone, PartialEq)]

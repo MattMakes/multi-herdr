@@ -78,9 +78,9 @@ use crate::measure::projection::{fold, CandidateView, RoundView};
 use crate::measure::recorder::{Appended, JsonlRecorder, NewEvent, Recorder};
 use crate::messaging::mailbox::Mailbox;
 use crate::prompts::render;
+use crate::roster::Roster;
 use crate::runtime::fault::Faults;
 use crate::runtime::RuntimeContext;
-use crate::teammates::Roster;
 use crate::usage::money::MicroUsd;
 use crate::vcs::git::{GitClient, GitIdentity};
 use crate::vcs::worktree::{

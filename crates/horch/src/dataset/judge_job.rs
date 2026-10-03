@@ -22,8 +22,8 @@ use horch_core::evaluation::scheduler::{
 use horch_core::fsx;
 use horch_core::harness::headless::{headless_command, judge_prompt, supports_json_schema};
 use horch_core::ids::{RoundId, SessionId};
+use horch_core::roster::Roster;
 use horch_core::runtime::RuntimeContext;
-use horch_core::teammates::Roster;
 
 use super::cli::JudgeJobArgs;
 use super::exit;

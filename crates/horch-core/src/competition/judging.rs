@@ -45,8 +45,8 @@ use crate::measure::event::{
 use crate::measure::paths::DatasetPaths;
 use crate::measure::projection::{fold, RoundView, MAX_JUDGE_ATTEMPTS};
 use crate::measure::recorder::{JsonlRecorder, NewEvent, Recorder};
+use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
-use crate::teammates::Teammate;
 use crate::vcs::git::GitClient;
 use crate::vcs::worktree::FrozenCandidate;
 

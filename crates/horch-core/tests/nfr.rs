@@ -20,7 +20,8 @@ fn repo() -> &'static Path {
 #[test]
 fn nfr_03_repo_roster_check_passes() {
     let dir = repo().join("teammates");
-    let roster = horch_core::teammates::Roster::load_with(Some(&dir.to_string_lossy())).unwrap();
+    let roster =
+        horch_core::roster::Roster::load_layered(None, None, Some(&dir.to_string_lossy())).unwrap();
     let problems = roster.check();
     assert!(problems.is_empty(), "{problems:#?}");
 }

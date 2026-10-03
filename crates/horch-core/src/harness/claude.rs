@@ -13,9 +13,9 @@ use super::launch::model_for;
 use serde_json::{json, Value};
 
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session};
+use crate::roster::Teammate;
 use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
 use crate::skills::Bundle;
-use crate::teammates::Teammate;
 
 /// The plugin the skills bundle loads as. Its skills show as `horch:<id>`.
 pub const SKILLS_PLUGIN: &str = "horch";

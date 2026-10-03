@@ -26,9 +26,9 @@ use std::time::SystemTime;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::roster::{ExecRule, Teammate};
 use crate::runtime::{HarnessBins, RuntimeContext};
 use crate::skills::Bundle;
-use crate::teammates::{ExecRule, Teammate};
 
 pub use capabilities::{Capabilities, SkillExposure};
 pub use launch::{LaunchEnv, Session};
@@ -369,7 +369,8 @@ impl FromStr for HarnessKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::teammates::{Agent, Roster};
+    use crate::harness::HarnessKind;
+    use crate::roster::Roster;
 
     const ALL: [HarnessKind; 6] = [
         HarnessKind::Claude,
@@ -485,14 +486,5 @@ mod tests {
         let t = Roster::builtin().unwrap();
         let t = t.require("opencode-pickle").unwrap();
         assert_eq!(t.agent, HarnessKind::OpenCode);
-
-        // The shim is an alias, not a second type.
-        let alias: Agent = HarnessKind::OpenCode;
-        let same: HarnessKind = alias;
-        assert_eq!(same, Agent::OpenCode);
-        assert_eq!(
-            std::any::TypeId::of::<Agent>(),
-            std::any::TypeId::of::<HarnessKind>()
-        );
     }
 }

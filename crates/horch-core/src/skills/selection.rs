@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 
 use super::catalog::SkillCatalog;
 use crate::harness::SkillExposure;
-use crate::teammates::{Phase, Teammate};
+use crate::roster::{Phase, Teammate};
 
 pub fn phase_skills(phase: Phase) -> &'static [&'static str] {
     match phase {

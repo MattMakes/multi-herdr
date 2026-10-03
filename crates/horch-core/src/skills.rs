@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::teammates::{Phase, Teammate};
+use crate::roster::{Phase, Teammate};
 
 pub mod activation;
 pub mod briefing;
@@ -203,7 +203,7 @@ mod tests {
             .map(String::as_str)
             .filter(|n| !phased.contains(n))
             .collect();
-        assert_eq!(by_name_only, crate::teammates::ORCHESTRATOR_ONLY_SKILLS);
+        assert_eq!(by_name_only, crate::roster::ORCHESTRATOR_ONLY_SKILLS);
         for phase in [
             Phase::Research,
             Phase::Plan,
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn skills_briefing_names_expected_skills_with_descriptions() {
         let tmp = tempfile::tempdir().unwrap();
-        let roster = crate::teammates::Roster::builtin().unwrap();
+        let roster = crate::roster::Roster::builtin().unwrap();
         let t = roster.require("backend-developer").unwrap();
         let bundle = Bundle::install(tmp.path(), t).unwrap().unwrap();
         let brief = bundle.briefing_in(t, None);
@@ -340,7 +340,7 @@ mod tests {
     /// `teammates/orchestrator.md`. skill-creator is the Claude flavor's only.
     #[test]
     fn skills_orchestrate_is_attached_by_name_to_the_orchestrator_only() {
-        let roster = crate::teammates::Roster::builtin().unwrap();
+        let roster = crate::roster::Roster::builtin().unwrap();
         assert_eq!(
             selected(roster.require("orchestrator").unwrap()).unwrap(),
             [

@@ -19,10 +19,10 @@ use anyhow::{bail, Context, Result};
 use crate::execution::SessionMode;
 use crate::ledger::Ledger;
 use crate::messaging::mailbox::Mailbox;
+use crate::roster::{ExecRule, Teammate};
 #[cfg(test)]
 use crate::runtime::BinOverrides;
 use crate::runtime::{HarnessBins, RuntimeContext};
-use crate::teammates::{ExecRule, Teammate};
 use crate::workspace::herdr::Herdr;
 
 use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest};
@@ -532,7 +532,8 @@ fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::teammates::{Agent, Roster};
+    use crate::harness::HarnessKind;
+    use crate::roster::Roster;
 
     fn argv(cmd: &Command) -> Vec<String> {
         cmd.get_args()
@@ -542,13 +543,13 @@ mod tests {
 
     #[test]
     fn phase_skills_are_native_on_all_harnesses_and_resume_keeps_prompt_last() {
-        use crate::teammates::Phase;
+        use crate::roster::Phase;
         let r = Roster::builtin().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         for name in ["sonnet", "codex-sol", "opencode-pickle", "pi", "prime"] {
             let mut t = r.require(name).unwrap().clone();
             t.phase = Some(Phase::Research);
-            if cfg!(windows) && t.agent == Agent::Codex {
+            if cfg!(windows) && t.agent == HarnessKind::Codex {
                 assert!(crate::skills::Bundle::install(tmp.path(), &t).is_err());
                 continue;
             }
@@ -572,15 +573,15 @@ mod tests {
                 );
                 assert!(args.last().unwrap().contains("Fleet skill phase: research"));
                 match t.agent {
-                    Agent::Claude => assert!(args.contains(&"--plugin-dir".into())),
-                    Agent::Pi | Agent::Prime => {
+                    HarnessKind::Claude => assert!(args.contains(&"--plugin-dir".into())),
+                    HarnessKind::Pi | HarnessKind::Prime => {
                         let flag = args.iter().position(|s| s == "--skill").unwrap();
                         assert!(std::path::Path::new(&args[flag + 1])
                             .join("brainstorm/SKILL.md")
                             .exists());
                         assert!(flag < args.iter().position(|s| s == "--").unwrap());
                     }
-                    Agent::OpenCode => {
+                    HarnessKind::OpenCode => {
                         let (_, config) = cmd
                             .get_envs()
                             .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
@@ -593,8 +594,8 @@ mod tests {
                             .iter()
                             .any(|p| p == &serde_json::json!(bundle.skills_dir())));
                     }
-                    Agent::Codex => assert!(!args.contains(&"--skill".into())),
-                    Agent::None => unreachable!(),
+                    HarnessKind::Codex => assert!(!args.contains(&"--skill".into())),
+                    HarnessKind::None => unreachable!(),
                 }
             }
         }
@@ -626,7 +627,7 @@ mod tests {
         let r = Roster::builtin().unwrap();
         for name in r.names() {
             let t = r.require(name).unwrap();
-            if t.agent == Agent::None {
+            if t.agent == HarnessKind::None {
                 continue;
             }
             let cmd = command_in(
@@ -738,7 +739,7 @@ mod tests {
     fn fixed_recipe_codex_worker_keeps_noninteractive_permissions() {
         let r = Roster::builtin().unwrap();
         let mut t = r.require("orchestration-worker").unwrap().clone();
-        t.agent = Agent::Codex;
+        t.agent = HarnessKind::Codex;
         t.effort = None;
         let a = argv(
             &command_in(
@@ -1124,7 +1125,7 @@ mod tests {
     fn a_mode_the_agent_cannot_express_is_refused() {
         let r = Roster::builtin().unwrap();
         let mut t = r.require("opencode-pickle").unwrap().clone();
-        t.permission_mode = Some(crate::teammates::PermissionMode::Plan);
+        t.permission_mode = Some(crate::roster::PermissionMode::Plan);
         let err = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None)
             .unwrap_err()
             .to_string();

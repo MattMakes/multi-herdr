@@ -31,8 +31,8 @@ use super::{
     Session, Workdir,
 };
 use crate::prompts;
+use crate::roster::{ExecRule, Teammate};
 use crate::runtime::RuntimeContext;
-use crate::teammates::{ExecRule, Teammate};
 
 /// Path to codex's shared rules file: `~/.codex/rules/default.rules`.
 pub fn rules_path(home: &Path) -> PathBuf {
@@ -554,7 +554,7 @@ pub(super) fn codex_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::teammates::Roster;
+    use crate::roster::Roster;
     use std::time::Duration;
 
     #[cfg(unix)]
@@ -564,8 +564,8 @@ mod tests {
         let source = tmp.path().join("user-codex");
         std::fs::create_dir_all(source.join("skills/personal")).unwrap();
         std::fs::write(source.join("skills/personal/SKILL.md"), "personal").unwrap();
-        let t = crate::teammates::Teammate {
-            phase: Some(crate::teammates::Phase::Plan),
+        let t = crate::roster::Teammate {
+            phase: Some(crate::roster::Phase::Plan),
             ..Default::default()
         };
         let bundle = crate::skills::Bundle::install(tmp.path(), &t)

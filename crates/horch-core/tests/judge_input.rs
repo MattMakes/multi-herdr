@@ -10,13 +10,14 @@ use horch_core::evaluation::judge_input::{
 };
 use horch_core::evaluation::rubric::{rubric_text, schema_text};
 use horch_core::evaluation::validator::ValidationReport;
+use horch_core::harness::HarnessKind;
 use horch_core::ids::{ExecutionId, ExperimentId, RoundId};
 use horch_core::measure::digest::{sha256_bytes, Digest};
 use horch_core::measure::event::RoundCreated;
 use horch_core::measure::paths::DatasetPaths;
 use horch_core::measure::projection::{CandidateView, JudgeView, PromotionView, RoundView};
+use horch_core::roster::Roster;
 use horch_core::teacher::TeacherRef;
-use horch_core::teammates::{Agent, Roster};
 use horch_core::vcs::git::{CheckoutLocation, CherryPick, GitClient, GitIdentity, NumstatLine};
 use horch_core::vcs::worktree::FrozenCandidate;
 use serde_json::{json, Value};
@@ -25,7 +26,7 @@ use serde_json::{json, Value};
 
 fn repo_roster() -> Roster {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
-    Roster::load_with(Some(dir.to_str().unwrap())).unwrap()
+    Roster::load_layered(None, None, Some(dir.to_str().unwrap())).unwrap()
 }
 
 fn exp_id() -> ExperimentId {
@@ -331,7 +332,7 @@ fn jdg_01_judge_teammate_check() {
     );
     assert!(t.hidden);
     assert_eq!(t.base, None);
-    assert_eq!(t.agent, Agent::Claude);
+    assert_eq!(t.agent, HarnessKind::Claude);
     assert_eq!(t.model.as_deref(), Some("opus"));
     assert_eq!(t.effort.as_deref(), Some("high"));
     assert!(!t.inherit_plugins);

@@ -7,12 +7,9 @@
 use std::path::{Path, PathBuf};
 
 /// Files that still read the process environment, with the phase that
-/// removes each entry. Do not add entries.
-///
-/// - `teammates.rs`: the zero-argument `Roster::load` / `Roster::load_with`
-///   wrappers over `Roster::load_layered`. A12 removes them once the oracle
-///   and NFR tests load the roster through a `RuntimeContext`.
-const PENDING: &[&str] = &["teammates.rs"];
+/// removes each entry. Do not add entries. A12 removed the last one
+/// (`teammates.rs`).
+const PENDING: &[&str] = &[];
 
 /// Ambient environment access. `std::env::consts` is allowed.
 const AMBIENT: &[&str] = &[

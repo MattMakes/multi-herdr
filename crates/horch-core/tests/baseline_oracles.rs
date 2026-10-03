@@ -14,12 +14,12 @@ use horch_core::harness::launch::{self, LaunchEnv, Session};
 use horch_core::harness::CommandSpec;
 use horch_core::ledger::{Ledger, Record};
 use horch_core::roster::validation::fallback_problems;
+use horch_core::roster::{Phase, Roster, Teammate};
 use horch_core::routing::decision::{self, Decision, GateFlags, PoolLine};
 use horch_core::routing::policy::{BalanceMode, Policy};
 use horch_core::routing::quota::{QuotaFile, QuotaView};
 use horch_core::runtime::{ProcessEnv, RuntimeContext};
 use horch_core::skills::Bundle;
-use horch_core::teammates::{Phase, Roster, Teammate};
 use serde_json::{json, Value};
 
 // ─── bless helper ───────────────────────────────────────────────────────────
@@ -183,7 +183,12 @@ impl World {
     }
 
     fn roster(&self) -> Roster {
-        Roster::load_with(Some(repo_teammates().to_str().unwrap())).unwrap()
+        Roster::load_layered(
+            Some(&self.home),
+            None,
+            Some(repo_teammates().to_str().unwrap()),
+        )
+        .unwrap()
     }
 }
 

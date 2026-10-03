@@ -19,8 +19,8 @@ use super::launch::{teammate_env, LaunchEnv};
 use crate::evaluation::rubric::{rubric_text, schema_text};
 use crate::ids::SessionId;
 use crate::roster::operator_enabled_plugins;
+use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
-use crate::teammates::Teammate;
 
 /// The only tools a headless judge may have. They read; none writes or runs.
 pub const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];

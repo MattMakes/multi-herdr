@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Agent, PermissionMode, Phase};
+use super::{PermissionMode, Phase};
+use crate::harness::HarnessKind;
 
 // `TEMPLATE` comes from the generated file above: the annotated `_template.md`,
 // used both to scaffold new teammates and to hold the documented field list to
@@ -80,7 +81,7 @@ pub struct Teammate {
     /// Names a file in `_base/`. When absent, the body IS the whole prompt.
     #[serde(default)]
     pub base: Option<String>,
-    pub agent: Agent,
+    pub agent: HarnessKind,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -204,7 +205,7 @@ impl Default for Teammate {
             generic: false,
             hidden: false,
             base: None,
-            agent: Agent::Claude,
+            agent: HarnessKind::Claude,
             model: None,
             effort: None,
             subagent_model: None,

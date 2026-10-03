@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use horch_core::harness::{CommandSpec, HarnessKind, LaunchEnv, PrepareRequest, Session};
+use horch_core::roster::Roster;
 use horch_core::runtime::{MapEnv, RuntimeContext};
-use horch_core::teammates::Roster;
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/harness")

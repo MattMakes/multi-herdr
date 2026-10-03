@@ -228,8 +228,8 @@ impl Mailbox {
 mod tests {
     use super::*;
     use crate::execution::SessionMode;
+    use crate::harness::HarnessKind;
     use crate::runtime::BinOverrides;
-    use crate::teammates::Agent;
 
     fn brief(role: &str) -> Brief {
         Brief {
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(back.task, b.task);
         assert_eq!(back.project_dir, b.project_dir);
         assert_eq!(back.teammate, "sonnet");
-        assert_eq!(back.agent().unwrap(), Agent::Claude);
+        assert_eq!(back.agent().unwrap(), HarnessKind::Claude);
     }
 
     #[test]

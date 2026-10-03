@@ -27,9 +27,9 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared};
+use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
-use crate::teammates::Teammate;
 
 /// One Prime Agent launch's private daemon socket and session directory.
 #[derive(Debug, Clone)]

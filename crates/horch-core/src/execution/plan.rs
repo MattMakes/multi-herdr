@@ -19,13 +19,14 @@ use crate::execution::model::{
     Task, WorkspacePlan,
 };
 use crate::execution::store::to_execution;
+use crate::harness::HarnessKind;
 use crate::ids::{ExecutionId, IdError, RoleName, SessionId, WorkerId, WorkspaceId};
 use crate::ledger::STATUS_WORKING;
+use crate::roster::{effort_problem, Phase, Roster, Teammate};
 use crate::routing::decision::{self, Decision, RoutingDecision, RoutingMode, RoutingProvenance};
 use crate::routing::policy::BalanceMode;
 use crate::routing::quota::QuotaView;
 use crate::skills::{plan_activation, SkillCatalog};
-use crate::teammates::{effort_problem, Agent, Phase, Roster, Teammate};
 
 /// The task a worker spawned without one records. The same text as the
 /// ledger facade's placeholder.
@@ -136,7 +137,7 @@ pub fn needs_gate(req: &SpawnRequest, roster: &Roster) -> bool {
     let Some(t) = req.teammate.as_ref().and_then(|n| roster.get(n.as_str())) else {
         return false;
     };
-    t.agent != Agent::None && Roster::is_spawnable(t).is_ok()
+    t.agent != HarnessKind::None && Roster::is_spawnable(t).is_ok()
 }
 
 /// Explicit task selection wins over the recorded phase and roster default.
@@ -150,7 +151,7 @@ pub fn resolve_phase(
 
 /// A fresh session: the minted id when the harness accepts one, else `None`
 /// (codex and OpenCode reveal theirs after launch; the worker discovers it).
-fn fresh_session(agent: Agent, minted: &SessionId) -> SessionMode {
+fn fresh_session(agent: HarnessKind, minted: &SessionId) -> SessionMode {
     SessionMode::Fresh(
         agent
             .capabilities()
@@ -323,7 +324,7 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
     // session behind an ordinary tier name.
     Roster::model_is_spawnable(&draft.model, &draft.teammate.name).map_err(unspawnable)?;
 
-    let gate_line = if needs_gate(req, inputs.roster) && draft.teammate.agent != Agent::None {
+    let gate_line = if needs_gate(req, inputs.roster) && draft.teammate.agent != HarnessKind::None {
         gate(&mut draft, req, inputs)?
     } else {
         None

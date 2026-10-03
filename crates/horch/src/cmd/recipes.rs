@@ -12,13 +12,13 @@ use std::process::ExitCode;
 use anyhow::Result;
 use horch_core::execution::SessionMode;
 use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
+use horch_core::harness::HarnessKind;
 use horch_core::ids::SessionId;
 use horch_core::ledger::{Ledger, Record, KIND_ORCHESTRATOR, ORCHESTRATING_TASK};
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::prompts;
 use horch_core::routing::quota::{self, QuotaView, State};
 use horch_core::runtime::RuntimeContext;
-use horch_core::teammates::Agent;
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
 use horch_core::workspace::paneshell::PaneShell;
@@ -596,7 +596,7 @@ pub fn pane_launch(
     }
     // The fixed 5-pane recipe assigns agent and model per pane, not per file.
     if kind == PaneKind::OrchestrationCodex {
-        teammate.agent = Agent::Codex;
+        teammate.agent = HarnessKind::Codex;
         teammate.effort = None;
     }
     if matches!(
@@ -746,7 +746,7 @@ mod tests {
     /// out of every worker's reach whichever flavor runs.
     #[test]
     fn only_fable_and_astra_orchestrators_hold_a_reserved_tier() {
-        use horch_core::teammates::reserved_tier;
+        use horch_core::roster::reserved_tier;
         assert!(reserved_tier(FleetFlavor::Fable.model()).is_some());
         assert!(reserved_tier(FleetFlavor::Astra.model()).is_some());
         assert!(reserved_tier(FleetFlavor::Opus.model()).is_none());
@@ -757,7 +757,7 @@ mod tests {
     /// up, fails to resolve its briefing, and dies where nobody is watching.
     #[test]
     fn every_pane_kind_names_a_teammate_that_exists() {
-        let roster = horch_core::teammates::Roster::builtin().unwrap();
+        let roster = horch_core::roster::Roster::builtin().unwrap();
         for (kind, name) in [
             (PaneKind::FleetOrchestrator, "orchestrator"),
             (PaneKind::FleetCodexOrchestrator, "orchestrator-codex"),

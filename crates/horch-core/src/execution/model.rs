@@ -15,9 +15,9 @@ use crate::ids::{
     ExecutionId, ExperimentId, PaneId, RoleName, RoundId, SessionId, TaskId, TeammateName,
     WorkerId, WorkspaceId,
 };
+use crate::roster::{Phase, Teammate};
 use crate::routing::decision::{GateFlags, RoutingProvenance};
 use crate::skills::activation::{ResolvedSkillRef, SkillActivationPlan};
-use crate::teammates::{Phase, Teammate};
 use crate::workspace::model::Direction;
 
 /// The ledger's legacy status for a live execution.

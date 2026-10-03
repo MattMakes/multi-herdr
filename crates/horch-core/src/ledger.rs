@@ -16,7 +16,7 @@
 use std::path::Path;
 
 use crate::execution::store::ExecutionStore;
-use crate::teammates::Phase;
+use crate::roster::Phase;
 use anyhow::{bail, Result};
 
 pub use crate::execution::legacy::{HistoryEntry, Record, KIND_ORCHESTRATOR, KIND_WORKER};

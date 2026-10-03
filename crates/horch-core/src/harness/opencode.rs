@@ -15,9 +15,9 @@ use anyhow::{bail, Context, Result};
 
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, Workdir};
+use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
-use crate::teammates::Teammate;
 
 /// A session that could belong to this worker.
 #[derive(Debug, Clone, PartialEq)]

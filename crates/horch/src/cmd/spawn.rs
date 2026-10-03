@@ -13,9 +13,9 @@ use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{SessionMode, SpawnRequest, TilingMode};
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
 use horch_core::messaging::mailbox::Mailbox;
+use horch_core::roster::Phase;
 use horch_core::routing::decision::GateFlags;
 use horch_core::runtime::RuntimeContext;
-use horch_core::teammates::Phase;
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
@@ -190,7 +190,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horch_core::teammates::Roster;
+    use horch_core::roster::Roster;
 
     #[test]
     fn a_bare_teammate_spawns_an_idle_worker() {

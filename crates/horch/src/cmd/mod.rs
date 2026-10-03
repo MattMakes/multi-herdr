@@ -21,9 +21,9 @@ pub mod worker;
 use std::path::Path;
 
 use anyhow::Result;
+use horch_core::roster::Roster;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::SkillCatalog;
-use horch_core::teammates::Roster;
 
 /// The roster as this context sees it: the built-ins, `~/.config/horch/teammates`,
 /// `$HORCH_TEAMMATES_DIR`, then `explicit`. Skill names are judged against

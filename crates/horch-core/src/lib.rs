@@ -15,7 +15,6 @@
 //! Nothing here shells out to `bash`, `jq`, `node`, or `just`: the only external
 //! process is `herdr` itself, plus whichever agent CLI a worker launches.
 
-pub mod agent;
 pub mod clock;
 pub mod competition;
 pub mod dataset;
@@ -33,7 +32,6 @@ pub mod routing;
 pub mod runtime;
 pub mod skills;
 pub mod teacher;
-pub mod teammates;
 pub mod telemetry;
 pub mod usage;
 pub mod vcs;

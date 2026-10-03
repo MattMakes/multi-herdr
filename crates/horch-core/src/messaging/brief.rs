@@ -14,8 +14,9 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::execution::{ReportTarget, SessionMode};
+use crate::harness::HarnessKind;
+use crate::roster::Teammate;
 use crate::runtime::BinOverrides;
-use crate::teammates::{Agent, Teammate};
 
 /// The schema this binary writes.
 pub const SCHEMA: u32 = 2;
@@ -84,7 +85,7 @@ fn report_to_orchestrator() -> ReportTarget {
 }
 
 impl Brief {
-    pub fn agent(&self) -> Result<Agent> {
+    pub fn agent(&self) -> Result<HarnessKind> {
         self.agent.parse().map_err(anyhow::Error::msg)
     }
 

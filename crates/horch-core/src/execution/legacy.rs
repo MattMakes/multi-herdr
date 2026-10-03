@@ -26,8 +26,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::execution::model::ExecutionStatus;
+use crate::roster::Phase;
 use crate::skills::activation::ResolvedSkillRef;
-use crate::teammates::Phase;
 
 /// One entry in a record's history.
 #[derive(Debug, Clone, Serialize, Deserialize)]

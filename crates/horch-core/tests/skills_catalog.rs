@@ -4,12 +4,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use horch_core::harness::HarnessKind;
 use horch_core::ids::SkillId;
+use horch_core::roster::{Phase, Roster, Teammate};
 use horch_core::skills::{
     self, briefing, plan_activation, BriefingContext, CatalogSource, InvocationPolicy,
     MaterializedSkills, SkillCatalog, BUNDLED_SKILL_FILES,
 };
-use horch_core::teammates::{Agent, Phase, Roster, Teammate};
 use horch_marketplace::LockEntry;
 
 const PINNED_REPOSITORY: &str = "https://github.com/MattMakes/skill-marketplace";
@@ -25,7 +26,7 @@ const PHASES: [Option<Phase>; 5] = [
 
 fn repo_roster() -> Roster {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
-    Roster::load_with(Some(dir.to_str().unwrap())).unwrap()
+    Roster::load_layered(None, None, Some(dir.to_str().unwrap())).unwrap()
 }
 
 fn oracles() -> PathBuf {
@@ -246,7 +247,7 @@ fn skl_07_plugin_skills_separate() {
     .into();
     let t = Teammate {
         name: "plugged".into(),
-        agent: Agent::Claude,
+        agent: HarnessKind::Claude,
         phase: Some(Phase::Plan),
         plugin_skills: plugin_skills.clone(),
         ..Teammate::default()
@@ -320,7 +321,7 @@ fn skl_08_briefing_matches_baseline_modulo_path() {
                                 &BriefingContext {
                                     phase: t.phase,
                                     declared: &t.skills,
-                                    namespace: (t.agent == Agent::Claude).then_some("horch"),
+                                    namespace: (t.agent == HarnessKind::Claude).then_some("horch"),
                                     plugin_lines: &[],
                                     skills_dir: &files.skills_dir(),
                                 },

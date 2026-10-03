@@ -8,8 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use horch_core::harness::HarnessKind;
+use horch_core::roster::Teammate;
 use horch_core::skills::{plan_activation, MaterializedSkills, SkillCatalog};
-use horch_core::teammates::{Agent, Teammate};
 use serde_json::Value;
 
 const PHASES: [&str; 4] = ["research", "plan", "implementation", "validation"];
@@ -298,7 +299,7 @@ fn mkt_08_runtime_needs_no_network() {
     assert_eq!(entry.description, "A demo skill for the CLI tests.");
     let teammate = Teammate {
         name: "marketplace-user".into(),
-        agent: Agent::Claude,
+        agent: HarnessKind::Claude,
         skills: vec!["demo".into()],
         ..Teammate::default()
     };

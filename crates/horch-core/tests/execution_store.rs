@@ -13,8 +13,8 @@ use horch_core::execution::{ExecutionStatus, FailureKind, LaunchStage};
 use horch_core::ids::SkillId;
 use horch_core::ledger::{Ledger, Record, KIND_WORKER, STATUS_DONE, STATUS_WORKING};
 use horch_core::measure::digest::Digest;
+use horch_core::roster::Phase;
 use horch_core::skills::{InvocationPolicy, ResolvedSkillRef, SkillVersion};
-use horch_core::teammates::Phase;
 use serde::Deserialize;
 
 const LEDGERS: [&str; 4] = ["bash-era", "pre-effort", "pr14-substituted", "orchestrator"];

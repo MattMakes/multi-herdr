@@ -41,9 +41,6 @@ pub mod repository;
 pub mod teammate;
 pub mod validation;
 
-/// The harness enum under its pre-A1 name. Phase A12 removes this alias.
-pub use crate::harness::HarnessKind as Agent;
-
 pub use effort::{effort_problem, model_takes_effort, valid_efforts, Effort};
 pub use operator::{
     effort_override_warnings, expand_home, operator_effort_warnings, operator_enabled_plugins,

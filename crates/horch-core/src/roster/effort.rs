@@ -2,7 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{reserved_tier, Agent};
+use super::reserved_tier;
+use crate::harness::HarnessKind;
 
 /// One effort level as a teammate file writes it, for example `medium`.
 ///
@@ -33,7 +34,7 @@ impl std::fmt::Display for Effort {
 /// sets differ: codex has `none` but rejects `minimal`, pi has `off`, claude
 /// tops out at `max`. Checked at `--check` and at `horch spawn --effort`, so a
 /// typo fails before a pane starts rather than inside one nobody watches.
-pub fn valid_efforts(agent: Agent) -> &'static [&'static str] {
+pub fn valid_efforts(agent: HarnessKind) -> &'static [&'static str] {
     agent.capabilities().effort
 }
 
@@ -44,12 +45,12 @@ pub fn valid_efforts(agent: Agent) -> &'static [&'static str] {
 /// --verbose`, ai_docs/reports/env-research/codex-opencode.md), so an effort
 /// there is silently a no-op - worse than an error, because the file then
 /// claims a setting that is not happening. Each harness module owns its rule.
-pub fn model_takes_effort(agent: Agent, model: &str) -> bool {
+pub fn model_takes_effort(agent: HarnessKind, model: &str) -> bool {
     agent.model_takes_effort(model)
 }
 
 /// Why `effort` cannot be used with this agent and model, or `None` if it can.
-pub fn effort_problem(agent: Agent, model: Option<&str>, effort: &str) -> Option<String> {
+pub fn effort_problem(agent: HarnessKind, model: Option<&str>, effort: &str) -> Option<String> {
     let model = model.unwrap_or_default();
     if !model.is_empty() && !model_takes_effort(agent, model) {
         return Some(format!(
@@ -57,7 +58,7 @@ pub fn effort_problem(agent: Agent, model: Option<&str>, effort: &str) -> Option
              ignored, or refused)"
         ));
     }
-    if agent == Agent::Codex {
+    if agent == HarnessKind::Codex {
         // Both are accepted by some codex clients and both are traps.
         match effort {
             "minimal" => {
