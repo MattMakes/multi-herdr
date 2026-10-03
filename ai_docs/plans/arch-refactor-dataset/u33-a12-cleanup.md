@@ -23,7 +23,9 @@ the code.
   `ledger.rs` facade and `ledger::state_root`, `teammates.rs` (roster
   wrappers), `mailbox.rs`, `message.rs`, `Herdr::send_line`,
   `tilecmd::after_change`, `balancecmd::equalize_quietly`, the `ProcessEnv`
-  shims in `roster/validation.rs`, `telemetry/readers.rs`, `prime.rs`
+  shims in `roster/validation.rs`, `Bundle::configure` and `Bundle::apply_env`
+  (delegates kept for `baseline_oracles.rs` and `command_with_skills_in`),
+  `skills::ensure_supported` (replaced by `ensure_supported_in`), `telemetry/readers.rs`, `prime.rs`
   (`Daemon::finish` uses `agent::prime_bin`), and any `PENDING` lists in
   `crates/horch-core/tests/arch_scan.rs`. Find the rest with
   `grep -rn 'pub use' crates/*/src` and by reading each top-level `*.rs`

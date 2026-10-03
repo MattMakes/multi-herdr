@@ -68,12 +68,27 @@ stops in JUDGING_BACKGROUND and exits 0.
   `DatasetPaths` accessors return `Result` (U27). A fault point in the
   promotion engine returns `FaultFired`; abort the process on it.
 
+- From U26 (`a6b-service.md`, "API for B3"): build the request with
+  `SpawnRequest::worker(Some(teammate), task)`, then set `kind`,
+  `workdir`, `report_to = ReportTarget::None`, `pinned = true` (U26 used a
+  `pinned: bool` and provenance mode `pinned`; do not add
+  `RoutingMode::Pinned` if `pinned` already gives it). Call
+  `store.find_by_idempotency("spawn:<round>:<label>")` BEFORE planning; the
+  service does not check it. `report_to` is in the plan but NOT in the
+  brief: add a `report_to` field to `messaging/brief.rs` (serde default =
+  orchestrator, so old briefs read the same) and make `horch done` skip the
+  orchestrator message when it is None. You own those lines. Recovery
+  rule: a `Planned` record with no pane becomes `LaunchFailed` after 5
+  minutes on the next spawn; a `Planned` record is never live.
+  `run_worker` sets `Failed{AgentExited{code}}` on a non-zero exit.
+
 ## FILES
 
 own:
 - `crates/horch-core/src/competition/{coordinator,observe}.rs` (new), `competition/mod.rs` (your lines)
 - `crates/horch-core/src/competition/budget.rs` (only to add the live `UsageMeter`)
-- `crates/horch-core/src/routing/decision.rs` (only `RoutingMode::Pinned`)
+- `crates/horch-core/src/routing/decision.rs` (only `RoutingMode::Pinned`, if still needed)
+- `crates/horch-core/src/messaging/brief.rs` and the `done` report step in `execution/lifecycle.rs` (only the `report_to` field and its check)
 - `crates/horch/src/dataset/run.rs` (replace the `// B3:` tail), `dataset/watch.rs` (new) and the `Watch` arm plus a new `Resume` subcommand in `dataset/cli.rs` and `dataset/mod.rs` (only those lines), `dataset/status.rs` (extend), `dataset/export.rs` (only `StoreFacts::facts_of`: fill tokens and cost from the usage meter or telemetry), `crates/horch/src/cmd/ledgercmd.rs` (`--all`), `crates/horch/src/cmd/spawn.rs` (resume refusal line only), `crates/horch/src/main.rs` (`sessions --all` flag only)
 - `teammates/_base/competition-candidate.md` (new)
 - `crates/horch-e2e/src/bin/fake-{claude,codex,opencode,herdr}.rs` (candidate mode, dataset workspaces)
