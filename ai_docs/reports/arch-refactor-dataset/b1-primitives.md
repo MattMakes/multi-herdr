@@ -33,7 +33,7 @@ Branch `ard/b1-primitives`. Phase B1 (part). Nothing calls these modules yet.
 - `nano_per_token(f64) -> Result<i128, MoneyError>`; `MoneyError { InexactPrice { dollars_per_mtok }, Overflow }` as in the dataset design §4.4.
 - `CostSource { PriceTable { date }, PricingFile { sha12 }, HarnessReported, Unpriced }`: `Display`/`FromStr`/serde as `price_table@<date>`, `pricing_file@<sha12>` (12 lowercase hex), `harness_reported`, `unpriced`.
 
-## Tests added (24)
+## Tests added (21)
 
 mea_09_create_immutable_refuses_overwrite, mea_09_replace_durable, sec_05_permissions, dirlock_excludes_second_holder, dirlock_breaks_dead_owner, dirlock_breaks_old_lock, dirlock_stale_holder_does_not_release_the_next_holder, mea_01_digests_stable, digest_string_round_trips, nfr_11_splitmix64_matches_reference, below_stays_in_range, shuffle_is_deterministic_per_seed, seed_from_digest_is_first_8_bytes_big_endian, property_runs_every_case_and_reports_failures, sec_01_redaction_patterns, redaction_keeps_surrounding_unicode, env_values_redact_by_key, mea_07_every_builtin_price_is_exact, mea_07_nano_accumulation_exact, mea_07_rounding_once, mea_07_cost_source.
 
