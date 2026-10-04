@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 
 use crate::competition::config::BudgetConfig;
-use crate::competition::preflight::DEFAULT_TOKEN_ESTIMATE;
+use crate::competition::preflight::{TokenEstimate, DEFAULT_TOKEN_ESTIMATE};
 use crate::usage::money::{nano_per_token, CostSource, MicroUsd, NanoUsd};
 use crate::usage::{builtin_prices, price_for, Price, Tokens, Usage};
 
@@ -108,17 +108,26 @@ impl UsageMeter {
     /// estimate at the table price, as preflight (PRE-09) projects it. 0
     /// when the model has no price; its measured spend still counts.
     pub fn projected(&self, model: &str) -> MicroUsd {
-        let t = DEFAULT_TOKEN_ESTIMATE;
-        let tokens = Tokens {
-            input: t.input,
-            cache_read: t.cache_read,
-            output: t.output,
-            ..Tokens::default()
-        };
-        price_for(&self.prices, model)
-            .and_then(|p| nano_cost(&p, &tokens))
+        estimate_cost(&self.prices, model, DEFAULT_TOKEN_ESTIMATE)
             .map_or(MicroUsd(0), NanoUsd::to_micro_half_even)
     }
+}
+
+/// The cost of `estimate` on `model`: the one cost model that preflight
+/// (PRE-09) and [`UsageMeter::projected`] share. `None` when the model has
+/// no price, or a price is not a whole number of n$ per token.
+pub(crate) fn estimate_cost(
+    prices: &BTreeMap<String, Price>,
+    model: &str,
+    estimate: TokenEstimate,
+) -> Option<NanoUsd> {
+    let tokens = Tokens {
+        input: estimate.input,
+        cache_read: estimate.cache_read,
+        output: estimate.output,
+        ..Tokens::default()
+    };
+    price_for(prices, model).and_then(|p| nano_cost(&p, &tokens))
 }
 
 /// The date of [`builtin_prices`].

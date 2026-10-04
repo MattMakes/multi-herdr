@@ -18,14 +18,15 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::competition::budget::estimate_cost;
 use crate::competition::config::DatasetConfig;
 use crate::fsx::DirLock;
 use crate::harness::HarnessKind;
 use crate::ids::{ModelId, TeammateName};
 use crate::measure::digest::{digest_json, Digest};
 use crate::runtime::machine::{GpuClass, Known, MachineSnapshot};
-use crate::usage::money::{nano_per_token, MicroUsd, NanoUsd};
-use crate::usage::{builtin_prices, price_for, Price};
+use crate::usage::money::{MicroUsd, NanoUsd};
+use crate::usage::{builtin_prices, Price};
 
 pub(crate) const REPORT_SCHEMA_VERSION: &str = "1.0.0";
 
@@ -195,7 +196,7 @@ pub fn evaluate(plan: &PreflightPlan, snapshot: &MachineSnapshot) -> PreflightRe
     let bounds = Bounds::of(plan, snapshot);
     let safe_n = bounds.safe_n(n);
     let waves = n.div_ceil(safe_n);
-    let cost = project_cost(plan);
+    let cost = project_cost(&plan.candidates, &plan.expected_tokens, &builtin_prices());
 
     let checks = vec![
         pre_01_git(plan),
@@ -699,19 +700,23 @@ struct Projection {
     per_candidate: BTreeMap<String, i64>,
 }
 
-/// Expected cost of every candidate, summed in n$ and rounded once.
-fn project_cost(plan: &PreflightPlan) -> Projection {
-    let prices = builtin_prices();
+/// Expected cost of every candidate at `prices`, summed in n$ and rounded
+/// once. Each candidate is priced by [`estimate_cost`], as the live budget
+/// prices it.
+fn project_cost(
+    candidates: &[PreflightCandidate],
+    expected_tokens: &BTreeMap<String, TokenEstimate>,
+    prices: &BTreeMap<String, Price>,
+) -> Projection {
     let mut total = NanoUsd(0);
     let mut unpriced = Vec::new();
     let mut per_candidate = BTreeMap::new();
-    for c in &plan.candidates {
-        let tokens = plan
-            .expected_tokens
+    for c in candidates {
+        let tokens = expected_tokens
             .get(&c.label)
             .copied()
             .unwrap_or(DEFAULT_TOKEN_ESTIMATE);
-        match price_for(&prices, c.model.as_str()).and_then(|p| cost_of(&p, tokens)) {
+        match estimate_cost(prices, c.model.as_str(), tokens) {
             Some(cost) => {
                 per_candidate.insert(c.label.clone(), cost.to_micro_half_even().0);
                 total += cost;
@@ -724,14 +729,6 @@ fn project_cost(plan: &PreflightPlan) -> Projection {
         unpriced,
         per_candidate,
     }
-}
-
-fn cost_of(price: &Price, tokens: TokenEstimate) -> Option<NanoUsd> {
-    let mut cost = NanoUsd(0);
-    cost.add_tokens(tokens.input, nano_per_token(price.input).ok()?);
-    cost.add_tokens(tokens.cache_read, nano_per_token(price.cache_read).ok()?);
-    cost.add_tokens(tokens.output, nano_per_token(price.output).ok()?);
-    Some(cost)
 }
 
 fn pre_09_budget(plan: &PreflightPlan, cost: &Projection) -> CheckResult {
@@ -950,4 +947,49 @@ fn gib(bytes: u64) -> String {
 
 fn usd(micro: i64) -> String {
     format!("${}.{:06}", micro / 1_000_000, micro % 1_000_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::competition::budget::UsageMeter;
+
+    /// Preflight (PRE-09) and the live budget price a candidate the same
+    /// way, for every table model, an unknown model, and a price whose
+    /// cache-write rate is not a whole n$ per token.
+    #[test]
+    fn pre_09_projection_matches_the_live_budget() {
+        let mut prices = builtin_prices();
+        // 1 n$ per input token; the derived 5-minute write is 1.25 n$.
+        let edge = Price {
+            input: 0.001,
+            output: 0.001,
+            cache_read: 0.001,
+            cache_write_5m: None,
+            cache_write_1h: None,
+        };
+        prices.insert("edge".into(), edge);
+        let meter = UsageMeter {
+            prices: prices.clone(),
+        };
+        let mut models: Vec<String> = prices.keys().cloned().collect();
+        models.push("gemini-3-1-pro".into());
+        for model in models {
+            let c = PreflightCandidate {
+                label: "A".into(),
+                teammate: TeammateName::new("t").unwrap(),
+                harness: HarnessKind::Claude,
+                model: ModelId::new(model.as_str()).unwrap(),
+                effort: None,
+            };
+            let p = project_cost(&[c], &BTreeMap::new(), &prices);
+            let preflight = p.per_candidate.get("A").copied().unwrap_or(0);
+            assert_eq!(preflight, meter.projected(&model).0, "{model}");
+            assert_eq!(
+                p.unpriced.is_empty(),
+                estimate_cost(&prices, &model, DEFAULT_TOKEN_ESTIMATE).is_some(),
+                "{model}"
+            );
+        }
+    }
 }
