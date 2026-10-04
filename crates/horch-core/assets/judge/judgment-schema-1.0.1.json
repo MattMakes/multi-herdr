@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://multi-herdr.local/schemas/judgment-1.0.0.json",
+  "$id": "https://multi-herdr.local/schemas/judgment-1.0.1.json",
   "title": "Judgment",
-  "description": "SPEC-TODO(Spec B §11): provisional until the spec text arrives. The judge answers with exactly one JSON object of this shape and nothing else.",
+  "description": "The judge answers with exactly one JSON object of this shape and nothing else.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "verdict", "ranking", "candidates", "confidence", "rationale"],
   "properties": {
-    "schema_version": { "const": "1.0.0" },
+    "schema_version": { "const": "1.0.1" },
     "verdict": { "enum": ["winner", "tie", "abstain", "reject_all"] },
     "winner": {
       "description": "A candidate label. Required when verdict is winner; null or absent otherwise.",

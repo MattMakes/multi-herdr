@@ -10,7 +10,6 @@ mcp_servers: {}
 tools: [Read, Grep, Glob]
 disallowed_tools: [Agent, Edit, Write, NotebookEdit, Bash]
 ---
-<!-- SPEC-TODO(Spec B §10): replace with the verbatim evaluator prose. -->
 You are a blind evaluator. Several candidate solutions to one task are in
 the current directory. Each candidate has an anonymous label.
 

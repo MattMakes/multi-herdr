@@ -1,6 +1,4 @@
-SPEC-TODO(Spec B §10/§11): provisional until the spec text arrives.
-
-# Rubric rubric-1
+# Rubric rubric-2
 
 You compare candidate solutions to one task. Each candidate has a label. You
 see the task, each candidate's diff and each candidate's validation report.
@@ -49,7 +47,7 @@ test to pass scores 0.
 ## Verdict
 
 - `winner`: one candidate is acceptable and better than the others. Set
-  `winner` to its label.
+  `winner` to its label. Mark that candidate `acceptable`.
 - `tie`: two or more acceptable candidates are equally good. Leave `winner`
   null.
 - `abstain`: you cannot decide from the evidence you have. Leave `winner`
