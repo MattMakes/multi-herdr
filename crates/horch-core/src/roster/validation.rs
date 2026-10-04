@@ -762,7 +762,8 @@ mod spawnable_tests {
                 | "orchestrator"
                 | "orchestrator-codex"
                 | "orchestration-orchestrator"
-                | "ue-tech-lead" => Some(Phase::Plan),
+                | "ue-tech-lead"
+                | "godot-tech-lead" => Some(Phase::Plan),
                 "architect-reviewer"
                 | "qa-engineer"
                 | "codex-reviewer"
@@ -772,7 +773,9 @@ mod spawnable_tests {
                 | "swift-reviewer"
                 | "swift-qa-engineer"
                 | "apple-accessibility-auditor"
-                | "codex-swift-reviewer" => Some(Phase::Validation),
+                | "codex-swift-reviewer"
+                | "godot-qa-engineer"
+                | "godot-code-reviewer" => Some(Phase::Validation),
                 _ => Some(Phase::Implementation),
             };
             assert_eq!(t.phase, expected, "{}", t.name);
@@ -1123,7 +1126,7 @@ mod spawnable_tests {
             .values()
             .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
             .count();
-        assert_eq!(covered, 47, "the rule should cover 47 claude teammates");
+        assert_eq!(covered, 51, "the rule should cover 51 claude teammates");
 
         // Take the deny away from a worker and the check fails by name.
         r.teammates.get_mut("opus").unwrap().disallowed_tools = Vec::new();
