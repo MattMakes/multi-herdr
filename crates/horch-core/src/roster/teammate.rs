@@ -99,6 +99,16 @@ pub struct Teammate {
     pub plugin_dirs: Vec<String>,
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Catalog skills offered by name only: materialized with the launch, and
+    /// named under "Also available" in the briefing without a description.
+    /// For a related skill that is worth one name, not a full description.
+    #[serde(default)]
+    pub available_skills: Vec<String>,
+    /// Skills copied at launch from a directory on the operator's machine,
+    /// such as the ones `xcrun agent skills export` writes. They are never
+    /// compiled in. Expected, like `skills:`. See `OperatorSkills`.
+    #[serde(default)]
+    pub operator_skills: Option<OperatorSkills>,
     /// Default work phase; spawn --phase overrides it.
     #[serde(default)]
     pub phase: Option<Phase>,
@@ -213,6 +223,8 @@ impl Default for Teammate {
             inherit_plugins: true,
             plugin_dirs: Vec::new(),
             skills: Vec::new(),
+            available_skills: Vec::new(),
+            operator_skills: None,
             phase: None,
             permission_mode: None,
             tools: None,
@@ -236,6 +248,17 @@ impl Default for Teammate {
             persona: String::new(),
         }
     }
+}
+
+/// `operator_skills:`: skill directories `names` under `dir`, an
+/// operator-local directory. `~/` in `dir` expands against the launch's
+/// home. Each name must be a `<dir>/<name>/SKILL.md` whose `name:` matches,
+/// must not clash with a catalog skill, and must not be a subagent skill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorSkills {
+    pub dir: String,
+    pub names: Vec<String>,
 }
 
 fn yes() -> bool {

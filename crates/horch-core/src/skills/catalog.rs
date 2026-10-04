@@ -2,10 +2,11 @@
 //! immutable resolved identity.
 //!
 //! Bundled skills come from the compiled-in `skills/` tree and are versioned
-//! `bundled+<digest12>`. Marketplace lock entries merge in on top. Only
-//! [`SkillCatalog::installed`] and [`check_store`] read the filesystem: the
-//! marketplace store under the data root (OD3). Nothing here reads the
-//! environment.
+//! `bundled+<digest12>`. Marketplace lock entries merge in on top. A
+//! teammate's `operator_skills:` merge in per launch, versioned
+//! `operator+<digest12>`. Only [`SkillCatalog::installed`], [`check_store`]
+//! and [`SkillCatalog::with_operator_skills`] read the filesystem. Nothing
+//! here reads the environment.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -22,6 +23,7 @@ use sha2::{Digest as _, Sha256};
 use super::{BUNDLED_PROVENANCE, BUNDLED_SKILL_FILES};
 use crate::ids::SkillId;
 use crate::measure::digest::Digest;
+use crate::roster::Teammate;
 
 /// The marketplace API, for the `horch` binary, which depends on core only.
 pub use horch_marketplace as marketplace;
@@ -40,6 +42,9 @@ pub enum CatalogSource {
         source: String,
         resolved_commit: Option<String>,
     },
+    /// A teammate's `operator_skills:`: read at launch from `<dir>/<id>/` on
+    /// the operator's machine. `dir` is already expanded.
+    Operator { dir: PathBuf },
 }
 
 /// One upstream file a bundled skill was adapted from.
@@ -96,6 +101,20 @@ impl CatalogEntry {
                 resolved_commit: Some(commit),
             } => format!("{source}@{commit}"),
             CatalogSource::Marketplace { source, .. } => source.clone(),
+            CatalogSource::Operator { dir } => format!("operator:{}", dir.display()),
+        }
+    }
+
+    /// Whether this entry came from a teammate's `operator_skills:`.
+    pub fn is_operator(&self) -> bool {
+        matches!(self.source, CatalogSource::Operator { .. })
+    }
+
+    /// `<dir>/<id>/` of an operator entry; `None` for any other entry.
+    pub fn operator_dir(&self) -> Option<PathBuf> {
+        match &self.source {
+            CatalogSource::Operator { dir } => Some(dir.join(self.id.as_str())),
+            _ => None,
         }
     }
 }
@@ -340,6 +359,82 @@ impl SkillCatalog {
         Ok(self)
     }
 
+    /// This catalog plus `teammate`'s `operator_skills:`, read from disk.
+    /// `~/` in the directory expands against `home`, the launch's home.
+    ///
+    /// Fails on a missing directory or skill, an invalid SKILL.md, a name
+    /// that a catalog skill already has (one bundle directory cannot hold
+    /// both), a subagent skill, or a tree the marketplace digest rules
+    /// refuse (a symlink, say). A teammate without the field changes
+    /// nothing.
+    pub fn with_operator_skills(
+        mut self,
+        teammate: &Teammate,
+        home: Option<&Path>,
+    ) -> Result<SkillCatalog> {
+        let Some(operator) = &teammate.operator_skills else {
+            return Ok(self);
+        };
+        let who = &teammate.name;
+        let dir = crate::roster::expand_home(&operator.dir, home);
+        if !dir.is_dir() {
+            bail!(
+                "{who}: operator_skills dir '{}' does not exist",
+                operator.dir
+            );
+        }
+        if operator.names.is_empty() {
+            bail!("{who}: operator_skills names no skill");
+        }
+        for (i, name) in operator.names.iter().enumerate() {
+            if operator.names[..i].contains(name) {
+                bail!("{who}: operator skill '{name}' is named twice");
+            }
+            let skill_dir = dir.join(name);
+            let skill_md = skill_dir.join("SKILL.md");
+            if self.entries.contains_key(name) {
+                bail!(
+                    "{who}: operator skill '{name}' has the name of a catalog skill; \
+                     rename one, or name the catalog skill in skills:"
+                );
+            }
+            let id = SkillId::new(name.as_str())
+                .with_context(|| format!("{who}: operator skill '{name}'"))?;
+            let bytes = std::fs::read(&skill_md).map_err(|_| {
+                anyhow!(
+                    "{who}: operator skill '{name}' is not in '{}': no {}",
+                    operator.dir,
+                    skill_md.display()
+                )
+            })?;
+            let meta = validate_skill_md(&skill_md.display().to_string(), name, &bytes)?;
+            if let Some(why) = subagent_skill(name, &bytes) {
+                bail!(
+                    "{who}: operator skill '{name}' is a subagent skill ({why}); \
+                     fleet panes start no subagents"
+                );
+            }
+            let digest: Digest = horch_marketplace::integrity::tree_digest(&skill_dir)
+                .map_err(|e| anyhow!("{who}: operator skill '{name}': {e}"))?
+                .parse()
+                .with_context(|| format!("{who}: operator skill '{name}' digest"))?;
+            self.entries.insert(
+                name.clone(),
+                CatalogEntry {
+                    id,
+                    version: SkillVersion(format!("operator+{}", digest.short12())),
+                    source: CatalogSource::Operator { dir: dir.clone() },
+                    digest,
+                    description: meta.description,
+                    provenance: None,
+                    skill_file_bytes: bytes.len(),
+                    files: Vec::new(),
+                },
+            );
+        }
+        Ok(self)
+    }
+
     pub fn get(&self, id: &SkillId) -> Option<&CatalogEntry> {
         self.entries.get(id.as_str())
     }
@@ -422,6 +517,23 @@ fn version_dir(root: &Path, id: &str, version: &str) -> Result<PathBuf> {
         bail!("marketplace.lock: '{id}' version '{version}' cannot name a directory");
     }
     Ok(root.join("skills").join(id).join(version))
+}
+
+/// Skills that only work by starting a subagent, which a fleet pane must
+/// not do. Apple's `device-interaction` is one by name. Any other skill is
+/// one when its SKILL.md says so. The reason is `None` for a fleet skill.
+fn subagent_skill(name: &str, skill_md: &[u8]) -> Option<&'static str> {
+    if name == "device-interaction" {
+        return Some("device-interaction runs as a subagent");
+    }
+    let body = String::from_utf8_lossy(skill_md);
+    if body.contains("SUBAGENT skill") {
+        Some("its SKILL.md says \"SUBAGENT skill\"")
+    } else if body.contains("Agent tool") {
+        Some("its SKILL.md uses the \"Agent tool\"")
+    } else {
+        None
+    }
 }
 
 /// The SKILL.md rules: YAML frontmatter whose `name` equals the directory

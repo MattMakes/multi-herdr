@@ -102,18 +102,22 @@ impl Bundle {
             teammate,
             SkillCatalog::bundled()?,
             &crate::mint_uuid(),
+            None,
         )
     }
 
-    /// Plan `teammate`'s skills against `catalog` and materialize the
-    /// activated ones under `<state_root>/skill-bundles/<execution_id>/`.
+    /// Plan `teammate`'s skills against `catalog` plus its
+    /// `operator_skills:` (`~/` expanded against `home`), and materialize
+    /// the activated ones under `<state_root>/skill-bundles/<execution_id>/`.
     /// `None` when nothing is activated.
     pub(crate) fn install_from(
         state_root: &Path,
         teammate: &Teammate,
         catalog: SkillCatalog,
         execution_id: &str,
+        home: Option<&Path>,
     ) -> Result<Option<Self>> {
+        let catalog = catalog.with_operator_skills(teammate, home)?;
         let plan = plan_activation(teammate, teammate.phase, &catalog)?;
         if !plan.activated.is_empty() {
             teammate.agent.adapter().ensure_skills_supported()?;
@@ -164,12 +168,20 @@ impl Bundle {
                 }
             }
         }
+        // Operator skills are expected too; they follow the bundled ones.
+        let declared: Vec<String> = teammate
+            .skills
+            .iter()
+            .map(String::as_str)
+            .chain(selection::operator_names(teammate))
+            .map(str::to_owned)
+            .collect();
         briefing::render(
             &self.plan,
             &self.catalog,
             &BriefingContext {
                 phase: teammate.phase,
-                declared: &teammate.skills,
+                declared: &declared,
                 namespace,
                 plugin_lines: &plugin_lines,
                 skills_dir: &self.skills_dir(),

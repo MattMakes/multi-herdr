@@ -37,8 +37,20 @@ pub(crate) fn selected_in(teammate: &Teammate, catalog: &SkillCatalog) -> Result
     if let Some(phase) = teammate.phase {
         names.extend(phase_skills(phase).iter().map(|s| (*s).to_owned()));
     }
+    names.extend(teammate.available_skills.iter().cloned());
     check(teammate, &names, catalog)?;
+    if teammate.operator_skills.is_some() {
+        check_loadable(teammate, true)?;
+    }
     Ok(names.into_iter().collect())
+}
+
+/// The names in the teammate's `operator_skills:`, if any.
+pub(crate) fn operator_names(teammate: &Teammate) -> impl Iterator<Item = &str> {
+    teammate
+        .operator_skills
+        .iter()
+        .flat_map(|o| o.names.iter().map(String::as_str))
 }
 
 /// Every selected name is in the catalog, and a teammate that selects any
@@ -56,8 +68,13 @@ pub(crate) fn check(
             );
         }
     }
+    check_loadable(teammate, !names.is_empty())
+}
+
+/// A teammate that selects any skill (`any`) can load one.
+fn check_loadable(teammate: &Teammate, any: bool) -> Result<()> {
     let exposes = teammate.agent.capabilities().skill_exposure != SkillExposure::None;
-    if !names.is_empty() && (teammate.disable_skills || !exposes) {
+    if any && (teammate.disable_skills || !exposes) {
         bail!(
             "teammate '{}': selected skills cannot load with disabled skills or no agent",
             teammate.name

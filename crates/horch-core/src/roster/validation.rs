@@ -79,6 +79,23 @@ impl Roster {
         if let Err(error) = selected {
             problems.push(format!("{error:#}"));
         }
+        for name in &t.available_skills {
+            if t.skills.contains(name) {
+                problems.push(format!(
+                    "{who}: '{name}' is both in skills and in available_skills"
+                ));
+            }
+        }
+        // Operator skills are read from the operator's machine, so `--check`
+        // reads the same directory the launch will.
+        if t.operator_skills.is_some() {
+            let extended = self
+                .skill_catalog()
+                .and_then(|c| c.with_operator_skills(t, self.home.as_deref()));
+            if let Err(error) = extended {
+                problems.push(format!("{error:#}"));
+            }
+        }
         if t.brief_description.trim().is_empty() {
             problems.push(format!("{who}: brief_description is empty"));
         }
@@ -222,7 +239,11 @@ impl Roster {
         // Orchestrator-only capabilities stay with the orchestrator.
         if !FLEET_ORCHESTRATORS.contains(&who.as_str()) {
             for skill in ORCHESTRATOR_ONLY_SKILLS {
-                if t.skills.iter().any(|s| s == skill) {
+                if t.skills
+                    .iter()
+                    .chain(&t.available_skills)
+                    .any(|s| s == skill)
+                {
                     problems.push(format!(
                         "{who}: skill '{skill}' belongs to the orchestrator only"
                     ));
