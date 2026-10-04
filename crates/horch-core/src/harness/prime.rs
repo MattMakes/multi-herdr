@@ -38,6 +38,9 @@ pub struct Daemon {
     sessions: PathBuf,
     /// The `prime-agent` program that answers `status` for [`Daemon::finish`].
     bin: PathBuf,
+    /// When this launch reserved its socket. Its daemon starts later; a
+    /// process that started earlier is not it.
+    installed: SystemTime,
 }
 
 impl Daemon {
@@ -66,6 +69,7 @@ impl Daemon {
             socket: base.join("d.sock"),
             sessions,
             bin: bin.to_path_buf(),
+            installed: SystemTime::now(),
         })
     }
 
@@ -78,11 +82,60 @@ impl Daemon {
     }
 
     /// Stop this launch's daemon, and only this one.
+    ///
+    /// `status` names the pid; a pid can be given to another program once
+    /// its process ends. So `status` is asked twice, and SIGTERM goes only
+    /// to a pid that both answers name with the same start time, and that
+    /// started after [`Daemon::install`]: horch never stops a daemon it did
+    /// not start, such as the operator's own. Otherwise the daemon is left
+    /// running, and the reason is logged.
     pub fn finish(&self) {
         if let Some(pid) = daemon_pid(&self.bin, &self.socket) {
-            terminate(pid);
+            let first = pid_start(pid);
+            let again = daemon_pid(&self.bin, &self.socket).map(|p| (p, pid_start(p)));
+            let started_at = u32::try_from(pid).ok().and_then(crate::procid::started_at);
+            match may_stop((pid, first), again, started_at, self.installed) {
+                Ok(()) => terminate(pid),
+                Err(why) => eprintln!("horch: left Prime daemon pid {pid} running: {why}"),
+            }
         }
         let _ = std::fs::remove_file(&self.socket);
+    }
+}
+
+/// How far a start time on the wall clock can be off: Linux counts it from a
+/// boot time in whole seconds.
+const START_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn pid_start(pid: i32) -> Option<u64> {
+    u32::try_from(pid).ok().and_then(crate::procid::start_time)
+}
+
+/// Whether [`Daemon::finish`] may signal the daemon that `status` named:
+/// `first` and `again` are the 2 answers, each a pid and its start time.
+/// Split out so the rules are testable without Prime installed.
+pub(crate) fn may_stop(
+    first: (i32, Option<u64>),
+    again: Option<(i32, Option<u64>)>,
+    started_at: Option<SystemTime>,
+    installed: SystemTime,
+) -> std::result::Result<(), &'static str> {
+    let Some(again) = again else {
+        return Err("a second status call does not name it");
+    };
+    if again.0 != first.0 {
+        return Err("a second status call names another pid");
+    }
+    if cfg!(windows) {
+        // No start times here: the pid is all there is (see `procid`).
+        return Ok(());
+    }
+    if first.1.is_none() || again.1 != first.1 {
+        return Err("its start time is unknown or changed between 2 status calls");
+    }
+    match started_at {
+        Some(t) if t + START_SLACK >= installed => Ok(()),
+        _ => Err("it started before this launch, so this launch did not start it"),
     }
 }
 
@@ -251,6 +304,76 @@ mod tests {
             pid_for_socket(r#"[{"pid":1}]"#, Path::new("/a/d.sock")),
             None
         );
+    }
+
+    /// SIGTERM only for one process across both `status` calls, started
+    /// after this launch reserved its socket.
+    #[test]
+    fn only_the_same_daemon_started_by_this_launch_is_stopped() {
+        use std::time::Duration;
+        let installed = SystemTime::now();
+        let after = Some(installed + Duration::from_secs(3));
+        let ok = (7, Some(100));
+        assert_eq!(may_stop(ok, Some(ok), after, installed), Ok(()));
+        assert!(may_stop(ok, None, after, installed).is_err(), "gone");
+        assert!(
+            may_stop(ok, Some((8, Some(100))), after, installed).is_err(),
+            "another pid"
+        );
+        let before = Some(installed - Duration::from_secs(60));
+        if cfg!(windows) {
+            return;
+        }
+        assert!(
+            may_stop(ok, Some((7, Some(101))), after, installed).is_err(),
+            "the pid was given to another process"
+        );
+        assert!(may_stop((7, None), Some((7, None)), after, installed).is_err());
+        assert!(
+            may_stop(ok, Some(ok), before, installed).is_err(),
+            "the operator's own daemon, started earlier"
+        );
+        assert!(may_stop(ok, Some(ok), None, installed).is_err());
+    }
+
+    /// `finish` against a `status` program that names a child of this test:
+    /// a child started before the launch is left running; one started after
+    /// it gets SIGTERM.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn finish_stops_only_a_daemon_this_launch_started() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let bin = state.path().join("prime-agent");
+        let mut daemon = Daemon::install(state.path(), "prime-1", &bin).unwrap();
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\necho '[{{\"socketPath\":\"{}\",\"pid\":{}}}]'\n",
+                daemon.socket().display(),
+                child.id()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Reserved long after the child started: not this launch's daemon.
+        daemon.installed = SystemTime::now() + std::time::Duration::from_secs(60);
+        daemon.finish();
+        assert_eq!(
+            child.try_wait().unwrap(),
+            None,
+            "a foreign daemon was stopped"
+        );
+
+        daemon.installed = SystemTime::now() - std::time::Duration::from_secs(60);
+        daemon.finish();
+        let status = child.wait().unwrap();
+        assert!(!status.success(), "this launch's daemon was not stopped");
     }
 
     #[test]

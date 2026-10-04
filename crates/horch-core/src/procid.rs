@@ -23,6 +23,15 @@ pub fn start_time(pid: u32) -> Option<u64> {
     imp::start_time(pid)
 }
 
+/// When `pid` started, on the wall clock, or `None` when it does not run or
+/// this platform cannot read it. For an order with a time this process
+/// took. On Linux it is boot time plus clock ticks, so it can be off by up
+/// to a second.
+pub fn started_at(pid: u32) -> Option<std::time::SystemTime> {
+    let pid = raw(pid)?;
+    imp::started_at(pid)
+}
+
 /// Whether `pid` runs and is the process that started at `started`. With
 /// `started` unknown (an old record), or a platform that cannot read start
 /// times, this is "the pid exists".
@@ -82,6 +91,12 @@ mod imp {
         };
         (n == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
     }
+
+    /// The start time is microseconds since the epoch.
+    pub(super) fn started_at(pid: i32) -> Option<std::time::SystemTime> {
+        let micros = start_time(pid)?;
+        Some(std::time::UNIX_EPOCH + std::time::Duration::from_micros(micros))
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -98,11 +113,35 @@ mod imp {
         let (_, rest) = stat.rsplit_once(')')?;
         rest.split_whitespace().nth(22 - 3)?.parse().ok()
     }
+
+    /// Boot time (`btime` in `/proc/stat`, in seconds) plus the start time
+    /// in clock ticks.
+    pub(super) fn started_at(pid: i32) -> Option<std::time::SystemTime> {
+        let ticks = start_time(pid)?;
+        let stat = std::fs::read_to_string("/proc/stat").ok()?;
+        let boot: u64 = stat
+            .lines()
+            .find_map(|l| l.strip_prefix("btime "))?
+            .trim()
+            .parse()
+            .ok()?;
+        // SAFETY: sysconf reads a constant.
+        let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok()?;
+        if hz == 0 {
+            return None;
+        }
+        let since_boot = std::time::Duration::from_millis(ticks * 1000 / hz);
+        Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(boot) + since_boot)
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
 mod imp {
     pub(super) fn start_time(_pid: i32) -> Option<u64> {
+        None
+    }
+
+    pub(super) fn started_at(_pid: i32) -> Option<std::time::SystemTime> {
         None
     }
 }
@@ -129,6 +168,28 @@ mod tests {
         assert!(alive(me, None), "an old record: the pid exists");
         assert!(!is_same(me, started + 1));
         assert!(!alive(me, Some(started + 1)), "a reused pid is dead");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_new_child_started_after_this_process() {
+        use std::time::{Duration, SystemTime};
+        let mine = started_at(std::process::id()).expect("this process runs");
+        assert!(mine <= SystemTime::now() + Duration::from_secs(1));
+        let before = SystemTime::now();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let theirs = started_at(child.id()).expect("the child runs");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        // Linux counts from a boot time in whole seconds.
+        assert!(
+            theirs + Duration::from_secs(1) >= before,
+            "{theirs:?} {before:?}"
+        );
+        assert!(theirs >= mine);
     }
 
     /// A child that has ended and been reaped: its record names nothing.
