@@ -66,6 +66,70 @@ impl Roster {
         }
     }
 
+    /// What is wrong with `t.skills_when`: each pattern as `offer_when`'s,
+    /// and each skill must be a catalog skill the teammate can load and does
+    /// not already name, switch off or reserve for the orchestrator.
+    fn skills_when_problems(&self, t: &Teammate) -> Vec<String> {
+        let mut problems = Vec::new();
+        if t.skills_when.is_empty() {
+            return problems;
+        }
+        let who = &t.name;
+        let catalog = match self.skill_catalog() {
+            Ok(catalog) => Some(catalog),
+            Err(e) => {
+                problems.push(format!("{who}: skills_when: {e:#}"));
+                None
+            }
+        };
+        let loads = !t.disable_skills
+            && t.agent.capabilities().skill_exposure != crate::harness::SkillExposure::None;
+        if !loads {
+            problems.push(format!(
+                "{who}: skills_when adds skills, but skills cannot load with disabled \
+                 skills or no agent"
+            ));
+        }
+        for (pattern, skills) in &t.skills_when {
+            if let Some(problem) = super::offer::pattern_problem(pattern) {
+                problems.push(format!("{who}: skills_when pattern '{pattern}' {problem}"));
+            }
+            if skills.is_empty() {
+                problems.push(format!("{who}: skills_when '{pattern}' names no skill"));
+            }
+            for name in skills {
+                let unknown = catalog.as_ref().is_some_and(|c| c.lookup(name).is_none());
+                if unknown {
+                    problems.push(format!(
+                        "{who}: skills_when '{pattern}' names unknown skill '{name}'"
+                    ));
+                }
+                if t.skills.contains(name) {
+                    problems.push(format!(
+                        "{who}: '{name}' is both in skills and in skills_when '{pattern}'"
+                    ));
+                }
+                if t.disabled_skills
+                    .iter()
+                    .any(|d| d == name || *d == format!("horch:{name}"))
+                {
+                    problems.push(format!(
+                        "{who}: '{name}' is both in skills_when '{pattern}' and in \
+                         disabled_skills"
+                    ));
+                }
+                if !FLEET_ORCHESTRATORS.contains(&who.as_str())
+                    && ORCHESTRATOR_ONLY_SKILLS.contains(&name.as_str())
+                {
+                    problems.push(format!(
+                        "{who}: skill '{name}' belongs to the orchestrator only"
+                    ));
+                }
+            }
+        }
+        problems
+    }
+
     /// Everything wrong with one teammate, judged against this roster (its
     /// bases, its rules, its skill catalog). Also run on a teammate merged
     /// with a fallback.
@@ -116,6 +180,7 @@ impl Roster {
                 problems.push(format!("{who}: offer_when pattern '{pattern}' {problem}"));
             }
         }
+        problems.extend(self.skills_when_problems(t));
         // Anything the orchestrator can pick must be something it may spawn.
         if !t.hidden {
             if let Err(e) = Roster::is_spawnable(t) {
@@ -1146,6 +1211,55 @@ mod spawnable_tests {
 
     /// A skill switched off that the same file also asks for is a
     /// contradiction, and a blank name switches off nothing.
+    /// GW11: every `skills_when` skill must exist and be loadable, and the
+    /// patterns follow `offer_when`'s rules.
+    #[test]
+    fn roster_check_holds_skills_when_to_the_catalog() {
+        // One teammate's check: the whole roster's takes minutes in a debug
+        // build.
+        let r = Roster::builtin().unwrap();
+        let mut opus = r.require("opus").unwrap().clone();
+        opus.skills = vec!["tdd".into()];
+        opus.disabled_skills = vec!["horch:debug".into()];
+        opus.skills_when = [
+            ("*.csproj".to_string(), vec!["missing-skill".into()]),
+            ("src/*.cs".to_string(), vec!["tdd".into()]),
+            ("*.sln".to_string(), vec![]),
+            (
+                "*.gd".to_string(),
+                vec!["debug".into(), "orchestrate".into()],
+            ),
+        ]
+        .into();
+        let problems = r.check_teammate(&opus);
+        for want in [
+            "opus: skills_when '*.csproj' names unknown skill 'missing-skill'",
+            "opus: skills_when pattern 'src/*.cs' contains a path separator",
+            "opus: 'tdd' is both in skills and in skills_when 'src/*.cs'",
+            "opus: skills_when '*.sln' names no skill",
+            "opus: 'debug' is both in skills_when '*.gd' and in disabled_skills",
+            "opus: skill 'orchestrate' belongs to the orchestrator only",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.contains(want)),
+                "{want}: {problems:?}"
+            );
+        }
+
+        let mut opus = r.require("opus").unwrap().clone();
+        opus.skills_when = [("*.csproj".to_string(), vec!["debug".into()])].into();
+        let problems = r.check_teammate(&opus);
+        assert!(
+            problems.iter().all(|p| !p.contains("skills_when")),
+            "{problems:?}"
+        );
+        opus.disable_skills = true;
+        assert!(r
+            .check_teammate(&opus)
+            .iter()
+            .any(|p| p.contains("opus: skills_when adds skills, but skills cannot load")));
+    }
+
     #[test]
     fn roster_check_rejects_contradictory_disabled_skills() {
         let mut r = Roster::builtin().unwrap();

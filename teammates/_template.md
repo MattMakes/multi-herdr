@@ -124,6 +124,14 @@ skills: []
 # list short. A name in both skills and available_skills fails --check.
 available_skills: []
 
+# skills_when adds catalog skills from project facts: a name glob (the same
+# entry names and rules as offer_when) maps to skills that join `skills` for a
+# launch in a project with a match. The ledger records them like any other
+# expected skill. Each skill must exist in the catalog, and a skill already in
+# skills fails --check. For a C# Godot project, e.g.
+#   skills_when: {"*.csproj": [godot-csharp-godot, godot-csharp-signals]}
+skills_when: {}
+
 # operator_skills copies skills from a directory on the operator's machine
 # into the launch bundle, on every harness that exposes skills. They are
 # never compiled in and never copied into this repo. Example, for skills that

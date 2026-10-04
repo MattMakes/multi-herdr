@@ -347,11 +347,12 @@ mod tests {
             .next()
             .unwrap();
         let documented: serde_yaml::Mapping = serde_yaml::from_str(front).unwrap();
-        // `fallbacks`, `offer_when` and `requires` are skipped when empty, so
-        // give each one entry to be listed.
+        // `fallbacks`, `offer_when`, `skills_when` and `requires` are skipped
+        // when empty, so give each one entry to be listed.
         let actual = serde_yaml::to_value(Teammate {
             fallbacks: vec![String::new()],
             offer_when: vec![String::new()],
+            skills_when: [(String::new(), vec![])].into(),
             requires: vec![horch_core::roster::Requirement::Xcode],
             ..Teammate::default()
         })

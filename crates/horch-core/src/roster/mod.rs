@@ -50,7 +50,7 @@ pub mod validation;
 
 pub(crate) use effort::effort_problem;
 pub use effort::{model_takes_effort, Effort};
-pub use offer::{offered_in, ProjectFacts, Requirement};
+pub use offer::{offered_in, project_skills, with_project_skills, ProjectFacts, Requirement};
 pub use operator::operator_effort_warnings;
 pub(crate) use operator::{expand_home, operator_enabled_plugins, operator_status_line};
 pub use permission::PermissionMode;

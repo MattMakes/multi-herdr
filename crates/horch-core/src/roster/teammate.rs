@@ -214,6 +214,11 @@ pub struct Teammate {
     /// See `offer.rs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offer_when: Vec<String>,
+    /// Name globs (`*.csproj`) mapped to catalog skills. In a project with a
+    /// matching file or directory (the facts `offer_when` reads), the skills
+    /// join `skills:` for that launch. See `offer::with_project_skills`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skills_when: BTreeMap<String, Vec<String>>,
     /// Host tools this teammate needs. `horch doctor` checks them when the
     /// project is offered this teammate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -263,6 +268,7 @@ impl Default for Teammate {
             first_instruction: None,
             fallbacks: Vec::new(),
             offer_when: Vec::new(),
+            skills_when: BTreeMap::new(),
             requires: Vec::new(),
             persona: String::new(),
         }

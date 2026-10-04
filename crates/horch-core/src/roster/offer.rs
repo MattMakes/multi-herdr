@@ -75,6 +75,30 @@ pub fn offered_in(t: &Teammate, facts: Option<&ProjectFacts>) -> bool {
     }
 }
 
+/// The skills `t.skills_when` adds in a project with `facts`: every skill of
+/// every matching pattern, sorted, without the ones `skills:` already names.
+pub fn project_skills(t: &Teammate, facts: &ProjectFacts) -> Vec<String> {
+    let added: BTreeSet<&String> = t
+        .skills_when
+        .iter()
+        .filter(|(pattern, _)| facts.has_match(pattern))
+        .flat_map(|(_, skills)| skills)
+        .filter(|s| !t.skills.contains(s))
+        .collect();
+    added.into_iter().cloned().collect()
+}
+
+/// `t` as it launches in a project with `facts`: each [`project_skills`]
+/// entry joins `skills:`, so the activation plan, the briefing and the
+/// ledger record treat it as an expected skill, and it leaves
+/// `available_skills:`.
+pub fn with_project_skills(mut t: Teammate, facts: &ProjectFacts) -> Teammate {
+    let added = project_skills(&t, facts);
+    t.available_skills.retain(|s| !added.contains(s));
+    t.skills.extend(added);
+    t
+}
+
 /// What `check` says about one `offer_when` pattern, if anything. Patterns
 /// match an entry NAME, so a path separator can never match.
 pub(crate) fn pattern_problem(pattern: &str) -> Option<&'static str> {
@@ -186,6 +210,66 @@ mod tests {
             ..domain(&[])
         };
         assert!(!offered_in(&hidden, None));
+    }
+
+    fn csharp_builder() -> Teammate {
+        Teammate {
+            name: "godot-gameplay-dev".into(),
+            skills: vec!["tdd".into()],
+            available_skills: vec!["godot-csharp-signals".into()],
+            skills_when: [
+                (
+                    "*.csproj".to_string(),
+                    vec!["godot-csharp-godot".into(), "godot-csharp-signals".into()],
+                ),
+                ("*.sln".to_string(), vec!["godot-csharp-godot".into()]),
+                ("limboai".to_string(), vec!["tdd".into()]),
+            ]
+            .into(),
+            ..Teammate::default()
+        }
+    }
+
+    #[test]
+    fn skills_when_adds_the_skills_of_every_matching_pattern() {
+        let t = csharp_builder();
+        let facts = ProjectFacts::from_names(["project.godot", "Game.csproj", "Game.sln"]);
+        assert_eq!(
+            project_skills(&t, &facts),
+            ["godot-csharp-godot", "godot-csharp-signals"]
+        );
+        let launched = with_project_skills(t, &facts);
+        assert_eq!(
+            launched.skills,
+            ["tdd", "godot-csharp-godot", "godot-csharp-signals"]
+        );
+        // A skill made expected is no longer only offered.
+        assert!(launched.available_skills.is_empty());
+    }
+
+    /// No match adds nothing; a skill `skills:` already names is not added
+    /// twice.
+    #[test]
+    fn skills_when_without_a_match_or_with_a_named_skill_adds_nothing() {
+        let t = csharp_builder();
+        let gdscript = ProjectFacts::from_names(["project.godot", "player.gd"]);
+        assert!(project_skills(&t, &gdscript).is_empty());
+        assert_eq!(with_project_skills(t.clone(), &gdscript), t);
+
+        let addon = ProjectFacts::from_names(["addons", "limboai"]);
+        assert!(project_skills(&t, &addon).is_empty());
+    }
+
+    #[test]
+    fn skills_when_parses_from_frontmatter() {
+        let text = "---\nname: x\nbrief_description: X\nagent: claude\nmodel: opus\n\
+                    skills_when: {\"*.csproj\": [godot-csharp-godot, godot-csharp-signals]}\n\
+                    ---\nbody";
+        let t = super::super::parser::parse_teammate("x", text).unwrap();
+        assert_eq!(
+            t.skills_when["*.csproj"],
+            ["godot-csharp-godot", "godot-csharp-signals"]
+        );
     }
 
     #[test]
