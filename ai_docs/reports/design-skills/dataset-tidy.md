@@ -4,8 +4,9 @@ Branch `ds/dataset-tidy`, worker opus-47. Plan:
 `ai_docs/plans/design-skills/d19-dataset-tidy.md`, plus items 6 to 8 that
 the orchestrator added during the unit.
 
-This is the first merge. It holds items 1 to 6 and the pid-reuse fix.
-Items 7 and 8 (2 flakes) follow as a second merge on the same branch.
+Merge 1 held items 1 to 6 and the pid-reuse fix. Merge 2 adds items 7 and
+8 (2 flakes): diagnostics and the loaded runs below. Neither flake
+reproduced, so neither has a proven root cause.
 
 | Item | Commit | State |
 |---|---|---|
@@ -16,8 +17,8 @@ Items 7 and 8 (2 flakes) follow as a second merge on the same branch.
 | 4b. Pid reuse in fake-herdr kills (found in item 4) | `Tests: Signal a pane's process group only while it is the same group` | Done |
 | 5. Clippy | `Lint: Fix every workspace clippy warning; gate on clippy -D warnings` | Done |
 | 6. Coordinator test for operator skills (added) | `Tests: A dataset candidate's record lists its operator skills` | Done |
-| 7. `arc_26_e2e_lifecycle_matrix_{codex,opencode}` session id timeout (added) | - | Second merge |
-| 8. `fake_prime_creates_session_file` empty `--version` stdout (added) | - | Second merge |
+| 7. `arc_26_e2e_lifecycle_matrix_{codex,opencode}` session id timeout (added) | `Tests: Name the exit status of an empty fake --version, and the pane output of a session id timeout` | Not reproduced; diagnostics added |
+| 8. `fake_prime_creates_session_file` empty `--version` stdout (added) | same commit | Not reproduced; diagnostics added |
 
 The gate (`HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`) is green
 after each commit.
@@ -216,6 +217,65 @@ already caught 2 `needless_borrow`s in my item 6 test before the commit.
   `["tdd", "test-modernizer"]`, the second with an `operator+` version.
   Red without the coordinator's `with_operator_skills` call (`["tdd"]`),
   green with it.
+
+## 7 and 8. The 2 flakes
+
+### What is known
+
+- Item 7: `arc_26_e2e_lifecycle_matrix_{codex,opencode}` waited 30 s for
+  the session id and timed out (opus-46: load 27 and 40, 1 in 40 binary
+  runs before V3, 1 in 200 after). One instance left a live fake `codex`
+  (pid 26533) and its `horch worker` (pid 26337) from `loose-ends`: the
+  worker started at 20:28:53 and the agent at 20:28:54. So the agent ran
+  within 1 s, and the session discovery did not record its id within the
+  next 29 s.
+- Item 8: `prime-agent --version` printed nothing in the P-UE gate
+  (`/tmp/ue-teammates-gate2.log`, base 27d2df6, about 21:00). The test
+  checked only stdout, so the exit status is unknown.
+- `syspolicyd` killed nothing in that period. Its last "Malware rejection"
+  lines are 18:12, 18:37, 18:45, 19:53, 19:58 and 20:03 (all before the V3
+  symlink fix). So the V3 cause does not explain either flake. Gotcha: in
+  zsh, `log` is a builtin; use `/usr/bin/log show`.
+- `cargo test` runs a test binary in the caller's process group. So a
+  fake-herdr pid-reuse kill (4b) that hit the `fakes` test would end the
+  whole gate, not 1 process. 4b does not explain item 8.
+
+### Loaded runs
+
+The `arc_26_e2e_lifecycle_matrix` tests (5) and the `fake_prime` and
+`fake_opencode` tests (3), as one run, under 12 `yes` processes and a
+`cargo build --workspace --all-targets` / `cargo clean` loop in a separate
+target dir (load average 28 to 49):
+
+| Code | Runs | Test runs | Failures |
+|---|---|---|---|
+| ds/dataset-tidy (merge 1 code) | 150 | 1200 | 0 |
+| design-skills b2ebc7c (before merge 1) | 150 | 1200 | 0 |
+
+The rate seen in gates (1 in 200 binary runs) needs more runs or the real
+condition: several worktrees' gates at once.
+
+### Candidate mechanisms (not proven)
+
+For item 7, each discovery poll makes 1 fake herdr call (`pane get`) and,
+on a find, 1 ledger write. Before merge 1, a fake herdr call could wait up
+to 10 s behind a dead holder's lock, and a ledger `DirLock` waits up to
+15 s (`LOCK_STALE_AFTER`) behind a dead holder. Two such waits in one poll,
+plus the 0.5 s, 1 s, 2 s, 3 s schedule, pass 30 s. Merge 1 removes the
+first wait for a holder that died (the pid check finds it within 1 s).
+
+### What changed
+
+- `tests/fakes.rs`: `version(h, name)` asserts success and a non-empty
+  answer, and names the exit status (or signal) and stderr. The
+  `opencode` and `prime-agent` version checks use it.
+- `tests/lifecycle.rs`: the session id wait of the `arc_26` matrix panics
+  with the record and the worker pane's output (fake-herdr `exec` writes
+  it to `<log>.pane-<id>.out`). The worker prints there when its session
+  discovery does not start.
+
+The next failure of either test names its cause class: a signal, an exit
+code, or a worker message.
 
 ## Decisions
 

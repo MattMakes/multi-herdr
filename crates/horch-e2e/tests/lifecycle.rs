@@ -72,7 +72,12 @@ fn record(h: &Harness, id: &str) -> Value {
         .unwrap_or_else(|| panic!("no record {id}"))
 }
 
-fn wait_for<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
+fn wait_for<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
+    wait_for_or(what, f, String::new)
+}
+
+/// [`wait_for`], with `context` in the panic message.
+fn wait_for_or<T>(what: &str, mut f: impl FnMut() -> Option<T>, context: impl Fn() -> String) -> T {
     let until = Instant::now() + Duration::from_secs(30);
     while Instant::now() < until {
         if let Some(v) = f() {
@@ -80,7 +85,19 @@ fn wait_for<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    panic!("timed out waiting for {what}");
+    panic!("timed out waiting for {what}\n{}", context());
+}
+
+/// What a worker pane wrote (fake-herdr `exec` saves its output), and the
+/// record, for a failure message.
+fn pane_context(h: &Harness, pane: &str, id: &str) -> String {
+    let mut out = h.log.clone().into_os_string();
+    out.push(format!(".pane-{}.out", pane.replace(':', "_")));
+    format!(
+        "record: {}\npane output:\n{}",
+        record(h, id),
+        std::fs::read_to_string(&out).unwrap_or_else(|e| format!("({e})"))
+    )
 }
 
 /// `horch spawn`, returning the new pane id (the last stdout line).
@@ -138,12 +155,16 @@ fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
     // The worker marks itself running, and the session id is known: minted
     // by horch (claude, pi) or discovered while the agent runs. The claude
     // and pi fakes exit at once, so their worker may already be done.
-    let session = wait_for("the session id", || {
-        let r = record(&h, &id);
-        let running = ["running", "done"].contains(&r["state"]["state"].as_str().unwrap_or(""));
-        let session = r["session_id"].as_str().filter(|s| !s.is_empty());
-        session.filter(|_| running).map(str::to_owned)
-    });
+    let session = wait_for_or(
+        "the session id",
+        || {
+            let r = record(&h, &id);
+            let running = ["running", "done"].contains(&r["state"]["state"].as_str().unwrap_or(""));
+            let session = r["session_id"].as_str().filter(|s| !s.is_empty());
+            session.filter(|_| running).map(str::to_owned)
+        },
+        || pane_context(&h, &pane, &id),
+    );
     assert_eq!(record(&h, &id)["pane_id"], pane.as_str());
 
     done(&h, &pane, &role, &id);
