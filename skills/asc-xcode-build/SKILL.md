@@ -54,7 +54,7 @@ asc xcode build \
   --output json
 ```
 
-When `--derived-data-path` is omitted, asc uses a stable cache outside the source checkout. The result-bundle destination must not already exist. Xcode logs go to stderr and the structured result goes to stdout.
+When `--derived-data-path` is omitted, asc uses a stable cache outside the source checkout. In the fleet, always pass `--derived-data-path "build/DerivedData"`: the sandbox lets the agent write only inside the project, so an archive with the default cache fails (exit 65). The result-bundle destination must not already exist. Xcode logs go to stderr and the structured result goes to stdout.
 
 ## Preferred iOS/tvOS/visionOS build flow
 
@@ -67,6 +67,7 @@ asc xcode archive \
   --configuration Release \
   --clean \
   --archive-path ".asc/artifacts/App.xcarchive" \
+  --derived-data-path "build/DerivedData" \
   --xcodebuild-flag=-destination \
   --xcodebuild-flag=generic/platform=iOS \
   --output json
@@ -82,7 +83,6 @@ By default, `asc xcode export` generates App Store Connect export options with a
 asc xcode export \
   --archive-path ".asc/artifacts/App.xcarchive" \
   --ipa-path ".asc/artifacts/App.ipa" \
-  --xcodebuild-flag=-allowProvisioningUpdates \
   --output json
 ```
 
@@ -173,6 +173,7 @@ asc xcode archive \
   --configuration Release \
   --clean \
   --archive-path ".asc/artifacts/MacApp.xcarchive" \
+  --derived-data-path "build/DerivedData" \
   --xcodebuild-flag=-destination \
   --xcodebuild-flag=generic/platform=macOS \
   --output json
@@ -184,7 +185,6 @@ If your macOS export produces a `.pkg`, export it with the helper. The upload co
 asc xcode export \
   --archive-path ".asc/artifacts/MacApp.xcarchive" \
   --pkg-path ".asc/artifacts/MacApp.pkg" \
-  --xcodebuild-flag=-allowProvisioningUpdates \
   --output json
 
 asc builds upload \
@@ -211,9 +211,8 @@ xcodebuild -showBuildSettings -scheme "App"
 
 ### No profiles for bundle ID during export
 
-- Add `--xcodebuild-flag=-allowProvisioningUpdates` to `asc xcode export`.
-- Verify the Apple ID is logged into Xcode.
-- If profiles are still missing, report the bundle ID and the export error to the orchestrator.
+- Do not add `-allowProvisioningUpdates`: it can create or change provisioning profiles in the team account, and the fleet blocks it.
+- Report the bundle ID and the export error to the orchestrator. A human signs into Xcode and fixes the profiles, or runs the export with `--xcodebuild-flag=-allowProvisioningUpdates`.
 
 ### CFBundleVersion too low
 
