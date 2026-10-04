@@ -2327,6 +2327,69 @@
       "adaptation": "Own text, written in this repository; own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-builder (SKILL.md only; facts re-tested on 4.7.2, nothing copied). Every rule and the worked example were run on Godot 4.7.2 (macOS); evidence in ai_docs/reports/godot/gw2-own-skills.md. references/fleet-additions.md carries GW10's verified fact on the 4.6 scene format (godotengine/godot GH-106837, GH-103352)."
     },
     {
+      "name": "godot-shader-basics",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/shader-basics/SKILL.md",
+          "sha256": "1721c40c4d348da4fe4e769cfaaa6dfaceae3b31c0b9c9533cc9679c88c0b562",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/shader-basics/references/2d-shader-recipes.md",
+          "sha256": "361f3b6a89d0d95dfcb739b09ad08db3ee49c563ed710841629d52d4fac09973",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/shader-basics/references/3d-shader-recipes.md",
+          "sha256": "76186687f9bcdc0c9b301fd86ed3f96112a2b7fb819fd5b2c773d415e85dccee",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/shader-basics/references/compositor-effects.md",
+          "sha256": "537638c4467da0b1b182b2094bfcbecccb74c6fc99100f72d287816bbfc3314e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/shader-basics/references/post-processing.md",
+          "sha256": "5257667aa29f7635750fe52ada0ef8395e18fed4f30aac0e5867063b212ff4f7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/shader-basics/references/shader-baker.md",
+          "sha256": "68a5b89abb03fd5792c65f5700b0d633033a47bb13694f57f1fb19d27d2f28b3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/shader-basics/references/stencil-buffer.md",
+          "sha256": "c4b80a8e3f3f5be0842adfff1b3ca5d27fddac3a0f7f2b9e68ebbfe670af9ede",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/cutout-depth-and-world-space.md, references/per-instance-and-global-uniforms.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-shaders-basics",
+      "vendored": true
+    },
+    {
       "name": "godot-state-machine",
       "sources": [
         {
@@ -2408,6 +2471,118 @@
         }
       ],
       "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{budgets-leaks-and-network-tests.md, deterministic-tests.md, golden-state-tests.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-testing-patterns",
+      "vendored": true
+    },
+    {
+      "name": "godot-tween-animation",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/tween-animation/SKILL.md",
+          "sha256": "a4cf8337be9c9313ba6fb091170045f8102bfc954fb1ffd5bae4079dfe482176",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/tween-animation/references/common-recipes.md",
+          "sha256": "1733be33215cc4f8dace9cbf9bf23c936a14ef2662a75021486438351ee27113",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/tween-animation/references/lifecycle.md",
+          "sha256": "5ba978857617839fe658b6de04c623cd1a31b5cc146ae6645316ee8d467ee09e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/tween-animation/references/looping-and-signals.md",
+          "sha256": "af1118d189759f95fcfd0f4002e9c9eca18ead4f06fa5a6dc9235f953741745f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/tween-animation/references/property-tweener-modifiers.md",
+          "sha256": "8d9e6405d7e9cff0b92ea282b36f68b179bab8f30477164009afcaab7933d1e1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/tween-composition.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-tweening",
+      "vendored": true
+    },
+    {
+      "name": "godot-ui",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-ui/SKILL.md",
+          "sha256": "b4514cbd13a8d257c761e66843c80214efbfcc9a385672a969789083554aaabf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-ui/references/anchors-in-code.md",
+          "sha256": "0a37f77578d4761291e4affa6166d1080a96813edd41245c0f8bcd36a2ca7591",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-ui/references/focus-and-navigation.md",
+          "sha256": "da491dee04deffced85454f1d5d9c54cc35318d734bb173cf8e82f4f1ad47e9f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-ui/references/foldable-container.md",
+          "sha256": "b34a657fb66271390ada1edf7d33972aa1f8f816f7122f9c45a0f072a4194bd6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-ui/references/signals.md",
+          "sha256": "d1bf80a6267939107533e528871fb00b0edf339c9c63bc7f35a60ad795f79a78",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-ui/references/theme-system.md",
+          "sha256": "4ecbedda787c230663d46f95603c12147a7f2413eb630f6f077a6d72ebe61eec",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-ui/references/ui-patterns.md",
+          "sha256": "163b241de9ed3634506013af17cbd7a337c495af166033d5badd4e5fc035d798",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/container-layout-advanced.md, references/rich-text-advanced.md, references/theme-variations-and-runtime-styling.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-ui-theming, godot-ui-rich-text, godot-ui-containers",
       "vendored": true
     },
     {

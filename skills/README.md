@@ -191,6 +191,9 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-responsive-ui](godot-responsive-ui/SKILL.md) | `jame581/GodotPrompter`: `skills/responsive-ui/` | renamed |
 | [godot-save-load](godot-save-load/SKILL.md) | `jame581/GodotPrompter`: `skills/save-load/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-save-load-systems` | combined |
 | [godot-scene-files](godot-scene-files/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |
+| [godot-shader-basics](godot-shader-basics/SKILL.md) | `jame581/GodotPrompter`: `skills/shader-basics/`; own-text references, consulted gd-agentic-skills `godot-shaders-basics` | combined |
 | [godot-state-machine](godot-state-machine/SKILL.md) | `jame581/GodotPrompter`: `skills/state-machine/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-state-machine-advanced/`) | combined |
 | [godot-testing](godot-testing/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-testing/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-testing-patterns/`) | combined |
+| [godot-tween-animation](godot-tween-animation/SKILL.md) | `jame581/GodotPrompter`: `skills/tween-animation/`; own-text references, consulted gd-agentic-skills `godot-tweening` | combined |
+| [godot-ui](godot-ui/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-ui/`; own-text references, consulted gd-agentic-skills `godot-ui-theming`, `godot-ui-rich-text`, `godot-ui-containers` | combined |
 | [godot-xr-development](godot-xr-development/SKILL.md) | `jame581/GodotPrompter`: `skills/xr-development/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-platform-vr/`) | combined |
