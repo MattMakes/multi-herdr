@@ -67,6 +67,8 @@ impl std::str::FromStr for Channel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// `MacOs` is the platform's name, not a repeat of the enum's.
+#[allow(clippy::enum_variant_names)]
 pub enum Os {
     MacOs,
     Linux,

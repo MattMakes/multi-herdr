@@ -687,7 +687,7 @@ mod tests {
                             format!("{err:#}").contains("herdr is unreachable"),
                             "{case}: {err:#}"
                         );
-                        assert_eq!(ws.pane_ids(), [pane.clone()], "{case}");
+                        assert_eq!(ws.pane_ids(), std::slice::from_ref(&pane), "{case}");
                     }
                     assert!(
                         ws.calls().iter().any(|c| c.method == "server_reachable"),

@@ -82,7 +82,7 @@ pub(crate) fn facts_of(
         status,
         session_id: r.session_id.as_deref().and_then(|s| SessionId::new(s).ok()),
         transcript_ref: usage.and_then(|u| u.transcript_ref.clone()),
-        transcript_digest: usage.and_then(|u| u.transcript_digest.clone()),
+        transcript_digest: usage.and_then(|u| u.transcript_digest),
         started_at: r.created_at.clone(),
         finished_at: r.finished_at.clone(),
         tokens: usage.map(|u| u.tokens).unwrap_or_default(),

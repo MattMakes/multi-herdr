@@ -160,14 +160,16 @@ fn quoted_end(b: &[u8], mut i: usize, q: u8) -> usize {
     i.min(b.len())
 }
 
+/// A token rule: prefix, minimum body length, body byte class.
+type TokenRule = (&'static str, usize, fn(u8) -> bool);
+
 /// `sk-ant-…`, `sk-…`, `ghp_…`, `github_pat_…` and Slack `xox?-…` tokens.
 fn prefixed_tokens(b: &[u8], i: usize) -> Option<(usize, usize)> {
     if !at_word_start(b, i) {
         return None;
     }
-    // (prefix, minimum body length, body byte class)
     let slack: fn(u8) -> bool = |c| c.is_ascii_alphanumeric() || c == b'-';
-    let rules: [(&str, usize, fn(u8) -> bool); 9] = [
+    let rules: [TokenRule; 9] = [
         ("sk-ant-", 8, is_token_byte),
         ("sk-", 20, is_token_byte),
         ("ghp_", 20, |c| c.is_ascii_alphanumeric()),

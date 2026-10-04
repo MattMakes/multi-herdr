@@ -348,7 +348,7 @@ pub(crate) fn find_rollouts(
     let mut found = Vec::new();
     collect_rollouts(sessions_dir, since, &workdir, &mut found);
     // Newest first, matching `ls -t`.
-    found.sort_by(|a, b| b.modified.cmp(&a.modified));
+    found.sort_by_key(|c| std::cmp::Reverse(c.modified));
     found
 }
 

@@ -1665,11 +1665,7 @@ mod tests {
         assert!(out.contains("sonnet-1(p1)"), "{out}");
         assert!(out.contains("tab 2  3 worker(s), 2 column(s)"), "{out}");
         // Tab 2 holds p5, p6, p7: column 2's bottom slot is free.
-        let bottom = out
-            .lines()
-            .filter(|l| l.starts_with("  bottom"))
-            .next_back()
-            .unwrap();
+        let bottom = out.lines().rfind(|l| l.starts_with("  bottom")).unwrap();
         assert!(bottom.contains("p6"), "{bottom}");
         assert!(bottom.trim_end().ends_with('-'), "{bottom}");
     }

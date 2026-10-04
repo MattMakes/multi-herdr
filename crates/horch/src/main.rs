@@ -554,7 +554,7 @@ fn run() -> Result<std::process::ExitCode> {
             } else if matrix {
                 cmd::teammatescmd::matrix(ctx, json)?;
             } else if check {
-                return Ok(cmd::teammatescmd::check(ctx)?);
+                return cmd::teammatescmd::check(ctx);
             } else {
                 cmd::teammatescmd::list(ctx, json)?;
             }

@@ -984,7 +984,10 @@ fn pro_05_receipt_fields() {
     assert_eq!(receipt.schema_version, "1.0.0");
     assert_eq!(receipt.round_id.as_str(), "r-1");
     assert_eq!(receipt.label, "A");
-    assert_eq!(receipt.source_shas, [f.candidate.head_sha.clone()]);
+    assert_eq!(
+        receipt.source_shas,
+        std::slice::from_ref(&f.candidate.head_sha)
+    );
     assert_eq!(receipt.dest_ref, "refs/heads/target");
     assert_eq!(receipt.dest_before, f.base);
     assert_eq!(receipt.dest_after, f.candidate.head_sha);

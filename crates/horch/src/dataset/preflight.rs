@@ -330,11 +330,11 @@ pub(crate) fn record(
     recorder.append(event(
         EventKind::ExperimentCreated(ExperimentCreated {
             task_id: task_id.clone(),
-            task_digest: task_digest.clone(),
-            config_digest: config_digest.clone(),
+            task_digest,
+            config_digest,
             base_sha: f.plan.git.base_sha.clone().unwrap_or_default(),
-            repo_digest: repo_digest.clone(),
-            environment_digest: f.report.environment_digest.clone(),
+            repo_digest,
+            environment_digest: f.report.environment_digest,
             candidates: f.plan.candidates.len() as u32,
             strategy: "diverse".to_string(),
             budget_usd_micro: f.plan.config.budget.hard_usd_micro,

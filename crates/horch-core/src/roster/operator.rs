@@ -55,9 +55,9 @@ pub fn operator_effort_warnings(
 
 /// The pure half of [`operator_effort_warnings`].
 ///
-/// Claude Code resolves effort as: env `CLAUDE_CODE_EFFORT_LEVEL` > `--effort`
-/// > settings > model default (cezaar#41). horch passes `--effort`, so only
-/// the env var - set in the shell, or in the `env` block of
+/// Claude Code resolves effort in this order: env `CLAUDE_CODE_EFFORT_LEVEL`,
+/// `--effort`, settings, model default (cezaar#41). horch passes `--effort`,
+/// so only the env var - set in the shell, or in the `env` block of
 /// ~/.claude/settings.json, which Claude Code exports into its own process -
 /// beats it, and it beats it for every pane at once. `maxEffortLevel` caps
 /// every level above it. A codex pane with no effort takes
