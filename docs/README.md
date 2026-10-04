@@ -15,8 +15,9 @@ Read these 4 pages in order:
    `horch-core` modules, where state lives, and the rules the tests enforce.
 2. [command-flow.md](command-flow.md): every command as a diagram, and which
    commands need herdr, a fleet or model money.
-3. [testing-and-gates.md](testing-and-gates.md): the gate, oracles, goldens,
-   `HORCH_BLESS`, fakes and the e2e gotchas.
+3. [testing-and-gates.md](testing-and-gates.md): the gate (never under
+   `git rebase -x`), the gate slots, oracles, goldens, `HORCH_BLESS`, fakes and
+   the e2e gotchas.
 4. [fleet-workflow.md](fleet-workflow.md): how the orchestrator runs units
    of work with plans, worktrees, the merge protocol and `STATUS.md`.
 
@@ -34,6 +35,11 @@ Each recipe names every file to change and the check for each step.
 
 ## Reference pages
 
+- [skills-and-teams.md](skills-and-teams.md): vendored skills and
+  re-vendoring, the roster fields (`available_skills`, `operator_skills`,
+  `offer_when`, `requires`), `horch doctor`, the Unreal, Swift and design
+  teams, `horch agent-list`, the Antigravity harness and
+  `multi-herdr-dataset`.
 - [phase-skills.md](phase-skills.md): the phase catalogs, how each harness
   sees skills, and context measurements.
 - [runtime-skill-checks.md](runtime-skill-checks.md): native skill discovery

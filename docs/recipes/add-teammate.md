@@ -98,7 +98,9 @@ In the steps, `<name>` is the teammate id, for example `design-critic`.
 
 ## Skill fields
 
-A teammate gets skills from 4 fields. Each one has a different cost in
+A teammate gets skills from 4 fields. The page
+[skills-and-teams.md](../skills-and-teams.md) explains the fields, the offer
+gate and the domain teams. Each field has a different cost in
 the worker's briefing.
 
 | field | what the worker gets | briefing cost |

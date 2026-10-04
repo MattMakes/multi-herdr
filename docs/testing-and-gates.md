@@ -12,16 +12,28 @@ HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate
 `just gate` runs `scripts/phase-gate.sh`. It stops at the first failure and
 prints `GATE GREEN` at the end. On a full machine it takes about 4 minutes.
 
+Warning: never run the gate or a test under `git rebase -x`, or from a git
+hook. Rebase first, then run the gate as its own command. On 2026-10-03 a gate
+run under `git rebase -x` inherited `GIT_DIR`, and test fixtures that ran
+`git init` and `git commit` wrote into the real repository. The gate script now
+unsets every variable that aims git at a repository (`GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`,
+`GIT_PREFIX`), and each git child that horch starts has the same list removed
+(`REPO_ENV` in `crates/horch-marketplace/src/git.rs`). That is a second line
+of defence. Do not depend on it.
+
 | # | step | a failure means | open first |
 |---|---|---|---|
 | 1 | `cargo fmt --all --check` | the formatting differs | run `cargo fmt --all` |
 | 2 | `cargo build --workspace --all-targets` | code or a test does not compile | the first `error[...]` in the output |
 | 3 | `cargo build --workspace --bins` | a binary does not compile (the e2e tests need all of them) | the same |
-| 4 | `cargo test --workspace --no-fail-fast` | a test failed; every test runs, so read the summary at the end | the failing test file |
-| 5 | `env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check` | a file in `teammates/` breaks a roster rule | the named teammate file; rules in `crates/horch-core/src/roster/validation.rs` |
-| 6 | `scripts/check-req-coverage.sh` | a requirement ID has no test | the ID's design table in `ai_docs/designs/` |
-| 7 | `scripts/check-deps.sh` | a crate has a dependency that is not allowed | the `Cargo.toml` you changed |
-| 8 | `scripts/verify-telemetry-e2e.sh` | the hermetic telemetry story changed | `crates/horch-e2e/tests/scenario.rs` |
+| 4 | `cargo clippy --workspace --all-targets -- -D warnings` | a clippy warning; every warning is an error | the first `warning:` in the output |
+| 5 | `cargo test --workspace --no-fail-fast` | a test failed; every test runs, so read the summary at the end | the failing test file |
+| 6 | `env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check` | a file in `teammates/` breaks a roster rule | the named teammate file; rules in `crates/horch-core/src/roster/validation.rs` |
+| 7 | `scripts/check-req-coverage.sh` | a requirement ID has no test | the ID's design table in `ai_docs/designs/` |
+| 8 | `scripts/check-deps.sh` | a crate has a dependency that is not allowed | the `Cargo.toml` you changed |
+| 9 | `scripts/verify-telemetry-e2e.sh` | the hermetic telemetry story changed | `crates/horch-e2e/tests/scenario.rs` |
 
 `HORCH_REQUIRE_GIT=1` and `HORCH_REQUIRE_SQLITE=1` turn a skip into a
 failure. Without them, a test that cannot find `git` (for example in
@@ -30,6 +42,27 @@ failure. Without them, a test that cannot find `git` (for example in
 `crates/horch-e2e/src/harness.rs`) or a working `sqlite3`
 (`crates/horch-e2e/tests/fakes.rs`) returns early and passes. Always set
 both on a development Mac.
+
+## Run the gate when many gates run
+
+Ten full gates at once (load 40 on 18 cores) made each gate slow and flaky.
+While you work, run only the tests you touch:
+
+```bash
+cargo test -p <crate> --test <file>
+cargo clippy -p <crate>
+rustfmt --check <files>
+```
+
+Run the full gate once, just before you report ready. Run it through the slot
+wrapper `.worktrees/gate-slot.sh` (a git-ignored operator script in the main checkout, not in a fresh clone), which lets 3 gates run at a time (set
+`GATE_SLOTS` to change the number). A slot is a directory in
+`/tmp/horch-gate-slots` that holds the pid of its holder. A slot whose holder
+is dead is reclaimed.
+
+```bash
+HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 .worktrees/gate-slot.sh just gate
+```
 
 `just verify` is an older, shorter check from the telemetry design (build,
 test, coverage, telemetry e2e, deps, `rustfmt` on changed files, `teammates
@@ -131,7 +164,10 @@ binaries in `crates/horch-e2e/src/bin/`:
 | `fake-ollama.rs` | `ollama` |
 
 `FAKES` in `crates/horch-e2e/src/harness.rs` maps each command name to its
-fake. `Harness::new` links them into a temp `bin/` first on `PATH`.
+fake. `Harness::new` links them into a temp `bin/` first on `PATH`. On unix
+the link is a symlink to the built file in `target/`. A hard link made macOS
+`syspolicyd` kill a fake with SIGKILL under load ("Malware rejection" in the
+unified log), which showed as a flaky e2e test.
 `HORCH_NOW` pins the clock (`crates/horch-core/src/clock.rs`). `HORCH_FAULT`
 stops a process at a named point (`crates/horch-core/src/runtime/fault.rs`);
 the e2e tests use it to test crash and resume.
@@ -141,7 +177,7 @@ the e2e tests use it to test crash and resume.
 - Run `cargo build --workspace --bins` before `cargo test -p horch-e2e`. The
   e2e tests run the built `horch`; they do not rebuild it, so they can test a
   stale binary.
-- Never write into a harness `bin/` entry. It can be a hard link to
+- Never write into a harness `bin/` entry. It can be a link to
   `target/debug/fake-*`, and a write changes the built fake. Use
   `Harness::write_bin`. `check_built_fakes` fails the test when a built fake
   changed. After a mistake, delete the damaged `target/debug/fake-*` and

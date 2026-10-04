@@ -32,11 +32,14 @@ In the steps, `<id>` is the skill id, for example `ui-taste`.
    `name`, `sources` (1 item per adapted file: `repository`, `revision`,
    `path`, `sha256`, `license`) and `adaptation`. A skill written here has
    `"sources": []`. Check: `skl_01_bundled_catalog_versions_and_digests`.
-   It fails when the entry is missing, when a source is not at a pinned
-   revision (`PINNED_REPOSITORY`/`PINNED_COMMIT` or `DESIGN_SOURCE_PINS`),
-   and when a skill with no sources is not in `REPO_ORIGINAL`. A new upstream
-   or a new repo-original skill therefore also needs a line in
-   `crates/horch-core/tests/skills_catalog.rs`; ask before you edit it.
+   It fails when the entry is missing, when a source is not a
+   `https://github.com/<owner>/<repo>` repository with a 40-hex revision, a
+   64-hex sha256 and a licence, and when a skill with no sources is not in
+   `REPO_ORIGINAL`. A new repo-original skill therefore also needs its id in
+   `REPO_ORIGINAL` in `crates/horch-core/tests/skills_catalog.rs`; ask before
+   you edit it. A new upstream needs no test change.
+   To copy an upstream skill verbatim instead, see
+   [Vendor an upstream skill](#vendor-an-upstream-skill).
 4. Add a row to `skills/README.md`, in alphabetical order: "Source mapping"
    for a process skill, "Design skills" for a design skill. Check: read it.
 5. Attach the skill. Choose 1:
@@ -60,7 +63,24 @@ In the steps, `<id>` is the skill id, for example `ui-taste`.
 | `teammates/<name>.md` | `skills:` entry | when attached by name |
 | `crates/horch-core/src/skills/selection.rs` | `phase_skills` | when attached to a phase |
 | `docs/phase-skills.md` | phase table | when attached to a phase |
-| `crates/horch-core/tests/skills_catalog.rs` | `DESIGN_SOURCE_PINS` or `REPO_ORIGINAL` | when a new upstream or a repo-original skill |
+| `crates/horch-core/tests/skills_catalog.rs` | `REPO_ORIGINAL` | when a repo-original skill |
+
+## Vendor an upstream skill
+
+A vendored skill is a verbatim copy. Use it when the upstream skill is good
+as it is (the 31 `ue-*` skills are an example).
+
+1. Copy the upstream skill directory at the pinned revision into
+   `skills/<id>/`. Leave out dotfiles. Keep the upstream `LICENSE` file next
+   to `SKILL.md`. The directory name must equal `name:` in `SKILL.md`.
+2. Add the `provenance.json` entry with `"vendored": true`, `sources` (every
+   copied file, `LICENSE` included, with its sha256 and the licence) and
+   `"adaptation": "verbatim"`. That flag exempts the skill from the 12 KB and
+   160 KB size budget. It does not exempt it from the text-only rule.
+3. Check: `cargo test -p horch-core --test skills_catalog` and
+   `horch skills show <id>` prints `vendored:     true`.
+4. To move to a new revision, follow "Re-vendor a skill" in
+   [skills-and-teams.md](../skills-and-teams.md#re-vendor-a-skill-at-a-new-upstream-revision).
 
 ## Tests and oracles
 

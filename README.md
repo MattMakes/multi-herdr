@@ -32,10 +32,17 @@ on it. On Windows the default install directory is
 Then check your setup and verify the machinery end to end:
 
 ```bash
-horch doctor            # is herdr installed and its server reachable?
+horch doctor            # herdr reachable? roster ok? host tools, effort overrides
 horch smoke messaging   # 2-pane check of the messaging primitives, no agents
 horch smoke fleet       # full spawn -> ledger -> report -> self-close check
 ```
+
+`horch doctor` stops with an error when herdr is missing or its server is
+unreachable. It then prints a warning, and still exits 0, for a roster problem,
+for a host tool that an offered teammate needs (`xcodebuild` for the Swift
+team), and for a setting that overrides every teammate's effort. Run it from
+your project directory: it counts the teammates the orchestrator would be
+offered there.
 
 Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.
@@ -604,6 +611,18 @@ The ledger lives at `$HORCH_STATE_DIR`, else
 format is unchanged from the previous bash implementation, so existing ledgers
 stay readable and their sessions stay resumable.
 
+## Skills, domain teams and the contributor handbook
+
+The roster has domain teams for Unreal Engine (Git LFS, UE 5.8), Swift and
+Apple platforms, and design. The orchestrator is offered a domain team only
+when the project has a matching file (`offer_when`). Skills are bundled
+(adapted, vendored or original) or come from your machine (`operator_skills`).
+[docs/skills-and-teams.md](docs/skills-and-teams.md) explains how to use each
+team, how to re-vendor a skill and what `horch agent-list` and
+`multi-herdr-dataset` show. [docs/README.md](docs/README.md) is the
+contributor handbook, including the gate rules: never run the gate under
+`git rebase -x`, and run it through the slot wrapper when other gates run.
+
 ## Keeping the docs current
 
 `herdr-docs/` is a mirror of <https://herdr.dev/docs/>. Refresh it any time:
@@ -708,6 +727,7 @@ New contributors: start with [the handbook in `docs/`](docs/README.md).
 ## Tests
 
 ```bash
+just gate               # the per-commit gate: fmt, build, clippy, tests, roster, coverage
 just verify             # build, every test, requirement coverage, the e2e story
 cargo test              # unit tests, no herdr server needed
 horch smoke messaging   # against a live herdr server
