@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = bootstrap::context().and_then(|mut ctx| {
         let env = snapshot_candidates();
-        dataset::dispatch(&mut ctx, &env, cli.command)
+        dataset::dispatch(&mut ctx, &env, cli)
     });
     match result {
         Ok(code) => ExitCode::from(code),

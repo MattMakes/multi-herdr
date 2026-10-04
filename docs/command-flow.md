@@ -152,6 +152,44 @@ The last line of `run` names the outcome, and the exit code follows it:
 Source: `outcome_line` in `crates/horch/src/dataset/run.rs`; the codes are in
 `crates/horch/src/dataset/mod.rs` (`exit`).
 
+### Which repo a dataset command targets
+
+Every `multi-herdr-dataset` command (except the hidden `judge-job`) picks its
+repo in this order:
+
+1. `--project <dir>` (a global flag; a relative dir is relative to the cwd);
+2. the git top level of the current directory;
+3. `$HORCH_PROJECT_DIR`, only when the current directory is in no git repo;
+4. the current directory.
+
+A fleet pane sets `HORCH_PROJECT_DIR` to the fleet's repo. Rule 2 makes `cd
+<other repo> && multi-herdr-dataset run ...` target the other repo.
+`run`, `resume`, `status`, `promote`, `rollback` and `cleanup` print
+`target: <repo> @ <HEAD, 12 chars>` as their first line, before preflight.
+Source: `resolve_project` in `crates/horch/src/dataset/mod.rs`.
+
+### Where the candidate worktrees go
+
+Each candidate worktree is at `<root>/<experiment id>/<label>`, such as
+`<root>/0199a5b0-.../A`. A promotion checks out its temp worktree under
+`<root>/<experiment id>/_promote/`.
+
+- Without `--worktree-root`, `<root>` is `<dataset root>/worktrees`
+  (`<state root>/multi-herdr/<project slug>/worktrees`).
+- `--worktree-root <dir>` sets `<root>`. A relative dir is relative to the
+  repo. Put it under a directory that the candidate harnesses trust, or a
+  candidate pane can stop at a trust dialog (dataset design §4.11.3).
+
+Cleanup removes each worktree and keeps its branch
+(`mh/exp/<exp8>/r<index>/<label>`; `cleanup --prune-branches` deletes it).
+After a COMPLETE round it also removes `<root>/<experiment id>/_promote/`
+and `<root>/<experiment id>/` when they are empty. A directory with
+anything left in it stays.
+
+`status` shows each experiment at the state of its latest round (such as
+RUNNING or COMPLETE); before its first round, at its own state (PREFLIGHT,
+ABORTED or PLANNED).
+
 Every arrow above is recorded as an event. After a crash or `kill -9`:
 
 ```mermaid

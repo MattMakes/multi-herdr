@@ -2,9 +2,10 @@
 //! from the events, with their state.
 
 use anyhow::{bail, Result};
+use horch_core::competition::model::RoundState;
 use horch_core::execution::FailureKind;
 use horch_core::ids::ExperimentId;
-use horch_core::measure::projection::{fold, CandidateView, Projection};
+use horch_core::measure::projection::{fold, CandidateView, ExperimentView, Projection};
 use horch_core::measure::store;
 use horch_core::runtime::RuntimeContext;
 
@@ -26,11 +27,7 @@ pub(crate) fn status(ctx: &RuntimeContext, experiment: Option<&str>) -> Result<u
 }
 
 /// The text `status` prints.
-pub(crate) fn render(
-    projection: &Projection,
-    only: Option<&ExperimentId>,
-    torn_lines: u32,
-) -> String {
+pub fn render(projection: &Projection, only: Option<&ExperimentId>, torn_lines: u32) -> String {
     let mut out = String::new();
     if projection.experiments.is_empty() {
         out.push_str("no experiments\n");
@@ -41,7 +38,7 @@ pub(crate) fn render(
         }
         out.push_str(&format!(
             "experiment {id} {} task {} candidates {} base {}\n",
-            exp.state.as_str(),
+            experiment_state(exp, projection).as_str(),
             exp.created.task_id,
             exp.created.candidates,
             short(&exp.created.base_sha),
@@ -83,6 +80,20 @@ pub(crate) fn render(
         out.push_str(&format!("{torn_lines} torn lines skipped\n"));
     }
     out
+}
+
+/// The state `status` shows for an experiment (dataset design §5). The
+/// experiment's own state stops at PLANNED, so that it can take more rounds.
+/// From its first round on, the experiment is where its latest round is.
+pub fn experiment_state(exp: &ExperimentView, projection: &Projection) -> RoundState {
+    match exp.state {
+        RoundState::Planned => exp
+            .rounds
+            .last()
+            .and_then(|r| projection.rounds.get(r))
+            .map_or(exp.state, |r| r.state),
+        state => state,
+    }
 }
 
 /// One candidate: its teammate and how far it got.

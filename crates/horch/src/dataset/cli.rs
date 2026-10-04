@@ -25,6 +25,11 @@ use horch_core::measure::event::OutcomeKind;
     arg_required_else_help = true
 )]
 pub struct Cli {
+    /// The repo to work on. Default: the git top level of the current
+    /// directory, else `$HORCH_PROJECT_DIR`, else the current directory.
+    #[arg(long, global = true, value_name = "DIR")]
+    pub project: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -109,9 +114,6 @@ pub struct WatchArgs {
     /// The state root of the dataset (a pane does not inherit the env).
     #[arg(long, value_name = "DIR")]
     pub state_dir: Option<PathBuf>,
-    /// The project whose dataset this is.
-    #[arg(long, value_name = "DIR")]
-    pub project: Option<PathBuf>,
 }
 
 /// `judge-job`: one judge attempt (`evaluation::scheduler::job_args`).

@@ -29,11 +29,8 @@ pub(crate) fn watch(ctx: &RuntimeContext, args: &WatchArgs) -> Result<u8> {
         .state_dir
         .clone()
         .unwrap_or_else(|| ctx.paths.state_root.clone());
-    let project = match &args.project {
-        Some(p) => p.clone(),
-        None => ctx.paths.project()?,
-    };
-    let paths = DatasetPaths::new(&state_root, &project);
+    // The global `--project` flag is already in the context.
+    let paths = DatasetPaths::new(&state_root, &ctx.paths.project()?);
     // Discard stdin: nothing typed here goes anywhere.
     std::thread::spawn(|| {
         let mut sink = [0u8; 1024];

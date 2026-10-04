@@ -741,6 +741,11 @@ fn cmp_04_n_worktrees_same_base_modify_same_file() {
             .collect();
         assert_eq!(paths, ["greeting.txt"], "{f}");
     }
+    // Cleanup leaves no empty `<root>/<experiment>/` (F7).
+    let exp_dir = Path::new(worktrees[0]["payload"]["path"].as_str().unwrap())
+        .parent()
+        .unwrap();
+    assert!(!exp_dir.exists(), "{} stays", exp_dir.display());
     // The branches stay after cleanup, each one commit on the base.
     let branches = candidate_branches(&h);
     assert_eq!(branches.len(), 3, "{branches:?}");

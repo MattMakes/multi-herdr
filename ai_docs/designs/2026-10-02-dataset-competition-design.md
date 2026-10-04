@@ -86,6 +86,19 @@ Root: `$HORCH_STATE_DIR/multi-herdr/<project-slug>/`. `<project-slug>` is
 `telemetry::collect::read_ledgers` (which reads `state_root/*.json`) never
 parses a dataset file (MEA-08).
 
+`project` is the repo the command targets (`dataset::resolve_project`,
+finding F3 of the L1 acceptance): `--project <dir>` (a global flag), else
+the git top level of the cwd, else `$HORCH_PROJECT_DIR`, else the cwd. A
+fleet pane sets `HORCH_PROJECT_DIR` to the fleet's repo, so the cwd's repo
+must win over it. `judge-job` alone keeps `$HORCH_PROJECT_DIR`, which the
+coordinator sets. `run`, `resume`, `status`, `promote`, `rollback` and
+`cleanup` print `target: <repo> @ <HEAD, 12 chars>` as their first line.
+The candidate worktrees go to `<root>/<exp>/<label>/`, where `<root>` is
+`--worktree-root` (relative to the project) or `<dataset root>/worktrees`;
+a promotion's temp worktrees go to `<root>/<exp>/_promote/`. After a
+COMPLETE round, the empty `<root>/<exp>/_promote/` and `<root>/<exp>/` are
+removed (non-recursive, finding F7).
+
 ```
 <root>/
   events/YYYY-MM-DD.jsonl              append-only event log (UTC day)
@@ -1438,6 +1451,10 @@ resume from it (§7.2). The first 4 states (CREATED, PREFLIGHT, ABORTED,
 PLANNED) belong to the experiment (`measure/projection.rs:ExperimentView`).
 A round is born PLANNED: `round.created` is valid only while its experiment
 is PLANNED.
+The experiment's own state therefore stops at PLANNED. `status` shows an
+experiment with a round at the state of its latest round (such as RUNNING
+or COMPLETE), and an experiment without a round at its own state
+(`dataset::status::experiment_state`, finding F6).
 
 An event name with a `:<condition>` suffix is the event plus the condition
 that picks the target (`competition/state.rs:RoundEvent`). `:last` means

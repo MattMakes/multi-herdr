@@ -1,13 +1,15 @@
 //! The `multi-herdr-dataset` command line (CMP-01) and the `outcome`
 //! state check (EXP-06).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use clap::Parser;
 use horch::dataset::cli::{Cli, Command as DatasetCommand, OutcomeArg};
 use horch::dataset::outcome::check_round;
+use horch::dataset::status::render;
+use horch::dataset::{resolve_project, spelled_as, target_line};
 use horch_core::competition::config::{parse_usd_micro, JudgeMode, Strategy};
 use horch_core::competition::model::RoundState;
 use horch_core::competition::preflight::PreflightReport;
@@ -161,6 +163,7 @@ fn cmp_01_cli_args() {
     ] {
         let out = Command::new(BIN)
             .args(args)
+            .current_dir(tmp.path())
             .env_remove("ANTHROPIC_API_KEY")
             .env("HORCH_STATE_DIR", tmp.path().join("state"))
             .env("HORCH_PROJECT_DIR", tmp.path())
@@ -284,6 +287,7 @@ fn exp_06_outcome_cli_refuses_wrong_state() {
     let outcome = |round: &str| {
         Command::new(BIN)
             .args(["outcome", round, "--kind", "verified"])
+            .current_dir(&project)
             .env_remove("ANTHROPIC_API_KEY")
             .env("HORCH_PROJECT_DIR", &project)
             .env("HORCH_STATE_DIR", &state)
@@ -337,5 +341,139 @@ fn exp_06_outcome_cli_refuses_wrong_state() {
         );
         v.winner = Some(winner.clone());
         assert!(check_round(&round, &v).is_ok(), "{state:?} with a winner");
+    }
+}
+
+// ─── F3: which repo a command targets ───────────────────────────────────────
+
+/// `git` in `dir` with a fixed identity; panics on failure.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// `status` in `cwd` with `HORCH_PROJECT_DIR=env_project`: its first line.
+fn status_target(cwd: &Path, env_project: &Path, state: &Path, extra: &[&str]) -> String {
+    let out = Command::new(BIN)
+        .args(extra)
+        .arg("status")
+        .current_dir(cwd)
+        .env_remove("ANTHROPIC_API_KEY")
+        .env("HORCH_PROJECT_DIR", env_project)
+        .env("HORCH_STATE_DIR", state)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{stdout}{out:?}");
+    stdout.lines().next().unwrap_or_default().to_string()
+}
+
+#[test]
+fn f3_project_precedence_and_target_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let repo = root.join("repo");
+    let fleet = root.join("fleet");
+    let plain = root.join("plain");
+    let state = root.join("state");
+    for dir in [&repo, &fleet, &plain] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+
+    // The cwd's repo beats `HORCH_PROJECT_DIR`, from a subdirectory too.
+    let want = format!("target: {} @ {}", repo.display(), &head[..12]);
+    assert_eq!(status_target(&repo, &fleet, &state, &[]), want);
+    assert_eq!(status_target(&repo.join("src"), &fleet, &state, &[]), want);
+    // `--project` beats both, before or after the subcommand.
+    let flag = fleet.to_string_lossy().into_owned();
+    assert_eq!(
+        status_target(&repo, &plain, &state, &["--project", &flag]),
+        format!("target: {} @ no HEAD", fleet.display())
+    );
+    // A cwd in no git repo falls back to `HORCH_PROJECT_DIR`.
+    assert_eq!(status_target(&plain, &repo, &state, &[]), want);
+
+    // The rule itself: a relative flag is relative to the cwd.
+    let top = |_: &Path| Some(PathBuf::from("/top"));
+    let none = |_: &Path| None;
+    let cwd = Some(Path::new("/cwd"));
+    let env = Some(Path::new("/env"));
+    assert_eq!(
+        resolve_project(Some(Path::new("p")), cwd, env, top),
+        Some(PathBuf::from("/cwd/p"))
+    );
+    assert_eq!(
+        resolve_project(None, cwd, env, top),
+        Some(PathBuf::from("/top"))
+    );
+    assert_eq!(
+        resolve_project(None, cwd, env, none),
+        Some(PathBuf::from("/env"))
+    );
+    assert_eq!(resolve_project(None, None, None, top), None);
+
+    // The top level keeps the cwd's spelling through a symlink.
+    #[cfg(unix)]
+    {
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+        assert_eq!(spelled_as(&repo, &link.join("src")), link);
+        assert_eq!(spelled_as(&repo, &link), link);
+        assert_eq!(spelled_as(&repo, &plain), repo, "unrelated dir");
+    }
+    assert_eq!(
+        target_line(Path::new("/r"), Some(&"c".repeat(40))),
+        format!("target: /r @ {}", "c".repeat(12))
+    );
+}
+
+// ─── F6: the experiment state `status` shows ────────────────────────────────
+
+#[test]
+fn f6_status_shows_the_experiment_at_its_round_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    let state = tmp.path().join("state");
+    std::fs::create_dir_all(&project).unwrap();
+    let paths = DatasetPaths::new(&state, &project);
+    let (exp, round) = provisioning_round(&paths);
+
+    // The live command: the round is PROVISIONING, so is the experiment.
+    let out = Command::new(BIN)
+        .arg("status")
+        .current_dir(&project)
+        .env_remove("ANTHROPIC_API_KEY")
+        .env("HORCH_PROJECT_DIR", &project)
+        .env("HORCH_STATE_DIR", &state)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(
+        stdout.contains(&format!("experiment {exp} PROVISIONING ")),
+        "{stdout}"
+    );
+
+    // While the round runs, and after it is COMPLETE.
+    let projection = fold(&store::read_all(&paths).unwrap().events);
+    assert_eq!(projection.experiments[&exp].state, RoundState::Planned);
+    for state in [RoundState::Running, RoundState::Complete] {
+        let mut p = projection.clone();
+        p.rounds.get_mut(&round).unwrap().state = state;
+        let text = render(&p, None, 0);
+        assert!(
+            text.contains(&format!("experiment {exp} {} ", state.as_str())),
+            "{state:?}: {text}"
+        );
     }
 }
