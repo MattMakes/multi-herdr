@@ -21,6 +21,20 @@ generic: false
 # nothing. Distinct from a leading `_`, which means "not parsed at all".
 hidden: false
 
+# Name globs (`*` and `?`, case-sensitive). When set, the orchestrator is
+# offered this teammate only when the fleet's project has a matching file or
+# directory at the top level or one level down; any one match is enough.
+# `horch spawn <name>` still works in any project. Leave it out (the default)
+# and the teammate is offered everywhere. For domain teammates, e.g.
+#   offer_when: ["*.uproject"]
+#   offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]
+offer_when: []
+
+# Host tools this teammate cannot work without. `horch doctor` checks each one
+# when the project is offered this teammate. Values: xcode (`xcodebuild` on
+# PATH, with `sudo xcodebuild -runFirstLaunch` done).
+requires: []
+
 # ─── inherited base prompt ───────────────────────────────────────────────────
 # Names a file in _base/. The base carries the orchestrator-facing protocol -
 # horch tell / horch note / horch done, the blocked-and-wait rule, the

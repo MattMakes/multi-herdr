@@ -24,6 +24,7 @@
 //! | `phase`      | [`Phase`] |
 //! | `effort`     | [`Effort`] and the per-agent effort checks |
 //! | `permission` | [`PermissionMode`] |
+//! | `offer`      | `offer_when`: which teammates this project is offered |
 //! | `parser`     | frontmatter splitting and parsing |
 //! | `repository` | [`Roster`]: built-ins and overlays |
 //! | [`validation`] | `--check`: [`Roster::check`] and the fallback rules |
@@ -33,6 +34,7 @@
 //! roster override arrive as parameters.
 
 pub(crate) mod effort;
+pub(crate) mod offer;
 pub(crate) mod operator;
 pub(crate) mod parser;
 pub(crate) mod permission;
@@ -43,6 +45,7 @@ pub mod validation;
 
 pub(crate) use effort::effort_problem;
 pub use effort::{model_takes_effort, Effort};
+pub use offer::{offered_in, ProjectFacts, Requirement};
 pub use operator::operator_effort_warnings;
 pub(crate) use operator::{expand_home, operator_enabled_plugins, operator_status_line};
 pub use permission::PermissionMode;

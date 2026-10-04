@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use super::parser::{md_files, parse_base, parse_teammate};
-use super::{Base, ExecRule, Teammate};
+use super::{offered_in, Base, ExecRule, ProjectFacts, Teammate};
 
 include!(concat!(env!("OUT_DIR"), "/builtin_teammates.rs"));
 
@@ -22,6 +22,9 @@ pub struct Roster {
     pub(crate) home: Option<PathBuf>,
     /// The skills teammates may name. `None`: the compiled-in catalog.
     pub(crate) skill_catalog: Option<crate::skills::SkillCatalog>,
+    /// What the project directory holds, for `offer_when`. `None`: nothing
+    /// was gathered, and every non-hidden teammate is offered.
+    pub(crate) project: Option<ProjectFacts>,
 }
 
 impl Roster {
@@ -135,10 +138,22 @@ impl Roster {
         self.teammates.keys().map(|s| s.as_str()).collect()
     }
 
+    /// Offer teammates by what `facts` says the project holds. The CLI
+    /// gathers the facts; see `offer.rs`.
+    pub fn with_project_facts(mut self, facts: ProjectFacts) -> Roster {
+        self.project = Some(facts);
+        self
+    }
+
     /// What the orchestrator is offered: specialists first, then generics.
-    /// Hidden teammates are excluded.
+    /// Hidden teammates are excluded, and so is a teammate whose `offer_when`
+    /// matches nothing in the project facts, when there are facts.
     pub fn offered(&self) -> Vec<&Teammate> {
-        let mut v: Vec<&Teammate> = self.teammates.values().filter(|t| !t.hidden).collect();
+        let mut v: Vec<&Teammate> = self
+            .teammates
+            .values()
+            .filter(|t| offered_in(t, self.project.as_ref()))
+            .collect();
         v.sort_by_key(|t| (t.generic, t.name.clone()));
         v
     }
