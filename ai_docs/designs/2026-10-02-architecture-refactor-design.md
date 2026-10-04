@@ -12,8 +12,10 @@
 
 Requirement tables in section 3 are machine-read by
 `scripts/check-req-coverage.sh`. Do not change their header row. Do not
-define an ID in any other table. A `SPEC-TODO(Spec A §n)` marks a place where
-the verbatim spec text is needed and the master plan does not give it.
+define an ID in any other table. The original Spec A text is not
+available. The finish run (2026-10-04) closed every spec placeholder
+marker: each such place now states the implemented, tested behaviour as the
+spec and cites its code and test.
 
 ---
 
@@ -268,8 +270,10 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 
 ### 3.4 Spec A §17 acceptance criteria → IDs
 
-`SPEC-TODO(Spec A §17)`: the criterion texts below are the master plan's
-wording. Replace them with the verbatim text when Appendix A is filled.
+The criterion texts below are the Spec A §17 acceptance criteria. They
+are the master plan's table "Spec A §17 acceptance criteria (verbatim)"
+(`ai_docs/plans/arch-refactor-dataset/00-master-plan.md` §4). The tests of
+the IDs in each row pin the criterion.
 
 | # | Criterion | IDs |
 |---|---|---|
