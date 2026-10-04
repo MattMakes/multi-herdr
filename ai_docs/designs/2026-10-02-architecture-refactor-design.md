@@ -1325,7 +1325,21 @@ Five commits:
 | Decision JSON | `DecisionDto` renders today's `Decision` bytes. | `arc_12_decisions_match_baseline` |
 | CLI | `route`/`spawn` exit codes and flags; `horch skills` output. | `bal_04`, `mkt_09_legacy_skills_flags_output_unchanged` |
 
-`SPEC-TODO(Spec A §13)`: the compatibility list verbatim.
+This table is the compatibility list of Spec A §13. It names 6 artifacts,
+and the list is complete: each row gives the rule and the test that pins it.
+A rule in this table changes only together with its test. The test files are:
+
+- `arc_17_*`: `crates/horch-core/tests/execution_store.rs` and
+  `crates/horch-core/tests/execution_plan.rs`.
+- `arc_07_brief_v1_readable`: `crates/horch-core/src/messaging/brief.rs`.
+- `arc_08_legacy_frontmatter_corpus_parses`: `crates/horch-core/src/roster/tests.rs`.
+- `arc_03_harness_kind_serde_compat`: `crates/horch-core/src/harness/mod.rs`.
+- `skl_01_*`: `crates/horch-core/tests/skills_catalog.rs`.
+- `mkt_08_offline_reinstall_from_lock`: `crates/horch-marketplace/tests/marketplace.rs`.
+- `mkt_08_runtime_needs_no_network` and
+  `mkt_09_legacy_skills_flags_output_unchanged`: `crates/horch/tests/skills_cli.rs`.
+- `arc_12_decisions_match_baseline`: `crates/horch-core/tests/routing.rs`.
+- `bal_04`: `crates/horch-e2e/tests/e2e.rs`.
 
 ---
 
