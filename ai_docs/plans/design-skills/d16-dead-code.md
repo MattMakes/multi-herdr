@@ -48,3 +48,9 @@ do not touch: oracles, goldens, teammates, skills.
 1. For each item: grep callers (all crates, tests included), decide, act. Gate per group. Commit per group.
 2. The skl_06 workaround. Gate. Commit.
 3. Report: the decision table (item, decision, reason). Follow conventions §7.
+
+## ADDED BY THE ORCHESTRATOR (from D13)
+
+- `vcs::git::GitClient::merge_ff_only` has no caller in `src/` after D13
+  (tests and fakes use it). Decide with the same rule: delete it (and fix
+  the tests and fakes) or keep it with a reason.
