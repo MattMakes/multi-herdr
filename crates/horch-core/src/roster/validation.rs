@@ -1123,7 +1123,7 @@ mod spawnable_tests {
             .values()
             .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
             .count();
-        assert_eq!(covered, 43, "the rule should cover 43 claude teammates");
+        assert_eq!(covered, 47, "the rule should cover 47 claude teammates");
 
         // Take the deny away from a worker and the check fails by name.
         r.teammates.get_mut("opus").unwrap().disallowed_tools = Vec::new();
