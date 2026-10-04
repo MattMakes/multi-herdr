@@ -123,7 +123,7 @@ impl DatasetPaths {
 | Object | Mode | Written by |
 |---|---|---|
 | every directory under `<root>` | 0700 | `fsx::ensure_private_dir` |
-| every file under `<root>` | 0600 | `fsx::write_atomic`, `create_immutable`, `replace_durable` with `PRIVATE_FILE` |
+| every file under `<root>` | 0600 | `fsx::write_atomic`, `create_immutable` with `PRIVATE_FILE` |
 | judge-input bundle files | 0400 | `evaluation::judge_input` after the digest |
 
 Windows: modes are not set; the `cfg(windows)` path is a no-op.
@@ -132,8 +132,8 @@ Windows: modes are not set; the `cfg(windows)` path is a no-op.
 
 | Function | Semantics | Used for |
 |---|---|---|
-| `fsx::create_immutable(path, bytes, mode) -> Result<Created>` | `create_new` + fsync + dir fsync; same bytes → `AlreadyIdentical`; different bytes → `FsxError::Conflict` | judgment, receipt, judge-input files |
-| `fsx::replace_durable(path, bytes, mode)` | temp + fsync + rename + dir fsync | round projections, manifest, export files |
+| `fsx::create_immutable(path, bytes, mode) -> Result<Created>` | `create_new` + fsync + dir fsync; same bytes → `AlreadyIdentical`; different bytes → `FsxError::Conflict` | judgment, receipt, judge-input files, judge output and exit, manifest, `run.json`, export files |
+| `fsx::write_atomic(path, bytes, mode)` | temp + fsync + rename + dir fsync | the dataset workspace file, usage records, retained transcripts, gate logs, judge heartbeat (and outside `<root>`: the execution ledger, briefs) |
 | `measure::store` append | one line per event, under `DirLock events.lock`, fsync per append | events |
 
 ---
@@ -157,7 +157,7 @@ or that another row defines.
 | MEA-06 | WorkerRun 1.0.0; facts ≠ scores; no winner field | B1 | mea_06_worker_run_schema, mea_06_no_winner_field |
 | MEA-07 | Integer µ$ and cost_source | B1 | mea_07_nano_accumulation_exact, mea_07_rounding_once, mea_07_cost_source |
 | MEA-08 | Dataset dir is a subdir | B1 | mea_08_dataset_dir_not_read_as_ledger |
-| MEA-09 | Atomic and immutable writes | B1 | mea_09_create_immutable_refuses_overwrite, mea_09_replace_durable |
+| MEA-09 | Atomic and immutable writes | B1 | mea_09_create_immutable_refuses_overwrite, mea_09_write_atomic_replaces_durably |
 | MEA-10 | Every invocation recorded | B3 | mea_10_every_spawn_has_terminal_event |
 | MEA-11 | Fake lifecycle replays to identical WorkerRun | B1 | mea_11_fake_lifecycle_replays_identical_worker_run |
 
