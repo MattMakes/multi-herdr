@@ -64,7 +64,8 @@ pub trait DoneSteps {
 /// process tree. The underlying agent session stays on disk and resumable.
 ///
 /// A failed report is logged and the shutdown goes on; the ledger already
-/// holds the summary.
+/// holds the summary. A pane that is gone at any step after the summary is
+/// recorded counts as closed: `done` succeeds.
 pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     let role = req.role;
     // `done` adds the tag and keyword itself; a summary that repeats them would
@@ -81,29 +82,47 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
         }
     }
 
-    let pane = ws.pane_get(req.pane)?;
+    // The record holds the summary now. The dataset coordinator closes the
+    // pane of a candidate whose record is done, so from here on it can close
+    // this pane first, at any step. A pane that is gone is closed: the steps
+    // that need only the workspace still run, and nothing fails.
+    let pane = match ws.pane_get(req.pane) {
+        Ok(pane) => Some(pane),
+        Err(e) => {
+            eprintln!("horch done: this pane is gone ({e:#}); it is closed already");
+            None
+        }
+    };
     let workspace = req
         .workspace
         .map(str::to_owned)
-        .or_else(|| pane.workspace_id.clone())
-        .context("could not resolve this pane's workspace")?;
+        .or_else(|| pane.as_ref().and_then(|p| p.workspace_id.clone()));
+    let workspace = match (workspace, &pane) {
+        (Some(workspace), _) => Some(workspace),
+        (None, Some(_)) => bail!("could not resolve this pane's workspace"),
+        (None, None) => None,
+    };
 
-    if let Err(e) = steps.record_session(&workspace, role, req.record_id) {
-        eprintln!("horch done: could not record the session id ({e:#}); shutting down anyway");
+    if let Some(workspace) = &workspace {
+        if let Err(e) = steps.record_session(workspace, role, req.record_id) {
+            eprintln!("horch done: could not record the session id ({e:#}); shutting down anyway");
+        }
+
+        steps.unregister(workspace, role);
+
+        // A departing worker leaves a hole and hands its width to whichever
+        // neighbour happens to be its split sibling, which lumps the grid
+        // rather than spreading it. Hand the tidy to a detached child: the
+        // close below kills this process tree, so by the time the hole
+        // exists, this process is gone. The child pulls the last worker into
+        // the free slot, and an overflow tab that lost its last worker closes
+        // itself.
+        steps.settle(workspace);
     }
 
-    steps.unregister(&workspace, role);
-
-    // A departing worker leaves a hole and hands its width to whichever neighbour
-    // happens to be its split sibling, which lumps the grid rather than spreading
-    // it. Hand the tidy to a detached child: the close below kills this process
-    // tree, so by the time the hole exists, this process is gone. The child pulls
-    // the last worker into the free slot, and an overflow tab that lost its last
-    // worker closes itself.
-    steps.settle(&workspace);
-
-    // The dataset coordinator closes the pane of a candidate whose record is
-    // done, so it can close this pane first. A pane that is gone is closed.
+    let Some(pane) = pane else {
+        return Ok(());
+    };
     match ws.pane_close(&pane.pane_id) {
         Err(e) if ws.pane_get(&pane.pane_id).is_ok() => Err(e),
         _ => Ok(()),
@@ -553,5 +572,111 @@ mod tests {
         let err = done(&ws, &steps, &request(&pane)).unwrap_err();
         assert!(err.to_string().contains("herdr is down"), "{err}");
         assert_eq!(ws.pane_ids(), [pane]);
+    }
+
+    /// A step of [`done`] before which the pane can vanish.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Step {
+        MarkDone,
+        Report,
+        PaneGet,
+        RecordSession,
+        Unregister,
+        Settle,
+        Close,
+    }
+
+    /// `done` steps that close the pane before `vanish` and record what ran.
+    struct VanishBefore<'a> {
+        ws: &'a FakeWorkspace,
+        pane: &'a str,
+        vanish: Step,
+        ran: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl VanishBefore<'_> {
+        fn at(&self, step: Step) {
+            if step == self.vanish {
+                self.ws.pane_close(self.pane).unwrap();
+            }
+        }
+    }
+
+    impl DoneSteps for VanishBefore<'_> {
+        fn mark_done(&self, _: &str, summary: &str) -> Result<()> {
+            self.at(Step::MarkDone);
+            self.ran.borrow_mut().push(format!("mark_done {summary}"));
+            // The next step is the report, or the `pane get` without one.
+            self.at(Step::Report);
+            self.at(Step::PaneGet);
+            Ok(())
+        }
+        fn report(&self, _: &str) -> Result<()> {
+            unreachable!("the request reports to nobody")
+        }
+        fn record_session(&self, workspace: &str, _: &str, _: &str) -> Result<()> {
+            self.at(Step::RecordSession);
+            self.ran
+                .borrow_mut()
+                .push(format!("record_session {workspace}"));
+            Ok(())
+        }
+        fn unregister(&self, workspace: &str, _: &str) {
+            self.at(Step::Unregister);
+            self.ran
+                .borrow_mut()
+                .push(format!("unregister {workspace}"));
+        }
+        fn settle(&self, workspace: &str) {
+            self.at(Step::Settle);
+            self.ran.borrow_mut().push(format!("settle {workspace}"));
+            self.at(Step::Close);
+        }
+    }
+
+    /// The pane can vanish before any step of `done`. The summary is always
+    /// recorded, `done` succeeds, and the steps that need only the workspace
+    /// run when the workspace is known.
+    #[test]
+    fn done_succeeds_when_the_pane_vanishes_before_any_step() {
+        use Step::*;
+        for vanish in [
+            MarkDone,
+            Report,
+            PaneGet,
+            RecordSession,
+            Unregister,
+            Settle,
+            Close,
+        ] {
+            for workspace in [Some("w1"), None] {
+                let ws = FakeWorkspace::new();
+                let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+                let steps = VanishBefore {
+                    ws: &ws,
+                    pane: &pane,
+                    vanish,
+                    ran: Default::default(),
+                };
+                let req = DoneRequest {
+                    record_id: "r1",
+                    role: "candidate-A",
+                    pane: &pane,
+                    workspace,
+                    summary: "finished",
+                    report_to: ReportTarget::None,
+                };
+                done(&ws, &steps, &req)
+                    .unwrap_or_else(|e| panic!("vanish before {vanish:?}, {workspace:?}: {e:#}"));
+                assert!(ws.pane_ids().is_empty(), "{vanish:?}");
+                let ran = steps.ran.into_inner();
+                assert_eq!(ran[0], "mark_done finished", "{vanish:?}");
+                // The workspace comes from the request, or from `pane get`
+                // while the pane is still there.
+                let known = workspace.is_some() || ![MarkDone, Report, PaneGet].contains(&vanish);
+                let expected = if known { 4 } else { 1 };
+                assert_eq!(ran.len(), expected, "{vanish:?}, {workspace:?}: {ran:?}");
+            }
+        }
     }
 }
