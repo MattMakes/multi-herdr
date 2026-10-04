@@ -334,7 +334,7 @@ mod tests {
             ("herdr.exe", b"binary"),
             ("conpty/conpty.dll", b"dll"),
             ("conpty/x64/OpenConsole.exe", b"console"),
-            ("THIRD-PARTY-NOTICES/LICENSE.txt", b"legal"),
+            ("docs/readme.txt", b"docs"),
         ]);
 
         extract_zip(&bytes, tmp.path()).unwrap();
@@ -352,11 +352,7 @@ mod tests {
             .join("x64")
             .join("OpenConsole.exe")
             .exists());
-        assert!(tmp
-            .path()
-            .join("THIRD-PARTY-NOTICES")
-            .join("LICENSE.txt")
-            .exists());
+        assert!(tmp.path().join("docs").join("readme.txt").exists());
     }
 
     /// Zip-slip: an entry pointing outside the destination must abort the install.
