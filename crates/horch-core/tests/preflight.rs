@@ -1,5 +1,5 @@
 //! B2: the dataset config loader and the pure preflight evaluation
-//! (PRE-01..PRE-05, PRE-08..PRE-11, PRE-13). Everything here is pure except
+//! (PRE-01..PRE-05, PRE-08..PRE-11, PRE-13, PRE-14). Everything here is pure except
 //! the storage probe, which works in a temp dir.
 
 use std::collections::BTreeMap;
@@ -9,8 +9,9 @@ use horch_core::competition::config::{
     load, parse_usd_micro, BudgetConfig, Caps, DatasetConfig, JudgeConfig, RunFlags, Strategy,
 };
 use horch_core::competition::preflight::{
-    evaluate, footprint_bytes, parse_git_version, storage_probe, CheckStatus, GitFacts,
-    PreflightCandidate, PreflightPlan, PreflightReport, StorageProbe, TokenEstimate,
+    claude_trust, codex_trust, evaluate, footprint_bytes, parse_git_version, storage_probe,
+    trust_fix, CheckStatus, GitFacts, HarnessTrust, PreflightCandidate, PreflightPlan,
+    PreflightReport, StorageProbe, TokenEstimate, TrustState,
 };
 use horch_core::harness::capabilities::HARNESS_FOOTPRINT_BYTES;
 use horch_core::harness::HarnessKind;
@@ -121,7 +122,19 @@ fn plan() -> PreflightPlan {
         artifacts_bytes: GIB,
         local_model_bytes: 0,
         expected_tokens: BTreeMap::new(),
-        trusted_parents: vec![PathBuf::from("/Users/op/projects")],
+        trust_root: Some(PathBuf::from(APP)),
+        trust: vec![trusted("claude"), trusted("codex")],
+    }
+}
+
+/// The main repository root of the base plan.
+const APP: &str = "/Users/op/projects/app";
+
+fn trusted(harness: &str) -> HarnessTrust {
+    HarnessTrust {
+        harness: harness.to_string(),
+        state: TrustState::Trusted,
+        reason: "fixture".to_string(),
     }
 }
 
@@ -140,7 +153,7 @@ fn detail(report: &PreflightReport, id: &str) -> String {
 fn preflight_base_plan_passes_every_check_in_order() {
     let report = evaluate(&plan(), &mac());
     let ids: Vec<&str> = report.checks.iter().map(|c| c.id.as_str()).collect();
-    let expected: Vec<String> = (1..=13).map(|i| format!("PRE-{i:02}")).collect();
+    let expected: Vec<String> = (1..=14).map(|i| format!("PRE-{i:02}")).collect();
     assert_eq!(ids, expected);
     for c in &report.checks {
         assert_eq!(c.status, CheckStatus::Pass, "{}: {}", c.id, c.detail);
@@ -632,15 +645,130 @@ fn pre_13_herdr_and_horch_exe() {
     p.horch_exe = None;
     assert_eq!(status(&evaluate(&p, &mac()), "PRE-13"), CheckStatus::Fail);
 
-    // A worktree root outside the trusted parents only warns.
+    // The worktree root no longer matters: trust is PRE-14's question.
     let mut p = plan();
     p.config.worktree_root = Some(PathBuf::from("/tmp/wt"));
+    assert_eq!(status(&evaluate(&p, &mac()), "PRE-13"), CheckStatus::Pass);
+}
+
+// ─── PRE-14 harness trust ───────────────────────────────────────────────────
+
+fn roots() -> Vec<PathBuf> {
+    vec![PathBuf::from(APP)]
+}
+
+#[test]
+fn pre_14_trusted_root_passes() {
+    let r = evaluate(&plan(), &mac());
+    assert_eq!(status(&r, "PRE-14"), CheckStatus::Pass);
+    assert!(detail(&r, "PRE-14").contains(APP));
+}
+
+#[test]
+fn pre_14_untrusted_root_refuses_with_the_fix() {
+    let mut p = plan();
+    p.trust[1].state = TrustState::Untrusted;
     let r = evaluate(&p, &mac());
-    assert_eq!(status(&r, "PRE-13"), CheckStatus::Warn);
-    assert!(detail(&r, "PRE-13").contains("workspace-trust"));
+    assert_eq!(status(&r, "PRE-14"), CheckStatus::Fail);
+    assert!(!r.passed);
+    let d = detail(&r, "PRE-14");
+    assert!(
+        d.contains("codex has not trusted /Users/op/projects/app"),
+        "{d}"
+    );
+    assert!(
+        d.contains("cd '/Users/op/projects/app' && codex  (choose \"Trust and continue\""),
+        "{d}"
+    );
+    assert!(!d.contains("claude has not"), "{d}");
+
+    // A harness that asks for trust but was not checked only warns.
+    let mut p = plan();
+    p.trust.clear();
+    let r = evaluate(&p, &mac());
+    assert_eq!(status(&r, "PRE-14"), CheckStatus::Warn);
     assert!(r.passed);
-    p.config.worktree_root = None;
-    assert_eq!(status(&evaluate(&p, &mac()), "PRE-13"), CheckStatus::Warn);
+
+    // No candidate harness that asks for trust: pass, whatever the stores say.
+    let mut p = plan();
+    p.candidates.retain(|c| c.harness == HarnessKind::OpenCode);
+    p.trust.clear();
+    assert_eq!(status(&evaluate(&p, &mac()), "PRE-14"), CheckStatus::Pass);
+}
+
+#[test]
+fn pre_14_claude_store() {
+    let yes = r#"{"oauthAccount":{"x":"secret-token"},"projects":{"/Users/op/projects/app":{"hasTrustDialogAccepted":true}}}"#;
+    let t = claude_trust(Some(yes), &roots());
+    assert_eq!(t.state, TrustState::Trusted);
+    assert!(!t.reason.contains("secret"), "{}", t.reason);
+
+    // A parent folder's entry does not trust the repository.
+    let parent = r#"{"projects":{"/Users/op/projects":{"hasTrustDialogAccepted":true},
+        "/Users/op/projects/app":{"hasTrustDialogAccepted":false}}}"#;
+    assert_eq!(
+        claude_trust(Some(parent), &roots()).state,
+        TrustState::Untrusted
+    );
+    let none = r#"{"projects":{}}"#;
+    assert_eq!(
+        claude_trust(Some(none), &roots()).state,
+        TrustState::Untrusted
+    );
+
+    // The canonical form of the root also matches (/tmp is /private/tmp).
+    let canonical = r#"{"projects":{"/private/tmp/app":{"hasTrustDialogAccepted":true}}}"#;
+    let both = [PathBuf::from("/tmp/app"), PathBuf::from("/private/tmp/app")];
+    assert_eq!(
+        claude_trust(Some(canonical), &both).state,
+        TrustState::Trusted
+    );
+
+    // A missing file is untrusted; a broken one is unknown.
+    let missing = claude_trust(None, &roots());
+    assert_eq!(missing.state, TrustState::Untrusted);
+    assert!(missing.reason.contains("does not exist"));
+    assert_eq!(
+        claude_trust(Some("{not json"), &roots()).state,
+        TrustState::Unknown
+    );
+}
+
+#[test]
+fn pre_14_codex_store() {
+    let yes = "model = \"gpt-5\"\n\n[projects.\"/Users/op/projects/app\"]\ntrust_level = \"trusted\"\n\n[projects.\"/other\"]\ntrust_level = \"untrusted\"\n";
+    assert_eq!(codex_trust(Some(yes), &roots()).state, TrustState::Trusted);
+    let literal = "[projects.'/Users/op/projects/app']\ntrust_level = 'trusted'\n";
+    assert_eq!(
+        codex_trust(Some(literal), &roots()).state,
+        TrustState::Trusted
+    );
+
+    // trust_level under another table does not count.
+    let other = "[projects.\"/Users/op/projects\"]\ntrust_level = \"trusted\"\n[tui]\ntrust_level = \"trusted\"\n";
+    assert_eq!(
+        codex_trust(Some(other), &roots()).state,
+        TrustState::Untrusted
+    );
+    let untrusted = "[projects.\"/Users/op/projects/app\"]\ntrust_level = \"untrusted\"\n";
+    assert_eq!(
+        codex_trust(Some(untrusted), &roots()).state,
+        TrustState::Untrusted
+    );
+    assert_eq!(codex_trust(Some(""), &roots()).state, TrustState::Untrusted);
+    let missing = codex_trust(None, &roots());
+    assert_eq!(missing.state, TrustState::Untrusted);
+    assert!(missing.reason.contains("does not exist"));
+}
+
+#[test]
+fn pre_14_fix_commands_quote_the_root() {
+    let root = Path::new("/Users/op/it's here");
+    assert_eq!(
+        trust_fix(HarnessKind::Claude, root),
+        "cd '/Users/op/it'\\''s here' && claude  (choose \"Yes, I trust this folder\", then exit)"
+    );
+    assert!(trust_fix(HarnessKind::Antigravity, root).contains("&& agy"));
 }
 
 // ─── config ─────────────────────────────────────────────────────────────────

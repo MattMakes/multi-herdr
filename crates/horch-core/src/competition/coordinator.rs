@@ -49,7 +49,8 @@ use crate::competition::config::DatasetConfig;
 use crate::competition::judging::{self, JobLauncher, JudgeEnv, JudgingStatus};
 use crate::competition::model::RoundState;
 use crate::competition::observe::{
-    self, classify, deadline_passed, Observed, TelemetryUsage, CANCELLED_BUDGET, CANCELLED_DISK,
+    self, classify, deadline_passed, trust_dialog, Observed, TelemetryUsage, CANCELLED_BUDGET,
+    CANCELLED_DISK, CANCELLED_TRUST, TRUST_DIALOG_WINDOW_S,
 };
 use crate::competition::planner::{candidate_planned_payload, round_created_payload, RoundPlan};
 use crate::competition::promotion::{
@@ -529,6 +530,18 @@ impl<G: GitClient> Coordinator<'_, G> {
         match classify(e, alive) {
             Observed::Live => {
                 let started = crate::clock::parse(&e.created_at).unwrap_or(now);
+                // A pane stopped at a trust dialog never starts: end it now,
+                // not at the deadline (PRE-14 should have refused the round).
+                if let Some(pane) = &e.pane {
+                    if !deadline_passed(started, now, TRUST_DIALOG_WINDOW_S) {
+                        let screen = self.workspace.pane_read(pane.as_str(), "visible");
+                        if screen.is_ok_and(|s| trust_dialog(&s).is_some()) {
+                            let reason = CANCELLED_TRUST.to_string();
+                            let failure = FailureKind::Cancelled { reason };
+                            return self.end_candidate(spec, label, e, failure);
+                        }
+                    }
+                }
                 if deadline_passed(started, now, spec.config.caps.candidate_deadline_s) {
                     self.end_candidate(spec, label, e, FailureKind::TimedOut)?;
                 }

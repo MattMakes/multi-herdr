@@ -8,6 +8,7 @@
 //! | the record is `Done` | completed |
 //! | the pane is gone while the record is live | Failed(PaneVanished) |
 //! | the agent exited (`Failed(AgentExited)`) | Failed(AgentExited) |
+//! | the pane shows a trust dialog (first 300 s) | close the pane → Failed(Cancelled{trust_dialog}) |
 //! | the deadline passed | close the pane → Failed(TimedOut) |
 //! | the budget ran out | close the pane → Failed(Cancelled{budget}) |
 //!
@@ -37,6 +38,54 @@ use crate::usage::{read_session, Locations, Tokens, Usage};
 pub(crate) const CANCELLED_BUDGET: &str = "budget";
 /// The reason a candidate that disk pressure kept from launching records.
 pub(crate) const CANCELLED_DISK: &str = "disk";
+/// The reason a candidate stopped at its harness's trust dialog records.
+pub(crate) const CANCELLED_TRUST: &str = "trust_dialog";
+
+/// How long after its spawn a candidate's pane is read for a trust dialog.
+/// The dialog is the first screen; later, the agent may print the same
+/// words while it works.
+pub(crate) const TRUST_DIALOG_WINDOW_S: u64 = 300;
+
+/// The trust dialog texts, per harness, normalized (see [`normalize_screen`]).
+/// Each one is a whole line of the dialog, so a wrapped pane still has it.
+/// Seen on claude 2.1.289 and codex-cli 0.160.0; agy's from its teammate
+/// note. PRE-14 refuses an untrusted repository before this can happen.
+pub(crate) const TRUST_DIALOGS: &[(&str, &str)] = &[
+    ("claude", "is this a project you created or one you trust"),
+    ("claude", "yes, i trust this folder"),
+    ("codex", "trusting will apply to the repository root"),
+    (
+        "codex",
+        "trust this folder? codex can read, edit, and run files here",
+    ),
+    ("antigravity", "do you trust the contents of this project"),
+];
+
+/// Lower case, every run of characters other than letters, digits and
+/// `, ? '` as one space: box borders and line wraps do not split a phrase.
+fn normalize_screen(screen: &str) -> String {
+    let mut out = String::with_capacity(screen.len());
+    let mut space = true;
+    for c in screen.chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() || matches!(c, ',' | '?' | '\'') {
+            out.push(c);
+            space = false;
+        } else if !space {
+            out.push(' ');
+            space = true;
+        }
+    }
+    out
+}
+
+/// The harness whose trust dialog `screen` shows, if any.
+pub(crate) fn trust_dialog(screen: &str) -> Option<&'static str> {
+    let screen = normalize_screen(screen);
+    TRUST_DIALOGS
+        .iter()
+        .find(|(_, text)| screen.contains(text))
+        .map(|(harness, _)| *harness)
+}
 
 /// What one look at a candidate found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,5 +353,31 @@ mod tests {
             .with_timezone(&Utc);
         assert!(!deadline_passed(t0, t0 + chrono::Duration::seconds(9), 10));
         assert!(deadline_passed(t0, t0 + chrono::Duration::seconds(10), 10));
+    }
+
+    /// The dialog texts as panes showed them in LA-7 (L1), wrapped and
+    /// boxed, match; ordinary agent output does not.
+    #[test]
+    fn trust_dialog_matches_the_harness_dialogs() {
+        let claude = "│ Accessing workspace:\n│ /x/wt/A\n│ Quick safety check: Is this a project you created or one you\n│ trust? (Like your own code)\n│ ❯ 1. Yes, I trust this folder\n│   2. No, exit\n";
+        assert_eq!(trust_dialog(claude), Some("claude"));
+        let codex = "  Note: You\u{2019}re in a subdirectory of a Git project. Trusting will apply to the\n  repository root: /x/proj\n\n  Trust this folder? Codex can read, edit, and run files here,\n  › 1. Trust and continue\n    2. Quit\n";
+        assert_eq!(trust_dialog(codex), Some("codex"));
+        assert_eq!(
+            trust_dialog("Do you trust the contents of this project?"),
+            Some("antigravity")
+        );
+        for quiet in [
+            "",
+            "running cargo test\nok",
+            "I trust this plan",
+            "trust_level = \"trusted\"",
+        ] {
+            assert_eq!(trust_dialog(quiet), None, "{quiet:?}");
+        }
+        // Every dialog text is already normalized, so it can match.
+        for (_, text) in TRUST_DIALOGS {
+            assert_eq!(normalize_screen(text), *text);
+        }
     }
 }

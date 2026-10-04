@@ -111,6 +111,10 @@ impl Harness {
     ///
     /// Without `git` the harness is returned as it was and [`Harness::git_bin`]
     /// is `None`, unless `HORCH_REQUIRE_GIT=1`, which makes that a panic.
+    ///
+    /// The sealed home also records Claude's and Codex's trust in the
+    /// project, as the operator does once, so dataset preflight (PRE-14)
+    /// passes. [`Harness::untrust_project`] removes it.
     pub fn with_git(mut self) -> Self {
         let Some(git) = find_on_real_path("git").filter(|p| p.is_absolute()) else {
             assert!(
@@ -153,7 +157,40 @@ impl Harness {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
+        self.trust_project();
         self
+    }
+
+    /// Record Claude's (`~/.claude.json`) and Codex's
+    /// (`$CODEX_HOME/config.toml`) trust in the project root, in the sealed
+    /// home, by its canonical path as the harnesses record it.
+    pub fn trust_project(&self) {
+        let root = self
+            .project
+            .canonicalize()
+            .unwrap_or_else(|_| self.project.clone());
+        let root = root.to_string_lossy().into_owned();
+        let claude = serde_json::json!({
+            "projects": { root.as_str(): { "hasTrustDialogAccepted": true } }
+        });
+        std::fs::write(self.home.join(".claude.json"), claude.to_string())
+            .expect("writing the claude trust fixture");
+        let codex = self.home.join(".codex");
+        std::fs::create_dir_all(&codex).expect("creating the codex home");
+        std::fs::write(
+            codex.join("config.toml"),
+            format!(
+                "[projects.{}]\ntrust_level = \"trusted\"\n",
+                serde_json::Value::from(root)
+            ),
+        )
+        .expect("writing the codex trust fixture");
+    }
+
+    /// Remove the trust [`Harness::trust_project`] recorded.
+    pub fn untrust_project(&self) {
+        let _ = std::fs::remove_file(self.home.join(".claude.json"));
+        let _ = std::fs::remove_file(self.home.join(".codex").join("config.toml"));
     }
 
     /// The real `git`, by absolute path, after [`Harness::with_git`].

@@ -261,6 +261,34 @@ fn pre_12_e2e_refuses_before_worktree_or_model() {
     assert!(violations(&h.log).is_empty(), "{:?}", violations(&h.log));
 }
 
+#[test]
+fn pre_14_untrusted_repo_refuses_before_worktree_or_model() {
+    let Some(h) = harness("pre14") else { return };
+    // The operator never trusted this repository in Claude or Codex.
+    h.untrust_project();
+    let machine = machine_fixture(&h, 500_000_000_000);
+    let out = run(&h, &[("HORCH_MACHINE_FILE", machine.to_str().unwrap())]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(4), "{}", text(&out));
+
+    let events = events(&h);
+    assert_eq!(
+        kinds(&events),
+        [
+            "experiment.created",
+            "preflight.completed",
+            "experiment.aborted"
+        ]
+    );
+    assert!(failed_checks(&events).contains(&"PRE-14".to_string()));
+    // The refusal names the one-time command for the main repository root.
+    let root = h.project.canonicalize().unwrap();
+    let fix = format!("cd '{}' && claude", root.display());
+    assert!(stdout.contains(&fix), "{stdout}");
+    assert_no_worktree(&h);
+    assert_no_agent_launch(&h);
+}
+
 #[cfg(unix)]
 #[test]
 fn pre_07_probe_no_secret_persisted() {

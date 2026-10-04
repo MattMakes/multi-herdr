@@ -186,7 +186,8 @@ or that another row defines.
 | PRE-10 | Judge available; budget reserved | B2 | pre_10_judge_available_and_reserved |
 | PRE-11 | Storage: write, lock, fsync, rename | B2 | pre_11_storage_probe |
 | PRE-12 | Refuse before any worktree or model; report persisted | B2 | pre_12_e2e_refuses_before_worktree_or_model |
-| PRE-13 | herdr reachable; horch exe found; trust warning | B2 | pre_13_herdr_and_horch_exe |
+| PRE-13 | herdr reachable; horch exe found | B2 | pre_13_herdr_and_horch_exe |
+| PRE-14 | Every candidate harness trusts the main repository root; a trust dialog in a pane ends the candidate at once | F2 | pre_14_trusted_root_passes, pre_14_untrusted_root_refuses_with_the_fix, pre_14_claude_store, pre_14_codex_store, pre_14_untrusted_repo_refuses_before_worktree_or_model, pre_14_trust_dialog_pane_ends_the_candidate_at_once |
 
 ### 3.3 CMP: competition
 
@@ -1078,7 +1079,7 @@ pub struct CheckResult { pub id: String /* "PRE-01" */, pub status: CheckStatus,
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreflightReport {
     pub schema_version: String,               // "1.0.0"
-    pub checks: Vec<CheckResult>,             // PRE-01..PRE-13, in order
+    pub checks: Vec<CheckResult>,             // PRE-01..PRE-14, in order
     pub safe_n: u32,
     pub waves: u32,
     pub projected_cost_microusd: MicroUsd,
@@ -1094,7 +1095,8 @@ pub struct PreflightPlan { pub config: DatasetConfig, pub candidates: Vec<Prefli
                            pub checkout_bytes: u64, pub build_bytes: u64, pub artifacts_bytes: u64,
                            pub local_model_bytes: u64,
                            pub expected_tokens: BTreeMap<String, TokenEstimate>, // by label
-                           pub trusted_parents: Vec<PathBuf> }
+                           pub trust_root: Option<PathBuf>,     // the main repository root
+                           pub trust: Vec<HarnessTrust> }       // PRE-14
 /// Pure.
 pub fn evaluate(plan: &PreflightPlan, snapshot: &MachineSnapshot) -> PreflightReport;
 ```
@@ -1138,7 +1140,7 @@ over the bounds that are known. `waves = ceil(N / safe_n)`.
   Silicon: max(1, available memory / `local_model_bytes`), or 1 when the
   model size is 0. Nvidia: the GPU count (at least 1). No GPU or unknown: 1.
 
-**Checks.** The report has exactly these 13 checks, in this order. A check
+**Checks.** The report has exactly these 14 checks, in this order. A check
 has the status `pass`, `warn` or `fail`. `passed` is true when no check
 fails. A `warn` never refuses a run. The order and the all-pass base plan are pinned by
 `preflight_base_plan_passes_every_check_in_order`.
@@ -1157,7 +1159,8 @@ fails. A `warn` never refuses a run. The order and the all-pass base plan are pi
 | PRE-10 | the judge harness (Claude, for the judge model `opus`) has no resolved version; the judge reserve is ≤ 0 | never | pre_10_judge_available_and_reserved |
 | PRE-11 | the storage probe fails to write, lock, fsync or rename in the dataset directory | never | pre_11_storage_probe |
 | PRE-12 | a candidate harness has no resolved version (the "round can start" row) | never | pre_12_e2e_refuses_before_worktree_or_model |
-| PRE-13 | herdr is not reachable; the horch executable is not found | the worktree root is not under a trusted directory | pre_13_herdr_and_horch_exe |
+| PRE-13 | herdr is not reachable; the horch executable is not found | never | pre_13_herdr_and_horch_exe |
+| PRE-14 | a candidate harness that asks for trust (Claude, Codex) has not trusted the main repository root. The detail names the harness, the root and the one-time command. | a candidate harness's trust cannot be read (agy; an unreadable store); the repository root is unknown | pre_14_trusted_root_passes, pre_14_untrusted_root_refuses_with_the_fix, pre_14_untrusted_repo_refuses_before_worktree_or_model |
 
 PRE-09 prices each candidate with `competition/budget.rs:estimate_cost`, the
 same function the live budget uses. It uses the plan's token estimate for
@@ -1169,7 +1172,7 @@ report with any `fail` with exit code 4. The events are `experiment.created`,
 exists and no harness ran. The report is in `preflight.completed` and in
 `experiments/<id>/manifest.json`.
 
-**Report.** `PreflightReport` has `schema_version` "1.0.0", the 13 checks,
+**Report.** `PreflightReport` has `schema_version` "1.0.0", the 14 checks,
 `safe_n`, `waves`, `projected_cost_microusd`, the machine snapshot,
 `environment_digest` and `passed`. `environment_digest` is the digest of the
 machine snapshot, the harness versions and the git version. The budget is not
@@ -1185,7 +1188,11 @@ part of it (`preflight_report_round_trips_and_digest_tracks_the_environment`).
 - free disk: measured on the nearest existing ancestor of the worktree root,
   or on the dataset root when no root is set.
 - `local_model_bytes`: 0.
-- `trusted_parents`: empty.
+- `trust_root`: the main repository root of the git toplevel. For a linked
+  worktree it is the directory before `/.git/worktrees/` in its `.git` file
+  (`main_root`, test `main_root_of_a_linked_worktree_is_the_main_repository`).
+- `trust`: one `HarnessTrust {harness, state, reason}` per candidate harness
+  that asks for trust (see 4.11.3).
 - `pools`: the pool-wide state of each candidate's quota pool.
 - the judge harness: Claude.
 
@@ -1200,11 +1207,10 @@ part of it (`preflight_report_round_trips_and_digest_tracks_the_environment`).
    it. Then PRE-03 counts only the harness footprint, and on Apple Silicon
    `local_inference` = 1. Reason: 1 local candidate at a time keeps 1 model
    in memory, which is the safe bound when the size is unknown.
-3. No harness trust store is read, so `trusted_parents` is empty and PRE-13
-   warns for every worktree root. Reason: the trust stores are private
-   harness files, and LA-7 on the operator's Mac decides whether a trust
-   prompt stalls a pane. The candidate deadline turns a stall into a
-   `TimedOut` data point.
+3. Superseded by 4.11.3 (F2). LA-7 showed that a trust dialog stalls a
+   candidate pane until the deadline, and that trust is keyed on the main
+   repository root, not on a parent folder. PRE-13 no longer looks at the
+   worktree root; PRE-14 reads the trust stores.
 4. A quota pool that is not `ok` makes PRE-07 warn, also when it is
    `exhausted`. It never fails PRE-07. Reason: the planner already removes
    every candidate whose pool blocks a spawn, for the candidate's model scope
@@ -1220,6 +1226,70 @@ value with an error. Reason: the master plan names only `--judge auto`, and
 no other mode has an implementation. A new mode is a new enum value with its
 own tests. Tests: `cmp_01_cli_args` (`--judge manual` is refused),
 `judge_mode_auto_is_the_only_mode`.
+
+#### 4.11.3 Harness trust (PRE-14, F2)
+
+A harness that has not trusted a repository stops a new pane at a trust
+dialog, and the candidate never starts. LA-7 (L1, claude 2.1.289 and
+codex-cli 0.160.0) showed:
+
+- Claude and Codex key trust on the **main repository root**. A linked
+  worktree of a trusted repository opens without a dialog. A trusted parent
+  folder does not trust a separate repository under it.
+- Claude records it in `~/.claude.json` as
+  `projects["<root>"].hasTrustDialogAccepted: true`. The key is the
+  canonical path (`/private/tmp/...` on macOS).
+- Codex records it in `$CODEX_HOME/config.toml` (default `~/.codex`) as a
+  table `[projects."<root>"]` with `trust_level = "trusted"`.
+- agy asks "Do you trust the contents of this project?" on the first launch
+  in each directory. horch cannot read where it keeps the answer.
+- opencode, pi and prime have no trust step (no trust text in their
+  binaries or bundles).
+
+**Preflight** (`competition/preflight.rs`): `asks_for_trust` is true for
+Claude, Codex and Antigravity. The CLI reads the store of each candidate
+harness that asks (`crates/horch/src/dataset/preflight.rs:harness_trust`).
+It matches the root and its canonical form. It keeps only the verdict: the
+files can hold tokens, so no other content of them is read into the plan,
+the report or the output. horch never writes a trust store; the operator
+accepts trust.
+
+| Store state | `TrustState` | PRE-14 |
+|---|---|---|
+| the entry is `true` / `"trusted"` for the root | `trusted` | pass |
+| no entry, `false`, another level, or no file | `untrusted` | fail |
+| the file is not valid JSON or cannot be read; agy | `unknown` | warn |
+
+The one-time commands (`trust_fix`; the root is single-quoted for the shell):
+
+- Claude: `cd '<root>' && claude`, choose "Yes, I trust this folder", exit.
+- Codex: `cd '<root>' && codex`, choose "Trust and continue", exit.
+- agy: `cd '<root>' && agy`, accept the trust question, exit.
+
+Tests: `pre_14_claude_store`, `pre_14_codex_store`,
+`pre_14_fix_commands_quote_the_root`, `pre_14_trusted_root_passes`,
+`pre_14_untrusted_root_refuses_with_the_fix`, and end to end
+`pre_14_untrusted_repo_refuses_before_worktree_or_model` (exit 4, no
+worktree, no agent launch). The e2e `Harness::with_git` records both
+trusts in its sealed home, as the operator does once.
+
+**Pane detection** (`competition/observe.rs`, the coordinator's `observe`):
+while a live candidate is younger than `TRUST_DIALOG_WINDOW_S` (300 s), each
+look reads its pane (`pane read --source visible`). If the screen shows a
+text of `TRUST_DIALOGS`, the coordinator ends the candidate at once:
+`Failed(Cancelled{reason: "trust_dialog"})`, and it closes the pane. The
+round goes on with the other candidates. The match is case-insensitive and
+ignores box borders and line wraps (`normalize_screen`). The window keeps
+an agent that later prints the same words from being stopped. The texts:
+
+| Harness | Text |
+|---|---|
+| claude | "Is this a project you created or one you trust", "Yes, I trust this folder" |
+| codex | "Trusting will apply to the repository root", "Trust this folder? Codex can read, edit, and run files here" |
+| antigravity | "Do you trust the contents of this project" |
+
+Tests: `trust_dialog_matches_the_harness_dialogs`,
+`pre_14_trust_dialog_pane_ends_the_candidate_at_once`.
 
 ---
 

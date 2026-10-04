@@ -163,6 +163,27 @@ struct CrashRound {
 /// writes `work.txt` and crashes. `shape` may change the plan before the
 /// round starts.
 fn crash_round(w: &World, roster: &Roster, shape: impl FnOnce(&mut RoundPlan)) -> CrashRound {
+    round_with(w, roster, shape, Agent::Crash)
+}
+
+/// What every candidate's agent does once it runs.
+#[derive(Clone, Copy, PartialEq)]
+enum Agent {
+    /// Exits with code 2.
+    Crash,
+    /// Stops at Claude's trust dialog and waits.
+    TrustDialog,
+}
+
+/// Claude's trust dialog, as a pane showed it in LA-7.
+const CLAUDE_TRUST_SCREEN: &str = "Accessing workspace:\n/x/wt/A\n\nQuick safety check: Is this a project you created or one you trust? (Like your\nown code, a well-known open source project, or work from your team).\n\n> 1. Yes, I trust this folder\n  2. No, exit\n\nEnter to confirm · Esc to cancel\n";
+
+fn round_with(
+    w: &World,
+    roster: &Roster,
+    shape: impl FnOnce(&mut RoundPlan),
+    agent: Agent,
+) -> CrashRound {
     let paths = DatasetPaths::new(&w.ctx.paths.state_root, &w.repo);
     let recorder = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
     let store = ExecutionStore::open(&w.ctx.paths, &w.repo);
@@ -250,7 +271,12 @@ fn crash_round(w: &World, roster: &Roster, shape: impl FnOnce(&mut RoundPlan)) -
                 store
                     .set_state(&r.record_id, ExecutionStatus::Running)
                     .unwrap();
-                store.record_exit(&r.record_id, Some(2)).unwrap();
+                match agent {
+                    Agent::Crash => store.record_exit(&r.record_id, Some(2)).unwrap(),
+                    Agent::TrustDialog => {
+                        fake.set_screen(r.pane_id.as_deref().unwrap(), CLAUDE_TRUST_SCREEN)
+                    }
+                }
             }
         }
     };
@@ -400,6 +426,41 @@ fn arc_24_candidates_are_ordinary_executions() {
     let mut expected = vec![ledger, "multi-herdr".to_string()];
     expected.sort();
     assert_eq!(entries, expected);
+}
+
+/// A candidate pane stopped at a trust dialog ends at the next look, with
+/// the reason, and not at the deadline (1 hour here; the test allows 50
+/// ticks of 1 ms).
+#[test]
+fn pre_14_trust_dialog_pane_ends_the_candidate_at_once() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let CrashRound {
+        recorder,
+        store,
+        round,
+        outcome,
+        ..
+    } = round_with(&w, &roster, |_| {}, Agent::TrustDialog);
+    assert_eq!(outcome, RoundOutcome::Rejected { budget: false });
+    let records = store.read().unwrap();
+    assert_eq!(records.len(), 2, "{records:?}");
+    let blocked = FailureKind::Cancelled {
+        reason: "trust_dialog".into(),
+    };
+    for record in &records {
+        let e = to_execution(record).unwrap();
+        assert_eq!(
+            e.status,
+            ExecutionStatus::Failed {
+                failure: blocked.clone()
+            }
+        );
+    }
+    let projection = fold(&recorder.read_all().unwrap().events);
+    for c in projection.rounds[&round].candidates.values() {
+        assert!(!c.is_eligible());
+    }
 }
 
 /// A candidate teammate with `operator_skills` gets them on its ledger

@@ -12,10 +12,12 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use horch_core::competition::config::DatasetConfig;
 use horch_core::competition::preflight::{
-    storage_probe, CheckStatus, GitFacts, PoolFacts, PreflightCandidate, PreflightPlan,
-    PreflightReport, StorageProbe,
+    asks_for_trust, claude_trust, codex_trust, storage_probe, CheckStatus, GitFacts, HarnessTrust,
+    PoolFacts, PreflightCandidate, PreflightPlan, PreflightReport, StorageProbe, TrustState,
+    CLAUDE_TRUST_FILE, CODEX_TRUST_FILE,
 };
 use horch_core::fsx;
+use horch_core::harness::codex::codex_home;
 use horch_core::harness::HarnessKind;
 use horch_core::ids::{ExperimentId, TaskId};
 use horch_core::measure::digest::{digest_json, sha256_bytes, Digest};
@@ -214,6 +216,11 @@ pub(crate) fn gather(
     let artifacts_bytes = n * (config.caps.output_cap_bytes + config.caps.log_cap_bytes * gates);
 
     let pools = pool_facts(view, &candidates);
+    let trust_root = git.toplevel.as_deref().map(main_root);
+    let trust = trust_root
+        .as_deref()
+        .map(|root| harness_trust(ctx, &candidates, root))
+        .unwrap_or_default();
     let plan = PreflightPlan {
         config: config.clone(),
         candidates,
@@ -231,11 +238,88 @@ pub(crate) fn gather(
         // candidates run 1 at a time (dataset design 4.11.1, decision 2).
         local_model_bytes: 0,
         expected_tokens: BTreeMap::new(),
-        // No harness trust store is read, so PRE-13 warns for every worktree
-        // root (dataset design 4.11.1, decision 3).
-        trusted_parents: Vec::new(),
+        trust_root,
+        trust,
     };
     (plan, snapshot)
+}
+
+/// The main repository root of `toplevel`: for a linked worktree, the
+/// directory that holds the common `.git`. Claude and Codex key their trust
+/// on it (dataset design 4.11.1, PRE-14).
+fn main_root(toplevel: &Path) -> PathBuf {
+    std::fs::read_to_string(toplevel.join(".git"))
+        .ok()
+        .and_then(|text| {
+            let gitdir = text.trim().strip_prefix("gitdir:")?.trim().to_string();
+            let cut = gitdir.find("/.git/worktrees/")?;
+            Some(PathBuf::from(&gitdir[..cut]))
+        })
+        .unwrap_or_else(|| toplevel.to_path_buf())
+}
+
+/// What each candidate harness that asks for trust has recorded for
+/// `root` (PRE-14). It reads the stores and keeps only the verdict: the
+/// files can hold tokens, so nothing else of them leaves this function.
+fn harness_trust(
+    ctx: &RuntimeContext,
+    candidates: &[PreflightCandidate],
+    root: &Path,
+) -> Vec<HarnessTrust> {
+    let mut roots = vec![root.to_path_buf()];
+    if let Ok(canonical) = root.canonicalize() {
+        if canonical != root {
+            roots.push(canonical);
+        }
+    }
+    let mut harnesses: Vec<HarnessKind> = candidates
+        .iter()
+        .map(|c| c.harness)
+        .filter(|h| asks_for_trust(*h))
+        .collect();
+    harnesses.sort_unstable_by_key(|h| h.as_str());
+    harnesses.dedup();
+    let home = &ctx.paths.home;
+    harnesses
+        .into_iter()
+        .map(|harness| match harness {
+            HarnessKind::Claude => match read_store(&home.join(".claude.json")) {
+                Ok(text) => claude_trust(text.as_deref(), &roots),
+                Err(()) => unreadable(harness, CLAUDE_TRUST_FILE),
+            },
+            HarnessKind::Codex => {
+                let file =
+                    codex_home(home, ctx.inherited.codex_home.as_deref()).join("config.toml");
+                match read_store(&file) {
+                    Ok(text) => codex_trust(text.as_deref(), &roots),
+                    Err(()) => unreadable(harness, CODEX_TRUST_FILE),
+                }
+            }
+            other => HarnessTrust {
+                harness: other.as_str().to_string(),
+                state: TrustState::Unknown,
+                reason: format!("horch cannot read where {} keeps its trust", other.as_str()),
+            },
+        })
+        .collect()
+}
+
+/// The text of a trust store, `None` when it does not exist, `Err` when it
+/// cannot be read.
+fn read_store(path: &Path) -> std::result::Result<Option<String>, ()> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+fn unreadable(harness: HarnessKind, file: &str) -> HarnessTrust {
+    HarnessTrust {
+        harness: harness.as_str().to_string(),
+        state: TrustState::Unknown,
+        reason: format!("{file} cannot be read"),
+    }
 }
 
 /// `path`, or its nearest ancestor that exists: the disk a new directory
@@ -429,6 +513,26 @@ mod tests {
         }
         assert_eq!(kind_of("antigravity"), Some(HarnessKind::Antigravity));
         assert_eq!(kind_of("nope"), None);
+    }
+
+    /// A linked worktree resolves to the main repository root, where the
+    /// harnesses keep their trust; a main checkout is its own root.
+    #[test]
+    fn main_root_of_a_linked_worktree_is_the_main_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("app");
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+        assert_eq!(main_root(&main), main);
+        let wt = tmp.path().join("wt-a");
+        std::fs::create_dir_all(&wt).unwrap();
+        let gitdir = format!("gitdir: {}/.git/worktrees/wt-a\n", main.display());
+        std::fs::write(wt.join(".git"), gitdir).unwrap();
+        assert_eq!(main_root(&wt), main);
+        // A submodule's `.git` file is not a worktree: it stays its own root.
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".git"), "gitdir: ../app/.git/modules/sub\n").unwrap();
+        assert_eq!(main_root(&sub), sub);
     }
 
     /// A project with no `target/` directory counts 0 build bytes, and the

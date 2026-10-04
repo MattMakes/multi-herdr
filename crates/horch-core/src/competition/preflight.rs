@@ -2,7 +2,7 @@
 //!
 //! [`evaluate`] is pure. The caller gathers the facts (machine snapshot, git,
 //! harness versions, the storage probe) and gets one [`CheckResult`] per
-//! PRE id, PRE-01..PRE-13 in order, plus the safe parallelism, the number of
+//! PRE id, PRE-01..PRE-14 in order, plus the safe parallelism, the number of
 //! waves and the projected cost. A run whose report has any `Fail` is refused
 //! before a worktree is created or a model is invoked.
 //!
@@ -125,8 +125,12 @@ pub struct PreflightPlan {
     pub local_model_bytes: u64,
     /// Expected tokens per candidate label; `DEFAULT_TOKEN_ESTIMATE` otherwise.
     pub expected_tokens: BTreeMap<String, TokenEstimate>,
-    /// Directories whose children the harnesses already trust.
-    pub trusted_parents: Vec<PathBuf>,
+    /// The main repository root: the harnesses key their trust on it, also
+    /// for a linked worktree.
+    pub trust_root: Option<PathBuf>,
+    /// What each candidate harness that asks for trust has recorded for
+    /// `trust_root` (PRE-14).
+    pub trust: Vec<HarnessTrust>,
 }
 
 impl PreflightPlan {
@@ -147,7 +151,7 @@ pub enum CheckStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckResult {
-    /// `"PRE-01"` .. `"PRE-13"`.
+    /// `"PRE-01"` .. `"PRE-14"`.
     pub id: String,
     pub status: CheckStatus,
     pub detail: String,
@@ -157,7 +161,7 @@ pub struct CheckResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreflightReport {
     pub schema_version: String,
-    /// PRE-01..PRE-13, in order.
+    /// PRE-01..PRE-14, in order.
     pub checks: Vec<CheckResult>,
     pub safe_n: u32,
     pub waves: u32,
@@ -215,6 +219,7 @@ pub fn evaluate(plan: &PreflightPlan, snapshot: &MachineSnapshot) -> PreflightRe
         pre_11_storage(plan.storage_probe),
         harness_check("PRE-12", plan, "the round can start without refusal"),
         pre_13_herdr(plan),
+        pre_14_trust(plan),
     ];
     let passed = checks.iter().all(|c| c.status != CheckStatus::Fail);
     let environment_digest = digest_json(&json!({
@@ -903,14 +908,9 @@ fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 fn pre_13_herdr(plan: &PreflightPlan) -> CheckResult {
-    let root = plan.config.worktree_root.as_deref();
-    let trusted = root.is_some_and(|r| plan.trusted_parents.iter().any(|p| r.starts_with(p)));
     let measured = json!({
         "herdr_reachable": plan.herdr_reachable,
         "horch_exe": plan.horch_exe,
-        "worktree_root": root,
-        "trusted_parents": plan.trusted_parents,
-        "worktree_root_trusted": trusted,
     });
     let mut problems = Vec::new();
     if !plan.herdr_reachable {
@@ -919,10 +919,7 @@ fn pre_13_herdr(plan: &PreflightPlan) -> CheckResult {
     if plan.horch_exe.is_none() {
         problems.push("the horch executable was not found");
     }
-    if !problems.is_empty() {
-        return check("PRE-13", CheckStatus::Fail, problems.join("; "), measured);
-    }
-    if trusted {
+    if problems.is_empty() {
         check(
             "PRE-13",
             CheckStatus::Pass,
@@ -930,13 +927,265 @@ fn pre_13_herdr(plan: &PreflightPlan) -> CheckResult {
             measured,
         )
     } else {
-        // Risk 2: a harness may stop at a workspace-trust prompt in a new
-        // directory. The candidate deadline turns a stall into a data point.
-        check(
-            "PRE-13",
+        check("PRE-13", CheckStatus::Fail, problems.join("; "), measured)
+    }
+}
+
+// ─── PRE-14 harness trust ───────────────────────────────────────────────────
+
+/// What a harness has recorded about the repository root. A harness that
+/// has not trusted it stops a new candidate pane at a trust dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustState {
+    Trusted,
+    Untrusted,
+    /// horch cannot read the harness's decision.
+    Unknown,
+}
+
+/// One harness's trust in the repository root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessTrust {
+    /// [`HarnessKind::as_str`].
+    pub harness: String,
+    pub state: TrustState,
+    /// Why, naming the store file. Never any content of the file: it can
+    /// hold tokens.
+    pub reason: String,
+}
+
+impl HarnessTrust {
+    fn new(harness: HarnessKind, state: TrustState, reason: impl Into<String>) -> Self {
+        HarnessTrust {
+            harness: harness.as_str().to_string(),
+            state,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Whether `harness` shows a trust dialog on its first launch in a
+/// repository. opencode, pi and prime have no trust step.
+pub fn asks_for_trust(harness: HarnessKind) -> bool {
+    matches!(
+        harness,
+        HarnessKind::Claude | HarnessKind::Codex | HarnessKind::Antigravity
+    )
+}
+
+/// The store file names the reasons use.
+pub const CLAUDE_TRUST_FILE: &str = "~/.claude.json";
+pub const CODEX_TRUST_FILE: &str = "$CODEX_HOME/config.toml";
+
+/// Claude's trust in `roots` (the root and its canonical form): the key
+/// `projects["<root>"].hasTrustDialogAccepted` is `true` in
+/// `~/.claude.json`. `file` is the file text, `None` when it does not exist.
+/// A parent folder's entry does not count: Claude keys trust on the
+/// repository root.
+pub fn claude_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
+    let claude = HarnessKind::Claude;
+    let Some(text) = file else {
+        return HarnessTrust::new(
+            claude,
+            TrustState::Untrusted,
+            format!("{CLAUDE_TRUST_FILE} does not exist"),
+        );
+    };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
+        return HarnessTrust::new(
+            claude,
+            TrustState::Unknown,
+            format!("{CLAUDE_TRUST_FILE} is not valid JSON"),
+        );
+    };
+    let accepted = roots.iter().any(|root| {
+        doc.get("projects")
+            .and_then(|p| p.get(root.to_string_lossy().as_ref()))
+            .and_then(|e| e.get("hasTrustDialogAccepted"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    });
+    if accepted {
+        HarnessTrust::new(
+            claude,
+            TrustState::Trusted,
+            format!("{CLAUDE_TRUST_FILE} trusts the repository root"),
+        )
+    } else {
+        HarnessTrust::new(
+            claude,
+            TrustState::Untrusted,
+            format!("{CLAUDE_TRUST_FILE} has no accepted trust for the repository root"),
+        )
+    }
+}
+
+/// Codex's trust in `roots`: a table `[projects."<root>"]` with
+/// `trust_level = "trusted"` in `$CODEX_HOME/config.toml`. `file` is the file
+/// text, `None` when it does not exist.
+pub fn codex_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
+    let codex = HarnessKind::Codex;
+    let Some(text) = file else {
+        return HarnessTrust::new(
+            codex,
+            TrustState::Untrusted,
+            format!("{CODEX_TRUST_FILE} does not exist"),
+        );
+    };
+    let roots: Vec<String> = roots
+        .iter()
+        .map(|r| r.to_string_lossy().into_owned())
+        .collect();
+    let mut in_root = false;
+    let mut trusted = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_root = toml_project_header(line).is_some_and(|p| roots.contains(&p));
+        } else if in_root {
+            if let Some(level) = toml_string_value(line, "trust_level") {
+                trusted = level == "trusted";
+            }
+        }
+    }
+    if trusted {
+        HarnessTrust::new(
+            codex,
+            TrustState::Trusted,
+            format!("{CODEX_TRUST_FILE} trusts the repository root"),
+        )
+    } else {
+        HarnessTrust::new(
+            codex,
+            TrustState::Untrusted,
+            format!("{CODEX_TRUST_FILE} has no trust_level = \"trusted\" for the repository root"),
+        )
+    }
+}
+
+/// The path of a `[projects."<path>"]` (or `[projects.'<path>']`) header.
+fn toml_project_header(line: &str) -> Option<String> {
+    let inner = line.strip_prefix('[')?.trim_start();
+    let rest = inner
+        .strip_prefix("projects")?
+        .trim_start()
+        .strip_prefix('.')?;
+    let rest = rest.trim_start();
+    let (key, after) = toml_quoted(rest)?;
+    (after.trim() == "]").then_some(key)
+}
+
+/// `"<value>"` or `'<value>'` for `key = ...`, `None` for any other line.
+fn toml_string_value(line: &str, key: &str) -> Option<String> {
+    let rest = line.strip_prefix(key)?.trim_start().strip_prefix('=')?;
+    toml_quoted(rest.trim_start()).map(|(value, _)| value)
+}
+
+/// A TOML basic (`"..."`, with `\\` and `\"` escapes) or literal (`'...'`)
+/// string at the start of `text`, and the text after it.
+fn toml_quoted(text: &str) -> Option<(String, &str)> {
+    let mut chars = text.char_indices();
+    let (_, quote) = chars.next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut escaped = false;
+    for (i, c) in chars {
+        if quote == '"' && escaped {
+            out.push(c);
+            escaped = false;
+        } else if quote == '"' && c == '\\' {
+            escaped = true;
+        } else if c == quote {
+            return Some((out, &text[i + c.len_utf8()..]));
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
+/// The one-time command that records `harness`'s trust in `root`. horch
+/// never writes a trust store: the operator accepts trust.
+pub fn trust_fix(harness: HarnessKind, root: &Path) -> String {
+    let quoted = format!("'{}'", root.to_string_lossy().replace('\'', "'\\''"));
+    match harness {
+        HarnessKind::Claude => {
+            format!("cd {quoted} && claude  (choose \"Yes, I trust this folder\", then exit)")
+        }
+        HarnessKind::Codex => {
+            format!("cd {quoted} && codex  (choose \"Trust and continue\", then exit)")
+        }
+        HarnessKind::Antigravity => {
+            format!("cd {quoted} && agy  (accept the trust question, then exit)")
+        }
+        other => format!(
+            "cd {quoted} && {}  (accept the trust question, then exit)",
+            other.as_str()
+        ),
+    }
+}
+
+fn pre_14_trust(plan: &PreflightPlan) -> CheckResult {
+    let mut asking: Vec<HarnessKind> = plan
+        .candidates
+        .iter()
+        .map(|c| c.harness)
+        .filter(|h| asks_for_trust(*h))
+        .collect();
+    asking.sort_unstable_by_key(|h| h.as_str());
+    asking.dedup();
+    let measured = json!({
+        "trust_root": plan.trust_root,
+        "trust": plan.trust,
+    });
+    if asking.is_empty() {
+        return check(
+            "PRE-14",
+            CheckStatus::Pass,
+            "no candidate harness asks for trust",
+            measured,
+        );
+    }
+    let Some(root) = plan.trust_root.as_deref() else {
+        return check(
+            "PRE-14",
             CheckStatus::Warn,
-            "worktrees are not under a trusted directory; harnesses may stop at a \
-             workspace-trust prompt (use --worktree-root)",
+            "the repository root is unknown, so harness trust was not checked",
+            measured,
+        );
+    };
+    let mut untrusted = Vec::new();
+    let mut unknown = Vec::new();
+    for harness in asking {
+        let found = plan.trust.iter().find(|t| t.harness == harness.as_str());
+        match found.map(|t| t.state) {
+            Some(TrustState::Trusted) => {}
+            Some(TrustState::Untrusted) => untrusted.push(format!(
+                "{} has not trusted {} ({}). Run once: {}",
+                harness.as_str(),
+                root.display(),
+                found.map(|t| t.reason.as_str()).unwrap_or_default(),
+                trust_fix(harness, root)
+            )),
+            Some(TrustState::Unknown) | None => unknown.push(format!(
+                "{} trust is unknown ({}); a trust dialog may stop its panes",
+                harness.as_str(),
+                found.map(|t| t.reason.as_str()).unwrap_or("not checked")
+            )),
+        }
+    }
+    if !untrusted.is_empty() {
+        check("PRE-14", CheckStatus::Fail, untrusted.join("; "), measured)
+    } else if !unknown.is_empty() {
+        check("PRE-14", CheckStatus::Warn, unknown.join("; "), measured)
+    } else {
+        check(
+            "PRE-14",
+            CheckStatus::Pass,
+            format!("every candidate harness trusts {}", root.display()),
             measured,
         )
     }
@@ -1038,7 +1287,8 @@ mod tests {
             artifacts_bytes: 0,
             local_model_bytes: 0,
             expected_tokens: BTreeMap::new(),
-            trusted_parents: Vec::new(),
+            trust_root: None,
+            trust: Vec::new(),
         };
         assert_eq!(pre_07_providers(&plan).status, CheckStatus::Pass);
         for state in ["tight", "unknown", "cooling", "exhausted", "broken"] {
