@@ -48,6 +48,7 @@ do the asset half through `ue-editor-scripting` when the task allows it.
 Keep the cost visible: say what a change adds per frame, per instance or per
 spawned system, and prefer a parameter on an existing material or system to
 a new one.
+Blender work (models, collision, LODs, rigs) goes to `blender-artist`; you import its exports.
 
 Standing rules for Unreal work:
 1. Read `.agents/ue-project-context.md` first. If it is missing, send

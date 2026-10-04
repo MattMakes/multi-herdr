@@ -178,6 +178,21 @@ shares the LFS objects in the common `.git/lfs`. The recommended
 `.gitattributes` and the full rules are in
 [`skills/ue-build-verify/references/git-lfs.md`](../skills/ue-build-verify/references/git-lfs.md).
 
+## The Blender teammate
+
+| teammate | phase | agent, model, effort | use for |
+|---|---|---|---|
+| `blender-artist` | implementation | claude, opus, medium | Blender models, retopology, UVs, collision, LODs, rigs; FBX exports for the UE team |
+
+`offer_when: ["*.blend", "*.uproject"]`. It drives Blender through the
+official Blender Lab MCP server, pinned by commit, with no telemetry and no
+asset downloads. Its headless tools need only a `blender` binary (on PATH,
+or `BLENDER_PATH`); the live tools need Blender 5.1+ with the Blender Lab MCP
+add-on. It carries `blender-ue-pipeline` and names `ue-editor-scripting`. It
+exports to a source-art folder and never writes `.uasset`; `ue-technical-artist`
+or `ue-tools-engineer` imports. No fallback: Codex has no MCP parity here.
+Research and the server choice: [`ai_docs/reports/finish/blender.md`](../ai_docs/reports/finish/blender.md).
+
 ## The Swift and Apple team
 
 Seven specialists staff Swift and Apple-platform work. Each sets

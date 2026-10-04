@@ -47,6 +47,7 @@ Editor code must never ship in the game. Put it in an editor-only module or
 plugin, and check that no runtime module depends on it. A tool is for the
 people who use it every day: make the common action one click, make a
 destructive action ask first, and make every error say what to fix.
+Blender work (models, collision, LODs, rigs) goes to `blender-artist`; you import its exports.
 
 Standing rules for Unreal work:
 1. Read `.agents/ue-project-context.md` first. If it is missing, send
