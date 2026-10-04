@@ -515,6 +515,37 @@ fn cmp_09_gates_per_candidate_with_timeouts() {
     assert_eq!(report.mechanical_score, 0.0);
 }
 
+/// A gate that passes but leaves a child in its process group: the
+/// leader is reaped first, no process has its pid, so the group is still
+/// the gate's and the child is killed.
+#[cfg(unix)]
+#[test]
+fn cmp_09_a_passed_gates_background_child_is_killed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (report, worktree, _) = validate_in(
+        &tmp,
+        |_| {},
+        |artifacts| {
+            CommandValidator::new(
+                vec![gate(
+                    "leaves",
+                    "sleep 30 >/dev/null 2>&1 & echo $! > sleep.pid",
+                    10_000,
+                )],
+                artifacts,
+                BTreeSet::new(),
+            )
+        },
+    );
+    assert_eq!(report.gates[0].status, GateStatus::Passed);
+    let pid: i32 = read(&worktree.join("sleep.pid")).trim().parse().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while pid_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!pid_alive(pid), "sleep {pid} outlived its passed gate");
+}
+
 #[test]
 fn sec_07_gates_only_from_config() {
     let tmp = tempfile::tempdir().unwrap();

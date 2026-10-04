@@ -91,16 +91,23 @@ fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
-/// Stop the collector a test started, by the pid in `collector.json`.
+/// Stop the collector a test started, by the pid in `collector.json`, and
+/// only while that pid still has the recorded start time: a collector that
+/// has ended leaves its file, and its pid can name another program.
 /// Never panics, so it is safe to call from `Drop` while a test unwinds.
 #[cfg(unix)]
 fn stop_collector_in(state: &Path) {
     let info = state.join("telemetry/collector.json");
-    if let Some(pid) = std::fs::read_to_string(&info)
+    let record = std::fs::read_to_string(&info)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v["pid"].as_i64())
-    {
+        .unwrap_or(Value::Null);
+    let pid = record["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+    let start = record["pid_start"].as_u64();
+    if let (Some(pid), Some(start)) = (pid, start) {
+        if !horch_core::procid::is_same(pid, start) {
+            return;
+        }
         let _ = std::process::Command::new("/bin/kill")
             .arg(pid.to_string())
             .status();
