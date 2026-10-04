@@ -806,7 +806,7 @@ pub struct DecisionRequest { pub api: String, pub model: String, pub state: serd
                              pub questions: BTreeMap<String, Question> }
 pub struct Question { #[serde(rename = "type")] pub kind: QuestionKind, pub instructions: String,
                       pub options: Vec<String>,               // skip if empty
-                      pub criteria: Option<serde_json::Value> } // SPEC-TODO(System One criteria semantics)
+                      pub criteria: Option<serde_json::Value> } // opaque; see "System One criteria" below
 pub enum QuestionKind { Choice, Score, Noul }                  // serde lowercase
 pub struct DecisionResponse { pub answers: BTreeMap<String, Answer>, pub usage: Option<serde_json::Value> }
 pub struct Answer { pub choice: Option<String>, pub probabilities: BTreeMap<String, f64>, pub confidence: Option<f64> }
@@ -818,6 +818,18 @@ pub struct TeacherRef { pub id: String, pub probabilities: Option<BTreeMap<Strin
 impl TeacherRef { pub fn none() -> TeacherRef; }               // {"id":"none","probabilities":null}
 pub struct Inert;                                              // decide → None, id → "none"
 ```
+
+**System One criteria** (`teacher/system_one.rs:Question.criteria`). The
+field is an optional JSON value of any type. horch treats it as opaque: it
+serializes the value unchanged, omits the key when it is `None`, and
+never reads, validates or interprets it. horch sets `criteria: None` in
+every question it builds (`dataset/export.rs`, the `best_worker` and
+`quality:<config_id>` questions), so no export row carries criteria. The
+reason: OD4 keeps Clef and Laya inert, and the System One wire details stay
+unverified until Clef is enabled (master plan, open item 7). A later unit
+that enables Clef defines the shape and versions the API. Test:
+`exp_01_system_one_serde_shape` pins the round trip of a criteria object
+and the omitted key.
 
 ### 4.10 Export row (`dataset/export.rs`, B6)
 

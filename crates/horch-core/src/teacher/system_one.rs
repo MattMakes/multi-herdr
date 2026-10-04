@@ -23,7 +23,8 @@ pub struct Question {
     pub instructions: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
-    // SPEC-TODO(System One criteria semantics): the shape of `criteria` is unknown.
+    /// Opaque, passed through unchanged; horch never reads it and writes
+    /// `None` in every exported question. Dataset design §4.9.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub criteria: Option<serde_json::Value>,
 }
