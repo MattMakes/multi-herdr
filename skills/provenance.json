@@ -4,227 +4,117 @@
   "format": "Curated adaptations; source_sha256 hashes the full original SKILL.md bytes.",
   "skills": [
     {
-      "name": "brainstorm",
-      "source_path": "plugins/dev/skills/brainstorm/SKILL.md",
-      "source_sha256": "56c53d04fa2e2ee15a092a9a237a696f5f678edd8b4accca08a66e1ee96bdaa0",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "research-codebase",
-      "source_path": "plugins/dev/skills/research-codebase/SKILL.md",
-      "source_sha256": "092deb05eee4a2a30c0c750b0db6979db636bff39fd6cdbaec46a2e6864c6739",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "trace",
-      "source_path": "plugins/dev/skills/trace/SKILL.md",
-      "source_sha256": "607ff0e84ba435363e53287081b0f1979bdcfc7f01d24d69ab0f61a2339e0da0",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "create-plan",
-      "source_path": "plugins/dev/skills/create-plan/SKILL.md",
-      "source_sha256": "c2bbdd681afa98a41ef43f298494cb448e2b8219978715ab40135e1f38357c51",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "pre-flight",
-      "source_path": "plugins/tools/skills/pre-flight/SKILL.md",
-      "source_sha256": "2784572438d971643bb00755c49147839a736f7a27888777776ba8f65b1bf209",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "execute",
-      "source_path": "plugins/dev/skills/execute-plan/SKILL.md",
-      "source_sha256": "5f153f9ef33f67644afb0633188af04a9bc4faac592a06d1d3a36a7f74f5f258",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "tdd",
-      "source_path": "plugins/dev/skills/tdd/SKILL.md",
-      "source_sha256": "3e75572a66b7619b7557f82d3cb7ffac9d406970d2abb3c371426d9789060084",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "debug",
-      "source_path": "plugins/dev/skills/debug/SKILL.md",
-      "source_sha256": "7ecb31c6eb1c48a14eca6db85f4b4abf0d3b8b4455247478924b4b8a6a3300be",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "check",
-      "source_path": "plugins/dev/skills/check-implementation/SKILL.md",
-      "source_sha256": "004ecef7d46f865854783bb689c1282cf1ccea01fb08ccec5613dbef13d260be",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "code-analysis",
-      "source_path": "plugins/code/skills/complexity-sweep/SKILL.md",
-      "source_sha256": "1518af1001a596f50e96c7a7438b3ecbed9fd1ea1317d4448bbd2b3869f92d18",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "code-review",
-      "source_path": "plugins/dev/skills/review-git-changes/SKILL.md",
-      "source_sha256": "9af6722a59f2fab1fd9eab74496d8b196aa89aaba50ebfae9cfc9710e11da952",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "security-review",
-      "source_path": "plugins/code/skills/security-sweep/SKILL.md",
-      "source_sha256": "0657c72feacf53b91c407c3d8656425935d5ac7f582baf29a7de04ffcf7d57f5",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "handoff",
-      "source_path": "plugins/dev/skills/whats-next/SKILL.md",
-      "source_sha256": "7fdb41074e2868707e89c41d1f415f3422d6ce8718180d3076ba95b55e940814",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "document",
-      "source_path": "plugins/dev/skills/document-project/SKILL.md",
-      "source_sha256": "3b9a94ea7b7d48b52475236973399e555d61d3d181350604cc926e1f1d9f7849",
-      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
-    },
-    {
-      "name": "orchestrate",
-      "source_path": null,
-      "source_sha256": null,
-      "adaptation": "Original to this repository. Reconciled from the retired external herdr-orchestrator and herdr-worker skills against the horch CLI."
-    },
-    {
-      "name": "skill-creator",
+      "name": "app-intents",
       "sources": [
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/LICENSE.txt",
-          "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/SKILL.md",
+          "sha256": "fb712c0ec6d8d6d3ddb6b5cfee4287b9b9a4c4bd1c1c8b66b861d740ba5a2adc",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/SKILL.md",
-          "sha256": "dcd4803e61e913e6fc27294184cd3a71f09f5e924ff20c8a9a20173e7b3c2bcf",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/anti-patterns.md",
+          "sha256": "5df2315d6f132cd268610d3ff44d9e822c29cef98d47fe879653cb91a985233b",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/agents/analyzer.md",
-          "sha256": "bf68f4cac5a56c673a928c2e6d619586c5b93ea364026ab37547772cb45a663a",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/assistant-schemas.md",
+          "sha256": "30f462ae86a5be48d50304a4e4fcb115dc905ba0478f11edb0cda4cce3e8458f",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/agents/comparator.md",
-          "sha256": "fe1fc9787c495d864c5d6eada47396478572325fde1b33a96d78bf4b849b7a3e",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/dependencies.md",
+          "sha256": "c125da4c9d4fa60d99e5b1b42ddab18e5fb0138d0aa8a53fd6a7b9a0aa88c39f",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/agents/grader.md",
-          "sha256": "57134da0c1a4eea33fbd74a1c9c44aa814f07d6bc64de303edb586f941e5d21a",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/entities.md",
+          "sha256": "8c3132af45c29da15bd98287cfd2c8691364388f61840a4ac4f1ecbb5842bb15",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/assets/eval_review.html",
-          "sha256": "ce477dcc74dc1c0d1d3352646a79167b5a63634e936b1019160025065974e452",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/fundamentals.md",
+          "sha256": "d98c7088c4cb944f6c2f2ac6e4ad96ee11402b9f697b278b78cf19a4e25a51b9",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/eval-viewer/generate_review.py",
-          "sha256": "fc9d1b9243fe5ab6012ebd579bd76d0035de1b79fd3b969de114defab26478fb",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/long-running-and-execution.md",
+          "sha256": "52ec173396e5464097b5b54ee9f6b917e9920e4ca88b7ea66ac781bc1c877eee",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/eval-viewer/viewer.html",
-          "sha256": "a53213426ee1100441d701a3a0d49cda7a842f992d2c36463f4d3cc0258575fa",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/onscreen-awareness.md",
+          "sha256": "15de75f6b2b673346d7ef967877052c351d85d1acffa206fbeb73ab08933399f",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/references/schemas.md",
-          "sha256": "8e8876180a8989b406a4d3edddf875b04cdfd5805cc8616686d552b11ce4455f",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/open-and-snippet-intents.md",
+          "sha256": "b8589667561ceff6148eb8789e2f500069627acb2a0668006d559224e626b4cd",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/scripts/__init__.py",
-          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/parameters.md",
+          "sha256": "d93a7872c5f198dbfb69425b92570eca44fe803c72e26908688d1a7149b0e531",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/scripts/aggregate_benchmark.py",
-          "sha256": "123ef128ea5ccc01a4b1ac212ef5567f21e9c13d3d240609780beeb3200c49aa",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/shortcuts-and-siri.md",
+          "sha256": "c950209c1311b7adc0cf4e3a697c1e4e8b1149d05aafccf93cd3400294b19708",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/scripts/generate_report.py",
-          "sha256": "13df7118a3c50c83c4c3250a606d5f2b20b25a3d44cbc392b3d669ec75281453",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/siri-intelligence.md",
+          "sha256": "8d48e3008fd8afc3408f279bc23957dfa3375194e618c11012fa9ee21fd4c666",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/scripts/improve_description.py",
-          "sha256": "87d864570220b699fac52da309d2d6efdb060647bfebc74f768128e646accf80",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/spotlight.md",
+          "sha256": "c40bd01142755c99545a4d65559838722ea301c64ee1889faa977d0aff2ece9a",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/scripts/package_skill.py",
-          "sha256": "1a33059b0db1ef73375d46d513e5ea81369d2e8838c970597b0d52ddef8d1c0f",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/testing-intents.md",
+          "sha256": "615f169a1c263b0c0d6759eccb2136c44006e88011f572eb074bb6bb905f88a1",
+          "license": "MIT"
         },
         {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/scripts/quick_validate.py",
-          "sha256": "67cf5703402013936c8fb75ad6a1afecd8841d45cc5e606b634eb05825fde365",
-          "license": "Apache-2.0"
-        },
-        {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/scripts/run_eval.py",
-          "sha256": "43e3b8f80dbf69c343967ba77e268fae991d9fa3ed68b32a0ff02532cd48657f",
-          "license": "Apache-2.0"
-        },
-        {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/scripts/run_loop.py",
-          "sha256": "7bd6f674203168520517eec94c55f493c0d154339b061b4d7c0f0dad187d0f21",
-          "license": "Apache-2.0"
-        },
-        {
-          "repository": "https://github.com/anthropics/claude-plugins-official",
-          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-          "path": "plugins/skill-creator/skills/skill-creator/scripts/utils.py",
-          "sha256": "3af8ae62c40c73ab712207436a0d9a981e845f25c5a7040229eb189cc8e45bb1",
-          "license": "Apache-2.0"
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
         }
       ],
-      "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase.",
-      "vendored": true
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
     },
     {
       "name": "app-store-changelog",
@@ -652,6 +542,111 @@
       "vendored": false
     },
     {
+      "name": "background-execution",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/SKILL.md",
+          "sha256": "5b8afdb49dcaca10dc287f1e027429f6c3bb50da6f0ef5b6a86c17cbd0429841",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/anti-patterns.md",
+          "sha256": "460272c3989dee57be748a90726e958292fca5b90f32f54b1d7e51ab47921e84",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-audio.md",
+          "sha256": "e68cacf3a83bbe74ee3fd6f9b4f1995c1cf58ba69705f858218b3841b8c79cb8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-modes.md",
+          "sha256": "d3b384283c4374505b5fd42bca81fef1eb068e910f535a7f13c6f528e3ea547b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-push.md",
+          "sha256": "d366b5a281d37e1074c41e5a1db66dc5772899deb9e600351c7322278851c286",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-url-session.md",
+          "sha256": "f954cad1db20c5c2e178165c1ed4c69055e62e5c9dd0ea3d45cebd672f250fe5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/bg-task-scheduler.md",
+          "sha256": "b4a29976525d00fc5aa9d8b48002871b4075e4a1c149dd19d204c66c074266dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/fundamentals.md",
+          "sha256": "e140da761fa3231a99dd4ded5ff4946ba08a46fd4bd66adee626e4571032b74b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/macos-background.md",
+          "sha256": "24a0a2704b84aaef1aab2b0353973302626deec2cb000cf1d3460117530b98a4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/swiftui-background-tasks.md",
+          "sha256": "e3e61064716e4f11042ce98aa5775f2831666a44795e927b247d53ae4bd31c65",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/task-assertions.md",
+          "sha256": "636bc4d054a6ead73bf9fd4137065080299550e72645220cd7d3ae57b6830322",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/testing-and-debugging.md",
+          "sha256": "76fa50aecffc9c3fccb3607d76767417cf66602afed732aa3e0a4b1b083b6cab",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
+    },
+    {
+      "name": "brainstorm",
+      "source_path": "plugins/dev/skills/brainstorm/SKILL.md",
+      "source_sha256": "56c53d04fa2e2ee15a092a9a237a696f5f678edd8b4accca08a66e1ee96bdaa0",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
       "name": "brand-identity",
       "sources": [
         {
@@ -768,6 +763,36 @@
         }
       ],
       "adaptation": "Merged the ui-ux-pro-max brand skill, the non-image logo and identity guidance from its design skill, and the strategy and logo-concept method of taste-skill brandkit into one strategy-first workflow with voice, visual identity and guidelines references; scripts, image generation, presets and approval sign-off rituals dropped."
+    },
+    {
+      "name": "check",
+      "source_path": "plugins/dev/skills/check-implementation/SKILL.md",
+      "source_sha256": "004ecef7d46f865854783bb689c1282cf1ccea01fb08ccec5613dbef13d260be",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "code-analysis",
+      "source_path": "plugins/code/skills/complexity-sweep/SKILL.md",
+      "source_sha256": "1518af1001a596f50e96c7a7438b3ecbed9fd1ea1317d4448bbd2b3869f92d18",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "code-review",
+      "source_path": "plugins/dev/skills/review-git-changes/SKILL.md",
+      "source_sha256": "9af6722a59f2fab1fd9eab74496d8b196aa89aaba50ebfae9cfc9710e11da952",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "create-plan",
+      "source_path": "plugins/dev/skills/create-plan/SKILL.md",
+      "source_sha256": "c2bbdd681afa98a41ef43f298494cb448e2b8219978715ab40135e1f38357c51",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "debug",
+      "source_path": "plugins/dev/skills/debug/SKILL.md",
+      "source_sha256": "7ecb31c6eb1c48a14eca6db85f4b4abf0d3b8b4455247478924b4b8a6a3300be",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
     },
     {
       "name": "design-imagery",
@@ -1020,6 +1045,24 @@
       "adaptation": "Merged the ui-ux-pro-max design-system, ui-styling and ui-ux-pro-max skills with the stitch-skill DESIGN.md format into a token-to-code workflow with checks; CSV data became curated, contrast-measured Markdown tables; search scripts, generators, slides, fonts and canvas art dropped."
     },
     {
+      "name": "document",
+      "source_path": "plugins/dev/skills/document-project/SKILL.md",
+      "source_sha256": "3b9a94ea7b7d48b52475236973399e555d61d3d181350604cc926e1f1d9f7849",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "execute",
+      "source_path": "plugins/dev/skills/execute-plan/SKILL.md",
+      "source_sha256": "5f153f9ef33f67644afb0633188af04a9bc4faac592a06d1d3a36a7f74f5f258",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "handoff",
+      "source_path": "plugins/dev/skills/whats-next/SKILL.md",
+      "source_sha256": "7fdb41074e2868707e89c41d1f415f3422d6ce8718180d3076ba95b55e940814",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
       "name": "ios-simulator-run",
       "sources": [
         {
@@ -1234,6 +1277,275 @@
       "adaptation": "Merged the 8 GSAP skills and their examples into one workflow skill with 8 topic references; rewrote in our voice, fixed source API errors, added checks and a verification step; carried the cinematic-ui entrance map, interaction budget and camera vocabulary as GSAP recipes; dropped persuasion, duplicate lists and the cinematic research workflow."
     },
     {
+      "name": "observability",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/SKILL.md",
+          "sha256": "25003e912b696a33d0d7356b9e99f9da88cf2afadb601549a7d229b2220ff42f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/activity-tracing.md",
+          "sha256": "fd2a0c839c915e754b37e1cecfc70f3f994554429c3b0cee437aa764acf06f89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/anti-patterns.md",
+          "sha256": "183bdee5e0aead5c377ee4dabcfc1aa3bb63ba86bf90348eeb1f6e591b75dd4e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/crash-reporting.md",
+          "sha256": "0feb28dcefef6b6c54306e02c0ffa79cb91436d5f26d63189d5a62724828d712",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/fundamentals.md",
+          "sha256": "d02db8c623ba23571106ae771bafcd6c2184729712e1cab310e687084470c1e5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/log-cli-and-console.md",
+          "sha256": "6f22b70dd00b1063480499a94a1f7345f17305fd2a3e8070360ee622b24131d5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/logger-api.md",
+          "sha256": "b2f91eb387effd4a9ef7f663128036b2b54c4b1a1f9f776b71faca6e0536b1d7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/metrickit.md",
+          "sha256": "cb50fcd23588ba3505a7b9a952bfae934aa8557ed1db1261b8ff905a15d96fcc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/network-telemetry.md",
+          "sha256": "02c749e44b6fccbbeb983ea3a01aa5e33db3d00da0cd75ac6143624a3312336b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/oslogstore.md",
+          "sha256": "ab7de1c20c59f30b238e267d421614bfdb8684cf82efaa3268d1191a3c304a76",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/production-monitoring.md",
+          "sha256": "6890d9a0df22716edce56e10c22562e6c6641eb201eecacdb037be25389b4952",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/signposts.md",
+          "sha256": "a0b5444c705c3a8993bb0a18cd4848581c1eb6852236e07410d09ee7b8933c76",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/symbolication.md",
+          "sha256": "73f425a30f3092e64d54636f7923c4aca422feaaf7b8481a5a9b8b7dca26ec99",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/third-party-sdks.md",
+          "sha256": "667f61fe118560b987a00137e10d3b3d119cc97686c3c29319eced050fa58aa8",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "None. Verbatim copy of SKILL.md and references with the upstream MIT LICENSE. Vendored because SKILL.md is 20 KB, over the 12 KB budget. Attached to Swift teammates by name; belongs to no phase.",
+      "vendored": true
+    },
+    {
+      "name": "orchestrate",
+      "source_path": null,
+      "source_sha256": null,
+      "adaptation": "Original to this repository. Reconciled from the retired external herdr-orchestrator and herdr-worker skills against the horch CLI."
+    },
+    {
+      "name": "pre-flight",
+      "source_path": "plugins/tools/skills/pre-flight/SKILL.md",
+      "source_sha256": "2784572438d971643bb00755c49147839a736f7a27888777776ba8f65b1bf209",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "research-codebase",
+      "source_path": "plugins/dev/skills/research-codebase/SKILL.md",
+      "source_sha256": "092deb05eee4a2a30c0c750b0db6979db636bff39fd6cdbaec46a2e6864c6739",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "security-review",
+      "source_path": "plugins/code/skills/security-sweep/SKILL.md",
+      "source_sha256": "0657c72feacf53b91c407c3d8656425935d5ac7f582baf29a7de04ffcf7d57f5",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "skill-creator",
+      "sources": [
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/LICENSE.txt",
+          "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/SKILL.md",
+          "sha256": "dcd4803e61e913e6fc27294184cd3a71f09f5e924ff20c8a9a20173e7b3c2bcf",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/agents/analyzer.md",
+          "sha256": "bf68f4cac5a56c673a928c2e6d619586c5b93ea364026ab37547772cb45a663a",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/agents/comparator.md",
+          "sha256": "fe1fc9787c495d864c5d6eada47396478572325fde1b33a96d78bf4b849b7a3e",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/agents/grader.md",
+          "sha256": "57134da0c1a4eea33fbd74a1c9c44aa814f07d6bc64de303edb586f941e5d21a",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/assets/eval_review.html",
+          "sha256": "ce477dcc74dc1c0d1d3352646a79167b5a63634e936b1019160025065974e452",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/eval-viewer/generate_review.py",
+          "sha256": "fc9d1b9243fe5ab6012ebd579bd76d0035de1b79fd3b969de114defab26478fb",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/eval-viewer/viewer.html",
+          "sha256": "a53213426ee1100441d701a3a0d49cda7a842f992d2c36463f4d3cc0258575fa",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/references/schemas.md",
+          "sha256": "8e8876180a8989b406a4d3edddf875b04cdfd5805cc8616686d552b11ce4455f",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/__init__.py",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/aggregate_benchmark.py",
+          "sha256": "123ef128ea5ccc01a4b1ac212ef5567f21e9c13d3d240609780beeb3200c49aa",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/generate_report.py",
+          "sha256": "13df7118a3c50c83c4c3250a606d5f2b20b25a3d44cbc392b3d669ec75281453",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/improve_description.py",
+          "sha256": "87d864570220b699fac52da309d2d6efdb060647bfebc74f768128e646accf80",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/package_skill.py",
+          "sha256": "1a33059b0db1ef73375d46d513e5ea81369d2e8838c970597b0d52ddef8d1c0f",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/quick_validate.py",
+          "sha256": "67cf5703402013936c8fb75ad6a1afecd8841d45cc5e606b634eb05825fde365",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/run_eval.py",
+          "sha256": "43e3b8f80dbf69c343967ba77e268fae991d9fa3ed68b32a0ff02532cd48657f",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/run_loop.py",
+          "sha256": "7bd6f674203168520517eec94c55f493c0d154339b061b4d7c0f0dad187d0f21",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/utils.py",
+          "sha256": "3af8ae62c40c73ab712207436a0d9a981e845f25c5a7040229eb189cc8e45bb1",
+          "license": "Apache-2.0"
+        }
+      ],
+      "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase.",
+      "vendored": true
+    },
+    {
       "name": "swift-code-audit",
       "sources": [
         {
@@ -1268,741 +1580,116 @@
       "adaptation": "Heavily adapted from ios-code-audit and renamed: the three parallel Explore agents become three sequential passes the worker runs itself (references/agent-prompts.md becomes references/pass-checklists.md); the report goes to a path the orchestrator chooses, not CODE_AUDIT.md in the repository root; the swiftui-expert-skill step is dropped and its SwiftUI checks move into pass C; performance profiling points to the bundled swiftui-performance-audit; the Xcode MCP bridge call becomes the XcodeBuildMCP build tool or xcodebuild. Kept: compiler warnings as ground truth, verify every Critical claim, group findings by root cause, the concurrency and API-modernity checklist, the 12 numbered report sections. Attached by name; belongs to no phase."
     },
     {
-      "name": "swift-security-expert",
+      "name": "swift-concurrency-pro",
       "sources": [
         {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/SKILL.md",
-          "sha256": "a915770a1a864c1cfb94987334df63dc7d6904ffba14223a51d78ff3d6037e37",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/biometric-authentication.md",
-          "sha256": "2956b4e73716473899fa5c116eecb6802ff3c0654ff376be0863edcb1c655606",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/certificate-trust.md",
-          "sha256": "ac5bd280a60522a986fbd29e44657770d766086d48cf8ab67d3aa1500bd0d76f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/common-anti-patterns.md",
-          "sha256": "1d46859f986afe362d248add8b47017d5cc52469c8a949ea3ab1437b105aab17",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/compliance-owasp-mapping.md",
-          "sha256": "37782e24e5302a21a33024c46122fd895ed6e18d8fe333aceea71300edbf692f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/credential-storage-patterns.md",
-          "sha256": "04ec5e12d18cc1946340169829fefa7ecdc4fa97c34ae04aec7f922969a4db27",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/cryptokit-public-key.md",
-          "sha256": "084d03b851ef99a8108b2c40292086c1b66471c960348a9a387b5769a294154b",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/cryptokit-symmetric.md",
-          "sha256": "05feefa3af7c048d481ea5ed3035ad5dc655d2e1c62c61e05b755f93bd8b762f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/keychain-access-control.md",
-          "sha256": "24ff0773803c347fdcaea007ff78eea3d3508f8d0fcf9463b4cf60ee6f1cd11f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/keychain-fundamentals.md",
-          "sha256": "48dae59a6f9505c2d6fd859449769090f3e1de1c26e7f874d744b92651145ffa",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/keychain-item-classes.md",
-          "sha256": "9332ef01b854f4df8e1e4fdbd08af38422ea4b694d090334782604a17619b506",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/keychain-sharing.md",
-          "sha256": "2c5bce7a1559558dec7d372d3cb74dca3235b4510bb9aa3814518ed109b1e780",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/migration-legacy-stores.md",
-          "sha256": "43fffbe77ef8c042cb1a58c42940ad78dbdc7af09f62eee17ec102e59ca96642",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/secure-enclave.md",
-          "sha256": "f35e8f44e085383343be8f54acb79613a715b024519d425f61f603cec685c264",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
-          "path": "swift-security-expert/references/testing-security-code.md",
-          "sha256": "8f7d0df78b83b37c1f07b25f5722a79d73242f7b7da7c7e948fed9f737c0478d",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/ivan-magda/swift-security-skill",
-          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
           "path": "LICENSE",
-          "sha256": "143b0c57ffb8d834c58dd793acc2f9bfcba56f85d610075c942dc9c8c9098d7a",
+          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/SKILL.md",
+          "sha256": "95d3098b038a38f163259cb7404070f786fed846a5e8b864e6b34fa7600247f9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/actors.md",
+          "sha256": "7a77a0f06d0040a6813ec02cd4b1360df4bcfa501f93710bfb4296de9911d64f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/async-streams.md",
+          "sha256": "589ba0dad544b28b158702e239fe6a4077b6d1484c83b8fd51290192bf1ffc9a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/bridging.md",
+          "sha256": "c8eb60dcdd90f67cb3b8b1213fc55a56dd5c4a04f465d7aff7fdbd5c451e0498",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/bug-patterns.md",
+          "sha256": "2233f58e784a9b6cf13620133485fcf7e3150192a40e713369ebbddc820dec85",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/cancellation.md",
+          "sha256": "c83b4134b44ea5a0ee06e785bd0cb85616234469833f9677297b6fcddea1e1fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/diagnostics.md",
+          "sha256": "cc2debc6f430ed13fc3be3a7ce942e55bb1cf02a9804ebfb272f295b502c9569",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/hotspots.md",
+          "sha256": "199a9fa4beea4a550b3f63e07cddd441d72fd41d1e17e6f3255071a661ce1e6d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/interop.md",
+          "sha256": "b86cd716bd22b38d718e86b37b3d7dd1225b5ce93a53f88842ff6993e93ca566",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/new-features.md",
+          "sha256": "c721a187b57e9d94112972c9685c57f7129187df2d36add4df1a9c9e9aa9e541",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/structured.md",
+          "sha256": "1655b610fd1dafb7cf42b61457ff8229117c06879d0e9cc40460f437ba97895b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/testing.md",
+          "sha256": "4a1fc1aefb572bbdbd75a502a74df795af7e2212eec6836a4f353f9b725abffc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/unstructured.md",
+          "sha256": "d8063edf18bbe5abc9c628548b0100c4dd8defe3340c017d6fa4936eca17c456",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/AvdLee/Swift-Concurrency-Agent-Skill",
+          "revision": "d5770817d2622e1585b1f7eaebc791a9cb0959c8",
+          "path": "skills/swift-concurrency/SKILL.md",
+          "sha256": "8c667b2ff988251c7c291abe046b77d7b8fcfbe3b5ed36961e25e224b1ead491",
           "license": "MIT"
         }
       ],
-      "adaptation": "Adapted SKILL.md, references verbatim: cut 36% (48,408 to 30,899 bytes) by removing the Scope Boundaries inclusion and exclusion sections (replaced by a 1-paragraph scope), Tone Rules, the Agent Self-Review Checklist, the ASCII decision tree (its branches stay as prose), output rule 10 (it cited the removed sections) and markdown table padding. 'If ambiguous, ask' becomes a message to the orchestrator. All 14 references kept, including the 3 optional ones (reasons in ai_docs/reports/domain-skills/swift-review.md). References are verbatim except key-shaped example strings, removed so that secret scanners pass: the example Stripe and Firebase keys in compliance-owasp-mapping.md, credential-storage-patterns.md and common-anti-patterns.md become <STRIPE_LIVE_SECRET_KEY> and <FIREBASE_API_KEY>; the detection grep in common-anti-patterns.md uses equivalent regex classes ([sp]k_live_, AIz[a], AK[I]A); the PEM headers in cryptokit-public-key.md become PEM labels. Simulator fix: SKILL.md Mistake #2 and the secure-enclave.md simulator paragraph and cross-validation note now agree. Apple documents SecureEnclave.isAvailable only as \"if the device supports Secure Enclave access\" and is silent on the Simulator, so both files call the Simulator value undocumented (usually false) and keep the compile-time guard. Over budget, so vendored. Attached by name; belongs to no phase.",
-      "vendored": true
-    },
-    {
-      "name": "swiftdata-testing",
-      "sources": [
-        {
-          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
-          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
-          "path": "swiftdata-testing/SKILL.md",
-          "sha256": "a8b00943508644f9eeea48269980f44f255d2089089610ed5e999dfe3b641032",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
-          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
-          "path": "swiftdata-testing/references/decimal-money-values.md",
-          "sha256": "4e5508683d92a127b3dd22f14f35d48f5e89d9d2f418fdb8855a8882d00543ed",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
-          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
-          "path": "swiftdata-testing/references/import-hash-dedup.md",
-          "sha256": "6f6c1b1b46e2692042da84d9f64fc3cfb07aee7eb8b9111837eda600e884d29f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
-          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
-          "path": "swiftdata-testing/references/mock-repositories.md",
-          "sha256": "df35e1f71fb67b10f29f43df06075fb1a5bf4cddf559e86ace06e351f8a29d84",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
-          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
-          "path": "swiftdata-testing/references/model-actor-testing.md",
-          "sha256": "a917b1ff118b6e7a83230cb19d3c140f8819a5721f86136e0c2f9af0076aee21",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
-          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
-          "path": "swiftdata-testing/references/model-container-fixtures.md",
-          "sha256": "fbc778e9b0f845e776202001a3f2c5da4c08b833a96a6d7159cf6467bfc9bd64",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
-          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
-          "path": "LICENSE",
-          "sha256": "bdfed70cd78e363685286bccdfb35820e847b5f59e6f8d7c8f57986e5538858e",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Adapted: fixed references/decimal-money-values.md (a fractional Decimal literal goes through Double; Decimal division is not exact, so splits must round to the minor unit and distribute the remainder) and the matching rules; the view-model and mock-repository guidance (SKILL.md step 2, references/mock-repositories.md) applies only when the codebase already uses view models, per the fleet house style (follow the codebase, MV in a new one); 'the user asks' becomes 'the task asks'. Other references verbatim. Attached by name; belongs to no phase."
-    },
-    {
-      "name": "swiftui-accessibility-auditor",
-      "sources": [
-        {
-          "repository": "https://github.com/rgmez/apple-accessibility-skills",
-          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
-          "path": "skills/swiftui-accessibility-auditor/SKILL.md",
-          "sha256": "9debfe924a45c4939ba0f7072b615ca7a3482fad429d0ce2f4c5b5e8b45426d7",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/rgmez/apple-accessibility-skills",
-          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
-          "path": "skills/swiftui-accessibility-auditor/checklist.md",
-          "sha256": "962a7f51ab22f7823ea0465dc1de18658cfc0a01c5ec5c78468c9e062daf8089",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/rgmez/apple-accessibility-skills",
-          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
-          "path": "LICENSE",
-          "sha256": "07bf6c0752f24eef905c4b2ff70b7f2561a084e314038d28de72b0177c5c6e82",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Path fix only: SKILL.md 'Required artifact' names `checklist.md` instead of `skills/swiftui-accessibility-auditor/checklist.md`. checklist.md and LICENSE verbatim. Attached by name to the Swift teammates; belongs to no phase."
-    },
-    {
-      "name": "swiftui-performance-audit",
-      "sources": [
-        {
-          "repository": "https://github.com/Dimillian/Skills",
-          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
-          "path": "swiftui-performance-audit/SKILL.md",
-          "sha256": "6cfb3f9f3e1938aca3eb1cf3ac9f265cca15559b0c9b3dcd3ab2e580be3cea2f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/Dimillian/Skills",
-          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
-          "path": "swiftui-performance-audit/references/code-smells.md",
-          "sha256": "c9834da9bde40952100147c7fa0dab12c21bcd762878da7c07b6cd260093ebb8",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/Dimillian/Skills",
-          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
-          "path": "swiftui-performance-audit/references/demystify-swiftui-performance-wwdc23.md",
-          "sha256": "7cffafe3903293479b73f71d822fe5209d307645d55f18d4fbbdf90a5f708d52",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/Dimillian/Skills",
-          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
-          "path": "swiftui-performance-audit/references/optimizing-swiftui-performance-instruments.md",
-          "sha256": "f3980f725406cd4158ace27e058b7b7a57478025f48d50512e99a20f9fa0fa9b",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/Dimillian/Skills",
-          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
-          "path": "swiftui-performance-audit/references/profiling-intake.md",
-          "sha256": "636ae046936183a7ac5412458926d0a8babe4e05396955d3608f9a7320913bcd",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/Dimillian/Skills",
-          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
-          "path": "swiftui-performance-audit/references/report-template.md",
-          "sha256": "c09e67323c3c0ebcacd647be9117f258d11ec58001ba0e5683c13c2bc4d21ff2",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/Dimillian/Skills",
-          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
-          "path": "swiftui-performance-audit/references/understanding-hangs-in-your-app.md",
-          "sha256": "3631b56751e5853fd04c1397f7cc5eb9f8d7f057a83509244fa82a4b57fc56fc",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/Dimillian/Skills",
-          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
-          "path": "swiftui-performance-audit/references/understanding-improving-swiftui-performance.md",
-          "sha256": "fd7a624c10af787c5673b748dee95d789ead1329e69f6471a9495682d0775643",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/Dimillian/Skills",
-          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
-          "path": "LICENSE",
-          "sha256": "df17aae89ce4705d0a6e5f7b46eeea3b9023967ecad948f8779b47039eb55a8b",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Adapted: the worker records Instruments itself (`xcrun xctrace record --template SwiftUI`, read with `xctrace export`) or messages the orchestrator, instead of asking the user (SKILL.md description, workflow steps 3-4, intake, section 3 and Verify; references/profiling-intake.md). Dropped the line that told the agent to add user-supplied files under references/. code-smells.md uses `Text(value, format:)` instead of a cached shared formatter (fleet house style). Other references verbatim. Attached by name; belongs to no phase."
-    },
-    {
-      "name": "ue-build-verify",
-      "sources": [],
-      "vendored": false,
-      "adaptation": "Own text, written in this repository. Consulted as references, no text copied: quodsoler/unreal-engine-skills at f3742d7b688690810df369802b90430324e380b9 (MIT), skills ue-testing-debugging (SKILL.md, references/automation-test-patterns.md) and ue-module-build-system (SKILL.md, references/common-build-errors.md). Flags checked against Epic's UE 5.8 documentation; evidence in ai_docs/reports/domain-skills/ue-own.md."
-    },
-    {
-      "name": "ue-editor-scripting",
-      "sources": [],
-      "vendored": false,
-      "adaptation": "Own text, written in this repository. Consulted as references, no text copied: quodsoler/unreal-engine-skills at f3742d7b688690810df369802b90430324e380b9 (MIT), skill ue-testing-debugging (SKILL.md, references/automation-test-patterns.md) for the headless editor command line. Commands and Python API names checked against Epic's UE 5.8 documentation and Unreal Python 5.8 reference; evidence in ai_docs/reports/domain-skills/ue-own.md."
-    },
-    {
-      "name": "ui-redesign",
-      "sources": [
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/SKILL.md",
-          "sha256": "59469635bbbd21acddbc664d95e8d97147f454b2d8f4a0a89c7d2c5afbe67577",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/contract.md",
-          "sha256": "2923a056b95da63d04100ac56bc8cdff6bc0a717ac3e5da5cef69eb5feb4619c",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/design-md.md",
-          "sha256": "a9368b64dd9b6e53e8c707830ce28fd8601d3195a81647ea46b6995aa3556b3c",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/slop-test.md",
-          "sha256": "6eb49fc64ca54929d2c1600e2a6014268f1a7593787c0ed3f6ecb4ac8390ad86",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/study.md",
-          "sha256": "021fe4d001b38ee87414c1bb69321d2e44b67df8ede76ecec225c41a634aab20",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/verbs/audit.md",
-          "sha256": "0a5b484453f1697a8675a7020df9159d0b4ce22f059b873501bfd82c26d6a31a",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/verbs/redesign.md",
-          "sha256": "c2830f3b7d68e9622f55d376048a5a454c5ef59d309a211e716d1142e86acbdf",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/taste-skill/SKILL.md",
-          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/redesign-skill/SKILL.md",
-          "sha256": "98ad3e5b051bfb71b2795f7e8a6aa0d32b51ee095606c098a4b2822ac07926c9",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/output-skill/SKILL.md",
-          "sha256": "e5bf48b1ae561511439cf71672209a10a88cee0968cc925909ff861dfa0a96a7",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Merged hallmark's redesign, audit and study verbs with taste-skill's redesign skill and redesign protocol into a staged, non-destructive workflow with a standalone audit checklist, safe design extraction from a URL or screenshot, and a new before/after evidence protocol; dropped hallmark stamps, logs, theme catalog and interactive gates."
-    },
-    {
-      "name": "ui-taste",
-      "sources": [
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/SKILL.md",
-          "sha256": "59469635bbbd21acddbc664d95e8d97147f454b2d8f4a0a89c7d2c5afbe67577",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/anti-patterns.md",
-          "sha256": "a36eb346ad59cafaa26119ed1e7c0bbb8aca6637209ee110eb630dd1a9307070",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/assets.md",
-          "sha256": "60929b3dc2258b69caf3012d99d174e1ad73da9645263db81a9b271cd6fd7d61",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/color.md",
-          "sha256": "31c470d16ceb17ccce290cbdd00b9e9a88f2094df8eaaefb67c86ec1e1cdb876",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/component-cookbook.md",
-          "sha256": "4d9ff4eeb675b9d668516ce5d098031d3552453b3671e50da30fb38cb9ab58bb",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/contract.md",
-          "sha256": "2923a056b95da63d04100ac56bc8cdff6bc0a717ac3e5da5cef69eb5feb4619c",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/copy.md",
-          "sha256": "703cdbf81fbef6f71d90596a32041d2a33a46fb71ba07ccf5ede6b4b1471d347",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/custom-theme.md",
-          "sha256": "da0fb051689bf9d100e50e67209566623c1fbe72e09b943248c458985c39e780",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/hero-enrichment.md",
-          "sha256": "63c14cc2c256dd78a69a1c36f4bcb764940aa7f1ba2e6dd40ca36013f8884a83",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/interaction-and-states.md",
-          "sha256": "e816eb2d067ba9f6f288a3831549da95624a05f432ed2a50f54136f27dd2d67f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/layout-and-space.md",
-          "sha256": "987f3a45f5dbe81547117a77987bcedf5376608a6412067e04337047e0c7c839",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/microinteractions.md",
-          "sha256": "613ca56c2c16e40aeb594af21fabd651732d9de63c848aee51113602525f6e64",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/motion.md",
-          "sha256": "330d056810315f65819579f8207afe402703a9192bc76a2009558a59b7c84ccf",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/responsive.md",
-          "sha256": "2bf18d72af704ca5dd3c220359a4c77c718efa19c40f62d9bff61ac4a90209b0",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/slop-test.md",
-          "sha256": "6eb49fc64ca54929d2c1600e2a6014268f1a7593787c0ed3f6ecb4ac8390ad86",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/structure.md",
-          "sha256": "ca5c0296ae428f8c4c5214407d431bbda5c453f98f2e7abdec03d644271af32b",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/themes/hum.md",
-          "sha256": "bbdd1e89a32d6b15e99493ba9497816a0915bd4e9bf150b95868db597c20e1d5",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/nutlope/hallmark",
-          "revision": "13ac0ec7e148655948100b6396439e481361d690",
-          "path": "skills/hallmark/references/typography.md",
-          "sha256": "94d7b2d2b138bd8687e09dc3dd618eaafff500b0497a6d69cb4c29b764e94b9c",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/taste-skill/SKILL.md",
-          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/taste-skill-v1/SKILL.md",
-          "sha256": "033d45af1ed23832730642f95f40ab49db7fb5222848489a6c5656144bfc6dae",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/gpt-tasteskill/SKILL.md",
-          "sha256": "2e64c269953f2656c21bf5a0fa6b4568e82fe0c72b36e8f84758e090349966a5",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/output-skill/SKILL.md",
-          "sha256": "e5bf48b1ae561511439cf71672209a10a88cee0968cc925909ff861dfa0a96a7",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/leonxlnx/taste-skill",
-          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-          "path": "skills/redesign-skill/SKILL.md",
-          "sha256": "98ad3e5b051bfb71b2795f7e8a6aa0d32b51ee095606c098a4b2822ac07926c9",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Merged hallmark and four taste-skill variants into one stack-neutral taste skill: rules per topic, ripgrep searches for named tells, measured hard gates and a six-axis rubric for review, and output-skill's complete-output rule; dropped theme and layout catalogs, dials, randomization rituals, stack-specific code and persuasion; conflicts resolved in ai_docs/reports/design-skills/skill-taste.md."
-    },
-    {
-      "name": "app-intents",
-      "sources": [
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/SKILL.md",
-          "sha256": "fb712c0ec6d8d6d3ddb6b5cfee4287b9b9a4c4bd1c1c8b66b861d740ba5a2adc",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/anti-patterns.md",
-          "sha256": "5df2315d6f132cd268610d3ff44d9e822c29cef98d47fe879653cb91a985233b",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/assistant-schemas.md",
-          "sha256": "30f462ae86a5be48d50304a4e4fcb115dc905ba0478f11edb0cda4cce3e8458f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/dependencies.md",
-          "sha256": "c125da4c9d4fa60d99e5b1b42ddab18e5fb0138d0aa8a53fd6a7b9a0aa88c39f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/entities.md",
-          "sha256": "8c3132af45c29da15bd98287cfd2c8691364388f61840a4ac4f1ecbb5842bb15",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/fundamentals.md",
-          "sha256": "d98c7088c4cb944f6c2f2ac6e4ad96ee11402b9f697b278b78cf19a4e25a51b9",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/long-running-and-execution.md",
-          "sha256": "52ec173396e5464097b5b54ee9f6b917e9920e4ca88b7ea66ac781bc1c877eee",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/onscreen-awareness.md",
-          "sha256": "15de75f6b2b673346d7ef967877052c351d85d1acffa206fbeb73ab08933399f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/open-and-snippet-intents.md",
-          "sha256": "b8589667561ceff6148eb8789e2f500069627acb2a0668006d559224e626b4cd",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/parameters.md",
-          "sha256": "d93a7872c5f198dbfb69425b92570eca44fe803c72e26908688d1a7149b0e531",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/shortcuts-and-siri.md",
-          "sha256": "c950209c1311b7adc0cf4e3a697c1e4e8b1149d05aafccf93cd3400294b19708",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/siri-intelligence.md",
-          "sha256": "8d48e3008fd8afc3408f279bc23957dfa3375194e618c11012fa9ee21fd4c666",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/spotlight.md",
-          "sha256": "c40bd01142755c99545a4d65559838722ea301c64ee1889faa977d0aff2ece9a",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "app-intents/references/testing-intents.md",
-          "sha256": "615f169a1c263b0c0d6759eccb2136c44006e88011f572eb074bb6bb905f88a1",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
-          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
-          "path": "LICENSE",
-          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "verbatim",
-      "vendored": true,
-      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
-    },
-    {
-      "name": "background-execution",
-      "sources": [
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/SKILL.md",
-          "sha256": "5b8afdb49dcaca10dc287f1e027429f6c3bb50da6f0ef5b6a86c17cbd0429841",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/anti-patterns.md",
-          "sha256": "460272c3989dee57be748a90726e958292fca5b90f32f54b1d7e51ab47921e84",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/background-audio.md",
-          "sha256": "e68cacf3a83bbe74ee3fd6f9b4f1995c1cf58ba69705f858218b3841b8c79cb8",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/background-modes.md",
-          "sha256": "d3b384283c4374505b5fd42bca81fef1eb068e910f535a7f13c6f528e3ea547b",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/background-push.md",
-          "sha256": "d366b5a281d37e1074c41e5a1db66dc5772899deb9e600351c7322278851c286",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/background-url-session.md",
-          "sha256": "f954cad1db20c5c2e178165c1ed4c69055e62e5c9dd0ea3d45cebd672f250fe5",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/bg-task-scheduler.md",
-          "sha256": "b4a29976525d00fc5aa9d8b48002871b4075e4a1c149dd19d204c66c074266dc",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/fundamentals.md",
-          "sha256": "e140da761fa3231a99dd4ded5ff4946ba08a46fd4bd66adee626e4571032b74b",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/macos-background.md",
-          "sha256": "24a0a2704b84aaef1aab2b0353973302626deec2cb000cf1d3460117530b98a4",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/swiftui-background-tasks.md",
-          "sha256": "e3e61064716e4f11042ce98aa5775f2831666a44795e927b247d53ae4bd31c65",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/task-assertions.md",
-          "sha256": "636bc4d054a6ead73bf9fd4137065080299550e72645220cd7d3ae57b6830322",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "background-execution/references/testing-and-debugging.md",
-          "sha256": "76fa50aecffc9c3fccb3607d76767417cf66602afed732aa3e0a4b1b083b6cab",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
-          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
-          "path": "LICENSE",
-          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "verbatim",
-      "vendored": true,
-      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
+      "adaptation": "Curated copy. testing.md: .serialized on a suite serializes every test in it (was: parameterized tests only). new-features.md: caller-actor nonisolated async needs NonisolatedNonsendingByDefault / Approachable Concurrency. New references/build-settings.md from AvdLee SKILL.md:16-24 (settings table and Xcode 26 note; the ask-the-developer line becomes a message to the orchestrator). SKILL.md: third-party-framework ask gate becomes a message to the orchestrator; build-settings step and reference entry added. Links to other upstream skill repositories replaced by bundled skill names.",
+      "vendored": false
     },
     {
       "name": "swift-focusengine-pro",
@@ -2125,412 +1812,6 @@
       "notes": "Upstream repository root is the skill; the directory is named for the skill. horch accepts the upstream version/author/tags frontmatter unchanged, so nothing moved under metadata."
     },
     {
-      "name": "uikit-accessibility-auditor",
-      "sources": [
-        {
-          "repository": "https://github.com/rgmez/apple-accessibility-skills",
-          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
-          "path": "skills/uikit-accessibility-auditor/SKILL.md",
-          "sha256": "bdbd1e2b7731bb2ec5493c5c8e4b3859669bb693dfea0c730e8512ab34076ba5",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/rgmez/apple-accessibility-skills",
-          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
-          "path": "skills/uikit-accessibility-auditor/checklist.md",
-          "sha256": "e4ea43262edc908b3515766ab2fa7edb6efeb09b2b6d0ca7306e5c0b66385662",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/rgmez/apple-accessibility-skills",
-          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
-          "path": "LICENSE",
-          "sha256": "07bf6c0752f24eef905c4b2ff70b7f2561a084e314038d28de72b0177c5c6e82",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Path fix only: SKILL.md 'Required artifact' names `checklist.md` instead of `skills/uikit-accessibility-auditor/checklist.md`. checklist.md and LICENSE verbatim. Attached by name to the Swift teammates; belongs to no phase."
-    },
-    {
-      "name": "widgets",
-      "sources": [
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/SKILL.md",
-          "sha256": "c070435ebe6ee8e2ca5aca7312a4ad3f9acf60095ed949737a8a2dfc46e844d3",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/animations-and-transitions.md",
-          "sha256": "6fdb98bad3a8a1d651bedbf81d0639b79fb1b4dbb65557366db01fa22a507011",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/anti-patterns.md",
-          "sha256": "fdd2985e8d15e64f56c973c257b1a233d6c0bce4424fcfe144f33cfae47166d3",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/configuration-and-intents.md",
-          "sha256": "f5f3a1be352e98209d95447f407995b01cca860596a85fd8607b450c77b83c92",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/controls.md",
-          "sha256": "9a00e7e92494cf7b4df9800a35611c7aa0863583f96e29b94bf75169c0f1d772",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/data-and-networking.md",
-          "sha256": "049c5faa5eabb1d56588f5435c534533093e81ef97fca3ae216f3452667e7b8d",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/deep-linking-and-navigation.md",
-          "sha256": "4acb36181ab6584097aa5700d174cace50a604cf176e82c9bb147a50d6c4e824",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/design-and-gallery.md",
-          "sha256": "286d914d0a906ba20ccabb07ca8c2f2651dc39522f482dc8dd04e84618e576b2",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/families-and-layout.md",
-          "sha256": "4745e43a478898e6dbe312036840e5ac8c054d24b0ddd71b1760b8fe41057454",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/fundamentals.md",
-          "sha256": "034870ce188d5b6546468e1de8621fad908dd6a0dda6148a19edf24299104798",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/interactive-widgets.md",
-          "sha256": "95ad294c9effa7af798afe87ea64695689b6f42aa9ae2e0fef4703da033612fe",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/live-activities.md",
-          "sha256": "76e84edd928962c6e63d605e349bdcbdbbd9f27f1ac2c4ebce11b88f69e5c76f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/lock-screen-and-watch.md",
-          "sha256": "7398b9c98f1a33db0868a9e2dc4ab5471a579d4be00b4aa35e043b8d00dffade",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/migration-and-deprecations.md",
-          "sha256": "8d67aa66790d8836700333b38add3697678cdb5cc202a4aa5ac675931259361f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/platforms.md",
-          "sha256": "f0f44aa140c5c8854d35f1817d7351cd965f996d5622cf2577099e99c66faea2",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/previews-and-testing.md",
-          "sha256": "b0781abfafc3412bdbf23eda4e362631b1139213ade406ab9cd224979d98ad3e",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/relevance-and-smart-stacks.md",
-          "sha256": "c4237a3fdce8e2ac7edf70140f11d9f2315cd9022c2e6a3277ecfe153f6b4da1",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/rendering-modes-and-tinting.md",
-          "sha256": "1790d28e5f27a2b53029cd6036e1c62adf34189dc448e857d5515419594f55ad",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/timeline-provider.md",
-          "sha256": "175c81c72b1eee4ec927d3595fc7cfc9682d1973c2b4a5fe6f415cdc9f2a610a",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "widgets/references/worked-example.md",
-          "sha256": "94dbc4c22f5c0cee31e63fd311894034b5b9adef0f7baa956b8a0b5cca9197c2",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
-          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
-          "path": "LICENSE",
-          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "verbatim",
-      "vendored": true,
-      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
-    },
-    {
-      "name": "observability",
-      "sources": [
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "LICENSE",
-          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/SKILL.md",
-          "sha256": "25003e912b696a33d0d7356b9e99f9da88cf2afadb601549a7d229b2220ff42f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/activity-tracing.md",
-          "sha256": "fd2a0c839c915e754b37e1cecfc70f3f994554429c3b0cee437aa764acf06f89",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/anti-patterns.md",
-          "sha256": "183bdee5e0aead5c377ee4dabcfc1aa3bb63ba86bf90348eeb1f6e591b75dd4e",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/crash-reporting.md",
-          "sha256": "0feb28dcefef6b6c54306e02c0ffa79cb91436d5f26d63189d5a62724828d712",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/fundamentals.md",
-          "sha256": "d02db8c623ba23571106ae771bafcd6c2184729712e1cab310e687084470c1e5",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/log-cli-and-console.md",
-          "sha256": "6f22b70dd00b1063480499a94a1f7345f17305fd2a3e8070360ee622b24131d5",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/logger-api.md",
-          "sha256": "b2f91eb387effd4a9ef7f663128036b2b54c4b1a1f9f776b71faca6e0536b1d7",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/metrickit.md",
-          "sha256": "cb50fcd23588ba3505a7b9a952bfae934aa8557ed1db1261b8ff905a15d96fcc",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/network-telemetry.md",
-          "sha256": "02c749e44b6fccbbeb983ea3a01aa5e33db3d00da0cd75ac6143624a3312336b",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/oslogstore.md",
-          "sha256": "ab7de1c20c59f30b238e267d421614bfdb8684cf82efaa3268d1191a3c304a76",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/production-monitoring.md",
-          "sha256": "6890d9a0df22716edce56e10c22562e6c6641eb201eecacdb037be25389b4952",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/signposts.md",
-          "sha256": "a0b5444c705c3a8993bb0a18cd4848581c1eb6852236e07410d09ee7b8933c76",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/symbolication.md",
-          "sha256": "73f425a30f3092e64d54636f7923c4aca422feaaf7b8481a5a9b8b7dca26ec99",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/n0an/Observability-Agent-Skill",
-          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
-          "path": "observability/references/third-party-sdks.md",
-          "sha256": "667f61fe118560b987a00137e10d3b3d119cc97686c3c29319eced050fa58aa8",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "None. Verbatim copy of SKILL.md and references with the upstream MIT LICENSE. Vendored because SKILL.md is 20 KB, over the 12 KB budget. Attached to Swift teammates by name; belongs to no phase.",
-      "vendored": true
-    },
-    {
-      "name": "swift-concurrency-pro",
-      "sources": [
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "LICENSE",
-          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/SKILL.md",
-          "sha256": "95d3098b038a38f163259cb7404070f786fed846a5e8b864e6b34fa7600247f9",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/actors.md",
-          "sha256": "7a77a0f06d0040a6813ec02cd4b1360df4bcfa501f93710bfb4296de9911d64f",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/async-streams.md",
-          "sha256": "589ba0dad544b28b158702e239fe6a4077b6d1484c83b8fd51290192bf1ffc9a",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/bridging.md",
-          "sha256": "c8eb60dcdd90f67cb3b8b1213fc55a56dd5c4a04f465d7aff7fdbd5c451e0498",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/bug-patterns.md",
-          "sha256": "2233f58e784a9b6cf13620133485fcf7e3150192a40e713369ebbddc820dec85",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/cancellation.md",
-          "sha256": "c83b4134b44ea5a0ee06e785bd0cb85616234469833f9677297b6fcddea1e1fa",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/diagnostics.md",
-          "sha256": "cc2debc6f430ed13fc3be3a7ce942e55bb1cf02a9804ebfb272f295b502c9569",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/hotspots.md",
-          "sha256": "199a9fa4beea4a550b3f63e07cddd441d72fd41d1e17e6f3255071a661ce1e6d",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/interop.md",
-          "sha256": "b86cd716bd22b38d718e86b37b3d7dd1225b5ce93a53f88842ff6993e93ca566",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/new-features.md",
-          "sha256": "c721a187b57e9d94112972c9685c57f7129187df2d36add4df1a9c9e9aa9e541",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/structured.md",
-          "sha256": "1655b610fd1dafb7cf42b61457ff8229117c06879d0e9cc40460f437ba97895b",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/testing.md",
-          "sha256": "4a1fc1aefb572bbdbd75a502a74df795af7e2212eec6836a4f353f9b725abffc",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
-          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
-          "path": "swift-concurrency-pro/references/unstructured.md",
-          "sha256": "d8063edf18bbe5abc9c628548b0100c4dd8defe3340c017d6fa4936eca17c456",
-          "license": "MIT"
-        },
-        {
-          "repository": "https://github.com/AvdLee/Swift-Concurrency-Agent-Skill",
-          "revision": "d5770817d2622e1585b1f7eaebc791a9cb0959c8",
-          "path": "skills/swift-concurrency/SKILL.md",
-          "sha256": "8c667b2ff988251c7c291abe046b77d7b8fcfbe3b5ed36961e25e224b1ead491",
-          "license": "MIT"
-        }
-      ],
-      "adaptation": "Curated copy. testing.md: .serialized on a suite serializes every test in it (was: parameterized tests only). new-features.md: caller-actor nonisolated async needs NonisolatedNonsendingByDefault / Approachable Concurrency. New references/build-settings.md from AvdLee SKILL.md:16-24 (settings table and Xcode 26 note; the ask-the-developer line becomes a message to the orchestrator). SKILL.md: third-party-framework ask gate becomes a message to the orchestrator; build-settings step and reference entry added. Links to other upstream skill repositories replaced by bundled skill names.",
-      "vendored": false
-    },
-    {
       "name": "swift-format-style",
       "sources": [
         {
@@ -2592,6 +1873,125 @@
       ],
       "adaptation": "Curated copy. anti-patterns.md: the fixed-format example uses .iso8601, or verbatim with en_US_POSIX and the Gregorian calendar (was calendar: .current). date-styles.md: one pitfall line on pinning the calendar for fixed formats. SKILL.md: 'Never use legacy Formatter' becomes 'for display'; description narrowed to values shown to the user.",
       "vendored": false
+    },
+    {
+      "name": "swift-security-expert",
+      "sources": [
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/SKILL.md",
+          "sha256": "a915770a1a864c1cfb94987334df63dc7d6904ffba14223a51d78ff3d6037e37",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/biometric-authentication.md",
+          "sha256": "2956b4e73716473899fa5c116eecb6802ff3c0654ff376be0863edcb1c655606",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/certificate-trust.md",
+          "sha256": "ac5bd280a60522a986fbd29e44657770d766086d48cf8ab67d3aa1500bd0d76f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/common-anti-patterns.md",
+          "sha256": "1d46859f986afe362d248add8b47017d5cc52469c8a949ea3ab1437b105aab17",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/compliance-owasp-mapping.md",
+          "sha256": "37782e24e5302a21a33024c46122fd895ed6e18d8fe333aceea71300edbf692f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/credential-storage-patterns.md",
+          "sha256": "04ec5e12d18cc1946340169829fefa7ecdc4fa97c34ae04aec7f922969a4db27",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/cryptokit-public-key.md",
+          "sha256": "084d03b851ef99a8108b2c40292086c1b66471c960348a9a387b5769a294154b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/cryptokit-symmetric.md",
+          "sha256": "05feefa3af7c048d481ea5ed3035ad5dc655d2e1c62c61e05b755f93bd8b762f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/keychain-access-control.md",
+          "sha256": "24ff0773803c347fdcaea007ff78eea3d3508f8d0fcf9463b4cf60ee6f1cd11f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/keychain-fundamentals.md",
+          "sha256": "48dae59a6f9505c2d6fd859449769090f3e1de1c26e7f874d744b92651145ffa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/keychain-item-classes.md",
+          "sha256": "9332ef01b854f4df8e1e4fdbd08af38422ea4b694d090334782604a17619b506",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/keychain-sharing.md",
+          "sha256": "2c5bce7a1559558dec7d372d3cb74dca3235b4510bb9aa3814518ed109b1e780",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/migration-legacy-stores.md",
+          "sha256": "43fffbe77ef8c042cb1a58c42940ad78dbdc7af09f62eee17ec102e59ca96642",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/secure-enclave.md",
+          "sha256": "f35e8f44e085383343be8f54acb79613a715b024519d425f61f603cec685c264",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/testing-security-code.md",
+          "sha256": "8f7d0df78b83b37c1f07b25f5722a79d73242f7b7da7c7e948fed9f737c0478d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "LICENSE",
+          "sha256": "143b0c57ffb8d834c58dd793acc2f9bfcba56f85d610075c942dc9c8c9098d7a",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted SKILL.md, references verbatim: cut 36% (48,408 to 30,899 bytes) by removing the Scope Boundaries inclusion and exclusion sections (replaced by a 1-paragraph scope), Tone Rules, the Agent Self-Review Checklist, the ASCII decision tree (its branches stay as prose), output rule 10 (it cited the removed sections) and markdown table padding. 'If ambiguous, ask' becomes a message to the orchestrator. All 14 references kept, including the 3 optional ones (reasons in ai_docs/reports/domain-skills/swift-review.md). References are verbatim except key-shaped example strings, removed so that secret scanners pass: the example Stripe and Firebase keys in compliance-owasp-mapping.md, credential-storage-patterns.md and common-anti-patterns.md become <STRIPE_LIVE_SECRET_KEY> and <FIREBASE_API_KEY>; the detection grep in common-anti-patterns.md uses equivalent regex classes ([sp]k_live_, AIz[a], AK[I]A); the PEM headers in cryptokit-public-key.md become PEM labels. Simulator fix: SKILL.md Mistake #2 and the secure-enclave.md simulator paragraph and cross-validation note now agree. Apple documents SecureEnclave.isAvailable only as \"if the device supports Secure Enclave access\" and is silent on the Simulator, so both files call the Simulator value undocumented (usually false) and keep the compile-time guard. Over budget, so vendored. Attached by name; belongs to no phase.",
+      "vendored": true
     },
     {
       "name": "swift-testing-pro",
@@ -2727,6 +2127,88 @@
       "vendored": false
     },
     {
+      "name": "swiftdata-testing",
+      "sources": [
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/SKILL.md",
+          "sha256": "a8b00943508644f9eeea48269980f44f255d2089089610ed5e999dfe3b641032",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/decimal-money-values.md",
+          "sha256": "4e5508683d92a127b3dd22f14f35d48f5e89d9d2f418fdb8855a8882d00543ed",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/import-hash-dedup.md",
+          "sha256": "6f6c1b1b46e2692042da84d9f64fc3cfb07aee7eb8b9111837eda600e884d29f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/mock-repositories.md",
+          "sha256": "df35e1f71fb67b10f29f43df06075fb1a5bf4cddf559e86ace06e351f8a29d84",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/model-actor-testing.md",
+          "sha256": "a917b1ff118b6e7a83230cb19d3c140f8819a5721f86136e0c2f9af0076aee21",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/model-container-fixtures.md",
+          "sha256": "fbc778e9b0f845e776202001a3f2c5da4c08b833a96a6d7159cf6467bfc9bd64",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "LICENSE",
+          "sha256": "bdfed70cd78e363685286bccdfb35820e847b5f59e6f8d7c8f57986e5538858e",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted: fixed references/decimal-money-values.md (a fractional Decimal literal goes through Double; Decimal division is not exact, so splits must round to the minor unit and distribute the remainder) and the matching rules; the view-model and mock-repository guidance (SKILL.md step 2, references/mock-repositories.md) applies only when the codebase already uses view models, per the fleet house style (follow the codebase, MV in a new one); 'the user asks' becomes 'the task asks'. Other references verbatim. Attached by name; belongs to no phase."
+    },
+    {
+      "name": "swiftui-accessibility-auditor",
+      "sources": [
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/swiftui-accessibility-auditor/SKILL.md",
+          "sha256": "9debfe924a45c4939ba0f7072b615ca7a3482fad429d0ce2f4c5b5e8b45426d7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/swiftui-accessibility-auditor/checklist.md",
+          "sha256": "962a7f51ab22f7823ea0465dc1de18658cfc0a01c5ec5c78468c9e062daf8089",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "LICENSE",
+          "sha256": "07bf6c0752f24eef905c4b2ff70b7f2561a084e314038d28de72b0177c5c6e82",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Path fix only: SKILL.md 'Required artifact' names `checklist.md` instead of `skills/swiftui-accessibility-auditor/checklist.md`. checklist.md and LICENSE verbatim. Attached by name to the Swift teammates; belongs to no phase."
+    },
+    {
       "name": "swiftui-liquid-glass",
       "sources": [
         {
@@ -2753,6 +2235,75 @@
       ],
       "adaptation": "Curated copy. liquid-glass.md: background-extension snippet now calls .backgroundExtensionEffect(); the nonexistent scrollExtensionMode(.underSidebar) is replaced by Apple's automatic scroll-under-sidebar behavior; foregroundColor becomes foregroundStyle; the 'always seek guides' sentence is deleted. SF Symbol images in both files use text styles (.font(.title2), .title, .largeTitle) instead of .font(.system(size:)), so symbols follow Dynamic Type.",
       "vendored": false
+    },
+    {
+      "name": "swiftui-performance-audit",
+      "sources": [
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/SKILL.md",
+          "sha256": "6cfb3f9f3e1938aca3eb1cf3ac9f265cca15559b0c9b3dcd3ab2e580be3cea2f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/code-smells.md",
+          "sha256": "c9834da9bde40952100147c7fa0dab12c21bcd762878da7c07b6cd260093ebb8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/demystify-swiftui-performance-wwdc23.md",
+          "sha256": "7cffafe3903293479b73f71d822fe5209d307645d55f18d4fbbdf90a5f708d52",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/optimizing-swiftui-performance-instruments.md",
+          "sha256": "f3980f725406cd4158ace27e058b7b7a57478025f48d50512e99a20f9fa0fa9b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/profiling-intake.md",
+          "sha256": "636ae046936183a7ac5412458926d0a8babe4e05396955d3608f9a7320913bcd",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/report-template.md",
+          "sha256": "c09e67323c3c0ebcacd647be9117f258d11ec58001ba0e5683c13c2bc4d21ff2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/understanding-hangs-in-your-app.md",
+          "sha256": "3631b56751e5853fd04c1397f7cc5eb9f8d7f057a83509244fa82a4b57fc56fc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/understanding-improving-swiftui-performance.md",
+          "sha256": "fd7a624c10af787c5673b748dee95d789ead1329e69f6471a9495682d0775643",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "LICENSE",
+          "sha256": "df17aae89ce4705d0a6e5f7b46eeea3b9023967ecad948f8779b47039eb55a8b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted: the worker records Instruments itself (`xcrun xctrace record --template SwiftUI`, read with `xctrace export`) or messages the orchestrator, instead of asking the user (SKILL.md description, workflow steps 3-4, intake, section 3 and Verify; references/profiling-intake.md). Dropped the line that told the agent to add user-supplied files under references/. code-smells.md uses `Text(value, format:)` instead of a cached shared formatter (fleet house style). Other references verbatim. Attached by name; belongs to no phase."
     },
     {
       "name": "swiftui-pro",
@@ -2837,6 +2388,18 @@
       ],
       "adaptation": "Curated copy of the top-level skill (not the nested skills/swiftui-pro variant). SKILL.md: third-party-framework ask gate becomes a message to the orchestrator. hygiene.md: 'Offer to translate' becomes a message to the orchestrator. views.md: view-model rule made neutral (follow the codebase; MV in a new codebase; view models only for a test seam). data.md, swift.md, views.md: links to other upstream skill repositories replaced by bundled skill names.",
       "vendored": false
+    },
+    {
+      "name": "tdd",
+      "source_path": "plugins/dev/skills/tdd/SKILL.md",
+      "source_sha256": "3e75572a66b7619b7557f82d3cb7ffac9d406970d2abb3c371426d9789060084",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
+    },
+    {
+      "name": "trace",
+      "source_path": "plugins/dev/skills/trace/SKILL.md",
+      "source_sha256": "607ff0e84ba435363e53287081b0f1979bdcfc7f01d24d69ab0f61a2339e0da0",
+      "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
     },
     {
       "name": "ue-actor-component-architecture",
@@ -3049,6 +2612,12 @@
       "vendored": true
     },
     {
+      "name": "ue-build-verify",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text, written in this repository. Consulted as references, no text copied: quodsoler/unreal-engine-skills at f3742d7b688690810df369802b90430324e380b9 (MIT), skills ue-testing-debugging (SKILL.md, references/automation-test-patterns.md) and ue-module-build-system (SKILL.md, references/common-build-errors.md). Flags checked against Epic's UE 5.8 documentation; evidence in ai_docs/reports/domain-skills/ue-own.md."
+    },
+    {
       "name": "ue-character-movement",
       "sources": [
         {
@@ -3159,6 +2728,12 @@
       ],
       "adaptation": "verbatim",
       "vendored": true
+    },
+    {
+      "name": "ue-editor-scripting",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text, written in this repository. Consulted as references, no text copied: quodsoler/unreal-engine-skills at f3742d7b688690810df369802b90430324e380b9 (MIT), skill ue-testing-debugging (SKILL.md, references/automation-test-patterns.md) for the headless editor command line. Commands and Python API names checked against Epic's UE 5.8 documentation and Unreal Python 5.8 reference; evidence in ai_docs/reports/domain-skills/ue-own.md."
     },
     {
       "name": "ue-editor-tools",
@@ -3901,6 +3476,431 @@
       ],
       "adaptation": "verbatim",
       "vendored": true
+    },
+    {
+      "name": "ui-redesign",
+      "sources": [
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/SKILL.md",
+          "sha256": "59469635bbbd21acddbc664d95e8d97147f454b2d8f4a0a89c7d2c5afbe67577",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/contract.md",
+          "sha256": "2923a056b95da63d04100ac56bc8cdff6bc0a717ac3e5da5cef69eb5feb4619c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/design-md.md",
+          "sha256": "a9368b64dd9b6e53e8c707830ce28fd8601d3195a81647ea46b6995aa3556b3c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/slop-test.md",
+          "sha256": "6eb49fc64ca54929d2c1600e2a6014268f1a7593787c0ed3f6ecb4ac8390ad86",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/study.md",
+          "sha256": "021fe4d001b38ee87414c1bb69321d2e44b67df8ede76ecec225c41a634aab20",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/verbs/audit.md",
+          "sha256": "0a5b484453f1697a8675a7020df9159d0b4ce22f059b873501bfd82c26d6a31a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/verbs/redesign.md",
+          "sha256": "c2830f3b7d68e9622f55d376048a5a454c5ef59d309a211e716d1142e86acbdf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill/SKILL.md",
+          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/redesign-skill/SKILL.md",
+          "sha256": "98ad3e5b051bfb71b2795f7e8a6aa0d32b51ee095606c098a4b2822ac07926c9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/output-skill/SKILL.md",
+          "sha256": "e5bf48b1ae561511439cf71672209a10a88cee0968cc925909ff861dfa0a96a7",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged hallmark's redesign, audit and study verbs with taste-skill's redesign skill and redesign protocol into a staged, non-destructive workflow with a standalone audit checklist, safe design extraction from a URL or screenshot, and a new before/after evidence protocol; dropped hallmark stamps, logs, theme catalog and interactive gates."
+    },
+    {
+      "name": "ui-taste",
+      "sources": [
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/SKILL.md",
+          "sha256": "59469635bbbd21acddbc664d95e8d97147f454b2d8f4a0a89c7d2c5afbe67577",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/anti-patterns.md",
+          "sha256": "a36eb346ad59cafaa26119ed1e7c0bbb8aca6637209ee110eb630dd1a9307070",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/assets.md",
+          "sha256": "60929b3dc2258b69caf3012d99d174e1ad73da9645263db81a9b271cd6fd7d61",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/color.md",
+          "sha256": "31c470d16ceb17ccce290cbdd00b9e9a88f2094df8eaaefb67c86ec1e1cdb876",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/component-cookbook.md",
+          "sha256": "4d9ff4eeb675b9d668516ce5d098031d3552453b3671e50da30fb38cb9ab58bb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/contract.md",
+          "sha256": "2923a056b95da63d04100ac56bc8cdff6bc0a717ac3e5da5cef69eb5feb4619c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/copy.md",
+          "sha256": "703cdbf81fbef6f71d90596a32041d2a33a46fb71ba07ccf5ede6b4b1471d347",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/custom-theme.md",
+          "sha256": "da0fb051689bf9d100e50e67209566623c1fbe72e09b943248c458985c39e780",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/hero-enrichment.md",
+          "sha256": "63c14cc2c256dd78a69a1c36f4bcb764940aa7f1ba2e6dd40ca36013f8884a83",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/interaction-and-states.md",
+          "sha256": "e816eb2d067ba9f6f288a3831549da95624a05f432ed2a50f54136f27dd2d67f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/layout-and-space.md",
+          "sha256": "987f3a45f5dbe81547117a77987bcedf5376608a6412067e04337047e0c7c839",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/microinteractions.md",
+          "sha256": "613ca56c2c16e40aeb594af21fabd651732d9de63c848aee51113602525f6e64",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/motion.md",
+          "sha256": "330d056810315f65819579f8207afe402703a9192bc76a2009558a59b7c84ccf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/responsive.md",
+          "sha256": "2bf18d72af704ca5dd3c220359a4c77c718efa19c40f62d9bff61ac4a90209b0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/slop-test.md",
+          "sha256": "6eb49fc64ca54929d2c1600e2a6014268f1a7593787c0ed3f6ecb4ac8390ad86",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/structure.md",
+          "sha256": "ca5c0296ae428f8c4c5214407d431bbda5c453f98f2e7abdec03d644271af32b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/themes/hum.md",
+          "sha256": "bbdd1e89a32d6b15e99493ba9497816a0915bd4e9bf150b95868db597c20e1d5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/typography.md",
+          "sha256": "94d7b2d2b138bd8687e09dc3dd618eaafff500b0497a6d69cb4c29b764e94b9c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill/SKILL.md",
+          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill-v1/SKILL.md",
+          "sha256": "033d45af1ed23832730642f95f40ab49db7fb5222848489a6c5656144bfc6dae",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/gpt-tasteskill/SKILL.md",
+          "sha256": "2e64c269953f2656c21bf5a0fa6b4568e82fe0c72b36e8f84758e090349966a5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/output-skill/SKILL.md",
+          "sha256": "e5bf48b1ae561511439cf71672209a10a88cee0968cc925909ff861dfa0a96a7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/redesign-skill/SKILL.md",
+          "sha256": "98ad3e5b051bfb71b2795f7e8a6aa0d32b51ee095606c098a4b2822ac07926c9",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged hallmark and four taste-skill variants into one stack-neutral taste skill: rules per topic, ripgrep searches for named tells, measured hard gates and a six-axis rubric for review, and output-skill's complete-output rule; dropped theme and layout catalogs, dials, randomization rituals, stack-specific code and persuasion; conflicts resolved in ai_docs/reports/design-skills/skill-taste.md."
+    },
+    {
+      "name": "uikit-accessibility-auditor",
+      "sources": [
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/uikit-accessibility-auditor/SKILL.md",
+          "sha256": "bdbd1e2b7731bb2ec5493c5c8e4b3859669bb693dfea0c730e8512ab34076ba5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/uikit-accessibility-auditor/checklist.md",
+          "sha256": "e4ea43262edc908b3515766ab2fa7edb6efeb09b2b6d0ca7306e5c0b66385662",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "LICENSE",
+          "sha256": "07bf6c0752f24eef905c4b2ff70b7f2561a084e314038d28de72b0177c5c6e82",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Path fix only: SKILL.md 'Required artifact' names `checklist.md` instead of `skills/uikit-accessibility-auditor/checklist.md`. checklist.md and LICENSE verbatim. Attached by name to the Swift teammates; belongs to no phase."
+    },
+    {
+      "name": "widgets",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/SKILL.md",
+          "sha256": "c070435ebe6ee8e2ca5aca7312a4ad3f9acf60095ed949737a8a2dfc46e844d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/animations-and-transitions.md",
+          "sha256": "6fdb98bad3a8a1d651bedbf81d0639b79fb1b4dbb65557366db01fa22a507011",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/anti-patterns.md",
+          "sha256": "fdd2985e8d15e64f56c973c257b1a233d6c0bce4424fcfe144f33cfae47166d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/configuration-and-intents.md",
+          "sha256": "f5f3a1be352e98209d95447f407995b01cca860596a85fd8607b450c77b83c92",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/controls.md",
+          "sha256": "9a00e7e92494cf7b4df9800a35611c7aa0863583f96e29b94bf75169c0f1d772",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/data-and-networking.md",
+          "sha256": "049c5faa5eabb1d56588f5435c534533093e81ef97fca3ae216f3452667e7b8d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/deep-linking-and-navigation.md",
+          "sha256": "4acb36181ab6584097aa5700d174cace50a604cf176e82c9bb147a50d6c4e824",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/design-and-gallery.md",
+          "sha256": "286d914d0a906ba20ccabb07ca8c2f2651dc39522f482dc8dd04e84618e576b2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/families-and-layout.md",
+          "sha256": "4745e43a478898e6dbe312036840e5ac8c054d24b0ddd71b1760b8fe41057454",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/fundamentals.md",
+          "sha256": "034870ce188d5b6546468e1de8621fad908dd6a0dda6148a19edf24299104798",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/interactive-widgets.md",
+          "sha256": "95ad294c9effa7af798afe87ea64695689b6f42aa9ae2e0fef4703da033612fe",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/live-activities.md",
+          "sha256": "76e84edd928962c6e63d605e349bdcbdbbd9f27f1ac2c4ebce11b88f69e5c76f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/lock-screen-and-watch.md",
+          "sha256": "7398b9c98f1a33db0868a9e2dc4ab5471a579d4be00b4aa35e043b8d00dffade",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/migration-and-deprecations.md",
+          "sha256": "8d67aa66790d8836700333b38add3697678cdb5cc202a4aa5ac675931259361f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/platforms.md",
+          "sha256": "f0f44aa140c5c8854d35f1817d7351cd965f996d5622cf2577099e99c66faea2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/previews-and-testing.md",
+          "sha256": "b0781abfafc3412bdbf23eda4e362631b1139213ade406ab9cd224979d98ad3e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/relevance-and-smart-stacks.md",
+          "sha256": "c4237a3fdce8e2ac7edf70140f11d9f2315cd9022c2e6a3277ecfe153f6b4da1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/rendering-modes-and-tinting.md",
+          "sha256": "1790d28e5f27a2b53029cd6036e1c62adf34189dc448e857d5515419594f55ad",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/timeline-provider.md",
+          "sha256": "175c81c72b1eee4ec927d3595fc7cfc9682d1973c2b4a5fe6f415cdc9f2a610a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/worked-example.md",
+          "sha256": "94dbc4c22f5c0cee31e63fd311894034b5b9adef0f7baa956b8a0b5cca9197c2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
     },
     {
       "name": "writing-for-interfaces",

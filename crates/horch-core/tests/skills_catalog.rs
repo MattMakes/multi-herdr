@@ -292,6 +292,83 @@ fn skills_bundled_text_only() {
     }
 }
 
+/// `skills/provenance.json` lists its skills sorted by name, so a merge that
+/// appends an entry fails here instead of drifting.
+#[test]
+fn skills_provenance_sorted_by_name() {
+    let raw = std::fs::read_to_string(skills_dir().join("provenance.json")).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let names: Vec<&str> = doc["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        names, sorted,
+        "provenance.json skills are not sorted by name"
+    );
+}
+
+/// Every skill table in `skills/README.md` is sorted by its first column,
+/// except the process-order "Source mapping" table, and every bundled skill
+/// has exactly one row across the tables.
+#[test]
+fn skills_readme_tables_sorted_one_row_per_skill() {
+    let readme = std::fs::read_to_string(skills_dir().join("README.md")).unwrap();
+    let mut section = "";
+    let mut table: Vec<&str> = Vec::new();
+    let mut all: Vec<&str> = Vec::new();
+    let mut check = |section: &str, table: &mut Vec<&str>| {
+        if section != "Source mapping" {
+            let mut sorted = table.clone();
+            sorted.sort_unstable();
+            assert_eq!(
+                *table, sorted,
+                "README table under '{section}' is not sorted"
+            );
+        }
+        table.clear();
+    };
+    for line in readme.lines() {
+        if let Some(h) = line.strip_prefix("## ") {
+            check(section, &mut table);
+            section = h;
+        }
+        // A skill row starts with `| [name](name/SKILL.md)`.
+        let name = line
+            .strip_prefix("| [")
+            .and_then(|r| r.split_once("](").map(|(n, _)| n))
+            .filter(|n| line.contains(&format!("]({n}/SKILL.md)")));
+        match name {
+            Some(n) => {
+                table.push(n);
+                all.push(n);
+            }
+            None => check(section, &mut table),
+        }
+    }
+    check(section, &mut table);
+
+    let on_disk: BTreeSet<String> = std::fs::read_dir(skills_dir())
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.path().join("SKILL.md").is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let mut listed: Vec<String> = all.iter().map(|s| s.to_string()).collect();
+    listed.sort();
+    let unique: BTreeSet<String> = listed.iter().cloned().collect();
+    assert_eq!(
+        listed.len(),
+        unique.len(),
+        "a skill has more than one README row"
+    );
+    assert_eq!(unique, on_disk, "README rows and bundled skills differ");
+}
+
 /// `build.rs` never bundles a dotfile or a file under a dot directory. The
 /// fixture `skills/.dotfile-fixture` exists on disk and must not appear.
 #[test]
