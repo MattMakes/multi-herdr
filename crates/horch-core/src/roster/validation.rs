@@ -965,7 +965,7 @@ mod spawnable_tests {
     fn roster_check_demands_the_subagent_deny_on_every_claude_fleet_pane() {
         const MESSAGE: &str = "a fleet pane must not spawn subagents";
 
-        // The shipped roster already carries it, on the 29 spawnable claude
+        // The shipped roster already carries it, on the 34 spawnable claude
         // teammates and on the orchestrator.
         let mut r = Roster::builtin().unwrap();
         assert!(r.check().is_empty(), "{:?}", r.check());
@@ -974,7 +974,7 @@ mod spawnable_tests {
             .values()
             .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
             .count();
-        assert_eq!(covered, 30, "the rule should cover 30 claude teammates");
+        assert_eq!(covered, 35, "the rule should cover 35 claude teammates");
 
         // Take the deny away from a worker and the check fails by name.
         r.teammates.get_mut("opus").unwrap().disallowed_tools = Vec::new();

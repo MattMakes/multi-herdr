@@ -51,12 +51,17 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "judge",
     "landing-page-builder",
     "motion-engineer",
+    "ue-ai-engineer",
+    "ue-character-engineer",
     "ue-code-reviewer",
     "ue-gameplay-engineer",
     "ue-network-engineer",
     "ue-qa-engineer",
     "ue-tech-lead",
     "ue-technical-artist",
+    "ue-tools-engineer",
+    "ue-ui-engineer",
+    "ue-world-engineer",
     "visual-prototyper",
 ];
 
