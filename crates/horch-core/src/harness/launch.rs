@@ -391,8 +391,8 @@ fn discover_once(
 /// The last discovery attempt, for `horch done` to run before it closes the
 /// pane (which kills the discovery thread). Does nothing when the record
 /// already has a session id, the harness mints its id at launch, the launch
-/// was a resume, or the launch marker is gone. `sessions_dir` is not known
-/// here, so a harness that needs it (Prime) is left to the thread.
+/// was a resume, or the launch marker is gone. The marker holds the launch's
+/// `sessions_dir` (Prime's), so this attempt searches where the thread does.
 pub fn discover_now(
     ctx: &RuntimeContext,
     mailbox: &Mailbox,
@@ -410,6 +410,7 @@ pub fn discover_now(
     }
     let marker = mailbox.launch_marker(role);
     let since = std::fs::metadata(&marker).and_then(|m| m.modified())?;
+    let sessions_dir = marker_sessions_dir(&marker);
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let pane = ctx
         .herdr
@@ -418,13 +419,38 @@ pub fn discover_now(
         .map(|p| p.to_string())
         .unwrap_or_default();
     let workdir = PathBuf::from(brief.workdir_or_project());
-    if let Some(session_id) =
-        discover_once(ctx, agent, &herdr, &pane, &ledger, &workdir, since, None)
-    {
+    if let Some(session_id) = discover_once(
+        ctx,
+        agent,
+        &herdr,
+        &pane,
+        &ledger,
+        &workdir,
+        since,
+        sessions_dir.as_deref(),
+    ) {
         ledger.set_session(record_id, &session_id)?;
         let _ = std::fs::remove_file(&marker);
     }
     Ok(())
+}
+
+/// The launch marker's contents: the launch's `sessions_dir`, or nothing. Its
+/// mtime is the launch time; its contents tell [`discover_now`] where the
+/// thread searches.
+fn marker_contents(sessions_dir: Option<&Path>) -> String {
+    sessions_dir
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The `sessions_dir` a launch marker holds. An empty marker (none, or one
+/// an older horch wrote) holds none.
+fn marker_sessions_dir(marker: &Path) -> Option<PathBuf> {
+    std::fs::read_to_string(marker)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Poll for the session id the agent minted and record it against the
@@ -441,7 +467,7 @@ fn start_discovery(
     sessions_dir: Option<PathBuf>,
 ) -> Result<Discovery> {
     let marker = target.mailbox.launch_marker(role);
-    std::fs::write(&marker, b"")
+    std::fs::write(&marker, marker_contents(sessions_dir.as_deref()))
         .with_context(|| format!("writing launch marker {}", marker.display()))?;
     let since = std::fs::metadata(&marker)
         .and_then(|m| m.modified())
@@ -1470,5 +1496,19 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("agent: none"), "{err}");
+    }
+
+    /// The marker carries the launch's `sessions_dir` to `discover_now`. An
+    /// empty marker, as an older horch wrote it, carries none.
+    #[test]
+    fn launch_marker_carries_the_sessions_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join(".prime-1.launch-marker");
+        let sessions = tmp.path().join("prime/prime-1-x/sessions");
+        std::fs::write(&marker, marker_contents(Some(&sessions))).unwrap();
+        assert_eq!(marker_sessions_dir(&marker), Some(sessions));
+        std::fs::write(&marker, marker_contents(None)).unwrap();
+        assert_eq!(marker_sessions_dir(&marker), None);
+        assert_eq!(marker_sessions_dir(&tmp.path().join("gone")), None);
     }
 }
