@@ -247,6 +247,11 @@ const MAX_SKILL_DIR_BYTES: usize = 160 * 1024;
 
 /// Skill ids exempt from the size budget: every skill whose provenance says
 /// `vendored: true`.
+///
+/// A combined Godot skill (`godot-*`, Godot wave GW3-GW7) is a renamed
+/// GodotPrompter `SKILL.md` plus own references, and its entry also sets
+/// `vendored: true`. This rule already exempts it, both the `SKILL.md` limit
+/// and the directory limit, so it needs no case of its own.
 fn budget_exempt() -> BTreeSet<String> {
     let catalog = SkillCatalog::bundled().unwrap();
     catalog
