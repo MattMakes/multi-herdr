@@ -173,6 +173,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-gameplay-loops](godot-gameplay-loops/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-game-loop-collection/`, `godot-game-loop-harvest/`, `godot-game-loop-time-trial/`, `godot-game-loop-waves/`, `godot-mechanic-revival/`, `godot-mechanic-secrets/`; code run on Godot 4.7.2)* | own text |
 | [godot-gdextension](godot-gdextension/SKILL.md) | `jame581/GodotPrompter`: `skills/gdextension/` | renamed |
 | [godot-gdscript-patterns](godot-gdscript-patterns/SKILL.md) | `jame581/GodotPrompter`: `skills/gdscript-patterns/` | renamed |
+| [godot-genre-blueprints](godot-genre-blueprints/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills` @ `4c4d0ff`: the 27 `godot-genre-*` skills and `godot-project-templates`)* | own text |
 | [godot-grill](godot-grill/SKILL.md) | `jame581/GodotPrompter`: `skills/grill/` | adapted |
 | [godot-hud-system](godot-hud-system/SKILL.md) | `jame581/GodotPrompter`: `skills/hud-system/` | renamed |
 | [godot-input-handling](godot-input-handling/SKILL.md) | `jame581/GodotPrompter`: `skills/input-handling/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-input-handling/`) | combined |

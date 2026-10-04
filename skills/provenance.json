@@ -1551,6 +1551,12 @@
       "vendored": true
     },
     {
+      "name": "godot-genre-blueprints",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-genre-action-rpg, godot-genre-battle-royale, godot-genre-card-game, godot-genre-educational, godot-genre-fighting, godot-genre-horror, godot-genre-idle-clicker, godot-genre-metroidvania, godot-genre-moba, godot-genre-open-world, godot-genre-party, godot-genre-platformer, godot-genre-puzzle, godot-genre-racing, godot-genre-rhythm, godot-genre-roguelike, godot-genre-romance, godot-genre-rts, godot-genre-sandbox, godot-genre-shooter, godot-genre-shooter-fps, godot-genre-simulation, godot-genre-sports, godot-genre-stealth, godot-genre-survival, godot-genre-tower-defense, godot-genre-visual-novel, godot-project-templates. No text, table or code copied (LGPL rule, operator decision 1). Router SKILL.md plus one references/<genre>.md per genre (27, operator decision 2) and references/project-templates.md. API names checked with scripts/godot/api_check.py and every gdscript block parse-checked with scripts/godot/gdscript_blocks_check.py on Godot 4.7.2. Report: ai_docs/reports/godot/gw8-genre-blueprints.md."
+    },
+    {
       "name": "godot-grill",
       "sources": [
         {
