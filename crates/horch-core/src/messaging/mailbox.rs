@@ -148,6 +148,11 @@ impl Mailbox {
         (!trimmed.is_empty()).then_some(trimmed)
     }
 
+    /// When `role` registered: the modification time of its id file.
+    pub fn registered_at(&self, role: &str) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.id_path(role)).ok()?.modified().ok()
+    }
+
     /// Every registered `(role, pane_id)`, sorted by role.
     pub fn roles(&self) -> Vec<(String, String)> {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {

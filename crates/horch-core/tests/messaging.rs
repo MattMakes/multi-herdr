@@ -225,3 +225,129 @@ fn arc_21_done_order() {
     lifecycle::done(&ws, &rec, &req).unwrap();
     assert!(rec.finish().contains(&"settle w9".to_string()));
 }
+
+/// Readiness waits cut to milliseconds.
+const READY_FAST: delivery::Readiness = delivery::Readiness {
+    timeout: Duration::from_millis(40),
+    poll: Duration::from_millis(1),
+};
+
+/// LA-3: opencode drops text typed while it starts (status `unknown`), so a
+/// resumed prompt is typed only once herdr reports the agent idle.
+#[test]
+fn deliver_when_idle_waits_for_idle() {
+    let (ws, pane) = one_pane();
+    ws.set_agent_states(
+        &pane,
+        &[
+            (None, None),
+            (Some("opencode"), Some("unknown")),
+            (Some("opencode"), Some("idle")),
+        ],
+    );
+    delivery::deliver_when_idle(&ws, &pane, "task", &READY_FAST, &FAST).unwrap();
+    assert_eq!(
+        trace(&ws),
+        vec![
+            format!("pane_get {pane}"),
+            format!("pane_get {pane}"),
+            format!("pane_get {pane}"),
+            format!("agent_prompt {pane} task"),
+        ]
+    );
+}
+
+#[test]
+fn deliver_when_idle_times_out_without_typing() {
+    let (ws, pane) = one_pane();
+    ws.set_agent_states(&pane, &[(Some("opencode"), Some("unknown"))]);
+    let err = delivery::deliver_when_idle(&ws, &pane, "task", &READY_FAST, &FAST).unwrap_err();
+    assert!(err.to_string().contains("was not idle"), "{err}");
+    assert!(
+        trace(&ws).iter().all(|c| c.starts_with("pane_get ")),
+        "nothing typed: {:?}",
+        trace(&ws)
+    );
+}
+
+/// `horch tell` and `horch assign`: a starting agent is waited out; a pane
+/// with no agent, or a busy agent, gets the line at once, as before.
+#[test]
+fn send_line_when_ready_waits_only_for_a_starting_agent() {
+    let (ws, pane) = one_pane();
+    ws.set_agent_states(
+        &pane,
+        &[
+            (Some("opencode"), Some("unknown")),
+            (Some("opencode"), Some("unknown")),
+            (Some("opencode"), Some("idle")),
+        ],
+    );
+    delivery::send_line_when_ready(&ws, &pane, "msg", Duration::ZERO, &READY_FAST, &FAST).unwrap();
+    assert_eq!(
+        trace(&ws),
+        vec![
+            format!("pane_get {pane}"),
+            format!("pane_get {pane}"),
+            format!("pane_get {pane}"),
+            format!("agent_prompt {pane} msg"),
+        ]
+    );
+
+    for (agent, status) in [(None, None), (Some("claude"), Some("working"))] {
+        let (ws, pane) = one_pane();
+        ws.set_agent_states(&pane, &[(agent, status)]);
+        delivery::send_line_when_ready(&ws, &pane, "msg", Duration::ZERO, &READY_FAST, &FAST)
+            .unwrap();
+        assert_eq!(
+            trace(&ws),
+            vec![
+                format!("pane_get {pane}"),
+                format!("agent_prompt {pane} msg")
+            ],
+            "{agent:?} {status:?}"
+        );
+    }
+
+    let (ws, pane) = one_pane();
+    ws.set_agent_states(&pane, &[(Some("opencode"), Some("unknown"))]);
+    let err = delivery::send_line_when_ready(&ws, &pane, "msg", Duration::ZERO, &READY_FAST, &FAST)
+        .unwrap_err();
+    assert!(err.to_string().contains("still starting"), "{err}");
+    assert!(trace(&ws).iter().all(|c| c.starts_with("pane_get ")));
+}
+
+/// A role that registered just now: herdr shows no agent at first, then one
+/// that is starting, then idle. The line waits for all of it (LA-3: a tell
+/// 3 s after spawn was lost while herdr showed no agent yet).
+#[test]
+fn send_line_when_ready_gives_a_fresh_role_time_to_show_its_agent() {
+    let grace = Duration::from_millis(40);
+    let (ws, pane) = one_pane();
+    ws.set_agent_states(
+        &pane,
+        &[
+            (None, None),
+            (None, None),
+            (Some("opencode"), Some("unknown")),
+            (Some("opencode"), Some("idle")),
+        ],
+    );
+    delivery::send_line_when_ready(&ws, &pane, "msg", grace, &READY_FAST, &FAST).unwrap();
+    let calls = trace(&ws);
+    assert_eq!(calls.last().unwrap(), &format!("agent_prompt {pane} msg"));
+    let gets = calls.iter().filter(|c| c.starts_with("pane_get ")).count();
+    assert_eq!(gets, 4, "{calls:?}");
+    assert_eq!(calls.len(), 5, "only the gets, then the prompt: {calls:?}");
+
+    // A pane that never shows an agent gets the line after the grace, on
+    // the old path.
+    let (ws, pane) = one_pane();
+    ws.set_agent_states(&pane, &[(None, None)]);
+    let started = std::time::Instant::now();
+    delivery::send_line_when_ready(&ws, &pane, "msg", grace, &READY_FAST, &FAST).unwrap();
+    assert!(started.elapsed() >= grace, "it waited out the grace");
+    let calls = trace(&ws);
+    assert!(calls.len() > 3, "it polled during the grace: {calls:?}");
+    assert_eq!(calls.last().unwrap(), &format!("agent_prompt {pane} msg"));
+}

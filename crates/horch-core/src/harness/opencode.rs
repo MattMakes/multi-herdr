@@ -125,6 +125,14 @@ impl Harness for OpenCode {
         Ok(())
     }
 
+    /// opencode 1.18.34 opens `--session <id>` and ignores `--prompt`
+    /// (LA-3, 2026-10-04: three resumes, one of them without horch, sat idle
+    /// with no task). If a later opencode honours it, the task arrives twice:
+    /// re-check on an upgrade.
+    fn resume_prompt_typed(&self) -> bool {
+        true
+    }
+
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
         opencode_command(
             env,
@@ -158,7 +166,9 @@ impl Harness for OpenCode {
 ///
 /// The prompt is a FLAG here, not a trailing positional, so it cannot be eaten
 /// by a variadic - but `args` still goes before it, to keep every builder in
-/// this file ordered the same way.
+/// this file ordered the same way. On a resume opencode ignores `--prompt`;
+/// it stays in the argv (the A0 launch oracles freeze it), and the launch
+/// types the prompt in as well ([`Harness::resume_prompt_typed`]).
 pub(super) fn opencode_command(
     env: &LaunchEnv,
     teammate: &Teammate,

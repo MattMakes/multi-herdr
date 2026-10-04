@@ -6,9 +6,10 @@
 
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use crate::workspace::client::WorkspaceClient;
+use crate::workspace::model::Pane;
 
 /// The waits [`send_line`] makes. [`Timing::DEFAULT`] is the real one; a test
 /// shortens it so a pane that never shows the text does not cost 15 seconds.
@@ -82,6 +83,117 @@ pub fn send_line_with(
         ws.pane_send_keys(pane, "enter")?;
     }
     Ok(())
+}
+
+/// How long a delivery waits for an agent that is still starting, and how
+/// often it asks herdr.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Readiness {
+    pub timeout: Duration,
+    pub poll: Duration,
+}
+
+impl Readiness {
+    /// An opencode resume took 5 s to reach idle on the operator's Mac
+    /// (2026-10-04); a loaded machine gets 24 times that.
+    pub const DEFAULT: Readiness = Readiness {
+        timeout: Duration::from_secs(120),
+        poll: Duration::from_millis(250),
+    };
+}
+
+/// herdr detects an agent in the pane but does not know its state yet: the
+/// agent is starting. `herdr agent prompt` still succeeds then, and the text
+/// is lost (opencode 1.18.34, LA-3 in `ai_docs/reports/finish/acceptance-fleet.md`).
+fn starting(pane: &Pane) -> bool {
+    pane.agent.as_deref().is_some_and(|a| !a.is_empty())
+        && matches!(pane.agent_status.as_deref(), None | Some("unknown"))
+}
+
+/// Poll `pane` until `ready` holds. False when `wait.timeout` passes first.
+/// A `pane_get` that fails counts as not ready.
+fn wait_for(
+    ws: &dyn WorkspaceClient,
+    pane: &str,
+    wait: &Readiness,
+    ready: impl Fn(&Pane) -> bool,
+) -> bool {
+    let deadline = Instant::now() + wait.timeout;
+    loop {
+        if ws.pane_get(pane).is_ok_and(|p| ready(&p)) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(wait.poll);
+    }
+}
+
+/// Type the first prompt of a launch into its pane once the agent there is
+/// idle, then submit it with [`send_line_with`].
+///
+/// For a harness that drops a prompt given on its command line, such as an
+/// opencode resume. An error when the agent is not idle within
+/// `wait.timeout`: nothing was typed, and the caller says so.
+pub fn deliver_when_idle(
+    ws: &dyn WorkspaceClient,
+    pane: &str,
+    text: &str,
+    wait: &Readiness,
+    timing: &Timing,
+) -> Result<()> {
+    if !wait_for(ws, pane, wait, |p| {
+        p.agent_status.as_deref() == Some("idle")
+    }) {
+        bail!(
+            "the agent in pane {pane} was not idle after {} s, so its task was not typed",
+            wait.timeout.as_secs()
+        );
+    }
+    send_line_with(ws, pane, text, timing)
+}
+
+/// How long after a role registers `horch tell` treats a pane with no agent
+/// as one whose agent has not shown yet. A worker registers before its agent
+/// starts, and opencode took 1.6 s more to show (LA-3).
+pub const TELL_GRACE: Duration = Duration::from_secs(30);
+
+/// [`send_line_with`], but first wait out an agent that is still starting
+/// in `pane`: what `horch tell` and `horch assign` do.
+///
+/// - herdr sees an agent that is starting ([`starting`]): wait until it is
+///   not, up to `wait.timeout`, else an error and nothing typed.
+/// - herdr sees no agent and `grace` is not zero (the role registered less
+///   than [`TELL_GRACE`] ago): wait up to `grace` for an agent to show, then
+///   as above. When none shows, the line goes as before.
+/// - Otherwise (no agent and no grace, or an agent in a known state, a busy
+///   one too) the line goes at once, exactly as before.
+pub fn send_line_when_ready(
+    ws: &dyn WorkspaceClient,
+    pane: &str,
+    message: &str,
+    grace: Duration,
+    wait: &Readiness,
+    timing: &Timing,
+) -> Result<()> {
+    let has_agent = |p: &Pane| p.agent.as_deref().is_some_and(|a| !a.is_empty());
+    let first = ws.pane_get(pane).ok();
+    let mut booting = first.as_ref().is_some_and(starting);
+    if !grace.is_zero() && first.as_ref().is_some_and(|p| !has_agent(p)) {
+        let appear = Readiness {
+            timeout: grace,
+            poll: wait.poll,
+        };
+        booting = wait_for(ws, pane, &appear, has_agent);
+    }
+    if booting && !wait_for(ws, pane, wait, |p| !starting(p)) {
+        bail!(
+            "the agent in pane {pane} was still starting after {} s, so the message was not typed",
+            wait.timeout.as_secs()
+        );
+    }
+    send_line_with(ws, pane, message, timing)
 }
 
 /// Poll the pane until the last characters of `message` show in it.

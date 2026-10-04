@@ -14,12 +14,18 @@ pub struct FakeCall {
     pub args: Vec<String>,
 }
 
+/// What `pane_get` says about a pane's agent: `(agent, agent_status)`.
+type AgentState = (Option<String>, Option<String>);
+
 #[derive(Debug, Default)]
 struct State {
     /// `(workspace id, pane id)` in creation order.
     panes: Vec<(String, String)>,
     workspaces: Vec<String>,
     screens: Vec<(String, String)>,
+    /// `(pane, agent, status)` sequences: each `pane_get` takes the next
+    /// pair, and the last one stays.
+    agents: Vec<(String, Vec<AgentState>)>,
     calls: Vec<FakeCall>,
     failures: Vec<(&'static str, String)>,
     next_pane: u32,
@@ -59,6 +65,19 @@ impl FakeWorkspace {
         st.screens.push((pane.to_owned(), text.to_owned()));
     }
 
+    /// Script what `pane_get` reports about the agent in `pane`: one
+    /// `(agent, status)` per call, the last one repeating. `None` is a pane
+    /// where herdr detects no agent.
+    pub fn set_agent_states(&self, pane: &str, states: &[(Option<&str>, Option<&str>)]) {
+        let mut st = self.state.borrow_mut();
+        st.agents.retain(|(p, _)| p != pane);
+        let states = states
+            .iter()
+            .map(|(a, s)| (a.map(str::to_owned), s.map(str::to_owned)))
+            .collect();
+        st.agents.push((pane.to_owned(), states));
+    }
+
     pub fn calls(&self) -> Vec<FakeCall> {
         self.state.borrow().calls.clone()
     }
@@ -90,11 +109,27 @@ impl FakeWorkspace {
     }
 
     fn pane(&self, id: &str, workspace: &str) -> Pane {
+        let (agent, agent_status) = self.agent_state(id);
         Pane {
             pane_id: id.to_owned(),
             workspace_id: Some(workspace.to_owned()),
             tab_id: None,
             agent_session: None,
+            agent,
+            agent_status,
+        }
+    }
+
+    /// The next scripted `(agent, status)` of `pane`; none when unscripted.
+    fn agent_state(&self, pane: &str) -> AgentState {
+        let mut st = self.state.borrow_mut();
+        let Some((_, states)) = st.agents.iter_mut().find(|(p, _)| p == pane) else {
+            return (None, None);
+        };
+        if states.len() > 1 {
+            states.remove(0)
+        } else {
+            states.first().cloned().unwrap_or((None, None))
         }
     }
 
@@ -123,14 +158,16 @@ impl WorkspaceClient for FakeWorkspace {
 
     fn pane_list(&self, workspace: &str) -> Result<Vec<Pane>> {
         self.enter("pane_list", &[workspace])?;
-        Ok(self
+        // Collected first: building a pane borrows the state again.
+        let listed: Vec<(String, String)> = self
             .state
             .borrow()
             .panes
             .iter()
             .filter(|(w, _)| w == workspace)
-            .map(|(w, p)| self.pane(p, w))
-            .collect())
+            .cloned()
+            .collect();
+        Ok(listed.iter().map(|(w, p)| self.pane(p, w)).collect())
     }
 
     fn pane_split(&self, from: &str, direction: Direction) -> Result<String> {

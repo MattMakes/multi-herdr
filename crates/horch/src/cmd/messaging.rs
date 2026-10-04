@@ -27,7 +27,8 @@ use crate::output;
 /// From a worker (`HORCH_ROLE` set) the message always starts with the worker's
 /// `[<role>]` tag: an untagged line reads as the human operator. A message over
 /// [`message::MAX_INLINE`] chars is written to a file, and the pane gets one
-/// short line that quotes its head and names the file.
+/// short line that quotes its head and names the file. An agent that is
+/// still starting in that pane is waited for first; it would drop the text.
 pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
@@ -62,7 +63,25 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     } else {
         text
     };
-    delivery::send_line(&herdr, &target, &line)
+    // An agent that is still starting drops typed text, so wait it out. A
+    // role that registered just now may not show its agent yet.
+    let grace = ctx.settings.tell_grace.unwrap_or(delivery::TELL_GRACE);
+    let fresh = mailbox
+        .registered_at(role)
+        .and_then(|at| at.elapsed().ok())
+        .is_some_and(|age| age < grace);
+    delivery::send_line_when_ready(
+        &herdr,
+        &target,
+        &line,
+        if fresh {
+            grace
+        } else {
+            std::time::Duration::ZERO
+        },
+        &delivery::Readiness::DEFAULT,
+        &delivery::Timing::DEFAULT,
+    )
 }
 
 /// List roles registered - and so reachable via `horch tell` - in this workspace.

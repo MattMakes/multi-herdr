@@ -115,13 +115,17 @@ impl Price {
 }
 
 /// The compiled-in price table, as of 2026-09-24. Sources and the unverified
-/// rows are in `ai_docs/reports/model-guide-2026-09.md`.
+/// rows are in `ai_docs/reports/model-guide-2026-09.md`; the rows added on
+/// 2026-10-04 cite theirs in `ai_docs/reports/finish/acceptance-fleet.md`.
 pub fn builtin_prices() -> BTreeMap<String, Price> {
     let mut m = BTreeMap::new();
     // Anthropic, from cezaar#49 (platform.claude.com pricing).
     m.insert("claude-fable-5-1".into(), Price::new(10.0, 50.0, 0.25));
     m.insert("claude-opus-5-5".into(), Price::new(4.0, 20.0, 0.20));
     m.insert("claude-opus-5".into(), Price::new(5.0, 25.0, 0.50));
+    // Sonnet 5.5, from platform.claude.com/docs/en/about-claude/pricing
+    // (read 2026-10-04): $2 / $10, cache hits $0.20, writes 1.25x and 2x.
+    m.insert("claude-sonnet-5-5".into(), Price::new(2.0, 10.0, 0.20));
     m.insert("claude-sonnet-5".into(), Price::new(2.0, 10.0, 0.20));
     m.insert("claude-haiku-4-5".into(), Price::new(1.0, 5.0, 0.10));
     // OpenAI. Astra's cache write is published ($12.50, i.e. 1.25x).
@@ -131,6 +135,18 @@ pub fn builtin_prices() -> BTreeMap<String, Price> {
     // Terra and Luna: sources disagree; the lower figure. UNVERIFIED.
     m.insert("gpt-5.6-terra".into(), Price::new(2.0, 12.0, 0.20));
     m.insert("gpt-5.6-luna".into(), Price::new(0.20, 1.20, 0.02));
+    // Google, from ai.google.dev/gemini-api/docs/pricing (read 2026-10-04),
+    // paid tier, prompts up to 200k tokens: $2 / $12, cached $0.20. Over 200k
+    // it is $4 / $18 / $0.40; one row cannot hold both, so long prompts are
+    // under-priced. Gemini bills no cache write, only hourly storage, so a
+    // write prices as plain input.
+    let gemini_pro = Price {
+        cache_write_5m: Some(2.0),
+        cache_write_1h: Some(2.0),
+        ..Price::new(2.0, 12.0, 0.20)
+    };
+    m.insert("gemini-3-1-pro".into(), gemini_pro);
+    m.insert("gemini-3.1-pro-preview".into(), gemini_pro);
     m
 }
 
@@ -170,7 +186,9 @@ pub(crate) fn canonical_model(model: &str) -> String {
     match m.as_str() {
         "fable" => "claude-fable-5-1".into(),
         "opus" => "claude-opus-5-5".into(),
-        "sonnet" => "claude-sonnet-5".into(),
+        // Claude Code resolves `sonnet` to Sonnet 5.5: its transcripts name
+        // claude-sonnet-5-5 (seen 2026-10-04).
+        "sonnet" => "claude-sonnet-5-5".into(),
         "haiku" => "claude-haiku-4-5".into(),
         _ => m,
     }
@@ -676,6 +694,30 @@ mod tests {
         assert_eq!(usage.skills.get("debug"), Some(&1));
     }
 
+    /// Every model a built-in teammate runs on prices, or is free or local
+    /// on purpose ([`is_free`]). A teammate without a model runs its
+    /// harness's default, which no teammate file names; one with no agent
+    /// (`smoke`) runs no model.
+    #[test]
+    fn every_builtin_teammate_model_has_a_price_or_is_free() {
+        let prices = builtin_prices();
+        let roster = crate::roster::Roster::builtin().unwrap();
+        let mut unpriced = Vec::new();
+        for name in roster.names() {
+            let t = roster.require(name).unwrap();
+            if t.agent == crate::harness::HarnessKind::None {
+                continue;
+            }
+            let Some(model) = t.model.as_deref() else {
+                continue;
+            };
+            if price_for(&prices, model).is_none() {
+                unpriced.push(format!("{name}: {model}"));
+            }
+        }
+        assert!(unpriced.is_empty(), "no price: {unpriced:?}");
+    }
+
     #[test]
     fn models_are_canonicalised_and_free_or_unknown_ones_are_told_apart() {
         for (raw, key) in [
@@ -683,6 +725,7 @@ mod tests {
             ("anthropic/claude-opus-5-5", "claude-opus-5-5"),
             ("claude-opus-5-5[1m]", "claude-opus-5-5"),
             ("opus", "claude-opus-5-5"),
+            ("sonnet", "claude-sonnet-5-5"),
             ("GPT-5.6-Sol", "gpt-5.6-sol"),
         ] {
             assert_eq!(canonical_model(raw), key, "{raw}");
