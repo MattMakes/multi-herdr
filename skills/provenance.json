@@ -1093,6 +1093,174 @@
         }
       ],
       "adaptation": "Merged hallmark and four taste-skill variants into one stack-neutral taste skill: rules per topic, ripgrep searches for named tells, measured hard gates and a six-axis rubric for review, and output-skill's complete-output rule; dropped theme and layout catalogs, dials, randomization rituals, stack-specific code and persuasion; conflicts resolved in ai_docs/reports/design-skills/skill-taste.md."
+    },
+    {
+      "name": "observability",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/SKILL.md",
+          "sha256": "25003e912b696a33d0d7356b9e99f9da88cf2afadb601549a7d229b2220ff42f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/activity-tracing.md",
+          "sha256": "fd2a0c839c915e754b37e1cecfc70f3f994554429c3b0cee437aa764acf06f89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/anti-patterns.md",
+          "sha256": "183bdee5e0aead5c377ee4dabcfc1aa3bb63ba86bf90348eeb1f6e591b75dd4e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/crash-reporting.md",
+          "sha256": "0feb28dcefef6b6c54306e02c0ffa79cb91436d5f26d63189d5a62724828d712",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/fundamentals.md",
+          "sha256": "d02db8c623ba23571106ae771bafcd6c2184729712e1cab310e687084470c1e5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/log-cli-and-console.md",
+          "sha256": "6f22b70dd00b1063480499a94a1f7345f17305fd2a3e8070360ee622b24131d5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/logger-api.md",
+          "sha256": "b2f91eb387effd4a9ef7f663128036b2b54c4b1a1f9f776b71faca6e0536b1d7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/metrickit.md",
+          "sha256": "cb50fcd23588ba3505a7b9a952bfae934aa8557ed1db1261b8ff905a15d96fcc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/network-telemetry.md",
+          "sha256": "02c749e44b6fccbbeb983ea3a01aa5e33db3d00da0cd75ac6143624a3312336b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/oslogstore.md",
+          "sha256": "ab7de1c20c59f30b238e267d421614bfdb8684cf82efaa3268d1191a3c304a76",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/production-monitoring.md",
+          "sha256": "6890d9a0df22716edce56e10c22562e6c6641eb201eecacdb037be25389b4952",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/signposts.md",
+          "sha256": "a0b5444c705c3a8993bb0a18cd4848581c1eb6852236e07410d09ee7b8933c76",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/symbolication.md",
+          "sha256": "73f425a30f3092e64d54636f7923c4aca422feaaf7b8481a5a9b8b7dca26ec99",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/third-party-sdks.md",
+          "sha256": "667f61fe118560b987a00137e10d3b3d119cc97686c3c29319eced050fa58aa8",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "None. Verbatim copy of SKILL.md and references with the upstream MIT LICENSE. Vendored because SKILL.md is 20 KB, over the 12 KB budget. Attached to Swift teammates by name; belongs to no phase.",
+      "vendored": true
+    },
+    {
+      "name": "swift-testing-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "LICENSE",
+          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/SKILL.md",
+          "sha256": "ad4f1bff44b5b7fce20b282481e651876efce024d13b16cb969bc433036ac059",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/async-tests.md",
+          "sha256": "bc6e0eabd10377b5796e9e554a4965a78b7d1aaba8f11021c2a63b6e8a9e669a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/core-rules.md",
+          "sha256": "2271efdca6c2b7b3365501172147884b6e786bcee7bef680fb4f4718929d6180",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/migrating-from-xctest.md",
+          "sha256": "35b64812402ad1d15b496993e1721daaf4e80672bf9cce47078f772fd271f93f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/new-features.md",
+          "sha256": "988df5cb556893c789f9aecdc4c8773fdbbda787ab1dad766bf1182a7b9a4819",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/writing-better-tests.md",
+          "sha256": "25da3455f6cec4f10d3dff0bf3e8e1372568c75691916541b4d517f451cb8bf1",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Upstream copy with 2 added lines in SKILL.md (headless runs with swift test --filter and xcodebuild test -only-testing:, and exit tests are not available on iOS, tvOS, watchOS or visionOS). Links to other upstream skill repositories (async-tests.md, writing-better-tests.md) replaced by bundled skill names. Otherwise verbatim.",
+      "vendored": false
     }
   ]
 }

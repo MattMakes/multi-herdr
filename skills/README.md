@@ -60,3 +60,12 @@ A skill may combine several upstream files, from several repositories. Its entry
 | [motion-gsap](motion-gsap/SKILL.md) | `greensock/gsap-skills`: `skills/gsap-*/SKILL.md` (8 skills) and `examples/`; `akseolabs-seo/cinematic-ui`: motion parts of `SKILL.md`, `references/implementation-guardrails.md`, `references/data/camera-shots-50.md`, `references/data/interaction-effects-50.md` |
 | [ui-redesign](ui-redesign/SKILL.md) | `nutlope/hallmark`: `skills/hallmark/SKILL.md` and its `verbs/redesign.md`, `verbs/audit.md`, `study.md` references; `leonxlnx/taste-skill`: `skills/redesign-skill/`, `skills/taste-skill/`, `skills/output-skill/` |
 | [ui-taste](ui-taste/SKILL.md) | `nutlope/hallmark`: `skills/hallmark/SKILL.md` and 17 rule references; `leonxlnx/taste-skill`: `skills/taste-skill/`, `skills/taste-skill-v1/`, `skills/gpt-tasteskill/`, `skills/output-skill/`, `skills/redesign-skill/` |
+
+## Swift and Apple skills
+
+These skills come from MIT-licensed Swift skill repositories. Each keeps its upstream `LICENSE` next to `SKILL.md`. "Vendored" means a verbatim copy; "adapted" means a curated copy with the edits listed in `provenance.json`. They attach by name to the Swift teammates and belong to no phase.
+
+| Skill | Kind | Upstream source |
+| --- | --- | --- |
+| [observability](observability/SKILL.md) | vendored | `n0an/Observability-Agent-Skill`: `observability/` |
+| [swift-testing-pro](swift-testing-pro/SKILL.md) | adapted, light | `twostraws/Swift-Testing-Agent-Skill`: `swift-testing-pro/` |
