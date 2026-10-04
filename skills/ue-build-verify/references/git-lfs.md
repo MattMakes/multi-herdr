@@ -30,11 +30,12 @@ The operator or the orchestrator owns this file. Do not change it unless the orc
 *.wav    filter=lfs diff=lfs merge=lfs -text lockable
 *.ogg    filter=lfs diff=lfs merge=lfs -text lockable
 *.mov    filter=lfs diff=lfs merge=lfs -text lockable
+*.mp4    filter=lfs diff=lfs merge=lfs -text lockable
 *.ttf    filter=lfs diff=lfs merge=lfs -text lockable
 *.otf    filter=lfs diff=lfs merge=lfs -text lockable
 ```
 
-Add any other binary type the project imports (for example MPEG-4 video) with the same attributes.
+Add any other binary type the project imports (for example `.mp3` audio or `.webm` video) with the same attributes.
 
 Do not put `Binaries/`, `Intermediate/`, `Saved/`, `DerivedDataCache/` or cooked output (`.uexp`, `.ubulk`, `.pak`) in LFS. They are build output and belong in `.gitignore`.
 

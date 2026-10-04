@@ -1513,7 +1513,7 @@ mod tests {
             serde_json::json!({
                 "syncClaudeAiSkills": false,
                 "remoteControlAtStartup": false,
-                "enabledPlugins": {"skill-creator@claude-plugins-official": false},
+                "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
                 "skillOverrides": {
                     "herdr-orchestrator": "off",
                     "herdr-worker": "off",
@@ -1540,7 +1540,7 @@ mod tests {
         assert_eq!(
             overlay,
             serde_json::json!({"remoteControlAtStartup": false,
-                "enabledPlugins": {"skill-creator@claude-plugins-official": false},
+                "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
                 "skillOverrides": {
                 "herdr-orchestrator": "off",
                 "herdr-worker": "off",

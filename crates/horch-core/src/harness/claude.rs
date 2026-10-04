@@ -307,10 +307,101 @@ pub(crate) fn overlay_skill_switches(
     ) {
         plugins.entry(key).or_insert(serde_json::Value::Bool(false));
     }
+    // For the same reason a disabled `<plugin>:<skill>` switches its whole
+    // plugin off (Claude Code 2.1.289, ai_docs/reports/finish/skill-overrides.md).
+    // `or_insert`: a plugin that plugin_skills keeps enabled stays enabled.
+    let enabled = operator_enabled_plugins(home);
+    let installed = super::claude_plugins::installed_plugins_in(home);
+    for name in &teammate.disabled_skills {
+        let Some((plugin, _)) = name.split_once(':') else {
+            continue;
+        };
+        for key in plugin_keys(plugin, &enabled, installed.as_ref()) {
+            plugins.entry(key).or_insert(serde_json::Value::Bool(false));
+        }
+    }
     Ok(())
+}
+
+/// Every `name@marketplace` key under which `plugin` is enabled in the
+/// operator's settings or installed, sorted. Empty when it is neither.
+fn plugin_keys(plugin: &str, enabled: &[String], installed: Option<&Value>) -> Vec<String> {
+    let registered = installed
+        .and_then(|v| v.get("plugins"))
+        .and_then(|p| p.as_object())
+        .map(|p| p.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut keys: Vec<String> = enabled
+        .iter()
+        .cloned()
+        .chain(registered)
+        .filter(|k| k.split('@').next() == Some(plugin))
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 /// The names skill-creator loads under as a skill, outside horch's bundle and
 /// the plugin: a user or project skill, and the claude.ai-synced copy.
 pub(crate) const AMBIENT_SKILL_CREATOR: [&str; 2] =
     ["skill-creator", "anthropic-skills:skill-creator"];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A plugin skill ignores `skillOverrides`, so a disabled `herdr:<skill>`
+    /// switches the herdr plugin off under every key it is enabled or
+    /// installed as. A bare name and a plugin nobody has add no plugin key.
+    #[test]
+    fn a_disabled_plugin_skill_switches_its_plugin_off() {
+        let home = tempfile::tempdir().unwrap();
+        let claude = home.path().join(".claude");
+        std::fs::create_dir_all(claude.join("plugins")).unwrap();
+        std::fs::write(
+            claude.join("settings.json"),
+            r#"{"enabledPlugins": {"herdr@m": true, "ddd@m": true}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            claude.join("plugins/installed_plugins.json"),
+            r#"{"version": 2, "plugins": {"herdr@fork": [{"installPath": "/x"}]}}"#,
+        )
+        .unwrap();
+        let teammate = Teammate {
+            disabled_skills: vec![
+                "herdr-worker".into(),
+                "herdr:herdr-worker".into(),
+                "herdr:herdr-orchestrator".into(),
+                "missing:skill".into(),
+            ],
+            ..Teammate::default()
+        };
+        let mut overlay = serde_json::Map::new();
+        overlay_skill_switches(&teammate, &mut overlay, Some(home.path())).unwrap();
+        assert_eq!(
+            overlay["enabledPlugins"],
+            json!({
+                "herdr@fork": false,
+                "herdr@m": false,
+                "skill-creator@claude-plugins-official": false
+            })
+        );
+        // The bare names still go off: they hide the user-level copies.
+        assert_eq!(overlay["skillOverrides"]["herdr-worker"], "off");
+    }
+
+    /// A plugin that plugin_skills keeps enabled stays enabled.
+    #[test]
+    fn plugin_skills_wins_over_a_disabled_plugin_skill() {
+        let mut overlay = serde_json::Map::new();
+        overlay.insert("enabledPlugins".into(), json!({"herdr@m": true}));
+        let plugins = overlay["enabledPlugins"].as_object_mut().unwrap();
+        for key in plugin_keys("herdr", &["herdr@m".into()], None) {
+            plugins.entry(key).or_insert(json!(false));
+        }
+        assert_eq!(overlay["enabledPlugins"], json!({"herdr@m": true}));
+        assert!(plugin_keys("herdr", &["herdrx@m".into()], None).is_empty());
+    }
+}
