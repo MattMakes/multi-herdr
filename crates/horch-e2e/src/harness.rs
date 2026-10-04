@@ -344,13 +344,147 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
+        let leaked = reap(&self.root, &self.log);
         if !std::thread::panicking() {
             check_built_fakes();
+            assert!(
+                leaked.is_empty(),
+                "the test leaked {} process(es) that outlived teardown by {:?}; \
+                 teardown killed them:\n{}",
+                leaked.len(),
+                REAP_GRACE,
+                leaked.join("\n")
+            );
         }
         if std::env::var_os("HORCH_E2E_KEEP").is_none() {
             let _ = std::fs::remove_dir_all(&self.root);
         }
     }
+}
+
+/// How long teardown waits for the harness's processes to end after it
+/// signals them.
+const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// End every process this harness started, and return the ones that
+/// leaked.
+///
+/// fake-herdr `exec` starts each pane command in its own process group and
+/// records the group in its state; a test that fails before `horch done`
+/// (or never closes a pane) leaves `horch worker` and a `stay` fake running
+/// for ever. Teardown sends SIGTERM to each recorded group, and to the group
+/// of every process whose command line names the harness root (a pane whose
+/// group was never recorded, a call of a fake). A process that still names
+/// the root after [`REAP_GRACE`] leaked: it gets SIGKILL and is returned.
+#[cfg(unix)]
+fn reap(root: &Path, log: &Path) -> Vec<String> {
+    let mut state = log.as_os_str().to_owned();
+    state.push(".state.json");
+    let recorded: Vec<u32> = std::fs::read_to_string(&state)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v["pids"].as_object().cloned())
+        .into_iter()
+        .flat_map(|m| m.into_iter().filter_map(|(_, p)| p.as_u64()))
+        .filter_map(|p| u32::try_from(p).ok())
+        .collect();
+    // With the separator: one harness root can be a prefix of another's.
+    let mut names = vec![format!("{}/", root.display())];
+    if let Ok(canonical) = std::fs::canonicalize(root) {
+        names.push(format!("{}/", canonical.display()));
+    }
+    let own_group = processes()
+        .into_iter()
+        .find(|p| p.pid == std::process::id())
+        .map(|p| p.pgid);
+    let named = || -> Vec<Process> {
+        processes()
+            .into_iter()
+            .filter(|p| names.iter().any(|n| p.command.contains(n.as_str())))
+            .filter(|p| p.pid != std::process::id())
+            .collect()
+    };
+    let mut groups: Vec<u32> = recorded;
+    groups.extend(named().iter().map(|p| p.pgid));
+    groups.retain(|g| *g > 1 && Some(*g) != own_group);
+    groups.sort_unstable();
+    groups.dedup();
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    signal_groups(&groups, "TERM");
+    let until = std::time::Instant::now() + REAP_GRACE;
+    loop {
+        let left = named();
+        if left.is_empty() {
+            return Vec::new();
+        }
+        if std::time::Instant::now() >= until {
+            let groups: Vec<u32> = left
+                .iter()
+                .map(|p| p.pgid)
+                .filter(|g| *g > 1 && Some(*g) != own_group)
+                .collect();
+            signal_groups(&groups, "KILL");
+            return left
+                .into_iter()
+                .map(|p| format!("{} {}", p.pid, p.command))
+                .collect();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(unix))]
+fn reap(_root: &Path, _log: &Path) -> Vec<String> {
+    Vec::new()
+}
+
+/// One row of `ps`.
+#[cfg(unix)]
+struct Process {
+    pid: u32,
+    pgid: u32,
+    command: String,
+}
+
+/// Every process on the machine, from `ps`. Empty when `ps` cannot run.
+#[cfg(unix)]
+fn processes() -> Vec<Process> {
+    let Ok(out) = Command::new("/bin/ps")
+        .args(["-axww", "-o", "pid=,pgid=,command="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pid = parts.next()?.parse().ok()?;
+            let pgid = parts.next()?.parse().ok()?;
+            Some(Process {
+                pid,
+                pgid,
+                command: parts.collect::<Vec<_>>().join(" "),
+            })
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn signal_groups(groups: &[u32], signal: &str) {
+    if groups.is_empty() {
+        return;
+    }
+    let targets: Vec<String> = groups.iter().map(|g| format!("-{g}")).collect();
+    let _ = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "kill -{signal} -- {} 2>/dev/null",
+            targets.join(" ")
+        ))
+        .status();
 }
 
 /// The size of each built fake when this test process first saw it.

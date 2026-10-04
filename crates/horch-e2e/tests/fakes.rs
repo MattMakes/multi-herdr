@@ -497,3 +497,93 @@ fn fake_herdr_breaks_only_a_dead_holders_lock() {
     let status = wait_up_to(&mut child, 10).expect("the call goes on once the lock is free");
     assert!(status.success());
 }
+
+/// Whether a process with this pid runs.
+#[cfg(unix)]
+fn runs(pid: &str) -> bool {
+    Command::new("/bin/sh")
+        .args(["-c", &format!("kill -0 {} 2>/dev/null", pid.trim())])
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// Wait up to 10 s for `file` to hold a pid, and return it.
+#[cfg(unix)]
+fn pid_in(file: &Path) -> String {
+    let started = std::time::Instant::now();
+    loop {
+        let pid = std::fs::read_to_string(file).unwrap_or_default();
+        if !pid.trim().is_empty() {
+            return pid.trim().to_string();
+        }
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "no pid in {}",
+            file.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A test that ends with a pane open (it failed before `horch done`, or
+/// never closed it) leaves nothing running: teardown kills the pane's
+/// process group, and the test does not fail for it.
+#[cfg(unix)]
+#[test]
+fn teardown_kills_the_open_panes() {
+    let mut h = Harness::new("teardown-pane");
+    h.set("HORCH_FAKE_SCENARIO", "exec");
+    let created = json(&fake(&h, "herdr", &["workspace", "create", "--label", "t"]));
+    let root = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let pidfile = std::env::temp_dir().join(format!("teardown-pane-{}", std::process::id()));
+    let command = format!("echo $$ > {}; /bin/sleep 60", pidfile.display());
+    assert!(fake(&h, "herdr", &["pane", "run", &root, &command])
+        .status
+        .success());
+    let pid = pid_in(&pidfile);
+    let _ = std::fs::remove_file(&pidfile);
+    assert!(runs(&pid));
+    drop(h);
+    assert!(!runs(&pid), "teardown kills the pane command");
+}
+
+/// A process that outlives teardown's SIGTERM fails the test, and teardown
+/// kills it.
+#[cfg(unix)]
+#[test]
+fn teardown_fails_a_test_that_leaks_a_process() {
+    let h = Harness::new("teardown-leak");
+    // Named by the harness root, in its own process group, deaf to SIGTERM.
+    let stubborn = h.write_bin(
+        "stubborn",
+        b"#!/bin/sh\ntrap '' TERM\necho $$ > \"$1\"\nwhile :; do /bin/sleep 1; done\n",
+    );
+    let pidfile = h.tmp.join("stubborn.pid");
+    let mut cmd = Command::new(&stubborn);
+    // Not the test's own output: a pipe it held open would stall the run.
+    cmd.arg(&pidfile)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = cmd.spawn().unwrap();
+    let pid = pid_in(&pidfile);
+
+    let teardown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(h)));
+    // The process is this test's child: reap it, or it stays a zombie.
+    let ended = wait_up_to(&mut child, 2).is_some();
+    if !ended {
+        // SIGKILL, so this test never leaks the process itself.
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(ended, "teardown killed pid {pid}");
+    let panic = teardown.expect_err("a leaked process fails the test");
+    let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(message.contains("leaked 1 process"), "{message}");
+    assert!(message.contains("stubborn"), "{message}");
+}
