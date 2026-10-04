@@ -26,6 +26,19 @@
 //!   `HERDR_PANE_ID` set, the way a real pane would. Output goes to
 //!   `$HORCH_FAKE_LOG.pane-<id>.out`. The process group id is stored in the
 //!   state, and `pane close` kills that group.
+//! - `shell`: each pane is a plain shell with no agent in it. `agent prompt`
+//!   exits 1, as real herdr does for a pane without an agent. `pane
+//!   send-text` types text into the pane; `pane send-keys <pane> enter` runs
+//!   the typed line like `exec`, with its output appended to the pane.
+//!
+//! `pane read` prints the pane text: the output of its commands, then the
+//! line typed and not yet entered. `pane wait-output` searches that text
+//! with `--match`, as herdr 0.8.2 does: exit 0 with an `output_matched`
+//! result, or exit 1 with herdr's `timeout` error on stderr. It takes no
+//! state lock while it polls.
+//!
+//! A top-level command that herdr 0.8.2 does not have (for example the old
+//! `herdr wait output`) exits 2 with herdr's `unknown command` message.
 //!
 //! Dataset workspaces (label `multi-herdr-dataset ...`) are exempt from the
 //! violation rule: their coordinator splits and closes panes there.
@@ -35,6 +48,25 @@ use std::path::PathBuf;
 
 use horch_e2e::{say, scenario_has, Call};
 use serde_json::{json, Value};
+
+/// The top-level commands of herdr 0.8.2 (`herdr --help`).
+const COMMANDS: [&str; 15] = [
+    "api",
+    "agent",
+    "channel",
+    "completion",
+    "config",
+    "integration",
+    "notification",
+    "pane",
+    "server",
+    "session",
+    "status",
+    "tab",
+    "update",
+    "workspace",
+    "worktree",
+];
 
 const MUTATING: [&str; 7] = ["focus", "tile", "split", "move", "close", "swap", "resize"];
 
@@ -65,6 +97,14 @@ fn main() {
     }
     std::env::remove_var(DETACHED);
     let mut call = Call::start("herdr");
+    // A wait polls for seconds; holding the lock that long would stall the
+    // very commands whose output it waits for.
+    if call.argv.get(..2) == Some(&["pane".to_string(), "wait-output".to_string()][..]) {
+        let args: Vec<&str> = call.argv.iter().map(String::as_str).collect();
+        let code = wait_output(&args[2..]);
+        call.flush();
+        std::process::exit(code);
+    }
     // One call at a time reads and writes the state: concurrent calls (a
     // coordinator and its workers) would otherwise lose each other's panes.
     let lock = StateLock::acquire();
@@ -215,6 +255,12 @@ fn run(call: &mut Call) -> i32 {
         say("herdr 0.8.2 (fake)");
         return 0;
     }
+    if let Some(noun) = args.first() {
+        if !COMMANDS.contains(noun) {
+            eprintln!("unknown command: {noun}\nrun 'herdr --help' for usage");
+            return 2;
+        }
+    }
     let mut state = load();
     // Any verb that changes what the operator sees is a violation, whatever
     // noun it is attached to, except inside a dataset workspace: the
@@ -295,6 +341,35 @@ fn run(call: &mut Call) -> i32 {
                 }
             }
             ok(json!({"type": "ok"}))
+        }
+        ["pane", "read", pane, ..] => {
+            say(&pane_text(&state, pane));
+            0
+        }
+        ["pane", "send-text", pane, text] if scenario_has("shell") => {
+            let typed = state["typed"][*pane].as_str().unwrap_or("").to_string();
+            state["typed"][*pane] = json!(format!("{typed}{text}"));
+            save(&state);
+            ok(json!({"type": "ok"}))
+        }
+        ["pane", "send-keys", pane, keys @ ..] if scenario_has("shell") => {
+            if keys.iter().any(|k| k.eq_ignore_ascii_case("enter")) {
+                let line = state["typed"][*pane].as_str().unwrap_or("").to_string();
+                state["typed"][*pane] = json!("");
+                save(&state);
+                // Not waited for: the line may call herdr, and this call
+                // holds the state lock. `pane wait-output` polls for it.
+                if !line.trim().is_empty() {
+                    shell_line(pane, &line);
+                }
+            }
+            ok(json!({"type": "ok"}))
+        }
+        ["agent", "prompt", pane, ..] if scenario_has("shell") => {
+            eprintln!(
+                r#"{{"error":{{"code":"agent_not_found","message":"no agent in pane {pane}"}}}}"#
+            );
+            1
         }
         ["pane", "split", from, ..] => {
             if scenario_has("fail_split") {
@@ -477,15 +552,97 @@ fn kill_group(pgid: u64, started: Option<u64>) {
     }
 }
 
+/// The file that holds what pane `pane` printed.
+fn pane_out(pane: &str) -> Option<PathBuf> {
+    std::env::var_os("HORCH_FAKE_LOG").map(|p| {
+        let mut p = p;
+        p.push(format!(".pane-{}.out", pane.replace(':', "_")));
+        PathBuf::from(p)
+    })
+}
+
+/// What a read of `pane` shows: its output, then the line typed into it.
+fn pane_text(state: &Value, pane: &str) -> String {
+    let out = pane_out(pane)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    let typed = state["typed"][pane].as_str().unwrap_or("");
+    format!("{out}{typed}")
+}
+
+/// `pane wait-output <pane> --match <text> [--timeout <ms>]`, answered the
+/// way herdr 0.8.2 answers it.
+fn wait_output(args: &[&str]) -> i32 {
+    let needle = flag(args, "--match").unwrap_or("");
+    let timeout = flag(args, "--timeout").and_then(|t| t.parse::<u64>().ok());
+    let mut skip = false;
+    let pane = args.iter().copied().find(|a| {
+        let value = skip;
+        skip = a.starts_with("--") && *a != "--raw";
+        !value && !a.starts_with("--")
+    });
+    let Some(pane) = pane else {
+        eprintln!("error: the following required arguments were not provided: <PANE_ID>");
+        return 2;
+    };
+    let deadline = timeout.map(|t| std::time::Instant::now() + std::time::Duration::from_millis(t));
+    loop {
+        let state = load();
+        if find_pane(&state, pane).is_none() {
+            eprintln!(
+                r#"{{"error":{{"code":"pane_not_found","message":"pane {pane} not found"}},"id":"cli:pane:wait-output"}}"#
+            );
+            return 1;
+        }
+        let text = pane_text(&state, pane);
+        if let Some(line) = text.lines().find(|l| l.contains(needle)) {
+            say(&json!({"id": "cli:pane:wait-output", "result": {
+                "type": "output_matched", "pane_id": pane, "matched_line": line,
+            }})
+            .to_string());
+            return 0;
+        }
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            eprintln!(
+                r#"{{"error":{{"code":"timeout","message":"timed out waiting for output match"}},"id":"cli:pane:wait-output"}}"#
+            );
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Start one entered line in `pane`, its output appended to the pane.
+fn shell_line(pane: &str, line: &str) {
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("/bin/sh", "-c")
+    };
+    let mut cmd = std::process::Command::new(shell);
+    cmd.arg(flag).arg(line).env("HERDR_PANE_ID", pane);
+    cmd.stdin(std::process::Stdio::null());
+    let out = pane_out(pane).and_then(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .ok()
+    });
+    if let Some(out) = out {
+        if let Ok(err) = out.try_clone() {
+            cmd.stderr(err);
+        }
+        cmd.stdout(out);
+    }
+    let _ = cmd.spawn();
+}
+
 /// Run `command` the way a herdr pane would: in a shell, with the pane's id
 /// in its environment, not waiting for it. Returns the pid, which is also the
 /// process group id on unix.
 fn exec_detached(pane: &str, command: &str) -> Option<u32> {
-    let out = std::env::var_os("HORCH_FAKE_LOG").map(|p| {
-        let mut p = p;
-        p.push(format!(".pane-{}.out", pane.replace(':', "_")));
-        PathBuf::from(p)
-    });
+    let out = pane_out(pane);
     let (shell, flag) = if cfg!(windows) {
         ("cmd", "/C")
     } else {

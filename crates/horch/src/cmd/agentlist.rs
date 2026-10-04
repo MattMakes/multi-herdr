@@ -13,7 +13,7 @@ use horch_core::clock;
 use horch_core::harness::inventory::{inventory, AgentRow, BinaryFacts};
 use horch_core::harness::HarnessKind;
 use horch_core::routing::quota::QuotaView;
-use horch_core::routing::quota_probe::harness_version;
+use horch_core::routing::quota_probe::{probe_version, VersionProbe};
 use horch_core::routing::snapshot;
 use horch_core::runtime::{process, RuntimeContext};
 
@@ -51,8 +51,8 @@ fn cached_view(ctx: &RuntimeContext) -> Option<QuotaView> {
 }
 
 /// Where each harness binary is, and (when `probe`) its `--version`. The
-/// probes run in parallel, each with the 5 s limit of `harness_version`.
-fn gather(ctx: &RuntimeContext, probe: bool) -> BTreeMap<&'static str, BinaryFacts> {
+/// probes run in parallel, each with the time limit of `probe_version`.
+pub(crate) fn gather(ctx: &RuntimeContext, probe: bool) -> BTreeMap<&'static str, BinaryFacts> {
     let paths: Vec<(&'static str, Option<PathBuf>)> = HarnessKind::ALL
         .iter()
         .filter_map(|k| {
@@ -65,15 +65,24 @@ fn gather(ctx: &RuntimeContext, probe: bool) -> BTreeMap<&'static str, BinaryFac
             .into_iter()
             .map(|(name, path)| {
                 let probing = probe.then(|| path.clone()).flatten();
-                let handle = s.spawn(move || probing.and_then(|p| harness_version(&p)));
+                let handle = s.spawn(move || probing.map(|p| probe_version(&p)));
                 (name, path, handle)
             })
             .collect();
         handles
             .into_iter()
             .map(|(name, path, handle)| {
-                let version = handle.join().ok().flatten();
-                (name, BinaryFacts { path, version })
+                let probe = handle.join().ok().flatten();
+                let broken = probe.as_ref().and_then(|p| p.broken()).map(str::to_owned);
+                let version = probe.and_then(VersionProbe::version);
+                (
+                    name,
+                    BinaryFacts {
+                        path,
+                        version,
+                        broken,
+                    },
+                )
             })
             .collect()
     })
@@ -94,24 +103,19 @@ fn resolve(ctx: &RuntimeContext, bin: &Path) -> Option<PathBuf> {
 fn table(rows: &[AgentRow], no_probe: bool) -> String {
     let mut out = String::new();
     let agent_w = rows.iter().map(|r| r.agent.len()).max().unwrap_or(0).max(5);
-    let status = |r: &AgentRow| {
-        if r.available {
-            "available"
-        } else {
-            "unavailable"
-        }
-    };
+    let status = |r: &AgentRow| r.status.clone();
     let status_w = "unavailable".len();
     out.push_str(&format!(
         "{:<agent_w$}  {:<status_w$}  {:<9}  {}\n",
         "AGENT", "STATUS", "POOL", "BINARY  VERSION",
     ));
     for r in rows {
-        let version = match (&r.version, r.found, no_probe) {
-            (Some(v), _, _) => v.as_str(),
-            (None, true, true) => "(not probed)",
-            (None, true, false) => "(no answer)",
-            (None, false, _) => "-",
+        let version = match (&r.version, &r.broken, r.found, no_probe) {
+            (Some(v), _, _, _) => v.clone(),
+            (None, Some(why), true, _) => format!("(broken: {why})"),
+            (None, None, true, true) => "(not probed)".into(),
+            (None, None, true, false) => "(no answer)".into(),
+            (None, _, false, _) => "-".into(),
         };
         out.push_str(&format!(
             "{:<agent_w$}  {:<status_w$}  {:<9}  {}  {}\n",

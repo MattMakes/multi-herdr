@@ -464,6 +464,19 @@ fn quo_06_local_broken() {
     }
 }
 
+/// The quota probe records a harness whose `--version` crashes, by harness,
+/// with its error line; the others stay healthy.
+#[test]
+fn quota_probe_records_a_crashing_harness() {
+    let mut h = corpus("quota-harness-broken");
+    h.set("HORCH_FAKE_SCENARIO", "crash");
+    let q = json(&h.run(&["quota", "--refresh", "--json"]));
+    let why = "pi --version exited 1: pi: Node.js 22.19 or newer is required";
+    assert_eq!(q["harnesses"]["pi"]["error"], why, "{q}");
+    assert_eq!(q["harnesses"]["claude"]["error"], Value::Null, "{q}");
+    assert!(q["harnesses"]["claude"]["version"].is_string(), "{q}");
+}
+
 #[test]
 fn quo_07_cli_does_not_probe_when_collector_live() {
     let h = corpus("quo07a");

@@ -19,8 +19,11 @@ use crate::routing::quota::{pool_for, QuotaView, State};
 pub struct BinaryFacts {
     /// Where the binary is, when it was found.
     pub path: Option<PathBuf>,
-    /// The first line of `--version`. `None` when not probed or no answer.
+    /// The first line of `--version`. `None` when not probed, broken or no
+    /// answer.
     pub version: Option<String>,
+    /// `--version` ran and failed: why, with the first error line.
+    pub broken: Option<String>,
 }
 
 /// A teammate that uses a model, with its effort.
@@ -53,6 +56,12 @@ pub struct AgentRow {
     pub found: bool,
     pub path: Option<String>,
     pub version: Option<String>,
+    /// Why the binary is broken: its `--version` failed now, or at the last
+    /// quota probe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broken: Option<String>,
+    /// `available`, `unavailable` or `broken`.
+    pub status: String,
     pub efforts: Vec<String>,
     pub capabilities: CapabilitySummary,
     pub models: Vec<ModelUse>,
@@ -61,7 +70,8 @@ pub struct AgentRow {
     /// The worst state of those pools in the cached view; `unknown` with
     /// no view.
     pub pool_state: String,
-    /// The binary is found and the pool is not exhausted.
+    /// Routing may choose it: the binary is found, it is not broken, and
+    /// its pool does not block a spawn (not broken, exhausted or cooling).
     pub available: bool,
 }
 
@@ -119,15 +129,35 @@ fn row(
         .collect();
     pools.sort();
     pools.dedup();
-    let state = view.map_or(State::Unknown, |v| {
-        model_names
-            .iter()
-            .map(|m| v.assess(kind.as_str(), m).state)
-            .min()
-            .unwrap_or(State::Unknown)
-    });
+    let assessed: Vec<_> = view
+        .map(|v| {
+            model_names
+                .iter()
+                .map(|m| v.assess(kind.as_str(), m))
+                .collect()
+        })
+        .unwrap_or_default();
+    let worst = assessed.iter().min_by_key(|a| a.state);
+    let state = worst.map_or(State::Unknown, |a| a.state);
 
     let found = facts.is_some_and(|f| f.path.is_some());
+    // The live probe first; else the quota view's reason when it says broken.
+    let broken = facts
+        .and_then(|f| f.broken.clone())
+        .or_else(|| {
+            worst
+                .filter(|a| a.state == State::Broken)
+                .map(|a| a.reason.clone())
+        })
+        .filter(|_| found);
+    let available = found && broken.is_none() && !state.blocks();
+    let status = if broken.is_some() {
+        "broken"
+    } else if available {
+        "available"
+    } else {
+        "unavailable"
+    };
     AgentRow {
         agent: kind.as_str().to_string(),
         found,
@@ -135,6 +165,8 @@ fn row(
             .and_then(|f| f.path.as_ref())
             .map(|p| p.display().to_string()),
         version: facts.and_then(|f| f.version.clone()),
+        broken,
+        status: status.to_string(),
         efforts: caps.effort.iter().map(|e| e.to_string()).collect(),
         capabilities: CapabilitySummary {
             resume: caps.resumes,
@@ -144,7 +176,7 @@ fn row(
         models,
         pools,
         pool_state: state.as_str().to_string(),
-        available: found && state != State::Exhausted,
+        available,
     }
 }
 
@@ -174,6 +206,7 @@ mod tests {
         BinaryFacts {
             path: Some(PathBuf::from(path)),
             version: version.map(String::from),
+            broken: None,
         }
     }
 
@@ -280,5 +313,50 @@ mod tests {
         assert!(!pi.found && !pi.available);
         assert_eq!(pi.pool_state, "unknown");
         assert!(pi.models.is_empty());
+    }
+
+    /// A binary whose `--version` crashed is found but broken: not
+    /// available, with the error line. A broken reading in the quota view
+    /// does the same when the live probe did not run.
+    #[test]
+    fn agent_list_inventory_broken_binary_is_not_available() {
+        let why = "pi --version exited 1: Error [ERR_REQUIRE_ESM]: require() of ES Module";
+        let facts = BTreeMap::from([(
+            "pi",
+            BinaryFacts {
+                path: Some(PathBuf::from("/bin/pi")),
+                version: None,
+                broken: Some(why.into()),
+            },
+        )]);
+        let rows = inventory(&[], &facts, None);
+        let pi = rows.iter().find(|r| r.agent == "pi").unwrap();
+        assert!(pi.found && !pi.available);
+        assert_eq!(pi.status, "broken");
+        assert_eq!(pi.broken.as_deref(), Some(why));
+
+        let mut file = QuotaFile::default();
+        file.harnesses.insert(
+            "pi".into(),
+            crate::routing::quota::HarnessHealth {
+                error: Some(why.into()),
+                ..Default::default()
+            },
+        );
+        let view = QuotaView::new(
+            file,
+            crate::clock::parse("2026-09-28T18:00:00Z").unwrap(),
+            Policy::default(),
+            true,
+        );
+        let facts = BTreeMap::from([("pi", found("/bin/pi", None))]);
+        let rows = inventory(&[], &facts, Some(&view));
+        let pi = rows.iter().find(|r| r.agent == "pi").unwrap();
+        assert_eq!(pi.status, "broken");
+        assert_eq!(pi.pool_state, "broken");
+        assert!(!pi.available);
+        let claude = rows.iter().find(|r| r.agent == "claude").unwrap();
+        assert_eq!(claude.status, "unavailable", "not found");
+        assert_eq!(claude.broken, None);
     }
 }

@@ -204,6 +204,24 @@ pub struct QuotaFile {
     pub written_at: Option<String>,
     #[serde(default)]
     pub pools: BTreeMap<String, PoolReading>,
+    /// What the last probe's `<harness> --version` showed, by harness
+    /// (`claude`, `pi`, ...). Absent in files written before it existed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub harnesses: BTreeMap<String, HarnessHealth>,
+}
+
+/// One harness binary at the last probe. A pool is shared by harnesses (a
+/// `pi` teammate on an `anthropic/` model draws on the `claude` pool), so a
+/// binary that crashes is judged here, by harness, not by pool.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessHealth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Set when `--version` ran and failed; cleared when it next succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probed_at: Option<String>,
 }
 
 impl Default for QuotaFile {
@@ -212,6 +230,7 @@ impl Default for QuotaFile {
             schema: 1,
             written_at: None,
             pools: BTreeMap::new(),
+            harnesses: BTreeMap::new(),
         }
     }
 }
@@ -366,8 +385,25 @@ impl QuotaView {
     }
 
     /// The state of the pool a teammate draws from, for its model.
+    ///
+    /// A harness whose last `--version` probe failed is `broken` whatever
+    /// its pool says: routing never chooses a binary that cannot start.
     pub fn assess(&self, agent: &str, model: &str) -> Assessment {
         let pool = pool_for(agent, model);
+        if let Some(e) = self
+            .file
+            .harnesses
+            .get(agent)
+            .and_then(|h| h.error.as_ref())
+        {
+            return Assessment {
+                pool: pool.to_string(),
+                state: State::Broken,
+                reason: e.clone(),
+                headroom_per_h: None,
+                worst: None,
+            };
+        }
         let local_model =
             (pool == POOL_LOCAL).then(|| model.split_once('/').map(|(_, m)| m).unwrap_or(model));
         self.assess_pool(pool, model_family(model), local_model)
@@ -1097,5 +1133,54 @@ mod tests {
         assert_eq!(pool_for("pi", "mystery/x"), POOL_UNKNOWN);
         assert_eq!(model_family("claude-opus-5-5"), Some("opus"));
         assert_eq!(short_time("2026-10-02T13:59:59Z"), "Fri 14:00Z");
+    }
+
+    /// A broken harness is judged by harness, not pool: `pi` on an
+    /// `anthropic/` model draws on the `claude` pool, which stays ok for
+    /// `claude`. A file written before `harnesses` existed still reads, and a
+    /// recovered harness is no longer broken.
+    #[test]
+    fn a_broken_harness_is_broken_whatever_its_pool() {
+        // all-ok.json predates `harnesses`.
+        let raw = std::fs::read_to_string(fixture("quota/all-ok.json")).unwrap();
+        assert!(!raw.contains("harnesses"));
+        let mut file = QuotaFile::read(&fixture("quota/all-ok.json")).unwrap();
+        assert!(file.harnesses.is_empty());
+        let v = QuotaView::new(file.clone(), now(), Policy::default(), true);
+        assert_eq!(
+            v.assess("pi", "anthropic/claude-sonnet-5-5").state,
+            State::Ok
+        );
+
+        let why = "pi --version exited 1: Error [ERR_REQUIRE_ESM]: require() of ES Module";
+        file.harnesses.insert(
+            "pi".into(),
+            HarnessHealth {
+                version: Some("0.70.0".into()),
+                error: Some(why.into()),
+                probed_at: Some("2026-09-28T17:55:00Z".into()),
+            },
+        );
+        let v = QuotaView::new(file.clone(), now(), Policy::default(), true);
+        for model in ["anthropic/claude-sonnet-5-5", "ollama/qwen3.8"] {
+            let a = v.assess("pi", model);
+            assert_eq!(a.state, State::Broken, "pi on {model}");
+            assert_eq!(a.reason, why);
+        }
+        assert_eq!(v.assess("claude", "claude-sonnet-5-5").state, State::Ok);
+        // The field round-trips, and is left out when empty.
+        let text = serde_json::to_string(&file).unwrap();
+        let back: QuotaFile = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.harnesses, file.harnesses);
+        assert!(!serde_json::to_string(&QuotaFile::default())
+            .unwrap()
+            .contains("harnesses"));
+
+        file.harnesses.get_mut("pi").unwrap().error = None;
+        let v = QuotaView::new(file, now(), Policy::default(), true);
+        assert_eq!(
+            v.assess("pi", "anthropic/claude-sonnet-5-5").state,
+            State::Ok
+        );
     }
 }

@@ -9,6 +9,7 @@ use std::ffi::OsStr;
 use std::process::Command;
 
 use anyhow::{bail, Result};
+use horch_core::harness::inventory::BinaryFacts;
 use horch_core::roster::{operator_effort_warnings, Requirement, Roster};
 use horch_core::runtime::{process, RuntimeContext};
 use horch_core::workspace::herdr::Herdr;
@@ -48,6 +49,10 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     );
     for p in &tool_problems {
         eprintln!("warning: {p}");
+    }
+    // Not fatal: the harness's teammates are unusable, the rest work.
+    for w in broken_harness_warnings(&super::agentlist::gather(ctx, true)) {
+        eprintln!("warning: {w}");
     }
     // Settings that quietly override the effort in every teammate file.
     let home = ctx.inherited.home_var.as_deref().map(std::path::Path::new);
@@ -94,6 +99,22 @@ pub fn check(ctx: &RuntimeContext) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// One line per harness whose `--version` ran and failed.
+fn broken_harness_warnings(
+    facts: &std::collections::BTreeMap<&'static str, BinaryFacts>,
+) -> Vec<String> {
+    facts
+        .iter()
+        .filter_map(|(name, f)| {
+            let why = f.broken.as_deref()?.trim_end_matches('.');
+            Some(format!(
+                "harness {name} is broken: {why}. The quota probe marks it broken and \
+                 routing then does not choose its teammates. Fix `{name} --version` first."
+            ))
+        })
+        .collect()
 }
 
 /// What is missing for the `requires:` of the teammates `roster` offers, one
@@ -255,5 +276,39 @@ mod tests {
             "{}",
             problems[0]
         );
+    }
+
+    #[test]
+    fn a_broken_harness_is_a_doctor_warning() {
+        let why = "pi --version exited 1: Error [ERR_REQUIRE_ESM]: require() of ES Module.";
+        let facts = std::collections::BTreeMap::from([
+            (
+                "claude",
+                BinaryFacts {
+                    path: Some("/bin/claude".into()),
+                    version: Some("2.1.0".into()),
+                    broken: None,
+                },
+            ),
+            (
+                "pi",
+                BinaryFacts {
+                    path: Some("/bin/pi".into()),
+                    version: None,
+                    broken: Some(why.into()),
+                },
+            ),
+        ]);
+        let warnings = broken_harness_warnings(&facts);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with(
+                "harness pi is broken: pi --version exited 1: Error [ERR_REQUIRE_ESM]: \
+                 require() of ES Module. The quota probe"
+            ),
+            "{}",
+            warnings[0]
+        );
+        assert!(warnings[0].contains("Fix `pi --version` first."));
     }
 }
