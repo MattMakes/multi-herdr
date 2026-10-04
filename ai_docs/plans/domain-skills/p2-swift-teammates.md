@@ -34,6 +34,12 @@ offered only on Apple projects.
     Its persona's first move: if the key file is missing, report BLOCKED.
     Check the `asc` deny patterns against `asc --help` if `asc` is
     installed; otherwise say so in the report and in a comment.
+  - From `ai_docs/reports/domain-skills/swift-ship.md`: add
+    `"Bash(asc metadata push *)"` to `app-release-preparer`'s
+    `disallowed_tools` (push writes live metadata without `--confirm`).
+    `-allowProvisioningUpdates` can change provisioning profiles in the
+    developer account: the persona must not pass it unless the assignment
+    names it, and a deny pattern for it is a second line of defence.
   - `codex-swift-reviewer`: agent codex, model and effort as §1 says (check
     the model name exists in the codex harness's known models), skills
     `swiftui-pro`, `swift-concurrency-pro`, read-only like `codex-reviewer`.
