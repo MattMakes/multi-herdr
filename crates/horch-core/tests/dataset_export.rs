@@ -426,7 +426,7 @@ fn build_fixture(state: &Path) -> (DatasetPaths, JsonlRecorder, InMemoryFacts) {
         &paths,
         1,
         Judgment {
-            schema_version: "1.0.0".into(),
+            schema_version: "1.0.1".into(),
             verdict: JudgmentVerdict::Winner,
             winner: Some("A".into()),
             ranking: vec!["A".into(), "B".into()],
@@ -455,7 +455,7 @@ fn build_fixture(state: &Path) -> (DatasetPaths, JsonlRecorder, InMemoryFacts) {
         &paths,
         2,
         Judgment {
-            schema_version: "1.0.0".into(),
+            schema_version: "1.0.1".into(),
             verdict: JudgmentVerdict::Tie,
             winner: None,
             ranking: vec!["B".into(), "A".into()],

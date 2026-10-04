@@ -623,11 +623,11 @@ pub fn build_judge_input(round: &RoundView, task_text: &str, candidates: &[(Stri
 pub fn judge_policy_digest(judge_md: &str, rubric: &str, schema: &str, model: &str, effort: &str,
                            policy: &WinnerPolicy, label_policy_version: &str) -> Digest;
 
-/// SPEC-TODO(Spec B §11): the Judgment schema verbatim. This shape is provisional.
+/// Spec B §11: the judge's answer. JSON Schema: assets/judge/judgment-schema-1.0.1.json.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Judgment {
-    pub schema_version: String,             // "1.0.0"
+    pub schema_version: String,             // "1.0.1" (JUDGMENT_SCHEMA_VERSION)
     pub verdict: JudgmentVerdict,
     pub winner: Option<String>,             // a label; required when verdict = winner
     pub ranking: Vec<String>,               // every label exactly once
@@ -662,7 +662,7 @@ pub struct WinnerPolicy {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
-pub enum TieBreak { Disabled, Utility { v: String } }   // SPEC-TODO(Spec B §11): the utility definition
+pub enum TieBreak { Disabled, Utility { v: String } }   // v: "u1" (UTILITY_RULE_V1) is the only rule
 #[derive(Debug, Clone, PartialEq)]
 pub enum WinnerOutcome {
     Winner { label: String },
@@ -682,12 +682,66 @@ pub fn decide_winner(j: Option<&Judgment>, eligible: &BTreeSet<String>, policy: 
 | verdict RejectAll | Rejected{JudgeRejected} |
 | verdict Abstain | NeedsIntervention |
 | verdict Tie, `tie_break: Disabled` | NeedsIntervention |
-| verdict Tie, `tie_break: Utility` | Winner by utility among the tied labels |
+| verdict Tie, `tie_break: Utility`, `v` is not `"u1"` | NeedsIntervention |
+| verdict Tie, `tie_break: Utility { v: "u1" }` | Winner by utility among the tied labels; NeedsIntervention if no tied label |
 | verdict Winner, label not in `eligible` | Rejected{JudgeRejected} |
-| verdict Winner, `confidence < min_confidence` | NeedsIntervention |
-| verdict Winner, eligible, confident | Winner |
+| verdict Winner, label not marked `acceptable` | NeedsIntervention |
+| verdict Winner, `confidence < min_confidence` (NaN included) | NeedsIntervention |
+| verdict Winner, eligible, acceptable, confident | Winner |
 
-`SPEC-TODO(Spec B §11)`: confirm the Abstain and RejectAll mappings.
+The rows apply top to bottom; the first match decides
+(`evaluation/winner.rs:decide_winner`). Tests: `jdg_06_policy_table`,
+`jdg_07_tie_needs_intervention_by_default` (`tests/evaluation.rs`),
+`a_winner_the_judge_marked_unacceptable_needs_the_operator` and
+`an_unknown_utility_rule_needs_the_operator` (`evaluation/winner.rs`).
+
+**Spec B §11, the Judgment schema 1.0.1** (`evaluation/judgment.rs:Judgment`,
+`assets/judge/judgment-schema-1.0.1.json`). The judge answers with exactly
+one JSON object and nothing else. `parse_judgment` (`evaluation/parser.rs`)
+accepts it only if all of these hold, and never repairs it:
+
+- Top-level fields, all required except `winner`: `schema_version` (the
+  string `"1.0.1"`), `verdict` (`winner`, `tie`, `abstain` or `reject_all`),
+  `winner` (a label, or null or absent), `ranking` (an array of labels),
+  `candidates` (an object, label → assessment), `confidence` (a number) and
+  `rationale` (a string). No other field.
+- An assessment has exactly `scores` (an object), `acceptable` (a boolean)
+  and `notes` (a string). `scores` has exactly one number per rubric
+  component, the `### <name>` headings under `## Components` of the rubric:
+  `correctness`, `tests`, `scope`, `maintainability`, `risk`.
+- Every score is finite and in 0 to 10. `confidence` is finite and in 0 to 1.
+- `candidates` has exactly the round's labels. `ranking` has every label
+  exactly once, best first.
+- `winner` is a label when `verdict` is `winner`, and null or absent for
+  every other verdict.
+- No key repeats at any depth. The answer is valid UTF-8 and at most the
+  byte cap (SEC-06).
+
+Errors map to `ParseError`: `NotJson`, `UnknownField`, `UnknownEnum` (also a
+wrong `schema_version`), `MissingField`, `DuplicateKey`, `ImpossibleLabel`,
+`NonFinite`, `TooLarge`. Tests: `jdg_05_*`, `sec_06_caps_enforced`,
+`judgment_schema_matches_type` (`tests/evaluation.rs`). The schema file and
+the Rust type must agree; `judgment_schema_matches_type` pins that. A change
+to the schema text is a new file and a new `JUDGMENT_SCHEMA_VERSION`,
+because the text enters the judge prompt, the bundle `schema_digest` and the
+judge policy digest. Version 1.0.1 differs from 1.0.0 only in the schema's
+`description`, `$id` and `schema_version` constant.
+
+**Abstain and RejectAll.** `reject_all` is the judge's finding that no
+candidate is acceptable, so the round ends `Rejected{JudgeRejected}` with no
+operator step. `abstain` says the evidence does not decide, so the operator
+decides (NeedsIntervention). A `winner` that the judge itself marked not
+`acceptable` contradicts the rubric's `winner` definition, so the operator
+decides.
+
+**Utility rule `u1`** (`evaluation/winner.rs:utility_winner`). It runs only
+for a `tie` verdict with `tie_break: {"mode":"utility","v":"u1"}`. The tied
+labels are the labels that are in `eligible` and marked `acceptable`. The
+winner is the tied label with the highest unweighted sum of its component
+scores. Equal sums go to the first label in byte order. The sum is
+computed in the function and never stored (JDG-06, no composite score).
+`confidence` does not gate a tie-break, because the operator opted in. The
+default policy is `{"min_confidence":0.7,"tie_break":{"mode":"disabled"}}`.
 
 Scheduler:
 

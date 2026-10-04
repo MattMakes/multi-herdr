@@ -641,7 +641,7 @@ impl World {
 fn answer() -> String {
     let scores = json!({"correctness": 8, "tests": 7, "scope": 9, "maintainability": 8, "risk": 8});
     json!({
-        "schema_version": "1.0.0",
+        "schema_version": "1.0.1",
         "verdict": "winner",
         "winner": "A",
         "ranking": ["A", "B"],

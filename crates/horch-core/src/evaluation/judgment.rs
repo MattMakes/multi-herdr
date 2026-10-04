@@ -13,8 +13,8 @@ use crate::ids::{ExecutionId, JudgmentId, RoundId};
 use crate::measure::digest::Digest;
 
 /// The version of the [`Judgment`] shape and of
-/// `assets/judge/judgment-schema-1.0.0.json`.
-pub(crate) const JUDGMENT_SCHEMA_VERSION: &str = "1.0.0";
+/// `assets/judge/judgment-schema-1.0.1.json`.
+pub(crate) const JUDGMENT_SCHEMA_VERSION: &str = "1.0.1";
 
 /// The field names of [`Judgment`], in declaration order.
 pub const JUDGMENT_FIELDS: &[&str] = &[
@@ -37,7 +37,8 @@ pub(crate) const ASSESSMENT_FIELDS: &[&str] = &["scores", "acceptable", "notes"]
 /// The serde spellings of [`JudgmentVerdict`].
 pub(crate) const VERDICTS: &[&str] = &["winner", "tie", "abstain", "reject_all"];
 
-/// SPEC-TODO(Spec B §11): the Judgment schema verbatim. This shape is provisional.
+/// The judge's answer (Spec B §11). The dataset design §4.7 states the
+/// schema and the checks `parse_judgment` makes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Judgment {

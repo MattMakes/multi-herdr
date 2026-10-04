@@ -280,7 +280,7 @@ fn judgment(labels: &[String]) -> String {
         })
         .collect();
     json!({
-        "schema_version": "1.0.0",
+        "schema_version": "1.0.1",
         "verdict": "winner",
         "winner": labels.first(),
         "ranking": labels,

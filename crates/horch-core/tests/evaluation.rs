@@ -28,7 +28,7 @@ fn scores(n: f64) -> Value {
 /// A valid answer for labels A and B, with A the winner.
 fn valid() -> Value {
     json!({
-        "schema_version": "1.0.0",
+        "schema_version": "1.0.1",
         "verdict": "winner",
         "winner": "A",
         "ranking": ["A", "B"],
@@ -312,7 +312,7 @@ fn judgment(verdict: JudgmentVerdict, winner: Option<&str>, confidence: f64) -> 
         notes: String::new(),
     };
     Judgment {
-        schema_version: "1.0.0".into(),
+        schema_version: "1.0.1".into(),
         verdict,
         winner: winner.map(str::to_string),
         ranking: vec!["A".into(), "B".into(), "C".into()],
