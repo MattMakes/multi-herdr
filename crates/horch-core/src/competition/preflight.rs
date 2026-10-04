@@ -6,9 +6,8 @@
 //! waves and the projected cost. A run whose report has any `Fail` is refused
 //! before a worktree is created or a model is invoked.
 //!
-//! SPEC-TODO(Spec B §3): the check list and every threshold below are
-//! provisional until the Spec B text arrives. Each threshold is a named
-//! constant, listed in `ai_docs/reports/arch-refactor-dataset/b2-preflight.md`.
+//! The check list and every threshold are specified in the dataset design,
+//! section 4.11.1 (Spec B §3). Each threshold is a named constant.
 
 use crate::harness::capabilities::HARNESS_FOOTPRINT_BYTES;
 use std::collections::BTreeMap;
@@ -684,7 +683,9 @@ fn pre_07_providers(plan: &PreflightPlan) -> CheckResult {
             .map(|p| format!("{} is {}", p.pool, p.state))
             .collect();
         if !limited.is_empty() {
-            // SPEC-TODO(Spec B §3): whether an exhausted pool refuses the run.
+            // Design 4.11.1, decision 4: the planner already dropped every
+            // candidate whose pool blocks a spawn; this pool-wide state only
+            // warns, even when it is `exhausted`.
             result.status = CheckStatus::Warn;
             result.detail = format!("quota: {}", limited.join(", "));
         }
@@ -953,6 +954,7 @@ fn usd(micro: i64) -> String {
 mod tests {
     use super::*;
     use crate::competition::budget::UsageMeter;
+    use crate::competition::config::{BudgetConfig, Caps, JudgeConfig, Strategy};
 
     /// Preflight (PRE-09) and the live budget price a candidate the same
     /// way, for every table model, an unknown model, and a price whose
@@ -991,5 +993,62 @@ mod tests {
                 "{model}"
             );
         }
+    }
+
+    /// PRE-07 warns for a quota pool that is not `ok`, also an exhausted
+    /// one, and the report still passes (design 4.11.1, decision 4).
+    #[test]
+    fn pre_07_a_pool_that_is_not_ok_warns_and_does_not_refuse() {
+        let candidate = PreflightCandidate {
+            label: "A".into(),
+            teammate: TeammateName::new("t").unwrap(),
+            harness: HarnessKind::Claude,
+            model: ModelId::new("opus").unwrap(),
+            effort: None,
+        };
+        let mut plan = PreflightPlan {
+            config: DatasetConfig {
+                candidates: 1,
+                strategy: Strategy::Diverse,
+                budget: BudgetConfig::default(),
+                judge: JudgeConfig::default(),
+                baseline: None,
+                gates: Vec::new(),
+                caps: Caps::default(),
+                exclude: Vec::new(),
+                promote_to: None,
+                worktree_root: None,
+                allow_dirty: false,
+                prune_branches: false,
+                retain_transcripts: false,
+            },
+            candidates: vec![candidate],
+            harness_versions: BTreeMap::from([("claude".to_string(), Some("2.3.0".to_string()))]),
+            judge_harness: HarnessKind::Claude,
+            git: GitFacts::default(),
+            storage_probe: StorageProbe::default(),
+            herdr_reachable: true,
+            horch_exe: None,
+            pools: vec![PoolFacts {
+                pool: "anthropic".into(),
+                state: "ok".into(),
+            }],
+            checkout_bytes: 0,
+            build_bytes: 0,
+            artifacts_bytes: 0,
+            local_model_bytes: 0,
+            expected_tokens: BTreeMap::new(),
+            trusted_parents: Vec::new(),
+        };
+        assert_eq!(pre_07_providers(&plan).status, CheckStatus::Pass);
+        for state in ["tight", "unknown", "cooling", "exhausted", "broken"] {
+            plan.pools[0].state = state.into();
+            let result = pre_07_providers(&plan);
+            assert_eq!(result.status, CheckStatus::Warn, "{state}");
+            assert_eq!(result.detail, format!("quota: anthropic is {state}"));
+        }
+        // An unresolved harness still fails, whatever the pools say.
+        plan.harness_versions.insert("claude".into(), None);
+        assert_eq!(pre_07_providers(&plan).status, CheckStatus::Fail);
     }
 }

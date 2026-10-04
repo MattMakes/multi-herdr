@@ -202,7 +202,8 @@ pub(crate) fn gather(
         .map(|t| tree_bytes(t, &NOT_CHECKED_OUT))
         .unwrap_or(0);
     // An existing build of the project is the best guess for one candidate's.
-    // SPEC-TODO(Spec B §3): a build estimate for a project never built here.
+    // A project never built here counts 0; the disk headroom covers its first
+    // build (dataset design 4.11.1, decision 1).
     let build_bytes = git
         .toplevel
         .as_deref()
@@ -226,11 +227,12 @@ pub(crate) fn gather(
         checkout_bytes,
         build_bytes,
         artifacts_bytes,
-        // SPEC-TODO(Spec B §3): the local model size of a `pi` candidate.
+        // No probe knows a `pi` candidate's model size; with 0, local
+        // candidates run 1 at a time (dataset design 4.11.1, decision 2).
         local_model_bytes: 0,
         expected_tokens: BTreeMap::new(),
-        // SPEC-TODO(Spec B §3): the directories each harness trusts. With none,
-        // PRE-13 warns for every worktree root.
+        // No harness trust store is read, so PRE-13 warns for every worktree
+        // root (dataset design 4.11.1, decision 3).
         trusted_parents: Vec::new(),
     };
     (plan, snapshot)
@@ -427,5 +429,22 @@ mod tests {
         }
         assert_eq!(kind_of("antigravity"), Some(HarnessKind::Antigravity));
         assert_eq!(kind_of("nope"), None);
+    }
+
+    /// A project with no `target/` directory counts 0 build bytes, and the
+    /// checkout skips `.git`, `target` and `node_modules` (dataset design
+    /// 4.11.1, facts and decision 1).
+    #[test]
+    fn tree_bytes_counts_a_never_built_project_as_zero_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("main.rs"), b"fn main() {}\n").unwrap();
+        for skipped in NOT_CHECKED_OUT {
+            std::fs::create_dir_all(root.join(skipped)).unwrap();
+            std::fs::write(root.join(skipped).join("big"), vec![0u8; 4096]).unwrap();
+        }
+        assert_eq!(tree_bytes(root, &NOT_CHECKED_OUT), 13);
+        assert_eq!(tree_bytes(&root.join("target"), &[]), 4096);
+        assert_eq!(tree_bytes(&root.join("no-such-target"), &[]), 0);
     }
 }
