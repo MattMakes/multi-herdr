@@ -103,6 +103,15 @@ pub trait GitClient {
     ) -> anyhow::Result<bool>;
     fn cherry_pick(&self, dir: &Path, range: &str, id: &GitIdentity) -> anyhow::Result<CherryPick>;
     fn merge_ff_only(&self, dir: &Path, rev: &str) -> anyhow::Result<()>;
+    /// `read-tree -m -u <old> <new>` in the checkout `dir`: move its index
+    /// and files from the tree of `old` to the tree of `new`. HEAD and refs
+    /// do not move. A local change in a path that differs between the two
+    /// makes git refuse before it writes anything; that is an error. The
+    /// default refuses, so a fake client does not need it.
+    fn read_tree_update(&self, dir: &Path, old: &str, new: &str) -> anyhow::Result<()> {
+        let _ = (dir, old, new);
+        bail!("this git client cannot update a checkout")
+    }
     fn branch_checkout_location(
         &self,
         repo: &Path,
@@ -535,6 +544,17 @@ impl GitClient for GitCli {
     fn merge_ff_only(&self, dir: &Path, rev: &str) -> anyhow::Result<()> {
         refuse_option(rev)?;
         self.run(dir, &["merge", "--ff-only", "--quiet", rev])?;
+        Ok(())
+    }
+
+    fn read_tree_update(&self, dir: &Path, old: &str, new: &str) -> anyhow::Result<()> {
+        refuse_option(old)?;
+        refuse_option(new)?;
+        // Stale stat data would make read-tree call a clean file changed.
+        // Exit 1 only means some file differs; read-tree decides on that.
+        self.runner
+            .output(dir, &["update-index", "-q", "--refresh"])?;
+        self.run(dir, &["read-tree", "-m", "-u", old, new])?;
         Ok(())
     }
 

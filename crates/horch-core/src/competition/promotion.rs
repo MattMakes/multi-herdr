@@ -11,9 +11,10 @@
 //!    under `plan.integration_root`. A conflict needs the operator, and
 //!    every candidate worktree is kept (PRO-04).
 //! 4. The integrated commit is validated again (PRO-02).
-//! 5. Publish: a compare-and-swap `update-ref` when no worktree has the
-//!    target checked out, `merge --ff-only` in a clean checkout. A dirty
-//!    checkout is never touched (PRO-03).
+//! 5. Publish: a compare-and-swap `update-ref`. When a clean worktree has
+//!    the target checked out, its index and files then follow by
+//!    `read-tree -m -u` (the receipt calls that mode `merge_ff_only`). A
+//!    dirty checkout is never touched (PRO-03).
 //! 6. `promotion.started` is recorded before the publish, the receipt is
 //!    written with `create_immutable` after it, then `promotion.completed`
 //!    (PRO-05).
@@ -89,7 +90,8 @@ pub enum PromotionStrategy {
 pub(crate) enum PublishMode {
     /// No worktree has the target checked out.
     UpdateRefCas,
-    /// The target is checked out, clean, in `checkout`.
+    /// The target is checked out, clean, in `checkout`. The name is the
+    /// receipt's; the publish is a ref swap and then a tree update.
     MergeFfOnly { checkout: PathBuf },
 }
 
@@ -497,26 +499,84 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
                     )))
                 }
             }
-            PublishMode::MergeFfOnly { checkout } => {
-                // A merge has no compare-and-swap: check the checkout first.
-                let branch = self.git.current_branch(checkout)?;
-                let head = self.git.head(checkout)?;
-                let clean = self.git.status_porcelain(checkout)?.is_empty();
-                let short = started
-                    .target
-                    .strip_prefix("refs/heads/")
-                    .unwrap_or(&started.target);
-                if branch.as_deref() != Some(short) || head != started.dest_before || !clean {
-                    return Ok(Published::Lost(format!(
-                        "the checkout {} of {} changed before the merge",
-                        checkout.display(),
-                        started.target
-                    )));
-                }
-                self.git.merge_ff_only(checkout, &started.planned_after)?;
-                Ok(Published::Moved)
-            }
+            PublishMode::MergeFfOnly { checkout } => self.publish_checked_out(checkout, started),
         }
+    }
+
+    /// Publish into a clean checkout of the target by compare-and-swap.
+    ///
+    /// 1. The checkout is on the target, at `dest_before`, and clean.
+    /// 2. `update-ref <target> <planned_after> <dest_before>` moves the ref.
+    ///    This is the one atomic step: a commit that landed after step 1
+    ///    makes it fail, and a `git commit` that read HEAD before it fails
+    ///    its own swap on HEAD.
+    /// 3. `read-tree -m -u <dest_before> <planned_after>` moves the index
+    ///    and files. Git refuses before it writes when a local change is in
+    ///    a path the promotion changes; the ref then goes back by
+    ///    compare-and-swap.
+    /// 4. The checkout is on the target at `planned_after`. This catches a
+    ///    commit made in the short window between steps 2 and 3.
+    ///
+    /// Any mismatch is `Lost`, so the round needs the operator; before
+    /// step 4 nothing stays moved. The receipt keeps the name `merge_ff_only` for this mode.
+    fn publish_checked_out(
+        &self,
+        checkout: &std::path::Path,
+        started: &PromotionStarted,
+    ) -> Result<Published> {
+        let target = &started.target;
+        let short = target.strip_prefix("refs/heads/").unwrap_or(target);
+        let on_target = |at: &str| -> Result<bool> {
+            Ok(self.git.current_branch(checkout)?.as_deref() == Some(short)
+                && self.git.head(checkout)? == at)
+        };
+        if !on_target(&started.dest_before)? || !self.git.status_porcelain(checkout)?.is_empty() {
+            return Ok(Published::Lost(format!(
+                "the checkout {} of {target} changed before the publish",
+                checkout.display()
+            )));
+        }
+        if !self.git.update_ref_cas(
+            checkout,
+            target,
+            &started.planned_after,
+            &started.dest_before,
+        )? {
+            return Ok(Published::Lost(format!(
+                "{target} moved from {} before the publish into {}",
+                started.dest_before,
+                checkout.display()
+            )));
+        }
+        if let Err(e) =
+            self.git
+                .read_tree_update(checkout, &started.dest_before, &started.planned_after)
+        {
+            let undone = self.git.update_ref_cas(
+                checkout,
+                target,
+                &started.dest_before,
+                &started.planned_after,
+            )?;
+            let state = if undone {
+                format!("{target} is back at {}", started.dest_before)
+            } else {
+                format!("{target} moved again and is not restored")
+            };
+            return Ok(Published::Lost(format!(
+                "the files of {} could not move to {} ({e:#}); {state}",
+                checkout.display(),
+                started.planned_after
+            )));
+        }
+        if !on_target(&started.planned_after)? {
+            return Ok(Published::Lost(format!(
+                "the checkout {} of {target} is not at {} after the publish",
+                checkout.display(),
+                started.planned_after
+            )));
+        }
+        Ok(Published::Moved)
     }
 
     fn publish_and_finish(
