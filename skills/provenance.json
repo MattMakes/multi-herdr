@@ -641,6 +641,12 @@
       "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
     },
     {
+      "name": "blender-ue-pipeline",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text, written in this repository. No upstream skill. Exporter settings checked against the Blender 5.2 Python API (bpy.ops.export_scene) and manual; Unreal rules checked against Epic's UE 5.8 FBX Static Mesh and Skeletal Mesh Pipeline, asset naming and texture pages, and Epic's Send to Unreal docs. Tool names are from Blender Lab blender_mcp v1.0.3 (2cea8d566dde07fbac28a61d698909d69724e853). Evidence table in references/export-settings.md; research in ai_docs/reports/finish/blender.md."
+    },
+    {
       "name": "brainstorm",
       "source_path": "plugins/dev/skills/brainstorm/SKILL.md",
       "source_sha256": "56c53d04fa2e2ee15a092a9a237a696f5f678edd8b4accca08a66e1ee96bdaa0",

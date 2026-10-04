@@ -72,6 +72,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "app-release-preparer",
     "apple-accessibility-auditor",
     "apple-platform-developer",
+    "blender-artist",
     "codex-swift-reviewer",
     "design-critic",
     "design-director",

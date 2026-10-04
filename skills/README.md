@@ -111,10 +111,11 @@ These skills come from MIT-licensed Swift skill repositories. Each keeps its ups
 
 31 bundles vendored from `quodsoler/unreal-engine-skills` (MIT, revision `f3742d7b688690810df369802b90430324e380b9`). 30 are verbatim copies of the upstream skill directory, minus dotfiles, plus the upstream `LICENSE` next to `SKILL.md`. `ue-project-context` is adapted: its interview becomes `[unknown]` markers and one `QUESTION:` to the orchestrator, and its `provenance.json` entry lists the edits. Each entry has `"vendored": true`. These skills belong to no phase; a Unreal Engine teammate attaches them by name.
 
-The 2 `own text` skills are written in this repository and have no upstream copy. Their rows name the upstream skills they consulted.
+The 3 `own text` skills are written in this repository and have no upstream copy. Their rows name the upstream skills or documents they consulted. `blender-ue-pipeline` is for the Blender teammate that hands assets to the Unreal teammates.
 
 | Skill | Upstream source | Copy |
 | --- | --- | --- |
+| [blender-ue-pipeline](blender-ue-pipeline/SKILL.md) | *(none - repo-original; checked against the Blender 5.2 API and Epic's 5.8 FBX pipeline docs)* | own text |
 | [ue-actor-component-architecture](ue-actor-component-architecture/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-actor-component-architecture/` | verbatim |
 | [ue-ai-navigation](ue-ai-navigation/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-ai-navigation/` | verbatim |
 | [ue-animation-system](ue-animation-system/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-animation-system/` | verbatim |
