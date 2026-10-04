@@ -1317,6 +1317,55 @@ tries `git add` and `git commit` and fails; the changed tracked file and the
 new file are in the frozen numstat, and both candidates are eligible),
 `cmp_07_candidate_crash_kept_in_round`.
 
+#### 4.11.5 Candidate lifecycle: an idle candidate (F5)
+
+An agent that stops at its prompt without `horch done` used to hold its
+slot until the deadline (LA run: codex-terra could not commit, stopped, and
+waited 900 s). The coordinator now watches herdr's `agent_status` for each
+live candidate pane (`Pane.agent_status`; `working` while the agent thinks
+or runs a tool, `idle` at its prompt):
+
+| Key (`caps.` in `dataset.yaml`) | Default | Meaning |
+|---|---|---|
+| `idle_nudge_after_s` | 120 | idle this long without `horch done` → one nudge; 0 turns the rule off |
+| `idle_end_after_s` | 180 | idle this long after the nudge → the candidate ends |
+
+Why these periods: the LA candidates finished a small task in 20 to 45 s,
+so 2 minutes at the prompt means the agent stopped, not that it is slow;
+3 more minutes is one more turn in which it can run `horch done`. The
+whole rule costs at most 5 minutes, well under `candidate_deadline_s`.
+`validate` refuses a nudge period with an end period of 0.
+
+The rule (`competition/observe.rs:IdleWatch::look`, one call per look):
+- `idle` starts or continues an idle stretch; any other status ends it.
+- After `idle_nudge_after_s` of one stretch, the coordinator types
+  `IDLE_NUDGE` once ("If you are finished, run: horch done "…". Do not
+  commit: the coordinator commits your work. If you are not finished,
+  continue the task.") through `messaging::delivery::send_line`, and the
+  end period starts.
+- Once nudged, an idle stretch of `idle_end_after_s` ends the candidate:
+  the record, then the pane, then `candidate.failed{Cancelled{reason:
+  "idle_without_done"}}`. Work between them restarts the stretch, never a
+  second nudge.
+- The candidate's work is frozen and validated like a crashed candidate's,
+  and it is not eligible: without `horch done` nobody said it finished.
+- The count is in memory: a resumed coordinator starts it again. No event
+  records the nudge (the event formats do not change); stderr says it.
+
+Tests: `idle_watch_nudges_once_then_ends` (the rule),
+`idle_candidate_is_nudged_once_then_ends` (FakeWorkspace: exactly 1
+`agent_prompt` per candidate, both end `idle_without_done`, work frozen, 0
+anomalies), `idle_rule_off_waits_for_the_deadline`,
+`idle_periods_default_parse_and_validate`.
+
+Fleet workers do not get this nudge (F5 decision). A fleet worker at its
+prompt is often waiting on purpose: after a `QUESTION:` it must wait for the
+orchestrator's answer and must not run `horch done`. A nudge to finish
+would push it to stop early. The orchestrator already sees every pane's
+`agent_status` and the ledger notes, so it can decide with that context.
+A fleet Codex worker's blocked commits are a different problem: git-writing
+units go to Claude teammates.
+
 ---
 
 ## 5. Round state machine (CMP-03)
@@ -1474,6 +1523,8 @@ Observation:
 | Done | completed |
 | pane gone while live | Failed(PaneVanished) |
 | agent exits | Failed(AgentExited) |
+| trust dialog on the screen (first 300 s) | close the pane → Cancelled{trust_dialog} (4.11.3) |
+| idle without `horch done` | one nudge; still idle → close the pane → Cancelled{idle_without_done} (4.11.5) |
 | deadline | close the pane → TimedOut |
 | budget | Cancelled |
 
