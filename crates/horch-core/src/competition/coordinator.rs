@@ -987,7 +987,7 @@ impl<G: GitClient> Coordinator<'_, G> {
                 base_sha: wt.base_sha.clone(),
                 head_sha: frozen.head_sha.clone(),
                 numstat: frozen.numstat.clone(),
-                diff_digest: frozen.diff_digest.clone(),
+                diff_digest: frozen.diff_digest,
                 frozen_at: crate::clock::stamp((self.clock)()),
             };
             let mut report = if ran {
@@ -1284,7 +1284,7 @@ pub(crate) fn frozen_winner(view: &RoundView, at: DateTime<Utc>) -> Result<Froze
         base_sha: wt.base_sha.clone(),
         head_sha: frozen.head_sha.clone(),
         numstat: frozen.numstat.clone(),
-        diff_digest: frozen.diff_digest.clone(),
+        diff_digest: frozen.diff_digest,
         frozen_at: crate::clock::stamp(at),
     })
 }

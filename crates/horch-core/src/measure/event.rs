@@ -369,8 +369,9 @@ pub struct PromotionStarted {
     pub dest_before: String,
     pub planned_after: String,
     pub strategy: PromotionStrategy,
-    /// `update_ref_cas` or `merge_ff_only`; the receipt repeats it. Empty in
-    /// an event written before B5.
+    /// `update_ref_cas` or `update_ref_cas_read_tree`; the receipt repeats
+    /// it. `merge_ff_only` is the legacy name of `update_ref_cas_read_tree`
+    /// in events written before D17. Empty in an event written before B5.
     #[serde(default)]
     pub publish: String,
     /// The revalidation of `planned_after`. A restart writes the receipt
