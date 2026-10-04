@@ -146,6 +146,13 @@ fn world() -> Option<World> {
     })
 }
 
+/// A fixed round id. The planner seeds the exploration slot with
+/// `sha256(round_id)`, so a minted id (random bits) changes the plan
+/// between runs.
+fn fixed_round() -> RoundId {
+    RoundId::new("0199a5b0-0000-7000-8000-0000000000c0").unwrap()
+}
+
 #[test]
 fn arc_24_candidates_are_ordinary_executions() {
     let Some(w) = world() else { return };
@@ -168,7 +175,7 @@ fn arc_24_candidates_are_ordinary_executions() {
     config.worktree_root = Some(w.root.join("worktrees"));
     let now = horch_core::clock::parse("2026-10-02T12:00:00Z").unwrap();
     let experiment = ExperimentId::mint(now);
-    let round = RoundId::mint(now);
+    let round = fixed_round();
     let view = QuotaView::new(
         QuotaFile::read(&core_dir().join("tests/fixtures/telemetry/quota/all-ok.json")).unwrap(),
         now,
@@ -395,7 +402,7 @@ fn cmp_10_committed_spend_counts_running_candidates() {
     config.worktree_root = Some(w.root.join("worktrees"));
     let now = horch_core::clock::parse("2026-10-02T12:00:00Z").unwrap();
     let experiment = ExperimentId::mint(now);
-    let round = RoundId::mint(now);
+    let round = fixed_round();
     let view = QuotaView::new(
         QuotaFile::read(&core_dir().join("tests/fixtures/telemetry/quota/all-ok.json")).unwrap(),
         now,
