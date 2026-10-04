@@ -262,6 +262,33 @@
       "vendored": false
     },
     {
+      "name": "appkit-accessibility-auditor",
+      "sources": [
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/appkit-accessibility-auditor/SKILL.md",
+          "sha256": "d79bb9272fbef31360cee15cb6ffad9b9abc21b65b0323579e888bb526ace3de",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/appkit-accessibility-auditor/checklist.md",
+          "sha256": "75212c7b0b6c64f8634bc901f5c09abff34244d47e71efed279f5c7ed7e7a5a5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "LICENSE",
+          "sha256": "07bf6c0752f24eef905c4b2ff70b7f2561a084e314038d28de72b0177c5c6e82",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Path fix only: SKILL.md 'Required artifact' names `checklist.md` instead of `skills/appkit-accessibility-auditor/checklist.md`. checklist.md and LICENSE verbatim. Attached by name to the Swift teammates; belongs to no phase."
+    },
+    {
       "name": "appstore-review",
       "sources": [
         {
@@ -993,6 +1020,26 @@
       "adaptation": "Merged the ui-ux-pro-max design-system, ui-styling and ui-ux-pro-max skills with the stitch-skill DESIGN.md format into a token-to-code workflow with checks; CSV data became curated, contrast-measured Markdown tables; search scripts, generators, slides, fonts and canvas art dropped."
     },
     {
+      "name": "ios-simulator-run",
+      "sources": [
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "ios-debugger-agent/SKILL.md",
+          "sha256": "07000b6744b8cf21bfa76db3bf76c6d158f9ef16a4a33eee9ce15508a7aa8b2e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "LICENSE",
+          "sha256": "df17aae89ce4705d0a6e5f7b46eeea3b9023967ecad948f8779b47039eb55a8b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted from ios-debugger-agent and renamed: a short XcodeBuildMCP playbook with bare tool names (no harness-specific prefix) and xcrun simctl fallbacks; the worker boots a simulator itself instead of asking the user; build failures and blockers go to the orchestrator; never erase or delete a simulator. Attached by name; belongs to no phase."
+    },
+    {
       "name": "landing-page",
       "sources": [
         {
@@ -1185,6 +1232,310 @@
         }
       ],
       "adaptation": "Merged the 8 GSAP skills and their examples into one workflow skill with 8 topic references; rewrote in our voice, fixed source API errors, added checks and a verification step; carried the cinematic-ui entrance map, interaction budget and camera vocabulary as GSAP recipes; dropped persuasion, duplicate lists and the cinematic research workflow."
+    },
+    {
+      "name": "swift-code-audit",
+      "sources": [
+        {
+          "repository": "https://github.com/jazzychad/ios-code-audit",
+          "revision": "34edb296a150915f8fcca69f27543af0c231c616",
+          "path": "SKILL.md",
+          "sha256": "3677c2832cc01a80faa1db3306cee1da21ed04bd18dec7afc6aa6504792191e4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jazzychad/ios-code-audit",
+          "revision": "34edb296a150915f8fcca69f27543af0c231c616",
+          "path": "references/agent-prompts.md",
+          "sha256": "e49f22b009d24a6e518ef674a0396c4f9fe95f85c63ab75b32c52d633e42ddad",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jazzychad/ios-code-audit",
+          "revision": "34edb296a150915f8fcca69f27543af0c231c616",
+          "path": "references/report-template.md",
+          "sha256": "4e9e2b3e88a1cf22f05b4d84d8798100283b8c96e73e1d2eddc310e665ead1d5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jazzychad/ios-code-audit",
+          "revision": "34edb296a150915f8fcca69f27543af0c231c616",
+          "path": "LICENSE",
+          "sha256": "b75802aceb694264767f7db469e25ba781b829d6a508f9cbd9623d981f249eec",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Heavily adapted from ios-code-audit and renamed: the three parallel Explore agents become three sequential passes the worker runs itself (references/agent-prompts.md becomes references/pass-checklists.md); the report goes to a path the orchestrator chooses, not CODE_AUDIT.md in the repository root; the swiftui-expert-skill step is dropped and its SwiftUI checks move into pass C; performance profiling points to the bundled swiftui-performance-audit; the Xcode MCP bridge call becomes the XcodeBuildMCP build tool or xcodebuild. Kept: compiler warnings as ground truth, verify every Critical claim, group findings by root cause, the concurrency and API-modernity checklist, the 12 numbered report sections. Attached by name; belongs to no phase."
+    },
+    {
+      "name": "swift-security-expert",
+      "sources": [
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/SKILL.md",
+          "sha256": "a915770a1a864c1cfb94987334df63dc7d6904ffba14223a51d78ff3d6037e37",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/biometric-authentication.md",
+          "sha256": "2956b4e73716473899fa5c116eecb6802ff3c0654ff376be0863edcb1c655606",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/certificate-trust.md",
+          "sha256": "ac5bd280a60522a986fbd29e44657770d766086d48cf8ab67d3aa1500bd0d76f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/common-anti-patterns.md",
+          "sha256": "1d46859f986afe362d248add8b47017d5cc52469c8a949ea3ab1437b105aab17",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/compliance-owasp-mapping.md",
+          "sha256": "37782e24e5302a21a33024c46122fd895ed6e18d8fe333aceea71300edbf692f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/credential-storage-patterns.md",
+          "sha256": "04ec5e12d18cc1946340169829fefa7ecdc4fa97c34ae04aec7f922969a4db27",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/cryptokit-public-key.md",
+          "sha256": "084d03b851ef99a8108b2c40292086c1b66471c960348a9a387b5769a294154b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/cryptokit-symmetric.md",
+          "sha256": "05feefa3af7c048d481ea5ed3035ad5dc655d2e1c62c61e05b755f93bd8b762f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/keychain-access-control.md",
+          "sha256": "24ff0773803c347fdcaea007ff78eea3d3508f8d0fcf9463b4cf60ee6f1cd11f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/keychain-fundamentals.md",
+          "sha256": "48dae59a6f9505c2d6fd859449769090f3e1de1c26e7f874d744b92651145ffa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/keychain-item-classes.md",
+          "sha256": "9332ef01b854f4df8e1e4fdbd08af38422ea4b694d090334782604a17619b506",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/keychain-sharing.md",
+          "sha256": "2c5bce7a1559558dec7d372d3cb74dca3235b4510bb9aa3814518ed109b1e780",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/migration-legacy-stores.md",
+          "sha256": "43fffbe77ef8c042cb1a58c42940ad78dbdc7af09f62eee17ec102e59ca96642",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/secure-enclave.md",
+          "sha256": "f35e8f44e085383343be8f54acb79613a715b024519d425f61f603cec685c264",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "swift-security-expert/references/testing-security-code.md",
+          "sha256": "8f7d0df78b83b37c1f07b25f5722a79d73242f7b7da7c7e948fed9f737c0478d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/ivan-magda/swift-security-skill",
+          "revision": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89",
+          "path": "LICENSE",
+          "sha256": "143b0c57ffb8d834c58dd793acc2f9bfcba56f85d610075c942dc9c8c9098d7a",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted SKILL.md, references verbatim: cut 36% (48,408 to 30,899 bytes) by removing the Scope Boundaries inclusion and exclusion sections (replaced by a 1-paragraph scope), Tone Rules, the Agent Self-Review Checklist, the ASCII decision tree (its branches stay as prose), output rule 10 (it cited the removed sections) and markdown table padding. 'If ambiguous, ask' becomes a message to the orchestrator. All 14 references kept, including the 3 optional ones (reasons in ai_docs/reports/domain-skills/swift-review.md). References are verbatim except key-shaped example strings, removed so that secret scanners pass: the example Stripe and Firebase keys in compliance-owasp-mapping.md, credential-storage-patterns.md and common-anti-patterns.md become <STRIPE_LIVE_SECRET_KEY> and <FIREBASE_API_KEY>; the detection grep in common-anti-patterns.md uses equivalent regex classes ([sp]k_live_, AIz[a], AK[I]A); the PEM headers in cryptokit-public-key.md become PEM labels. Over budget, so vendored. Attached by name; belongs to no phase.",
+      "vendored": true
+    },
+    {
+      "name": "swiftdata-testing",
+      "sources": [
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/SKILL.md",
+          "sha256": "a8b00943508644f9eeea48269980f44f255d2089089610ed5e999dfe3b641032",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/decimal-money-values.md",
+          "sha256": "4e5508683d92a127b3dd22f14f35d48f5e89d9d2f418fdb8855a8882d00543ed",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/import-hash-dedup.md",
+          "sha256": "6f6c1b1b46e2692042da84d9f64fc3cfb07aee7eb8b9111837eda600e884d29f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/mock-repositories.md",
+          "sha256": "df35e1f71fb67b10f29f43df06075fb1a5bf4cddf559e86ace06e351f8a29d84",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/model-actor-testing.md",
+          "sha256": "a917b1ff118b6e7a83230cb19d3c140f8819a5721f86136e0c2f9af0076aee21",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "swiftdata-testing/references/model-container-fixtures.md",
+          "sha256": "fbc778e9b0f845e776202001a3f2c5da4c08b833a96a6d7159cf6467bfc9bd64",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akshaypimprikar/ios-swiftdata-testing-agent-skill",
+          "revision": "e8a98757b3e62e9dcfce0ce08e50ee40137c2b22",
+          "path": "LICENSE",
+          "sha256": "bdfed70cd78e363685286bccdfb35820e847b5f59e6f8d7c8f57986e5538858e",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted: fixed references/decimal-money-values.md (a fractional Decimal literal goes through Double; Decimal division is not exact, so splits must round to the minor unit and distribute the remainder) and the matching rules; the view-model and mock-repository guidance (SKILL.md step 2, references/mock-repositories.md) applies only when the codebase already uses view models, per the fleet house style (follow the codebase, MV in a new one); 'the user asks' becomes 'the task asks'. Other references verbatim. Attached by name; belongs to no phase."
+    },
+    {
+      "name": "swiftui-accessibility-auditor",
+      "sources": [
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/swiftui-accessibility-auditor/SKILL.md",
+          "sha256": "9debfe924a45c4939ba0f7072b615ca7a3482fad429d0ce2f4c5b5e8b45426d7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/swiftui-accessibility-auditor/checklist.md",
+          "sha256": "962a7f51ab22f7823ea0465dc1de18658cfc0a01c5ec5c78468c9e062daf8089",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "LICENSE",
+          "sha256": "07bf6c0752f24eef905c4b2ff70b7f2561a084e314038d28de72b0177c5c6e82",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Path fix only: SKILL.md 'Required artifact' names `checklist.md` instead of `skills/swiftui-accessibility-auditor/checklist.md`. checklist.md and LICENSE verbatim. Attached by name to the Swift teammates; belongs to no phase."
+    },
+    {
+      "name": "swiftui-performance-audit",
+      "sources": [
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/SKILL.md",
+          "sha256": "6cfb3f9f3e1938aca3eb1cf3ac9f265cca15559b0c9b3dcd3ab2e580be3cea2f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/code-smells.md",
+          "sha256": "c9834da9bde40952100147c7fa0dab12c21bcd762878da7c07b6cd260093ebb8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/demystify-swiftui-performance-wwdc23.md",
+          "sha256": "7cffafe3903293479b73f71d822fe5209d307645d55f18d4fbbdf90a5f708d52",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/optimizing-swiftui-performance-instruments.md",
+          "sha256": "f3980f725406cd4158ace27e058b7b7a57478025f48d50512e99a20f9fa0fa9b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/profiling-intake.md",
+          "sha256": "636ae046936183a7ac5412458926d0a8babe4e05396955d3608f9a7320913bcd",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/report-template.md",
+          "sha256": "c09e67323c3c0ebcacd647be9117f258d11ec58001ba0e5683c13c2bc4d21ff2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/understanding-hangs-in-your-app.md",
+          "sha256": "3631b56751e5853fd04c1397f7cc5eb9f8d7f057a83509244fa82a4b57fc56fc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-performance-audit/references/understanding-improving-swiftui-performance.md",
+          "sha256": "fd7a624c10af787c5673b748dee95d789ead1329e69f6471a9495682d0775643",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "LICENSE",
+          "sha256": "df17aae89ce4705d0a6e5f7b46eeea3b9023967ecad948f8779b47039eb55a8b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted: the worker records Instruments itself (`xcrun xctrace record --template SwiftUI`, read with `xctrace export`) or messages the orchestrator, instead of asking the user (SKILL.md description, workflow steps 3-4, intake, section 3 and Verify; references/profiling-intake.md). Dropped the line that told the agent to add user-supplied files under references/. code-smells.md uses `Text(value, format:)` instead of a cached shared formatter (fleet house style). Other references verbatim. Attached by name; belongs to no phase."
     },
     {
       "name": "ue-build-verify",
@@ -1772,6 +2123,33 @@
       "adaptation": "verbatim",
       "vendored": true,
       "notes": "Upstream repository root is the skill; the directory is named for the skill. horch accepts the upstream version/author/tags frontmatter unchanged, so nothing moved under metadata."
+    },
+    {
+      "name": "uikit-accessibility-auditor",
+      "sources": [
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/uikit-accessibility-auditor/SKILL.md",
+          "sha256": "bdbd1e2b7731bb2ec5493c5c8e4b3859669bb693dfea0c730e8512ab34076ba5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "skills/uikit-accessibility-auditor/checklist.md",
+          "sha256": "e4ea43262edc908b3515766ab2fa7edb6efeb09b2b6d0ca7306e5c0b66385662",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rgmez/apple-accessibility-skills",
+          "revision": "ab6f67852f5da2b76dbfa2574451269e9386b2a8",
+          "path": "LICENSE",
+          "sha256": "07bf6c0752f24eef905c4b2ff70b7f2561a084e314038d28de72b0177c5c6e82",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Path fix only: SKILL.md 'Required artifact' names `checklist.md` instead of `skills/uikit-accessibility-auditor/checklist.md`. checklist.md and LICENSE verbatim. Attached by name to the Swift teammates; belongs to no phase."
     },
     {
       "name": "widgets",
@@ -3515,6 +3893,41 @@
         }
       ],
       "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "writing-for-interfaces",
+      "sources": [
+        {
+          "repository": "https://github.com/andrewgleave/skills",
+          "revision": "d6c72b885a1902d4b74d4bd9beca80f2a1b96b51",
+          "path": "writing-for-interfaces/SKILL.md",
+          "sha256": "adc038a4fd7b79d103c1fd26b1f0311232af8f8c36c9c60bb4c510bdb28c5d37",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/andrewgleave/skills",
+          "revision": "d6c72b885a1902d4b74d4bd9beca80f2a1b96b51",
+          "path": "writing-for-interfaces/references/patterns.md",
+          "sha256": "530f88104d1ae47abc855962f9741c68f10bd7ee06056d139da5ca7732904c9a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/andrewgleave/skills",
+          "revision": "d6c72b885a1902d4b74d4bd9beca80f2a1b96b51",
+          "path": "writing-for-interfaces/references/sources.md",
+          "sha256": "eed230fe4be33c0a61267be9072430e4978373fe61bf7ad83c1749d42e7380f7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/andrewgleave/skills",
+          "revision": "d6c72b885a1902d4b74d4bd9beca80f2a1b96b51",
+          "path": "LICENSE",
+          "sha256": "65f36bd667670398303fbd8b04c8232906b613721290e6a1d47502722d6c9778",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted SKILL.md, references verbatim: removed `context: fork`; cut the 828-character description to 215 characters without the 'trigger whenever' wording; replaced the voice interview with: infer the voice from the codebase, else message the orchestrator, and report the voice used. SKILL.md is 12,736 bytes with verbatim references, so vendored. Attached by name; belongs to no phase.",
       "vendored": true
     }
   ]

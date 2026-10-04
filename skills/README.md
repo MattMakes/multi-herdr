@@ -148,3 +148,16 @@ These skills attach by name to the Swift teammates; none belongs to a phase. Eac
 | [asc-metadata-sync](asc-metadata-sync/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-metadata-sync/SKILL.md` | adapted, dry-run only |
 | [asc-submission-health](asc-submission-health/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-submission-health/` (SKILL.md, `references/readiness-repairs.md`) | adapted, diagnosis only |
 | [asc-xcode-build](asc-xcode-build/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-xcode-build/SKILL.md` | adapted |
+Copies of MIT-licensed Swift skills, each with its upstream `LICENSE`. They attach to the Swift teammates by name and belong to no phase. "Vendored" means the references are verbatim and the skill is exempt from the size budget. Pins, hashes and every edit are in `provenance.json`.
+
+| Skill | Upstream source | Verdict |
+| --- | --- | --- |
+| [appkit-accessibility-auditor](appkit-accessibility-auditor/SKILL.md) | `rgmez/apple-accessibility-skills`: `skills/appkit-accessibility-auditor/` | Adapt, path fix only |
+| [ios-simulator-run](ios-simulator-run/SKILL.md) | `Dimillian/Skills`: `ios-debugger-agent/` | Adapt, rewritten as a playbook |
+| [swift-code-audit](swift-code-audit/SKILL.md) | `jazzychad/ios-code-audit`: `SKILL.md`, `references/` | Adapt, heavily |
+| [swift-security-expert](swift-security-expert/SKILL.md) | `ivan-magda/swift-security-skill`: `swift-security-expert/` | Adapt SKILL.md, vendored references |
+| [swiftdata-testing](swiftdata-testing/SKILL.md) | `akshaypimprikar/ios-swiftdata-testing-agent-skill`: `swiftdata-testing/` | Adapt |
+| [swiftui-accessibility-auditor](swiftui-accessibility-auditor/SKILL.md) | `rgmez/apple-accessibility-skills`: `skills/swiftui-accessibility-auditor/` | Adapt, path fix only |
+| [swiftui-performance-audit](swiftui-performance-audit/SKILL.md) | `Dimillian/Skills`: `swiftui-performance-audit/` | Adapt |
+| [uikit-accessibility-auditor](uikit-accessibility-auditor/SKILL.md) | `rgmez/apple-accessibility-skills`: `skills/uikit-accessibility-auditor/` | Adapt, path fix only |
+| [writing-for-interfaces](writing-for-interfaces/SKILL.md) | `andrewgleave/skills`: `writing-for-interfaces/` | Adapt SKILL.md, vendored references |
