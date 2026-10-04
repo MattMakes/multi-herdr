@@ -60,3 +60,18 @@ A skill may combine several upstream files, from several repositories. Its entry
 | [motion-gsap](motion-gsap/SKILL.md) | `greensock/gsap-skills`: `skills/gsap-*/SKILL.md` (8 skills) and `examples/`; `akseolabs-seo/cinematic-ui`: motion parts of `SKILL.md`, `references/implementation-guardrails.md`, `references/data/camera-shots-50.md`, `references/data/interaction-effects-50.md` |
 | [ui-redesign](ui-redesign/SKILL.md) | `nutlope/hallmark`: `skills/hallmark/SKILL.md` and its `verbs/redesign.md`, `verbs/audit.md`, `study.md` references; `leonxlnx/taste-skill`: `skills/redesign-skill/`, `skills/taste-skill/`, `skills/output-skill/` |
 | [ui-taste](ui-taste/SKILL.md) | `nutlope/hallmark`: `skills/hallmark/SKILL.md` and 17 rule references; `leonxlnx/taste-skill`: `skills/taste-skill/`, `skills/taste-skill-v1/`, `skills/gpt-tasteskill/`, `skills/output-skill/`, `skills/redesign-skill/` |
+
+## Swift and Apple skills
+
+These skills attach by name to the Swift teammates; none belongs to a phase. Each keeps its upstream MIT `LICENSE` next to `SKILL.md`. The App Store skills never change App Store Connect: each live write becomes a dry-run sent to the orchestrator.
+
+| Skill | Upstream source | Kind |
+| --- | --- | --- |
+| [app-store-changelog](app-store-changelog/SKILL.md) | `Dimillian/Skills`: `app-store-changelog/` (SKILL.md, references; the `git log` script is inlined) | adapted |
+| [appstore-review](appstore-review/SKILL.md) | `3paws-ai/mobile-ai-skills`: `skills/appstore-review/` (SKILL.md, `references/appstore-review-ref.md`) | adapted, vendored |
+| [asc-cli-usage](asc-cli-usage/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-cli-usage/SKILL.md` | adapted |
+| [asc-crash-triage](asc-crash-triage/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-crash-triage/SKILL.md` | verbatim |
+| [asc-id-resolver](asc-id-resolver/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-id-resolver/SKILL.md` | verbatim |
+| [asc-metadata-sync](asc-metadata-sync/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-metadata-sync/SKILL.md` | adapted, dry-run only |
+| [asc-submission-health](asc-submission-health/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-submission-health/` (SKILL.md, `references/readiness-repairs.md`) | adapted, diagnosis only |
+| [asc-xcode-build](asc-xcode-build/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-xcode-build/SKILL.md` | adapted |

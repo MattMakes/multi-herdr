@@ -102,6 +102,69 @@
       "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase."
     },
     {
+      "name": "app-store-changelog",
+      "sources": [
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "app-store-changelog/SKILL.md",
+          "sha256": "3c86eb572b2a67a3f79b4d2eb76ec20683d54bc7fecfac55a7259b0f6fe66723",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "app-store-changelog/references/release-notes-guidelines.md",
+          "sha256": "c8dcb505b66ab8dc2008e35be44f290d5e03468bed48bf0f07c3adbb5c985ed4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "app-store-changelog/scripts/collect_release_changes.sh",
+          "sha256": "d694f35dffbb1fafd3b5580a2211d07ffca90baf0eb8138bdf3fff8db5386d7b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "LICENSE",
+          "sha256": "df17aae89ce4705d0a6e5f7b46eeea3b9023967ecad948f8779b47039eb55a8b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted. SKILL.md: the read-only git log commands of scripts/collect_release_changes.sh are inlined (bundled files are text-only), the script reference is removed, and 'Ask for clarification' becomes a message to the orchestrator. release-notes-guidelines.md: 'ask for clarification' becomes 'ask the orchestrator'. agents/openai.yaml is not copied. MIT LICENSE kept.",
+      "vendored": false
+    },
+    {
+      "name": "appstore-review",
+      "sources": [
+        {
+          "repository": "https://github.com/3paws-ai/mobile-ai-skills",
+          "revision": "6d3570eab02b57d8f8269ef11a1ef8ffcb1c8553",
+          "path": "skills/appstore-review/SKILL.md",
+          "sha256": "2b42b4336f313a1c7f38970bf632040ac25907f8f928c26ac8aa46aa5f780c84",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/3paws-ai/mobile-ai-skills",
+          "revision": "6d3570eab02b57d8f8269ef11a1ef8ffcb1c8553",
+          "path": "skills/appstore-review/references/appstore-review-ref.md",
+          "sha256": "c218a12a0993482fb8967ca24efd5480874e1fa81fc5c557c7790e526000e3d4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/3paws-ai/mobile-ai-skills",
+          "revision": "6d3570eab02b57d8f8269ef11a1ef8ffcb1c8553",
+          "path": "LICENSE",
+          "sha256": "13eff4111443a3aff06bfa41eef91ab4c4385f465f7462fc61f95b3ce8eca6fd",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, light. The folded description is one line; trigger and agents are kept because horch's parser accepts them. Checks that need the running app, the network, Xcode Organizer or App Store Connect are marked (runtime) and report UNVERIFIED without evidence. print(), force-unwrap and TODO/FIXME checks are WARN at most. 'If the user mentions' becomes 'If the task mentions'. references/appstore-review-ref.md is verbatim; README.md and references/setup-guide.md (install steps with machine paths) are not copied. MIT LICENSE kept. Vendored because the references are verbatim and SKILL.md is over 12 KB.",
+      "vendored": true
+    },
+    {
       "name": "art-direction",
       "sources": [
         {
@@ -288,6 +351,153 @@
         }
       ],
       "adaptation": "Combined and rewritten: the cinematic-ui director workflow (decisions, storyboard, signature composition before shared system) without its questionnaire, sub-agents, compiled-spec phase or data dumps; 13 directions merged from taste-skill styles, pencilplaybook presets and 6 film-director temperaments; pencilplaybook perceptual defaults as floors; Pencil canvas rules in one optional reference; a DESIGN-DIRECTION.md contract replaces interactive approval."
+    },
+    {
+      "name": "asc-cli-usage",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-cli-usage/SKILL.md",
+          "sha256": "c9576c7aee6143b090e7932eae1f216af0a16c716c8c12bc6aa46f3e12446415",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, light. 'in this repo' is dropped from the description. The web-auth material (web auth capabilities, web api-keys create, the 'Reuse authentication before requesting another code' section, the web availability fallback) and the Apple Ads section are dropped. Fleet rule: App Store Connect writes are never run; the worker sends the dry-run to the orchestrator. MIT LICENSE kept.",
+      "vendored": false
+    },
+    {
+      "name": "asc-crash-triage",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-crash-triage/SKILL.md",
+          "sha256": "3afc42be148548f93aceb411b595914ab5e945ec5407c9d63b848b681901430c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Verbatim (every command is read-only). MIT LICENSE kept.",
+      "vendored": true
+    },
+    {
+      "name": "asc-id-resolver",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-id-resolver/SKILL.md",
+          "sha256": "0b988ee48f1fbfb94674c9fd1ec79d4637d5717782a0b6aacacc11478a830f75",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Verbatim (every command is read-only). MIT LICENSE kept.",
+      "vendored": true
+    },
+    {
+      "name": "asc-metadata-sync",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-metadata-sync/SKILL.md",
+          "sha256": "1a4b5b2dfc42a6fa95541f5ceff3b1a484c3b4f02eef2f0693237fbd927d9e1a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, dry-run only. A fleet rule states that asc metadata push without --confirm still writes live metadata, so the worker never runs push or any other live write without --dry-run; each apply, push, sync, upload, import, edit and set step becomes a dry-run sent to the orchestrator. 'the user' becomes 'the task' or 'the orchestrator'. MIT LICENSE kept.",
+      "vendored": false
+    },
+    {
+      "name": "asc-submission-health",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-submission-health/SKILL.md",
+          "sha256": "64ca677b6fafe7cd6b7ba1ed79e1679cf8444dbd37f21beaadfba7c7e3c1ae93",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-submission-health/references/readiness-repairs.md",
+          "sha256": "c094db5d4a337379c005bd4370284412b368ccc00db28b3f6fb6d57d32c74d5d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-submission-health/references/digital-goods.md",
+          "sha256": "5beacf88fcfdcc661700666074a838813ac378fb91531230768b055b5f0cc802",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-submission-health/references/app-privacy.md",
+          "sha256": "671a31e9c1c236e23ad6b8d52874a7a86c5f9d939ffb87eb4a5e7e8341abc425",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, diagnosis half only. SKILL.md keeps target resolution, readiness diagnosis, health criteria, review monitoring and failure routing; each repair, cancel, retry and submit step becomes a dry-run sent to the orchestrator; links to asc-release-flow are removed. digital-goods.md and app-privacy.md are not copied; their read-only inspection and the web-session gaps are summarized in SKILL.md. readiness-repairs.md keeps its inspection commands, marks every write as dry-run only, removes the web-session and screenshot-skill routes, and asks the orchestrator instead of the user. MIT LICENSE kept.",
+      "vendored": false
+    },
+    {
+      "name": "asc-xcode-build",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-xcode-build/SKILL.md",
+          "sha256": "41e3504f7b4c054e12873989ac784fafb8129458ee2c35aa59e3cda552841224",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, light. A fleet rule: local build, archive and export steps run; a build upload runs only when the assignment names it; asc publish is never run and goes to the orchestrator as a dry-run. Links to the unbundled asc-ad-hoc-distribution and asc-signing-setup skills become reports to the orchestrator. MIT LICENSE kept.",
+      "vendored": false
     },
     {
       "name": "brand-identity",
