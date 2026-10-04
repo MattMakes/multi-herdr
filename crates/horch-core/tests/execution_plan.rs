@@ -824,6 +824,9 @@ impl WorkspaceClient for FastWorker<'_> {
     fn workspace_close(&self, workspace: &str) -> Result<()> {
         self.inner.workspace_close(workspace)
     }
+    fn server_reachable(&self) -> bool {
+        self.inner.server_reachable()
+    }
 }
 
 /// The worker runs once `pane_run` answers, and the spawner records the
