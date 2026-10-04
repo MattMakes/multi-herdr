@@ -558,8 +558,36 @@ pub struct RunScores {
 pub struct NumstatLine { pub added: Option<u32>, pub removed: Option<u32>, pub path: String } // None = binary
 ```
 
-`SPEC-TODO(Spec B WorkerRun)`: the field list verbatim. The golden
-`worker-run-1.0.0.json` (MEA-11) freezes this shape.
+This is the complete WorkerRun 1.0.0 field list. Every struct sets
+`deny_unknown_fields`, so a reader refuses an extra field such as `winner`.
+`WorkerRun::project` (`measure/worker_run.rs`) builds it; each field comes
+from one source:
+
+| Field | Source |
+|---|---|
+| `schema_version` | the constant `"1.0.0"` (`WORKER_RUN_SCHEMA_VERSION`) |
+| `worker_run_id` | `ExecutionFacts.execution_id`; it matches the `execution_id` of the candidate's `candidate.spawned` envelope |
+| `experiment_id`, `round_id`, `label` | the round that holds the candidate |
+| `task_id`, `task_digest` | `experiment.created` |
+| `config.config_id`, `teammate`, `harness`, `model`, `effort`, `slot`, `propensity` | `candidate.planned` |
+| `config.skills` | the execution record (`ExecutionFacts.skills`) |
+| `config.routing` | `candidate.spawned.routing`; the execution record when no spawn event exists |
+| `facts.status`, `session_id`, `started_at`, `finished_at` | the execution record |
+| `facts.base_sha` | `worktree.created.base_sha`; `round.created.base_sha` when no worktree exists |
+| `facts.head_sha`, `numstat`, `diff_digest` | `candidate.frozen`; `null` / `[]` when not frozen |
+| `facts.transcript_ref`, `transcript_digest`, `tokens`, `cost_microusd`, `cost_source` | the usage record the coordinator's meter wrote at freeze; no record → zero tokens, `unpriced` |
+| `facts.latency_ms` | `finished_at − started_at` in ms; `null` when either is missing or the clock went backwards |
+| `facts.environment_digest` | `experiment.created` |
+| `scores.gates`, `mechanical_score` | `validation.completed`; `[]` / `null` when not validated |
+| `scores.judge_components` | the judgment's component scores for this label; `null` without a judgment |
+
+The CLI builds the execution part from the ledger record and the usage
+record (`horch/src/dataset/export.rs:facts_of`). Tests:
+`mea_06_worker_run_schema` (the exact key set of each object),
+`mea_06_no_winner_field`, and `mea_11_fake_lifecycle_replays_identical_worker_run`
+(all in `crates/horch-core/tests/measure.rs`). The golden
+`crates/horch-core/tests/golden/worker-run-1.0.0.json` freezes this shape;
+it is never re-blessed, and a change to the shape bumps `schema_version`.
 
 ### 4.4 Money (`usage/money.rs`, B1, MEA-07)
 

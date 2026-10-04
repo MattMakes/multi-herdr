@@ -5,12 +5,13 @@
 //! scores (how it was rated) are separate objects. There is no winner field:
 //! the winner is a property of the round, not of a run.
 //!
-//! The `Execution` struct arrives in A6; until then the execution's part
-//! comes in as [`ExecutionFacts`].
+//! The execution's part comes in as [`ExecutionFacts`]; the CLI builds it
+//! from the ledger record and the usage record
+//! (`horch/src/dataset/export.rs:facts_of`).
 //!
-//! SPEC-TODO(Spec B WorkerRun): the field list verbatim. The golden
-//! `tests/golden/worker-run-1.0.0.json` (MEA-11) freezes this shape; a
-//! change bumps `WORKER_RUN_SCHEMA_VERSION`.
+//! The field list and the source of each field are dataset design §4.3. The
+//! golden `tests/golden/worker-run-1.0.0.json` (MEA-11) freezes this shape;
+//! a change bumps `WORKER_RUN_SCHEMA_VERSION`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -95,7 +96,7 @@ pub struct RunScores {
 }
 
 /// The fields of a WorkerRun that come from the execution record, not from
-/// measure events. A6/B3 build this from `execution::Execution`.
+/// measure events. `horch/src/dataset/export.rs:facts_of` builds it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionFacts {
     pub execution_id: ExecutionId,
