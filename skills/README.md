@@ -164,6 +164,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-brainstorming](godot-brainstorming/SKILL.md) | `jame581/GodotPrompter`: `skills/brainstorming/` | adapted |
 | [godot-csharp-godot](godot-csharp-godot/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-godot/` | renamed |
 | [godot-csharp-signals](godot-csharp-signals/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-signals/` | renamed |
+| [godot-dedicated-server](godot-dedicated-server/SKILL.md) | `jame581/GodotPrompter`: `skills/dedicated-server/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-server-architecture/`, `godot-multiplayer-networking/`) | combined |
 | [godot-dialogue-manager](godot-dialogue-manager/SKILL.md) | `jame581/GodotPrompter`: `skills/dialogue-manager/` | renamed |
 | [godot-export-pipeline](godot-export-pipeline/SKILL.md) | `jame581/GodotPrompter`: `skills/export-pipeline/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-export-builds/`, `godot-platform-desktop/`, `godot-platform-web/`, `godot-platform-console/`, `godot-adapt-mobile-to-desktop/`) | combined |
 | [godot-gdextension](godot-gdextension/SKILL.md) | `jame581/GodotPrompter`: `skills/gdextension/` | renamed |
@@ -174,6 +175,8 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-localization](godot-localization/SKILL.md) | `jame581/GodotPrompter`: `skills/localization/` | renamed |
 | [godot-math-essentials](godot-math-essentials/SKILL.md) | `jame581/GodotPrompter`: `skills/math-essentials/` | renamed |
 | [godot-mobile-development](godot-mobile-development/SKILL.md) | `jame581/GodotPrompter`: `skills/mobile-development/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-platform-mobile/`, `godot-adapt-desktop-to-mobile/`) | combined |
+| [godot-multiplayer-basics](godot-multiplayer-basics/SKILL.md) | `jame581/GodotPrompter`: `skills/multiplayer-basics/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-adapt-single-to-multiplayer/`, `godot-multiplayer-networking/`) | combined |
+| [godot-multiplayer-sync](godot-multiplayer-sync/SKILL.md) | `jame581/GodotPrompter`: `skills/multiplayer-sync/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-multiplayer-networking/`, `godot-adapt-single-to-multiplayer/`) | combined |
 | [godot-multithreading](godot-multithreading/SKILL.md) | `jame581/GodotPrompter`: `skills/multithreading/` | renamed |
 | [godot-phantom-camera](godot-phantom-camera/SKILL.md) | `jame581/GodotPrompter`: `skills/phantom-camera/` | renamed |
 | [godot-popochiu](godot-popochiu/SKILL.md) | `jame581/GodotPrompter`: `skills/popochiu/` | renamed |

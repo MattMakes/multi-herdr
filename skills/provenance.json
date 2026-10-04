@@ -1279,6 +1279,55 @@
       "vendored": true
     },
     {
+      "name": "godot-dedicated-server",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dedicated-server/SKILL.md",
+          "sha256": "17e8764e38d05a1f9dc150a78ac893dce1b19244c6b1e543d51e1bbe4de7b9a9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dedicated-server/references/deployment.md",
+          "sha256": "74833da2520d96cd661baeed399f907e92ccc325218e581f185e607c31a59abe",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dedicated-server/references/lobby-management.md",
+          "sha256": "6595d8c7ce78895af8d1704e989ae90180b730201dffa4d705bb2ec8f0b1b808",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dedicated-server/references/match-flow.md",
+          "sha256": "a05263a21e8edae0321c53b2c149f574c81b3bd5cfee90c032a1571c7597f560",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dedicated-server/references/server-config.md",
+          "sha256": "d550d616c2c7a092382efea0a321b81d9f44564fd4c10d6ea4d43349392e9e77",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{host-operations.md, host-security.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-server-architecture, godot-multiplayer-networking; Fact fixes on 4.7: the feature tag table row 'headless | --headless CLI flag' said --headless sets a 'headless' feature tag; it sets none (tested on 4.7.2: OS.has_feature(\"headless\") is false under --headless, DisplayServer.get_name() returns \"headless\"), so the row now says to check DisplayServer.get_name()",
+      "vendored": true
+    },
+    {
       "name": "godot-dialogue-manager",
       "sources": [
         {
@@ -1654,6 +1703,104 @@
         }
       ],
       "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{battery-and-background.md, desktop-to-mobile-port.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-platform-mobile, godot-adapt-desktop-to-mobile",
+      "vendored": true
+    },
+    {
+      "name": "godot-multiplayer-basics",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-basics/SKILL.md",
+          "sha256": "f5364956e31ff17d81ee2218f9dc08f5851b2d7a905d0b8b62299ea7374acaa1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-basics/references/disconnect-handling.md",
+          "sha256": "93931c356df9e32a52cd294c61c2a5f33e078e8f45bdbf8c6827ce746a846e79",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-basics/references/enet-setup.md",
+          "sha256": "4bc007aceaaa6d47ff69dff0901636a975d3542344b4fef08cb8d2e76d74d685",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-basics/references/player-join-flow.md",
+          "sha256": "024716cbe6848ac5bae384a3190a83f2140f517cd1fc555362d5f8c1ef492476",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-basics/references/spawning-networked-objects.md",
+          "sha256": "ed3b70ba9f26282aedf1d1ca2b96b4d651ff1d95f9fc56d9fbd05da8874d91f9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{engine-version-notes.md, local-testing-and-discovery.md, single-player-retrofit.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-adapt-single-to-multiplayer, godot-multiplayer-networking; references/engine-version-notes.md states two facts verified by the GW10 unit against the 4.7.2 doctool dump and godot-docs 4.7 (9adca4c): one Godot version on all peers (GH-90027), Node.get_node_rpc_config since 4.5 (GH-106848)",
+      "vendored": true
+    },
+    {
+      "name": "godot-multiplayer-sync",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-sync/SKILL.md",
+          "sha256": "36435adc538dd0fcbbf4657e6c15654b74f025deae1fdebebb3088495ff9076d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-sync/references/bandwidth-optimization.md",
+          "sha256": "c1f6021d8bed8a1e2f56cd404d9ce4426ccb4b6f97e70f5cc5f74fdc39bd5d25",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-sync/references/client-prediction.md",
+          "sha256": "52af6e6d7b2527f6cfbe10a048a3ef341b5a32d5c6ae1d2a8320c6e33795c2d0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-sync/references/interpolation.md",
+          "sha256": "b77434673947c48841c804557f9ab5571d64d1d77e9c8486055cfec8686d5313",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multiplayer-sync/references/lag-compensation.md",
+          "sha256": "4152331abe47555ff344c3300ab5b914345820924913703a699ae188f8a74909",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{interest-management.md, rollback-netcode.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-multiplayer-networking, godot-adapt-single-to-multiplayer",
       "vendored": true
     },
     {
