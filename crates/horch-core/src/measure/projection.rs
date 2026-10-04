@@ -11,7 +11,7 @@
 //! the target state, then checks what the table cannot see (such as a judge
 //! attempt number). `round.needs_intervention`, `round.cleanup_started` and
 //! `round.completed` reach NEEDS_INTERVENTION, CLEANUP and COMPLETE
-//! (SPEC-TODO(Spec B event list): the orchestrator added these 3 kinds).
+//! (design §4.1 says why these 3 kinds exist).
 
 use std::collections::BTreeMap;
 

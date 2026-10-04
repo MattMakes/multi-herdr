@@ -58,16 +58,22 @@ phase 8 (training Laya).
 
 ### 1.4 Non-goals (Spec B §20) and what enforces them
 
-| Non-goal | Enforced by |
-|---|---|
-| No online RL, no self-training, no DB server, no distributed runs | NFR-09, plus this list |
-| No judge-driven code edits | SEC-04, SEC-07 |
-| No automatic conflict resolution | PRO-04 |
-| No transcript hoarding | SEC-03 |
-| No second worker registry | ARC-24 |
-| No opaque composite score | JDG-06 |
+This is the complete non-goal list of Spec B. The original Spec B text is not
+available; this list is the master plan's §20 table
+(`ai_docs/plans/arch-refactor-dataset/00-master-plan.md`, "Spec B §20
+non-goals"), and the tests below pin each line. A change that breaks a
+non-goal fails one of these tests.
 
-`SPEC-TODO(Spec B §20)`: the non-goal list verbatim.
+| Non-goal | Enforced by | Test that pins it |
+|---|---|---|
+| No online RL and no self-training: no recorded outcome changes a later plan or decision | OD4; `teacher::inert::Inert` is the only `DecisionModel`, and it returns `None` | `teacher::system_one::tests::exp_01_inert_returns_none` |
+| No DB server: the event log is JSONL files under `DatasetPaths` | NFR-09 (no database crate, no async runtime) | `tests/nfr.rs:nfr_09_no_async_runtime_deps` |
+| No distributed runs: one coordinator process on one host, no network | NFR-06, NFR-09 (no HTTP crate) | `tests/nfr.rs:nfr_06_dependency_allowlist`, `nfr_09_no_async_runtime_deps` |
+| No judge-driven code edits: the judge reads a read-only bundle, and its output is never executed | SEC-04, SEC-07 | `horch-e2e/tests/judge.rs:sec_04_judge_cwd_bundle_tools_readonly`, `tests/vcs.rs:sec_07_gates_only_from_config` |
+| No automatic conflict resolution: a promotion conflict stops at NEEDS_INTERVENTION with the worktrees kept | PRO-04 | `tests/promotion.rs:pro_04_conflict_needs_intervention_preserves_worktrees` |
+| No transcript hoarding: events carry transcript refs and digests; raw copies need `retain_transcripts: true` | SEC-03 | `horch-e2e/tests/dataset.rs:sec_03_no_transcript_copies_by_default` |
+| No second worker registry: a candidate is an ordinary `Execution` in the ledger | ARC-24 | `tests/coordinator.rs:arc_24_candidates_are_ordinary_executions` |
+| No opaque composite score: the winner policy is a fixed table, and the judgment keeps every component score | JDG-06 | `tests/evaluation.rs:jdg_06_policy_table` |
 
 ---
 
@@ -324,8 +330,8 @@ pub struct EventEnvelope {
 #[serde(rename_all = "snake_case")]
 pub enum Actor { Coordinator, Worker, JudgeJob, Operator }
 
-/// SPEC-TODO(Spec B event list): the master plan names these kinds; confirm
-/// the list and every payload against Spec B verbatim.
+/// The complete event list (27 kinds). `EventKind::KNOWN` holds the dotted
+/// names in this order; `mea_02_envelope_roundtrip_every_kind` pins it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventKind {
     ExperimentCreated(ExperimentCreated),       // "experiment.created"
@@ -351,6 +357,10 @@ pub enum EventKind {
     PromotionRolledBack(PromotionRolledBack),   // "promotion.rolled_back"
     WorktreeCleanupFailed(WorktreeCleanupFailed), // "worktree.cleanup_failed"
     OutcomeRecorded(OutcomeRecorded),           // "outcome.recorded"
+    RoundNeedsIntervention(RoundNeedsIntervention), // "round.needs_intervention"
+    RoundCleanupStarted(RoundCleanupStarted),   // "round.cleanup_started"
+    RoundCompleted(RoundCompleted),             // "round.completed"
+    OperatorPromote(OperatorPromote),           // "operator.promote"
     /// An unknown kind, kept byte-for-byte so a newer writer's events survive
     /// a rebuild by an older reader (MEA-02).
     Unknown { kind: String, payload: serde_json::Value },
@@ -385,20 +395,77 @@ pub struct JudgeScheduled { pub attempt: u32, pub input_digest: Digest, pub judg
 pub struct JudgeStarted { pub attempt: u32, pub pid: u32 }
 pub struct JudgeCompleted { pub attempt: u32, pub judgment_id: JudgmentId, pub output_digest: Digest }
 pub struct JudgeFailed { pub attempt: u32, pub cause: JudgeFailure }
-pub enum JudgeFailure { Crashed { code: Option<i32> }, TimedOut, Lost, Malformed { error: String }, OverCap }
+pub enum JudgeFailure { Crashed { code: Option<i32> }, TimedOut, Lost, Malformed { error: String }, OverCap } // #[serde(tag = "kind")]
 pub struct WinnerSelected { pub label: String, pub execution_id: ExecutionId, pub head_sha: String,
                             pub judgment_id: JudgmentId, pub promotion: PromotionIntent }
 pub enum PromotionIntent { NotRequested, Requested { target: String } }   // "not_requested" | {"requested":…}
 pub struct WinnerRejected { pub reason: RejectReason }
 pub enum RejectReason { NoEligible, JudgeRejected, BelowConfidence, Tie, StaleJudgment, RevalidationFailed }
-pub struct PromotionStarted { pub target: String, pub dest_before: String, pub planned_after: String, pub strategy: PromotionStrategy }
+pub struct PromotionStarted { pub target: String, pub dest_before: String, pub planned_after: String, pub strategy: PromotionStrategy,
+                              #[serde(default)] pub publish: String,            // "update_ref_cas" | "update_ref_cas_read_tree"
+                              #[serde(default)] pub validation_ids: Vec<String> } // the revalidation of planned_after
 pub struct PromotionCompleted { pub receipt_digest: Digest, pub dest_after: String }
 pub struct PromotionConflicted { pub paths: Vec<String> }
 pub struct PromotionRolledBack { pub target: String, pub restored: String }
 pub struct WorktreeCleanupFailed { pub label: String, pub path: PathBuf, pub error: String }
 pub struct OutcomeRecorded { pub kind: OutcomeKind, pub post_merge_score: f64, pub note: Option<String> }
 pub enum OutcomeKind { Regression, Revert, Verified }
+pub struct RoundNeedsIntervention { pub reason: String, pub source: InterventionSource }
+pub enum InterventionSource { Judge, Promotion, Operator }
+pub struct RoundCleanupStarted {}                     // worktrees go, branches stay
+pub struct RoundCompleted { pub final_outcome: FinalOutcome }
+pub enum FinalOutcome { Winner, Rejected, NeedsIntervention, Promoted } // the state cleanup started from
+pub struct OperatorPromote { pub target: String }
 ```
+
+`PromotionStarted.publish` names the publish step; `merge_ff_only` is its
+legacy spelling in events written before D17, and an event written before B5
+has it empty. `RoundCompleted.final_outcome` must match the state the round
+held at `round.cleanup_started` (DECIDED → `winner`, REJECTED → `rejected`,
+PROMOTED → `promoted`, NEEDS_INTERVENTION → `needs_intervention`); the fold
+records any other value as an anomaly.
+
+**Who writes each event, and its idempotency key.** Every event is written
+by the coordinator process except where the actor column says otherwise. The
+key makes a re-run append a no-op (MEA-04). `<from>` is the round state when
+cleanup started; `<n>` is the judge or promotion attempt.
+
+| Kind | Actor | Written by (`path:symbol`) | Idempotency key |
+|---|---|---|---|
+| `experiment.created` | coordinator | `horch/src/dataset/preflight.rs:record` | `experiment.created:<exp>` |
+| `preflight.completed` | coordinator | `horch/src/dataset/preflight.rs:record` | `preflight.completed:<exp>` |
+| `experiment.aborted` | coordinator | `horch/src/dataset/preflight.rs:record` | `experiment.aborted:<exp>` |
+| `round.created` | coordinator | `competition/coordinator.rs` | `round.created:<round>` |
+| `candidate.planned` | coordinator | `competition/coordinator.rs` | `plan:<round>:<label>` |
+| `worktree.created` | coordinator | `competition/coordinator.rs` | `worktree:<round>:<label>` |
+| `candidate.spawned` | coordinator | `competition/coordinator.rs` | `spawn:<round>:<label>` |
+| `candidate.completed`, `candidate.failed` | coordinator | `competition/coordinator.rs` | `ended:<round>:<label>` |
+| `candidate.frozen` | coordinator | `competition/coordinator.rs` | `freeze:<round>:<label>` |
+| `validation.completed` | coordinator | `competition/coordinator.rs` | `validation:<round>:<label>` |
+| `judge.scheduled`, `judge.started`, `judge.completed`, `judge.failed` | coordinator | `competition/judging.rs` | `<kind>:<round>:<n>` |
+| `winner.selected` | coordinator | `competition/judging.rs` | `winner:<round>` |
+| `winner.rejected` | coordinator | `judging.rs` (judge verdict), `coordinator.rs` (0 eligible), `promotion.rs` (stale or failed revalidation) | `winner:<round>`, `winner.rejected:<round>`, `promotion.rejected:<round>:<n>` |
+| `promotion.started`, `promotion.conflicted` | coordinator | `competition/promotion.rs` | `<kind>:<round>:<n>` |
+| `promotion.completed` | coordinator | `competition/promotion.rs` | `promotion.completed:<round>` |
+| `promotion.rolled_back` | operator | `competition/promotion.rs` (`rollback`) | `promotion.rolled_back:<round>` |
+| `worktree.cleanup_failed` | coordinator | `competition/cleanup.rs` | `worktree.cleanup_failed:<round>:<from>:<label>` |
+| `outcome.recorded` | operator | `dataset/outcome.rs` | `outcome:<round>:<kind>:<occurred_at>` |
+| `round.needs_intervention` | coordinator | `judging.rs` (source `judge`), `promotion.rs` (source `promotion`), `coordinator.rs` | `needs_intervention:<round>`, `round.needs_intervention:promotion:<round>:<n>` |
+| `round.cleanup_started` | coordinator | `competition/cleanup.rs` | `round.cleanup_started:<round>:<from>` |
+| `round.completed` | coordinator | `competition/cleanup.rs` | `round.completed:<round>:<from>` |
+| `operator.promote` | operator | `horch/src/dataset/promote.rs` | `operator.promote:<round>:<n>` |
+
+The last 4 kinds are not in the master plan. They exist so a rebuild from
+the log alone reaches every state of §5: without `round.needs_intervention`
+a judge tie or a dirty target leaves no event that moves the round, and
+without `round.cleanup_started` / `round.completed` a rebuild never reaches
+CLEANUP or COMPLETE. `operator.promote` records the operator's re-entry at
+DECIDED. Tests: `mea_02_envelope_roundtrip_every_kind` (every kind
+round-trips, and `EventKind::KNOWN` equals this list),
+`mea_02_unknown_kind_preserved`, `mea_02_known_kind_bad_payload_is_an_error`,
+`mea_05_round_needs_intervention_and_completion_checks`,
+`mea_05_full_lifecycles_fold_without_anomalies` (all in
+`crates/horch-core/tests/measure.rs`).
 
 ### 4.2 Recorder and store (B1)
 
@@ -491,8 +558,36 @@ pub struct RunScores {
 pub struct NumstatLine { pub added: Option<u32>, pub removed: Option<u32>, pub path: String } // None = binary
 ```
 
-`SPEC-TODO(Spec B WorkerRun)`: the field list verbatim. The golden
-`worker-run-1.0.0.json` (MEA-11) freezes this shape.
+This is the complete WorkerRun 1.0.0 field list. Every struct sets
+`deny_unknown_fields`, so a reader refuses an extra field such as `winner`.
+`WorkerRun::project` (`measure/worker_run.rs`) builds it; each field comes
+from one source:
+
+| Field | Source |
+|---|---|
+| `schema_version` | the constant `"1.0.0"` (`WORKER_RUN_SCHEMA_VERSION`) |
+| `worker_run_id` | `ExecutionFacts.execution_id`; it matches the `execution_id` of the candidate's `candidate.spawned` envelope |
+| `experiment_id`, `round_id`, `label` | the round that holds the candidate |
+| `task_id`, `task_digest` | `experiment.created` |
+| `config.config_id`, `teammate`, `harness`, `model`, `effort`, `slot`, `propensity` | `candidate.planned` |
+| `config.skills` | the execution record (`ExecutionFacts.skills`) |
+| `config.routing` | `candidate.spawned.routing`; the execution record when no spawn event exists |
+| `facts.status`, `session_id`, `started_at`, `finished_at` | the execution record |
+| `facts.base_sha` | `worktree.created.base_sha`; `round.created.base_sha` when no worktree exists |
+| `facts.head_sha`, `numstat`, `diff_digest` | `candidate.frozen`; `null` / `[]` when not frozen |
+| `facts.transcript_ref`, `transcript_digest`, `tokens`, `cost_microusd`, `cost_source` | the usage record the coordinator's meter wrote at freeze; no record → zero tokens, `unpriced` |
+| `facts.latency_ms` | `finished_at − started_at` in ms; `null` when either is missing or the clock went backwards |
+| `facts.environment_digest` | `experiment.created` |
+| `scores.gates`, `mechanical_score` | `validation.completed`; `[]` / `null` when not validated |
+| `scores.judge_components` | the judgment's component scores for this label; `null` without a judgment |
+
+The CLI builds the execution part from the ledger record and the usage
+record (`horch/src/dataset/export.rs:facts_of`). Tests:
+`mea_06_worker_run_schema` (the exact key set of each object),
+`mea_06_no_winner_field`, and `mea_11_fake_lifecycle_replays_identical_worker_run`
+(all in `crates/horch-core/tests/measure.rs`). The golden
+`crates/horch-core/tests/golden/worker-run-1.0.0.json` freezes this shape;
+it is never re-blessed, and a change to the shape bumps `schema_version`.
 
 ### 4.4 Money (`usage/money.rs`, B1, MEA-07)
 
@@ -892,59 +987,104 @@ pub fn evaluate(plan: &PreflightPlan, snapshot: &MachineSnapshot) -> PreflightRe
 
 ## 5. Round state machine (CMP-03)
 
-`SPEC-TODO(Spec B round states)`: the master plan names only the states from
-JUDGING_BACKGROUND on. The earlier states below follow the B2/B3 flow.
+This is the complete state list and transition table. The code is
+`competition/model.rs:RoundState` (16 states, serialized
+`SCREAMING_SNAKE_CASE`) and `competition/state.rs:TABLE`;
+`competition/state.rs:transition` is the only place a state changes.
+`cmp_03_transition_table` (`crates/horch-core/tests/competition_planner.rs`)
+checks every row of `TABLE` and checks that every other (state, event) pair
+is refused.
 
 States: `CREATED`, `PREFLIGHT`, `ABORTED`, `PLANNED`, `PROVISIONING`,
 `RUNNING`, `VALIDATING`, `JUDGING_BACKGROUND`, `DECIDED`, `REVALIDATING`,
 `PROMOTING`, `PROMOTED`, `NEEDS_INTERVENTION`, `REJECTED`, `CLEANUP`,
 `COMPLETE`.
 
+The master plan names only the states from JUDGING_BACKGROUND on. The
+states before it follow the B2 and B3 flow, because each one is a point
+where the coordinator waits for a different event set and a crash must
+resume from it (§7.2). The first 4 states (CREATED, PREFLIGHT, ABORTED,
+PLANNED) belong to the experiment (`measure/projection.rs:ExperimentView`).
+A round is born PLANNED: `round.created` is valid only while its experiment
+is PLANNED.
+
+An event name with a `:<condition>` suffix is the event plus the condition
+that picks the target (`competition/state.rs:RoundEvent`). `:last` means
+every other candidate already passed this step. `candidate.ended` is
+`candidate.completed` or `candidate.failed`. `promotion.requested` is not an
+event in the log: the fold applies it after `winner.selected` with
+`promotion: requested`, and after `operator.promote`.
+
 ### 5.1 Default path (no promotion, OD5)
 
 | From | Event / condition | To |
 |---|---|---|
 | CREATED | `experiment.created` | PREFLIGHT |
-| PREFLIGHT | `preflight.completed` (passed) | PLANNED |
-| PREFLIGHT | `experiment.aborted` (a check failed; no worktree, no model) | ABORTED |
-| PLANNED | `round.created`, every `candidate.planned` | PROVISIONING |
-| PROVISIONING | every `worktree.created` | RUNNING |
-| RUNNING | `candidate.spawned` per wave; `candidate.completed` / `candidate.failed` per candidate | RUNNING |
-| RUNNING | every candidate terminal, or round deadline | VALIDATING |
-| VALIDATING | `candidate.frozen` + `validation.completed` per terminal candidate | VALIDATING |
-| VALIDATING | every candidate validated; ≥ 1 eligible | JUDGING_BACKGROUND |
-| VALIDATING | 0 eligible | REJECTED (`winner.rejected{no_eligible}`, judge skipped) |
-| JUDGING_BACKGROUND | `judge.scheduled`, `judge.started`, `judge.failed` (attempt < 2) | JUDGING_BACKGROUND |
-| JUDGING_BACKGROUND | `judge.completed` + `winner.selected{promotion: not_requested}` | DECIDED |
-| JUDGING_BACKGROUND | `judge.completed` + outcome NeedsIntervention, or `judge.failed` on attempt 2 | NEEDS_INTERVENTION |
-| JUDGING_BACKGROUND | `judge.completed` + `winner.rejected` | REJECTED |
-| DECIDED | no promotion requested | CLEANUP |
-| REJECTED | — | CLEANUP |
-| CLEANUP | every worktree removed (failures → `worktree.cleanup_failed`, branches kept) | COMPLETE |
-| NEEDS_INTERVENTION | operator: `promote <round>` (only from a DECIDED winner) or `cleanup` | DECIDED or CLEANUP |
+| PREFLIGHT | `preflight.completed:passed` | PLANNED |
+| PREFLIGHT | `preflight.completed:failed` (`experiment.aborted` follows; no worktree, no model) | PREFLIGHT |
+| CREATED, PREFLIGHT | `experiment.aborted` | ABORTED |
+| PLANNED | `round.created`, `candidate.planned` | PLANNED |
+| PLANNED | `candidate.planned:last` | PROVISIONING |
+| PROVISIONING | `worktree.created` | PROVISIONING |
+| PROVISIONING | `worktree.created:last` | RUNNING |
+| RUNNING | `candidate.spawned`, `candidate.ended` | RUNNING |
+| RUNNING | `candidate.ended:last` (a candidate past `caps.candidate_deadline_s` ends as `candidate.failed{timed_out}`) | VALIDATING |
+| VALIDATING | `candidate.frozen`, `validation.completed` | VALIDATING |
+| VALIDATING | `validation.completed:last`, ≥ 1 eligible | JUDGING_BACKGROUND |
+| VALIDATING | `validation.completed:none_eligible` | VALIDATING |
+| VALIDATING | `winner.rejected{no_eligible}` (judge skipped; only after every candidate is validated and none is eligible) | REJECTED |
+| JUDGING_BACKGROUND | `judge.scheduled`, `judge.started`, `judge.completed`, `judge.failed` (attempt < 2) | JUDGING_BACKGROUND |
+| JUDGING_BACKGROUND | `judge.failed:last_attempt` (attempt 2) | NEEDS_INTERVENTION |
+| JUDGING_BACKGROUND | `winner.selected{promotion: not_requested}` (after `judge.completed`) | DECIDED |
+| JUDGING_BACKGROUND | `winner.rejected` (after `judge.completed`) | REJECTED |
+| JUDGING_BACKGROUND | `round.needs_intervention:judge` (after `judge.completed`; for example a tie) | NEEDS_INTERVENTION |
+| DECIDED, REJECTED | `round.cleanup_started` | CLEANUP |
+| CLEANUP | `round.completed` (failures → `worktree.cleanup_failed`, branches kept) | COMPLETE |
 
 ### 5.2 `--promote-to` / `promote <round>` path
 
 | From | Event / condition | To |
 |---|---|---|
-| DECIDED | promotion requested | REVALIDATING |
-| REVALIDATING | worktree HEAD or branch ≠ frozen SHA | REJECTED (`winner.rejected{stale_judgment}`) |
-| REVALIDATING | integrate (ff or cherry-pick in a temp worktree) conflicts | NEEDS_INTERVENTION (`promotion.conflicted`, worktrees kept) |
-| REVALIDATING | gates fail on the integrated commit | REJECTED (`winner.rejected{revalidation_failed}`) |
-| REVALIDATING | gates pass; target checked out and dirty | NEEDS_INTERVENTION |
-| REVALIDATING | gates pass; `promotion.started{dest_before, planned_after}` | PROMOTING |
-| PROMOTING | publish (CAS `update-ref`, or `merge --ff-only` in the clean checkout) → receipt via `create_immutable` → `promotion.completed` | PROMOTED |
-| PROMOTING | CAS lost (ref ≠ dest_before) | NEEDS_INTERVENTION |
-| PROMOTED | receipt durable | CLEANUP |
-| REJECTED | — | CLEANUP |
-| CLEANUP | — | COMPLETE |
-| COMPLETE | `rollback` (CAS back to dest_before) → `promotion.rolled_back` | COMPLETE |
+| DECIDED | `promotion.requested` | REVALIDATING |
+| REVALIDATING | `winner.rejected{stale_judgment}` (worktree HEAD or branch ≠ frozen SHA) or `{revalidation_failed}` (gates fail on the integrated commit) | REJECTED |
+| REVALIDATING | `promotion.conflicted` (the cherry-pick in the temp worktree conflicts; worktrees kept) | NEEDS_INTERVENTION |
+| REVALIDATING | `round.needs_intervention:promotion` (target checked out and dirty) | NEEDS_INTERVENTION |
+| REVALIDATING | `promotion.started{dest_before, planned_after}` | PROMOTING |
+| PROMOTING | `promotion.completed` (after the publish and the receipt via `create_immutable`) | PROMOTED |
+| PROMOTING | `promotion.conflicted`, `round.needs_intervention:promotion` (CAS lost: ref ≠ dest_before) | NEEDS_INTERVENTION |
+| PROMOTED | `round.cleanup_started` | CLEANUP |
+| PROMOTED, COMPLETE | `promotion.rolled_back` (`rollback`: CAS back to dest_before) | same state |
+
+### 5.3 Operator transitions
+
+| From | Event / condition | To |
+|---|---|---|
+| RUNNING, VALIDATING, JUDGING_BACKGROUND, DECIDED, REVALIDATING, PROMOTING | `round.needs_intervention:operator` | NEEDS_INTERVENTION |
+| NEEDS_INTERVENTION | `operator.promote` (`promote <round>`; only a round with a winner) | DECIDED |
+| COMPLETE | `operator.promote` (`promote <round>` of a collected round; its branches are kept) | DECIDED |
+| NEEDS_INTERVENTION | `round.cleanup_started` (only the operator's `cleanup` command) | CLEANUP |
 
 Every other pair is invalid. `measure::projection::fold` records an invalid
-transition as an anomaly and does not apply it. No path reaches PROMOTED
-without DECIDED → REVALIDATING → PROMOTING
+transition as an anomaly and does not apply it. The fold also checks what
+the table cannot see: a `winner.selected` must cite the recorded judgment
+and an eligible label, a judge attempt number must follow the last one, a
+`round.needs_intervention:judge` needs a judgment, an `outcome.recorded` is
+valid only in DECIDED, PROMOTED, CLEANUP or COMPLETE, and
+`round.completed.final_outcome` must match the state cleanup started from
+(`mea_05_round_needs_intervention_and_completion_checks`,
+`mea_05_invalid_transition_is_an_anomaly_and_not_applied`). No path reaches
+PROMOTED without DECIDED → REVALIDATING → PROMOTING
 (`cmp_03_prop_no_invalid_path_to_promoted`). NEEDS_INTERVENTION keeps every
 worktree.
+
+`promote <round>` re-enters at DECIDED from COMPLETE as well as from
+NEEDS_INTERVENTION. The master plan says it "later re-enters at DECIDED",
+and a default round is COMPLETE by then; cleanup keeps candidate branches,
+so the promotion revalidates from the branch
+(`operator_promote_reenters_revalidation` in
+`crates/horch-core/tests/promotion.rs`, `pro_08_promote_to_and_promote_cmd`
+in `crates/horch-e2e/tests/promotion.rs`). A second promotion of a promoted
+round is refused.
 
 Master plan note: the B5 text lists `NEEDS_INTERVENTION → CLEANUP → COMPLETE`
 and also "NEEDS_INTERVENTION keeps everything". This design resolves it: from

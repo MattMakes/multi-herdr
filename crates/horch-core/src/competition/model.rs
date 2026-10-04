@@ -149,9 +149,7 @@ pub struct Outcome {
 
 /// Where a round is (dataset design §5). The first four states belong to the
 /// experiment before its first round: CREATED, PREFLIGHT, ABORTED, PLANNED.
-///
-/// SPEC-TODO(Spec B round states): the master plan names only the states
-/// from JUDGING_BACKGROUND on; the earlier states follow the B2/B3 flow.
+/// Design §5 gives the full list and every transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RoundState {
