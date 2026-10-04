@@ -101,8 +101,15 @@ fn run() -> Result<bool> {
     }
     if prune {
         for removed in stale_files(&cli.out, &pages)? {
-            let verb = if cli.dry_run { "would remove" } else { "removed" };
-            println!("  {verb:<14} {}", removed.file_name().unwrap_or_default().to_string_lossy());
+            let verb = if cli.dry_run {
+                "would remove"
+            } else {
+                "removed"
+            };
+            println!(
+                "  {verb:<14} {}",
+                removed.file_name().unwrap_or_default().to_string_lossy()
+            );
             if !cli.dry_run {
                 std::fs::remove_file(&removed)
                     .with_context(|| format!("removing {}", removed.display()))?;
@@ -119,7 +126,11 @@ fn run() -> Result<bool> {
         counts[Outcome::Unchanged as usize],
         counts[Outcome::Removed as usize],
         failed,
-        if cli.dry_run { "  (dry run: nothing written)" } else { "" }
+        if cli.dry_run {
+            "  (dry run: nothing written)"
+        } else {
+            ""
+        }
     );
     if failed > 0 {
         eprintln!("\n{failed} page(s) failed; everything else was written.");
@@ -224,7 +235,10 @@ mod tests {
         let cli = Cli::try_parse_from(["herdr-docs-sync"]).unwrap();
         assert_eq!(cli.out, PathBuf::from("herdr-docs"));
         assert!(!cli.dry_run);
-        assert!(!cli.keep_stale, "pruning is the default so the mirror stays faithful");
+        assert!(
+            !cli.keep_stale,
+            "pruning is the default so the mirror stays faithful"
+        );
         assert_eq!(cli.sitemap, SITEMAP_URL);
     }
 
@@ -262,9 +276,13 @@ mod tests {
     #[test]
     fn stale_files_is_empty_for_a_fresh_directory() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(stale_files(&tmp.path().join("absent"), &pages(&["install"]))
+        assert!(
+            stale_files(&tmp.path().join("absent"), &pages(&["install"]))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(stale_files(tmp.path(), &pages(&["install"]))
             .unwrap()
             .is_empty());
-        assert!(stale_files(tmp.path(), &pages(&["install"])).unwrap().is_empty());
     }
 }

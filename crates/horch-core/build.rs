@@ -57,6 +57,16 @@ fn main() {
         writeln!(bundled, "    ({relative:?}, include_bytes!({absolute:?})),").unwrap();
     }
     bundled.push_str("];\n");
+    // Upstream provenance of the bundled skills: the pinned marketplace
+    // commit and each original SKILL.md's sha256.
+    let provenance = skills.join("provenance.json");
+    println!("cargo:rerun-if-changed={}", provenance.display());
+    writeln!(
+        bundled,
+        "pub static BUNDLED_PROVENANCE: &str = include_str!({:?});",
+        provenance.to_string_lossy()
+    )
+    .unwrap();
     std::fs::write(
         Path::new(&std::env::var("OUT_DIR").unwrap()).join("bundled_skills.rs"),
         bundled,
@@ -106,7 +116,7 @@ fn emit(out: &mut String, ident: &str, dir: &Path, keep: fn(&str) -> bool) {
     // Sorted so the generated file is stable across filesystems.
     entries.sort();
 
-    writeln!(out, "pub static {ident}: &[(&str, &str)] = &[").unwrap();
+    writeln!(out, "pub(crate) static {ident}: &[(&str, &str)] = &[").unwrap();
     for (stem, path) in entries {
         writeln!(out, "    (\"{stem}\", include_str!(r\"{path}\")),").unwrap();
     }

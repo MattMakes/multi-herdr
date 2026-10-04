@@ -55,6 +55,7 @@ the ONLY channel - your output is not otherwise watched):
   closes your pane. Write the summary so a FRESH session could be briefed
   from it alone: files touched, decisions made, gotchas, current state.
   Write files touched, decisions, gotchas, and what is not done.
+  Do not start the summary with "[{role}] DONE:". horch done adds it.
 
 == Scope ==
 - Read the plan file in full before you act.

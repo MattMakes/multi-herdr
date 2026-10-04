@@ -9,7 +9,9 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
-use horch_core::ledger::Ledger;
+use horch_core::execution::records::Ledger;
+use horch_core::execution::store::ExecutionStore;
+use horch_core::runtime::RuntimeContext;
 
 use crate::output;
 
@@ -33,9 +35,14 @@ pub enum LedgerCommand {
         task: Option<String>,
     },
     /// Attach a session id discovered after launch.
-    SetSession { key: String, session_id: String },
+    SetSession {
+        key: String,
+        session_id: String,
+    },
     /// Exit 0 when any record already claims this session id.
-    HasSession { session_id: String },
+    HasSession {
+        session_id: String,
+    },
     /// Re-open a finished session under a role.
     Resume {
         key: String,
@@ -48,10 +55,18 @@ pub enum LedgerCommand {
         role: String,
         task: String,
     },
-    Note { key: String, text: String },
-    Done { key: String, summary: String },
+    Note {
+        key: String,
+        text: String,
+    },
+    Done {
+        key: String,
+        summary: String,
+    },
     /// Print one record as JSON.
-    Get { key: String },
+    Get {
+        key: String,
+    },
     List {
         #[arg(long)]
         json: bool,
@@ -65,22 +80,32 @@ pub enum LedgerCommand {
 /// Read this before spawning: a `[done]` session whose task or history overlaps
 /// the new task is a resume candidate
 /// (`horch spawn --resume <session-or-record-id> "task"`).
-pub fn sessions(json: bool) -> Result<()> {
-    print_list(json)
+pub fn sessions(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
+    print_list(ctx, json, all)
 }
 
-fn print_list(json: bool) -> Result<()> {
-    let ledger = Ledger::open()?;
+/// The JSON form is the store's records as written: a record with a typed
+/// status carries it under `state` (additive), and `status` keeps the legacy
+/// word. The text form prints only the legacy words, which the orchestrator
+/// prompt reads (risk 5). Competition candidates and judges belong to
+/// `multi-herdr-dataset`: both forms leave them out unless `all`.
+fn print_list(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
+    let store = ExecutionStore::open_in(ctx)?;
+    let records: Vec<_> = store
+        .read()?
+        .into_iter()
+        .filter(|r| all || r.round_id.is_none())
+        .collect();
     if json {
-        output::println(&serde_json::to_string_pretty(&ledger.read()?)?);
+        output::println(&ExecutionStore::render_json(&records)?);
     } else {
-        output::print(&ledger.render()?);
+        output::print(&ExecutionStore::render_text(&records));
     }
     Ok(())
 }
 
-pub fn run(command: LedgerCommand) -> Result<ExitCode> {
-    let ledger = Ledger::open()?;
+pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
+    let ledger = Ledger::open_in(ctx)?;
     match command {
         LedgerCommand::Add {
             record_id,
@@ -116,7 +141,7 @@ pub fn run(command: LedgerCommand) -> Result<ExitCode> {
         LedgerCommand::Get { key } => {
             output::println(&serde_json::to_string_pretty(&ledger.get(&key)?)?)
         }
-        LedgerCommand::List { json } => print_list(json)?,
+        LedgerCommand::List { json } => print_list(ctx, json, true)?,
         LedgerCommand::Path => output::println(&ledger.path().display().to_string()),
     }
     Ok(ExitCode::SUCCESS)

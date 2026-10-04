@@ -6,6 +6,8 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: sonnet
+# When this model's usage pool cannot serve a spawn (horch route sonnet).
+fallbacks: [codex-terra]
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. cezaar#40 runs builders low; medium because our briefs are not
 # always complete specs. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)

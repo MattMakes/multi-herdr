@@ -1,0 +1,6 @@
+
+
+Fleet skill phase: validation. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:
+- horch:orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.
+- horch:skill-creator: Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
+Also available in this phase: horch:check, horch:code-analysis, horch:code-review, horch:document, horch:handoff, horch:security-review. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.

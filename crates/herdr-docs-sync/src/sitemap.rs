@@ -72,7 +72,10 @@ pub fn parse(xml: &str) -> Result<Sitemap> {
                 }
             }
             Ok(_) => {}
-            Err(e) => bail!("malformed sitemap XML at byte {}: {e}", reader.buffer_position()),
+            Err(e) => bail!(
+                "malformed sitemap XML at byte {}: {e}",
+                reader.buffer_position()
+            ),
         }
         buf.clear();
     }
@@ -211,7 +214,10 @@ mod tests {
         .collect();
         let pages = doc_pages(&urls);
         let names: Vec<&str> = pages.iter().map(|p| p.file_name.as_str()).collect();
-        assert_eq!(names, vec!["cli-reference.md", "config-reference.md", "install.md"]);
+        assert_eq!(
+            names,
+            vec!["cli-reference.md", "config-reference.md", "install.md"]
+        );
     }
 
     /// Only the English docs are mirrored; blog, marketing and translated pages

@@ -19,6 +19,10 @@ rules:
     justification: read the project session ledger before spawning
   - pattern: '"horch", "layout"'
     justification: report the worker grid and the next split
+  - pattern: '"horch", "quota"'
+    justification: read the usage pools before spawning a batch
+  - pattern: '"horch", "route"'
+    justification: see what the usage-limit gate would do with a spawn
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a
 private `CODEX_HOME` that lives only as long as the pane, as:

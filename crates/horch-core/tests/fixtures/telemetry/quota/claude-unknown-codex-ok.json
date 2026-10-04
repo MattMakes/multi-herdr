@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "written_at": "2026-09-28T17:55:00Z",
+  "pools": {
+    "claude": {
+      "state": "unknown",
+      "observed_at": null,
+      "source": "get_usage",
+      "windows": [],
+      "refusal_seen_at": null,
+      "error": "probe timed out after 10s"
+    },
+    "codex": {
+      "state": "?",
+      "observed_at": "2026-09-28T17:55:00Z",
+      "source": "app-server",
+      "harness_version": "0.158.0",
+      "windows": [
+        {
+          "name": "7d",
+          "minutes": 10080,
+          "scope_model": null,
+          "used": 0.12,
+          "resets_at": "2026-10-03T19:15:49Z"
+        }
+      ],
+      "ordinary_usage_allowed": true,
+      "error": null
+    },
+    "opencode-zen": {
+      "state": "ok",
+      "observed_at": "2026-09-28T17:55:00Z",
+      "no_signal": true,
+      "cooling_until": null
+    },
+    "local": {
+      "state": "ok",
+      "observed_at": "2026-09-28T17:55:00Z",
+      "error": null
+    }
+  }
+}

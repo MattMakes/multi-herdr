@@ -13,8 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
-use horch_core::ledger::{Ledger, Record};
-use horch_core::teammates::{Phase, Roster};
+use horch_core::execution::legacy::Record;
+use horch_core::execution::store::ExecutionStore;
+use horch_core::roster::{Phase, Roster};
+use horch_core::runtime::RuntimeContext;
 use horch_core::usage::{self, Locations, Missing, Price, Tokens};
 use serde::Serialize;
 
@@ -86,17 +88,17 @@ pub struct Report {
     pub total: Rollup,
 }
 
-pub fn cost(args: CostArgs) -> Result<()> {
-    let ledger = Ledger::open()?;
-    let mut records = ledger.read()?;
+pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
+    let store = ExecutionStore::open_in(ctx)?;
+    let mut records = store.read()?;
     if let Some(since) = &args.since {
         records.retain(|r| r.created_at.as_str() >= since.as_str());
     }
     if !args.records.is_empty() {
         records.retain(|r| {
-            args.records.iter().any(|k| {
-                *k == r.record_id || r.session_id.as_deref() == Some(k.as_str())
-            })
+            args.records
+                .iter()
+                .any(|k| *k == r.record_id || r.session_id.as_deref() == Some(k.as_str()))
         });
     }
     for extra in &args.sessions {
@@ -117,28 +119,35 @@ pub fn cost(args: CostArgs) -> Result<()> {
             history: Vec::new(),
             created_at: String::new(),
             updated_at: String::new(),
+            ..Record::default()
         });
     }
     let prices = usage::load_prices(args.pricing.as_deref().map(std::path::Path::new))?;
     let reprice = match &args.reprice {
         Some(model) => match usage::price_for(&prices, model) {
             Some(p) => Some((model.clone(), p)),
-            None => bail!("--reprice: no price for '{model}' (known: {})", known(&prices)),
+            None => bail!(
+                "--reprice: no price for '{model}' (known: {})",
+                known(&prices)
+            ),
         },
         None => None,
     };
-    let roster = Roster::load().ok();
+    let roster: Option<Roster> = super::load_roster(ctx, None).ok();
     let report = build(
         &records,
         roster.as_ref(),
-        &Locations::from_env(),
+        &Locations::from_context(ctx),
         &prices,
         reprice.as_ref().map(|(m, p)| (m.as_str(), p)),
     );
     if args.json {
         output::println(&serde_json::to_string_pretty(&report)?);
     } else {
-        output::print(&render(&report, ledger.path().display().to_string().as_str()));
+        output::print(&render(
+            &report,
+            store.path().display().to_string().as_str(),
+        ));
     }
     Ok(())
 }
@@ -227,7 +236,13 @@ pub fn build(
         let models: BTreeSet<&str> = used
             .by_model
             .keys()
-            .map(|m| if m.is_empty() { r.model.as_str() } else { m.as_str() })
+            .map(|m| {
+                if m.is_empty() {
+                    r.model.as_str()
+                } else {
+                    m.as_str()
+                }
+            })
             .collect();
         let row = Row {
             record_id: r.record_id.clone(),
@@ -287,7 +302,11 @@ pub fn render(report: &Report, ledger: &str) -> String {
         .as_ref()
         .map(|m| format!(" | on {m}"))
         .unwrap_or_default();
-    let rep_sep = if report.reprice.is_some() { "|---:" } else { "" };
+    let rep_sep = if report.reprice.is_some() {
+        "|---:"
+    } else {
+        ""
+    };
     let rep = |x: Option<f64>| x.map(|v| format!(" | {}", money(v))).unwrap_or_default();
 
     let mut out = format!(
@@ -301,7 +320,11 @@ pub fn render(report: &Report, ledger: &str) -> String {
     ));
     for r in &report.rows {
         let t = &r.tokens;
-        let flag = if r.unpriced_models.is_empty() { "" } else { " *" };
+        let flag = if r.unpriced_models.is_empty() {
+            ""
+        } else {
+            " *"
+        };
         out.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {}{flag}{} |\n",
             r.teammate,
@@ -366,12 +389,18 @@ pub fn render(report: &Report, ledger: &str) -> String {
     if !report.not_priced.is_empty() {
         out.push_str("\n## Not priced\n\n");
         for n in &report.not_priced {
-            let why = match n.reason {
-                Missing::NoSessionId => "the ledger never learned its session id",
-                Missing::NoTranscript => "no transcript found for its session id",
-                Missing::NotRead => "this harness's usage is not read (see the model guide)",
+            let why = match &n.reason {
+                Missing::NoSessionId => "the ledger never learned its session id".to_string(),
+                Missing::NoTranscript => "no transcript found for its session id".to_string(),
+                Missing::NotRead => {
+                    "this harness's usage is not read here (agent none, or no sqlite3)".to_string()
+                }
+                Missing::Failed(why) => format!("could not be read: {why}"),
             };
-            out.push_str(&format!("- {} ({}, {}): {why}\n", n.teammate, n.agent, n.record_id));
+            out.push_str(&format!(
+                "- {} ({}, {}): {why}\n",
+                n.teammate, n.agent, n.record_id
+            ));
         }
     }
 
@@ -380,14 +409,28 @@ pub fn render(report: &Report, ledger: &str) -> String {
         let used: Vec<String> = r
             .skills_used
             .iter()
-            .map(|(s, n)| if *n > 1 { format!("{s} x{n}") } else { s.clone() })
+            .map(|(s, n)| {
+                if *n > 1 {
+                    format!("{s} x{n}")
+                } else {
+                    s.clone()
+                }
+            })
             .collect();
         out.push_str(&format!(
             "| {} | {} | {} | {} |\n",
             r.teammate,
             r.role,
-            if used.is_empty() { "-".into() } else { used.join(", ") },
-            if r.expected_unused.is_empty() { "-".into() } else { r.expected_unused.join(", ") },
+            if used.is_empty() {
+                "-".into()
+            } else {
+                used.join(", ")
+            },
+            if r.expected_unused.is_empty() {
+                "-".into()
+            } else {
+                r.expected_unused.join(", ")
+            },
         ));
     }
     out
@@ -407,7 +450,13 @@ fn share(t: &Tokens) -> String {
 mod tests {
     use super::*;
 
-    fn record(id: &str, agent: &str, tier: &str, sid: Option<&str>, phase: Option<Phase>) -> Record {
+    fn record(
+        id: &str,
+        agent: &str,
+        tier: &str,
+        sid: Option<&str>,
+        phase: Option<Phase>,
+    ) -> Record {
         Record {
             record_id: id.into(),
             session_id: sid.map(str::to_owned),
@@ -422,6 +471,7 @@ mod tests {
             history: Vec::new(),
             created_at: "2026-09-24T00:00:00Z".into(),
             updated_at: String::new(),
+            ..Record::default()
         }
     }
 
@@ -445,23 +495,60 @@ mod tests {
         .unwrap();
         let loc = Locations {
             home: home.to_path_buf(),
+            claude_projects: home.join(".claude/projects"),
             codex_sessions: home.join(".codex/sessions"),
             pi_sessions: home.join(".pi/agent/sessions"),
+            opencode_db: home.join(".local/share/opencode/opencode.db"),
+            sqlite3: "sqlite3".into(),
         };
         let records = vec![
-            record("r1", "claude", "backend-developer", Some("sid-c"), Some(Phase::Implementation)),
-            record("r2", "codex", "codex-reviewer", Some("sid-x"), Some(Phase::Validation)),
-            record("r3", "opencode", "opencode-pickle", Some("ses_1"), Some(Phase::Implementation)),
-            record("r4", "codex", "codex-sol", None, Some(Phase::Implementation)),
+            record(
+                "r1",
+                "claude",
+                "backend-developer",
+                Some("sid-c"),
+                Some(Phase::Implementation),
+            ),
+            record(
+                "r2",
+                "codex",
+                "codex-reviewer",
+                Some("sid-x"),
+                Some(Phase::Validation),
+            ),
+            record(
+                "r3",
+                "opencode",
+                "opencode-pickle",
+                Some("ses_1"),
+                Some(Phase::Implementation),
+            ),
+            record(
+                "r4",
+                "codex",
+                "codex-sol",
+                None,
+                Some(Phase::Implementation),
+            ),
         ];
         let roster = Roster::builtin().unwrap();
         let prices = usage::builtin_prices();
         let opus = prices["claude-opus-5-5"];
-        let report = build(&records, Some(&roster), &loc, &prices, Some(("claude-opus-5-5", &opus)));
+        let report = build(
+            &records,
+            Some(&roster),
+            &loc,
+            &prices,
+            Some(("claude-opus-5-5", &opus)),
+        );
 
         assert_eq!(report.rows.len(), 2);
         assert_eq!(report.not_priced.len(), 2);
-        assert_eq!(report.not_priced[0].reason, Missing::NotRead);
+        assert_eq!(
+            report.not_priced[0].reason,
+            Missing::NoTranscript,
+            "no opencode.db here"
+        );
         assert_eq!(report.not_priced[1].reason, Missing::NoSessionId);
         assert_eq!(report.by_family["build"].sessions, 1);
         assert_eq!(report.by_family["review"].sessions, 1);
@@ -477,12 +564,23 @@ mod tests {
         assert_eq!(backend.expected_unused, vec!["security-review".to_string()]);
         // codex-reviewer loaded code-review and never security-review.
         let reviewer = &report.rows[1];
-        assert_eq!(reviewer.expected_unused, vec!["security-review".to_string()]);
+        assert_eq!(
+            reviewer.expected_unused,
+            vec!["security-review".to_string()]
+        );
 
         let md = render(&report, "ledger.json");
-        assert!(md.contains("| backend-developer | backend-developer-1 | claude | claude-opus-5-5 | medium |"), "{md}");
+        assert!(
+            md.contains(
+                "| backend-developer | backend-developer-1 | claude | claude-opus-5-5 | medium |"
+            ),
+            "{md}"
+        );
         assert!(md.contains("## Not priced"), "{md}");
-        assert!(md.contains("opencode-pickle (opencode, r3): this harness's usage is not read"), "{md}");
+        assert!(
+            md.contains("opencode-pickle (opencode, r3): no transcript found"),
+            "{md}"
+        );
         assert!(md.contains("| on claude-opus-5-5 |"), "{md}");
     }
 }

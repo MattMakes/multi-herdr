@@ -7,10 +7,13 @@
 //! | harness | transcript | tokens |
 //! |---------|------------|--------|
 //! | claude  | `~/.claude/projects/*/<sid>.jsonl` | assistant `message.usage`, streamed several times per `message.id` |
-//! | codex   | `<codex home>/sessions/**/rollout-*-<sid>.jsonl` | running `total_token_usage` in `token_count` events |
+//! | codex   | `<codex home>/sessions/**/rollout-*-<sid>.jsonl` | `token_usage_record` per response; before 0.157, `token_count` totals |
 //! | pi      | `~/.pi/agent/sessions/**/*<sid>*.jsonl` | assistant `usage` per message |
 //! | prime   | the session file path the ledger stores | as pi |
-//! | opencode| SQLite; not read | reported as not priced |
+//! | opencode| `opencode.db`, via the `sqlite3` CLI | completed assistant messages |
+//!
+//! The token readers themselves live in `telemetry::readers`, shared with the
+//! telemetry collector; this module keeps the prices and the skill scan.
 //!
 //! Prices are per million tokens and dated; see
 //! `ai_docs/reports/model-guide-2026-09.md`. `--pricing <file.json>`
@@ -22,6 +25,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub mod money;
 
 /// Token counts in the one shape every harness is converted into.
 ///
@@ -146,7 +151,7 @@ pub fn load_prices(path: Option<&Path>) -> Result<BTreeMap<String, Price>> {
 /// The price-table key for a model as a transcript or teammate names it:
 /// provider prefix, `[1m]` suffix and date stamp removed, Claude aliases
 /// resolved to the model they currently point at.
-pub fn canonical_model(model: &str) -> String {
+pub(crate) fn canonical_model(model: &str) -> String {
     let mut m = model.trim().to_ascii_lowercase();
     if let Some(rest) = m.strip_suffix("[1m]") {
         m = rest.to_string();
@@ -172,7 +177,7 @@ pub fn canonical_model(model: &str) -> String {
 }
 
 /// Models that cost nothing: local Ollama and OpenCode's free tier.
-pub fn is_free(model: &str) -> bool {
+pub(crate) fn is_free(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
     m.starts_with("ollama/")
         || (m.starts_with("opencode/") && (m.ends_with("-free") || m == "opencode/big-pickle"))
@@ -194,8 +199,7 @@ pub fn price_for(prices: &BTreeMap<String, Price>, model: &str) -> Option<Price>
 
 /// `~/.claude/projects/<any>/<sid>.jsonl`. Searched across project
 /// directories instead of re-deriving Claude's cwd slug.
-pub fn find_claude_transcript(home: &Path, session_id: &str) -> Option<PathBuf> {
-    let projects = home.join(".claude/projects");
+pub(crate) fn find_claude_transcript(projects: &Path, session_id: &str) -> Option<PathBuf> {
     let file = format!("{session_id}.jsonl");
     for entry in std::fs::read_dir(projects).ok()?.flatten() {
         let candidate = entry.path().join(&file);
@@ -207,7 +211,7 @@ pub fn find_claude_transcript(home: &Path, session_id: &str) -> Option<PathBuf> 
 }
 
 /// A codex rollout named after `session_id`, anywhere under `sessions_dir`.
-pub fn find_codex_rollout(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
+pub(crate) fn find_codex_rollout(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
     find_file(sessions_dir, &|name| {
         name.starts_with("rollout-") && name.ends_with(&format!("{session_id}.jsonl"))
     })
@@ -215,7 +219,7 @@ pub fn find_codex_rollout(sessions_dir: &Path, session_id: &str) -> Option<PathB
 
 /// A pi session file whose name carries `session_id`. `session_id` may also
 /// be a path already (the Prime case).
-pub fn find_pi_session(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
+pub(crate) fn find_pi_session(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
     let direct = PathBuf::from(session_id);
     if direct.is_file() {
         return Some(direct);
@@ -257,7 +261,7 @@ fn u(v: &Value, keys: &[&str]) -> u64 {
 /// same `message.id` and usage that only grows, so the last record per id is
 /// the response. `<synthetic>` records are Claude Code's own, not API calls.
 /// Skill loads are `Skill` tool calls, counted once per `tool_use` id.
-pub fn read_claude(text: &str) -> Usage {
+pub(crate) fn read_claude(text: &str) -> Usage {
     let mut last: BTreeMap<String, (String, Tokens)> = BTreeMap::new();
     let mut tool_uses: BTreeMap<String, String> = BTreeMap::new();
     for line in text.lines() {
@@ -365,7 +369,7 @@ fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
 /// compacted session reads low. A session that switched models is priced
 /// entirely as its last model; the totals are not split per turn. Skill loads
 /// are shell or tool calls that read a `skills/<name>/SKILL.md`.
-pub fn read_codex(text: &str) -> Usage {
+pub(crate) fn read_codex(text: &str) -> Usage {
     let mut total: Option<Value> = None;
     let mut model = String::new();
     let mut turns: BTreeSet<u64> = BTreeSet::new();
@@ -389,7 +393,10 @@ pub fn read_codex(text: &str) -> Usage {
             .pointer("/payload/type")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if matches!(kind, "function_call" | "local_shell_call" | "custom_tool_call") {
+        if matches!(
+            kind,
+            "function_call" | "local_shell_call" | "custom_tool_call"
+        ) {
             for skill in skill_reads(line) {
                 *usage.skills.entry(skill).or_default() += 1;
             }
@@ -417,7 +424,7 @@ pub fn read_codex(text: &str) -> Usage {
 /// messages carrying `usage`. The field names are pi's (`input`, `output`,
 /// `cacheRead`, `cacheWrite`), with the Anthropic spellings accepted too,
 /// because they were not confirmed against a live file.
-pub fn read_pi(text: &str) -> Usage {
+pub(crate) fn read_pi(text: &str) -> Usage {
     let mut usage = Usage::default();
     for line in text.lines() {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
@@ -467,22 +474,53 @@ pub fn read_pi(text: &str) -> Usage {
 #[derive(Debug, Clone)]
 pub struct Locations {
     pub home: PathBuf,
+    /// `<home>/.claude/projects`: one directory per project slug.
+    pub claude_projects: PathBuf,
     pub codex_sessions: PathBuf,
     pub pi_sessions: PathBuf,
+    /// OpenCode's SQLite database. `$HORCH_OPENCODE_DB` overrides.
+    pub opencode_db: PathBuf,
+    /// The `sqlite3` CLI that reads `opencode_db`. `$HORCH_SQLITE3_BIN`
+    /// overrides.
+    pub sqlite3: PathBuf,
 }
 
 impl Locations {
-    pub fn from_env() -> Self {
-        let home = crate::agent::home_dir();
-        let codex_sessions = crate::codex::codex_home(&home).join("sessions");
-        let pi_sessions = std::env::var_os("PI_CODING_AGENT_SESSION_DIR")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
+    /// Every location for the context's home, with the environment overrides
+    /// it read applied, and the context's `sqlite3`.
+    pub fn from_context(ctx: &crate::runtime::RuntimeContext) -> Self {
+        Self {
+            sqlite3: ctx.bins.harness.sqlite3.clone(),
+            ..Self::under_home(&ctx.paths.home, &ctx.inherited)
+        }
+    }
+
+    /// Every location for a given home directory, with the overrides in
+    /// `inherited` applied: `CODEX_HOME`, `PI_CODING_AGENT_SESSION_DIR`,
+    /// `HORCH_OPENCODE_DB` and `XDG_DATA_HOME`. Tests pass a temp dir.
+    /// `sqlite3` is the plain program name.
+    pub fn under_home(home: &Path, inherited: &crate::runtime::Inherited) -> Self {
+        let codex_sessions =
+            crate::harness::codex::codex_home(home, inherited.codex_home.as_deref())
+                .join("sessions");
+        let pi_sessions = inherited
+            .pi_session_dir
+            .clone()
             .unwrap_or_else(|| home.join(".pi/agent/sessions"));
+        let opencode_db = inherited.opencode_db.clone().unwrap_or_else(|| {
+            inherited
+                .xdg_data_home
+                .clone()
+                .unwrap_or_else(|| home.join(".local/share"))
+                .join("opencode/opencode.db")
+        });
         Locations {
-            home,
+            home: home.to_path_buf(),
+            claude_projects: home.join(".claude/projects"),
             codex_sessions,
             pi_sessions,
+            opencode_db,
+            sqlite3: PathBuf::from("sqlite3"),
         }
     }
 }
@@ -495,28 +533,60 @@ pub enum Missing {
     NoSessionId,
     /// The id is known but no transcript file was found for it.
     NoTranscript,
-    /// This harness's usage is not read (opencode, or the smoke fake).
+    /// This harness's usage is not read (the smoke fake), or cannot be here
+    /// (no `sqlite3` for OpenCode).
     NotRead,
+    /// The transcript exists but could not be read.
+    Failed(String),
 }
 
-/// Find and read one session's transcript for `agent`.
+/// Find and read one session's usage for `agent`.
+///
+/// Tokens come from the telemetry readers, from offset 0 with throwaway
+/// cursors, so `horch cost` and `horch usage` count the same events
+/// (TEL-10): Codex's final response (`token_usage_record`) and Claude
+/// subagent transcripts included. Skill loads are still found by scanning
+/// the transcript text.
 pub fn read_session(
     loc: &Locations,
     agent: &str,
     session_id: Option<&str>,
 ) -> std::result::Result<(PathBuf, Usage), Missing> {
-    let Some(sid) = session_id.filter(|s| !s.is_empty()) else {
-        return Err(Missing::NoSessionId);
+    use crate::telemetry::readers::{read_whole, Unreadable};
+    let (events, files) = read_whole(loc, agent, session_id).map_err(|e| match e {
+        Unreadable::NoSessionId => Missing::NoSessionId,
+        Unreadable::NoTranscript(_) => Missing::NoTranscript,
+        Unreadable::NotRead(_) => Missing::NotRead,
+        Unreadable::Failed(why) => Missing::Failed(why),
+    })?;
+    let mut usage = Usage::default();
+    for e in &events {
+        usage
+            .by_model
+            .entry(e.model.clone())
+            .or_default()
+            .add(&e.tokens.priced());
+        if !e.delta {
+            usage.calls += 1;
+        }
+    }
+    let scan: Option<fn(&str) -> Usage> = match agent {
+        "claude" => Some(read_claude),
+        "codex" => Some(read_codex),
+        "pi" | "prime" => Some(read_pi),
+        _ => None,
     };
-    let (path, reader): (Option<PathBuf>, fn(&str) -> Usage) = match agent {
-        "claude" => (find_claude_transcript(&loc.home, sid), read_claude),
-        "codex" => (find_codex_rollout(&loc.codex_sessions, sid), read_codex),
-        "pi" | "prime" => (find_pi_session(&loc.pi_sessions, sid), read_pi),
-        _ => return Err(Missing::NotRead),
-    };
-    let path = path.ok_or(Missing::NoTranscript)?;
-    let text = std::fs::read_to_string(&path).map_err(|_| Missing::NoTranscript)?;
-    Ok((path, reader(&text)))
+    if let Some(scan) = scan {
+        for file in &files {
+            if let Ok(text) = std::fs::read_to_string(file) {
+                for (skill, n) in scan(&text).skills {
+                    *usage.skills.entry(skill).or_default() += n;
+                }
+            }
+        }
+    }
+    let path = files.into_iter().next().ok_or(Missing::NoTranscript)?;
+    Ok((path, usage))
 }
 
 #[cfg(test)]
@@ -548,14 +618,19 @@ mod tests {
             }
         );
         assert!(!usage.by_model.contains_key("<synthetic>"));
-        assert_eq!(usage.skills.get("horch:tdd"), Some(&1), "{:?}", usage.skills);
+        assert_eq!(
+            usage.skills.get("horch:tdd"),
+            Some(&1),
+            "{:?}",
+            usage.skills
+        );
         assert_eq!(usage.skills.len(), 1, "a repeated record is one load");
 
         let prices = builtin_prices();
         let cost = price_for(&prices, "claude-opus-5-5").unwrap().cost(&t);
         // 15*4 + 1000*5 + 400*8 + 50_000*0.2 + 350*20, per million.
-        let expected = (15.0 * 4.0 + 1000.0 * 5.0 + 400.0 * 8.0 + 50_000.0 * 0.2 + 350.0 * 20.0)
-            / 1_000_000.0;
+        let expected =
+            (15.0 * 4.0 + 1000.0 * 5.0 + 400.0 * 8.0 + 50_000.0 * 0.2 + 350.0 * 20.0) / 1_000_000.0;
         assert!((cost - expected).abs() < 1e-12, "{cost} vs {expected}");
     }
 
@@ -574,7 +649,12 @@ mod tests {
             }
         );
         assert_eq!(usage.calls, 2);
-        assert_eq!(usage.skills.get("code-review"), Some(&1), "{:?}", usage.skills);
+        assert_eq!(
+            usage.skills.get("code-review"),
+            Some(&1),
+            "{:?}",
+            usage.skills
+        );
         assert!(
             !usage.skills.contains_key("tdd"),
             "a SKILL.md path in the prompt is not a load"
@@ -588,7 +668,10 @@ mod tests {
         let usage = read_pi(&fixture("pi.jsonl"));
         assert_eq!(usage.calls, 2);
         let t = usage.tokens();
-        assert_eq!((t.input, t.output, t.cache_read, t.cache_write_5m), (150, 60, 500, 40));
+        assert_eq!(
+            (t.input, t.output, t.cache_read, t.cache_write_5m),
+            (150, 60, 500, 40)
+        );
         assert!(usage.by_model.contains_key("ollama/qwen3.8"), "{usage:?}");
         assert_eq!(usage.skills.get("debug"), Some(&1));
     }
@@ -605,9 +688,21 @@ mod tests {
             assert_eq!(canonical_model(raw), key, "{raw}");
         }
         let prices = builtin_prices();
-        assert_eq!(price_for(&prices, "ollama/qwen3.8").unwrap().cost(&Tokens { input: 1_000_000, ..Tokens::default() }), 0.0);
-        assert_eq!(price_for(&prices, "opencode/big-pickle").unwrap().input, 0.0);
-        assert!(price_for(&prices, "mystery-model-9").is_none(), "unknown is not free");
+        assert_eq!(
+            price_for(&prices, "ollama/qwen3.8").unwrap().cost(&Tokens {
+                input: 1_000_000,
+                ..Tokens::default()
+            }),
+            0.0
+        );
+        assert_eq!(
+            price_for(&prices, "opencode/big-pickle").unwrap().input,
+            0.0
+        );
+        assert!(
+            price_for(&prices, "mystery-model-9").is_none(),
+            "unknown is not free"
+        );
     }
 
     #[test]
@@ -629,8 +724,11 @@ mod tests {
         std::fs::write(pi.join("2026-09-24_sid-p.jsonl"), fixture("pi.jsonl")).unwrap();
         let loc = Locations {
             home: home.to_path_buf(),
+            claude_projects: home.join(".claude/projects"),
             codex_sessions: home.join(".codex/sessions"),
             pi_sessions: home.join(".pi/agent/sessions"),
+            opencode_db: home.join(".local/share/opencode/opencode.db"),
+            sqlite3: PathBuf::from("sqlite3"),
         };
 
         assert!(read_session(&loc, "claude", Some("sid-c")).is_ok());
@@ -638,16 +736,33 @@ mod tests {
         assert!(read_session(&loc, "pi", Some("sid-p")).is_ok());
         let prime_path = pi.join("2026-09-24_sid-p.jsonl");
         assert!(read_session(&loc, "prime", prime_path.to_str()).is_ok());
-        assert_eq!(read_session(&loc, "claude", Some("gone")).unwrap_err(), Missing::NoTranscript);
-        assert_eq!(read_session(&loc, "claude", None).unwrap_err(), Missing::NoSessionId);
-        assert_eq!(read_session(&loc, "opencode", Some("ses_1")).unwrap_err(), Missing::NotRead);
+        assert_eq!(
+            read_session(&loc, "claude", Some("gone")).unwrap_err(),
+            Missing::NoTranscript
+        );
+        assert_eq!(
+            read_session(&loc, "claude", None).unwrap_err(),
+            Missing::NoSessionId
+        );
+        assert_eq!(
+            read_session(&loc, "opencode", Some("ses_1")).unwrap_err(),
+            Missing::NoTranscript
+        );
+        assert_eq!(
+            read_session(&loc, "none", Some("x")).unwrap_err(),
+            Missing::NotRead
+        );
     }
 
     #[test]
     fn a_pricing_file_overrides_one_row_and_keeps_the_rest() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("p.json");
-        std::fs::write(&path, r#"{"gpt-5.6-sol": {"input": 5, "output": 30, "cache_read": 0.5}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"gpt-5.6-sol": {"input": 5, "output": 30, "cache_read": 0.5}}"#,
+        )
+        .unwrap();
         let prices = load_prices(Some(&path)).unwrap();
         assert_eq!(prices["gpt-5.6-sol"].output, 30.0);
         assert_eq!(prices["claude-opus-5-5"].input, 4.0);

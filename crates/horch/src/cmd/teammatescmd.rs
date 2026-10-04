@@ -7,17 +7,23 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
-use horch_core::teammates::{model_takes_effort, Agent, Roster, Teammate, TEMPLATE};
+use horch_core::harness::HarnessKind;
+use horch_core::roster::{model_takes_effort, Teammate, TEMPLATE};
+use horch_core::runtime::RuntimeContext;
 use horch_core::usage;
 use serde::Serialize;
 
 use crate::output;
 
 /// Human-readable table: what the orchestrator can pick, and what it cannot.
-pub fn list(json: bool) -> Result<()> {
-    let roster = Roster::load()?;
+pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
+    let roster = super::load_roster(ctx, None)?;
     if json {
-        let all: Vec<_> = roster.names().iter().map(|n| roster.get(n).unwrap()).collect();
+        let all: Vec<_> = roster
+            .names()
+            .iter()
+            .map(|n| roster.get(n).unwrap())
+            .collect();
         output::println(&serde_json::to_string_pretty(&all)?);
         return Ok(());
     }
@@ -26,19 +32,37 @@ pub fn list(json: bool) -> Result<()> {
     if roster.sources.is_empty() {
         out.push_str("Roster: compiled-in only\n\n");
     } else {
-        let dirs: Vec<String> = roster.sources.iter().map(|d| d.display().to_string()).collect();
-        out.push_str(&format!("Roster: compiled-in, overlaid by {}\n\n", dirs.join(", ")));
+        let dirs: Vec<String> = roster
+            .sources
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
+        out.push_str(&format!(
+            "Roster: compiled-in, overlaid by {}\n\n",
+            dirs.join(", ")
+        ));
     }
 
     let offered = roster.offered();
     // Width spans every printed name, hidden ones included, so the two
     // sections stay in one column.
-    let width = roster.names().iter().map(|n| n.len()).max().unwrap_or(0).max(4);
+    let width = roster
+        .names()
+        .iter()
+        .map(|n| n.len())
+        .max()
+        .unwrap_or(0)
+        .max(4);
     // Agent and model names vary a lot across five harnesses - `claude`/`opus`
     // next to `opencode`/`opencode/nemotron-3.5-lightning-free` - so both
     // columns are measured rather than guessed, or the descriptions stop
     // lining up exactly when the roster gets interesting.
-    let agent_width = offered.iter().map(|t| t.agent.as_str().len()).max().unwrap_or(0).max(5);
+    let agent_width = offered
+        .iter()
+        .map(|t| t.agent.as_str().len())
+        .max()
+        .unwrap_or(0)
+        .max(5);
     let model_width = offered
         .iter()
         .map(|t| t.model.as_deref().unwrap_or("-").len())
@@ -46,10 +70,11 @@ pub fn list(json: bool) -> Result<()> {
         .unwrap_or(0)
         .max(5);
     out.push_str("OFFERED TO THE ORCHESTRATOR\n");
-    let (specialists, generics): (Vec<_>, Vec<_>) =
-        offered.iter().partition(|t| !t.generic);
-    let groups: [(&str, Vec<&&horch_core::teammates::Teammate>); 2] =
-        [("specialists", specialists), ("generic fallbacks", generics)];
+    let (specialists, generics): (Vec<_>, Vec<_>) = offered.iter().partition(|t| !t.generic);
+    let groups: [(&str, Vec<&&horch_core::roster::Teammate>); 2] = [
+        ("specialists", specialists),
+        ("generic fallbacks", generics),
+    ];
     for (label, group) in groups {
         if group.is_empty() {
             continue;
@@ -80,7 +105,12 @@ pub fn list(json: bool) -> Result<()> {
         // launched into a pane by `horch fleet` rather than spawned into one.
         out.push_str("\nHIDDEN (never in the orchestrator's context)\n");
         for t in hidden {
-            out.push_str(&format!("    {:<width$}  {}\n", t.name, t.brief_description, width = width));
+            out.push_str(&format!(
+                "    {:<width$}  {}\n",
+                t.name,
+                t.brief_description,
+                width = width
+            ));
         }
     }
     output::print(&out);
@@ -113,7 +143,7 @@ pub fn matrix_row(t: &Teammate) -> MatrixRow {
     let effort = match &t.effort {
         Some(e) => e.clone(),
         None if !model_takes_effort(t.agent, &model) => "n/a".into(),
-        None if t.agent == Agent::Codex => "inherits config.toml".into(),
+        None if t.agent == HarnessKind::Codex => "inherits config.toml".into(),
         None => "agent default".into(),
     };
     let price = usage::price_for(&usage::builtin_prices(), &model);
@@ -139,13 +169,13 @@ pub fn matrix_row(t: &Teammate) -> MatrixRow {
 }
 
 /// The roster as a tuning table.
-pub fn matrix(json: bool) -> Result<()> {
-    let roster = Roster::load()?;
+pub fn matrix(ctx: &RuntimeContext, json: bool) -> Result<()> {
+    let roster = super::load_roster(ctx, None)?;
     let rows: Vec<MatrixRow> = roster
         .names()
         .iter()
         .filter_map(|n| roster.get(n))
-        .filter(|t| t.agent != Agent::None)
+        .filter(|t| t.agent != HarnessKind::None)
         .map(matrix_row)
         .collect();
     if json {
@@ -183,7 +213,11 @@ pub fn matrix(json: bool) -> Result<()> {
             r.model,
             r.effort,
             r.phase,
-            if skills.is_empty() { "-".into() } else { skills.join(", ") },
+            if skills.is_empty() {
+                "-".into()
+            } else {
+                skills.join(", ")
+            },
             price,
             notes.join(", "),
         ));
@@ -193,9 +227,13 @@ pub fn matrix(json: bool) -> Result<()> {
 }
 
 /// Validate the roster. Exit code is what CI and `horch doctor` care about.
-pub fn check() -> Result<ExitCode> {
-    let roster = Roster::load()?;
+pub fn check(ctx: &RuntimeContext) -> Result<ExitCode> {
+    let roster = super::load_roster(ctx, None)?;
     let problems = roster.check();
+    // Warnings (design 13.3 rule 6) never fail the check.
+    for w in horch_core::roster::validation::fallback_warnings(&roster) {
+        eprintln!("warning: {w}");
+    }
     if problems.is_empty() {
         output::println(&format!(
             "roster ok: {} teammates, {} offered to the orchestrator",
@@ -217,14 +255,14 @@ pub fn check() -> Result<ExitCode> {
 ///
 /// The template is the schema's documentation, so it is also what a new file is
 /// cut from - there is no second, drifting copy of the field list in here.
-pub fn new(name: &str, dir: Option<&str>) -> Result<()> {
+pub fn new(ctx: &RuntimeContext, name: &str, dir: Option<&str>) -> Result<()> {
     if name.starts_with('_') {
         bail!("a leading '_' means 'not parsed as a teammate'; pick another name");
     }
     let dir = match dir {
         Some(d) => PathBuf::from(d),
-        None => match std::env::var_os("HORCH_TEAMMATES_DIR") {
-            Some(d) => PathBuf::from(d),
+        None => match &ctx.bins.roster_override {
+            Some(d) => d.clone(),
             None => bail!(
                 "no target directory: pass --dir, or set HORCH_TEAMMATES_DIR to the \
                  teammates/ folder you want to add to"
@@ -247,7 +285,7 @@ pub fn new(name: &str, dir: Option<&str>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use horch_core::teammates::{Roster, Teammate, TEMPLATE};
+    use horch_core::roster::{Roster, Teammate, TEMPLATE};
 
     /// The template is the schema's documentation. If a field is added to
     /// `Teammate` without being documented (or a documented key is removed),
@@ -262,7 +300,12 @@ mod tests {
             .next()
             .unwrap();
         let documented: serde_yaml::Mapping = serde_yaml::from_str(front).unwrap();
-        let actual = serde_yaml::to_value(Teammate::default()).unwrap();
+        // `fallbacks` is skipped when empty, so give it one entry to be listed.
+        let actual = serde_yaml::to_value(Teammate {
+            fallbacks: vec![String::new()],
+            ..Teammate::default()
+        })
+        .unwrap();
         let actual = actual.as_mapping().unwrap();
 
         let mut documented: Vec<String> = documented
@@ -288,8 +331,14 @@ mod tests {
         let roster = Roster::builtin().unwrap();
         let row = |name: &str| super::matrix_row(roster.require(name).unwrap());
         let backend = row("backend-developer");
-        assert_eq!((backend.effort.as_str(), backend.effort_is_explicit), ("medium", true));
-        assert_eq!((backend.price_in, backend.price_out), (Some(4.0), Some(20.0)));
+        assert_eq!(
+            (backend.effort.as_str(), backend.effort_is_explicit),
+            ("medium", true)
+        );
+        assert_eq!(
+            (backend.price_in, backend.price_out),
+            (Some(4.0), Some(20.0))
+        );
         assert_eq!(row("codex-sol").effort, "medium");
         assert_eq!(row("opencode-pickle").effort, "n/a");
         assert_eq!(row("opencode-pickle").price_in, Some(0.0));
@@ -298,7 +347,7 @@ mod tests {
         assert_eq!(row("prime").price_in, Some(4.0));
         for name in roster.names() {
             let t = roster.get(name).unwrap();
-            if t.agent == horch_core::teammates::Agent::Codex && !t.hidden {
+            if t.agent == horch_core::harness::HarnessKind::Codex && !t.hidden {
                 assert!(row(name).effort_is_explicit, "{name}");
             }
         }
@@ -312,7 +361,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("scratch.md"), text).unwrap();
         let mut roster = Roster::builtin().unwrap();
-        roster.overlay(dir.path()).expect("template must load as a teammate");
+        roster
+            .overlay(dir.path())
+            .expect("template must load as a teammate");
         assert_eq!(roster.require("scratch").unwrap().name, "scratch");
     }
 }

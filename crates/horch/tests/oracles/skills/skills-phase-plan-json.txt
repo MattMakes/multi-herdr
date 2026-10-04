@@ -1,0 +1,23 @@
+{
+  "estimate_note": "Names and descriptions only; bytes/4 estimate excludes harness wrappers, paths, ambient skills and tools. Full bodies load on demand.",
+  "metadata_bytes": 329,
+  "metadata_tokens_estimate": 83,
+  "phase": "plan",
+  "skills": [
+    {
+      "description": "Use when a design or requirements are settled and need executable implementation tasks with verification.",
+      "name": "create-plan",
+      "skill_file_bytes": 2691
+    },
+    {
+      "description": "Use before executing a plan to verify wiring, contracts, preservation, configuration, and prerequisites against source.",
+      "name": "pre-flight",
+      "skill_file_bytes": 2758
+    },
+    {
+      "description": "Use when work must transfer to another worker or continue after context loss.",
+      "name": "handoff",
+      "skill_file_bytes": 2518
+    }
+  ]
+}

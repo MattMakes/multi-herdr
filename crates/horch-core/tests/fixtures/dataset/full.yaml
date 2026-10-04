@@ -1,0 +1,27 @@
+# A complete dataset.yaml: every section the loader knows.
+candidates: 4
+strategy: diverse
+budget:
+  soft_usd_micro: 8000000
+  hard_usd_micro: 10000000
+  judge_reserve_usd_micro: 1000000
+judge:
+  model: opus
+  effort: high
+  timeout_s: 600
+baseline: sonnet
+gates:
+  - name: test
+    command: cargo test --workspace
+    timeout_s: 900
+  - name: fmt
+    command: cargo fmt --all --check
+    timeout_s: 120
+    required: false
+caps:
+  max_parallel: 3
+  candidate_deadline_s: 1800
+exclude:
+  - smoke
+allow_dirty: false
+retain_transcripts: false

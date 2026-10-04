@@ -6,6 +6,8 @@ base: fleet-worker
 agent: codex
 phase: implementation
 model: gpt-5.6-sol
+# When this model's usage pool cannot serve a spawn (horch route codex-network).
+fallbacks: [opus]
 # Set explicitly: unset, the pane inherits ~/.codex/config.toml. medium, the
 # same builder level as codex-sol.
 effort: medium

@@ -1,0 +1,3 @@
+{"result":{"type":"pane_list","panes":[
+  {"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1"},
+  {"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","agent_session":"abc-123"}]}}

@@ -10,10 +10,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use horch_core::herdr::{Direction, Herdr, Layout, Rect};
-use horch_core::ledger::Ledger;
-use horch_core::mailbox::Mailbox;
-use horch_core::paneshell::PaneShell;
+use horch_core::execution::records::Ledger;
+use horch_core::execution::TilingMode;
+use horch_core::messaging::mailbox::Mailbox;
+use horch_core::runtime::RuntimeContext;
+use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::model::{Direction, Layout, Rect};
+use horch_core::workspace::paneshell::PaneShell;
 
 use super::doctor;
 use super::spawn::{spawn, SpawnArgs};
@@ -30,11 +33,11 @@ pub enum SmokeCommand {
     Tile,
 }
 
-pub fn run(command: SmokeCommand) -> Result<ExitCode> {
+pub fn run(ctx: &RuntimeContext, command: SmokeCommand) -> Result<ExitCode> {
     match command {
-        SmokeCommand::Messaging => messaging(),
-        SmokeCommand::Fleet => fleet(),
-        SmokeCommand::Tile => tile(),
+        SmokeCommand::Messaging => messaging(ctx),
+        SmokeCommand::Fleet => fleet(ctx),
+        SmokeCommand::Tile => tile(ctx),
     }
 }
 
@@ -64,10 +67,10 @@ fn arithmetic_echo(shell: PaneShell) -> &'static str {
 
 /// Cheap, self-verifying 2-pane check of the herdr messaging primitives
 /// (send-text + send-keys enter, and the mailbox registry).
-fn messaging() -> Result<ExitCode> {
-    doctor::check()?;
-    let herdr = Herdr::new();
-    let exe = std::env::current_exe().context("locating the horch binary")?;
+fn messaging(ctx: &RuntimeContext) -> Result<ExitCode> {
+    doctor::check(ctx)?;
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
 
     let ws = herdr.workspace_create("horch smoke test", None, false)?;
@@ -80,7 +83,7 @@ fn messaging() -> Result<ExitCode> {
 
     // Registration shells out to `herdr pane get`; poll the mailbox rather than
     // guessing a sleep.
-    let mailbox = Mailbox::new(&ws.workspace_id);
+    let mailbox = Mailbox::in_context(ctx, &ws.workspace_id);
     let registered = poll(20, Duration::from_millis(500), || {
         mailbox.pane_for("a").is_some() && mailbox.pane_for("b").is_some()
     });
@@ -96,7 +99,7 @@ fn messaging() -> Result<ExitCode> {
 
     println!("Sending a test message a -> b via horch tell...");
     let target = mailbox.pane_for("b").expect("just polled");
-    herdr.send_line(&target, arithmetic_echo(shell))?;
+    horch_core::messaging::delivery::send_line(&herdr, &target, arithmetic_echo(shell))?;
 
     if herdr.wait_output(&b, "SMOKE_TEST_42", 15_000)? {
         println!(
@@ -122,10 +125,10 @@ fn messaging() -> Result<ExitCode> {
 /// Self-verifying check of the fleet machinery (spawn -> brief -> register ->
 /// ledger add/note/done -> tell -> pane self-close) using a token-free fake agent
 /// in a scratch workspace with an isolated ledger.
-fn fleet() -> Result<ExitCode> {
-    doctor::check()?;
-    let herdr = Herdr::new();
-    let exe = std::env::current_exe().context("locating the horch binary")?;
+fn fleet(ctx: &RuntimeContext) -> Result<ExitCode> {
+    doctor::check(ctx)?;
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
 
     // Isolated state so the check never touches a real project ledger.
@@ -136,12 +139,16 @@ fn fleet() -> Result<ExitCode> {
         .prefix("horch-smoke-proj")
         .tempdir()?;
     let project = project_dir.path().to_string_lossy().into_owned();
-    std::env::set_var("HORCH_STATE_DIR", state_dir.path());
-    std::env::set_var("HORCH_PROJECT_DIR", &project);
+    // This check's own context: the scratch state and project, and (below)
+    // the scratch workspace. The process environment is left alone.
+    let mut ctx = ctx.clone();
+    ctx.paths.set_state_dir(state_dir.path());
+    ctx.paths.project_dir = Some(project.clone().into());
+    let ctx = &mut ctx;
 
     let ws = herdr.workspace_create("herdr-fleet smoke", Some(&project), false)?;
-    std::env::set_var("HORCH_WORKSPACE_ID", &ws.workspace_id);
-    let mailbox = Mailbox::new(&ws.workspace_id);
+    ctx.herdr.workspace = Some(horch_core::ids::WorkspaceId::new(ws.workspace_id.as_str())?);
+    let mailbox = Mailbox::in_context(ctx, &ws.workspace_id);
 
     // A fake orchestrator (no agent) so the worker's `horch done` has a
     // `horch tell` target to report DONE to.
@@ -160,20 +167,26 @@ fn fleet() -> Result<ExitCode> {
     }
 
     println!("Spawning smoke worker...");
-    let pane = spawn(SpawnArgs {
-        teammate: Some("smoke".to_string()),
-        phase: None,
-        effort: None,
-        task: "verify fleet machinery".to_string(),
-        resume: None,
-        role: None,
-        from_pane: Some(ws.root_pane_id.clone()),
-        direction: Direction::Right,
-        // Tiling on, so this check covers the hook `horch spawn` now runs.
-        no_tile: false,
-    })?;
+    let pane = spawn(
+        ctx,
+        SpawnArgs {
+            teammate: Some("smoke".to_string()),
+            phase: None,
+            effort: None,
+            task: "verify fleet machinery".to_string(),
+            resume: None,
+            role: None,
+            from_pane: Some(ws.root_pane_id.clone()),
+            direction: Direction::Right,
+            // Tiling on, so this check covers the hook `horch spawn` now runs.
+            tiling: TilingMode::Automatic,
+            // The smoke fake spends nothing; never gate it on usage limits.
+            exact: false,
+            force: true,
+        },
+    )?;
 
-    let ledger = Ledger::open()?;
+    let ledger = Ledger::open_in(ctx)?;
     let reached_done = poll(30, Duration::from_secs(1), || smoke_session_done(&ledger));
     if !reached_done {
         eprintln!(
@@ -441,10 +454,10 @@ fn fail(workspace_id: &str, what: &str, complaints: &[String]) -> ExitCode {
 ///
 /// Spends no tokens: the worker panes are shells counting into a file, and the one
 /// real spawn uses the `smoke` teammate, which has no agent.
-fn tile() -> Result<ExitCode> {
-    doctor::check()?;
-    let herdr = Herdr::new();
-    let exe = std::env::current_exe().context("locating the horch binary")?;
+fn tile(ctx: &RuntimeContext) -> Result<ExitCode> {
+    doctor::check(ctx)?;
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
     let counters = tempfile::Builder::new()
         .prefix("horch-smoke-tick")
@@ -458,13 +471,17 @@ fn tile() -> Result<ExitCode> {
         .prefix("horch-smoke-proj")
         .tempdir()?;
     let project = project_dir.path().to_string_lossy().into_owned();
-    std::env::set_var("HORCH_STATE_DIR", state_dir.path());
-    std::env::set_var("HORCH_PROJECT_DIR", &project);
+    // This check's own context: the scratch state and project, and (below)
+    // the scratch workspace. The process environment is left alone.
+    let mut ctx = ctx.clone();
+    ctx.paths.set_state_dir(state_dir.path());
+    ctx.paths.project_dir = Some(project.clone().into());
+    let ctx = &mut ctx;
 
     let ws = herdr.workspace_create("horch tile smoke", Some(&project), false)?;
-    std::env::set_var("HORCH_WORKSPACE_ID", &ws.workspace_id);
+    ctx.herdr.workspace = Some(horch_core::ids::WorkspaceId::new(ws.workspace_id.as_str())?);
     let orchestrator = ws.root_pane_id.clone();
-    let mailbox = Mailbox::new(&ws.workspace_id);
+    let mailbox = Mailbox::in_context(ctx, &ws.workspace_id);
 
     // The orchestrator must be REGISTERED: the bad shape below leaves no
     // full-height pane, so the positional guess has nothing to go on and tiling
@@ -527,7 +544,7 @@ fn tile() -> Result<ExitCode> {
     let (tab_before, pane_before) = viewed(&herdr, &ws.workspace_id)?;
 
     println!("Tiling...");
-    super::tilecmd::tile(None, Some(&ws.workspace_id), false, 0)?;
+    super::tilecmd::tile(ctx, None, Some(&ws.workspace_id), false, 0)?;
 
     // The watched pane stayed on tab 1, so the viewed tab AND the focused pane
     // must both be the ones the operator had.
@@ -610,21 +627,27 @@ fn tile() -> Result<ExitCode> {
         ));
     }
 
-    let spawned = spawn(SpawnArgs {
-        teammate: Some("smoke".to_string()),
-        phase: None,
-        effort: None,
-        task: "verify the spawn hook tiles".to_string(),
-        resume: None,
-        role: None,
-        // What `horch spawn` does by default: split the calling pane, which in a
-        // fleet is the orchestrator's. Named explicitly because this check runs
-        // outside the workspace it is testing, where the default would resolve to
-        // the checker's own pane in another workspace.
-        from_pane: Some(orchestrator.clone()),
-        direction: Direction::Right,
-        no_tile: false,
-    })?;
+    let spawned = spawn(
+        ctx,
+        SpawnArgs {
+            teammate: Some("smoke".to_string()),
+            phase: None,
+            effort: None,
+            task: "verify the spawn hook tiles".to_string(),
+            resume: None,
+            role: None,
+            // What `horch spawn` does by default: split the calling pane, which in a
+            // fleet is the orchestrator's. Named explicitly because this check runs
+            // outside the workspace it is testing, where the default would resolve to
+            // the checker's own pane in another workspace.
+            from_pane: Some(orchestrator.clone()),
+            direction: Direction::Right,
+            tiling: TilingMode::Automatic,
+            // The smoke fake spends nothing; never gate it on usage limits.
+            exact: false,
+            force: true,
+        },
+    )?;
 
     // 9 workers: 4 on tab 1, 5 on tab 2. The spawned pane is the newcomer, so it
     // takes the last slot - and it may already have closed itself, since the
@@ -684,7 +707,7 @@ fn tile() -> Result<ExitCode> {
             survivors.push((pane.clone(), counter.clone()));
         }
     }
-    super::tilecmd::tile(None, Some(&ws.workspace_id), false, 600)?;
+    super::tilecmd::tile(ctx, None, Some(&ws.workspace_id), false, 600)?;
     let complaints = grid_complaints(&herdr, &ws.workspace_id, &orchestrator, &[4])?;
     if !complaints.is_empty() {
         return Ok(fail(
@@ -723,7 +746,7 @@ fn smoke_session_done(ledger: &Ledger) -> bool {
         return false;
     };
     let events: Vec<&str> = record.history.iter().map(|h| h.event.as_str()).collect();
-    record.status == horch_core::ledger::STATUS_DONE
+    record.status == horch_core::execution::legacy::STATUS_DONE
         && events.contains(&"note")
         && events.contains(&"done")
 }

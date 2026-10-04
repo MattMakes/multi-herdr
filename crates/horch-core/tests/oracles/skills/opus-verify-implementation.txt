@@ -1,0 +1,6 @@
+
+
+Fleet skill phase: implementation. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:
+- horch:check: Use when verifying completed implementation against its plan, requirements, tests, and build.
+- horch:security-review: Use for an authorized security audit or focused review of trust boundaries, credentials, parsing, and dependencies.
+Also available in this phase: horch:debug, horch:execute, horch:handoff, horch:tdd. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.

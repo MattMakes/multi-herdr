@@ -83,7 +83,9 @@ mod tests {
     /// both digests so it is diagnosable.
     #[test]
     fn verify_digest_rejects_a_mismatch() {
-        let err = verify_digest(b"abc", &sha256_hex(b"abd")).unwrap_err().to_string();
+        let err = verify_digest(b"abc", &sha256_hex(b"abd"))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("checksum mismatch"), "{err}");
         assert!(err.contains("Refusing to install"), "{err}");
     }

@@ -1,0 +1,77 @@
+{
+  "_pinned_env": {
+    "ANTHROPIC_API_KEY": null,
+    "CLAUDE_CODE_EFFORT_LEVEL": null,
+    "CODEX_HOME": null,
+    "HOME": "<HOME>",
+    "HORCH_CLAUDE_BIN": null,
+    "HORCH_CODEX_BIN": null,
+    "HORCH_NOW": null,
+    "HORCH_OPENCODE_BIN": null,
+    "HORCH_PI_BIN": null,
+    "HORCH_PRIME_BIN": null,
+    "HORCH_TEAMMATES_DIR": null,
+    "OPENCODE_CONFIG_CONTENT": null,
+    "PATH": "<TMP>/bin"
+  },
+  "_prompt": "ORACLE PROMPT: do the task.",
+  "_session_ids": {
+    "fresh": "00000000-0000-4000-8000-000000000001",
+    "resume": "00000000-0000-4000-8000-000000000002"
+  },
+  "modes": {
+    "fresh": {
+      "args": [
+        "--model",
+        "opencode/big-pickle",
+        "--auto",
+        "--pure",
+        "--prompt",
+        "\n\nFleet skill phase: implementation. Available native skills: check, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+      ],
+      "current_dir": null,
+      "env": {
+        "ANTHROPIC_API_KEY": null,
+        "OPENCODE_CONFIG_CONTENT": "{\"skills\":{\"paths\":[\"<BUNDLE>/skills\"]}}"
+      },
+      "program": "opencode"
+    },
+    "resume": {
+      "args": [
+        "--model",
+        "opencode/big-pickle",
+        "--auto",
+        "--pure",
+        "--session",
+        "00000000-0000-4000-8000-000000000002",
+        "--prompt",
+        "\n\nFleet skill phase: implementation. Available native skills: check, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+      ],
+      "current_dir": null,
+      "env": {
+        "ANTHROPIC_API_KEY": null,
+        "OPENCODE_CONFIG_CONTENT": "{\"skills\":{\"paths\":[\"<BUNDLE>/skills\"]}}"
+      },
+      "program": "opencode"
+    },
+    "unmanaged": {
+      "args": [
+        "--model",
+        "opencode/big-pickle",
+        "--auto",
+        "--pure",
+        "--prompt",
+        "\n\nFleet skill phase: implementation. Available native skills: check, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+      ],
+      "current_dir": null,
+      "env": {
+        "ANTHROPIC_API_KEY": null,
+        "OPENCODE_CONFIG_CONTENT": "{\"skills\":{\"paths\":[\"<BUNDLE>/skills\"]}}"
+      },
+      "program": "opencode"
+    }
+  },
+  "skills_bundle": true,
+  "skills_bundle_error": null,
+  "teammate": "opencode-pickle"
+}

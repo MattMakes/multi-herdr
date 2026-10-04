@@ -3,14 +3,22 @@
 //! Creates a new herdr pane running a worker agent, either as a FRESH session or
 //! RESUMING a previous session id from the project ledger. Prints the new pane id
 //! on stdout (human detail goes to stderr) so callers can chain splits when
-//! building layouts.
+//! building layouts. The rules live in `execution::plan` and the steps in
+//! `execution::service`; this reads the inputs and prints.
 
 use anyhow::{bail, Context, Result};
-use horch_core::herdr::{Direction, Herdr};
-use horch_core::ledger::{Ledger, STATUS_WORKING};
-use horch_core::mailbox::{Brief, Mailbox};
-use horch_core::paneshell::PaneShell;
-use horch_core::teammates::{effort_problem, Phase, Roster, Teammate};
+use horch_core::execution::plan::{self, GateInputs, MintedIds, PlanInputs};
+use horch_core::execution::service::{ExecutionService, SpawnError};
+use horch_core::execution::store::ExecutionStore;
+use horch_core::execution::{SessionMode, SpawnRequest, TilingMode};
+use horch_core::ids::{ExecutionId, SessionId, TeammateName};
+use horch_core::messaging::mailbox::Mailbox;
+use horch_core::roster::Phase;
+use horch_core::routing::decision::GateFlags;
+use horch_core::runtime::RuntimeContext;
+use horch_core::workspace::arrange;
+use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::model::Direction;
 
 pub struct SpawnArgs {
     pub teammate: Option<String>,
@@ -22,8 +30,13 @@ pub struct SpawnArgs {
     pub role: Option<String>,
     pub from_pane: Option<String>,
     pub direction: Direction,
-    /// Leave the grid alone. `HORCH_TILE=0` says the same thing for every spawn.
-    pub no_tile: bool,
+    /// `Disabled` leaves the grid alone. `HORCH_TILE=0` says the same thing
+    /// for every spawn.
+    pub tiling: TilingMode,
+    /// Never substitute a fallback teammate (the usage-limit gate).
+    pub exact: bool,
+    /// Never refuse over usage limits.
+    pub force: bool,
 }
 
 /// Split `horch spawn`'s positional arguments into a teammate and a task.
@@ -54,271 +67,130 @@ pub fn resolve_positionals(
 }
 
 /// Spawn a worker pane, returning its pane id so callers can chain splits.
-pub fn spawn(args: SpawnArgs) -> Result<String> {
-    if args.teammate.is_none() && args.resume.is_none() {
-        bail!("give a teammate (e.g. `horch spawn sonnet \"task\"`) or --resume <id>");
+/// A refusal is a [`SpawnError::Refused`]; its REFUSED line is on stdout.
+pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
+    let mut req = SpawnRequest::worker(
+        args.teammate
+            .as_deref()
+            .map(TeammateName::new)
+            .transpose()?,
+        args.task,
+    );
+    if req.teammate.is_none() && args.resume.is_none() {
+        return Err(SpawnError::from(plan::PlanError::NothingToSpawn).into());
     }
-    let roster = Roster::load_with(env_override("HORCH_TEAMMATES_DIR").as_deref())?;
+    (req.resume, req.phase, req.effort) = (args.resume, args.phase, args.effort);
+    (req.from_pane, req.direction, req.tiling) = (args.from_pane, args.direction, args.tiling);
+    req.flags = GateFlags {
+        exact: args.exact,
+        force: args.force,
+    };
 
-    let herdr = Herdr::new();
-    let mailbox = Mailbox::resolve(&herdr)
+    let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
+    let roster = super::load_roster(ctx, roster_dir.as_deref())?;
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane")?;
     std::fs::create_dir_all(mailbox.dir())?;
+    // Read once, so the ledger this process writes and the one the worker
+    // later reads (its brief carries the project) are the same file.
+    let project = ctx.paths.project()?;
+    let store = ExecutionStore::open_in(ctx)?;
 
-    // Pin the project dir so the ledger this process writes and the ledger the
-    // worker later reads resolve to the same file.
-    let project_dir = horch_core::ledger::project_dir()?;
-    let project_dir = project_dir.to_string_lossy().into_owned();
-    std::env::set_var("HORCH_PROJECT_DIR", &project_dir);
-
-    let ledger = Ledger::open()?;
-    let mut plan = match &args.resume {
-        // Resuming: teammate, model and session all come from the record.
-        Some(key) => {
-            let record = ledger.get(key)?;
-            let session_id = record.session_id.clone().unwrap_or_default();
-            if session_id.is_empty() {
-                bail!(
-                    "record {} has no captured session id; spawn a fresh {} instead",
-                    record.record_id,
-                    record.tier
-                );
-            }
-            if record.status == STATUS_WORKING {
-                bail!(
-                    "session {session_id} is still marked working (a live worker may own it); \
-                     refusing to resume"
-                );
-            }
-            let mut teammate = roster.require(&record.tier)?.clone();
-            teammate.phase = resolve_phase(args.phase, record.phase, teammate.phase);
-            // A resume keeps the level it ran at, as it keeps its model.
-            if record.effort.is_some() {
-                teammate.effort = record.effort.clone();
-            }
-            Roster::is_spawnable(&teammate)?;
-            Plan {
-                teammate,
-                model: record.model.clone(),
-                record_id: record.record_id.clone(),
-                session_id,
-                resume: true,
-            }
-        }
-        None => {
-            let name = args.teammate.clone().expect("checked above");
-            let mut teammate = roster.require(&name)?.clone();
-            teammate.phase = resolve_phase(args.phase, None, teammate.phase);
-            Roster::is_spawnable(&teammate)?;
-            Plan {
-                model: teammate.model.clone().unwrap_or_default(),
-                record_id: horch_core::mint_uuid(),
-                // Claude, pi and Prime accept a caller-minted session id, so
-                // the ledger knows the resume handle before the agent even
-                // starts. Codex and OpenCode reveal theirs only after launch;
-                // `horch worker` harvests those into the ledger asynchronously.
-                session_id: if teammate.agent.mints_session_id() {
-                    horch_core::mint_uuid()
-                } else {
-                    String::new()
-                },
-                teammate,
-                resume: false,
-            }
-        }
-    };
-
-    // The last gate before launch, and the only one that sees what will ACTUALLY
-    // start: `is_spawnable` above reads the teammate FILE's model, but a resume
-    // takes its model from the ledger record, so a stale or hand-edited record
-    // could otherwise start a second top-tier session behind an ordinary tier
-    // name. Both branches pass through here.
-    Roster::model_is_spawnable(&plan.model, &plan.teammate.name)?;
-    if let Some(effort) = &args.effort {
-        plan.teammate.effort = Some(effort.clone());
-    }
-    // Checked against what will launch, so a `--effort` typo or a level this
-    // agent/model cannot take fails here rather than in an unwatched pane.
-    if let Some(effort) = &plan.teammate.effort {
-        if let Some(why) = effort_problem(plan.teammate.agent, Some(&plan.model), effort) {
-            bail!("{}: {why}", plan.teammate.name);
-        }
-    }
-    // Reject unusable catalogs before allocating a role or recording a live session.
-    validate_selection(&plan.teammate)?;
-
-    // Auto role name: <teammate>-<n> from a per-teammate, per-workspace counter.
-    let role = match args.role {
-        Some(role) => role,
-        None => format!(
-            "{}-{}",
-            plan.teammate.name,
-            mailbox.next_seq(&plan.teammate.name)?
-        ),
-    };
-    if mailbox.role_taken(&role) {
-        bail!("role '{role}' already exists in this workspace");
-    }
-
-    // Ledger first, brief second, pane last: the worker can assume both exist.
-    if plan.resume {
-        ledger.resume_with_phase(&plan.record_id, &role, &args.task, plan.teammate.phase)?;
-    } else {
-        ledger.add_with_phase(
-            &plan.record_id,
-            plan.teammate.agent.as_str(),
-            plan.teammate.name.as_str(),
-            &plan.model,
-            &role,
-            Some(plan.session_id.as_str()),
-            &args.task,
-            plan.teammate.phase,
-        )?;
-    }
-    ledger.set_effort(&plan.record_id, plan.teammate.effort.as_deref())?;
-
-    mailbox.write_brief(&Brief {
-        role: role.clone(),
-        teammate: plan.teammate.name.clone(),
-        agent: plan.teammate.agent.as_str().to_string(),
-        model: plan.model.clone(),
-        record_id: plan.record_id.clone(),
-        session_id: plan.session_id.clone(),
-        resume: plan.resume,
-        task: args.task.clone(),
-        project_dir,
-        state_dir: std::env::var("HORCH_STATE_DIR")
-            .ok()
-            .filter(|s| !s.is_empty()),
-        claude_bin: env_override("HORCH_CLAUDE_BIN"),
-        codex_bin: env_override("HORCH_CODEX_BIN"),
-        resolved: Some(plan.teammate.clone()),
-        teammates_dir: env_override("HORCH_TEAMMATES_DIR"),
-    })?;
-
-    let from_pane = match args.from_pane {
-        Some(p) => p,
-        None => {
-            let internal = std::env::var("HERDR_PANE_ID")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .context("horch spawn needs --from-pane when not run inside a herdr pane")?;
-            herdr.pane_get(&internal)?.pane_id
-        }
-    };
-
-    let new_pane = herdr.pane_split(&from_pane, args.direction)?;
-    let exe = std::env::current_exe().context("locating the horch binary")?;
-    let command = PaneShell::host().command_line(&exe, &["worker", role.as_str()]);
-    herdr.pane_run(&new_pane, &command)?;
-
-    // Lay the grid out, which is also what puts this pane where it belongs: a
-    // split halves its parent, so a fresh worker starts full height beside
-    // whichever pane was split and the columns come out 1/2, 1/4, 1/8... The
-    // tiler moves it into the next free slot and evens every column. It is
-    // deterministic Rust, so the orchestrator spends no tokens on layout and
-    // never passes --from-pane or --direction.
-    //
-    // Best effort: a grid that will not lay out must not fail a spawn whose
-    // worker is already running.
-    if args.no_tile {
-        if let Ok(layout) = herdr.pane_layout(Some(&new_pane)) {
-            crate::cmd::balancecmd::equalize_quietly(&herdr, layout);
-        }
-    } else {
-        crate::cmd::tilecmd::after_change(&herdr, mailbox.workspace_id(), Some(&new_pane));
-    }
-
-    if plan.resume {
-        eprintln!(
-            "spawned {role} (pane {new_pane}): {} {}, RESUMING session {}",
-            plan.teammate.agent, plan.model, plan.session_id
-        );
-    } else if plan.session_id.is_empty() {
-        eprintln!(
-            "spawned {role} (pane {new_pane}): {} {}, new session",
-            plan.teammate.agent, plan.model
-        );
-    } else {
-        eprintln!(
-            "spawned {role} (pane {new_pane}): {} {}, new session {}",
-            plan.teammate.agent, plan.model, plan.session_id
+    let existing = req.resume.as_deref().and_then(|key| store.get(key).ok());
+    if let Some(r) = existing.as_ref().filter(|r| r.round_id.is_some()) {
+        anyhow::bail!(
+            "record {} is a competition {} (round {}); multi-herdr-dataset owns it, \
+             so horch spawn --resume refuses it",
+            r.record_id,
+            if r.experiment_id.is_some() {
+                "candidate"
+            } else {
+                "judge"
+            },
+            r.round_id.as_deref().unwrap_or_default()
         );
     }
-    Ok(new_pane)
-}
+    let root = &ctx.paths.state_root;
+    let gated = match plan::needs_gate(&req, &roster) {
+        true => {
+            let policy = super::quotacmd::load_policy(ctx, root)?;
+            let env = super::quotacmd::quota_env(ctx);
+            let now = horch_core::clock::now();
+            let view = horch_core::routing::snapshot::obtain(root, now, &policy, true, &env)?;
+            Some((view, policy.balance_mode))
+        }
+        false => None,
+    };
+    let ids = MintedIds {
+        execution: ExecutionId::new(horch_core::mint_uuid())?,
+        session: SessionId::new(horch_core::mint_uuid())?,
+    };
+    let catalog = roster.skill_catalog()?;
+    let inputs = PlanInputs {
+        roster: &roster,
+        catalog: &catalog,
+        gate: gated.as_ref().map(|(view, balance)| GateInputs {
+            view,
+            balance: *balance,
+        }),
+        existing: existing.as_ref(),
+        now: horch_core::clock::now(),
+        ids: &ids,
+        project: &project,
+    };
+    let plan = match plan::plan_launch(&req, &inputs).map_err(SpawnError::from) {
+        Err(e @ SpawnError::Refused { .. }) => {
+            if let SpawnError::Refused { line, .. } = &e {
+                crate::output::println(line);
+            }
+            return Err(e.into());
+        }
+        other => other?,
+    };
+    if let Some(line) = &plan.gate_line {
+        crate::output::println(line);
+    }
 
-/// Validate the resolved selection before allocating persistent spawn state.
-fn validate_selection(teammate: &Teammate) -> Result<()> {
-    horch_core::skills::ensure_supported(teammate)
-}
-
-/// Explicit task selection wins over the recorded phase and roster default.
-fn resolve_phase(
-    explicit: Option<Phase>,
-    recorded: Option<Phase>,
-    default: Option<Phase>,
-) -> Option<Phase> {
-    explicit.or(recorded).or(default)
-}
-
-/// A non-empty environment override, to carry into the worker's brief.
-///
-/// A spawned pane is a fresh shell started by the herdr server, so it inherits
-/// the user's profile - not the environment `horch spawn` was run with. Without
-/// this, `HORCH_CLAUDE_BIN=claude horch fleet` would silently have no effect on
-/// the workers it spawns, which is exactly when the override is needed most.
-fn env_override(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|s| !s.is_empty())
-}
-
-/// What to launch, resolved from either the roster or a ledger record.
-struct Plan {
-    teammate: Teammate,
-    model: String,
-    record_id: String,
-    /// Empty when the agent mints its own id after launch.
-    session_id: String,
-    resume: bool,
+    // Lay the grid out, which also puts the pane where it belongs: a split
+    // halves its parent, and the tiler moves the worker into the next free
+    // slot and evens every column. Best effort: a grid that will not lay out
+    // must not fail a spawn whose worker is already running.
+    let tile = |pane: &str, tiling: TilingMode| {
+        if tiling == TilingMode::Disabled {
+            if let Ok(layout) = herdr.pane_layout(Some(pane)) {
+                arrange::equalize_quietly(ctx, &herdr, layout);
+            }
+        } else {
+            arrange::after_change(ctx, &herdr, mailbox.workspace_id(), Some(pane));
+        }
+    };
+    let service = ExecutionService {
+        ctx,
+        store: &store,
+        workspace: &herdr,
+        mailbox: &mailbox,
+        tile: &tile,
+    };
+    let out = service.spawn(plan, args.role.as_deref())?;
+    let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
+    let what = format!("{} {}", launch.teammate.agent, launch.model);
+    match &launch.session {
+        SessionMode::Resume(id) => {
+            eprintln!("spawned {role} (pane {pane}): {what}, RESUMING session {id}")
+        }
+        SessionMode::Fresh(None) => eprintln!("spawned {role} (pane {pane}): {what}, new session"),
+        SessionMode::Fresh(Some(id)) => {
+            eprintln!("spawned {role} (pane {pane}): {what}, new session {id}")
+        }
+    }
+    Ok(out.pane)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn invalid_selection_is_refused_before_spawn_side_effects() {
-        let mut t = Roster::builtin().unwrap().require("opus").unwrap().clone();
-        t.skills = vec!["missing-bundle".into()];
-        assert!(validate_selection(&t)
-            .unwrap_err()
-            .to_string()
-            .contains("missing-bundle"));
-        t.skills.clear();
-        t.disable_skills = true;
-        assert!(validate_selection(&t).is_err());
-    }
-
-    #[test]
-    fn phase_override_wins_and_resume_keeps_recorded_selection() {
-        assert_eq!(
-            resolve_phase(
-                Some(Phase::Validation),
-                Some(Phase::Research),
-                Some(Phase::Plan)
-            ),
-            Some(Phase::Validation)
-        );
-        assert_eq!(
-            resolve_phase(None, Some(Phase::Research), Some(Phase::Plan)),
-            Some(Phase::Research)
-        );
-        assert_eq!(
-            resolve_phase(None, None, Some(Phase::Plan)),
-            Some(Phase::Plan)
-        );
-        assert_eq!(resolve_phase(None, None, None), None);
-    }
+    use horch_core::roster::Roster;
 
     #[test]
     fn a_bare_teammate_spawns_an_idle_worker() {
