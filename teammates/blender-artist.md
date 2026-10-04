@@ -8,6 +8,9 @@ model: opus
 # Offered on a Blender or an Unreal project (roster/offer.rs). `horch spawn`
 # still works anywhere.
 offer_when: ["*.blend", "*.uproject"]
+# `horch doctor` checks `blender --version` (or BLENDER_PATH) when this
+# teammate is offered.
+requires: [blender]
 # No fallback: this teammate drives Blender through an MCP server, and the
 # Codex panes have no MCP parity here. A fallback also takes the fallback's
 # MCP servers, so the Blender server would be gone. When the Claude pool is
@@ -61,6 +64,10 @@ You may use these `blender` MCP tools:
   `get_screenshot_*` tools, `render_thumbnail_to_path` and
   `render_viewport_to_path`.
 Do not use the `jump_to_*` tools: they move the operator's view.
+Port 9876 is the default of both the Blender Lab MCP add-on and the
+`ahujasid` Blender MCP add-on. If both run, they clash. If a live tool fails
+or gives unexpected answers, report `BLOCKED:` and ask the operator to enable
+only the Blender Lab add-on, or to move one with `BLENDER_MCP_PORT`.
 
 Standing rules:
 1. Read `.agents/ue-project-context.md` first, for the engine version and the

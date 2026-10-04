@@ -19,12 +19,15 @@ use super::Teammate;
 pub enum Requirement {
     /// `xcodebuild` on PATH, with Xcode's first launch done.
     Xcode,
+    /// `blender` on PATH, or `BLENDER_PATH`, and `--version` runs.
+    Blender,
 }
 
 impl Requirement {
     pub fn as_str(self) -> &'static str {
         match self {
             Requirement::Xcode => "xcode",
+            Requirement::Blender => "blender",
         }
     }
 }

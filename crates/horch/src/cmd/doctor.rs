@@ -42,10 +42,14 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     }
     // Not fatal either: the fleet launches, but the teammate that needs the
     // tool stalls in its pane.
+    // `BLENDER_PATH` is the Blender Lab MCP server's own variable, read
+    // here because nothing else in horch uses it.
+    let blender_path = std::env::var_os("BLENDER_PATH").filter(|p| !p.is_empty());
     let tool_problems = requirement_problems(
         &roster,
         ctx.inherited.path.as_deref(),
         ctx.inherited.pathext.as_deref(),
+        blender_path.as_deref(),
     );
     for p in &tool_problems {
         eprintln!("warning: {p}");
@@ -119,14 +123,16 @@ fn broken_harness_warnings(
 
 /// What is missing for the `requires:` of the teammates `roster` offers, one
 /// line per requirement. Nothing is checked that no offered teammate needs.
+/// `blender_path` is `BLENDER_PATH`, which wins over `blender` on PATH.
 pub(crate) fn requirement_problems(
     roster: &Roster,
     path: Option<&OsStr>,
     pathext: Option<&str>,
+    blender_path: Option<&OsStr>,
 ) -> Vec<String> {
     let offered = roster.offered();
     let mut problems = Vec::new();
-    for requirement in [Requirement::Xcode] {
+    for requirement in [Requirement::Xcode, Requirement::Blender] {
         let needed_by: Vec<&str> = offered
             .iter()
             .filter(|t| t.requires.contains(&requirement))
@@ -137,6 +143,7 @@ pub(crate) fn requirement_problems(
         }
         let problem = match requirement {
             Requirement::Xcode => xcode_problem(path, pathext),
+            Requirement::Blender => blender_problem(path, pathext, blender_path),
         };
         if let Some(problem) = problem {
             problems.push(format!(
@@ -179,6 +186,85 @@ fn xcode_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String> 
     }
 }
 
+/// The oldest Blender the live MCP tools run on.
+const BLENDER_LIVE_MIN: (u32, u32) = (5, 1);
+
+/// Blender must run, or the blender-artist reports `BLOCKED:` at its first
+/// step. The Blender Lab MCP server runs `BLENDER_PATH` when it is set, else
+/// `blender` on PATH; this looks in the same order. Its `*_for_cli` tools
+/// run any Blender; the live tools need [`BLENDER_LIVE_MIN`] and the add-on.
+fn blender_problem(
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    blender_path: Option<&OsStr>,
+) -> Option<String> {
+    let bin = match blender_path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => match process::which(path, pathext, "blender") {
+            Some(bin) => bin,
+            None => {
+                return Some(
+                    "blender not found on PATH and BLENDER_PATH is not set. Install Blender \
+                     5.1 or later, then put `blender` on PATH or set BLENDER_PATH (macOS: \
+                     /Applications/Blender.app/Contents/MacOS/Blender)."
+                        .into(),
+                )
+            }
+        },
+    };
+    let out = match Command::new(&bin).arg("--version").output() {
+        Ok(out) => out,
+        Err(e) => {
+            return Some(format!(
+                "could not run {}: {e}. Set BLENDER_PATH to the Blender executable \
+                 (macOS: /Applications/Blender.app/Contents/MacOS/Blender).",
+                bin.display()
+            ))
+        }
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let detail = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        return Some(format!(
+            "`{} --version` failed ({}). Reinstall Blender 5.1 or later, or point \
+             BLENDER_PATH at a working one.{}",
+            bin.display(),
+            out.status,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" blender said: {}", detail.trim())
+            }
+        ));
+    }
+    match blender_version(&stdout) {
+        Some(v) if v < BLENDER_LIVE_MIN => Some(format!(
+            "{} is Blender {}.{}. The live MCP tools need {}.{} or later; only the \
+             `*_for_cli` tools work. Install Blender {}.{} or later.",
+            bin.display(),
+            v.0,
+            v.1,
+            BLENDER_LIVE_MIN.0,
+            BLENDER_LIVE_MIN.1,
+            BLENDER_LIVE_MIN.0,
+            BLENDER_LIVE_MIN.1
+        )),
+        _ => None,
+    }
+}
+
+/// `(major, minor)` from the first `Blender X.Y[.Z]` line of `--version`.
+fn blender_version(stdout: &str) -> Option<(u32, u32)> {
+    let rest = stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Blender "))?;
+    let mut parts = rest.split(|c: char| !c.is_ascii_digit());
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -193,6 +279,20 @@ mod tests {
             ..Teammate::default()
         });
         r
+    }
+
+    /// The xcode line alone: with no project facts every built-in teammate
+    /// is offered, so the blender-artist adds a Blender line.
+    fn xcode_problems(path: &std::path::Path) -> Vec<String> {
+        requirement_problems(
+            &roster_requiring_xcode(),
+            Some(path.as_os_str()),
+            None,
+            None,
+        )
+        .into_iter()
+        .filter(|p| p.starts_with("xcode "))
+        .collect()
     }
 
     /// A fake `xcodebuild` in its own PATH directory that exits with `code`.
@@ -211,22 +311,14 @@ mod tests {
     #[test]
     fn xcode_is_fine_when_first_launch_is_done() {
         let dir = fake_xcodebuild(0);
-        let problems = requirement_problems(
-            &roster_requiring_xcode(),
-            Some(dir.path().as_os_str()),
-            None,
-        );
+        let problems = xcode_problems(dir.path());
         assert!(problems.is_empty(), "{problems:?}");
     }
 
     #[test]
     fn xcode_first_launch_pending_is_reported() {
         let dir = fake_xcodebuild(69);
-        let problems = requirement_problems(
-            &roster_requiring_xcode(),
-            Some(dir.path().as_os_str()),
-            None,
-        );
+        let problems = xcode_problems(dir.path());
         assert_eq!(problems.len(), 1, "{problems:?}");
         // The built-in Swift teammates need Xcode too, so they share the line.
         assert!(problems[0].contains("(needed by "), "{}", problems[0]);
@@ -242,11 +334,7 @@ mod tests {
     #[test]
     fn missing_xcodebuild_is_reported() {
         let empty = tempfile::tempdir().unwrap();
-        let problems = requirement_problems(
-            &roster_requiring_xcode(),
-            Some(empty.path().as_os_str()),
-            None,
-        );
+        let problems = xcode_problems(empty.path());
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(
             problems[0].contains("xcodebuild not found"),
@@ -267,15 +355,134 @@ mod tests {
                 .unwrap()
                 .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
         };
-        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None).is_empty());
+        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None, None).is_empty());
 
-        let problems = requirement_problems(&facts(["Package.swift"]), path, None);
+        let problems = requirement_problems(&facts(["Package.swift"]), path, None, None);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(
             problems[0].contains("xcodebuild not found"),
             "{}",
             problems[0]
         );
+    }
+
+    fn roster_requiring_blender() -> Roster {
+        let mut r = Roster::builtin().unwrap();
+        r.insert_for_test(Teammate {
+            name: "blender-test".into(),
+            brief_description: "Blender".into(),
+            requires: vec![Requirement::Blender],
+            ..Teammate::default()
+        });
+        r
+    }
+
+    /// A fake `blender` in its own directory: `--version` prints `version`
+    /// and exits with `code`.
+    fn fake_blender(version: &str, code: i32) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("blender");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\n\
+                 echo 'Blender {version}'\necho '\tbuild date: 2026-09-01'\n\
+                 echo 'cannot open display' >&2\nexit {code}\n"
+            ),
+        )
+        .unwrap();
+        process::make_executable(&bin).unwrap();
+        dir
+    }
+
+    fn blender_problems(path: &std::path::Path, blender_path: Option<&OsStr>) -> Vec<String> {
+        requirement_problems(
+            &roster_requiring_blender(),
+            Some(path.as_os_str()),
+            None,
+            blender_path,
+        )
+        .into_iter()
+        .filter(|p| p.starts_with("blender "))
+        .collect()
+    }
+
+    #[test]
+    fn blender_on_path_is_fine() {
+        let dir = fake_blender("5.1.0", 0);
+        assert!(blender_problems(dir.path(), None).is_empty());
+    }
+
+    #[test]
+    fn missing_blender_names_both_fixes() {
+        let empty = tempfile::tempdir().unwrap();
+        let problems = blender_problems(empty.path(), None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("blender-test"), "{}", problems[0]);
+        assert!(problems[0].contains("blender not found"), "{}", problems[0]);
+        assert!(problems[0].contains("BLENDER_PATH"), "{}", problems[0]);
+    }
+
+    /// `BLENDER_PATH` wins over PATH, as in the MCP server: a broken one is
+    /// reported even with a good `blender` on PATH.
+    #[test]
+    fn blender_path_wins_over_path() {
+        let good = fake_blender("5.1.0", 0);
+        let broken = fake_blender("5.1.0", 2);
+        let bin = broken.path().join("blender");
+        let problems = blender_problems(good.path(), Some(bin.as_os_str()));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("--version` failed"), "{}", problems[0]);
+        assert!(
+            problems[0].contains("cannot open display"),
+            "{}",
+            problems[0]
+        );
+
+        let empty = tempfile::tempdir().unwrap();
+        let fine = good.path().join("blender");
+        assert!(blender_problems(empty.path(), Some(fine.as_os_str())).is_empty());
+
+        let gone = empty.path().join("Blender");
+        let problems = blender_problems(good.path(), Some(gone.as_os_str()));
+        assert!(problems[0].contains("could not run"), "{problems:?}");
+    }
+
+    #[test]
+    fn an_old_blender_is_reported() {
+        let dir = fake_blender("4.2.3 LTS", 0);
+        let problems = blender_problems(dir.path(), None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("Blender 4.2"), "{}", problems[0]);
+        assert!(problems[0].contains("5.1 or later"), "{}", problems[0]);
+    }
+
+    #[test]
+    fn blender_version_reads_the_first_line() {
+        assert_eq!(
+            blender_version("Blender 5.1.0\n\tbuild hash: x\n"),
+            Some((5, 1))
+        );
+        assert_eq!(blender_version("Blender 4.2.3 LTS\n"), Some((4, 2)));
+        assert_eq!(blender_version("Blender 10.0\n"), Some((10, 0)));
+        assert_eq!(blender_version("hello\n"), None);
+    }
+
+    /// The built-in blender-artist needs Blender: a Blender project is
+    /// offered it, so doctor checks; a Rust project is not.
+    #[test]
+    fn the_blender_artist_needs_blender() {
+        let empty = tempfile::tempdir().unwrap();
+        let path = Some(empty.path().as_os_str());
+        let facts = |names: [&str; 1]| {
+            Roster::builtin()
+                .unwrap()
+                .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
+        };
+        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None, None).is_empty());
+        let problems = requirement_problems(&facts(["ship.blend"]), path, None, None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("blender-artist"), "{}", problems[0]);
     }
 
     #[test]
