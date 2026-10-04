@@ -163,6 +163,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-beehave](godot-beehave/SKILL.md) | `jame581/GodotPrompter`: `skills/beehave/` | renamed |
 | [godot-brainstorming](godot-brainstorming/SKILL.md) | `jame581/GodotPrompter`: `skills/brainstorming/` | adapted |
 | [godot-build-verify](godot-build-verify/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |
+| [godot-camera-system](godot-camera-system/SKILL.md) | `jame581/GodotPrompter`: `skills/camera-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-camera-systems/`) | combined |
 | [godot-code-review](godot-code-review/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-code-review/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-auditor/`, `godot-analyst/`) | combined |
 | [godot-csharp-godot](godot-csharp-godot/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-godot/` | renamed |
 | [godot-csharp-signals](godot-csharp-signals/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-signals/` | renamed |
@@ -183,6 +184,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-multiplayer-sync](godot-multiplayer-sync/SKILL.md) | `jame581/GodotPrompter`: `skills/multiplayer-sync/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-multiplayer-networking/`, `godot-adapt-single-to-multiplayer/`) | combined |
 | [godot-multithreading](godot-multithreading/SKILL.md) | `jame581/GodotPrompter`: `skills/multithreading/` | renamed |
 | [godot-phantom-camera](godot-phantom-camera/SKILL.md) | `jame581/GodotPrompter`: `skills/phantom-camera/` | renamed |
+| [godot-physics-system](godot-physics-system/SKILL.md) | `jame581/GodotPrompter`: `skills/physics-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-2d-physics/`, `godot-physics-3d/`, `godot-raycasting-queries/`) | combined |
 | [godot-player-controller](godot-player-controller/SKILL.md) | `jame581/GodotPrompter`: `skills/player-controller/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-characterbody-2d/`) | combined |
 | [godot-popochiu](godot-popochiu/SKILL.md) | `jame581/GodotPrompter`: `skills/popochiu/` | renamed |
 | [godot-project-context](godot-project-context/SKILL.md) | *(none - repo-original; shape of `ue-project-context`; run on Godot 4.7.2)* | own text |

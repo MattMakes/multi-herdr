@@ -1209,6 +1209,55 @@
       "adaptation": "Own text, written in this repository; own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-builder (SKILL.md only; facts re-tested on 4.7.2, nothing copied). Shape and fleet rules follow skills/ue-build-verify. Every command was run on Godot 4.7.2 (macOS) in scratch projects, with GUT v9.7.1 (aeb5d4f3f7f0a6c9b5e178876d6c99b791fda605) and gdUnit4 v6.2.1 (08ffc7c65b61b1b2edd545616061a99973c13ce1) exit codes measured, and dotnet build run with Godot.NET.Sdk 4.7.2; evidence in ai_docs/reports/godot/gw2-own-skills.md. The parse checker is a gdscript block in references/parse-check.md (bundles are text only)."
     },
     {
+      "name": "godot-camera-system",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/camera-system/SKILL.md",
+          "sha256": "fc085ffae33dd9879004ec18f16de87e9d2a82c3045222b23b7483a8b16e85b9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/camera-system/references/camera-zones.md",
+          "sha256": "963b1443fb2799818c78bbf05dd88f81f1c9101ed549ad363a79413c44cf4e6b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/camera-system/references/camera3d-patterns.md",
+          "sha256": "9592709ff2969b71fa077699ce0372a91a9388f7a0457bd46d39d8bc7d4bfb14",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/camera-system/references/split-screen.md",
+          "sha256": "38d52d95668bc46780236b496d79e7a6e9d7d4da37b051532ea2587dea6e34e8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/camera-system/references/transitions.md",
+          "sha256": "48e5fcc0e28cb080bb347466587a267f7dfa27caf0ddd281f7001cb26e3229ba",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{follow-rigs-and-framing.md, occlusion-bob-and-minimap.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-camera-systems",
+      "vendored": true
+    },
+    {
       "name": "godot-code-review",
       "sources": [
         {
@@ -1983,6 +2032,111 @@
         }
       ],
       "adaptation": "rename to godot-* prefix; the upstream text names the pinned addon version v0.11.0.2",
+      "vendored": true
+    },
+    {
+      "name": "godot-physics-system",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/SKILL.md",
+          "sha256": "f9be3073fb03c350d66cd098af8a733114967f371b2a9e3099df765d8cd62962",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/area-recipes.md",
+          "sha256": "7c44510a980fac42d8ecb882d53332d6fbc614604af57e54303a3e9ee905f5da",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/collision-layers.md",
+          "sha256": "476ec6c20b00fd60bbb273dc31380dcb924f62af2b23bbb13662bb11bb92e1fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/collision-shapes.md",
+          "sha256": "df4f77d399831331ca734710dc35cfadfafe451398e99a5f2e53fd03e746e1f3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/interpolation-camera.md",
+          "sha256": "48ac9c773777f4425b958a4c7a2eab01f64aea1ac34f7102a7036b5541987b03",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/interpolation-tuning.md",
+          "sha256": "cf2935eebb8cccc2d4f4c924bbc1e7d372639198974d2e16a70f6a944674c1ac",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/jolt-differences.md",
+          "sha256": "22cd037d382e4e791a07cff54850594f8676f704b9362156e11a8aa441f58906",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/ragdoll-recipes.md",
+          "sha256": "d351d3fefb4e62971749174de7cd3a80bbba674172ecf7a6bc582b921a1df9d6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/raycasting-recipes.md",
+          "sha256": "dcf168811914366ceb83d5e4a152c9ffc6645937724e5b7ef37fce6f7cbd350b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/rigidbody-recipes.md",
+          "sha256": "b73105a6d92db177affdb6db9cce32ab272675cb79c57ed517f463bc7d7408ad",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/softbody-recipes.md",
+          "sha256": "4009572e4b455bd900a95537d01adc9beef699949d54e2e4c503ad3e6c12947b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/staticbody-recipes.md",
+          "sha256": "daf01b17efe09fb3e9116fbcbbe83a6f3ff1d1d28e38f150997c867dcdaccf01",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/physics-system/references/troubleshooting.md",
+          "sha256": "ef00fe5a6328a0220980e9d3c638bd141b8e85b4ce56f2754630cf1459d83949",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{3d-stairs-hover-and-vehicles.md, queries-and-casts.md, server-bodies-and-bullets.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-2d-physics, godot-physics-3d, godot-raycasting-queries; Fact fixes on 4.7: Jolt is the default physics engine for new 3D projects since 4.6, not 4.4 (SKILL.md lines 25 and 140; godot-docs 4.7 upgrading_to_godot_4.6, GH-105737)",
       "vendored": true
     },
     {
