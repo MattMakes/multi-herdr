@@ -147,9 +147,13 @@ and [`ai_docs/reports/domain-skills/ue-teammates.md`](../ai_docs/reports/domain-
 | `ue-world-engineer` | 2 | implementation | claude, opus, medium | World Partition, streaming, PCG, collision, save games |
 
 Every one runs on Claude: native Windows refuses a Codex teammate that has
-skills, and most Unreal work happens on Windows. Their `fallbacks:` follow
-their non-UE counterparts (`codex-sol`, and `codex-terra` for QA), so a
-fallback spawn on Windows fails the same check. Every implementation
+skills, and most Unreal work happens on Windows. Only `ue-tech-lead` and
+`ue-code-reviewer`, which read and plan but never build, fall back to
+`codex-sol`. The builders and `ue-qa-engineer` have no fallback: a Codex pane
+runs with the network off and `workspace-write`, which may block the shared
+Derived Data Cache, and nobody has tried it on a UE project yet. When the
+Claude pool is out, `horch route` refuses and the orchestrator waits. Add a
+Codex fallback after a trial on a real project. Every implementation
 teammate and `ue-qa-engineer` carry `ue-build-verify`. `ue-technical-artist`
 and `ue-tools-engineer` also carry `ue-editor-scripting`, and so they may
 change an asset through editor Python or a commandlet. The others never

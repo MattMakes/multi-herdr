@@ -8,8 +8,12 @@ model: sonnet
 # Offered only on an Unreal project (roster/offer.rs). `horch spawn` still
 # works anywhere.
 offer_when: ["*.uproject"]
-# When this model's usage pool cannot serve a spawn (horch route ue-qa-engineer).
-fallbacks: [codex-terra]
+# No fallback: this teammate builds or runs the editor, and a Codex pane is
+# untested there (network off, workspace-write may block the shared Derived
+# Data Cache; native Windows refuses Codex with skills). When the Claude pool
+# is out, `horch route` refuses and the orchestrator waits. Add a Codex
+# fallback only after a trial on a real project
+# (ai_docs/reports/unreal-engine-wave.md "Harness notes").
 # high: a missed finding costs a review round, the same as qa-engineer.
 # (ai_docs/reports/model-guide-2026-09.md)
 effort: high
