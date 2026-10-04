@@ -14,7 +14,9 @@ use anyhow::{bail, Context, Result};
 
 use chrono::{DateTime, Utc};
 
-use crate::execution::legacy::{LedgerRecordV1, KIND_ORCHESTRATOR, KIND_WORKER};
+use crate::execution::legacy::{
+    HistoryEntry, LedgerRecordV1, KIND_ORCHESTRATOR, KIND_WORKER, STATUS_WORKING,
+};
 use crate::execution::model::{
     Execution, ExecutionKind, ExecutionStatus, FailureKind, LaunchStage, SessionState, Task,
 };
@@ -22,6 +24,11 @@ use crate::fsx::{self, DirLock};
 use crate::ids::IdError;
 use crate::runtime::Paths;
 use crate::skills::activation::ResolvedSkillRef;
+use crate::workspace::client::WorkspaceClient;
+
+/// The history text of a record that [`ExecutionStore::end_if_pane_closed`]
+/// ended.
+pub const PANE_CLOSED: &str = "pane closed without horch done";
 
 /// A lock older than this is broken: panes can be killed mid-write, and the
 /// old spinlock broke after about 15 seconds too.
@@ -558,6 +565,50 @@ impl ExecutionStore {
                 closed.push(r.clone());
             }
             Ok(closed)
+        })
+    }
+
+    /// End the newest record addressed by `key` when its pane closed without
+    /// `horch done`: the record is still `working`, names a pane, and herdr
+    /// answers but does not have that pane. The record becomes
+    /// `Failed(PaneVanished)` with the history text [`PANE_CLOSED`], so
+    /// `horch spawn --resume` can reopen it. A pane that is open, a record
+    /// without a pane, an orchestrator, and a herdr that does not answer
+    /// leave the record alone. Returns whether it ended the record.
+    pub fn end_if_pane_closed(&self, key: &str, ws: &dyn WorkspaceClient) -> Result<bool> {
+        let Ok(record) = self.get(key) else {
+            return Ok(false);
+        };
+        let Some(pane) = record.pane_id.as_deref() else {
+            return Ok(false);
+        };
+        if record.status != STATUS_WORKING || record.is_orchestrator() {
+            return Ok(false);
+        }
+        if ws.pane_get(pane).is_ok() || !ws.server_reachable() {
+            return Ok(false);
+        }
+        let at = crate::clock::now_stamp();
+        self.update(|records| {
+            let mut ended = false;
+            // Re-checked under the lock: the worker may run `horch done` now.
+            for r in records
+                .iter_mut()
+                .filter(|r| r.record_id == record.record_id && r.status == STATUS_WORKING)
+            {
+                r.set_state(ExecutionStatus::Failed {
+                    failure: FailureKind::PaneVanished,
+                });
+                r.finished_at.get_or_insert_with(|| at.clone());
+                r.updated_at = at.clone();
+                r.history.push(HistoryEntry {
+                    at: at.clone(),
+                    event: "ended".to_string(),
+                    text: PANE_CLOSED.to_string(),
+                });
+                ended = true;
+            }
+            Ok(ended)
         })
     }
 

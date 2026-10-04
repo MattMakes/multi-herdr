@@ -97,6 +97,10 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     let project = ctx.paths.project()?;
     let store = ExecutionStore::open_in(ctx)?;
 
+    // A record whose pane closed without `horch done` ends here, so it resumes.
+    if let Some(key) = req.resume.as_deref() {
+        store.end_if_pane_closed(key, &herdr)?;
+    }
     let existing = req.resume.as_deref().and_then(|key| store.get(key).ok());
     if let Some(r) = existing.as_ref().filter(|r| r.round_id.is_some()) {
         anyhow::bail!(
