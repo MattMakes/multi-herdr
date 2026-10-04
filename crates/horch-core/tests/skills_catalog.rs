@@ -45,6 +45,9 @@ fn oracles() -> PathBuf {
 /// fails. Never give one of these an oracle file.
 const SKIP_NEW_TEAMMATES: &[&str] = &[
     "antigravity",
+    "apple-accessibility-auditor",
+    "apple-platform-developer",
+    "codex-swift-reviewer",
     "design-critic",
     "design-director",
     "design-system-engineer",

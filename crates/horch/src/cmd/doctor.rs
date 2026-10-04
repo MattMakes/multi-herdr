@@ -207,11 +207,9 @@ mod tests {
             None,
         );
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(
-            problems[0].contains("needed by swift-developer"),
-            "{}",
-            problems[0]
-        );
+        // The built-in Swift teammates need Xcode too, so they share the line.
+        assert!(problems[0].contains("(needed by "), "{}", problems[0]);
+        assert!(problems[0].contains("swift-developer"), "{}", problems[0]);
         assert!(problems[0].contains("-runFirstLaunch"), "{}", problems[0]);
         assert!(
             problems[0].contains("first launch pending"),
