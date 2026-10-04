@@ -417,3 +417,83 @@ fn harness_with_git_makes_repo() {
     assert!(plain.git_bin().is_none() && plain.head_sha().is_none());
     assert!(!plain.allows_program(&git));
 }
+
+/// Start fake herdr `args` in the sealed environment of `h` without waiting.
+fn start_herdr(h: &Harness, args: &[&str]) -> std::process::Child {
+    let mut cmd = Command::new(h.bin.join(format!("herdr{}", std::env::consts::EXE_SUFFIX)));
+    cmd.args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    h.seal(&mut cmd);
+    cmd.spawn().expect("starting fake herdr")
+}
+
+/// Wait up to `secs` for `child`. `None` when it still runs then.
+fn wait_up_to(child: &mut std::process::Child, secs: u64) -> Option<std::process::ExitStatus> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while std::time::Instant::now() < until {
+        if let Some(status) = child.try_wait().unwrap() {
+            return Some(status);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    None
+}
+
+/// The state lock dir of `h`'s fake herdr.
+fn state_lock(h: &Harness) -> std::path::PathBuf {
+    let mut p = h.log.clone().into_os_string();
+    p.push(".state.lock");
+    p.into()
+}
+
+/// A call made after the test removed its temp dir (a detached `horch tile`
+/// can make one) fails at once. It used to wait for the lock for ever.
+#[test]
+fn fake_herdr_fails_when_the_harness_root_is_gone() {
+    let mut h = Harness::new("fakes-gone");
+    // The fakes stay reachable; only the log's directory goes.
+    let gone = h.root.join("gone");
+    h.set("HORCH_FAKE_LOG", gone.join("fake.log").to_string_lossy());
+    let mut child = start_herdr(&h, &["pane", "list"]);
+    let Some(status) = wait_up_to(&mut child, 10) else {
+        let _ = child.kill();
+        panic!("fake herdr still waits for a lock in a removed directory");
+    };
+    assert!(!status.success());
+    let mut err = String::new();
+    std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut err).unwrap();
+    assert!(err.contains("the harness is gone"), "{err}");
+}
+
+/// A lock left by a dead call is taken over; a live holder's lock is kept,
+/// however long it holds it.
+#[cfg(unix)]
+#[test]
+fn fake_herdr_breaks_only_a_dead_holders_lock() {
+    let h = Harness::new("fakes-lock");
+    let lock = state_lock(&h);
+
+    let dead = Command::new("/usr/bin/true").spawn().unwrap();
+    let dead_pid = dead.id();
+    let mut dead = dead;
+    dead.wait().unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    std::fs::write(lock.join("pid"), dead_pid.to_string()).unwrap();
+    let mut child = start_herdr(&h, &["pane", "list"]);
+    let status = wait_up_to(&mut child, 10).expect("a dead holder's lock is taken over");
+    assert!(status.success());
+    assert!(!lock.exists(), "the call released the lock");
+
+    std::fs::create_dir(&lock).unwrap();
+    std::fs::write(lock.join("pid"), std::process::id().to_string()).unwrap();
+    let mut child = start_herdr(&h, &["pane", "list"]);
+    assert!(
+        wait_up_to(&mut child, 3).is_none(),
+        "a live holder's lock is kept"
+    );
+    std::fs::remove_file(lock.join("pid")).unwrap();
+    std::fs::remove_dir(&lock).unwrap();
+    let status = wait_up_to(&mut child, 10).expect("the call goes on once the lock is free");
+    assert!(status.success());
+}

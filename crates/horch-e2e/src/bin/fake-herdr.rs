@@ -82,9 +82,27 @@ fn main() {
 /// Process groups to kill once the call is done.
 static KILL: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
-/// `$HORCH_FAKE_LOG.state.lock/`, a mkdir lock. A lock older than 10 s is
-/// left by a killed call and is taken over.
+/// `$HORCH_FAKE_LOG.state.lock/`, a mkdir lock. The holder writes its pid
+/// into `pid` in the lock dir.
+///
+/// A waiter takes the lock over only from a holder that is dead: one whose
+/// pid no longer runs, or one that left no pid after [`NO_PID_GRACE`]. Each
+/// call runs in its own process group (see `main`), so only a SIGKILL of
+/// the call itself leaves a stale lock. A live holder is never broken, so a
+/// slow holder under load cannot lose the state. Measured under load 28 to
+/// 62 (7624 calls): a hold takes at most 0.5 s and a wait at most 0.4 s.
+///
+/// A lock whose directory cannot be made at all means the harness root is
+/// gone: a detached `horch tile` can call herdr after the test removed its
+/// temp dir. The call fails then instead of waiting for ever.
 struct StateLock(Option<PathBuf>);
+
+/// How long a lock dir without a `pid` file counts as being set up. The
+/// holder writes the pid right after `mkdir`.
+const NO_PID_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How often a waiter checks whether the holder still runs.
+const HOLDER_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl StateLock {
     fn acquire() -> StateLock {
@@ -92,27 +110,66 @@ impl StateLock {
             return StateLock(None);
         };
         let dir = state.with_extension("lock");
-        let start = std::time::Instant::now();
+        let mut checked = std::time::Instant::now();
         loop {
-            if std::fs::create_dir(&dir).is_ok() {
-                return StateLock(Some(dir));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => {
+                    let _ = std::fs::write(dir.join("pid"), std::process::id().to_string());
+                    return StateLock(Some(dir));
+                }
+                Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+                    eprintln!(
+                        "fake-herdr: cannot lock {} ({e}); the harness is gone",
+                        dir.display()
+                    );
+                    std::process::exit(1);
+                }
+                Err(_) => {}
             }
-            let stale = std::fs::metadata(&dir)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > std::time::Duration::from_secs(10));
-            if stale || start.elapsed() > std::time::Duration::from_secs(30) {
-                let _ = std::fs::remove_dir(&dir);
+            if checked.elapsed() >= HOLDER_CHECK {
+                checked = std::time::Instant::now();
+                if holder_is_dead(&dir) {
+                    let _ = std::fs::remove_file(dir.join("pid"));
+                    let _ = std::fs::remove_dir(&dir);
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 }
 
+/// Whether the lock in `dir` was left by a call that no longer runs.
+fn holder_is_dead(dir: &std::path::Path) -> bool {
+    match std::fs::read_to_string(dir.join("pid"))
+        .ok()
+        .and_then(|p| p.trim().parse::<u32>().ok())
+    {
+        Some(pid) => !process_runs(pid),
+        None => std::fs::metadata(dir)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > NO_PID_GRACE),
+    }
+}
+
+/// Whether a process with this pid runs. Unknown (no `kill` to ask) counts
+/// as running: a live lock is never broken.
+fn process_runs(pid: u32) -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+    std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("kill -0 {pid} 2>/dev/null"))
+        .status()
+        .map_or(true, |s| s.success())
+}
+
 impl Drop for StateLock {
     fn drop(&mut self) {
         if let Some(dir) = &self.0 {
+            let _ = std::fs::remove_file(dir.join("pid"));
             let _ = std::fs::remove_dir(dir);
         }
     }
