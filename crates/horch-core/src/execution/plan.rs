@@ -354,6 +354,9 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
             )));
         }
     }
+    // `skills_when` skills of this project join `skills:` here, so the
+    // record, the brief's resolved teammate and the launch bundle agree.
+    draft.teammate = inputs.roster.for_launch(draft.teammate);
     // Unusable catalogs fail before a role or a record exists.
     crate::skills::ensure_supported_in(&draft.teammate, inputs.catalog)
         .map_err(|e| PlanError::SkillUnsupported(format!("{e:#}")))?;
@@ -540,6 +543,72 @@ mod tests {
             err.contains("horch ledger done r1 \"pane closed without horch done\""),
             "{err}"
         );
+    }
+
+    /// GW11: in a project whose facts match a `skills_when` glob, the plan
+    /// lists those skills as Explicit, and the launch teammate carries them,
+    /// so the launch bundle plans the same skills as the record (SKL-04).
+    /// Without facts, or without a match, nothing is added.
+    #[test]
+    fn skills_when_reaches_the_record_and_the_launch_teammate() {
+        use crate::roster::ProjectFacts;
+        use crate::skills::InvocationPolicy;
+
+        let mut roster = Roster::builtin().unwrap();
+        let mut sonnet = roster.require("sonnet").unwrap().clone();
+        sonnet.skills_when = [(
+            "*.csproj".to_string(),
+            vec!["code-review".into(), "document".into()],
+        )]
+        .into();
+        roster.insert_for_test(sonnet);
+        let catalog = SkillCatalog::bundled().unwrap();
+        let ids = MintedIds {
+            execution: ExecutionId::new("e1").unwrap(),
+            session: SessionId::new("s1").unwrap(),
+        };
+        let mut req = SpawnRequest::worker(Some("sonnet".parse().unwrap()), "build");
+        req.pinned = true;
+        let plan_in = |roster: &Roster| {
+            plan_launch(
+                &req,
+                &PlanInputs {
+                    roster,
+                    catalog: &catalog,
+                    gate: None,
+                    existing: None,
+                    now: crate::clock::parse("2026-10-04T00:00:00Z").unwrap(),
+                    ids: &ids,
+                    project: Path::new("/work/alpha"),
+                },
+            )
+            .unwrap()
+        };
+        let added = ["code-review", "document"];
+
+        let csharp = roster
+            .clone()
+            .with_project_facts(ProjectFacts::from_names(["Game.csproj"]));
+        let plan = plan_in(&csharp);
+        for name in added {
+            let r = plan
+                .execution
+                .skills
+                .iter()
+                .find(|r| r.id.as_str() == name)
+                .unwrap_or_else(|| panic!("{name} not recorded"));
+            assert_eq!(r.policy, InvocationPolicy::Explicit, "{name}");
+            assert!(plan.launch.teammate.skills.iter().any(|s| s == name));
+        }
+        assert_eq!(plan.execution.skills, plan.skills.activated);
+
+        let gdscript = roster
+            .clone()
+            .with_project_facts(ProjectFacts::from_names(["player.gd"]));
+        for plan in [plan_in(&gdscript), plan_in(&roster)] {
+            let ids = plan.skills.activated_ids();
+            assert!(added.iter().all(|n| !ids.contains(n)), "{ids:?}");
+        }
     }
 
     /// Planning is pure (Spec A §3): outside this test module, `plan.rs`

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use super::parser::{md_files, parse_base, parse_teammate};
-use super::{offered_in, Base, ExecRule, ProjectFacts, Teammate};
+use super::{offered_in, with_project_skills, Base, ExecRule, ProjectFacts, Teammate};
 
 include!(concat!(env!("OUT_DIR"), "/builtin_teammates.rs"));
 
@@ -242,6 +242,22 @@ impl Roster {
     pub fn with_project_facts(mut self, facts: ProjectFacts) -> Roster {
         self.project = Some(facts);
         self
+    }
+
+    /// The facts [`Roster::with_project_facts`] attached, if any.
+    pub fn project_facts(&self) -> Option<&ProjectFacts> {
+        self.project.as_ref()
+    }
+
+    /// `t` as it launches in this roster's project: its `skills_when`
+    /// skills join `skills:` (`offer::with_project_skills`). Unchanged when
+    /// no facts were attached. The spawn record and the launch bundle must
+    /// both see this teammate, or the launch's skill check (SKL-04) fails.
+    pub fn for_launch(&self, t: Teammate) -> Teammate {
+        match &self.project {
+            Some(facts) => with_project_skills(t, facts),
+            None => t,
+        }
     }
 
     /// What the orchestrator is offered: specialists first, then generics.
