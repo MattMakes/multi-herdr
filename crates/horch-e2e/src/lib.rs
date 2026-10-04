@@ -230,6 +230,11 @@ pub fn bin_dir() -> PathBuf {
 ///        "usage": {"model": "claude-opus-5-5", "input": 1000, "output": 500}}}
 /// ```
 ///
+/// `commit` is `true` (commit the work) or `"blocked"`: try `git add` and
+/// `git commit` the way a sandboxed Codex does, fail (the index cannot be
+/// written), and record `commit_failed`. The coordinator then commits the
+/// work at freeze.
+///
 /// `exit` is one of `done` (run `horch done`, as a real agent would),
 /// `crash` (exit 3), `exit0` (exit 0 without `horch done`), `hang` (block
 /// until killed) and `vanish` (close the own pane through herdr).
@@ -276,6 +281,24 @@ pub fn run_candidate(call: &mut Call, label: &str, spec: &Value, usage: impl Fn(
     }
     if !spec["usage"].is_null() {
         usage(&spec["usage"]);
+    }
+    if spec["commit"] == "blocked" {
+        if let Some(git) = std::env::var_os("HORCH_GIT_BIN") {
+            let mut failed = false;
+            for args in [
+                &["add", "-A"][..],
+                &["commit", "--quiet", "--no-gpg-sign", "-m", "candidate work"],
+            ] {
+                let mut cmd = std::process::Command::new(&git);
+                cmd.arg("-C").arg(".").args(args);
+                horch_marketplace::git::scrub_repo_env(&mut cmd);
+                // The sandbox denies the write; an index under a file fails
+                // the same way, with no side effect.
+                cmd.env("GIT_INDEX_FILE", "/dev/null/index");
+                failed |= !cmd.status().is_ok_and(|s| s.success());
+            }
+            call.extra.insert("commit_failed".into(), json!(failed));
+        }
     }
     if spec["commit"].as_bool() == Some(true) {
         if let Some(git) = std::env::var_os("HORCH_GIT_BIN") {

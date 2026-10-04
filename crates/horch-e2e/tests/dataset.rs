@@ -828,6 +828,65 @@ fn cmp_07_timeout() {
     assert_clean(&h);
 }
 
+/// F5: a candidate whose sandbox blocks `git commit` (Codex in a linked
+/// worktree cannot write `.git/worktrees/<label>`) leaves its work in the
+/// work tree. The freeze commits the changed tracked file and the new file,
+/// so the work is judged like committed work.
+#[test]
+fn cmp_07_blocked_commit_work_is_frozen() {
+    let blocked = serde_json::json!({
+        "write": {"notes.txt": "one\ntwo\nthree\n", "new.txt": "new\n"},
+        "commit": "blocked",
+        "exit": "done"
+    });
+    let Some(h) = round_harness(
+        "cmp07blocked",
+        &PAIR,
+        "",
+        serde_json::json!({"A": blocked, "B": blocked}),
+    ) else {
+        return;
+    };
+    let out = run_round(&h, 2, &[]);
+    assert!(
+        matches!(out.status.code(), Some(0 | 5)),
+        "{}",
+        text(&out)
+    );
+    let codex = h
+        .calls_of("codex")
+        .into_iter()
+        .find(|c| c["candidate"].is_string())
+        .expect("a candidate ran on codex");
+    assert_eq!(codex["commit_failed"], true, "{codex}");
+    let events = events(&h);
+    let frozen = of_kind(&events, "candidate.frozen");
+    assert_eq!(frozen.len(), 2, "{}", text(&out));
+    for f in frozen {
+        let paths = f["payload"]["numstat"].to_string();
+        assert!(paths.contains("notes.txt"), "{paths}");
+        assert!(paths.contains("new.txt"), "{paths}");
+        let label = f["payload"]["label"].as_str().unwrap();
+        let validated = of_kind(&events, "validation.completed")
+            .into_iter()
+            .find(|e| e["payload"]["label"] == label)
+            .expect("validated");
+        assert_eq!(validated["payload"]["report"]["eligible"], true);
+        // One commit on the base: the freeze's, not the candidate's.
+        let head = f["payload"]["head_sha"].as_str().unwrap();
+        let log = h
+            .git_cmd(&["log", "--format=%s", &format!("main..{head}")])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout).trim(),
+            format!("candidate {label} frozen")
+        );
+    }
+    assert_every_spawn_ended(&h);
+    assert_clean(&h);
+}
+
 #[test]
 fn cmp_07_candidate_crash_kept_in_round() {
     // A writes work, commits nothing and crashes.
