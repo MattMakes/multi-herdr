@@ -795,26 +795,33 @@ pub struct PoolLine { pub pool: String, pub state: String, pub detail: String } 
 ### 4.5 `execution` planning and service (A6)
 
 ```rust
+// execution/lifecycle.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportTarget { Orchestrator, None }
 
+// execution/model.rs. Spec A §8 SpawnRequest: these 14 fields.
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
-    // SPEC-TODO(Spec A §8): the field list verbatim.
-    pub teammate: Option<TeammateName>,     // None with resume
-    pub task: Option<String>,
+    pub teammate: Option<TeammateName>,     // None with `resume`: the record names it
+    pub resume: Option<String>,             // a record id or session id to resume
+    pub task: String,                       // empty for an idle worker
     pub phase: Option<Phase>,
-    pub effort: Option<String>,
-    pub session: SessionMode,               // Fresh(None) | Resume(id)
-    pub balance: BalanceMode,
-    pub flags: GateFlags,
-    pub routing_mode: RoutingMode,          // Pinned for candidates (B3)
+    pub effort: Option<String>,             // this spawn only, over the teammate's (or the record's)
+    pub role: Option<String>,               // None allocates `<teammate>-<n>`
+    pub from_pane: Option<String>,          // the pane to split; None splits the caller's pane
+    pub direction: Direction,               // Right by default
     pub tiling: TilingMode,
-    pub workdir: Option<PathBuf>,           // None → project_dir
+    pub flags: GateFlags,                   // exact: never substitute; force: never refuse
+    pub pinned: bool,                       // skip the usage-limit gate; provenance says `pinned` (B3)
+    pub workdir: Option<PathBuf>,           // None → the project dir
     pub kind: ExecutionKind,
     pub report_to: ReportTarget,
-    pub idempotency_key: Option<String>,    // "spawn:<round>:<label>" (B3)
+}
+impl SpawnRequest {
+    /// Every option at its default: no resume, Right, Automatic, not pinned,
+    /// Worker, report to the orchestrator.
+    pub fn worker(teammate: Option<TeammateName>, task: impl Into<String>) -> SpawnRequest;
 }
 
 #[derive(Debug, Clone)]
@@ -897,12 +904,41 @@ impl ExecutionStore {
 }
 
 // execution/lifecycle.rs
-pub fn run_worker(ctx: &RuntimeContext, store: &ExecutionStore, brief: &Brief) -> anyhow::Result<i32>;
-pub fn done<W: WorkspaceClient>(ctx: &RuntimeContext, store: &ExecutionStore, ws: &W, summary: &str) -> anyhow::Result<()>;
+pub trait WorkerSteps {
+    fn load_brief(&mut self) -> Result<Brief>;
+    fn enter_context(&mut self, brief: &Brief) -> Result<()>;
+    fn register(&mut self, brief: &Brief) -> Result<()>;
+    fn set_running(&mut self, brief: &Brief) -> Result<()>;
+    fn launch(&mut self, brief: &Brief) -> Result<Option<i32>>;   // None: a signal ended the agent
+    fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()>;
+}
+pub fn run_worker(steps: &mut dyn WorkerSteps) -> anyhow::Result<i32>;   // PaneWorker runs the steps for real
+pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> anyhow::Result<()>;
 ```
 
-`SPEC-TODO(Spec A §8)`: the worker startup order verbatim
-(`arc_18_worker_startup_order` asserts it).
+Spec A §8 worker startup order (`execution/lifecycle.rs:run_worker`):
+
+1. `load_brief`: find this pane's mailbox and read the brief that
+   `horch spawn` wrote. On failure, record nothing (the record is unknown)
+   and return the error.
+2. `enter_context`: take the brief's project, ledger and binary overrides
+   as the process's context.
+3. `register`: register the role in the mailbox, so `horch tell` reaches
+   the pane. When step 2 or 3 fails, record `Failed(AgentExited{code:
+   None})` at once (best effort), then return the original error.
+4. `set_running`: set the record to `Running`. On failure, log it and go
+   on: the agent must start even when its bookkeeping cannot be written.
+5. `launch`: run the agent through the harness flow and wait for it. On
+   failure, record `agent_exited(None)` (best effort) and return the error.
+6. `agent_exited(code)`: record how the agent ended. On failure, log it.
+7. Return the agent's exit code, or 1 when a signal ended it. `horch
+   worker` exits with it.
+
+The worker never calls `done`: the agent runs `horch done`, which closes
+the pane. Tests: `arc_18_worker_startup_order` (the order and a launch
+failure), `arc_18_register_failure_records_failed`,
+`arc_18_enter_context_failure_records_failed` and
+`arc_18_agent_exit_recorded` (`horch-core/tests/execution_plan.rs`).
 
 ### 4.6 `harness` (A1 enum, A4 trait)
 

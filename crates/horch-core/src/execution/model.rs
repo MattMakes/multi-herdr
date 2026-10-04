@@ -270,7 +270,7 @@ impl Execution {
 
 /// What a caller asks `horch spawn` (or the B3 coordinator) to start.
 ///
-/// `SPEC-TODO(Spec A §8)`: the field list verbatim.
+/// The field list is Spec A §8 (architecture design §4.5).
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
     /// The teammate to start. `None` with `resume`: the record names it.
