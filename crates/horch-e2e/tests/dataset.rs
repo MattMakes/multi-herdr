@@ -848,11 +848,7 @@ fn cmp_07_blocked_commit_work_is_frozen() {
         return;
     };
     let out = run_round(&h, 2, &[]);
-    assert!(
-        matches!(out.status.code(), Some(0 | 5)),
-        "{}",
-        text(&out)
-    );
+    assert!(matches!(out.status.code(), Some(0 | 5)), "{}", text(&out));
     let codex = h
         .calls_of("codex")
         .into_iter()
