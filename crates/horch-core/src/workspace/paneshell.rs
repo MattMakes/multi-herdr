@@ -38,6 +38,18 @@ impl PaneShell {
     /// Build a command line that runs `exe` with `args`, safe to pass to
     /// `herdr pane run`, without any [`FORBIDDEN_ENV`] variable.
     pub fn command_line<S: AsRef<str>>(self, exe: &Path, args: &[S]) -> String {
+        self.command_line_with_env(exe, &[], args)
+    }
+
+    /// [`PaneShell::command_line`], with each `(name, value)` in `env` set
+    /// for `exe` and every process it starts. A pane does not inherit this
+    /// process's environment, so a value the pane must see travels here.
+    pub fn command_line_with_env<S: AsRef<str>>(
+        self,
+        exe: &Path,
+        env: &[(&str, &str)],
+        args: &[S],
+    ) -> String {
         let mut parts = Vec::with_capacity(args.len() + 1);
         parts.push(self.quote(&exe.to_string_lossy()));
         parts.extend(args.iter().map(|a| self.quote(a.as_ref())));
@@ -51,16 +63,24 @@ impl PaneShell {
                     .iter()
                     .map(|name| format!("Remove-Item Env:{name} -ErrorAction SilentlyContinue; "))
                     .collect();
-                format!("{removes}& {joined}")
+                let sets: String = env
+                    .iter()
+                    .map(|(name, value)| format!("$env:{name} = {}; ", self.quote(value)))
+                    .collect();
+                format!("{removes}{sets}& {joined}")
             }
             // An absolute `env`: a pane's PATH is not this process's PATH.
-            // BSD, GNU and busybox `env` all take `-u`.
+            // BSD, GNU and busybox `env` all take `-u` and `NAME=VALUE`.
             PaneShell::Posix => {
                 let removes: String = FORBIDDEN_ENV
                     .iter()
                     .map(|name| format!(" -u {name}"))
                     .collect();
-                format!("/usr/bin/env{removes} {joined}")
+                let sets: String = env
+                    .iter()
+                    .map(|(name, value)| format!(" {}", self.quote(&format!("{name}={value}"))))
+                    .collect();
+                format!("/usr/bin/env{removes}{sets} {joined}")
             }
         }
     }
@@ -116,6 +136,25 @@ mod tests {
             assert!(ps.contains(&remove), "{ps}");
             assert!(ps.find(&remove) < ps.find("& "), "{ps}");
         }
+    }
+
+    /// A value the pane must see is set after the removals and before the
+    /// binary, quoted like any argument.
+    #[test]
+    fn command_line_with_env_sets_each_value_for_the_binary() {
+        let env = [("HORCH_DATA_DIR", "/data/it's here")];
+        assert_eq!(
+            PaneShell::Posix.command_line_with_env(Path::new("/bin/horch"), &env, &["worker"]),
+            r"/usr/bin/env -u ANTHROPIC_API_KEY 'HORCH_DATA_DIR=/data/it'\''s here' '/bin/horch' 'worker'"
+        );
+        assert_eq!(
+            PaneShell::PowerShell.command_line_with_env(
+                Path::new(r"C:\horch.exe"),
+                &env,
+                &["worker"]
+            ),
+            r"Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue; $env:HORCH_DATA_DIR = '/data/it''s here'; & 'C:\horch.exe' 'worker'"
+        );
     }
 
     #[test]

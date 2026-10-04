@@ -22,7 +22,9 @@ pub struct Paths {
     /// The explicit `$HORCH_STATE_DIR`, if any. A pane does not inherit this
     /// process's environment, so an explicit state root is passed on to it.
     pub state_override: Option<PathBuf>,
-    /// `${XDG_DATA_HOME:-$HOME/.local/share}/horch`.
+    /// `$HORCH_DATA_DIR`, else `${XDG_DATA_HOME:-$HOME/.local/share}/horch`.
+    /// A pane does not inherit this process's environment, so a pane command
+    /// sets `HORCH_DATA_DIR` to this value.
     pub data_root: PathBuf,
     /// The system temp dir; the workspace mailboxes live under it.
     pub temp_root: PathBuf,
@@ -75,8 +77,12 @@ pub(crate) fn state_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
         .join("horch")
 }
 
-/// horch's data directory: `${XDG_DATA_HOME:-$HOME/.local/share}/horch`.
+/// horch's data directory (the skill store): `$HORCH_DATA_DIR`, else
+/// `${XDG_DATA_HOME:-$HOME/.local/share}/horch`.
 pub(crate) fn data_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
+    if let Some(dir) = nonempty_path(env, "HORCH_DATA_DIR") {
+        return dir;
+    }
     nonempty_path(env, "XDG_DATA_HOME")
         .unwrap_or_else(|| home.join(".local").join("share"))
         .join("horch")
@@ -125,6 +131,30 @@ mod tests {
         assert_eq!(
             state_root(&env, home),
             PathBuf::from("/home/a/.local/state/horch")
+        );
+    }
+
+    #[test]
+    fn data_root_prefers_horch_data_dir_then_xdg_then_home() {
+        let home = Path::new("/home/a");
+        let env = MapEnv::new("/cwd");
+        assert_eq!(
+            data_root(&env, home),
+            PathBuf::from("/home/a/.local/share/horch")
+        );
+        let env = env.with("XDG_DATA_HOME", "/xdg");
+        assert_eq!(data_root(&env, home), PathBuf::from("/xdg/horch"));
+        // The variable names the store itself: no `horch` is appended.
+        let env = env.with("HORCH_DATA_DIR", "/data");
+        assert_eq!(data_root(&env, home), PathBuf::from("/data"));
+        assert_eq!(Paths::from_env(&env).data_root, PathBuf::from("/data"));
+        // Empty counts as unset.
+        let env = MapEnv::new("/cwd")
+            .with("HORCH_DATA_DIR", "")
+            .with("XDG_DATA_HOME", "");
+        assert_eq!(
+            data_root(&env, home),
+            PathBuf::from("/home/a/.local/share/horch")
         );
     }
 

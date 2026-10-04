@@ -229,7 +229,14 @@ fn pane_command_for(
             args.push(dir);
         }
     }
-    Ok(PaneShell::host().command_line(&exe, &args))
+    // The skill store too: `pane-launch`, its agent and every `horch spawn`
+    // that agent runs read `HORCH_DATA_DIR`, so they all use this store.
+    let data_root = ctx.paths.data_root.to_string_lossy();
+    Ok(PaneShell::host().command_line_with_env(
+        &exe,
+        &[("HORCH_DATA_DIR", data_root.as_ref())],
+        &args,
+    ))
 }
 
 /// Launch the herdr-fleet workspace.
@@ -835,6 +842,32 @@ mod tests {
         let without =
             pane_command(&test_ctx(), "codex-1", PaneKind::OrchestrationCodex, None).unwrap();
         assert!(!without.contains("--model"), "{without}");
+    }
+
+    /// G7: a pane does not inherit `$XDG_DATA_HOME`, so the pane command
+    /// names the spawner's skill store.
+    #[test]
+    fn pane_command_sets_the_spawners_data_dir() {
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with("XDG_DATA_HOME", "/xdg-data"),
+        )
+        .unwrap();
+        let cmd = pane_command(
+            &ctx,
+            "orchestrator",
+            PaneKind::FleetOrchestrator,
+            Some("opus"),
+        )
+        .unwrap();
+        let data = std::path::Path::new("/xdg-data").join("horch");
+        let set = if cfg!(windows) {
+            format!("$env:HORCH_DATA_DIR = '{}'; ", data.display())
+        } else {
+            format!(" 'HORCH_DATA_DIR={}' ", data.display())
+        };
+        assert!(cmd.contains(&set), "{cmd}");
     }
 
     #[test]

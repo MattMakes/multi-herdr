@@ -68,8 +68,10 @@ pub struct Brief {
     #[serde(default)]
     pub teammates_dir: Option<String>,
     /// The skill store (`data_root`) the spawner checked the teammate's
-    /// skills against. A pane does not inherit `$XDG_DATA_HOME`, so without
-    /// it the worker resolves skills in the default store.
+    /// skills against. A pane does not inherit `$XDG_DATA_HOME` or
+    /// `$HORCH_DATA_DIR`, so without it the worker resolves skills in the
+    /// default store. The worker passes it on to its agent as
+    /// `HORCH_DATA_DIR`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_root: Option<String>,
     /// Schema 2: the directory the agent works in, when it is not the project.
@@ -161,6 +163,11 @@ impl Brief {
         // they must resolve the same roster this worker was briefed from.
         if let Some(dir) = &self.teammates_dir {
             out.push(("HORCH_TEAMMATES_DIR".into(), dir.clone()));
+        }
+        // The same for the skill store: the agent's `horch spawn` checks
+        // skills in the store this worker launched with.
+        if let Some(dir) = &self.data_root {
+            out.push(("HORCH_DATA_DIR".into(), dir.clone()));
         }
         for (key, value) in self.overrides().env_pairs() {
             out.push((key.to_string(), value.to_string_lossy().into_owned()));
@@ -272,6 +279,7 @@ mod tests {
         let env = b.transport_env();
         assert!(env.contains(&("HORCH_CLAUDE_BIN".into(), "/bin/fake-claude".into())));
         assert!(env.contains(&("HORCH_CODEX_BIN".into(), "/bin/fake-codex".into())));
+        assert!(!env.iter().any(|(k, _)| k == "HORCH_DATA_DIR"));
 
         // The oldest briefs have neither override nor task.
         let older = r#"{"role":"old","teammate":"sonnet","agent":"claude","model":"sonnet",
@@ -331,6 +339,7 @@ mod tests {
             ("HORCH_PROJECT_DIR", "/tmp/proj"),
             ("HORCH_STATE_DIR", "/state"),
             ("HORCH_TEAMMATES_DIR", "/roster"),
+            ("HORCH_DATA_DIR", "/data/horch"),
         ] {
             assert_eq!(env.get(key).map(String::as_str), Some(want), "{key}");
         }

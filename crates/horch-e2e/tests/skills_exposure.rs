@@ -303,6 +303,11 @@ fn skl_06_e2e_marketplace_offline() {
 /// G3 (LA-5): a split pane does not inherit `$XDG_DATA_HOME`. The brief
 /// carries the spawner's store, so the worker, run without the variable,
 /// still finds a skill installed only in that store.
+///
+/// G7: the worker's agent gets the store as `HORCH_DATA_DIR`, so a `horch`
+/// command it runs reads the same store. The orchestrator pane command
+/// sets `HORCH_DATA_DIR` too.
+#[cfg(unix)]
 #[test]
 fn worker_reads_the_skill_store_its_spawner_read() {
     let mut h = world("g3store", "g3-market", "claude", "sonnet", &["tdd"]).with_git();
@@ -341,6 +346,21 @@ fn worker_reads_the_skill_store_its_spawner_read() {
     assert!(data.join("horch/marketplace.lock").is_file());
     assert!(!h.home.join(".local/share/horch/marketplace.lock").exists());
     teammate(&h, "g3-market", "claude", "sonnet", &["demo", "tdd"]);
+    let store = data.join("horch").to_string_lossy().into_owned();
+
+    // The agent: a probe records its environment, then runs fake claude.
+    let agent_env = h.tmp.join("agent.env");
+    let claude = h.bin.join("claude");
+    let probe = h.write_bin(
+        "claude-probe",
+        format!(
+            "#!/bin/sh\n/usr/bin/env > '{}'\nexec '{}' \"$@\"\n",
+            agent_env.display(),
+            claude.display()
+        )
+        .as_bytes(),
+    );
+    h.set("HORCH_CLAUDE_BIN", probe.to_string_lossy());
 
     let out = h.run(&[
         "spawn",
@@ -374,6 +394,57 @@ fn worker_reads_the_skill_store_its_spawner_read() {
     assert!(out.status.success(), "worker: {}", text(&out));
     let r = report(&h);
     assert_eq!(strings(&r["skills"]), ["demo", "tdd"], "{r}");
+
+    // The agent sees the store, and a `horch` command it runs lists it.
+    let env = std::fs::read_to_string(&agent_env).unwrap();
+    assert!(
+        env.lines().any(|l| l == format!("HORCH_DATA_DIR={store}")),
+        "{env}"
+    );
+    assert!(
+        !env.lines().any(|l| l.starts_with("XDG_DATA_HOME=")),
+        "{env}"
+    );
+    let mut list = h.horch(&["marketplace", "list", "--json"]);
+    list.env_remove("XDG_DATA_HOME")
+        .env("HORCH_DATA_DIR", &store);
+    let out = list.output().unwrap();
+    assert!(out.status.success(), "list: {}", text(&out));
+    let listed: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(listed["store"], store.as_str(), "{listed}");
+    assert!(listed.to_string().contains("\"demo\""), "{listed}");
+
+    // The orchestrator: `horch fleet` names the store in the pane command,
+    // so `pane-launch` sees it in a shell without `XDG_DATA_HOME`.
+    let project = h.project.to_string_lossy().into_owned();
+    let out = h.run(&["fleet", "--cwd", &project]);
+    assert!(out.status.success(), "fleet: {}", text(&out));
+    let ran = h
+        .calls_of("herdr")
+        .into_iter()
+        .filter_map(|c| c["ran"].as_str().map(str::to_owned))
+        .find(|line| line.contains("'pane-launch'"))
+        .expect("horch fleet ran a pane-launch command");
+    let set = format!("'HORCH_DATA_DIR={store}'");
+    assert!(ran.contains(&set), "{ran}");
+    let pane_env = h.tmp.join("orchestrator.env");
+    let pane_probe = h.write_bin(
+        "pane-probe",
+        format!("#!/bin/sh\n/usr/bin/env > '{}'\n", pane_env.display()).as_bytes(),
+    );
+    let horch = format!("'{}'", Harness::horch_bin().display());
+    assert!(ran.contains(&horch), "{ran}");
+    let line = ran.replacen(&horch, &format!("'{}'", pane_probe.display()), 1);
+    let mut shell = std::process::Command::new("/bin/sh");
+    h.seal(&mut shell);
+    shell.arg("-c").arg(&line).env_remove("XDG_DATA_HOME");
+    let out = shell.output().unwrap();
+    assert!(out.status.success(), "{line}\n{}", text(&out));
+    let env = std::fs::read_to_string(&pane_env).unwrap();
+    assert!(
+        env.lines().any(|l| l == format!("HORCH_DATA_DIR={store}")),
+        "{env}"
+    );
 }
 
 /// Write an operator skill directory `<home>/.agents/skills/<name>/`, as
