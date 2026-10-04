@@ -32,7 +32,7 @@ skills:
 
 # Same build server and docs server as swift-developer.md.
 mcp_servers:
-  mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,ui-automation,swift-package"}}
+  mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_SENTRY_DISABLED":"true","MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,ui-automation,swift-package"}}
   context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]

@@ -35,7 +35,7 @@ skills:
 # Compiler warnings are swift-code-audit's ground truth: mobilebuildmcp
 # builds without Xcode open (see swift-developer.md for the pin).
 mcp_servers:
-  mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,swift-package"}}
+  mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_SENTRY_DISABLED":"true","MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,swift-package"}}
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
 ---

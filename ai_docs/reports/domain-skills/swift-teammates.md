@@ -260,3 +260,15 @@ each with its description; measured from each `SKILL.md` `description:`):
   upgrade.
 - Mid-pattern `*` support in Claude Code deny rules is not verified (see
   above).
+
+## Settled after merge (orchestrator, 2026-10-04)
+
+- Mid-pattern `*`: verified. Claude Code's permissions page ("Wildcard
+  patterns") says `*` stands in for any text at any position, with examples
+  `Bash(git * main)` and `Bash(* --version)`. The 2 mid-pattern deny rules
+  in `app-release-preparer` match.
+- Telemetry: off fleet-wide for these tools. The 5 teammates with
+  mobilebuildmcp set `MOBILEBUILDMCP_SENTRY_DISABLED: "true"` (2.7.1
+  `build/utils/sentry.js:95` compares with the string `"true"`).
+  `app-release-preparer` sets `ASC_TELEMETRY_DISABLED: "1"` (asc 5.9.1
+  `internal/telemetry/state.go:397`, `envTruthy`).
