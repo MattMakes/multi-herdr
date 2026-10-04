@@ -174,6 +174,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-grill](godot-grill/SKILL.md) | `jame581/GodotPrompter`: `skills/grill/` | adapted |
 | [godot-hud-system](godot-hud-system/SKILL.md) | `jame581/GodotPrompter`: `skills/hud-system/` | renamed |
 | [godot-input-handling](godot-input-handling/SKILL.md) | `jame581/GodotPrompter`: `skills/input-handling/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-input-handling/`) | combined |
+| [godot-inventory-system](godot-inventory-system/SKILL.md) | `jame581/GodotPrompter`: `skills/inventory-system/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-inventory-system` | combined |
 | [godot-limboai](godot-limboai/SKILL.md) | `jame581/GodotPrompter`: `skills/limboai/` | renamed |
 | [godot-localization](godot-localization/SKILL.md) | `jame581/GodotPrompter`: `skills/localization/` | renamed |
 | [godot-math-essentials](godot-math-essentials/SKILL.md) | `jame581/GodotPrompter`: `skills/math-essentials/` | renamed |
@@ -186,6 +187,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-popochiu](godot-popochiu/SKILL.md) | `jame581/GodotPrompter`: `skills/popochiu/` | renamed |
 | [godot-project-context](godot-project-context/SKILL.md) | *(none - repo-original; shape of `ue-project-context`; run on Godot 4.7.2)* | own text |
 | [godot-responsive-ui](godot-responsive-ui/SKILL.md) | `jame581/GodotPrompter`: `skills/responsive-ui/` | renamed |
+| [godot-save-load](godot-save-load/SKILL.md) | `jame581/GodotPrompter`: `skills/save-load/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-save-load-systems` | combined |
 | [godot-scene-files](godot-scene-files/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |
 | [godot-state-machine](godot-state-machine/SKILL.md) | `jame581/GodotPrompter`: `skills/state-machine/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-state-machine-advanced/`) | combined |
 | [godot-testing](godot-testing/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-testing/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-testing-patterns/`) | combined |

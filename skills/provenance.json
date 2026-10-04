@@ -1629,6 +1629,55 @@
       "vendored": true
     },
     {
+      "name": "godot-inventory-system",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/inventory-system/SKILL.md",
+          "sha256": "3122d4031fe0cafb01c06c897dd3273b9ab5aa77ce8619041724e3daaafe70b2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/inventory-system/references/core-classes.md",
+          "sha256": "ba7d0a1b3200c602ed3c5bb01ab3b4cf5f5d308027038af0f6dd42a002fa409e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/inventory-system/references/equipment.md",
+          "sha256": "5137c0d078e21b8c26936b6dbce05197f17ff223daac00a4ad8eb6e61fd70eee",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/inventory-system/references/serialization.md",
+          "sha256": "888bebc966764810986348f3fd55efcc06ccbd985c5a9b4d5f324184d7cf8fd2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/inventory-system/references/ui-binding.md",
+          "sha256": "61d64238bc92e09c8eccbe6be73b2c554696a1329546b8e6ab9c49f5a66a4c51",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; references/grid-inventory.md, references/weight-loot-crafting.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-inventory-system; Fact fixes on 4.7: references/ui-binding.md GDScript _drop_data takes data: Variant, not Dictionary (4.7.2 parse error: parent signature is _drop_data(Vector2, Variant) -> void)",
+      "vendored": true
+    },
+    {
       "name": "godot-limboai",
       "sources": [
         {
@@ -2066,6 +2115,55 @@
         }
       ],
       "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-save-load",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/save-load/SKILL.md",
+          "sha256": "2a810a5cdc7eab9e26cb24fa2c115838f7cf5f9f5ed1448ad292278800657997",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/save-load/references/configfile.md",
+          "sha256": "1d2f671b774d9ed6043669a19d1ea214ac05725fb3fb67e87befa88b6ecae6bf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/save-load/references/json-saves.md",
+          "sha256": "711230bd86d454c6e6d1c7b1bd79c3a0b28cc02b1829e937ac088f8b62e6f398",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/save-load/references/save-architecture.md",
+          "sha256": "00a0e2b9f3ce071a9df60934dbcb49670c2f9d0148f1c25173d0f275e71e06ad",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/save-load/references/version-migration.md",
+          "sha256": "04d44565a11e9a08509aba45b45ba85c1c4566d816ae29e4f74dd0ca9d39393b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; references/binary-saves.md, references/safe-writes.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-save-load-systems",
       "vendored": true
     },
     {
