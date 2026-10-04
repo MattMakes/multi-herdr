@@ -1940,6 +1940,48 @@
       "vendored": true
     },
     {
+      "name": "godot-gdscript-advanced",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-advanced/SKILL.md",
+          "sha256": "e35440a042c10d57051732874da5513e134c30c0545daf28eaef4e546719ba11",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-advanced/references/metaprogramming-recipes.md",
+          "sha256": "f50c24461186b79b477c7a2a8db61f1ae0b6a310b5bcd55ba20d1ede47fbc636",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-advanced/references/profiler-recipes.md",
+          "sha256": "f62a81fcfa8c438ab8fee1387d98d4d449dbfd49714212b2c1fb9cb257230ec5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-advanced/references/tool-script-recipes.md",
+          "sha256": "11ac6a08f9ab2abf604a691a74df779e80257a35fee0e3b80b42b370d1354e8d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{typing-and-warnings.md, collections-and-callables.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-gdscript-mastery; API fixes on 4.7.2: references/tool-script-recipes.md Mesh.PRIMITIVE_LINE_LOOP -> Mesh.PRIMITIVE_LINE_STRIP (the loop is closed by one more vertex: `for i in segments + 1`); Fact fixes on 4.7: references/tool-script-recipes.md marks DebugDraw as a third-party addon, not an engine class (no DebugDraw class in the 4.7.2 --doctool dump)",
+      "vendored": true
+    },
+    {
       "name": "godot-gdscript-patterns",
       "sources": [
         {
@@ -2873,6 +2915,62 @@
       "sources": [],
       "adaptation": "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: quest-system. Quest definitions, quest log, branching, timers, tracker HUD and quest givers. Typed GDScript, parse-checked and run headless on Godot 4.7.2.",
       "vendored": false
+    },
+    {
+      "name": "godot-resource-pattern",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/resource-pattern/SKILL.md",
+          "sha256": "bb285e8301f566412cd3bcb8de58592edbcb16647f1ec9673eb1607457521915",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/resource-pattern/references/collections.md",
+          "sha256": "3fe4f691a25ebc3e2274629bab4fe7e6cfa6adc115ec03482a7ae0fdf818915c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/resource-pattern/references/configuration-pattern.md",
+          "sha256": "c3e552304984a941893099afa5390ab2e19cfcf93a70b62f7a32bc24dc9c896f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/resource-pattern/references/editor-integration.md",
+          "sha256": "cd174eb2a36156db2a0a8ef6b6065e723ad6ba26fc948593e332286539e9cb79",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/resource-pattern/references/saving-resources.md",
+          "sha256": "2da35ffb2eebbeb6ce2187e592b83b1cb7063763ce2f5e05845fb154208f4a24",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/resource-pattern/references/sharing-vs-unique.md",
+          "sha256": "c91bb1fe1ea0f7cd0d41475aaf8e85eb2c8939fd9d370137f9ae0224122f91d6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{resource-lifetime.md, reactive-resources.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-resource-data-patterns; Fact fixes on 4.7: SKILL.md section 8 and references/sharing-vs-unique.md, duplicate(true) copies only embedded sub-resources since 4.5, duplicate_deep(Resource.DEEP_DUPLICATE_ALL) copies external ones (test run on 4.7.2; upgrading_to_godot_4.5)",
+      "vendored": true
     },
     {
       "name": "godot-responsive-ui",
