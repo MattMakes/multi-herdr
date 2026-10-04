@@ -67,7 +67,7 @@ Rechecked on 2026-10-04 against Epic's 5.8 pages. UE 5.8 (hotfix 5.8.3, 2026-09-
 | `Engine/Binaries/Linux/UnrealEditor` | Editor binary on Linux | Epic 5.8, Linux Development Quickstart | yes (rechecked 2026-10-04); the `-Cmd` name on macOS and Linux: no |
 | `-ExecCmds="..."` | Run console commands after start | Epic 5.8, Command-Line Arguments Reference | yes |
 | `Automation RunTest <Filter>;Quit` | Run tests, then exit | Epic 5.8, Run Automation Tests | yes |
-| `Automation List` | List the registered tests | Upstream `ue-testing-debugging` | no |
+| `Automation List` | List the registered tests | Skill `ue-testing-debugging` | no |
 | `-unattended` | No dialogs, no user input | Epic 5.8, Command-Line Arguments Reference | yes |
 | `-nullrhi` | No rendering, headless | Epic 5.8, Command-Line Arguments Reference | yes |
 | `-nosplash` | No splash screen | Epic 5.8, Command-Line Arguments Reference | yes |
@@ -75,6 +75,6 @@ Rechecked on 2026-10-04 against Epic's 5.8 pages. UE 5.8 (hotfix 5.8.3, 2026-09-
 | `-abslog=<file>` | Log file at an absolute path | Epic 5.8, Command-Line Arguments Reference | yes |
 | `-ReportExportPath=<dir>` | Write the JSON and HTML test report | Epic 5.8, Run Automation Tests; Command-Line Arguments Reference | yes |
 | `-ResumeRunTest` | Resume a crashed run | Epic 5.8, Run Automation Tests | yes |
-| `-testexit="Automation Test Queue Empty"` | Exit when the phrase is logged | Upstream `ue-testing-debugging`; listed without text in Epic 5.8 reference | partly; not used here, `;Quit` replaces it |
-| `-nopause` | No "press a key" at exit | Upstream `ue-testing-debugging` | no; not in Epic 5.8 reference, not used here |
+| `-testexit="Automation Test Queue Empty"` | Exit when the phrase is logged | Skill `ue-testing-debugging`; listed without text in Epic 5.8 reference | partly; not used here, `;Quit` replaces it |
+| `-nopause` | No "press a key" at exit | Skill `ue-testing-debugging` | no; not in Epic 5.8 reference, not used here |
 | `-ReportOutputPath` | Old name of `-ReportExportPath` | Epic 5.8 reference: "Deprecated" | yes (do not use) |

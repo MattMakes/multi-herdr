@@ -1,9 +1,7 @@
 ---
 name: background-execution
 description: Writes and reviews Swift code for background execution on Apple platforms - BGTaskScheduler (app refresh, processing, continued processing), beginBackgroundTask assertions, background URLSession downloads/uploads, silent and VoIP push, background modes (audio, location, BLE), the SwiftUI .backgroundTask modifier, and macOS schedulers. Use when scheduling deferred work, finishing work after the app backgrounds, transferring files in the background, waking the app via push, or debugging background tasks that never run.
-license: MIT
 metadata:
-  author: Anton Novoselov
   version: "1.0"
 ---
 

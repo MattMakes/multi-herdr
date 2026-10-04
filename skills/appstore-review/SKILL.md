@@ -2,8 +2,6 @@
 name: appstore-review
 version: "1.2.0"
 description: "App Store review readiness audit for iOS apps. Scans the codebase, entitlements, Info.plist, privacy manifests, paywall/subscription UI, and metadata for anything that could trigger a warning or rejection during App Store review. Invoke explicitly when preparing a submission. Do NOT trigger automatically."
-author: 3 Paws AI Studio
-license: MIT
 agents:
   - claude-code
 tags:

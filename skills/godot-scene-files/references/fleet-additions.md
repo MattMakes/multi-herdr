@@ -1,6 +1,6 @@
 # Fleet additions
 
-Facts that the GodotPrompter v1.14.0 skills lack, verified by unit GW10
+Facts that the copied skills lack, verified by unit GW10
 (worker opus-83) against the Godot 4.7.2 `--doctool` dump and godot-docs 4.7
 (commit `9adca4c`). Written in own words.
 

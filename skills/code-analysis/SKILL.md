@@ -5,7 +5,7 @@ description: Use when assessing changed code for complexity, maintainability, or
 
 # Code Analysis
 
-Analyze the assigned scope using the target repository's available analyzers. This portable adaptation does not bundle the upstream JavaScript metrics engine or install tools at runtime.
+Analyze the assigned scope using the target repository's available analyzers. This portable workflow does not bundle any standalone JavaScript metrics engine or install tools at runtime.
 
 1. Determine the exact files or diff from the brief. Inspect language manifests, analyzer configuration, and CI scripts. Exclude generated/vendor files unless specifically in scope; report if no applicable source remains.
 2. Run the existing project analysis command with its configured thresholds. Capture tool/version, command, scope, diagnostics, and exit code. Do not assume one language's metrics are available for another, or invent measurements when an analyzer is absent.

@@ -1,6 +1,6 @@
 # Fleet additions: GDScript on Godot 4.7
 
-Own text. These facts are not in the upstream skill. Back to [SKILL.md](../SKILL.md).
+Own text. These facts are not in the copied skill. Back to [SKILL.md](../SKILL.md).
 
 Sources: the Godot 4.7.2 doctool dump (`@GDScript`) and the godot-docs 4.7 branch,
 checked by the fleet's Godot reviewer. Issue numbers are from the Godot repository.

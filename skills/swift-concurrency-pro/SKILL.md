@@ -1,9 +1,7 @@
 ---
 name: swift-concurrency-pro
 description: Reviews Swift code for concurrency correctness, modern API usage, and common async/await pitfalls. Use when reading, writing, or reviewing Swift concurrency code.
-license: MIT
 metadata:
-  author: Paul Hudson
   version: "1.0"
 ---
 

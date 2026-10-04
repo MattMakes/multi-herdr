@@ -5,7 +5,7 @@ description: Use for an authorized security audit or focused review of trust bou
 
 # Security Review
 
-Audit the assigned repository or diff and validate findings before declaring vulnerabilities. This portable workflow replaces upstream scripts and specialized agent fan-out with direct evidence-driven analysis.
+Audit the assigned repository or diff and validate findings before declaring vulnerabilities. This portable workflow replaces external scripts and specialized agent fan-out with direct evidence-driven analysis.
 
 1. Define scope, revision, languages, entry points, deployment assumptions, and assets. Map trust boundaries: external inputs, identities/roles, privileged operations, storage, network destinations, and agent/tool execution when applicable.
 2. Inspect applicable areas: injection and unsafe parsing; authentication/session and object-level authorization; path traversal and file permissions; outbound request controls; cryptography and sensitive logging; configuration/secrets handling; dependency provenance and known advisories. For agent integrations, examine prompt injection paths, tool authority, untrusted skill content, and supply-chain execution.

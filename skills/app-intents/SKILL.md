@@ -1,9 +1,7 @@
 ---
 name: app-intents
 description: Writes and reviews Swift App Intents code that exposes app actions and data to Siri, Shortcuts, Spotlight, widgets, Control Center, and Apple Intelligence. Use when adding AppIntent, AppEntity, OpenIntent, AppShortcutsProvider, EntityQuery, Focus Filters, AssistantEntity/AssistantIntent schemas, on-screen awareness, LongRunningIntent/CancellableIntent, EntityCollection, SyncableEntity, AppIntentsTesting, or when wiring SwiftData/networked data into intents.
-license: MIT
 metadata:
-  author: Anton Novoselov
   version: "1.3.0"
 ---
 

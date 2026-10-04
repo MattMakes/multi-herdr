@@ -7,7 +7,7 @@ description: Use when using the LimboAI addon — behavior trees and hierarchica
 
 > **Related skills:** **godot-ai-navigation** for movement the tasks drive, **godot-state-machine** for core-engine FSM (when you don't need an addon), **godot-brainstorming** for choosing an AI approach.
 
-> **Addon:** LimboAI · version `v1.8.0` · Godot 4.6+ (GDExtension) · MIT · source: https://github.com/limbonaut/limboai · written in C++ (GDExtension; engine-module build also available). GDExtension exposes GDScript; **C# requires the module build** (not GDExtension in v1.8.0), and the v1.8.0 module build targets **Godot 4.7**.
+> **Addon:** LimboAI · version `v1.8.0` · Godot 4.6+ (GDExtension) · source: https://github.com/limbonaut/limboai · written in C++ (GDExtension; engine-module build also available). GDExtension exposes GDScript; **C# requires the module build** (not GDExtension in v1.8.0), and the v1.8.0 module build targets **Godot 4.7**.
 
 ---
 

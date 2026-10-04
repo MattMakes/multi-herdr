@@ -1,9 +1,7 @@
 ---
 name: swiftdata-testing
 description: Writes and reviews SwiftData test code — in-memory ModelContainer fixtures, mock repository patterns, @ModelActor test isolation, Decimal money-value assertions, and content-hash dedup testing. Use when writing or reviewing unit/integration tests for a SwiftData-backed app.
-license: MIT
 metadata:
-  author: Akshay Pimprikar
   version: "1.0"
 ---
 

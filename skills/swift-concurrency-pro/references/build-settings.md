@@ -1,7 +1,5 @@
 # Concurrency build settings
 
-Adapted from AvdLee's Swift Concurrency Agent Skill (MIT). See `skills/provenance.json`.
-
 Read `Package.swift` or the `.pbxproj` before giving advice that depends on concurrency behavior. Check the Swift language mode, strict concurrency level, default isolation, and upcoming features every time, not only for migration work.
 
 | Setting | SwiftPM (`Package.swift`) | Xcode (`.pbxproj`) |

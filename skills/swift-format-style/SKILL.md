@@ -1,9 +1,7 @@
 ---
 name: swift-format-style
 description: Writes and reviews Swift FormatStyle code for values shown to the user, replacing legacy Formatter subclasses and C-style String(format:) with modern .formatted() APIs. Use when displaying formatted numbers, dates, durations, measurements, lists, names, byte counts, or URLs.
-license: MIT
 metadata:
-  author: Anton Novoselov
   version: "1.0"
 ---
 

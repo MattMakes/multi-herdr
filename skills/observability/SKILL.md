@@ -1,9 +1,7 @@
 ---
 name: observability
 description: Writes and reviews Swift observability code on Apple platforms - unified logging (Logger, OSLog, privacy redaction, log levels and persistence), signposts and Instruments, activity tracing, MetricKit metrics and diagnostics (launch, hangs, crashes, OOM, disk writes), crash reports and symbolication, OSLogStore log export, Xcode Organizer, and shipping telemetry to your own backend or third-party SDKs. Use when adding logging, instrumenting performance, wiring MetricKit, diagnosing production crashes or hangs, exporting logs for support, or choosing between print, Logger, signposts, and analytics SDKs.
-license: MIT
 metadata:
-  author: Anton Novoselov
   version: "1.0"
 ---
 

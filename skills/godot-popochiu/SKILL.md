@@ -7,7 +7,7 @@ description: Use when using the Popochiu addon — point-and-click adventure fra
 
 > **Related skills:** **godot-dialogue-system** for hand-rolled dialogue data, **godot-inventory-system** for generic inventory patterns, **godot-save-load** for core-engine persistence.
 
-> **Addon:** Popochiu · version `v2.1.1` · Godot 4.6 · MIT · source: https://github.com/carenalgas/popochiu · pure GDScript (no C# API — GDScript-only skill).
+> **Addon:** Popochiu · version `v2.1.1` · Godot 4.6 · source: https://github.com/carenalgas/popochiu · pure GDScript (no C# API — GDScript-only skill).
 
 ---
 

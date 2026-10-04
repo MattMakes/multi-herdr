@@ -1,9 +1,7 @@
 ---
 name: widgets
 description: Writes and reviews SwiftUI WidgetKit code for Home Screen, Lock Screen, StandBy, and watch widgets - timeline providers and reload policies, StaticConfiguration / AppIntentConfiguration, user-configurable widgets, widget families and sizing, accented/tinted rendering modes, interactive widgets and Controls (Control Center), Live Activities and the Dynamic Island, Smart Stack relevance, push-updated widgets, and visionOS / CarPlay / macOS surfaces. Use when building a widget extension, a timeline provider, a Lock Screen or accessory widget, a watch complication, an interactive button/toggle widget, a Control Center control, a Live Activity, or fixing a widget that won't update or render correctly in tinted mode.
-license: MIT
 metadata:
-  author: Anton Novoselov
   version: "1.2"
 ---
 

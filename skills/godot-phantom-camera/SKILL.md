@@ -7,7 +7,7 @@ description: Use when using the Phantom Camera addon — PhantomCamera2D/3D with
 
 > **Related skills:** **godot-camera-system** for hand-rolled camera patterns, **godot-tween-animation** for the easing concepts the transitions build on.
 
-> **Addon:** Phantom Camera · version `v0.11.0.2` · Godot 4.4+ · MIT · source: https://github.com/ramokz/phantom-camera · nodes are GDScript, plus an official C# wrapper API (`namespace PhantomCamera`) shipped as source `.cs` files in the addon. **Pre-1.0:** minor versions may break API.
+> **Addon:** Phantom Camera · version `v0.11.0.2` · Godot 4.4+ · source: https://github.com/ramokz/phantom-camera · nodes are GDScript, plus an official C# wrapper API (`namespace PhantomCamera`) shipped as source `.cs` files in the addon. **Pre-1.0:** minor versions may break API.
 
 ---
 
