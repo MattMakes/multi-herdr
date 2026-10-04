@@ -12,13 +12,20 @@
 //!    entries not yet planned, with SplitMix64 seeded by `sha256(round_id)`.
 //!    Its propensity is 1/k for k such entries; every other slot has 1.0.
 //!
+//! Every slot has a price. An eligible entry whose model the price table
+//! does not know becomes [`ExclusionReason::Unpriced`] in the eligible set,
+//! and an unpriced baseline is [`Baseline::Unusable`]: the budget cannot
+//! count a candidate it cannot price.
+//!
 //! Labels follow slot order. The judge's anonymous shuffle comes later.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::competition::budget::estimate_cost;
 use crate::competition::config::DatasetConfig;
 use crate::competition::diversity::{pick_diverse, Coverage};
 use crate::competition::model::CandidateLabel;
+use crate::competition::preflight::DEFAULT_TOKEN_ESTIMATE;
 use crate::harness::HarnessKind;
 use crate::ids::{ModelId, RoundId, TeammateName};
 use crate::measure::digest::sha256_bytes;
@@ -26,10 +33,13 @@ use crate::measure::event::{CandidatePlanned, RoundCreated, SlotKind};
 use crate::measure::testkit::{seed_from_digest, SplitMix64};
 use crate::roster::{Roster, Teammate};
 use crate::routing::decision::{decide, resolve, GateFlags, RoutingDecision};
-use crate::routing::eligible::{roster_eligibility, EligibilityFilter, EligibleEntry};
+use crate::routing::eligible::{
+    roster_eligibility, EligibilityFilter, EligibleEntry, ExclusionReason, Verdict,
+};
 use crate::routing::policy::BalanceMode;
 use crate::routing::quota::QuotaView;
 use crate::teacher::TeacherRef;
+use crate::usage::{builtin_prices, Price};
 
 /// Labels are `A`, `B`, … in slot order (`CandidateLabel::from_index`).
 ///
@@ -130,6 +140,11 @@ pub fn round_seed(round_id: &RoundId) -> u64 {
     seed_from_digest(&sha256_bytes(round_id.as_str().as_bytes()))
 }
 
+/// Whether the budget can price a candidate on `model`.
+fn priced(prices: &BTreeMap<String, Price>, model: &str) -> bool {
+    estimate_cost(prices, model, DEFAULT_TOKEN_ESTIMATE).is_some()
+}
+
 /// A slot's launch settings, before its label.
 struct Pick {
     slot: SlotKind,
@@ -155,7 +170,10 @@ impl Pick {
 
 /// The baseline: the gate's decision, and the slot it launches, if any.
 /// The requested name is returned too, so the other slots skip it.
-fn route_baseline(input: &PlanInput) -> (Baseline, Option<Pick>, Vec<String>) {
+fn route_baseline(
+    input: &PlanInput,
+    prices: &BTreeMap<String, Price>,
+) -> (Baseline, Option<Pick>, Vec<String>) {
     let Some(name) = input
         .baseline
         .clone()
@@ -194,6 +212,11 @@ fn route_baseline(input: &PlanInput) -> (Baseline, Option<Pick>, Vec<String>) {
     };
     taken.push(resolved.clone());
     match baseline_pick(&launch, &resolved) {
+        Ok(pick) if !priced(prices, pick.model.as_str()) => (
+            unusable(format!("model {} has no price", pick.model)),
+            None,
+            taken,
+        ),
         Ok(pick) => (Baseline::Routed(routed), Some(pick), taken),
         Err(reason) => (unusable(reason), None, taken),
     }
@@ -220,11 +243,21 @@ fn baseline_pick(launch: &Teammate, resolved: &str) -> Result<Pick, String> {
 pub fn plan_round(input: &PlanInput) -> RoundPlan {
     let mut filter = input.filter.clone();
     filter.excluded.extend(input.config.exclude.iter().cloned());
-    let eligible_set = roster_eligibility(input.roster, input.view, &filter);
+    let prices = builtin_prices();
+    let mut eligible_set = roster_eligibility(input.roster, input.view, &filter);
+    for e in &mut eligible_set {
+        if e.is_eligible()
+            && e.model
+                .as_ref()
+                .is_some_and(|m| !priced(&prices, m.as_str()))
+        {
+            e.verdict = Verdict::Excluded(ExclusionReason::Unpriced);
+        }
+    }
     let seed = round_seed(input.round_id);
     let n = input.n as usize;
 
-    let (baseline, base_pick, taken) = route_baseline(input);
+    let (baseline, base_pick, taken) = route_baseline(input, &prices);
     let mut picks: Vec<Pick> = Vec::new();
     let mut covered = Coverage::default();
     if n > 0 {
