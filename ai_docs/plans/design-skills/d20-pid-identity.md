@@ -67,3 +67,33 @@ the orchestrator if you overlap.
 1. The shared start-time helper with tests. Commit.
 2. Sites 1–4, a commit each, gate before each.
 3. Report: every site, its decision and its test. Follow the merge protocol.
+
+## ITEM 5 (added 2026-10-03): git environment isolation
+
+Incident: `git rebase -x '... just gate' design-skills` in this worktree
+exported `GIT_DIR` to the gate. Tests that build temp repos
+(`crates/horch/tests/skills_cli.rs:175` and `crates/horch-e2e/tests/skills_exposure.rs:265`
+`git init --bare` + commit "demo"; `crates/horch-core/tests/vcs.rs:94` and
+`crates/horch-core/tests/coordinator.rs:113` `git init -b main` + commit
+"base") then wrote to the real repository: `core.bare=true`, HEAD=main and 2
+commits on main. The operator repaired it.
+
+Fix, so no environment can point a git call at the wrong repository:
+1. Product: every place horch runs `git` (`vcs::git::SystemGit` and any other
+   `Command::new("git")` / `HORCH_GIT_BIN` site; search for them) removes
+   `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`,
+   `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+   `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES` and `GIT_PREFIX` from the
+   child, and always passes the repository with `-C <dir>`. One shared
+   helper, not N copies.
+2. Tests: every test helper that runs git uses the same scrub (a test-side
+   helper in each test crate's support module is fine if it calls a shared
+   list of variable names exported from horch-core).
+3. `scripts/phase-gate.sh` unsets the same variables at the top, with a
+   comment that names this incident.
+4. Regression test: create a decoy repository, export `GIT_DIR` and
+   `GIT_WORK_TREE` to it, run the 4 named tests' setup helpers (or the
+   product git runner), and assert the decoy's config, HEAD and refs are
+   unchanged.
+5. Never run the gate under `git rebase -x` again in this run; rebase, then
+   run the gate.
