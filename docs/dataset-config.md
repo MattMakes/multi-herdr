@@ -7,6 +7,15 @@ overrides the key with the same name. The source is
 the design is §4.11 of
 `ai_docs/designs/2026-10-02-dataset-competition-design.md`.
 
+`<repo>` is the repo the command targets: `--project <dir>`, else the git
+top level of the current directory (the full order is in
+[command-flow.md](command-flow.md), "Which repo a dataset command targets").
+In a linked worktree (`git worktree add`), the git top level is the linked
+worktree, not the main repository. So a command run there reads the linked
+worktree's `.multi-herdr/dataset.yaml`, starts the candidates from its HEAD
+and keeps its own dataset directory. To target the main repository from a
+linked worktree, pass `--project <main repository>`.
+
 ## Top-level keys
 
 | key | default | flag | meaning |
