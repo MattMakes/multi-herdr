@@ -73,14 +73,15 @@ fn main() {
     call.flush();
     // Kill only after the state is saved and unlocked: a pane that closes
     // itself kills this very process.
-    for pgid in std::mem::take(&mut *KILL.lock().unwrap()) {
-        kill_group(pgid);
+    for (pgid, started) in std::mem::take(&mut *KILL.lock().unwrap()) {
+        kill_group(pgid, started.as_deref());
     }
     std::process::exit(code);
 }
 
-/// Process groups to kill once the call is done.
-static KILL: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+/// Process groups to kill once the call is done, with their leader's start
+/// time when `pane run` recorded it.
+static KILL: std::sync::Mutex<Vec<(u64, Option<String>)>> = std::sync::Mutex::new(Vec::new());
 
 /// `$HORCH_FAKE_LOG.state.lock/`, a mkdir lock. The holder writes its pid
 /// into `pid` in the lock dir.
@@ -285,6 +286,12 @@ fn run(call: &mut Call) -> i32 {
             if scenario_has("exec") {
                 if let Some(pid) = exec_detached(pane, command) {
                     state["pids"][*pane] = json!(pid);
+                    // With the pid, the start time: `pane close` kills the
+                    // group only while its leader is this process.
+                    #[cfg(unix)]
+                    if let Some(started) = horch_e2e::process::started(pid) {
+                        state["started"][*pane] = json!(started);
+                    }
                     save(&state);
                 }
             }
@@ -392,9 +399,13 @@ fn remove_pane(state: &mut Value, pane: &str) -> bool {
             found |= panes.len() != before;
         }
     }
+    let started = state["started"]
+        .as_object_mut()
+        .and_then(|m| m.remove(pane))
+        .and_then(|s| s.as_str().map(str::to_owned));
     if let Some(pid) = state["pids"].as_object_mut().and_then(|m| m.remove(pane)) {
         if let Some(pid) = pid.as_u64() {
-            KILL.lock().unwrap().push(pid);
+            KILL.lock().unwrap().push((pid, started));
         }
     }
     found
@@ -443,16 +454,27 @@ fn close_workspace(state: &mut Value, ws: &str) {
 }
 
 /// Kill the process group of a pane's command.
-fn kill_group(pgid: u64) {
+///
+/// Only while it is still that group: the pid was recorded at `pane run`,
+/// and a pane command that has ended frees it for any other program. A kill
+/// of a reused group id can end another test run, even a whole gate. A
+/// group without a recorded start time is not killed.
+fn kill_group(pgid: u64, started: Option<&str>) {
     if cfg!(windows) {
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pgid.to_string(), "/T", "/F"])
             .status();
-    } else {
-        let _ = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(format!("kill -TERM -- -{pgid} 2>/dev/null"))
-            .status();
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use horch_e2e::process::{is_same_group, processes, signal_groups};
+        let (Ok(group), Some(started)) = (u32::try_from(pgid), started) else {
+            return;
+        };
+        if is_same_group(&processes(), group, started) {
+            signal_groups(&[group], "TERM");
+        }
     }
 }
 

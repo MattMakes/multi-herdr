@@ -584,6 +584,6 @@ fn teardown_fails_a_test_that_leaks_a_process() {
     assert!(ended, "teardown killed pid {pid}");
     let panic = teardown.expect_err("a leaked process fails the test");
     let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
-    assert!(message.contains("leaked 1 process"), "{message}");
+    assert!(message.contains("the test leaked"), "{message}");
     assert!(message.contains("stubborn"), "{message}");
 }

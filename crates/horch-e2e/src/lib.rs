@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 pub mod harness;
+pub mod process;
 
 /// One call of a fake, built up while it runs and written when it finishes.
 #[derive(Debug)]
