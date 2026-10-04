@@ -1,6 +1,6 @@
 //! `herdr-install` - installs the latest Herdr CLI.
 //!
-//! The Rust port of https://herdr.dev/install.sh and https://herdr.dev/install.ps1,
+//! The Rust port of <https://herdr.dev/install.sh> and <https://herdr.dev/install.ps1>,
 //! as one binary that needs no shell, no curl, and no PowerShell. It reads the same
 //! release manifests as `herdr update`, so installs and updates agree on what
 //! "latest" means.
