@@ -89,3 +89,12 @@ the orchestrator.
 report in `ai_docs/reports/godot/<unit>.md` (what, sources consulted, API
 check output summary, anything dropped and why), then `horch done` with the
 summary.
+
+## Work outside skills/ (rule added during the wave)
+
+horch reads `skills/` in every build and test, so an unfinished skill there
+breaks every worker. Build and check skills under
+`.worktrees/_scratch/godot-<your role>/skills/` (`rename.py --out` there).
+Copy them into `skills/` only while you hold the lock, right before
+`skills_catalog` and the commit. A `description:` that holds `: ` must be
+quoted.
