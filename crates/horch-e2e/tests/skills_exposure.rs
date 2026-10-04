@@ -472,3 +472,55 @@ fn git_env_cannot_reach_another_repository() {
     );
     assert_eq!(repo_state(&decoy.join(".git")), before, "the decoy changed");
 }
+
+/// Spawn `name`, run `between`, then run its worker as the new pane would,
+/// and return the worker's output, success or not.
+fn worker_after(h: &Harness, name: &str, between: impl FnOnce()) -> Output {
+    let out = h.run(&["spawn", name, "x", "--from-pane", "w1:p1", "--no-tile"]);
+    assert!(out.status.success(), "spawn {name}: {}", text(&out));
+    let pane = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .last()
+        .unwrap()
+        .trim()
+        .to_string();
+    between();
+    let mut worker = h.horch(&["worker", &format!("{name}-1")]);
+    worker.env("HERDR_PANE_ID", &pane);
+    worker.output().unwrap()
+}
+
+/// An operator skill edited between the spawn (which recorded its digest)
+/// and the worker's start fails the launch: the agent never runs content
+/// the ledger did not record.
+#[test]
+fn operator_skills_e2e_changed_since_spawn_fails_the_launch() {
+    let h = operator_world("opskd", "op-drift", "claude", "sonnet");
+    let skill_md = h.home.join(".agents/skills/test-modernizer/SKILL.md");
+    let out = worker_after(&h, "op-drift", || {
+        std::fs::write(
+            &skill_md,
+            "---\nname: test-modernizer\ndescription: Edited after the spawn.\n---\nnew body\n",
+        )
+        .unwrap();
+    });
+    assert!(!out.status.success(), "{}", text(&out));
+    let t = text(&out);
+    assert!(t.contains("the skills changed since"), "{t}");
+    assert!(t.contains("'test-modernizer' was operator+"), "{t}");
+    assert!(h.calls_of("claude").is_empty(), "the agent ran: {t}");
+}
+
+/// An operator skill deleted between the spawn and the worker's start fails
+/// the launch, instead of the skip that a missing skill gets at spawn.
+#[test]
+fn operator_skills_e2e_deleted_since_spawn_fails_the_launch() {
+    let h = operator_world("opskg", "op-gone", "claude", "sonnet");
+    let skill = h.home.join(".agents/skills/test-modernizer");
+    let out = worker_after(&h, "op-gone", || std::fs::remove_dir_all(&skill).unwrap());
+    assert!(!out.status.success(), "{}", text(&out));
+    let t = text(&out);
+    assert!(t.contains("'test-modernizer' (operator+"), "{t}");
+    assert!(t.contains("is missing now"), "{t}");
+    assert!(h.calls_of("claude").is_empty(), "the agent ran: {t}");
+}

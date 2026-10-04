@@ -623,6 +623,59 @@ fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn skill_ref(
+        id: &str,
+        version: &str,
+        digest: char,
+    ) -> crate::skills::activation::ResolvedSkillRef {
+        crate::skills::activation::ResolvedSkillRef {
+            id: crate::ids::SkillId::new(id).unwrap(),
+            version: horch_marketplace::SkillVersion(version.into()),
+            digest: format!("sha256:{}", digest.to_string().repeat(64))
+                .parse()
+                .unwrap(),
+            source: "bundled".into(),
+            policy: crate::skills::activation::InvocationPolicy::Explicit,
+        }
+    }
+
+    /// The launch compares id, version and digest with the ledger record.
+    #[test]
+    fn skill_drift_names_missing_changed_and_unrecorded_skills() {
+        let tdd = skill_ref("tdd", "bundled+aaaa", 'a');
+        let op = skill_ref("test-modernizer", "operator+bbbb", 'b');
+        assert_eq!(
+            skill_drift(&[tdd.clone(), op.clone()], &[op.clone(), tdd.clone()]),
+            None
+        );
+        assert_eq!(skill_drift(&[], &[]), None);
+        // The policy and the source do not count.
+        let offered = crate::skills::activation::ResolvedSkillRef {
+            policy: crate::skills::activation::InvocationPolicy::Offered,
+            source: "elsewhere".into(),
+            ..tdd.clone()
+        };
+        assert_eq!(skill_drift(std::slice::from_ref(&tdd), &[offered]), None);
+
+        assert_eq!(
+            skill_drift(&[tdd.clone(), op.clone()], std::slice::from_ref(&tdd)).unwrap(),
+            "'test-modernizer' (operator+bbbb) is missing now"
+        );
+        let edited = skill_ref("test-modernizer", "operator+cccc", 'c');
+        assert_eq!(
+            skill_drift(std::slice::from_ref(&op), &[edited]).unwrap(),
+            "'test-modernizer' was operator+bbbb (digest bbbbbbbbbbbb) and is \
+             operator+cccc (digest cccccccccccc) now"
+        );
+        // Same version label, other bytes: still a change.
+        let same_label = skill_ref("test-modernizer", "operator+bbbb", 'd');
+        assert!(skill_drift(std::slice::from_ref(&op), &[same_label]).is_some());
+        assert_eq!(
+            skill_drift(std::slice::from_ref(&tdd), &[tdd.clone(), op]).unwrap(),
+            "'test-modernizer' (operator+bbbb) was not recorded"
+        );
+    }
     use crate::harness::HarnessKind;
     use crate::roster::Roster;
 
