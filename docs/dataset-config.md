@@ -83,7 +83,19 @@ A list. Each gate:
 | `name` | required | the gate name in logs and validation records |
 | `command` | required | the shell command, not empty |
 | `timeout_s` | required | greater than 0 |
-| `required` | `true` | parsed but not read: every gate must pass for a candidate to be eligible |
+| `required` | `true` | `false`: a failed gate does not make the candidate ineligible |
+
+A candidate is eligible for the judge when every required gate passes. A gate
+with `required: false` still runs and counts in the mechanical score (passed
+gates / all gates). Promotion revalidates the integrated commit with the same
+rule. Source: `CommandValidator::validate` in
+`crates/horch-core/src/evaluation/validator.rs`.
+
+```yaml
+gates:
+  - { name: test, command: cargo test, timeout_s: 600 }
+  - { name: lint, command: cargo clippy -- -D warnings, timeout_s: 300, required: false }
+```
 
 ## `caps`
 

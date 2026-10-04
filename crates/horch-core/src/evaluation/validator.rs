@@ -36,6 +36,9 @@ pub struct GateSpec {
     pub name: String,
     pub command: String,
     pub timeout: Duration,
+    /// A candidate is eligible only when every required gate passes. A gate
+    /// that is not required still counts in the mechanical score.
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,7 +77,7 @@ pub struct ValidationReport {
     pub gates: Vec<GateResult>,
     /// passed / total; 0.0 when there are no gates.
     pub mechanical_score: f64,
-    /// Every gate passed.
+    /// Every required gate passed ([`GateSpec::required`]).
     pub eligible: bool,
 }
 
@@ -216,6 +219,11 @@ impl Validator for CommandValidator {
             .iter()
             .filter(|g| g.status == GateStatus::Passed)
             .count();
+        let eligible = self
+            .gates
+            .iter()
+            .zip(&gates)
+            .all(|(spec, g)| !spec.required || g.status == GateStatus::Passed);
         let mechanical_score = if gates.is_empty() {
             0.0
         } else {
@@ -225,7 +233,7 @@ impl Validator for CommandValidator {
             validation_id: crate::ids::mint_v7(crate::clock::now()).to_string(),
             label: label.clone(),
             head_sha: candidate.head_sha.clone(),
-            eligible: passed == gates.len(),
+            eligible,
             gates,
             mechanical_score,
         })

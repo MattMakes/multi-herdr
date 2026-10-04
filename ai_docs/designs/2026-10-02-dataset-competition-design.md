@@ -683,7 +683,8 @@ impl<'a, G: GitClient> WorktreeManager<'a, G> {
 ### 4.6 Validation (`evaluation/validator.rs`, B3)
 
 ```rust
-pub struct GateSpec { pub name: String, pub command: String, pub timeout: Duration } // from config only (SEC-07)
+pub struct GateSpec { pub name: String, pub command: String, pub timeout: Duration,
+                     pub required: bool } // from config only (SEC-07); `gates[].required`, default true
 pub enum GateStatus { Passed, Failed { code: i32 }, TimedOut, Error { reason: String } }
 pub struct GateResult { pub name: String, pub status: GateStatus, pub duration_ms: u64,
                         pub log_ref: PathBuf, pub log_digest: Digest, pub log_truncated: bool }

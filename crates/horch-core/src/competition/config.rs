@@ -439,6 +439,18 @@ mod tests {
         assert!(parse_file("judge:\n  mode: manual\n").is_err());
     }
 
+    /// G9: a gate is required unless `required: false` says otherwise.
+    #[test]
+    fn a_gate_is_required_by_default() {
+        let file = parse_file(
+            "gates:\n  - {name: a, command: make, timeout_s: 5}\n  \
+             - {name: b, command: lint, timeout_s: 5, required: false}\n",
+        )
+        .unwrap();
+        let required: Vec<bool> = file.gates.unwrap().iter().map(|g| g.required).collect();
+        assert_eq!(required, [true, false]);
+    }
+
     /// The idle periods default to 120 s and 180 s, the file sets them, 0
     /// turns the rule off, and a nudge without an end period is refused.
     #[test]

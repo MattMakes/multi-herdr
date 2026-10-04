@@ -357,6 +357,7 @@ fn coordinate(
             name: g.name.clone(),
             command: g.command.clone(),
             timeout: Duration::from_secs(g.timeout_s),
+            required: g.required,
         })
         .collect();
     // `fail-gate:<name>` reaches the gates from `run` (and from promotion's

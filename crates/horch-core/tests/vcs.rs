@@ -407,6 +407,7 @@ fn gate(name: &str, command: &str, timeout_ms: u64) -> GateSpec {
         name: name.into(),
         command: command.into(),
         timeout: Duration::from_millis(timeout_ms),
+        required: true,
     }
 }
 
@@ -515,6 +516,49 @@ fn cmp_09_gates_per_candidate_with_timeouts() {
     );
     assert!(report.gates.is_empty());
     assert_eq!(report.mechanical_score, 0.0);
+}
+
+/// G9: `gates[].required: false` lets a candidate stay eligible when that
+/// gate fails; it still counts in the mechanical score. A required gate that
+/// fails makes the candidate ineligible.
+#[test]
+fn cmp_09_only_a_required_gate_decides_eligibility() {
+    let run = |optional_fails: bool| {
+        let tmp = tempfile::tempdir().unwrap();
+        let (report, _, _) = validate_in(
+            &tmp,
+            |_| {},
+            |artifacts| {
+                let (required, optional) = if optional_fails {
+                    ("true", "exit 1")
+                } else {
+                    ("exit 1", "true")
+                };
+                CommandValidator::new(
+                    vec![
+                        gate("required", required, 10_000),
+                        GateSpec {
+                            required: false,
+                            ..gate("optional", optional, 10_000)
+                        },
+                    ],
+                    artifacts,
+                    BTreeSet::new(),
+                )
+            },
+        );
+        report
+    };
+
+    let report = run(true);
+    assert_eq!(report.gates[1].status, GateStatus::Failed { code: 1 });
+    assert!(report.eligible, "a failed optional gate made it ineligible");
+    assert!((report.mechanical_score - 0.5).abs() < 1e-9);
+
+    let report = run(false);
+    assert_eq!(report.gates[0].status, GateStatus::Failed { code: 1 });
+    assert!(!report.eligible, "a failed required gate left it eligible");
+    assert!((report.mechanical_score - 0.5).abs() < 1e-9);
 }
 
 /// A gate that passes but leaves a child in its process group: the
