@@ -9,6 +9,7 @@
 //! | [`ids`]         | typed identities (`ExecutionId`, `RoleName`, `PaneId`, ...) |
 //! | [`clock`]       | the one clock horch reads (`HORCH_NOW` pins it)             |
 //! | [`fsx`]         | durable file writes and the cross-process directory lock    |
+//! | [`procid`]      | process identity: a pid with its start time                 |
 //! | [`runtime`]     | the process boundary: `RuntimeContext`, paths, binaries     |
 //! | [`roster`]      | `teammates/` files: parsing, layering, `--check` rules      |
 //! | [`prompts`]     | rendering briefings from `teammates/`                       |
@@ -43,6 +44,7 @@ pub mod harness;
 pub mod ids;
 pub mod measure;
 pub mod messaging;
+pub mod procid;
 pub mod prompts;
 pub mod roster;
 pub mod routing;

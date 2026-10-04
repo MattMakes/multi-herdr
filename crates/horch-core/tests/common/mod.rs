@@ -170,3 +170,33 @@ pub fn prime_sid(state: &Path) -> String {
         .to_string_lossy()
         .into_owned()
 }
+
+/// D20 item 5. Run test `child` of this test binary in a new process with
+/// `GIT_DIR` and `GIT_WORK_TREE` aimed at a decoy repository, and assert
+/// that the child passed and the decoy did not change. The child process,
+/// not this one, gets the variables: the other tests of this binary run in
+/// parallel and must not see them.
+pub fn assert_decoy_untouched(git: &Path, child: &str) {
+    use horch_marketplace::git::{repo_state, GitRunner};
+    let tmp = tempfile::tempdir().unwrap();
+    let decoy = tmp.path().join("decoy");
+    std::fs::create_dir(&decoy).unwrap();
+    GitRunner::new(git)
+        .with_env("GIT_CONFIG_GLOBAL", tmp.path().join("gitconfig"))
+        .run(&decoy, &["init", "--quiet", "-b", "trunk"])
+        .unwrap();
+    let before = repo_state(&decoy.join(".git"));
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", child, "--ignored", "--test-threads=1"])
+        .env("GIT_DIR", decoy.join(".git"))
+        .env("GIT_WORK_TREE", &decoy)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "{child}: {stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(repo_state(&decoy.join(".git")), before, "the decoy changed");
+}

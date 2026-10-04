@@ -179,7 +179,7 @@ impl CommandValidator {
         loop {
             if let Some(exit) = child.try_wait()? {
                 // Stragglers the gate left in the background go too.
-                kill_group(&mut child);
+                kill_reaped_group(&mut child);
                 return Ok(exit_status(exit));
             }
             if Instant::now() >= deadline {
@@ -260,8 +260,9 @@ fn private_file(path: &Path) -> anyhow::Result<File> {
 
 #[cfg(unix)]
 fn kill_group(child: &mut Child) {
-    // The group id is the child's pid (`process_group(0)`). A group that is
-    // already gone gives ESRCH, which is fine.
+    // The group id is the child's pid (`process_group(0)`). The child is
+    // not reaped yet, so its pid and group id are still its own. A group
+    // that is already gone gives ESRCH, which is fine.
     unsafe {
         libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
     }
@@ -270,6 +271,29 @@ fn kill_group(child: &mut Child) {
 #[cfg(not(unix))]
 fn kill_group(child: &mut Child) {
     let _ = child.kill();
+}
+
+/// Kill the group of a gate leader that `try_wait` has already reaped: the
+/// stragglers it left in the background.
+///
+/// The leader's pid is free now, but POSIX gives no new process a pid while
+/// a process group with that id exists. So while no process has the pid,
+/// the group, if it has members, is still the gate's. A process that has
+/// the pid is another program, and its group may be its own: no signal.
+#[cfg(unix)]
+fn kill_reaped_group(child: &mut Child) {
+    if may_kill_reaped_group(child.id()) {
+        kill_group(child);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_reaped_group(_child: &mut Child) {}
+
+/// Whether the group of reaped leader `pid` is still the gate's.
+#[cfg(unix)]
+fn may_kill_reaped_group(pid: u32) -> bool {
+    !fsx::pid_alive(pid)
 }
 
 fn exit_status(exit: ExitStatus) -> GateStatus {
@@ -380,5 +404,21 @@ mod tests {
         assert_eq!(file_part("../x"), "___x");
         assert!(!plain_name("../x"));
         assert!(plain_name("c-1"));
+    }
+
+    /// After the reap, a process that has the leader's pid is another
+    /// program (a reused pid): its group is not signalled. With no process
+    /// at the pid, the group is still the gate's.
+    #[cfg(unix)]
+    #[test]
+    fn a_reaped_leaders_pid_that_runs_again_is_not_the_gate() {
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        assert!(!may_kill_reaped_group(other.id()), "a running pid");
+        other.kill().unwrap();
+        other.wait().unwrap();
+        assert!(may_kill_reaped_group(other.id()), "no process has the pid");
     }
 }

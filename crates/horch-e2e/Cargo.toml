@@ -41,9 +41,13 @@ name = "fake-ollama"
 path = "src/bin/fake-ollama.rs"
 
 [dependencies]
+# `procid`: fake-herdr and the harness signal a recorded process group only
+# while it is the same group.
+horch-core.workspace = true
+# `git::scrub_repo_env`: every git child of the harness and the fakes.
+horch-marketplace.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
-horch-core.workspace = true
 tempfile = "3"

@@ -6,6 +6,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# No inherited variable may aim a git call at a repository. On 2026-10-03 a
+# gate run under `git rebase -x` inherited GIT_DIR, and test fixtures that
+# `git init` and commit wrote into the real repository (core.bare=true,
+# HEAD=main, 2 commits). The same list is REPO_ENV in
+# crates/horch-marketplace/src/git.rs. Rebase first, then run the gate;
+# never run it under `git rebase -x`.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE \
+  GIT_CEILING_DIRECTORIES GIT_PREFIX
+
 step() {
   echo "==> gate: $*"
   "$@"

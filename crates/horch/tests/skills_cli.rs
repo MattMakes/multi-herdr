@@ -144,8 +144,8 @@ impl World {
     }
 
     fn git(&self, dir: &Path, args: &[&str]) {
-        let out = Command::new(self.git.as_ref().unwrap())
-            .arg("-C")
+        let mut cmd = Command::new(self.git.as_ref().unwrap());
+        cmd.arg("-C")
             .arg(dir)
             .args(args)
             .env_remove("ANTHROPIC_API_KEY")
@@ -154,9 +154,11 @@ impl World {
             .env("GIT_AUTHOR_NAME", "Horch Fixture")
             .env("GIT_AUTHOR_EMAIL", "fixture@horch.invalid")
             .env("GIT_COMMITTER_NAME", "Horch Fixture")
-            .env("GIT_COMMITTER_EMAIL", "fixture@horch.invalid")
-            .output()
-            .unwrap();
+            .env("GIT_COMMITTER_EMAIL", "fixture@horch.invalid");
+        // `-C` does not win over `GIT_DIR`: under `git rebase -x` this
+        // helper once wrote to the real repository.
+        horch_marketplace::git::scrub_repo_env(&mut cmd);
+        let out = cmd.output().unwrap();
         assert!(out.status.success(), "git {args:?} failed: {}", text(&out));
     }
 
@@ -403,5 +405,48 @@ fn entry_commit(catalog: &SkillCatalog) -> String {
             ..
         } => c.clone(),
         other => panic!("not a git marketplace entry: {other:?}"),
+    }
+}
+
+/// D20 item 5: `bare_skill_repo` with `GIT_DIR` and `GIT_WORK_TREE` aimed at
+/// a decoy repository leaves the decoy unchanged. The child process, not
+/// this one, gets the variables: the other tests run in parallel.
+#[test]
+fn git_env_cannot_reach_another_repository() {
+    use horch_marketplace::git::{repo_state, GitRunner};
+    let w = World::new().with_git();
+    let Some(git) = w.git.clone() else { return };
+    let decoy = w.root.join("decoy");
+    std::fs::create_dir(&decoy).unwrap();
+    GitRunner::new(git)
+        .with_env("GIT_CONFIG_GLOBAL", w.root.join("gitconfig"))
+        .run(&decoy, &["init", "--quiet", "-b", "trunk"])
+        .unwrap();
+    let before = repo_state(&decoy.join(".git"));
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "git_env_decoy_child",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env("GIT_DIR", decoy.join(".git"))
+        .env("GIT_WORK_TREE", &decoy)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(repo_state(&decoy.join(".git")), before, "the decoy changed");
+}
+
+#[test]
+#[ignore = "run by git_env_cannot_reach_another_repository, with GIT_DIR set"]
+fn git_env_decoy_child() {
+    let w = World::new().with_git();
+    if w.git.is_some() {
+        assert!(w.bare_skill_repo().join("HEAD").is_file());
     }
 }

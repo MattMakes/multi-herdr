@@ -4,10 +4,11 @@
 //! the same idiom as `Ledger::lock`. The holder writes `collector.json` next
 //! to it. A lock whose pid is dead is broken, and the breaker says so.
 //!
-//! Liveness is "the pid exists" (`kill(pid, 0)` on Unix, `tasklist` on
-//! Windows). The design also asks that the process start time match; stable
-//! Rust has no portable way to read it, so a reused pid would read as live
-//! until that process exits. The lock is also removed on every normal exit.
+//! Liveness is "the pid exists and has the recorded start time"
+//! ([`crate::procid::alive`]), so a reused pid does not keep a stale lock
+//! alive. A `collector.json` without a start time (written before it
+//! existed), or a platform without start times (Windows), falls back to
+//! "the pid exists". The lock is also removed on every normal exit.
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +27,10 @@ pub struct LockInfo {
     pub workspace_id: Option<String>,
     #[serde(default)]
     pub pane_id: Option<String>,
+    /// The holder's [`crate::procid::start_time`]; `None` in a file written
+    /// before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_start: Option<u64>,
 }
 
 pub(crate) fn lock_dir(state_root: &Path) -> PathBuf {
@@ -36,7 +41,7 @@ pub(crate) fn info_path(state_root: &Path) -> PathBuf {
     super::dir(state_root).join("collector.json")
 }
 
-use crate::fsx::pid_alive;
+use crate::procid;
 
 /// Who holds the lock, if anyone.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +63,7 @@ pub fn holder(state_root: &Path) -> Holder {
         return Holder::Free;
     }
     match read_info(state_root) {
-        Some(info) if pid_alive(info.pid) => Holder::Live(info),
+        Some(info) if procid::alive(info.pid, info.pid_start) => Holder::Live(info),
         Some(info) => Holder::Stale(Some(info)),
         None => {
             // A holder between `create_dir` and writing its info is live for
@@ -153,6 +158,7 @@ pub fn this_process(now: &str, ctx: &crate::runtime::RuntimeContext) -> LockInfo
         herdr_session: ctx.inherited.herdr_session.clone(),
         workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.to_string()),
         pane_id: ctx.herdr.pane.as_ref().map(|p| p.to_string()),
+        pid_start: procid::start_time(std::process::id()),
     }
 }
 
@@ -195,5 +201,40 @@ mod tests {
         let lock = acquire(tmp.path(), &this_process("now", &test_ctx())).unwrap();
         assert!(lock.is_ok(), "the stale lock is broken and taken");
         assert_eq!(read_info(tmp.path()).unwrap().pid, std::process::id());
+    }
+
+    /// A lock whose pid runs with another start time is stale: the pid was
+    /// given to a later program. Without a start time (an old file), the
+    /// pid alone decides, as before.
+    #[test]
+    fn spc_01_a_reused_pid_is_a_stale_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(lock_dir(tmp.path())).unwrap();
+        let me = std::process::id();
+        let info = |pid_start| LockInfo {
+            pid: me,
+            started_at: "2026-09-28T17:00:00Z".into(),
+            pid_start,
+            ..LockInfo::default()
+        };
+        let put = |i: &LockInfo| {
+            std::fs::write(info_path(tmp.path()), serde_json::to_string(i).unwrap()).unwrap()
+        };
+        std::fs::write(
+            info_path(tmp.path()),
+            format!(r#"{{"pid":{me},"started_at":"x"}}"#),
+        )
+        .unwrap();
+        assert!(matches!(holder(tmp.path()), Holder::Live(_)), "an old file");
+        let Some(mine) = procid::start_time(me) else {
+            return; // No start times on this platform.
+        };
+        put(&info(Some(mine)));
+        assert!(matches!(holder(tmp.path()), Holder::Live(_)));
+        put(&info(Some(mine + 1)));
+        assert!(matches!(holder(tmp.path()), Holder::Stale(Some(_))));
+        let lock = acquire(tmp.path(), &this_process("now", &test_ctx())).unwrap();
+        assert!(lock.is_ok(), "the reused pid's lock is broken and taken");
+        assert_eq!(read_info(tmp.path()).unwrap().pid_start, Some(mine));
     }
 }

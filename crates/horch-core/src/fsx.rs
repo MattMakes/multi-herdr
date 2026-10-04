@@ -217,8 +217,9 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
     set_mode(path, PRIVATE_DIR)
 }
 
-/// Whether process `pid` exists. `DirLock` and the telemetry collector
-/// lock both decide liveness with this.
+/// Whether process `pid` exists. A pid alone can name a later program:
+/// `DirLock` and the telemetry collector lock decide liveness with
+/// [`crate::procid::alive`], which also checks the start time.
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -273,6 +274,11 @@ pub(crate) struct LockOwner {
     /// Random per acquisition, so a holder only ever releases its own lock.
     #[serde(default)]
     pub nonce: String,
+    /// The holder's [`crate::procid::start_time`]: a pid that now names
+    /// another process is a dead holder. `None` in an owner file written
+    /// before it existed; then the pid alone decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<u64>,
 }
 
 /// A cross-process lock at `<dir>/<name>.lock/`.
@@ -355,6 +361,7 @@ impl DirLock {
                         host: host_name(),
                         acquired_at: crate::clock::stamp(chrono::Utc::now()),
                         nonce: uuid::Uuid::new_v4().simple().to_string(),
+                        started: crate::procid::start_time(std::process::id()),
                     };
                     let json = serde_json::to_vec(&owner).expect("LockOwner serializes");
                     write_atomic(&guard.path.join("owner"), &json, PRIVATE_FILE)?;
@@ -389,7 +396,7 @@ fn is_stale(path: &Path, stale_after: Duration) -> bool {
     }
     match read_owner(path) {
         // A pid on another host cannot be checked from here.
-        Some(o) => o.host == host_name() && !pid_alive(o.pid),
+        Some(o) => o.host == host_name() && !crate::procid::alive(o.pid, o.started),
         // A holder between `create_dir` and writing its owner is live for a
         // moment; only an old, ownerless lock is stale.
         None => age.is_some_and(|a| a >= OWNERLESS_GRACE),
@@ -558,6 +565,7 @@ mod tests {
             host: host_name(),
             acquired_at: "2026-09-28T17:00:00Z".into(),
             nonce: "dead".into(),
+            started: None,
         };
         std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
         let held = DirLock::acquire(
@@ -570,6 +578,52 @@ mod tests {
         let owner: LockOwner =
             serde_json::from_slice(&std::fs::read(held.path().join("owner")).unwrap()).unwrap();
         assert_eq!(owner.pid, std::process::id());
+    }
+
+    /// The owner's pid runs (it is this process) but with another start
+    /// time: the pid was given to a later program, so the owner is dead and
+    /// the lock is broken. An owner file without a start time keeps the old
+    /// rule: the pid runs, so the lock is held.
+    #[test]
+    fn dirlock_breaks_an_owner_whose_pid_was_reused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("events.lock");
+        let me = std::process::id();
+        let owner = |started| LockOwner {
+            pid: me,
+            host: host_name(),
+            acquired_at: "2026-09-28T17:00:00Z".into(),
+            nonce: "old".into(),
+            started,
+        };
+        std::fs::create_dir(&lock).unwrap();
+        std::fs::write(
+            lock.join("owner"),
+            serde_json::to_vec(&owner(None)).unwrap(),
+        )
+        .unwrap();
+        let hour = Duration::from_secs(3600);
+        assert!(!is_stale(&lock, hour), "an old owner file: the pid decides");
+        let Some(mine) = crate::procid::start_time(me) else {
+            return; // No start times on this platform.
+        };
+        std::fs::write(
+            lock.join("owner"),
+            serde_json::to_vec(&owner(Some(mine))).unwrap(),
+        )
+        .unwrap();
+        assert!(!is_stale(&lock, hour), "the same process holds it");
+        std::fs::write(
+            lock.join("owner"),
+            serde_json::to_vec(&owner(Some(mine + 1))).unwrap(),
+        )
+        .unwrap();
+        assert!(is_stale(&lock, hour), "the pid now names another process");
+        let held = DirLock::acquire(tmp.path(), "events", hour, Duration::from_secs(1))
+            .expect("the reused pid's lock is broken");
+        let new: LockOwner =
+            serde_json::from_slice(&std::fs::read(held.path().join("owner")).unwrap()).unwrap();
+        assert_eq!(new.started, Some(mine));
     }
 
     #[test]
@@ -606,6 +660,7 @@ mod tests {
                 host: host_name(),
                 acquired_at: "2026-09-28T17:00:00Z".into(),
                 nonce: "dead".into(),
+                started: None,
             };
             std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
             #[cfg(unix)]
@@ -660,6 +715,7 @@ mod tests {
             host: host_name(),
             acquired_at: "2026-09-28T17:00:00Z".into(),
             nonce: "dead".into(),
+            started: None,
         };
         std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
         let breaker = tmp.path().join("events.lock.break");
@@ -693,6 +749,7 @@ mod tests {
             host: host_name(),
             acquired_at: "2026-09-28T17:00:00Z".into(),
             nonce: "dead".into(),
+            started: None,
         };
         std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
         let breaker = tmp.path().join("events.lock.break");
