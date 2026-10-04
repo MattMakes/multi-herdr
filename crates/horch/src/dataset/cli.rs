@@ -231,12 +231,25 @@ impl OutcomeArg {
         }
     }
 
-    /// The score when `--score` is not given.
-    // SPEC-TODO(Spec B §outcome): the default post-merge score per kind.
+    /// The score when `--score` is not given (dataset design 4.10.1).
     pub(crate) fn default_score(self) -> f64 {
         match self {
             OutcomeArg::Verified => 1.0,
             OutcomeArg::Regression | OutcomeArg::Revert => 0.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `verified` scores 1.0; `regression` and `revert` score 0.0
+    /// (dataset design 4.10.1).
+    #[test]
+    fn outcome_default_score_per_kind() {
+        assert_eq!(OutcomeArg::Verified.default_score(), 1.0);
+        assert_eq!(OutcomeArg::Regression.default_score(), 0.0);
+        assert_eq!(OutcomeArg::Revert.default_score(), 0.0);
     }
 }

@@ -819,6 +819,45 @@ pub struct ReadinessReport { pub arms: BTreeMap<String, ArmCoverage>, pub judged
 pub fn readiness(rows: &[ExportRow], t: &ReadinessThresholds) -> ReadinessReport;
 ```
 
+#### 4.10.1 Export row details
+
+This section is the spec for the export row's open points. It states the
+implemented, tested behaviour.
+
+- **Label policy.** `competition/planner.rs:LABEL_POLICY_VERSION` is
+  `"slot-order-1"`. Labels are `A`, `B`, … in slot order
+  (`CandidateLabel::from_index`). The version names the export directory
+  `exports/<label_policy_version>/`, so it is one path component
+  (`measure/paths.rs:component`). `export` and `readiness` use it when
+  `--label-policy` is not given. Test: `label_policy_version_is_slot_order_1_and_path_safe`.
+- **Task features.** `ExportState.task_features` has exactly these 4 keys.
+  Each one is a recorded setting of the experiment or round that is known
+  before the round is decided.
+
+  | Key | Value | Source |
+  |---|---|---|
+  | `budget_usd_micro` | the hard budget ceiling in µ$ | `experiment.created` |
+  | `candidates` | the planned candidate count | `experiment.created` |
+  | `round_index` | the round's index in its experiment, from 0 | `round.created` |
+  | `strategy` | the strategy string; `run` records `"diverse"` | `experiment.created` |
+
+  Tests: `exp_03_row_shape`, `exp_04_export_golden`.
+- **Score answers.** A `quality:<config_id>` answer is a System One answer
+  with `choice: null`, `confidence: null` and
+  `probabilities: {"score": <sum of the judge's component scores>}`
+  (`dataset/export.rs:SCORE_KEY`). Tests: `exp_03_row_shape`,
+  `exp_04_export_golden`.
+- **Readiness for Laya.** "≥ 50 runs per arm" means: at least
+  `clef_min_arms` (4) arms with ≥ `laya_runs_per_arm` (50) runs each, plus
+  ≥ `laya_judged_rounds` (500) judged rounds. Reason: a rarely explored arm
+  must not block Laya, and Clef already sets the arm count. The gap text is
+  `laya: arms with >= 50 runs <n>/4`. Test: `exp_05_coverage_and_verdict`.
+- **Outcome scores.** `outcome <round> --kind <kind>` records
+  `post_merge_score` from `--score`. Without `--score` the score is 1.0 for
+  `verified`, and 0.0 for `regression` and `revert`
+  (`crates/horch/src/dataset/cli.rs:OutcomeArg::default_score`). Tests:
+  `outcome_default_score_per_kind`, `exp_06_outcome_recorded_and_exported`.
+
 ### 4.11 Machine, preflight, config (B2)
 
 ```rust

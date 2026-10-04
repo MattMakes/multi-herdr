@@ -42,9 +42,8 @@ use crate::teacher::TeacherRef;
 use crate::usage::{builtin_prices, Price};
 
 /// Labels are `A`, `B`, … in slot order (`CandidateLabel::from_index`).
-///
-/// SPEC-TODO(Spec B label policy): the version string is not in the master
-/// plan; it names the export directory, so it must stay path-safe.
+/// The version names the export directory, so it is one path component
+/// (dataset design 4.10.1).
 pub const LABEL_POLICY_VERSION: &str = "slot-order-1";
 
 /// Everything one round's plan depends on.
@@ -356,5 +355,22 @@ pub fn candidate_planned_payload(slot: &PlannedSlot) -> CandidatePlanned {
         slot: slot.slot,
         propensity: slot.propensity,
         config_id: slot.config_id.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::measure::paths::component;
+
+    /// The label policy version is `slot-order-1`, a valid path component
+    /// (dataset design 4.10.1).
+    #[test]
+    fn label_policy_version_is_slot_order_1_and_path_safe() {
+        assert_eq!(LABEL_POLICY_VERSION, "slot-order-1");
+        assert_eq!(
+            component("label policy version", LABEL_POLICY_VERSION).unwrap(),
+            LABEL_POLICY_VERSION
+        );
     }
 }

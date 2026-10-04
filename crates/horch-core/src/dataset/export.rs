@@ -41,9 +41,8 @@ pub(crate) const BEST_WORKER: &str = "best_worker";
 /// The prefix of the per-config quality question keys: `quality:<config_id>`.
 pub(crate) const QUALITY_PREFIX: &str = "quality:";
 
-/// The probability key of a `score` answer.
-// SPEC-TODO(System One score answers): the wire shape of a score answer is
-// unknown; the summed judge score goes under this key.
+/// The probability key of a `score` answer: the summed judge score goes
+/// under it (dataset design 4.10.1).
 pub(crate) const SCORE_KEY: &str = "score";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,8 +83,8 @@ pub struct ExportRow {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExportState {
-    // SPEC-TODO(Spec B export state): the task feature list. These are the
-    // experiment's recorded settings, known before the round is decided.
+    /// The experiment's recorded settings, known before the round is
+    /// decided: exactly the 4 keys of dataset design 4.10.1.
     pub task_features: BTreeMap<String, Value>,
     pub task_digest: Digest,
     pub repo_digest: Digest,

@@ -133,9 +133,9 @@ pub struct ReadinessReport {
 
 /// Count `rows` and judge them against `t`.
 ///
-/// SPEC-TODO(Spec B readiness): "≥ 50 runs per arm" for Laya is read as
-/// "at least `clef_min_arms` arms with ≥ `laya_runs_per_arm` runs each", the
-/// same arm count as Clef, so a rarely explored arm does not block Laya.
+/// "≥ 50 runs per arm" for Laya is "at least `clef_min_arms` arms with
+/// ≥ `laya_runs_per_arm` runs each", the same arm count as Clef, so a rarely
+/// explored arm does not block Laya (dataset design 4.10.1).
 pub fn readiness(rows: &[ExportRow], t: &ReadinessThresholds) -> ReadinessReport {
     #[derive(Default)]
     struct Tally {
