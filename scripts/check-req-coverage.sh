@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Every requirement ID defined in ai_docs/designs/*.md must have at least one
+# (tracked files only: an operator's untracked draft must not change the result)
 # test whose name starts with the lowercase ID: TEL-05 -> tel_05_...
 #
 # A row `| XXX-00 | ...` defines its ID only inside a table whose header's
@@ -65,7 +66,7 @@ definitions() {
       next
     }
     { intable = 0 }
-  ' ai_docs/designs/*.md
+  ' $(git ls-files 'ai_docs/designs/*.md')
 }
 
 defs=$(definitions)
