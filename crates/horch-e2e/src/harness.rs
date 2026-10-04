@@ -168,6 +168,9 @@ impl Harness {
         let mut cmd = Command::new(git);
         cmd.args(args);
         self.seal(&mut cmd);
+        // `seal` clears the environment already; the scrub keeps it so if a
+        // caller adds variables later.
+        horch_marketplace::git::scrub_repo_env(&mut cmd);
         cmd
     }
 

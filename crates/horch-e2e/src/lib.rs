@@ -283,7 +283,10 @@ pub fn run_candidate(call: &mut Call, label: &str, spec: &Value, usage: impl Fn(
                 &["add", "-A"][..],
                 &["commit", "--quiet", "--no-gpg-sign", "-m", "candidate work"],
             ] {
-                let _ = std::process::Command::new(&git).args(args).status();
+                let mut cmd = std::process::Command::new(&git);
+                cmd.arg("-C").arg(".").args(args);
+                horch_marketplace::git::scrub_repo_env(&mut cmd);
+                let _ = cmd.status();
             }
         }
     }

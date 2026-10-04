@@ -5,6 +5,8 @@
 //! time the coordinator sleeps between ticks, every live candidate's record
 //! is moved on the way its agent would move it.
 
+mod common;
+
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -107,30 +109,23 @@ fn world() -> Option<World> {
     let repo = root.join("repo");
     std::fs::create_dir(&repo).unwrap();
     std::fs::write(repo.join("a.txt"), "one\n").unwrap();
-    for args in [
-        &["init", "-q", "-b", "main"][..],
-        &["add", "-A"],
-        &["commit", "-q", "-m", "base"],
-    ] {
-        let out = std::process::Command::new(&bin)
+    // In `repo` only: `GIT_DIR` from a hook or `git rebase -x` is removed.
+    let run = |args: &[&str]| {
+        let mut cmd = std::process::Command::new(&bin);
+        cmd.arg("-C")
+            .arg(&repo)
             .args(args)
             .current_dir(&repo)
-            .envs(pins.iter().map(|(k, v)| (*k, v.as_str())))
-            .output()
-            .unwrap();
+            .envs(pins.iter().map(|(k, v)| (*k, v.as_str())));
+        horch_marketplace::git::scrub_repo_env(&mut cmd);
+        let out = cmd.output().unwrap();
         assert!(out.status.success(), "{out:?}");
-    }
-    let base = String::from_utf8(
-        std::process::Command::new(&bin)
-            .args(["rev-parse", "HEAD"])
-            .current_dir(&repo)
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap()
-    .trim()
-    .to_string();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "base"]);
+    let base = run(&["rev-parse", "HEAD"]);
     let env = MapEnv::new(&repo)
         .with("HORCH_STATE_DIR", &root.join("state").to_string_lossy())
         .with("HORCH_PROJECT_DIR", &repo.to_string_lossy())
@@ -639,4 +634,18 @@ fn cmp_10_committed_spend_counts_running_candidates() {
             reason: "budget".into()
         }
     );
+}
+
+/// D20 item 5: `world` with `GIT_DIR` and `GIT_WORK_TREE` aimed at a decoy
+/// repository leaves the decoy unchanged.
+#[test]
+fn git_env_cannot_reach_another_repository() {
+    let Some(bin) = find_git() else { return };
+    common::assert_decoy_untouched(&bin, "git_env_decoy_child");
+}
+
+#[test]
+#[ignore = "run by git_env_cannot_reach_another_repository, with GIT_DIR set"]
+fn git_env_decoy_child() {
+    assert!(world().is_some());
 }

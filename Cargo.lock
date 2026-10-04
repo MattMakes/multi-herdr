@@ -602,6 +602,7 @@ dependencies = [
  "clap",
  "crossterm",
  "horch-core",
+ "horch-marketplace",
  "libc",
  "serde",
  "serde_json",
@@ -631,6 +632,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "horch-core",
+ "horch-marketplace",
  "serde_json",
  "tempfile",
 ]

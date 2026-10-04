@@ -26,6 +26,8 @@ tempfile = "3"
 crossterm = "0.28"
 
 [dev-dependencies]
+# `git::scrub_repo_env` and `git::repo_state` for the test git helpers.
+horch-marketplace.workspace = true
 serde_yaml.workspace = true
 
 # `setsid`, so the grid tidy a departing worker leaves behind outlives the pane.

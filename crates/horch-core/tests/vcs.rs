@@ -6,6 +6,8 @@
 //! dates, so hashes are the same on every machine. Without git on `PATH` the
 //! git tests are skipped, unless `HORCH_REQUIRE_GIT=1`.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -638,4 +640,18 @@ fn validator_strips_api_key_and_redacts() {
             worktree.join("target").display()
         )
     );
+}
+
+/// D20 item 5: the fixture with `GIT_DIR` and `GIT_WORK_TREE` aimed at a
+/// decoy repository leaves the decoy unchanged.
+#[test]
+fn git_env_cannot_reach_another_repository() {
+    let Some(bin) = find_git() else { return };
+    common::assert_decoy_untouched(&bin, "git_env_decoy_child");
+}
+
+#[test]
+#[ignore = "run by git_env_cannot_reach_another_repository, with GIT_DIR set"]
+fn git_env_decoy_child() {
+    assert!(Fixture::new().is_some());
 }

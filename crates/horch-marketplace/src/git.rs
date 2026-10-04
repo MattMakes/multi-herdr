@@ -13,17 +13,31 @@ use std::process::{Command, Stdio};
 /// operator's shell can carry an invalid, billed one.
 const FORBIDDEN_ENV: [&str; 1] = ["ANTHROPIC_API_KEY"];
 
-/// Removed from every git child, so the directory alone selects the
-/// repository. A caller inside a git hook would otherwise leak these.
-const REPO_ENV: [&str; 7] = [
+/// Removed from every git child, so the `-C` directory alone selects the
+/// repository. A caller inside a git hook, or under `git rebase --exec`,
+/// has `GIT_DIR` set: on 2026-10-03 a gate run under `git rebase -x` let
+/// test fixtures `git init` and commit into the real repository. Every git
+/// child that horch or its tests start removes these with
+/// [`scrub_repo_env`].
+pub const REPO_ENV: [&str; 9] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
-    "GIT_COMMON_DIR",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_PREFIX",
 ];
+
+/// Remove every [`REPO_ENV`] variable from `cmd`, a git child. Call it after
+/// any `env` call: a variable set on `cmd` is removed too.
+pub fn scrub_repo_env(cmd: &mut Command) {
+    for k in REPO_ENV {
+        cmd.env_remove(k);
+    }
+}
 
 /// Set on every git child.
 const FIXED_ENV: [(&str, &str); 3] = [
@@ -34,6 +48,37 @@ const FIXED_ENV: [(&str, &str); 3] = [
 
 /// Passed as `-c` before every subcommand.
 const FIXED_CONFIG: [&str; 1] = ["core.hooksPath=/dev/null"];
+
+/// The files that show which repository `git_dir` is: its config, `HEAD`,
+/// `packed-refs` and every loose ref, as one text. The [`REPO_ENV`]
+/// regression tests compare it before and after git runs with `GIT_DIR`
+/// aimed at `git_dir`.
+pub fn repo_state(git_dir: &Path) -> String {
+    let mut out = String::new();
+    for name in ["config", "HEAD", "packed-refs"] {
+        out += &format!(
+            "{name}: {:?}\n",
+            std::fs::read_to_string(git_dir.join(name)).ok()
+        );
+    }
+    let mut stack = vec![git_dir.join("refs")];
+    let mut refs = Vec::new();
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            if e.path().is_dir() {
+                stack.push(e.path());
+            } else {
+                refs.push(format!(
+                    "{}: {:?}",
+                    e.path().display(),
+                    std::fs::read_to_string(e.path()).ok()
+                ));
+            }
+        }
+    }
+    refs.sort();
+    out + &refs.join("\n")
+}
 
 #[derive(Debug, Clone)]
 pub struct GitRunner {
@@ -132,9 +177,17 @@ impl GitRunner {
         for (k, v) in FIXED_ENV {
             cmd.env(k, v);
         }
-        for k in FORBIDDEN_ENV.iter().chain(&REPO_ENV) {
+        for k in FORBIDDEN_ENV {
             cmd.env_remove(k);
         }
+        scrub_repo_env(&mut cmd);
+        // The directory again as `-C`, so the repository never depends on
+        // how git searches from its working directory.
+        let at = std::path::absolute(dir).map_err(|source| GitError::Spawn {
+            bin: self.bin.clone(),
+            source,
+        })?;
+        cmd.arg("-C").arg(at);
         for c in FIXED_CONFIG {
             cmd.arg("-c").arg(c);
         }

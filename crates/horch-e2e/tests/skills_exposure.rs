@@ -426,3 +426,38 @@ fn operator_skills_e2e_check_fails_on_a_missing_name() {
         text(&check)
     );
 }
+
+/// D20 item 5: `skl_06_e2e_marketplace_offline`, which runs `git init
+/// --bare`, `symbolic-ref` and commit "demo", with `GIT_DIR` and
+/// `GIT_WORK_TREE` aimed at a decoy repository leaves the decoy unchanged.
+/// The child process, not this one, gets the variables: the other tests
+/// run in parallel.
+#[test]
+fn git_env_cannot_reach_another_repository() {
+    use horch_marketplace::git::{repo_state, GitRunner};
+    let h = world("gitenv", "skl-market", "claude", "sonnet", &["tdd"]).with_git();
+    let Some(git) = h.git_bin() else { return };
+    let decoy = h.root.join("decoy");
+    std::fs::create_dir(&decoy).unwrap();
+    GitRunner::new(git)
+        .with_env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .run(&decoy, &["init", "--quiet", "-b", "trunk"])
+        .unwrap();
+    let before = repo_state(&decoy.join(".git"));
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "skl_06_e2e_marketplace_offline",
+            "--test-threads=1",
+        ])
+        .env("GIT_DIR", decoy.join(".git"))
+        .env("GIT_WORK_TREE", &decoy)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(repo_state(&decoy.join(".git")), before, "the decoy changed");
+}

@@ -24,7 +24,9 @@ mod fixture {
             "fixture git outside the temp dir: {}",
             dir.display()
         );
-        let out = Command::new("git")
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
+            .arg(dir)
             .current_dir(dir)
             .args(args)
             .env("GIT_CONFIG_GLOBAL", config)
@@ -33,9 +35,11 @@ mod fixture {
             .env("GIT_AUTHOR_NAME", "fixture")
             .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
             .env("GIT_COMMITTER_NAME", "fixture")
-            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
-            .output()
-            .ok()?;
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid");
+        // `GIT_DIR` from a hook or `git rebase -x` would aim this at the
+        // real repository.
+        horch_marketplace::git::scrub_repo_env(&mut cmd);
+        let out = cmd.output().ok()?;
         assert!(
             out.status.success(),
             "git {args:?}: {}",
@@ -697,6 +701,59 @@ fn mkt_10_source_dispatch_localized() {
     assert!(is_pattern("Git { url, .. } => x"));
     assert!(is_pattern("Local { path } = y else"));
     assert!(!is_pattern("Git {\n url,\n })"));
+}
+
+/// D20 item 5: `GIT_DIR` and `GIT_WORK_TREE` that point at another
+/// repository (a decoy) do not reach a git child. `git init --bare`,
+/// `symbolic-ref` and a commit, the steps that rewrote the real repository
+/// under `git rebase -x`, change only their own directory.
+#[test]
+fn git_env_cannot_reach_another_repository() {
+    let Some(repo) = Repo::new() else { return };
+    let decoy = repo.tmp.path().join("decoy");
+    fs::create_dir(&decoy).unwrap();
+    let git = repo.runner();
+    git.run(&decoy, &["init", "--quiet", "-b", "trunk"])
+        .unwrap();
+    let before = horch_marketplace::git::repo_state(&decoy.join(".git"));
+
+    let aimed = repo
+        .runner()
+        .with_env("GIT_DIR", decoy.join(".git"))
+        .with_env("GIT_WORK_TREE", &decoy)
+        .with_env("GIT_AUTHOR_NAME", "fixture")
+        .with_env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+        .with_env("GIT_COMMITTER_NAME", "fixture")
+        .with_env("GIT_COMMITTER_EMAIL", "fixture@example.invalid");
+    let bare = repo.tmp.path().join("other.git");
+    let work = repo.tmp.path().join("other");
+    fs::create_dir(&bare).unwrap();
+    fs::create_dir(&work).unwrap();
+    aimed.run(&bare, &["init", "--quiet", "--bare"]).unwrap();
+    aimed
+        .run(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"])
+        .unwrap();
+    aimed
+        .run(&work, &["init", "--quiet", "-b", "main"])
+        .unwrap();
+    fs::write(work.join("a.txt"), "a\n").unwrap();
+    aimed.run(&work, &["add", "-A"]).unwrap();
+    aimed
+        .run(&work, &["commit", "--quiet", "-m", "demo"])
+        .unwrap();
+
+    assert_eq!(
+        horch_marketplace::git::repo_state(&decoy.join(".git")),
+        before,
+        "the decoy changed"
+    );
+    assert!(fs::read_to_string(bare.join("config"))
+        .unwrap()
+        .contains("bare = true"));
+    assert!(
+        work.join(".git/refs/heads/main").is_file(),
+        "the commit is in its own repo"
+    );
 }
 
 #[test]
