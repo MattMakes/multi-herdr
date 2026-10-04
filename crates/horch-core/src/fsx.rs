@@ -405,13 +405,55 @@ fn is_stale(path: &Path, stale_after: Duration) -> bool {
 /// an older one was left by a killed process and is removed.
 const BREAKER_STALE_AFTER: Duration = Duration::from_secs(5);
 
+/// An exclusive `flock` on the directory of a lock, held while one process
+/// breaks that lock. The kernel drops it when the process dies, so unlike a
+/// breaker directory it is never left behind.
+struct BreakerGuard {
+    _dir: Option<std::fs::File>,
+}
+
+impl BreakerGuard {
+    /// Take the guard of the lock at `lock`. `None` while another process
+    /// holds it. Where `flock` is not available (not unix, or a filesystem
+    /// without it) the guard holds nothing and the breaker directory alone
+    /// excludes, as before the guard.
+    fn take(lock: &Path) -> Option<BreakerGuard> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let Some(dir) = lock.parent().and_then(|d| std::fs::File::open(d).ok()) else {
+                return Some(BreakerGuard { _dir: None });
+            };
+            if unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Some(BreakerGuard { _dir: Some(dir) });
+            }
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) {
+                return None;
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = lock;
+        Some(BreakerGuard { _dir: None })
+    }
+}
+
 /// Remove a stale lock, and say so. Returns whether this call removed it.
 ///
 /// Two processes can both see the same stale lock. Without coordination the
 /// slower one removes the lock the faster one has just taken in its place.
-/// So a breaker first takes `<name>.lock.break/` and checks again that the
-/// lock is stale; a process that cannot take it waits and retries.
+/// So a breaker first takes the [`BreakerGuard`], then `<name>.lock.break/`,
+/// and checks again that the lock is stale; a process that cannot take
+/// either waits and retries.
+///
+/// A breaker killed inside its window leaves `<name>.lock.break/`. It is
+/// removed once it is older than [`BREAKER_STALE_AFTER`], and only under the
+/// guard: 2 processes that removed it at once could remove a fresh breaker
+/// a third had just made, and 2 breakers would run again. The directory
+/// stays so that binaries from before the guard are still excluded.
 fn break_lock(path: &Path, stale_after: Duration) -> bool {
+    let Some(_guard) = BreakerGuard::take(path) else {
+        return false;
+    };
     let mut breaker = path.as_os_str().to_owned();
     breaker.push(".break");
     let breaker = PathBuf::from(breaker);
@@ -555,12 +597,14 @@ mod tests {
     }
 
     /// Many processes find one dead owner's lock at once. Only one of them
-    /// breaks it, so no new holder loses its lock to a second breaker.
+    /// breaks it, so no new holder loses its lock to a second breaker. In
+    /// every other round a killed breaker's directory is there too: only
+    /// one process removes it, so 2 breakers never run at once.
     #[test]
     fn dirlock_concurrent_breakers_keep_one_holder() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
-        for _ in 0..10 {
+        for round in 0..10 {
             let tmp = tempfile::tempdir().unwrap();
             let lock = tmp.path().join("events.lock");
             std::fs::create_dir(&lock).unwrap();
@@ -571,6 +615,16 @@ mod tests {
                 nonce: "dead".into(),
             };
             std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
+            #[cfg(unix)]
+            if round % 2 == 1 {
+                let breaker = tmp.path().join("events.lock.break");
+                std::fs::create_dir(&breaker).unwrap();
+                let old = std::time::SystemTime::now() - BREAKER_STALE_AFTER * 2;
+                std::fs::File::open(&breaker)
+                    .unwrap()
+                    .set_modified(old)
+                    .unwrap();
+            }
             let inside = Arc::new(AtomicUsize::new(0));
             let most = Arc::new(AtomicUsize::new(0));
             let threads: Vec<_> = (0..8)
@@ -630,6 +684,48 @@ mod tests {
         )
         .expect("the left breaker is removed and the dead lock broken");
         assert!(!breaker.exists());
+    }
+
+    /// A breaker paused inside its window for longer than
+    /// [`BREAKER_STALE_AFTER`] still holds the guard: no other process
+    /// removes its breaker directory or breaks the lock a second time.
+    #[cfg(unix)]
+    #[test]
+    fn dirlock_paused_breaker_blocks_other_breakers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("events.lock");
+        std::fs::create_dir(&lock).unwrap();
+        let dead = LockOwner {
+            pid: 999_999_999,
+            host: host_name(),
+            acquired_at: "2026-09-28T17:00:00Z".into(),
+            nonce: "dead".into(),
+        };
+        std::fs::write(lock.join("owner"), serde_json::to_vec(&dead).unwrap()).unwrap();
+        let breaker = tmp.path().join("events.lock.break");
+        std::fs::create_dir(&breaker).unwrap();
+        let old = std::time::SystemTime::now() - BREAKER_STALE_AFTER * 2;
+        std::fs::File::open(&breaker)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let stale = Duration::from_secs(3600);
+
+        let paused = BreakerGuard::take(&lock).expect("the guard is free");
+        for _ in 0..3 {
+            assert!(!break_lock(&lock, stale));
+        }
+        assert!(breaker.exists(), "the paused breaker keeps its directory");
+        assert!(lock.join("owner").is_file(), "the lock is not broken twice");
+
+        drop(paused);
+        assert!(
+            !break_lock(&lock, stale),
+            "the left breaker is removed first"
+        );
+        assert!(!breaker.exists());
+        assert!(break_lock(&lock, stale), "then the dead lock is broken");
+        assert!(!lock.exists());
     }
 
     #[test]
