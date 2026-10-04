@@ -1545,6 +1545,69 @@
       "vendored": true
     },
     {
+      "name": "godot-input-handling",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/input-handling/SKILL.md",
+          "sha256": "300bdfa2b09e417ec79f025e686b6c969ae8473775dc608ba5157ef308526bd7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/input-handling/references/action-rebinding.md",
+          "sha256": "77caeccf4bd99d09e899ba7901ed873de202f708e320feb28dcf5688640f4b7f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/input-handling/references/event-propagation.md",
+          "sha256": "e2d239a618afcadf50aef0f85553cc86388e6f91ad71b7496bf2cc6773d734c6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/input-handling/references/gamepad.md",
+          "sha256": "f2ba8e6f6cf971937880f7f10d840d57100fdc16b09fb206b9e09d9baa24d47c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/input-handling/references/input-buffering.md",
+          "sha256": "33e64e1c33ae212d62bea47fe6d8be3330018bc201bcfa01d300b34b495da95c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/input-handling/references/mouse.md",
+          "sha256": "61d26ce79d3492f6e9c2010a51c6b500213225c882da36c3fcee5a18dd51dfef",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/input-handling/references/touch.md",
+          "sha256": "d11d1edef5f42325be0f5b9687ea48cfb0cd8fb5e9ef72165ec215f0eda1f23d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{buffers-combos-and-accessibility.md, injection-replay-conflicts-multitouch.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-input-handling",
+      "vendored": true
+    },
+    {
       "name": "godot-limboai",
       "sources": [
         {
@@ -1853,6 +1916,34 @@
       "vendored": true
     },
     {
+      "name": "godot-player-controller",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/player-controller/SKILL.md",
+          "sha256": "3b9b99fbb4ca571acce1cfd664fd94b92eaf62369a6b53cffcb657bf75329298",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/player-controller/references/common-movement-recipes.md",
+          "sha256": "51e97f43d25394b6e5248451249bd8f3c9422d29d87e6053e5b354b0165aa8ef",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{collision-and-platforms.md, platformer-feel.md, top-down-pixel-and-crowds.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-characterbody-2d",
+      "vendored": true
+    },
+    {
       "name": "godot-popochiu",
       "sources": [
         {
@@ -1961,6 +2052,34 @@
       "sources": [],
       "vendored": false,
       "adaptation": "Own text, written in this repository; own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-builder (SKILL.md only; facts re-tested on 4.7.2, nothing copied). Every rule and the worked example were run on Godot 4.7.2 (macOS); evidence in ai_docs/reports/godot/gw2-own-skills.md. references/fleet-additions.md carries GW10's verified fact on the 4.6 scene format (godotengine/godot GH-106837, GH-103352)."
+    },
+    {
+      "name": "godot-state-machine",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/state-machine/SKILL.md",
+          "sha256": "2aa1e3eacd63fdaa5c6761f763deebf05e5e4107ec7bc2058b6902c9205e5abb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/state-machine/references/hierarchical-and-parallel.md",
+          "sha256": "4a21b680490e763ec76e5a908cde9ba6c2236dbd4b9c6cd99a4d660b4a7a938b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{observers-debug-and-utility.md, pushdown-and-transitions.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-state-machine-advanced",
+      "vendored": true
     },
     {
       "name": "godot-xr-development",

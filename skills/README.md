@@ -172,6 +172,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-gdscript-patterns](godot-gdscript-patterns/SKILL.md) | `jame581/GodotPrompter`: `skills/gdscript-patterns/` | renamed |
 | [godot-grill](godot-grill/SKILL.md) | `jame581/GodotPrompter`: `skills/grill/` | adapted |
 | [godot-hud-system](godot-hud-system/SKILL.md) | `jame581/GodotPrompter`: `skills/hud-system/` | renamed |
+| [godot-input-handling](godot-input-handling/SKILL.md) | `jame581/GodotPrompter`: `skills/input-handling/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-input-handling/`) | combined |
 | [godot-limboai](godot-limboai/SKILL.md) | `jame581/GodotPrompter`: `skills/limboai/` | renamed |
 | [godot-localization](godot-localization/SKILL.md) | `jame581/GodotPrompter`: `skills/localization/` | renamed |
 | [godot-math-essentials](godot-math-essentials/SKILL.md) | `jame581/GodotPrompter`: `skills/math-essentials/` | renamed |
@@ -180,8 +181,10 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-multiplayer-sync](godot-multiplayer-sync/SKILL.md) | `jame581/GodotPrompter`: `skills/multiplayer-sync/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-multiplayer-networking/`, `godot-adapt-single-to-multiplayer/`) | combined |
 | [godot-multithreading](godot-multithreading/SKILL.md) | `jame581/GodotPrompter`: `skills/multithreading/` | renamed |
 | [godot-phantom-camera](godot-phantom-camera/SKILL.md) | `jame581/GodotPrompter`: `skills/phantom-camera/` | renamed |
+| [godot-player-controller](godot-player-controller/SKILL.md) | `jame581/GodotPrompter`: `skills/player-controller/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-characterbody-2d/`) | combined |
 | [godot-popochiu](godot-popochiu/SKILL.md) | `jame581/GodotPrompter`: `skills/popochiu/` | renamed |
 | [godot-project-context](godot-project-context/SKILL.md) | *(none - repo-original; shape of `ue-project-context`; run on Godot 4.7.2)* | own text |
 | [godot-responsive-ui](godot-responsive-ui/SKILL.md) | `jame581/GodotPrompter`: `skills/responsive-ui/` | renamed |
 | [godot-scene-files](godot-scene-files/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |
+| [godot-state-machine](godot-state-machine/SKILL.md) | `jame581/GodotPrompter`: `skills/state-machine/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-state-machine-advanced/`) | combined |
 | [godot-xr-development](godot-xr-development/SKILL.md) | `jame581/GodotPrompter`: `skills/xr-development/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-platform-vr/`) | combined |
