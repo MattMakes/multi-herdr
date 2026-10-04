@@ -122,6 +122,47 @@ still declare `plugin_dirs` (`~/` expands at launch); `horch teammates --check`
 verifies those paths exist. `disable_skills` conflicts with phase, skills, or
 plugin directories.
 
+## The Unreal Engine team
+
+Eleven `ue-*` specialists staff Unreal Engine work. Each sets
+`offer_when: ["*.uproject"]`, so the fleet orchestrator is offered them only
+when the project has a `.uproject` file at the top level or one level down.
+`horch spawn ue-<name>` still works in any project. The selection, the
+skill choices and the measured briefing sizes are in
+[`ai_docs/reports/unreal-engine-wave.md`](../ai_docs/reports/unreal-engine-wave.md)
+and [`ai_docs/reports/domain-skills/ue-teammates.md`](../ai_docs/reports/domain-skills/ue-teammates.md).
+
+| teammate | wave | phase | agent, model, effort | use for |
+|---|---|---|---|---|
+| `ue-tech-lead` | 1 | plan | claude, opus, high | runs first: writes `.agents/ue-project-context.md`; plans modules and plugins |
+| `ue-gameplay-engineer` | 1 | implementation | claude, opus, medium | actors, components, gameplay framework, GAS, tags, data assets |
+| `ue-network-engineer` | 1 | implementation | claude, opus, medium | replication, RPCs, prediction, net movement, dedicated servers |
+| `ue-technical-artist` | 1 | implementation | claude, opus, medium | materials, Niagara, audio, Sequencer, procedural content |
+| `ue-qa-engineer` | 1 | validation | claude, sonnet, high | headless builds, automation tests, crash repros, profiling |
+| `ue-code-reviewer` | 1 | validation | claude, opus, high | UE C++ review; never edits |
+| `ue-character-engineer` | 2 | implementation | claude, opus, medium | movement modes, animation, cameras, Enhanced Input |
+| `ue-ai-engineer` | 2 | implementation | claude, opus, medium | AI controllers, behavior trees, EQS, State Tree, Mass |
+| `ue-ui-engineer` | 2 | implementation | claude, opus, medium | UMG, Slate, Common UI, MVVM, gamepad focus |
+| `ue-tools-engineer` | 2 | implementation | claude, opus, medium | editor modules, customizations, validators, editor scripts |
+| `ue-world-engineer` | 2 | implementation | claude, opus, medium | World Partition, streaming, PCG, collision, save games |
+
+Every one runs on Claude: native Windows refuses a Codex teammate that has
+skills, and most Unreal work happens on Windows. Their `fallbacks:` follow
+their non-UE counterparts (`codex-sol`, and `codex-terra` for QA), so a
+fallback spawn on Windows fails the same check. Every implementation
+teammate and `ue-qa-engineer` carry `ue-build-verify`. `ue-technical-artist`
+and `ue-tools-engineer` also carry `ue-editor-scripting`, and so they may
+change an asset through editor Python or a commandlet. The others never
+touch `.uasset` or `.umap` files and list the asset change for a human.
+`available_skills:` names at most 3 related skills per teammate, picked from
+the "Related Skills" sections of its own skills.
+
+Each persona carries the same five standing rules: read
+`.agents/ue-project-context.md` first, never write asset bytes, check APIs in
+the engine headers, one build at a time per working copy, and a `DONE:` that
+names the target, the configuration and the automation filter with its
+result.
+
 ## The effort-matrix personas
 
 Eight more Claude specialists split the work by model tier and effort level
