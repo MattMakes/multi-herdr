@@ -58,9 +58,36 @@ phase 8 (training Laya).
 - Golden prompts are never regenerated. Prose changes go in as named
   sanctioned blocks. A serialization format change bumps the schema version;
   a serialization golden is never re-blessed.
-- Every phase follows the junior checklist (Spec A §16), written to
-  `ai_docs/gates/architecture-refactor/CHECKLIST.md` and quoted in commit
-  messages. `SPEC-TODO(Spec A §16)`: the checklist items verbatim.
+- Every phase follows the junior checklist (Spec A §16). Its working copy is
+  `ai_docs/gates/architecture-refactor/CHECKLIST.md`; a commit body quotes
+  the lines it checked, unchanged, and a line that does not apply gets
+  `(n/a: <reason>)`. The Spec A §16 checklist items are:
+  1. `just gate` is green on this commit
+     (`HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate` prints
+     `GATE GREEN`, `scripts/phase-gate.sh`).
+  2. Every ID of this phase has a test
+     (`scripts/check-req-coverage.sh --phase <P>` exits 0).
+  3. Every new test name starts with its lowercase requirement ID
+     (`ARC-02` → `arc_02_...`).
+  4. No golden prompt changed; any prose change is a named sanctioned block.
+  5. No serialization golden re-blessed; a format change bumped its schema
+     version.
+  6. No oracle under `crates/*/tests/oracles/` regenerated.
+  7. No existing test changed to make it pass, unless the unit plan says so.
+  8. No new crate outside the allowlist (`scripts/check-deps.sh` and
+     `nfr_05`, `nfr_06`, `nfr_09`, `nfr_11` pass).
+  9. No new `std::env` read outside `runtime/` and the binary's bootstrap
+     (`arc_05_no_ambient_env_in_core`).
+  10. No `ANTHROPIC_API_KEY` reaches a child process (`FORBIDDEN_ENV`
+      strips it).
+  11. Tests are hermetic: no network, no real harness binary, no herdr
+      server, no file outside a temp dir; real `git` only on temp repos.
+  12. No re-export shim module (`arc_25_no_shim_modules`). Phases A1 to A11
+      kept a shim for every moved module; A12 removed them all.
+  13. Old ledgers, old briefs and old teammate frontmatter still load.
+  14. New `pub mod` lines in `crates/horch-core/src/lib.rs` are in
+      alphabetical order; no other line changed.
+  15. The diff was re-read adversarially; the unit report lists gotchas.
 
 ---
 
