@@ -5,8 +5,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use horch_core::competition::budget::{
+    measured_from_runs, MeasuredTokens, MEASURED_MIN_RUNS, MEASURED_WINDOW,
+};
 use horch_core::competition::config::{
-    load, parse_usd_micro, BudgetConfig, Caps, DatasetConfig, JudgeConfig, RunFlags, Strategy,
+    load, parse_usd_micro, BudgetConfig, Caps, DatasetConfig, ExpectedTokens, JudgeConfig,
+    RunFlags, Strategy,
 };
 use horch_core::competition::preflight::{
     evaluate, footprint_bytes, parse_git_version, storage_probe, CheckStatus, GitFacts,
@@ -560,6 +564,151 @@ fn pre_09_budget_projection_soft_limit() {
     assert!(detail(&r, "PRE-09").contains("mystery"));
 }
 
+/// Sized like an LA candidate (acceptance-dataset F1): it used about 14k
+/// input, 12k 1-hour cache writes, 140k cache reads and 1.5k output tokens.
+fn la_sized() -> TokenEstimate {
+    TokenEstimate {
+        input: 20_000,
+        cache_write_1h: 15_000,
+        cache_read: 200_000,
+        output: 3_000,
+        ..TokenEstimate::default()
+    }
+}
+
+/// 2 sonnet candidates at `--budget-usd 2` (soft $1.60, reserve $0.20).
+fn two_sonnets_at_2_usd() -> PreflightPlan {
+    let mut p = plan();
+    p.candidates = vec![
+        candidate("A", HarnessKind::Claude, "sonnet"),
+        candidate("B", HarnessKind::Claude, "sonnet"),
+    ];
+    p.config.budget = BudgetConfig {
+        soft_usd_micro: 1_600_000,
+        hard_usd_micro: usd(2),
+        judge_reserve_usd_micro: 200_000,
+        ..BudgetConfig::default()
+    };
+    p
+}
+
+/// G2 DONE WHEN: with `budget.expected_tokens` sized like the LA run, 2
+/// sonnet candidates pass PRE-09 at `--budget-usd 2`; without the key the
+/// default estimate ($1.60 each) still applies and refuses the run.
+#[test]
+fn pre_09_configured_estimate_fits_the_task() {
+    let mut p = two_sonnets_at_2_usd();
+    p.config.budget.expected_tokens.all = Some(la_sized());
+    let r = evaluate(&p, &mac());
+    // Sonnet: 20k × $2 + 15k × $4 + 200k × $0.20 + 3k × $10 per Mtok = $0.17.
+    assert_eq!(r.projected_cost_microusd, MicroUsd(340_000));
+    assert_eq!(status(&r, "PRE-09"), CheckStatus::Pass);
+    assert!(
+        detail(&r, "PRE-09").contains("A: config all, B: config all"),
+        "{}",
+        detail(&r, "PRE-09")
+    );
+    let measured = &r.check("PRE-09").unwrap().measured;
+    assert_eq!(measured["estimate_source"]["A"], "config all");
+
+    let p = two_sonnets_at_2_usd();
+    let r = evaluate(&p, &mac());
+    assert_eq!(r.projected_cost_microusd, MicroUsd(3_200_000));
+    assert_eq!(status(&r, "PRE-09"), CheckStatus::Fail);
+    assert!(detail(&r, "PRE-09").contains("A: default, B: default"));
+}
+
+/// The sources in order: the plan's per-label estimate, the config's model
+/// entry, the config's `all`, the measured usage (at least
+/// MEASURED_MIN_RUNS runs), the default.
+#[test]
+fn pre_09_estimate_source_order() {
+    let one_m_input = TokenEstimate {
+        input: 1_000_000,
+        ..TokenEstimate::default()
+    };
+    let measured = |runs: u32| {
+        BTreeMap::from([(
+            "sonnet".to_string(),
+            MeasuredTokens {
+                runs,
+                estimate: la_sized(),
+            },
+        )])
+    };
+    let source = |p: &PreflightPlan, label: &str| {
+        evaluate(p, &mac()).check("PRE-09").unwrap().measured["estimate_source"][label]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // Measured with enough runs beats the default.
+    let mut p = two_sonnets_at_2_usd();
+    p.measured_tokens = measured(MEASURED_MIN_RUNS);
+    assert_eq!(source(&p, "A"), "measured 3 runs");
+    let r = evaluate(&p, &mac());
+    assert_eq!(r.projected_cost_microusd, MicroUsd(340_000));
+    assert_eq!(status(&r, "PRE-09"), CheckStatus::Pass);
+
+    // Too few runs: the default.
+    p.measured_tokens = measured(MEASURED_MIN_RUNS - 1);
+    assert_eq!(source(&p, "A"), "default");
+
+    // The config's `all` beats the measured usage.
+    p.measured_tokens = measured(MEASURED_MIN_RUNS);
+    p.config.budget.expected_tokens.all = Some(one_m_input);
+    assert_eq!(source(&p, "A"), "config all");
+    // $2 per Mtok input, 2 candidates.
+    assert_eq!(
+        evaluate(&p, &mac()).projected_cost_microusd,
+        MicroUsd(4_000_000)
+    );
+
+    // The model entry beats `all`; another model's entry does not apply.
+    p.config.budget.expected_tokens.models = BTreeMap::from([
+        ("sonnet".to_string(), la_sized()),
+        ("opus".to_string(), one_m_input),
+    ]);
+    assert_eq!(source(&p, "A"), "config model");
+    assert_eq!(
+        evaluate(&p, &mac()).projected_cost_microusd,
+        MicroUsd(340_000)
+    );
+
+    // The plan's per-label estimate beats everything, for that label only.
+    p.expected_tokens.insert("A".into(), one_m_input);
+    assert_eq!(source(&p, "A"), "plan");
+    assert_eq!(source(&p, "B"), "config model");
+}
+
+/// The measured estimate is the per-kind maximum of the latest
+/// MEASURED_WINDOW runs of each model; empty runs are left out.
+#[test]
+fn measured_estimate_is_the_max_of_the_latest_runs() {
+    let run = |input: u64, output: u64| TokenEstimate {
+        input,
+        output,
+        ..TokenEstimate::default()
+    };
+    let mut runs = vec![("sonnet".to_string(), run(1_000_000, 1))];
+    runs.extend((0..MEASURED_WINDOW as u64).map(|i| ("sonnet".to_string(), run(10 + i, 5))));
+    runs.push(("sonnet".to_string(), run(50, 3)));
+    runs.push(("sonnet".to_string(), TokenEstimate::default()));
+    runs.push(("gpt-5.5".to_string(), run(7, 7)));
+    let m = measured_from_runs(runs);
+    // The oldest run (1M input) is outside the window.
+    assert_eq!(
+        m["sonnet"],
+        MeasuredTokens {
+            runs: MEASURED_WINDOW as u32,
+            estimate: run(50, 5),
+        }
+    );
+    assert_eq!(m["gpt-5.5"].runs, 1);
+    assert!(measured_from_runs(Vec::new()).is_empty());
+}
+
 // ─── PRE-10 judge ───────────────────────────────────────────────────────────
 
 #[test]
@@ -879,6 +1028,75 @@ fn config_rejects_unknown_key() {
         (
             "gates:\n  - name: t\n    command: make\n    timeout_s: 0\n",
             "timeout_s",
+        ),
+    ] {
+        std::fs::write(&file, yaml).unwrap();
+        let err = format!("{:#}", load(project.path(), &flags()).unwrap_err());
+        assert!(err.contains(why), "{yaml}: {err}");
+    }
+}
+
+/// `budget.expected_tokens` parses `all` and per-model entries (a kind
+/// left out is 0), and rejects unknown kinds, negative or zero estimates.
+#[test]
+fn config_expected_tokens() {
+    let project = project_with(None);
+    let file = project.path().join(".multi-herdr/dataset.yaml");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "budget:\n  expected_tokens:\n    all: {input: 20000, cache_read: 200000, output: 3000}\n    models:\n      sonnet: {cache_write_1h: 15000, output: 2000}\n",
+    )
+    .unwrap();
+    let c = load(project.path(), &flags()).unwrap();
+    assert_eq!(
+        c.budget.expected_tokens,
+        ExpectedTokens {
+            all: Some(TokenEstimate {
+                input: 20_000,
+                cache_read: 200_000,
+                output: 3_000,
+                ..TokenEstimate::default()
+            }),
+            models: BTreeMap::from([(
+                "sonnet".to_string(),
+                TokenEstimate {
+                    cache_write_1h: 15_000,
+                    output: 2_000,
+                    ..TokenEstimate::default()
+                },
+            )]),
+        }
+    );
+
+    for (yaml, why) in [
+        (
+            "budget:\n  expected_tokens:\n    all: {inputs: 5}\n",
+            "unknown field `inputs`",
+        ),
+        (
+            "budget:\n  expected_tokens:\n    all: {input: -5}\n",
+            "budget.expected_tokens.all.input: invalid type: integer `-5`, expected u64",
+        ),
+        (
+            "budget:\n  expected_tokens:\n    all: {input: lots}\n",
+            "invalid type",
+        ),
+        (
+            "budget:\n  expected_tokens:\n    each: {input: 5}\n",
+            "unknown field `each`",
+        ),
+        (
+            "budget:\n  expected_tokens:\n    all: {}\n",
+            "budget.expected_tokens.all must give at least 1 token",
+        ),
+        (
+            "budget:\n  expected_tokens:\n    models:\n      sonnet: {output: 0}\n",
+            "budget.expected_tokens.models.sonnet must give at least 1 token",
+        ),
+        (
+            "budget:\n  expected_tokens:\n    models:\n      '': {output: 1}\n",
+            "empty model name",
         ),
     ] {
         std::fs::write(&file, yaml).unwrap();

@@ -13,8 +13,8 @@
 //!
 //! `committed` (the coordinator's policy, the orchestrator's decision until
 //! Spec B §budget says otherwise): each running candidate counts the max of
-//! what it has spent and its projected cost ([`UsageMeter::projected`], the
-//! number preflight PRE-09 checked), minus what it has spent. The judge's
+//! what it has spent and its projected cost ([`UsageMeter::projected`]),
+//! minus what it has spent. The judge's
 //! reserve is held until the judge completes; it is already in `limit`.
 //! So a round whose projected spend crosses the limit stops launching
 //! before its measured spend does.
@@ -108,8 +108,9 @@ impl UsageMeter {
     }
 
     /// The projected cost of one candidate on `model`: the default token
-    /// estimate at the table price, as preflight (PRE-09) projects it. 0
-    /// when the model has no price; its measured spend still counts.
+    /// estimate at the table price. PRE-09 uses the same price, but first
+    /// looks for a configured or measured estimate ([`resolve_estimate`]).
+    /// 0 when the model has no price; its measured spend still counts.
     pub fn projected(&self, model: &str) -> MicroUsd {
         estimate_cost(&self.prices, model, DEFAULT_TOKEN_ESTIMATE)
             .map_or(MicroUsd(0), NanoUsd::to_micro_half_even)

@@ -1063,7 +1063,11 @@ pub struct DatasetConfig {
     #[serde(default)] pub retain_transcripts: bool,  // SEC-03, explicit opt-in
 }
 pub enum Strategy { Diverse }
-pub struct BudgetConfig { pub soft_usd_micro: i64, pub hard_usd_micro: i64, pub judge_reserve_usd_micro: i64 }
+pub struct BudgetConfig { pub soft_usd_micro: i64, pub hard_usd_micro: i64, pub judge_reserve_usd_micro: i64,
+                         pub expected_tokens: ExpectedTokens }   // `budget.expected_tokens`, PRE-09
+pub struct ExpectedTokens { pub all: Option<TokenEstimate>, pub models: BTreeMap<String, TokenEstimate> }
+pub struct TokenEstimate { pub input: u64, pub cache_write_5m: u64, pub cache_write_1h: u64,
+                           pub cache_read: u64, pub output: u64 }   // a kind left out is 0
 pub struct JudgeConfig { pub mode: JudgeMode /* Auto */, pub model: String /* "opus" */, pub effort: String /* "high" */,
                          pub timeout_s: u64, pub policy: WinnerPolicy }
 pub struct GateConfig { pub name: String, pub command: String, pub timeout_s: u64, pub required: bool }
@@ -1095,6 +1099,7 @@ pub struct PreflightPlan { pub config: DatasetConfig, pub candidates: Vec<Prefli
                            pub checkout_bytes: u64, pub build_bytes: u64, pub artifacts_bytes: u64,
                            pub local_model_bytes: u64,
                            pub expected_tokens: BTreeMap<String, TokenEstimate>, // by label
+                           pub measured_tokens: BTreeMap<String, MeasuredTokens>, // by model
                            pub trust_root: Option<PathBuf>,     // the main repository root
                            pub trust: Vec<HarnessTrust> }       // PRE-14
 /// Pure.
@@ -1155,7 +1160,7 @@ fails. A `warn` never refuses a run. The order and the all-pass base plan are pi
 | PRE-06 | a candidate harness has no resolved version | never | pre_06_harness_resolution_before_worktree |
 | PRE-07 | a candidate harness has no resolved version | a candidate's quota pool is not `ok` (`tight`, `unknown`, `cooling`, `exhausted`, `broken`) | pre_07_probe_no_secret_persisted, pre_07_a_pool_that_is_not_ok_warns_and_does_not_refuse |
 | PRE-08 | the plan has 0 candidates | `safe_n < N` (the round runs in waves) | pre_08_safe_n_waves |
-| PRE-09 | the hard ceiling is not set (≤ 0); projected cost + judge reserve > hard ceiling | projected cost + judge reserve > soft limit; a candidate model has no price | pre_09_budget_projection_soft_limit, pre_09_projection_matches_the_live_budget |
+| PRE-09 | the hard ceiling is not set (≤ 0); projected cost + judge reserve > hard ceiling | projected cost + judge reserve > soft limit; a candidate model has no price | pre_09_budget_projection_soft_limit, pre_09_projection_matches_the_live_budget, pre_09_configured_estimate_fits_the_task, pre_09_estimate_source_order |
 | PRE-10 | the judge harness (Claude, for the judge model `opus`) has no resolved version; the judge reserve is ≤ 0 | never | pre_10_judge_available_and_reserved |
 | PRE-11 | the storage probe fails to write, lock, fsync or rename in the dataset directory | never | pre_11_storage_probe |
 | PRE-12 | a candidate harness has no resolved version (the "round can start" row) | never | pre_12_e2e_refuses_before_worktree_or_model |
@@ -1163,8 +1168,51 @@ fails. A `warn` never refuses a run. The order and the all-pass base plan are pi
 | PRE-14 | a candidate harness that asks for trust (Claude, Codex) has not trusted the main repository root. The detail names the harness, the root and the one-time command. | a candidate harness's trust cannot be read (agy; an unreadable store); the repository root is unknown | pre_14_trusted_root_passes, pre_14_untrusted_root_refuses_with_the_fix, pre_14_untrusted_repo_refuses_before_worktree_or_model |
 
 PRE-09 prices each candidate with `competition/budget.rs:estimate_cost`, the
-same function the live budget uses. It uses the plan's token estimate for
-the label, or `DEFAULT_TOKEN_ESTIMATE`. It sums in n$ and rounds to µ$ once.
+same function the live budget uses. It sums in n$ and rounds to µ$ once.
+`competition/budget.rs:resolve_estimate` picks each candidate's expected
+tokens from the first source that has them (finding F1 of the L1
+acceptance: a fixed estimate projected $1.60 for a sonnet candidate that
+spent $0.07):
+
+1. `plan` — `PreflightPlan.expected_tokens` for the label. The CLI leaves it
+   empty; it is for callers and tests that know better.
+2. `config model` — `budget.expected_tokens.models.<model>` in
+   `.multi-herdr/dataset.yaml`, keyed by the candidate's model id as the
+   roster names it (`sonnet`, `gpt-5.5`).
+3. `config all` — `budget.expected_tokens.all`.
+4. `measured N runs` — the earlier candidates of the same task id on the
+   same model, when there are at least `MEASURED_MIN_RUNS` (3) of them. The
+   estimate is the maximum of each token kind over the latest
+   `MEASURED_WINDOW` (10) runs, not the mean: PRE-09 checks a ceiling, and
+   with 3 to 10 runs a high percentile is the maximum. 1 run can be an
+   outlier. `crates/horch/src/dataset/preflight.rs:measured_tokens` reads the
+   event log and the usage records (`artifacts/<round>/usage/<label>.json`);
+   a record with 0 tokens (no transcript) does not count, and a dataset that
+   cannot be read gives no measurement.
+5. `default` — `DEFAULT_TOKEN_ESTIMATE` (200k input, 3M cache read, 60k
+   output).
+
+```yaml
+budget:
+  expected_tokens:
+    all: {input: 20000, cache_write_1h: 15000, cache_read: 200000, output: 3000}
+    models:
+      gpt-5.5: {input: 30000, cache_read: 250000, output: 4000}
+```
+
+An estimate gives any of `input`, `cache_write_5m`, `cache_write_1h`,
+`cache_read` and `output`, the 5 kinds `usage::Price` prices; a kind left
+out is 0. Load rejects an unknown kind, a negative or non-integer count, an
+estimate of 0 tokens and an empty model name (`config_expected_tokens`). The
+key is left out of the config digest when it is empty.
+
+The PRE-09 detail names the source of each label, such as `projected $0.340000
+(estimates: A: config all, B: config all) plus judge reserve $0.200000 is
+under the soft limit $1.600000`. `measured.estimate_source` has the same,
+by label.
+
+The live budget does not use these sources yet: `UsageMeter::projected`
+(the coordinator's committed spend) still uses `DEFAULT_TOKEN_ESTIMATE`.
 
 PRE-12 as a requirement is the refusal itself. `dataset/run.rs` refuses a
 report with any `fail` with exit code 4. The events are `experiment.created`,

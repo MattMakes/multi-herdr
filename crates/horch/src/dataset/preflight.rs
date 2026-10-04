@@ -513,6 +513,147 @@ mod tests {
     use super::*;
     use horch_core::harness::trust::TrustState;
 
+    /// PRE-09's measured source reads the usage records of the earlier
+    /// candidates of the same task id, per model; another task's runs and a
+    /// candidate without a usage record do not count.
+    #[test]
+    fn measured_tokens_reads_the_same_task_only() {
+        use horch_core::ids::{ExecutionId, ModelId, RoundId, TeammateName};
+        use horch_core::measure::event::{
+            Actor, CandidatePlanned, EventKind, RoundCreated, SlotKind,
+        };
+        use horch_core::measure::recorder::{JsonlRecorder, NewEvent};
+        use horch_core::measure::store::StoreOptions;
+        use horch_core::teacher::TeacherRef;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DatasetPaths::from_slug(tmp.path(), "fixture");
+        let rec = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
+        let uuid = |n: u64| format!("0199a5b0-0000-7000-8000-{n:012x}");
+        let at = Utc::now();
+        // A passed report: `round.created` needs a PLANNED experiment.
+        let report: PreflightReport = serde_json::from_value(serde_json::json!({
+            "schema_version": "1.0.0", "checks": [], "safe_n": 1, "waves": 1,
+            "projected_cost_microusd": 0,
+            "machine": {"os": "macos", "arch": "aarch64", "cpus": 10,
+                        "mem_total_bytes": null, "mem_available_bytes": null,
+                        "disk_free_bytes": null, "disk_total_bytes": null,
+                        "gpu": "apple_silicon", "max_open_files": null, "max_processes": null},
+            "environment_digest": sha256_bytes(b"e").to_string(),
+            "passed": true,
+        }))
+        .unwrap();
+        let mut n = 0u64;
+        let mut push =
+            |exp: &ExperimentId, round: Option<&RoundId>, exec: Option<ExecutionId>, kind| {
+                n += 1;
+                rec.append(NewEvent {
+                    kind,
+                    actor: Actor::Coordinator,
+                    experiment_id: exp.clone(),
+                    round_id: round.cloned(),
+                    execution_id: exec,
+                    idempotency_key: format!("k{n}"),
+                    occurred_at: at,
+                })
+                .unwrap();
+            };
+        // 3 rounds of "fix the bug", 1 round of another task. Round 2's
+        // candidate has no usage record.
+        for (i, task) in [
+            "fix the bug",
+            "fix the bug",
+            "fix the bug",
+            "fix the bug",
+            "other",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let i = i as u64;
+            let exp = ExperimentId::new(uuid(0xe00 + i)).unwrap();
+            let round = RoundId::new(uuid(0xa00 + i)).unwrap();
+            let exec = ExecutionId::new(uuid(0xc00 + i)).unwrap();
+            let task_id = task_id_of(task).unwrap();
+            push(
+                &exp,
+                None,
+                None,
+                EventKind::ExperimentCreated(ExperimentCreated {
+                    task_id,
+                    task_digest: sha256_bytes(task.as_bytes()),
+                    config_digest: sha256_bytes(b"c"),
+                    base_sha: "a".repeat(40),
+                    repo_digest: sha256_bytes(b"r"),
+                    environment_digest: sha256_bytes(b"e"),
+                    candidates: 1,
+                    strategy: "diverse".into(),
+                    budget_usd_micro: 2_000_000,
+                    promote_to: None,
+                }),
+            );
+            push(
+                &exp,
+                None,
+                None,
+                EventKind::PreflightCompleted(PreflightCompleted {
+                    report: report.clone(),
+                }),
+            );
+            push(
+                &exp,
+                Some(&round),
+                None,
+                EventKind::RoundCreated(RoundCreated {
+                    index: 0,
+                    base_sha: "a".repeat(40),
+                    labels: vec!["A".into()],
+                    eligible_set: Vec::new(),
+                    propensities: BTreeMap::new(),
+                    teacher: TeacherRef::none(),
+                    seed: 1,
+                    label_policy_version: "lp-1".into(),
+                }),
+            );
+            push(
+                &exp,
+                Some(&round),
+                Some(exec.clone()),
+                EventKind::CandidatePlanned(CandidatePlanned {
+                    label: "A".into(),
+                    teammate: TeammateName::new("sonnet").unwrap(),
+                    harness: HarnessKind::Claude,
+                    model: ModelId::new("sonnet").unwrap(),
+                    effort: None,
+                    slot: SlotKind::Baseline,
+                    propensity: 1.0,
+                    config_id: "sonnet".into(),
+                }),
+            );
+            if i == 2 {
+                continue;
+            }
+            let dir = paths.artifacts_dir(&exp, &round).unwrap().join("usage");
+            std::fs::create_dir_all(&dir).unwrap();
+            let record = serde_json::json!({
+                "execution_id": exec, "label": "A",
+                "tokens": {"input": 100 * (i + 1), "cache_write_5m": 0, "cache_write_1h": 7,
+                           "cache_read": 1000, "output": 10},
+                "cost_microusd": 1, "cost_source": "unpriced",
+                "transcript_ref": null, "transcript_digest": null,
+            });
+            std::fs::write(dir.join("A.json"), record.to_string()).unwrap();
+        }
+
+        let m = measured_tokens(&paths, "fix the bug");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m["sonnet"].runs, 3);
+        // Rounds 0, 1 and 3; the "other" task's 500 input is not counted.
+        assert_eq!(m["sonnet"].estimate.input, 400);
+        assert_eq!(m["sonnet"].estimate.cache_write_1h, 7);
+        assert!(measured_tokens(&paths, "never run").is_empty());
+    }
+
     /// Every harness kind resolves by name, so preflight shows its version.
     #[test]
     fn kind_of_names_every_harness() {
