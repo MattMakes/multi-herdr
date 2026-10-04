@@ -293,6 +293,82 @@ pub(crate) fn kill_job(hb: &Heartbeat) -> bool {
     cfg!(unix)
 }
 
+/// What [`kill_lost_job`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LostKill {
+    /// The job still ran as itself, and [`kill_job`] killed it and its group.
+    pub job: bool,
+    /// Members of the dead job's group that were killed: its orphans.
+    pub killed: Vec<u32>,
+    /// Members that started after the last heartbeat: not the job's.
+    pub kept: Vec<u32>,
+}
+
+/// Kill what is left of the lost job in `job_dir`.
+///
+/// A job that still runs as itself is killed with [`kill_job`]. A job whose
+/// pid no process has can leave its judge CLI running in its group. Each
+/// member of that group that started at or before the heartbeat file's
+/// last write is killed: it ran while the job was alive, so it is the job's.
+/// The id is not the job's for certain: once the job's group empties, a
+/// later program can get the pid, lead a group, and die. But that program
+/// started after the job died, so its members did too, and are kept. Each
+/// member's start time is checked again just before its signal. A pid that
+/// another program has now is never signalled. Windows lists no members:
+/// only [`kill_job`] applies there.
+pub(crate) fn kill_lost_job(job_dir: &Path) -> LostKill {
+    let path = job_dir.join(HEARTBEAT_FILE);
+    let Some(hb) = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Heartbeat>(&b).ok())
+    else {
+        return LostKill::default();
+    };
+    let mut done = LostKill {
+        job: kill_job(&hb),
+        ..LostKill::default()
+    };
+    let last_beat = std::fs::metadata(&path).and_then(|m| m.modified());
+    if done.job || fsx::pid_alive(hb.pid) {
+        return done;
+    }
+    let Ok(last_beat) = last_beat else {
+        return done;
+    };
+    for pid in procid::group_members(hb.pid) {
+        let ours = procid::started_by(pid, last_beat);
+        match procid::start_time(pid) {
+            Some(started) if ours && kill_member(pid, hb.pid, started) => done.killed.push(pid),
+            _ => done.kept.push(pid),
+        }
+    }
+    done
+}
+
+/// SIGKILL `pid` while it is still in group `pgid` with start time
+/// `started`, and say whether a signal was sent.
+fn kill_member(pid: u32, pgid: u32, started: u64) -> bool {
+    #[cfg(unix)]
+    {
+        if !procid::is_same(pid, started) {
+            return false;
+        }
+        // SAFETY: plain syscalls; `is_same` refuses 0 and values that turn
+        // negative.
+        unsafe {
+            if libc::getpgid(pid as libc::pid_t) != pgid as libc::pid_t {
+                return false;
+            }
+            libc::kill(pid as libc::pid_t, libc::SIGKILL) == 0
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, pgid, started);
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

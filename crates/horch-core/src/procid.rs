@@ -68,6 +68,24 @@ pub fn is_same_group(pgid: u32, started: u64) -> bool {
     }
 }
 
+/// The pids in process group `pgid` now: its members, the leader among
+/// them while it runs. Empty when the group has none, or on a platform that
+/// cannot list them (Windows).
+pub fn group_members(pgid: u32) -> Vec<u32> {
+    match raw(pgid) {
+        Some(group) => imp::group_members(group),
+        None => Vec::new(),
+    }
+}
+
+/// Whether `pid` runs and started at or before `t` on the wall clock. An
+/// unknown start time is not a match. Linux compares in clock ticks since
+/// boot, not with [`started_at`], so the whole-second boot time cannot move
+/// a start before `t`.
+pub fn started_by(pid: u32, t: std::time::SystemTime) -> bool {
+    raw(pid).and_then(|pid| imp::started_by(pid, t)) == Some(true)
+}
+
 /// `pid` as the OS type, when it can name one process: 0 and values that
 /// would turn negative (a process group, or every process) are refused.
 fn raw(pid: u32) -> Option<i32> {
@@ -97,6 +115,28 @@ mod imp {
         let micros = start_time(pid)?;
         Some(std::time::UNIX_EPOCH + std::time::Duration::from_micros(micros))
     }
+
+    pub(super) fn started_by(pid: i32, t: std::time::SystemTime) -> Option<bool> {
+        Some(started_at(pid)? <= t)
+    }
+
+    pub(super) fn group_members(pgid: i32) -> Vec<u32> {
+        // Room for more members than a judge job has; a fuller group is cut.
+        const CAP: usize = 4096;
+        let mut pids = vec![0 as libc::pid_t; CAP];
+        let bytes = std::mem::size_of_val(pids.as_slice()) as libc::c_int;
+        // SAFETY: the buffer holds `bytes` bytes of zeroed pids.
+        let n = unsafe { libc::proc_listpgrppids(pgid, pids.as_mut_ptr().cast(), bytes) };
+        if n <= 0 {
+            return Vec::new();
+        }
+        // `n` counts bytes; the buffer was zeroed, so a slot it did not
+        // fill is 0 and is dropped.
+        pids.truncate((n as usize).min(CAP));
+        pids.into_iter()
+            .filter_map(|p| u32::try_from(p).ok().filter(|p| *p > 0))
+            .collect()
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -110,8 +150,50 @@ mod imp {
     /// parentheses and may hold spaces, so counting starts after the last
     /// `)`, at field 3.
     pub(super) fn parse_stat(stat: &str) -> Option<u64> {
+        stat_field(stat, 22)
+    }
+
+    /// Field `n` (from 3) of a `/proc/<pid>/stat` line.
+    pub(super) fn stat_field<T: std::str::FromStr>(stat: &str, n: usize) -> Option<T> {
         let (_, rest) = stat.rsplit_once(')')?;
-        rest.split_whitespace().nth(22 - 3)?.parse().ok()
+        rest.split_whitespace().nth(n - 3)?.parse().ok()
+    }
+
+    /// Every pid in `/proc` whose field 5, the process group, is `pgid`.
+    pub(super) fn group_members(pgid: i32) -> Vec<u32> {
+        let Ok(dir) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        dir.flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|pid| {
+                std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .ok()
+                    .and_then(|stat| stat_field::<i32>(&stat, 5))
+                    == Some(pgid)
+            })
+            .collect()
+    }
+
+    /// `t` moved onto `CLOCK_BOOTTIME`, which the start time counts in,
+    /// through the distance between `t` and now.
+    pub(super) fn started_by(pid: i32, t: std::time::SystemTime) -> Option<bool> {
+        let ticks = start_time(pid)?;
+        // SAFETY: sysconf reads a constant.
+        let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok()?;
+        let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: `ts` is a valid timespec to fill.
+        if hz == 0 || unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } != 0 {
+            return None;
+        }
+        let boot_now = std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32);
+        let now = std::time::SystemTime::now();
+        let t_boot = match now.duration_since(t) {
+            Ok(ago) => boot_now.checked_sub(ago)?,
+            Err(ahead) => boot_now + ahead.duration(),
+        };
+        let start = std::time::Duration::from_nanos(ticks.checked_mul(1_000_000_000)? / hz);
+        Some(start <= t_boot)
     }
 
     /// Boot time (`btime` in `/proc/stat`, in seconds) plus the start time
@@ -143,6 +225,14 @@ mod imp {
 
     pub(super) fn started_at(_pid: i32) -> Option<std::time::SystemTime> {
         None
+    }
+
+    pub(super) fn started_by(_pid: i32, _t: std::time::SystemTime) -> Option<bool> {
+        None
+    }
+
+    pub(super) fn group_members(_pgid: i32) -> Vec<u32> {
+        Vec::new()
     }
 }
 
@@ -209,10 +299,54 @@ mod tests {
         assert!(!alive(pid, Some(started)));
     }
 
+    /// This test's own group holds this process and a child it starts.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn group_members_lists_this_group() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        // SAFETY: plain syscall on this process.
+        let group = unsafe { libc::getpgrp() } as u32;
+        let members = group_members(group);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(members.contains(&std::process::id()), "{members:?}");
+        assert!(members.contains(&child.id()), "{members:?}");
+        assert_eq!(group_members(0), Vec::<u32>::new());
+        assert_eq!(group_members(u32::MAX), Vec::<u32>::new());
+    }
+
+    /// A process started by a time only from its start on, and a gone
+    /// process never.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn started_by_orders_a_start_with_a_time() {
+        use std::time::{Duration, SystemTime};
+        let before = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(50));
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        std::thread::sleep(Duration::from_millis(50));
+        let after = SystemTime::now();
+        assert!(!started_by(pid, before), "started after `before`");
+        assert!(started_by(pid, after));
+        assert!(started_by(std::process::id(), after));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!started_by(pid, after), "gone");
+        assert!(!started_by(0, after));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn stat_field_22_after_a_command_with_spaces() {
         let stat = "42 (a b) c) S 1 42 42 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 98765 0 0";
         assert_eq!(imp::parse_stat(stat), Some(98765));
+        assert_eq!(imp::stat_field::<i32>(stat, 5), Some(42), "the group");
     }
 }

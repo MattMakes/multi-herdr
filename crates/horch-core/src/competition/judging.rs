@@ -26,7 +26,8 @@ use crate::evaluation::judgment::{Judgment, JudgmentRecord};
 use crate::evaluation::parser::{parse_judgment, ParseError};
 use crate::evaluation::rubric::{judge_policy_digest, rubric_text, schema_text};
 use crate::evaluation::scheduler::{
-    discover, job_facts, kill_job, ExitReason, JobState, JudgeJobSpec, OUTPUT_CAP_BYTES,
+    discover, job_facts, kill_job, kill_lost_job, ExitReason, JobState, JudgeJobSpec,
+    OUTPUT_CAP_BYTES,
 };
 use crate::evaluation::validator::ValidationReport;
 use crate::evaluation::winner::{decide_winner, WinnerOutcome, WinnerPolicy};
@@ -197,11 +198,17 @@ pub fn poll(env: &JudgeEnv, round_id: &RoundId, now: DateTime<Utc>) -> Result<Ju
             fail(env, round_id, &round, attempt, cause, exit.code)
         }
         JobState::Lost => {
-            // Lost covers a dead pid, and a stale heartbeat whose pid now
-            // names another program: kill only a job that is still itself.
-            let facts = job_facts(&job_dir);
-            if let (Some(hb), true) = (facts.heartbeat, facts.pid_alive) {
-                kill_job(&hb);
+            // Lost covers a stale job that still runs, a dead job whose
+            // judge CLI may still run, and a pid that now names another
+            // program: `kill_lost_job` signals only the job's own processes.
+            let kill = kill_lost_job(&job_dir);
+            if !kill.killed.is_empty() || !kill.kept.is_empty() {
+                eprintln!(
+                    "horch: judge attempt {attempt} of round {round_id} was lost; \
+                     killed its orphans {:?}; kept {:?}, which started after its \
+                     last heartbeat",
+                    kill.killed, kill.kept
+                );
             }
             fail(env, round_id, &round, attempt, JudgeFailure::Lost, None)
         }
