@@ -98,3 +98,11 @@ breaks every worker. Build and check skills under
 Copy them into `skills/` only while you hold the lock, right before
 `skills_catalog` and the commit. A `description:` that holds `: ` must be
 quoted.
+
+## Upstream errors (standing rule)
+
+A real API error (api_check) or a fact error you proved on 4.7.2 (a test
+run, the doctool dump, or the 4.7 docs) in upstream GodotPrompter text is
+fixed in place. List it in provenance as `API fixes on 4.7.2: A -> B` or
+`Fact fixes on 4.7: <what> (<evidence>)`, and in your report. A claim you
+cannot prove stays as it is and goes in the report.
