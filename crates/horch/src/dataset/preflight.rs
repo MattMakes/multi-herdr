@@ -12,9 +12,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use horch_core::competition::config::DatasetConfig;
 use horch_core::competition::preflight::{
-    asks_for_trust, claude_trust, codex_trust, storage_probe, CheckStatus, GitFacts, HarnessTrust,
-    PoolFacts, PreflightCandidate, PreflightPlan, PreflightReport, StorageProbe, TrustState,
-    CLAUDE_TRUST_FILE, CODEX_TRUST_FILE,
+    asks_for_trust, claude_config_file, claude_trust, codex_trust, storage_probe, CheckStatus,
+    GitFacts, HarnessTrust, PoolFacts, PreflightCandidate, PreflightPlan, PreflightReport,
+    StorageProbe, TrustState, CLAUDE_TRUST_FILE, CODEX_TRUST_FILE,
 };
 use horch_core::fsx;
 use horch_core::harness::codex::codex_home;
@@ -283,7 +283,10 @@ fn harness_trust(
     harnesses
         .into_iter()
         .map(|harness| match harness {
-            HarnessKind::Claude => match read_store(&home.join(".claude.json")) {
+            HarnessKind::Claude => match read_store(&claude_config_file(
+                home,
+                ctx.inherited.claude_config_dir.as_deref(),
+            )) {
                 Ok(text) => claude_trust(text.as_deref(), &roots),
                 Err(()) => unreadable(harness, CLAUDE_TRUST_FILE),
             },
@@ -513,6 +516,48 @@ mod tests {
         }
         assert_eq!(kind_of("antigravity"), Some(HarnessKind::Antigravity));
         assert_eq!(kind_of("nope"), None);
+    }
+
+    /// PRE-14 reads Claude's trust from `$CLAUDE_CONFIG_DIR/.claude.json`
+    /// when the variable is set, and from `~/.claude.json` otherwise.
+    #[test]
+    fn claude_trust_follows_claude_config_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        let home = tmp.path().join("home");
+        let ccd = tmp.path().join("ccd");
+        for dir in [&root, &home, &ccd] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let trusted = serde_json::json!({"projects": {
+            root.to_string_lossy(): {"hasTrustDialogAccepted": true}
+        }})
+        .to_string();
+        let candidates = [PreflightCandidate {
+            label: "A".into(),
+            teammate: horch_core::ids::TeammateName::new("sonnet").unwrap(),
+            harness: HarnessKind::Claude,
+            model: horch_core::ids::ModelId::new("sonnet").unwrap(),
+            effort: None,
+        }];
+        let state = |with_ccd: bool| {
+            let mut env =
+                horch_core::runtime::MapEnv::new(&root).with("HOME", &home.to_string_lossy());
+            if with_ccd {
+                env = env.with("CLAUDE_CONFIG_DIR", &ccd.to_string_lossy());
+            }
+            let ctx = RuntimeContext::from_env(&env).unwrap();
+            harness_trust(&ctx, &candidates, &root)[0].state
+        };
+        // Only the config dir trusts the root.
+        std::fs::write(ccd.join(".claude.json"), &trusted).unwrap();
+        assert_eq!(state(true), TrustState::Trusted);
+        assert_eq!(state(false), TrustState::Untrusted);
+        // Only the home file trusts it.
+        std::fs::remove_file(ccd.join(".claude.json")).unwrap();
+        std::fs::write(home.join(".claude.json"), &trusted).unwrap();
+        assert_eq!(state(true), TrustState::Untrusted);
+        assert_eq!(state(false), TrustState::Trusted);
     }
 
     /// A linked worktree resolves to the main repository root, where the

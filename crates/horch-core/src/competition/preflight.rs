@@ -974,13 +974,23 @@ pub fn asks_for_trust(harness: HarnessKind) -> bool {
     )
 }
 
-/// The store file names the reasons use.
-pub const CLAUDE_TRUST_FILE: &str = "~/.claude.json";
+/// The store file names the reasons use. Claude keeps `.claude.json` in
+/// `$CLAUDE_CONFIG_DIR` when it is set, else in the home directory (see
+/// [`claude_config_file`]).
+pub const CLAUDE_TRUST_FILE: &str = "$CLAUDE_CONFIG_DIR/.claude.json";
 pub const CODEX_TRUST_FILE: &str = "$CODEX_HOME/config.toml";
+
+/// The file Claude keeps its global config and trust decisions in:
+/// `$CLAUDE_CONFIG_DIR/.claude.json` when the variable is set, else
+/// `<home>/.claude.json`. Seen on claude 2.1.289: with the variable set, it
+/// writes `.claude.json` in that directory and leaves the home one alone.
+pub fn claude_config_file(home: &Path, claude_config_dir: Option<&Path>) -> PathBuf {
+    claude_config_dir.unwrap_or(home).join(".claude.json")
+}
 
 /// Claude's trust in `roots` (the root and its canonical form): the key
 /// `projects["<root>"].hasTrustDialogAccepted` is `true` in
-/// `~/.claude.json`. `file` is the file text, `None` when it does not exist.
+/// [`claude_config_file`]. `file` is the file text, `None` when it does not exist.
 /// A parent folder's entry does not count: Claude keys trust on the
 /// repository root.
 pub fn claude_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {

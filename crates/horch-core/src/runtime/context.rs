@@ -177,6 +177,8 @@ pub struct Inherited {
     pub opencode_config_content: Option<String>,
     /// `CODEX_HOME`.
     pub codex_home: Option<PathBuf>,
+    /// `CLAUDE_CONFIG_DIR`: where Claude keeps `.claude.json` when set.
+    pub claude_config_dir: Option<PathBuf>,
     /// `CLAUDE_CODE_EFFORT_LEVEL`, raw.
     pub claude_code_effort_level: Option<String>,
     /// `PI_CODING_AGENT_SESSION_DIR`.
@@ -202,6 +204,7 @@ impl Inherited {
             pathext: env.var("PATHEXT"),
             opencode_config_content: env.var("OPENCODE_CONFIG_CONTENT"),
             codex_home: nonempty_path(env, "CODEX_HOME"),
+            claude_config_dir: nonempty_path(env, "CLAUDE_CONFIG_DIR"),
             claude_code_effort_level: env.var("CLAUDE_CODE_EFFORT_LEVEL"),
             pi_session_dir: nonempty_path(env, "PI_CODING_AGENT_SESSION_DIR"),
             opencode_db: nonempty_path(env, "HORCH_OPENCODE_DB"),
@@ -400,6 +403,7 @@ mod tests {
             .with("HORCH_FAULT", "after-append,abort-after-append")
             .with("OPENCODE_CONFIG_CONTENT", "{}")
             .with("CODEX_HOME", "/codex")
+            .with("CLAUDE_CONFIG_DIR", "/ccd")
             .with("CLAUDE_CODE_EFFORT_LEVEL", "high")
             .with("PI_CODING_AGENT_SESSION_DIR", "/pi")
             .with("HORCH_OPENCODE_DB", "/oc.db")
@@ -465,6 +469,7 @@ mod tests {
         assert_eq!(i.home_var, Some(OsString::from("/home/a")));
         assert_eq!(i.opencode_config_content.as_deref(), Some("{}"));
         assert_eq!(i.codex_home, Some(PathBuf::from("/codex")));
+        assert_eq!(i.claude_config_dir, Some(PathBuf::from("/ccd")));
         assert_eq!(i.claude_code_effort_level.as_deref(), Some("high"));
         assert_eq!(i.pi_session_dir, Some(PathBuf::from("/pi")));
         assert_eq!(i.opencode_db, Some(PathBuf::from("/oc.db")));
