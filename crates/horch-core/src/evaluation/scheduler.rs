@@ -275,6 +275,12 @@ fn open_log(path: &Path) -> Result<std::fs::File> {
 /// comes from a file, and a job that has ended frees it for any other
 /// program. A heartbeat without a start time names no process for certain,
 /// so it is not killed either.
+///
+/// The group is signalled first, while the leader is checked to run: a
+/// running leader keeps its group id from being given out. The window is
+/// from the check to `killpg`: the leader would have to end, its group
+/// empty, and the id go to a new group between 2 calls. The leader itself
+/// gets [`procid::signal_same`], which closes its own window on Linux.
 pub(crate) fn kill_job(hb: &Heartbeat) -> bool {
     let Some(started) = hb.started else {
         return false;
@@ -283,12 +289,13 @@ pub(crate) fn kill_job(hb: &Heartbeat) -> bool {
         return false;
     }
     #[cfg(unix)]
-    unsafe {
-        // SAFETY: plain syscalls on the job's pid, checked just above (and
-        // `is_same` refuses 0 and values that turn negative); failure is
-        // ignored.
-        libc::kill(-(hb.pid as libc::pid_t), libc::SIGKILL);
-        libc::kill(hb.pid as libc::pid_t, libc::SIGKILL);
+    {
+        if let Some(group) = procid::os_pid(hb.pid) {
+            // SAFETY: plain syscall on the job's group, checked just above;
+            // failure is ignored.
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+        procid::signal_same(hb.pid, started, libc::SIGKILL);
     }
     cfg!(unix)
 }
@@ -350,17 +357,14 @@ pub(crate) fn kill_lost_job(job_dir: &Path) -> LostKill {
 fn kill_member(pid: u32, pgid: u32, started: u64) -> bool {
     #[cfg(unix)]
     {
-        if !procid::is_same(pid, started) {
+        let (Some(os), Some(group)) = (procid::os_pid(pid), procid::os_pid(pgid)) else {
+            return false;
+        };
+        // SAFETY: plain syscall; a pid that has gone answers -1.
+        if unsafe { libc::getpgid(os) } != group {
             return false;
         }
-        // SAFETY: plain syscalls; `is_same` refuses 0 and values that turn
-        // negative.
-        unsafe {
-            if libc::getpgid(pid as libc::pid_t) != pgid as libc::pid_t {
-                return false;
-            }
-            libc::kill(pid as libc::pid_t, libc::SIGKILL) == 0
-        }
+        procid::signal_same(pid, started, libc::SIGKILL)
     }
     #[cfg(not(unix))]
     {

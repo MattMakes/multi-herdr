@@ -88,18 +88,27 @@ impl Daemon {
     /// to a pid that both answers name with the same start time, and that
     /// started after [`Daemon::install`]: horch never stops a daemon it did
     /// not start, such as the operator's own. Otherwise the daemon is left
-    /// running, and the reason is logged.
+    /// running, and the reason is logged. A daemon left running keeps its
+    /// socket.
     pub fn finish(&self) {
-        if let Some(pid) = daemon_pid(&self.bin, &self.socket) {
+        let left_running = daemon_pid(&self.bin, &self.socket).is_some_and(|pid| {
             let first = pid_start(pid);
             let again = daemon_pid(&self.bin, &self.socket).map(|p| (p, pid_start(p)));
             let started_at = u32::try_from(pid).ok().and_then(crate::procid::started_at);
             match may_stop((pid, first), again, started_at, self.installed) {
-                Ok(()) => terminate(pid),
-                Err(why) => eprintln!("horch: left Prime daemon pid {pid} running: {why}"),
+                Ok(()) => {
+                    terminate(pid, first);
+                    false
+                }
+                Err(why) => {
+                    eprintln!("horch: left Prime daemon pid {pid} running: {why}");
+                    true
+                }
             }
+        });
+        if !left_running {
+            let _ = std::fs::remove_file(&self.socket);
         }
-        let _ = std::fs::remove_file(&self.socket);
     }
 }
 
@@ -160,21 +169,25 @@ pub(crate) fn pid_for_socket(json: &str, socket: &Path) -> Option<i32> {
                 .then(|| r.get("pid")?.as_i64())
                 .flatten()
         })
-        .map(|pid| pid as i32)
+        // A pid that names no single process (0, or one that turns negative
+        // as a `pid_t`) names no daemon.
+        .and_then(|pid| u32::try_from(pid).ok().and_then(crate::procid::os_pid))
 }
 
+/// SIGTERM to `pid` while it still has start time `started` (see
+/// [`crate::procid::signal_same`]).
 #[cfg(unix)]
-fn terminate(pid: i32) {
+fn terminate(pid: i32, started: Option<u64>) {
     // SIGTERM, not SIGKILL: the daemon flushes its sessions on the way out, and
     // a session file half-written is a resume that fails later in a pane nobody
     // is watching.
-    unsafe {
-        libc::kill(pid, libc::SIGTERM);
+    if let (Ok(pid), Some(started)) = (u32::try_from(pid), started) {
+        crate::procid::signal_same(pid, started, libc::SIGTERM);
     }
 }
 
 #[cfg(not(unix))]
-fn terminate(pid: i32) {
+fn terminate(pid: i32, _started: Option<u64>) {
     let _ = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T"])
         .status();
@@ -304,6 +317,12 @@ mod tests {
             pid_for_socket(r#"[{"pid":1}]"#, Path::new("/a/d.sock")),
             None
         );
+        // -1 as a pid is every process; 0 is this group; 4294967295 turns
+        // into -1.
+        for pid in ["-1", "0", "4294967295"] {
+            let json = format!(r#"[{{"socketPath":"/a/d.sock","pid":{pid}}}]"#);
+            assert_eq!(pid_for_socket(&json, Path::new("/a/d.sock")), None, "{pid}");
+        }
     }
 
     /// SIGTERM only for one process across both `status` calls, started
@@ -362,6 +381,8 @@ mod tests {
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Reserved long after the child started: not this launch's daemon.
+        // The daemon's socket; a plain file does for this check.
+        std::fs::write(daemon.socket(), "").unwrap();
         daemon.installed = SystemTime::now() + std::time::Duration::from_secs(60);
         daemon.finish();
         assert_eq!(
@@ -369,11 +390,16 @@ mod tests {
             None,
             "a foreign daemon was stopped"
         );
+        assert!(daemon.socket().exists(), "a running daemon lost its socket");
 
         daemon.installed = SystemTime::now() - std::time::Duration::from_secs(60);
         daemon.finish();
         let status = child.wait().unwrap();
         assert!(!status.success(), "this launch's daemon was not stopped");
+        assert!(
+            !daemon.socket().exists(),
+            "a stopped daemon kept its socket"
+        );
     }
 
     #[test]

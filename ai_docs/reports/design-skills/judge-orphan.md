@@ -39,8 +39,8 @@ member start. Every orphan of the job started while the job was alive.
      start time) gets no signal.
   3. Else, for each pid in `procid::group_members(hb.pid)`: when
      `procid::started_by(pid, mtime of heartbeat)` is true, `kill_member`
-     checks `procid::is_same(pid, start)` and `getpgid(pid) == pgid` again
-     and then sends SIGKILL to that pid only. All other members go to
+     checks `getpgid(pid) == pgid` again and then sends SIGKILL to that pid
+     only, through `procid::signal_same` (see "Signal races" below). All other members go to
      `kept`.
 - The time is the `heartbeat` file mtime, not `hb.at`: `hb.at` has 1 s
   precision (`clock::stamp`).
@@ -117,6 +117,91 @@ Search: `rg -n 'Command::new' crates/*/src`. Only `GitRunner` and
 | `runtime/machine.rs`, `routing/quota_probe.rs`, `harness/prime.rs`, `harness/opencode.rs:40`, `harness/headless.rs` `help_lists`, `telemetry/readers.rs`, `horch/src/cmd/doctor.rs`, `horch/src/cmd/install.rs`, `herdr-install` | Version, status and quota probes | Safe: they run no git. |
 | Hooks | horch runs no user hooks. `GitRunner` sets `core.hooksPath=/dev/null`. | Safe. |
 
+## Added: the full repository variable list (`horch-marketplace/src/git.rs`)
+
+codex-reviewer-1 found that D20's `REPO_ENV` (9 names) missed names that
+`git rev-parse --local-env-vars` lists.
+
+- `REPO_ENV` now has 18 names, in alphabetical order: the 16 names of the
+  host git, plus `GIT_NAMESPACE` and `GIT_CEILING_DIRECTORIES`.
+- `scrub_repo_env` also removes each `GIT_CONFIG_KEY_<n>` and
+  `GIT_CONFIG_VALUE_<n>`. It removes them when this process has them and
+  when they are set on the `Command`.
+- `scripts/phase-gate.sh` unsets the same 18 names and the numbered pairs
+  (`compgen -e`).
+- Tests in `crates/horch-marketplace/tests/marketplace.rs`:
+  - `repo_env_holds_every_local_env_var`: `REPO_ENV` is a superset of the
+    host git's `rev-parse --local-env-vars`. It skips when git is missing.
+  - `git_config_env_does_not_reach_git`: `GIT_CONFIG_PARAMETERS` and
+    `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` set
+    `init.defaultBranch=hijacked`. A `git init` through the runner does not
+    get a `hijacked` HEAD.
+  - Before the fix both failed. The first test named 9 missing names.
+- Not tested: removal of numbered pairs from this process's own
+  environment. The test binary runs tests in parallel, so a test cannot set
+  them in its own process. The code path is the same filter.
+
+## Added: codex-reviewer-1 process findings
+
+### 1. Signal races (HIGH)
+
+- New `procid::signal_same(pid, started, signal) -> bool` (unix):
+  - Linux: `pidfd_open(pid)` first, then `is_same(pid, started)`, then
+    `pidfd_send_signal`. A match after the open proves that the pidfd names
+    the recorded process, so a pid reuse after the check cannot get the
+    signal. A kernel without pidfds (`ENOSYS`, before 5.3) falls back to
+    the check and `kill`. `ESRCH` gives `false`.
+  - macOS has no pidfd for a process that is not a child. The start time is
+    checked immediately before `kill`. Residual window: the process must
+    end and its pid must go to a new program between 2 consecutive
+    syscalls.
+- `scheduler.rs` `kill_job`: `killpg` while the leader is checked to run,
+  then `signal_same` for the leader. Residual window for `killpg` on both
+  platforms: between the check and `killpg`, the leader must end, its group
+  must empty, and the id must go to a new group.
+- `scheduler.rs` `kill_member` and `prime.rs` `terminate` use
+  `signal_same`. `terminate` needs the start time from the first `status`
+  call. On Windows, `terminate` is as before (`taskkill`).
+- `validator.rs`: the gate leader is no longer reaped before the group
+  kill. `leader_exited` uses `waitid(P_PID, WEXITED | WNOHANG | WNOWAIT)`.
+  The zombie keeps the pid and the group id. Then `kill_group` runs, and
+  then `child.wait()` reaps the leader and gives the status. This removes
+  `kill_reaped_group`, `may_kill_reaped_group` and their test. Windows
+  uses `try_wait` as before.
+- Tests:
+  - `procid` `signal_same_signals_only_the_recorded_process`: a wrong start
+    time, 0 and `u32::MAX` send nothing. The right start time kills.
+  - `validator` `an_exited_leader_stays_unreaped_until_the_group_kill`:
+    after `leader_exited` is true, the pid still exists, and `wait` gives
+    the status. This test calls the new function, so it cannot run on the
+    old code.
+  - `tests/vcs.rs` `cmp_09_a_passed_gates_background_child_is_killed`
+    still passes. It covers the group kill after a normal exit.
+- The pidfd path compiles and runs only on Linux. It was not run here.
+
+### 2. The Prime socket (MEDIUM)
+
+- `Daemon::finish` removed the socket even when `may_stop` refused and the
+  daemon stayed alive. Now a daemon that is left running keeps its socket.
+  The socket is removed when no daemon answers, or after the SIGTERM.
+- Test: `finish_stops_only_a_daemon_this_launch_started` asserts that the
+  socket exists after the refusal and is gone after the stop. The old code
+  removed it in both cases, so the first new assertion fails there.
+
+### 3. Pid range
+
+- `procid::os_pid(u32) -> Option<i32>` is the one place that refuses 0 and
+  values above `i32::MAX`. `fsx::pid_alive` uses it. Before, 4294967295
+  became -1, `kill(-1, 0)` succeeded, and `procid::alive` said "alive".
+- `prime.rs` `pid_for_socket` now refuses -1, 0 and 4294967295 through
+  `os_pid`. Before, `as i32` passed them through.
+- `telemetry/lock.rs` needed no code change: it decides through
+  `procid::alive`, which calls `fsx::pid_alive`.
+- Tests: `procid` `os_pid_refuses_what_is_not_one_process`, `lock`
+  `a_pid_out_of_range_is_a_stale_lock`, and `prime`
+  `unmatched_or_unparseable_status_kills_nothing` (3 new rows). With the
+  old `fsx.rs`, the first 2 failed.
+
 ## Checks
 
 - The full gate (`HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`)
@@ -124,6 +209,13 @@ Search: `rg -n 'Command::new' crates/*/src`. Only `GitRunner` and
 - After the rebase on `design-skills`, the merge-train checks ran: the
   workspace build, the touched test files, clippy with `-D warnings`, and
   `rustfmt --check`. Never under `git rebase -x`.
+- `cargo test -p horch-core --lib` passed 390 of 390, 3 times. One earlier
+  run under load failed `fsx::tests::dirlock_paused_breaker_blocks_other_breakers`
+  once. It passed alone 3 times and in the 3 full runs. It does not use the
+  changed code paths (its dead pid is 999999999, which is in range).
+- The `horch-core` lib tests take about 270 s. The slow tests are in
+  `roster::validation` and `routing::decision` (over 60 s each). This unit
+  does not touch them.
 
 ## Gotchas and follow-ups
 

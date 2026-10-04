@@ -88,8 +88,37 @@ pub fn started_by(pid: u32, t: std::time::SystemTime) -> bool {
 
 /// `pid` as the OS type, when it can name one process: 0 and values that
 /// would turn negative (a process group, or every process) are refused.
-fn raw(pid: u32) -> Option<i32> {
+/// Every cast of a stored pid to `pid_t` goes through here.
+pub fn os_pid(pid: u32) -> Option<i32> {
     i32::try_from(pid).ok().filter(|p| *p > 0)
+}
+
+fn raw(pid: u32) -> Option<i32> {
+    os_pid(pid)
+}
+
+/// Send `signal` to `pid` only while it runs with start time `started`, and
+/// say whether it was sent.
+///
+/// On Linux a pidfd is opened first and the start time checked after: the
+/// pidfd names the process that had the pid when it was opened, and a match
+/// after that proves it is the one recorded. The signal then goes to that
+/// process even if it ends and its pid is given out in between. A kernel
+/// without pidfds (before 5.3) falls back to the check and `kill`. On
+/// macOS there is no pidfd for a process that is not a child: the start
+/// time is checked just before `kill`, and the pid would have to end and
+/// be given out again between the two calls.
+#[cfg(unix)]
+pub fn signal_same(pid: u32, started: u64, signal: i32) -> bool {
+    let Some(os) = raw(pid) else {
+        return false;
+    };
+    #[cfg(target_os = "linux")]
+    if let Some(sent) = imp::pidfd_signal(os, signal, || is_same(pid, started)) {
+        return sent;
+    }
+    // SAFETY: plain syscall on a pid checked to be positive.
+    is_same(pid, started) && unsafe { libc::kill(os, signal) } == 0
 }
 
 #[cfg(target_os = "macos")]
@@ -173,6 +202,31 @@ mod imp {
                     == Some(pgid)
             })
             .collect()
+    }
+
+    /// Open a pidfd for `pid`, run `same`, and send `signal` through the
+    /// pidfd when it holds. `None` when this kernel has no pidfds.
+    pub(super) fn pidfd_signal(pid: i32, signal: i32, same: impl Fn() -> bool) -> Option<bool> {
+        // SAFETY: plain syscalls; the fd is closed below.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if fd < 0 {
+            let err = std::io::Error::last_os_error().raw_os_error();
+            // ESRCH: no process has the pid, so there is nothing to signal.
+            return (err != Some(libc::ENOSYS)).then_some(false);
+        }
+        let fd = fd as libc::c_int;
+        let sent = same()
+            && unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    fd,
+                    signal,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            } == 0;
+        unsafe { libc::close(fd) };
+        Some(sent)
     }
 
     /// `t` moved onto `CLOCK_BOOTTIME`, which the start time counts in,
@@ -297,6 +351,38 @@ mod tests {
         child.wait().unwrap();
         assert!(!is_same(pid, started));
         assert!(!alive(pid, Some(started)));
+    }
+
+    #[test]
+    fn os_pid_refuses_what_is_not_one_process() {
+        assert_eq!(os_pid(0), None);
+        assert_eq!(os_pid(u32::MAX), None, "would be -1: every process");
+        assert_eq!(os_pid(i32::MAX as u32 + 1), None, "would be negative");
+        assert_eq!(os_pid(42), Some(42));
+        assert!(!crate::fsx::pid_alive(u32::MAX));
+        assert!(!alive(u32::MAX, None));
+    }
+
+    /// The signal goes only to the process with the recorded start time.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn signal_same_signals_only_the_recorded_process() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let started = start_time(pid).unwrap();
+        assert!(
+            !signal_same(pid, started + 1, libc::SIGKILL),
+            "a reused pid"
+        );
+        assert_eq!(child.try_wait().unwrap(), None, "the child still runs");
+        assert!(!signal_same(0, started, libc::SIGKILL));
+        assert!(!signal_same(u32::MAX, started, libc::SIGKILL));
+        assert!(signal_same(pid, started, libc::SIGKILL));
+        assert!(!child.wait().unwrap().success(), "killed");
+        assert!(!signal_same(pid, started, libc::SIGKILL), "gone");
     }
 
     /// This test's own group holds this process and a child it starts.
