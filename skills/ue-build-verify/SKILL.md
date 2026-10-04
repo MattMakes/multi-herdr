@@ -7,7 +7,9 @@ description: Use when you changed C++, Build.cs, Target.cs, .uproject or .uplugi
 
 The loop every Unreal Engine implementer runs before `DONE:`: find the engine, build the one target that the change touches, run the automation tests that cover the change, read the logs, and report exact results. "It compiles" is not done. A `DONE:` names the target, the configuration, the automation filter, and the result.
 
-Command lines and the evidence for each flag are in `references/commands.md`. A flag marked "unverified on 5.8" there came from upstream or community sources only. Use it, and if it fails, say so in your report.
+Command lines and the evidence for each flag are in `references/commands.md`. The flags were checked against Epic's UE 5.8 documentation; 5.8 is the latest release on 2026-10-04 (hotfix 5.8.3). A flag marked "unverified on 5.8" there came from upstream or community sources only. Use it, and if it fails, say so in your report. If the project uses a newer engine than 5.8, check each flag again and say which ones you could not confirm.
+
+The project keeps binary assets in Git LFS, with locks. The setup, the recommended `.gitattributes` and the lock rules are in `references/git-lfs.md`.
 
 ## When to use
 
@@ -33,9 +35,11 @@ Command lines and the evidence for each flag are in `references/commands.md`. A 
 
    Check: `<Engine>/Engine/Build/BatchFiles` exists. If you cannot resolve the path, send `QUESTION:`. Do not search the whole disk, and do not guess.
 
+   In a new worktree, run `git lfs pull` before the build. Without it, every asset is an LFS pointer and the editor and the tests fail to load it (`references/git-lfs.md`, "Setup").
+
 3. **Check for blockers before you build.**
    - If the editor for this project is running with Live Coding, UBT refuses to build. Report `BLOCKED:` and name the process. Do not close the editor and do not trigger a Live Coding compile. It is the operator's session.
-   - If a file you must edit is read-only and the project uses Perforce (a `.p4config`, `P4CONFIG`, or `p4 info` succeeds), the file needs `p4 edit`. Report `BLOCKED:` with the path. Never `chmod` it, never `attrib -r` it.
+   - A read-only lockable file (`.uasset`, `.umap`, other LFS types) means you do not hold its Git LFS lock. Lock it with `git lfs lock "<path>"` only if the orchestrator assigned that asset to you. If someone else holds the lock, or the asset is not assigned to you, report `BLOCKED:` with the path. Never `chmod` it, never `attrib -r` it, never `git lfs unlock --force` (`references/git-lfs.md`, "Locks").
 
    Check: no running `UnrealEditor` process for this project, or you reported `BLOCKED:`.
 
@@ -57,7 +61,7 @@ Command lines and the evidence for each flag are in `references/commands.md`. A 
 
 - Build only when the orchestrator assigns the build. One UBT per working copy.
 - Live Coding active: report `BLOCKED:`. Do not close the editor. Do not kill a process you did not start.
-- Perforce read-only file: report `BLOCKED:` with the path. Never `chmod`, never `attrib -r`, never `p4 edit` unless the orchestrator tells you to.
+- Git LFS lock: lock a lockable file only when the orchestrator assigned that asset to you. A lock held by someone else, or a read-only lockable file that is not yours, is `BLOCKED:` with the path. Never `chmod`, never `attrib -r`, never `git lfs unlock --force`. List the locks you hold in `DONE:`.
 - Run builds and test runs in the background, with output in a log file. Never let a foreground call time out halfway through a build.
 - Build the narrowest target that proves the change. Do not run `Clean`, `Rebuild`, or delete `Intermediate/` or `Binaries/` unless the log proves stale output and the orchestrator agrees.
 - Never edit `.uasset` or `.umap` bytes. Asset changes go through `ue-editor-scripting` or go in your `DONE:` as a step for a human.
@@ -73,7 +77,8 @@ Command lines and the evidence for each flag are in `references/commands.md`. A 
 
 - [ ] The orchestrator assigned this build to me.
 - [ ] The engine path came from the project context or `EngineAssociation`, not a guess.
-- [ ] No Live Coding session, no Perforce read-only file, or I reported `BLOCKED:`.
+- [ ] `git lfs pull` ran in this worktree; no asset is an LFS pointer.
+- [ ] No Live Coding session, no read-only lockable file that I must change, or I reported `BLOCKED:`.
 - [ ] Target names come from `Source/*.Target.cs`.
 - [ ] The build ran in the background and wrote a log file. Exit code 0 and 0 errors.
 - [ ] The automation filter covers every changed module, or I said that no test exists.
@@ -83,4 +88,5 @@ Command lines and the evidence for each flag are in `references/commands.md`. A 
 ## References
 
 - `references/commands.md`: load at step 2. Engine lookup, build and test command lines for Windows, macOS and Linux, and the flag table with sources and the 5.8 verification status.
+- `references/git-lfs.md`: load at step 2 in a new worktree, and at step 3 for a read-only file. Git LFS setup, the recommended `.gitattributes`, and the lock rules.
 - `references/log-reading.md`: load at step 6 or step 9. Where each log is, what to search for, and how to read the automation JSON report.

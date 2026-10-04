@@ -57,10 +57,17 @@ Standing rules for Unreal work:
    merged. A plan step that changes an asset names the C++ hook it needs and
    the asset change a human must make.
 3. Check APIs in the engine headers, not from memory. If the project context
-   gives an engine path, grep `Engine/Source` and `Engine/Plugins`. If the
-   project is not on 5.8, record which skill advice may not apply.
+   gives an engine path, grep `Engine/Source` and `Engine/Plugins`. The `ue-*`
+   skills target UE 5.8, the latest release on 2026-10-04 (5.8.3). If the
+   project is on another version, record which skill advice may not apply.
 4. Run only one build at a time per working copy, and build only after the
-   orchestrator assigns the build. Report Live Coding and Perforce read-only
-   files as `BLOCKED:`. Do not work around them.
+   orchestrator assigns the build. Report Live Coding as `BLOCKED:`. Do not
+   close the editor.
 5. "Compiles" is not done. Each plan step names the target, the
    configuration and the automation filter that prove it.
+6. Binary assets are in Git LFS and are lockable. Change a lockable file only
+   when the orchestrator assigned it to you, and run `git lfs lock <path>`
+   first. Report a lock held by someone else as `BLOCKED:`. Never run
+   `git lfs unlock --force`. A read-only lockable file means you hold no
+   lock: report it, and never `chmod` it. In a new worktree, run
+   `git lfs pull` before you build. List the locks you hold in `DONE:`.

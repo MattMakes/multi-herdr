@@ -161,11 +161,22 @@ touch `.uasset` or `.umap` files and list the asset change for a human.
 `available_skills:` names at most 3 related skills per teammate, picked from
 the "Related Skills" sections of its own skills.
 
-Each persona carries the same five standing rules: read
+Each persona carries the same six standing rules: read
 `.agents/ue-project-context.md` first, never write asset bytes, check APIs in
-the engine headers, one build at a time per working copy, and a `DONE:` that
+the engine headers, one build at a time per working copy, a `DONE:` that
 names the target, the configuration and the automation filter with its
-result.
+result, and the Git LFS lock rules. The `ue-*` skills target UE 5.8, the
+latest release on 2026-10-04 (hotfix 5.8.3).
+
+Version control is Git with Git LFS, not Perforce. `.uasset`, `.umap` and
+the other binary types are LFS files marked `lockable`. A worker locks an
+asset with `git lfs lock` only when the orchestrator assigned that asset,
+reports a lock held by someone else as `BLOCKED:`, never runs
+`git lfs unlock --force`, and never makes a read-only file writable with
+`chmod`. A new worktree needs `git lfs pull`; every worktree of a clone
+shares the LFS objects in the common `.git/lfs`. The recommended
+`.gitattributes` and the full rules are in
+[`skills/ue-build-verify/references/git-lfs.md`](../skills/ue-build-verify/references/git-lfs.md).
 
 ## The Swift and Apple team
 
