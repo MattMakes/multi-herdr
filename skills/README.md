@@ -74,28 +74,44 @@ To re-vendor a skill at a new upstream revision:
 
 ## Swift and Apple skills
 
-Verbatim copies of MIT-licensed upstream skills, each with its upstream `LICENSE`. They attach by name to the Swift teammates and belong to no phase.
+These skills come from MIT-licensed Swift skill repositories. Each keeps its upstream `LICENSE` next to `SKILL.md`. They attach by name to the Swift teammates and belong to no phase. In the Kind column, "verbatim" and "vendored" mean the references are verbatim copies, and a vendored skill is exempt from the size budget. "adapted" means a curated copy with the edits listed in `provenance.json`. The App Store skills never change App Store Connect: each live write becomes a dry-run sent to the orchestrator. Pins, hashes and every edit are in `provenance.json`.
 
-| Skill | Upstream source |
-| --- | --- |
-| [app-intents](app-intents/SKILL.md) | `n0an/App-Intents-Agent-Skill`: `app-intents/` (verbatim) |
-| [background-execution](background-execution/SKILL.md) | `n0an/Background-Execution-Agent-Skill`: `background-execution/` (verbatim) |
-| [swift-focusengine-pro](swift-focusengine-pro/SKILL.md) | `mhaviv/Swift-FocusEngine-Agent-Skill`: repository root (verbatim) |
-| [widgets](widgets/SKILL.md) | `n0an/Widgets-Agent-Skill`: `widgets/` (verbatim) |
-These skills come from MIT-licensed Swift skill repositories. Each keeps its upstream `LICENSE` next to `SKILL.md`. "Vendored" means a verbatim copy; "adapted" means a curated copy with the edits listed in `provenance.json`. They attach by name to the Swift teammates and belong to no phase.
-
-| Skill | Kind | Upstream source |
+| Skill | Upstream source | Kind |
 | --- | --- | --- |
-| [observability](observability/SKILL.md) | vendored | `n0an/Observability-Agent-Skill`: `observability/` |
-| [swift-concurrency-pro](swift-concurrency-pro/SKILL.md) | adapted | `twostraws/Swift-Concurrency-Agent-Skill`: `swift-concurrency-pro/`; `AvdLee/Swift-Concurrency-Agent-Skill`: `skills/swift-concurrency/SKILL.md` (build-settings table) |
-| [swift-format-style](swift-format-style/SKILL.md) | adapted | `n0an/Swift-FormatStyle-Agent-Skill`: `swift-format-style/` |
-| [swift-testing-pro](swift-testing-pro/SKILL.md) | adapted, light | `twostraws/Swift-Testing-Agent-Skill`: `swift-testing-pro/` |
-| [swiftdata-pro](swiftdata-pro/SKILL.md) | adapted | `twostraws/SwiftData-Agent-Skill`: `swiftdata-pro/`; `vanab/swiftdata-agent-skill`: `swiftdata-expert-skill/references/migrations-and-history.md`, `core-data-adoption.md` |
-| [swiftui-liquid-glass](swiftui-liquid-glass/SKILL.md) | adapted | `Dimillian/Skills`: `swiftui-liquid-glass/` |
-| [swiftui-pro](swiftui-pro/SKILL.md) | adapted | `twostraws/SwiftUI-Agent-Skill`: `swiftui-pro/` (top-level copy) |
+| [app-intents](app-intents/SKILL.md) | `n0an/App-Intents-Agent-Skill`: `app-intents/` (verbatim) | verbatim |
+| [app-store-changelog](app-store-changelog/SKILL.md) | `Dimillian/Skills`: `app-store-changelog/` (SKILL.md, references; the `git log` script is inlined) | adapted |
+| [appkit-accessibility-auditor](appkit-accessibility-auditor/SKILL.md) | `rgmez/apple-accessibility-skills`: `skills/appkit-accessibility-auditor/` | Adapt, path fix only |
+| [appstore-review](appstore-review/SKILL.md) | `3paws-ai/mobile-ai-skills`: `skills/appstore-review/` (SKILL.md, `references/appstore-review-ref.md`) | adapted, vendored |
+| [asc-cli-usage](asc-cli-usage/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-cli-usage/SKILL.md` | adapted |
+| [asc-crash-triage](asc-crash-triage/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-crash-triage/SKILL.md` | verbatim |
+| [asc-id-resolver](asc-id-resolver/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-id-resolver/SKILL.md` | verbatim |
+| [asc-metadata-sync](asc-metadata-sync/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-metadata-sync/SKILL.md` | adapted, dry-run only |
+| [asc-submission-health](asc-submission-health/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-submission-health/` (SKILL.md, `references/readiness-repairs.md`) | adapted, diagnosis only |
+| [asc-xcode-build](asc-xcode-build/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-xcode-build/SKILL.md` | adapted |
+| [background-execution](background-execution/SKILL.md) | `n0an/Background-Execution-Agent-Skill`: `background-execution/` (verbatim) | verbatim |
+| [ios-simulator-run](ios-simulator-run/SKILL.md) | `Dimillian/Skills`: `ios-debugger-agent/` | Adapt, rewritten as a playbook |
+| [observability](observability/SKILL.md) | `n0an/Observability-Agent-Skill`: `observability/` | vendored |
+| [swift-code-audit](swift-code-audit/SKILL.md) | `jazzychad/ios-code-audit`: `SKILL.md`, `references/` | Adapt, heavily |
+| [swift-concurrency-pro](swift-concurrency-pro/SKILL.md) | `twostraws/Swift-Concurrency-Agent-Skill`: `swift-concurrency-pro/`; `AvdLee/Swift-Concurrency-Agent-Skill`: `skills/swift-concurrency/SKILL.md` (build-settings table) | adapted |
+| [swift-focusengine-pro](swift-focusengine-pro/SKILL.md) | `mhaviv/Swift-FocusEngine-Agent-Skill`: repository root (verbatim) | verbatim |
+| [swift-format-style](swift-format-style/SKILL.md) | `n0an/Swift-FormatStyle-Agent-Skill`: `swift-format-style/` | adapted |
+| [swift-security-expert](swift-security-expert/SKILL.md) | `ivan-magda/swift-security-skill`: `swift-security-expert/` | Adapt SKILL.md, vendored references |
+| [swift-testing-pro](swift-testing-pro/SKILL.md) | `twostraws/Swift-Testing-Agent-Skill`: `swift-testing-pro/` | adapted, light |
+| [swiftdata-pro](swiftdata-pro/SKILL.md) | `twostraws/SwiftData-Agent-Skill`: `swiftdata-pro/`; `vanab/swiftdata-agent-skill`: `swiftdata-expert-skill/references/migrations-and-history.md`, `core-data-adoption.md`, `concurrency-and-actors.md` | adapted |
+| [swiftdata-testing](swiftdata-testing/SKILL.md) | `akshaypimprikar/ios-swiftdata-testing-agent-skill`: `swiftdata-testing/` | Adapt |
+| [swiftui-accessibility-auditor](swiftui-accessibility-auditor/SKILL.md) | `rgmez/apple-accessibility-skills`: `skills/swiftui-accessibility-auditor/` | Adapt, path fix only |
+| [swiftui-liquid-glass](swiftui-liquid-glass/SKILL.md) | `Dimillian/Skills`: `swiftui-liquid-glass/` | adapted |
+| [swiftui-performance-audit](swiftui-performance-audit/SKILL.md) | `Dimillian/Skills`: `swiftui-performance-audit/` | Adapt |
+| [swiftui-pro](swiftui-pro/SKILL.md) | `twostraws/SwiftUI-Agent-Skill`: `swiftui-pro/` (top-level copy) | adapted |
+| [uikit-accessibility-auditor](uikit-accessibility-auditor/SKILL.md) | `rgmez/apple-accessibility-skills`: `skills/uikit-accessibility-auditor/` | Adapt, path fix only |
+| [widgets](widgets/SKILL.md) | `n0an/Widgets-Agent-Skill`: `widgets/` (verbatim) | verbatim |
+| [writing-for-interfaces](writing-for-interfaces/SKILL.md) | `andrewgleave/skills`: `writing-for-interfaces/` | Adapt SKILL.md, vendored references |
+
 ## Unreal Engine skills
 
 31 bundles vendored from `quodsoler/unreal-engine-skills` (MIT, revision `f3742d7b688690810df369802b90430324e380b9`). 30 are verbatim copies of the upstream skill directory, minus dotfiles, plus the upstream `LICENSE` next to `SKILL.md`. `ue-project-context` is adapted: its interview becomes `[unknown]` markers and one `QUESTION:` to the orchestrator, and its `provenance.json` entry lists the edits. Each entry has `"vendored": true`. These skills belong to no phase; a Unreal Engine teammate attaches them by name.
+
+The 2 `own text` skills are written in this repository and have no upstream copy. Their rows name the upstream skills they consulted.
 
 | Skill | Upstream source | Copy |
 | --- | --- | --- |
@@ -105,9 +121,11 @@ These skills come from MIT-licensed Swift skill repositories. Each keeps its ups
 | [ue-async-threading](ue-async-threading/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-async-threading/` | verbatim |
 | [ue-audio-system](ue-audio-system/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-audio-system/` | verbatim |
 | [ue-blueprint-cpp-interop](ue-blueprint-cpp-interop/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-blueprint-cpp-interop/` | verbatim |
+| [ue-build-verify](ue-build-verify/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging` and `ue-module-build-system`)* | own text |
 | [ue-character-movement](ue-character-movement/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-character-movement/` | verbatim |
 | [ue-cpp-foundations](ue-cpp-foundations/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-cpp-foundations/` | verbatim |
 | [ue-data-assets-tables](ue-data-assets-tables/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-data-assets-tables/` | verbatim |
+| [ue-editor-scripting](ue-editor-scripting/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging`)* | own text |
 | [ue-editor-tools](ue-editor-tools/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-editor-tools/` | verbatim |
 | [ue-game-features](ue-game-features/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-game-features/` | verbatim |
 | [ue-gameplay-abilities](ue-gameplay-abilities/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-gameplay-abilities/` | verbatim |
@@ -130,34 +148,3 @@ These skills come from MIT-licensed Swift skill repositories. Each keeps its ups
 | [ue-testing-debugging](ue-testing-debugging/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-testing-debugging/` | verbatim |
 | [ue-ui-umg-slate](ue-ui-umg-slate/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-ui-umg-slate/` | verbatim |
 | [ue-world-level-streaming](ue-world-level-streaming/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-world-level-streaming/` | verbatim |
-## Unreal Engine skills
-
-| Skill | Upstream source | Copy |
-| --- | --- | --- |
-| [ue-build-verify](ue-build-verify/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging` and `ue-module-build-system`)* | own text |
-| [ue-editor-scripting](ue-editor-scripting/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging`)* | own text |
-These skills attach by name to the Swift teammates; none belongs to a phase. Each keeps its upstream MIT `LICENSE` next to `SKILL.md`. The App Store skills never change App Store Connect: each live write becomes a dry-run sent to the orchestrator.
-
-| Skill | Upstream source | Kind |
-| --- | --- | --- |
-| [app-store-changelog](app-store-changelog/SKILL.md) | `Dimillian/Skills`: `app-store-changelog/` (SKILL.md, references; the `git log` script is inlined) | adapted |
-| [appstore-review](appstore-review/SKILL.md) | `3paws-ai/mobile-ai-skills`: `skills/appstore-review/` (SKILL.md, `references/appstore-review-ref.md`) | adapted, vendored |
-| [asc-cli-usage](asc-cli-usage/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-cli-usage/SKILL.md` | adapted |
-| [asc-crash-triage](asc-crash-triage/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-crash-triage/SKILL.md` | verbatim |
-| [asc-id-resolver](asc-id-resolver/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-id-resolver/SKILL.md` | verbatim |
-| [asc-metadata-sync](asc-metadata-sync/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-metadata-sync/SKILL.md` | adapted, dry-run only |
-| [asc-submission-health](asc-submission-health/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-submission-health/` (SKILL.md, `references/readiness-repairs.md`) | adapted, diagnosis only |
-| [asc-xcode-build](asc-xcode-build/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-xcode-build/SKILL.md` | adapted |
-Copies of MIT-licensed Swift skills, each with its upstream `LICENSE`. They attach to the Swift teammates by name and belong to no phase. "Vendored" means the references are verbatim and the skill is exempt from the size budget. Pins, hashes and every edit are in `provenance.json`.
-
-| Skill | Upstream source | Verdict |
-| --- | --- | --- |
-| [appkit-accessibility-auditor](appkit-accessibility-auditor/SKILL.md) | `rgmez/apple-accessibility-skills`: `skills/appkit-accessibility-auditor/` | Adapt, path fix only |
-| [ios-simulator-run](ios-simulator-run/SKILL.md) | `Dimillian/Skills`: `ios-debugger-agent/` | Adapt, rewritten as a playbook |
-| [swift-code-audit](swift-code-audit/SKILL.md) | `jazzychad/ios-code-audit`: `SKILL.md`, `references/` | Adapt, heavily |
-| [swift-security-expert](swift-security-expert/SKILL.md) | `ivan-magda/swift-security-skill`: `swift-security-expert/` | Adapt SKILL.md, vendored references |
-| [swiftdata-testing](swiftdata-testing/SKILL.md) | `akshaypimprikar/ios-swiftdata-testing-agent-skill`: `swiftdata-testing/` | Adapt |
-| [swiftui-accessibility-auditor](swiftui-accessibility-auditor/SKILL.md) | `rgmez/apple-accessibility-skills`: `skills/swiftui-accessibility-auditor/` | Adapt, path fix only |
-| [swiftui-performance-audit](swiftui-performance-audit/SKILL.md) | `Dimillian/Skills`: `swiftui-performance-audit/` | Adapt |
-| [uikit-accessibility-auditor](uikit-accessibility-auditor/SKILL.md) | `rgmez/apple-accessibility-skills`: `skills/uikit-accessibility-auditor/` | Adapt, path fix only |
-| [writing-for-interfaces](writing-for-interfaces/SKILL.md) | `andrewgleave/skills`: `writing-for-interfaces/` | Adapt SKILL.md, vendored references |
