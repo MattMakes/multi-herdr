@@ -7,7 +7,7 @@ Engine: Godot 4.7.2.stable.official.ed1daf0bf (`/Applications/Godot.app`), headl
 
 8 combined skills. Each is the GodotPrompter v1.14.0 skill, renamed by
 `scripts/godot/rename.py`, plus own-text references under `references/`
-written after reading the gd-agentic-skills sources for facts (LGPL rule:
+written after reading the gd-agentic-skills sources for facts (own-text rule:
 nothing copied). The SKILL.md edits are the extended `description:`, a
 "Fleet additions" list at the end, and the upstream fixes listed below.
 

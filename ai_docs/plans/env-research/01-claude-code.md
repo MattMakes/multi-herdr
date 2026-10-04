@@ -20,7 +20,7 @@ the teammate `env:` map).
 3. Cross-check against the official docs:
    https://docs.claude.com/en/docs/claude-code/settings (env var table and settings keys),
    https://docs.claude.com/en/docs/claude-code/costs , and the changelog
-   https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md for anything added or renamed around 2.1.x.
+   claude-code for anything added or renamed around 2.1.x.
 4. For each candidate below, and any others you find, fill the fields from the shared context. Candidates to investigate explicitly (verify spelling; some may not exist in 2.1.274):
    - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (compaction threshold - report the DEFAULT threshold and window in this version; the compaction benchmark thread will pick the value, you just report the lever and its default)
    - `BASH_MAX_OUTPUT_LENGTH`, `BASH_DEFAULT_TIMEOUT_MS`, `BASH_MAX_TIMEOUT_MS` (a bash tool result dumped a huge JS bundle into the orchestrator's context today; a cap is the fix)

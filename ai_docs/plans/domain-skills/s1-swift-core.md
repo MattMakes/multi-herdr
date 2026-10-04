@@ -14,8 +14,7 @@ observability, each with its report edits applied.
   `ai_docs/reports/swift-fleet-skills-2026-10.md` §4 (your rows), §5 (house
   style: every adaptation must agree with the "fleet answer" column) and
   §7.3 (provenance).
-- Sources: `/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/<owner>_<repo>/`; pins in `/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/PINS.txt`. The
-  LICENSE for each skill is its repository's root `LICENSE`.
+- Sources: `/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/<owner>_<repo>/`; pins in `/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/PINS.txt`.
 - "Vendor" means verbatim (`vendored: true`, budget-exempt). "Adapt" means
   our curated copy: apply exactly the report's edits plus the fleet rules
   (no subagents, `context: fork` removed, no "ask the user" — a message to
@@ -27,12 +26,11 @@ observability, each with its report edits applied.
   "verify", verify against Apple's documentation (web search/fetch) and
   record the URL; if it cannot be verified, delete the claim rather than
   ship it.
-- V0 (`ds/vendoring-infra`) adds the `vendored` flag and accepts `LICENSE`
-  files. If the gate fails only on those before V0 merges, say so and send
+- V0 (`ds/vendoring-infra`) adds the `vendored` flag. If the gate fails only on it before V0 merges, say so and send
   READY-TO-MERGE; you will get REBASE after V0.
 - Skills attach by name to the Swift teammates (unit P-Swift). Never add
-  them to a `Phase`. Copy only skill content (SKILL.md, references/*.md,
-  LICENSE): no plugin.json, gemini-extension.json, images or dotfiles.
+  them to a `Phase`. Copy only skill content (SKILL.md, references/*.md):
+  no plugin.json, gemini-extension.json, images or dotfiles.
 
 ## FILES
 
@@ -53,18 +51,18 @@ do not touch: Rust code, teammates, other skills.
 ## STEPS
 
 0. Create the worktree.
-1. Vendor `swift-testing-pro` (top-level copy `twostraws_Swift-Testing-Agent-Skill/swift-testing-pro/`,
+1. Vendor `swift-testing-pro` (top-level copy `Swift-Testing-Agent-Skill/swift-testing-pro/`,
    not its nested `skills/`; add the optional headless-run line) and
-   `observability` (`n0an_Observability-Agent-Skill/observability/`).
+   `observability` (`Observability-Agent-Skill/observability/`).
 2. Adapt `swiftui-pro` (top-level copy, not the nested `skills/swiftui-pro/`).
 3. Adapt `swift-concurrency-pro`: fix `testing.md:35` (`.serialized` on a
    suite serializes every test), add the NonisolatedNonsendingByDefault note,
-   add AvdLee's build-settings table (`AvdLee_Swift-Concurrency-Agent-Skill/skills/swift-concurrency/SKILL.md:16-24`)
+   add build-settings table (`Swift-Concurrency-Agent-Skill/skills/swift-concurrency/SKILL.md:16-24`)
    as a reference with its own provenance source.
-4. Adapt `swiftdata-pro`; add vanab's `migrations-and-history.md` and
-   `core-data-adoption.md` (`vanab_swiftdata-agent-skill/swiftdata-expert-skill/references/`)
+4. Adapt `swiftdata-pro`; add `migrations-and-history.md` and
+   `core-data-adoption.md` (`swiftdata-agent-skill/swiftdata-expert-skill/references/`)
    minus the `#Unique` advice that lacks a CloudKit caveat (or add the caveat).
 5. Adapt `swift-format-style` (fix `anti-patterns.md:80-88`).
-6. Adapt `swiftui-liquid-glass` (`Dimillian_Skills/swiftui-liquid-glass/`):
+6. Adapt `swiftui-liquid-glass` (`Skills/swiftui-liquid-glass/`):
    the four fixes; verify `scrollExtensionMode`.
 7. Commit per skill or per two. Gate. Report.

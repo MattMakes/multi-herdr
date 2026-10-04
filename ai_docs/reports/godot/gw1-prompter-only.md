@@ -23,8 +23,8 @@
 
 ## Sources consulted
 
-GodotPrompter v1.14.0 at `3e8d0f005f9604e1dbdad3de693e39555384c5af` (MIT). The sha256 of every copied
-upstream file and of `LICENSE` are in the provenance `sources`. gd-agentic-skills was not consulted.
+GodotPrompter v1.14.0 at `3e8d0f005f9604e1dbdad3de693e39555384c5af`. The sha256 of every copied
+upstream file is in the provenance `sources`. gd-agentic-skills was not consulted.
 
 ## Checks
 

@@ -4,7 +4,7 @@ Date: 2026-10-03. Research only. Nothing in `teammates/`, `skills/` or
 `crates/` changed.
 
 Sources read:
-- the index, [twostraws/swift-agent-skills](https://github.com/twostraws/swift-agent-skills)
+- the index, swift-agent-skills
   at `a6d22db72162`;
 - all 32 repositories it links, cloned at the revisions in
   [Appendix A](#appendix-a-pinned-upstream-revisions);
@@ -60,10 +60,8 @@ A skill can be vendored only if it survives the fleet's rules:
 
 On top of those rules, three facts shaped this report.
 
-1. **Licences.** 30 of the 32 repositories are MIT. `daetojemax/figma-to-swiftui-skill`
-   and `twostraws/SwiftAgents` have no licence file, so this repository can
-   link to them but cannot copy them. Apple's Xcode 27 skills belong to Apple;
-   the re-export repository states "No license is granted".
+1. **Copies.** Apple's Xcode 27 skills belong to Apple and stay outside the
+   bundle; teammates load them as operator skills.
 2. **Not in the phase catalogs.** Swift skills must not go into
    `phase_skills()`, or every Python or Rust worker spawned with
    `--phase implementation` would carry SwiftUI descriptions. Attach them by
@@ -78,10 +76,10 @@ On top of those rules, three facts shaped this report.
 ## 3. The two sources
 
 **The community index** links 35 skills. Two thirds of them were updated in
-the last two months. Paul Hudson's `*-pro` skills are short, terse rule lists,
-human-written and accurate, and form the core. Anton Novoselov's (n0an)
+the last two months. The `*-pro` skills are short, terse rule lists,
+human-written and accurate, and form the core. One
 platform skills are the freshest and densest: they cover the iOS 27 APIs from
-WWDC26. Thomas Ricouard's (Dimillian) repository mixes useful SwiftUI skills
+WWDC26. One repository mixes useful SwiftUI skills
 with four that fan out to subagents.
 
 **Apple's Xcode 27 skills** came out after most of that list. Xcode 27
@@ -117,63 +115,63 @@ Key:
 
 | skill (upstream) | verdict | edits | teammates |
 |---|---|---|---|
-| `swiftui-pro` (twostraws) | **Adapt, light** | Use the top-level copy, not `skills/swiftui-pro/`. That copy is an older Claude-plugin variant using `${CLAUDE_SKILL_DIR}`. Change "without asking first" (`SKILL.md:32`) and "Offer to translate" (`hygiene.md:8`) to messages to the orchestrator. Replace the GitHub links at `data.md:37` and `swift.md:56` with vendored skill names. Make `views.md:8` ("place view logic into view models") neutral, per section 5 | developer, reviewer |
-| `swift-concurrency-pro` (twostraws) | **Adapt** | **Fix `testing.md:35` (checked):** it says `.serialized` on a suite only serializes parameterized tests, but on a suite it serializes every test inside. In `new-features.md`, say that caller-actor `nonisolated` async needs `NonisolatedNonsendingByDefault` / Approachable Concurrency to be on. Add AvdLee's build-settings table (`SKILL.md:16-24`) as a reference. Turn the ask gate into a message | developer, platform, reviewer |
-| `swiftdata-pro` (twostraws) | **Adapt, light** | Turn the ask gate into a message and repoint the external links. Add vanab's `migrations-and-history.md` and `core-data-adoption.md` as extra references, because Hudson has no migrations, history or `@ModelActor` coverage. Strip vanab's `#Unique` advice, which has no CloudKit caveat | developer |
-| `swift-testing-pro` (twostraws) | **Vendor** (top-level copy) | Optional: one line on headless runs (`swift test --filter`, `xcodebuild test -only-testing:`), and a note that exit tests don't run on iOS | developer, qa |
-| `swift-format-style` (n0an) | **Adapt** | **Fix `anti-patterns.md:80-88` (checked):** a fixed wire format with `calendar: .current` breaks for users on non-Gregorian calendars; use `.iso8601` or a POSIX locale with a Gregorian calendar. Soften "Never use legacy Formatter" to "for display". Narrow the description to formatting shown to the user | developer |
-| `swiftui-liquid-glass` (Dimillian) | **Adapt** | Fix the background-extension snippet, which never calls `.backgroundExtensionEffect()` (`liquid-glass.md:204-215`). Replace `foregroundColor` at `:252`. Verify `scrollExtensionMode` and delete it if it doesn't exist. Delete the "always seek guides" line at `:5` | developer |
-| `observability` (n0an) | **Vendor** | none | developer, platform |
-| `swiftui-view-refactor` (Dimillian) | **Reference** | Fold its member-ordering and stable-view-tree rules into the house style (section 5) instead of carrying a second "review SwiftUI" skill | - |
-| `swiftui-ui-patterns` (Dimillian) | **Reference** | Its snippets use APIs that `swiftui-pro` flags (`tabItem`, `cornerRadius`, `DispatchQueue.main.asyncAfter`). It also tells the agent to edit its own `references/` | - |
-| `swift-concurrency` (AvdLee) | **Reference** | 30k words and 67 course links. It contradicts Hudson on `@concurrent` for I/O (`SKILL.md:96-101`, checked). Take only the settings table | - |
-| `swift-concurrency-expert` (Dimillian) | **Skip** | Wrong isolated-conformance syntax (`SKILL.md:71-74`), and a `Task.detached` "after" example. Hudson covers all of it | - |
-| `swiftdata-expert-skill` (vanab) | **Reference** | Two references go into `swiftdata-pro`, as above. Its example model doesn't compile and declares uniqueness twice | - |
+| `swiftui-pro` | **Adapt, light** | Use the top-level copy, not `skills/swiftui-pro/`. That copy is an older Claude-plugin variant using `${CLAUDE_SKILL_DIR}`. Change "without asking first" (`SKILL.md:32`) and "Offer to translate" (`hygiene.md:8`) to messages to the orchestrator. Replace the GitHub links at `data.md:37` and `swift.md:56` with vendored skill names. Make `views.md:8` ("place view logic into view models") neutral, per section 5 | developer, reviewer |
+| `swift-concurrency-pro` | **Adapt** | **Fix `testing.md:35` (checked):** it says `.serialized` on a suite only serializes parameterized tests, but on a suite it serializes every test inside. In `new-features.md`, say that caller-actor `nonisolated` async needs `NonisolatedNonsendingByDefault` / Approachable Concurrency to be on. Add build-settings table (`SKILL.md:16-24`) as a reference. Turn the ask gate into a message | developer, platform, reviewer |
+| `swiftdata-pro` | **Adapt, light** | Turn the ask gate into a message and repoint the external links. Add `migrations-and-history.md` and `core-data-adoption.md` as extra references, because swiftdata-pro has no migrations, history or `@ModelActor` coverage. Strip `#Unique` advice, which has no CloudKit caveat | developer |
+| `swift-testing-pro` | **Vendor** (top-level copy) | Optional: one line on headless runs (`swift test --filter`, `xcodebuild test -only-testing:`), and a note that exit tests don't run on iOS | developer, qa |
+| `swift-format-style` | **Adapt** | **Fix `anti-patterns.md:80-88` (checked):** a fixed wire format with `calendar: .current` breaks for users on non-Gregorian calendars; use `.iso8601` or a POSIX locale with a Gregorian calendar. Soften "Never use legacy Formatter" to "for display". Narrow the description to formatting shown to the user | developer |
+| `swiftui-liquid-glass` | **Adapt** | Fix the background-extension snippet, which never calls `.backgroundExtensionEffect()` (`liquid-glass.md:204-215`). Replace `foregroundColor` at `:252`. Verify `scrollExtensionMode` and delete it if it doesn't exist. Delete the "always seek guides" line at `:5` | developer |
+| `observability` | **Vendor** | none | developer, platform |
+| `swiftui-view-refactor` | **Reference** | Fold its member-ordering and stable-view-tree rules into the house style (section 5) instead of carrying a second "review SwiftUI" skill | - |
+| `swiftui-ui-patterns` | **Reference** | Its snippets use APIs that `swiftui-pro` flags (`tabItem`, `cornerRadius`, `DispatchQueue.main.asyncAfter`). It also tells the agent to edit its own `references/` | - |
+| `swift-concurrency` | **Reference** | 30k words and 67 course links. It contradicts swift-concurrency-pro on `@concurrent` for I/O (`SKILL.md:96-101`, checked). Take only the settings table | - |
+| `swift-concurrency-expert` | **Skip** | Wrong isolated-conformance syntax (`SKILL.md:71-74`), and a `Task.detached` "after" example. swift-concurrency-pro covers all of it | - |
+| `swiftdata-expert-skill` | **Reference** | Two references go into `swiftdata-pro`, as above. Its example model doesn't compile and declares uniqueness twice | - |
 | `swift-api-design-guidelines-skill` (Erikote04) | **Skip** | Restates swift.org. "Every declaration should have a documentation comment" produces noise in app code | - |
 | `swift-architecture-skill` (efremidze) | **Reference** | Defaults to MVVM and never offers MV (`selection-guide.md:60-61`). Its 8 scripts only maintain that repository | - |
 | `swiftui-design-principles` (arjitj2) | **Skip** | Hard-coded `.system(size:)` fonts break Dynamic Type. Its description triggers on any SwiftUI view | - |
-| `core-data-expert` (AvdLee) | **Reference**, or vendor if a Core Data app arrives | Before shipping it, fix the double continuation resume in the async `loadPersistentStores` bridge (`concurrency.md:129-142`) | - |
+| `core-data-expert` | **Reference**, or vendor if a Core Data app arrives | Before shipping it, fix the double continuation resume in the async `loadPersistentStores` bridge (`concurrency.md:129-142`) | - |
 
 ### 4.2 Apple system surfaces
 
 | skill | verdict | edits | teammates |
 |---|---|---|---|
-| `app-intents` (n0an) | **Vendor** | none. Covers the iOS 27 `LongRunningIntent` and `AppIntentsTesting` | platform |
-| `widgets` (n0an) | **Vendor** | Optionally trim the 720-character description | platform |
-| `background-execution` (n0an) | **Vendor** | none | platform |
-| `swift-focusengine-pro` (mhaviv) | **Vendor** | Rename the directory to the skill name. Move `version`/`author`/`tags` under `metadata` if a loader rejects them | platform |
-| `macos-spm-app-packaging` (Dimillian) | **Adapt**, only if the fleet ships macOS apps outside the App Store | `sign-and-notarize.sh:16` writes a .p8 from an env var to `/tmp`; use `--key "$ASC_PRIVATE_KEY_PATH"` instead. Gate the `git push` / `gh release create` steps | (developer) |
-| `macos-menubar-tuist-app` (Dimillian) | **Reference** | Only useful with Tuist | - |
-| `figma-to-swiftui` (daetojemax) | **Reference**, blocked by the missing licence | Once licensed: route its gates to the orchestrator, and attach it only to a pane that has the Figma MCP server | - |
+| `app-intents` | **Vendor** | none. Covers the iOS 27 `LongRunningIntent` and `AppIntentsTesting` | platform |
+| `widgets` | **Vendor** | Optionally trim the 720-character description | platform |
+| `background-execution` | **Vendor** | none | platform |
+| `swift-focusengine-pro` | **Vendor** | Rename the directory to the skill name. Move `version`/`author`/`tags` under `metadata` if a loader rejects them | platform |
+| `macos-spm-app-packaging` | **Adapt**, only if the fleet ships macOS apps outside the App Store | `sign-and-notarize.sh:16` writes a .p8 from an env var to `/tmp`; use `--key "$ASC_PRIVATE_KEY_PATH"` instead. Gate the `git push` / `gh release create` steps | (developer) |
+| `macos-menubar-tuist-app` | **Reference** | Only useful with Tuist | - |
+| `figma-to-swiftui` | **Reference** | Route its gates to the orchestrator, and attach it only to a pane that has the Figma MCP server | - |
 
 ### 4.3 Review, testing, accessibility, security
 
 | skill | verdict | edits | teammates |
 |---|---|---|---|
-| `swiftui-performance-audit` (Dimillian) | **Adapt** | The intake says "ask the user to run Instruments" (`SKILL.md:16,28,56,85`). Change it to: the worker runs `xcrun xctrace record --template SwiftUI` itself, or messages the orchestrator. Use `Text(value, format:)` instead of the cached shared formatter (`code-smells.md:22`) | reviewer |
-| `swift-security-expert` (ivan-magda) | **Adapt** | Cut the 5.2k-word body by about 40% (the tone, scope and self-review sections). Optionally drop `compliance-owasp-mapping`, `testing-security-code` and `migration-legacy-stores`. Accurate and specific: it binds biometrics to `SecAccessControl`, says add-or-update on `errSecDuplicateItem`, and gives availability for ML-KEM and ML-DSA | reviewer |
-| `ios-code-audit` (jazzychad) → `swift-code-audit` | **Adapt, heavily** | Its three parallel Explore agents (`SKILL.md:58-60`) become three sequential passes. Write the report to a path the orchestrator chooses, not `CODE_AUDIT.md` in the repository root. Drop the `swiftui-expert-skill` step. Keep these parts: compiler warnings are the ground truth, "verify every Critical claim", grouping findings by root cause, and its concurrency and API-modernity checklist | reviewer |
-| `swiftdata-testing` (akshaypimprikar) | **Adapt**, or skip | **Fix `decimal-money-values.md:8-23` (checked):** a `Decimal` literal goes through `Double`, and `Decimal` division is not exact. Make the MVVM and mock-repository section conditional | qa |
-| `ios-debugger-agent` (Dimillian) → `ios-simulator-run` | **Adapt** into a short playbook over XcodeBuildMCP | Use neutral tool names, boot a simulator itself, and report failures to the orchestrator instead of "ask the user" (`:16`, `:49`) | qa, developer |
+| `swiftui-performance-audit` | **Adapt** | The intake says "ask the user to run Instruments" (`SKILL.md:16,28,56,85`). Change it to: the worker runs `xcrun xctrace record --template SwiftUI` itself, or messages the orchestrator. Use `Text(value, format:)` instead of the cached shared formatter (`code-smells.md:22`) | reviewer |
+| `swift-security-expert` | **Adapt** | Cut the 5.2k-word body by about 40% (the tone, scope and self-review sections). Optionally drop `compliance-owasp-mapping`, `testing-security-code` and `migration-legacy-stores`. Accurate and specific: it binds biometrics to `SecAccessControl`, says add-or-update on `errSecDuplicateItem`, and gives availability for ML-KEM and ML-DSA | reviewer |
+| `ios-code-audit` → `swift-code-audit` | **Adapt, heavily** | Its three parallel Explore agents (`SKILL.md:58-60`) become three sequential passes. Write the report to a path the orchestrator chooses, not `CODE_AUDIT.md` in the repository root. Drop the `swiftui-expert-skill` step. Keep these parts: compiler warnings are the ground truth, "verify every Critical claim", grouping findings by root cause, and its concurrency and API-modernity checklist | reviewer |
+| `swiftdata-testing` | **Adapt**, or skip | **Fix `decimal-money-values.md:8-23` (checked):** a `Decimal` literal goes through `Double`, and `Decimal` division is not exact. Make the MVVM and mock-repository section conditional | qa |
+| `ios-debugger-agent` → `ios-simulator-run` | **Adapt** into a short playbook over XcodeBuildMCP | Use neutral tool names, boot a simulator itself, and report failures to the orchestrator instead of "ask the user" (`:16`, `:49`) | qa, developer |
 | `ios-simulator-skill` (conorluddy) | **Skip** for now | Needs `brew install idb` and `pip install pillow`. Starts detached recorders, and has `simctl erase`/`delete` scripts. XcodeBuildMCP covers the same ground | - |
-| `swift-testing-expert` (AvdLee), `swift-testing` (bocato) | **Reference** / **Skip** | AvdLee adds only test-plan and tag conventions. Bocato is stale (`XCTestDynamicOverlay`, `record: true`), and its description fires on "unit tests"/"TDD", so it would take over from the fleet's `tdd` | - |
-| `swiftui-` and `uikit-accessibility-auditor` (rgmez) | **Adapt**, path only | `skills/<name>/checklist.md` becomes `checklist.md`. Freshest of the five accessibility skills: it has a WWDC26 readiness section and a P0/P1/P2 output contract | a11y |
-| `appkit-accessibility-auditor` (rgmez) | **Adapt**, only for macOS work | same path fix | (a11y) |
+| `swift-testing-expert`, `swift-testing` (bocato) | **Reference** / **Skip** | Swift-Concurrency-Agent-Skill adds only test-plan and tag conventions. Bocato is stale (`XCTestDynamicOverlay`, `record: true`), and its description fires on "unit tests"/"TDD", so it would take over from the fleet's `tdd` | - |
+| `swiftui-` and `uikit-accessibility-auditor` | **Adapt**, path only | `skills/<name>/checklist.md` becomes `checklist.md`. Freshest of the five accessibility skills: it has a WWDC26 readiness section and a P0/P1/P2 output contract | a11y |
+| `appkit-accessibility-auditor` | **Adapt**, only for macOS work | same path fix | (a11y) |
 | `ios-accessibility` (dadederk) | **Reference** | Deep, but stops at iOS 17 and has developer-confirmation gates. Its Large Content Viewer and `accessibilityInputLabels` material is the only coverage of those | - |
-| `swift-accessibility-skill` (PasqualeVittoriosi) | **Reference, never vendor with this description** | "always use together… even when the user doesn't mention accessibility" means about 3.5k tokens on every view edit, silent fixes and a summary appended to every output. Copy its `nutrition-labels.md` and `performAccessibilityAudit` material into the auditor's references, citing them under MIT | - |
-| `writing-for-interfaces` (andrewgleave) | **Adapt** | Remove `context: fork`, a Claude-only field that forks a subagent. Cut the 828-character description to about 250, without the "trigger whenever" wording. Replace the voice interview (`:54-74`) with: infer the voice from the codebase, else ask the orchestrator | a11y |
-| Dimillian `bug-hunt-swarm`, `review-swarm`, `orchestrate-batch-refactor`, `review-and-simplify-changes` | **Skip** | Each one fans out to subagents | - |
-| Dimillian `project-skill-audit`, `github`, `react-component-performance` | **Skip** | Codex-only, generic, or not Swift | - |
+| `swift-accessibility-skill` | **Reference, never vendor with this description** | "always use together… even when the user doesn't mention accessibility" means about 3.5k tokens on every view edit, silent fixes and a summary appended to every output. Copy its `nutrition-labels.md` and `performAccessibilityAudit` material into the auditor's references | - |
+| `writing-for-interfaces` | **Adapt** | Remove `context: fork`, a Claude-only field that forks a subagent. Cut the 828-character description to about 250, without the "trigger whenever" wording. Replace the voice interview (`:54-74`) with: infer the voice from the codebase, else ask the orchestrator | a11y |
+| Skills `bug-hunt-swarm`, `review-swarm`, `orchestrate-batch-refactor`, `review-and-simplify-changes` | **Skip** | Each one fans out to subagents | - |
+| Skills `project-skill-audit`, `github`, `react-component-performance` | **Skip** | Codex-only, generic, or not Swift | - |
 
 ### 4.4 Shipping
 
 | skill | verdict | edits | teammates |
 |---|---|---|---|
-| `asc-cli-usage`, `asc-id-resolver`, `asc-crash-triage`, `asc-xcode-build` (rudrankriyam) | **Adapt, light** | Drop "in this repo" from the `cli-usage` description, and its web-auth and Apple Ads sections | release |
+| `asc-cli-usage`, `asc-id-resolver`, `asc-crash-triage`, `asc-xcode-build` | **Adapt, light** | Drop "in this repo" from the `cli-usage` description, and its web-auth and Apple Ads sections | release |
 | `asc-submission-health` | **Adapt** | Keep the diagnosis half only. Each cancel, retry or submit step becomes "send the dry-run to the orchestrator" | release |
 | `asc-metadata-sync` | **Adapt** | Dry-run only. `asc metadata push` without `--confirm` still writes live metadata (`SKILL.md:61`), so the "`--confirm` gates mutation" assumption fails here | release |
 | `appstore-review` (3paws) | **Adapt, light** | Flatten the folded description and drop `trigger: manual` / `agents:` if the loader is strict. Report checks that need runtime as UNVERIFIED. Downgrade the style rules ("no force unwraps") from FAIL to WARN | release |
-| `app-store-changelog` (Dimillian) | **Adapt**, one line | "Ask for clarification" (`:31`) becomes a message. Its script is read-only `git log` | release |
+| `app-store-changelog` | **Adapt**, one line | "Ask for clarification" (`:31`) becomes a message. Its script is read-only `git log` | release |
 | `asc-release-flow`, `asc-signing-setup` | **Reference** | Each submits, revokes or deletes | - |
 | `asc-ppp-pricing`, `asc-apple-ads`, `asc-ad-hoc-distribution`, `asc-app-create-ui`, `asc-wall-submit`, `asc-revenuecat-catalog-sync`, `asc-shots-pipeline`, `asc-aso-audit`, `asc-build-lifecycle` | **Skip** | They change prices, spend on ads, publish outward or need extra MCP servers and tools. `build-lifecycle` expires builds, which cannot be undone | - |
 | `app-store-aso` (timbroddin) | **Adapt**, optional | Its validator prompts on stdin with no arguments (`validate_metadata.py:145-147`) and hangs a pane. Strip the Krankie install. Mark the speculative ranking claims as heuristics | (release) |
@@ -186,14 +184,14 @@ its own. The adaptations in section 4 already apply these answers.
 
 | question | upstream positions | fleet answer |
 |---|---|---|
-| View architecture | MV with no view models (Dimillian view-refactor, ui-patterns); view models (`swiftui-pro` `views.md:8`, `efremidze` default, `swiftdata-testing`) | **Follow the codebase. In a new codebase, MV** with `@Observable` models and `@Query` in views. Add view models only for logic that needs a test seam |
-| `@concurrent` | Not for ordinary async I/O (Hudson); for a network call (AvdLee) | **Only for CPU-bound work** that must leave the caller's actor |
-| `.serialized` | Parameterized only, even on a suite (Hudson, wrong); the whole suite (AvdLee, Apple) | **On a suite it serializes every test in it** |
-| Formatting | Cached shared `NumberFormatter` (performance-audit); `Text(value, format:)` (`swiftui-pro`, n0an) | **FormatStyle for display**; a fixed POSIX locale for wire formats |
+| View architecture | MV with no view models (Skills view-refactor, ui-patterns); view models (`swiftui-pro` `views.md:8`, `efremidze` default, `swiftdata-testing`) | **Follow the codebase. In a new codebase, MV** with `@Observable` models and `@Query` in views. Add view models only for logic that needs a test seam |
+| `@concurrent` | Not for ordinary async I/O (swift-concurrency-pro); for a network call | **Only for CPU-bound work** that must leave the caller's actor |
+| `.serialized` | Parameterized only, even on a suite (swift-concurrency-pro, wrong); the whole suite (Swift-Concurrency-Agent-Skill, Apple) | **On a suite it serializes every test in it** |
+| Formatting | Cached shared `NumberFormatter` (performance-audit); `Text(value, format:)` (`swiftui-pro`, App-Intents-Agent-Skill) | **FormatStyle for display**; a fixed POSIX locale for wire formats |
 | Sizes | Fixed fonts and radii (arjitj2); exact Figma values; Dynamic Type (`swiftui-pro`) | **Dynamic Type and semantic styles.** Use exact values only where a design spec gives them, and never for text size |
 
-The persona bodies should also carry the rules from `twostraws/SwiftAgents`,
-rewritten in our own words because that repository has no licence:
+The persona bodies should also carry the rules from `SwiftAgents`,
+rewritten in our own words:
 - `@MainActor` on `@Observable` classes unless the project defaults to main
   actor isolation;
 - no GCD; `Task.sleep(for:)`;
@@ -319,8 +317,7 @@ app before reporting `DONE:`, as `frontend-developer` does with its browser.
   otherwise `xcodebuild` stalls a pane at the licence prompt. `horch doctor`
   could check for `xcodebuild` when any `swift-*` or `apple-*` teammate is in
   the roster.
-- **XcodeBuildMCP** ([getsentry/XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP),
-  MIT, v2.7.0, 2026-07-23). It builds, tests, runs and drives the simulator,
+- **XcodeBuildMCP** (v2.7.0, 2026-07-23). It builds, tests, runs and drives the simulator,
   and works with Xcode 27's Device Hub. It runs without Xcode open, which is
   why it suits unattended panes.
 - **Xcode's own MCP bridge** (`xcrun mcpbridge`, Xcode 26.3 and later). It
@@ -353,8 +350,7 @@ operator_skills:
 `provenance.json` already allows a per-skill `source_repository` and
 `source_revision`; `skill-creator` uses them. Add one entry per vendored
 skill, using the revisions in Appendix A and the SHA-256 of each upstream
-SKILL.md. Keep each upstream `LICENSE` next to its skill, as `skill-creator`
-does: MIT requires the notice.
+SKILL.md.
 
 ## 8. Rollout order
 
@@ -362,7 +358,7 @@ Each step is useful on its own.
 
 1. **Vendor the eight skills that need little or no editing**: `swift-testing-pro`,
    `observability`, `app-intents`, `widgets`, `background-execution`,
-   `swift-focusengine-pro`, and the two rgmez auditors with the path fix.
+   `swift-focusengine-pro`, and the two apple-accessibility-skills auditors with the path fix.
    Then make the light adaptations: `swiftui-pro`, `swift-concurrency-pro`
    (the two fixes and the settings table) and `swiftdata-pro`.
 2. **Add `swift-developer` and `swift-reviewer`.** Run one real task on a Mac
@@ -383,8 +379,8 @@ Each step is useful on its own.
 - No skill was run. Every verdict comes from reading, and the four "checked"
   items were checked against the upstream text and Apple's documented
   behaviour, not by compiling code.
-- Upstream claims about iOS 27 APIs (n0an `widgets` `allowedExecutionTargets`,
-  `app-intents` `AppIntentsTesting`) and Dimillian's `scrollExtensionMode`
+- Upstream claims about iOS 27 APIs (App-Intents-Agent-Skill `widgets` `allowedExecutionTargets`,
+  `app-intents` `AppIntentsTesting`) and `scrollExtensionMode`
   were not checked against the SDK.
 - The Xcode 27 skills list and word counts come from a third-party re-export
   dated 2026-06-09, which is a beta. The operator's own export may differ.
@@ -397,33 +393,33 @@ Each step is useful on its own.
 
 | repository | revision | used for |
 |---|---|---|
-| twostraws/swift-agent-skills | `a6d22db72162` | index |
-| twostraws/SwiftUI-Agent-Skill | `be297ff80ddd` | swiftui-pro |
-| twostraws/Swift-Concurrency-Agent-Skill | `bee3f69ba171` | swift-concurrency-pro |
-| twostraws/SwiftData-Agent-Skill | `922d989473a9` | swiftdata-pro |
-| twostraws/Swift-Testing-Agent-Skill | `2d6bba14a3c8` | swift-testing-pro |
-| n0an/Swift-FormatStyle-Agent-Skill | `5cda783ac709` | swift-format-style |
-| n0an/Observability-Agent-Skill | `4ab4f371b03b` | observability |
-| n0an/App-Intents-Agent-Skill | `f754f08c5ef4` | app-intents |
-| n0an/Widgets-Agent-Skill | `06567e152df0` | widgets |
-| n0an/Background-Execution-Agent-Skill | `a29ddf879308` | background-execution |
-| mhaviv/Swift-FocusEngine-Agent-Skill | `903d58d0ed03` | swift-focusengine-pro |
-| Dimillian/Skills | `05ba982bfeb0` | swiftui-liquid-glass, swiftui-performance-audit, ios-debugger-agent, app-store-changelog |
-| rgmez/apple-accessibility-skills | `ab6f67852f5d` | swiftui-, uikit-, appkit-accessibility-auditor |
-| ivan-magda/swift-security-skill | `bda2e0ccee6a` | swift-security-expert |
-| jazzychad/ios-code-audit | `34edb296a150` | swift-code-audit |
-| akshaypimprikar/ios-swiftdata-testing-agent-skill | `e8a98757b3e6` | swiftdata-testing |
-| andrewgleave/skills | `d6c72b885a19` | writing-for-interfaces |
-| 3paws-ai/mobile-ai-skills | `6d3570eab02b` | appstore-review |
-| rudrankriyam/app-store-connect-cli-skills | `9a093fa52177` | asc-* |
-| vanab/swiftdata-agent-skill | `4819a5381fa5` | two references into swiftdata-pro |
-| AvdLee/Swift-Concurrency-Agent-Skill | `d5770817d262` | settings table into swift-concurrency-pro |
+| swift-agent-skills | `a6d22db72162` | index |
+| SwiftUI-Agent-Skill | `be297ff80ddd` | swiftui-pro |
+| Swift-Concurrency-Agent-Skill | `bee3f69ba171` | swift-concurrency-pro |
+| SwiftData-Agent-Skill | `922d989473a9` | swiftdata-pro |
+| Swift-Testing-Agent-Skill | `2d6bba14a3c8` | swift-testing-pro |
+| Swift-FormatStyle-Agent-Skill | `5cda783ac709` | swift-format-style |
+| Observability-Agent-Skill | `4ab4f371b03b` | observability |
+| App-Intents-Agent-Skill | `f754f08c5ef4` | app-intents |
+| Widgets-Agent-Skill | `06567e152df0` | widgets |
+| Background-Execution-Agent-Skill | `a29ddf879308` | background-execution |
+| Swift-FocusEngine-Agent-Skill | `903d58d0ed03` | swift-focusengine-pro |
+| Skills | `05ba982bfeb0` | swiftui-liquid-glass, swiftui-performance-audit, ios-debugger-agent, app-store-changelog |
+| apple-accessibility-skills | `ab6f67852f5d` | swiftui-, uikit-, appkit-accessibility-auditor |
+| swift-security-skill | `bda2e0ccee6a` | swift-security-expert |
+| ios-code-audit | `34edb296a150` | swift-code-audit |
+| ios-swiftdata-testing-agent-skill | `e8a98757b3e6` | swiftdata-testing |
+| skills | `d6c72b885a19` | writing-for-interfaces |
+| mobile-ai-skills | `6d3570eab02b` | appstore-review |
+| app-store-connect-cli-skills | `9a093fa52177` | asc-* |
+| swiftdata-agent-skill | `4819a5381fa5` | two references into swiftdata-pro |
+| Swift-Concurrency-Agent-Skill | `d5770817d262` | settings table into swift-concurrency-pro |
 | PasqualeVittoriosi/swift-accessibility-skill | `3791850af76f` | nutrition-label material for the auditor |
 | dadederk/iOS-Accessibility-Agent-Skill | `dcc3a36ce1d0` | reference |
 
 ## Sources
 
-- [twostraws/swift-agent-skills](https://github.com/twostraws/swift-agent-skills) and every repository it links (Appendix A)
+- swift-agent-skills and every repository it links (Appendix A)
 - [superagents-lab/xcode27-skills](https://github.com/superagents-lab/xcode27-skills): a re-export of Apple's Xcode 27 skills, read for reference only
 - [getsentry/XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP) and its [npm package](https://www.npmjs.com/package/xcodebuildmcp)
 - Xcode 26.3 MCP bridge: [InfoQ](https://infoq.com/news/2026/02/xcode-26-3-agentic-coding), [rudrank.com](https://rudrank.com/exploring-xcode-using-mcp-tools-cursor-external-clients)

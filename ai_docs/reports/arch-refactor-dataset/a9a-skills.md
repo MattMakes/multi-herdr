@@ -75,7 +75,7 @@ briefing::render(&plan, &catalog, &BriefingContext {
   `bundled+<digest12>`.
 - **Provenance.** Per-skill `source_repository`/`source_revision`
   override the file-level values (`skill-creator` names
-  `anthropics/claude-plugins-official`). A skill with
+  `claude-plugins-official`). A skill with
   `source_path: null` (`orchestrate`, original to this repository) has
   `provenance: None`.
 - **Design over plan.** The names follow the design §4.9: `SkillCatalog`,

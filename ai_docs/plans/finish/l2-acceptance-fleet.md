@@ -23,7 +23,7 @@ evidence, and fix or hand over every defect.
 - LA-4: with one Claude and one Codex worker, verify only the activated
   skills are visible (Claude `/skills` listing or its plugin dir; codex's
   `CODEX_HOME`).
-- LA-5: `horch skills install MattMakes/skill-marketplace@<tag>` pins a SHA;
+- LA-5: `horch skills install skill-marketplace@<tag>` pins a SHA;
   then spawn works with the network off (`HORCH_GIT_BIN=/nonexistent` as the
   e2e test does, or disconnect if practical).
 - Money: keep it to the workers named above. Never a top-tier model.

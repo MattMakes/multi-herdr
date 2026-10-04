@@ -24,8 +24,7 @@ Researched 2026-10-04.
 | | Blender Lab `blender_mcp` (chosen) | `ahujasid/blender-mcp`, now `mcp-for-blender` |
 |---|---|---|
 | maker | Blender developers (Blender Lab) | community (Siddharth Ahuja) |
-| source | [projects.blender.org/lab/blender_mcp](https://projects.blender.org/lab/blender_mcp), docs [blender.org/lab/mcp-server](https://www.blender.org/lab/mcp-server/) | [github.com/ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp) (MIT, about 30k stars, pushed 2026-09-30) |
-| licence | GPL-3.0-or-later (`mcp/manifest.json`, SPDX headers, add-on manifest) | MIT |
+| source | [projects.blender.org/lab/blender_mcp](https://projects.blender.org/lab/blender_mcp), docs [blender.org/lab/mcp-server](https://www.blender.org/lab/mcp-server/) | [github.com/ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp) (about 30k stars, pushed 2026-09-30) |
 | releases | v0.1.0 (2026-03-24) to v1.0.3 (2026-09-11, commit `2cea8d566dde07fbac28a61d698909d69724e853`) | PyPI `blender-mcp` 2.0.0 (2026-09-16) is a shim that installs `mcp-for-blender` 2.1.3 |
 | package | not on PyPI; install from git, `mcp/` subdirectory, entry point `blender-mcp` | PyPI `mcp-for-blender` (and the old name `blender-mcp`) |
 | transport | MCP stdio (or `--transport http`) to the server; TCP socket `localhost:9876` from the server to the add-on (`BLENDER_MCP_HOST`, `BLENDER_MCP_PORT`) | MCP stdio; TCP socket to the add-on (`BLENDER_HOST`, `BLENDER_PORT`, default 9876) |

@@ -13,8 +13,7 @@ background-execution, swift-focusengine-pro.
   `ai_docs/reports/swift-fleet-skills-2026-10.md` §4 (your rows), §5 (house
   style: every adaptation must agree with the "fleet answer" column) and
   §7.3 (provenance).
-- Sources: `/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/<owner>_<repo>/`; pins in `/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/PINS.txt`. The
-  LICENSE for each skill is its repository's root `LICENSE`.
+- Sources: `/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/<owner>_<repo>/`; pins in `/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/PINS.txt`.
 - "Vendor" means verbatim (`vendored: true`, budget-exempt). "Adapt" means
   our curated copy: apply exactly the report's edits plus the fleet rules
   (no subagents, `context: fork` removed, no "ask the user" — a message to
@@ -26,12 +25,11 @@ background-execution, swift-focusengine-pro.
   "verify", verify against Apple's documentation (web search/fetch) and
   record the URL; if it cannot be verified, delete the claim rather than
   ship it.
-- V0 (`ds/vendoring-infra`) adds the `vendored` flag and accepts `LICENSE`
-  files. If the gate fails only on those before V0 merges, say so and send
+- V0 (`ds/vendoring-infra`) adds the `vendored` flag. If the gate fails only on it before V0 merges, say so and send
   READY-TO-MERGE; you will get REBASE after V0.
 - Skills attach by name to the Swift teammates (unit P-Swift). Never add
-  them to a `Phase`. Copy only skill content (SKILL.md, references/*.md,
-  LICENSE): no plugin.json, gemini-extension.json, images or dotfiles.
+  them to a `Phase`. Copy only skill content (SKILL.md, references/*.md):
+  no plugin.json, gemini-extension.json, images or dotfiles.
 
 ## FILES
 
@@ -52,10 +50,10 @@ do not touch: Rust code, teammates, other skills.
 ## STEPS
 
 0. Create the worktree.
-1. Vendor `app-intents` (`n0an_App-Intents-Agent-Skill/app-intents/`),
-   `widgets` (`n0an_Widgets-Agent-Skill/widgets/`), `background-execution`
-   (`n0an_Background-Execution-Agent-Skill/background-execution/`).
-2. Vendor `swift-focusengine-pro` (`mhaviv_Swift-FocusEngine-Agent-Skill/`,
+1. Vendor `app-intents` (`App-Intents-Agent-Skill/app-intents/`),
+   `widgets` (`Widgets-Agent-Skill/widgets/`), `background-execution`
+   (`Background-Execution-Agent-Skill/background-execution/`).
+2. Vendor `swift-focusengine-pro` (`Swift-FocusEngine-Agent-Skill/`,
    repo root; the directory gets the skill name). If horch's frontmatter
    parser rejects `version`/`author`/`tags`, move them under `metadata`
    and record that as the only adaptation.

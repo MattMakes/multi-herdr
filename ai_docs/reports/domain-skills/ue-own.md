@@ -9,7 +9,7 @@ Branch `ds/ue-own`. Worker opus-41. Date 2026-10-03.
 | `ue-build-verify` | 8,796 B | 18,126 B | `SKILL.md`, `references/commands.md`, `references/log-reading.md` |
 | `ue-editor-scripting` | 8,163 B | 17,977 B | `SKILL.md`, `references/commands.md`, `references/python-recipes.md` |
 
-Both are house skills: own text, `"sources": []`, `"vendored": false`. The `adaptation` text names the upstream skills consulted, with the pin `quodsoler/unreal-engine-skills` at `f3742d7b688690810df369802b90430324e380b9` (MIT). No upstream text is copied. Both are listed in `REPO_ORIGINAL` in `crates/horch-core/tests/skills_catalog.rs`; the orchestrator approved this one-line test change (option 1). Gate green at each commit.
+Both are house skills: own text, `"sources": []`, `"vendored": false`. The `adaptation` text names the upstream skills consulted, with the pin `unreal-engine-skills` at `f3742d7b688690810df369802b90430324e380b9`. No upstream text is copied. Both are listed in `REPO_ORIGINAL` in `crates/horch-core/tests/skills_catalog.rs`; the orchestrator approved this one-line test change (option 1). Gate green at each commit.
 
 ## Sources
 

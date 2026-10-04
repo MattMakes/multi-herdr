@@ -27,7 +27,7 @@ command string.
 - Sandboxing: https://code.claude.com/docs/en/sandboxing (fetched 2026-10-04).
 - Settings reference: https://code.claude.com/docs/en/settings-reference,
   section "Sandbox settings" and `permissions.blockReadsOutsideWorkingDirectories`.
-- Seatbelt profile: `anthropics/sandbox-runtime`, `src/sandbox/macos-sandbox-utils.ts`
+- Seatbelt profile: `sandbox-runtime`, `src/sandbox/macos-sandbox-utils.ts`
   (main, fetched 2026-10-04). Claude Code builds its sandbox on this package.
 - asc 5.9.1: `internal/asc/client_core.go:23` (`BaseURL =
   "https://api.appstoreconnect.apple.com"`), `internal/asc/notary.go:27`,

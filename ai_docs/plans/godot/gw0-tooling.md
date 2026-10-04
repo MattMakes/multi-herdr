@@ -16,7 +16,7 @@ gate.
    frontmatter `name:`, rewrites cross-references (`godot-prompter:<x>`,
    bold `**<x>**` in "Related skills" lines, and any other reference form you
    find in the 56 upstream skills — grep them all) to the new names, using the
-   full upstream skill list as the map, and copies the upstream `LICENSE`
+   full upstream skill list as the map
    next to `SKILL.md`. Print the sha256 of each upstream file copied (for
    provenance). `--dry-run` shows the diff. Never touch `description:`.
    Test it (a small fixture under `scripts/godot/tests/`, run by

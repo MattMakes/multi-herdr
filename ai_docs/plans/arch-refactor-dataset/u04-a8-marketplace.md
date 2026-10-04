@@ -23,7 +23,7 @@ tests of phase A8 pass. No CLI is added (that is A11).
   has no `--`. `description` is non-empty and at most 1024 bytes. Copy these
   rules into the marketplace crate (do not import core).
 - Bundled skills live in the repo `skills/` dir; `skills/provenance.json`
-  pins upstream `MattMakes/skill-marketplace` at commit
+  pins upstream `skill-marketplace` at commit
   `d47670328c59a3311a9b4149bc5f8f33f0a92754` with a per-skill
   `source_sha256`. Phase A9 (later) merges bundled entries and lock entries
   into one catalog in core. Your crate defines the `Bundled` source type only;

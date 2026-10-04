@@ -74,7 +74,7 @@ New material that no source had: the motion-character table (adjectives to durat
 
 ## Provenance
 
-`skills/provenance.json` has 1 `motion-gsap` entry with 17 sources: the 8 gsap-skills SKILL.md files, 5 example files (vanilla, react, vue, 2 nuxt), and 4 cinematic-ui files. Each has the pinned revision, the sha256 of the original file and `license: "MIT"`. `horch skills show motion-gsap` prints all 17 `upstream:` lines. `skills/README.md` has 1 row in "Design skills".
+`skills/provenance.json` has 1 `motion-gsap` entry with 17 sources: the 8 gsap-skills SKILL.md files, 5 example files (vanilla, react, vue, 2 nuxt), and 4 cinematic-ui files. Each has the pinned revision, the sha256 of the original file. `horch skills show motion-gsap` prints all 17 `upstream:` lines. `skills/README.md` has 1 row in "Design skills".
 
 ## Sizes
 

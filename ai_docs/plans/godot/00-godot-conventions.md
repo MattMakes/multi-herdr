@@ -9,24 +9,21 @@ Read these first, in full:
 
 ## Sources (read-only)
 
-- GodotPrompter v1.14.0 (MIT):
+- GodotPrompter v1.14.0:
   `.worktrees/_scratch/godot-src/GodotPrompter` at `3e8d0f005f9604e1dbdad3de693e39555384c5af`.
-- gd-agentic-skills (LGPL-3.0):
+- gd-agentic-skills:
   `.worktrees/_scratch/godot-src/gd-agentic-skills` at `4c4d0ff5c4597938cc9257d99d9e35f7692c9c06`.
 - Never edit, commit or move these clones.
 
-## The LGPL rule (operator decision 1)
+## The own-text rule (operator decision 1)
 
 - Copy nothing from gd-agentic-skills: no sentence, no table, no `.gd`
   script, no `.py`. Read it for facts and techniques, close it, then write
   in your own words and your own code. Do not paraphrase line by line.
-- A file that uses gd-agentic facts says so in its provenance `adaptation`:
-  "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: <skill
-  dirs>". gd-agentic never appears in `sources` (nothing was copied).
-- GodotPrompter text (MIT) may be copied. A copied file is a `sources` entry
-  with repository, revision, path, sha256 of the upstream file and
-  `license: MIT`, plus the upstream `LICENSE` file next to `SKILL.md` and as
-  a second `sources` entry, as the `ue-*` entries do.
+- A file written this way is own text: it is not in `copied_files`.
+- GodotPrompter text may be copied. A copied file is listed in the
+  skill's `copied_files` in `skills/copied.json`. No licence file is copied
+  (operator rule, 2026-10-04).
 
 ## Engine and checks
 

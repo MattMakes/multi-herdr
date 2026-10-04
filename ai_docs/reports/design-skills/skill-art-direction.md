@@ -81,7 +81,7 @@ Every color pair with a stated ratio in the direction files was computed with th
 
 ## Follow-ups
 
-- Provenance: 1 entry in `skills/provenance.json` with 26 sources (cinematic-ui 15 files, taste-skill 3, pencilplaybook 8), each with the `PINS.txt` revision, sha256 and `license: "MIT"`. The entry is first in the list, in alphabetical order by skill id.
+- Provenance: 1 entry in `skills/provenance.json` with 26 sources (cinematic-ui 15 files, taste-skill 3, pencilplaybook 8), each with the `PINS.txt` revision, sha256. The entry is first in the list, in alphabetical order by skill id.
 - README: 1 row in the `skills/README.md` source mapping table.
 - Tests: no test or oracle changed. The orchestrator's fix on `design-skills` limits the `horch skills` oracles to the 16 A0 skills.
 - Not done (outside my scope): `art-direction` belongs to no phase yet. D07 attaches it to personas by name.

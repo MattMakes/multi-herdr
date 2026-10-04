@@ -4,7 +4,7 @@ Follow `ai_docs/plans/godot/00-godot-conventions.md`.
 
 ## GOAL
 
-These 18 skills are in `skills/` with provenance, LICENSE and README rows:
+These 18 skills are in `skills/` with provenance and README rows:
 
 - Renamed only (16): `gdscript-patterns`, `localization`, `hud-system`,
   `responsive-ui`, `multithreading`, `gdextension`, `addon-development`,

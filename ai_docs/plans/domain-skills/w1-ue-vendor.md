@@ -6,19 +6,18 @@ Unit slug: `ue-vendor`. Branch: `ds/ue-vendor`.
 
 All 31 upstream `ue-*` skills are bundled: 30 verbatim, and
 `ue-project-context` adapted, so its interview becomes one `QUESTION:` to
-the orchestrator. Each skill has its LICENSE and a provenance entry, and
+the orchestrator. Each skill has a provenance entry, and
 `horch skills` lists all 31.
 
 ## CONTEXT
 
 - Read first: `ai_docs/plans/domain-skills/00-conventions.md`, then
   `ai_docs/reports/unreal-engine-wave.md` "Skills to add" (vendor and adapt).
-- Source: `/Users/mascott/projects/multi-herdr/.worktrees/_sources/unreal/quodsoler_unreal-engine-skills/skills/<name>/`.
-  Revision and licence: `.../unreal/PINS.txt`. The LICENSE is at the repo root.
-- V0 (`ds/vendoring-infra`) adds the `vendored` flag, accepts `LICENSE`
-  files, and exempts vendored skills from the size budget. It may land
+- Source: `/Users/mascott/projects/multi-herdr/.worktrees/_sources/unreal/unreal-engine-skills/skills/<name>/`.
+  Revision: `.../unreal/PINS.txt`.
+- V0 (`ds/vendoring-infra`) adds the `vendored` flag and exempts vendored skills from the size budget. It may land
   after you start. Write your provenance with `vendored: true` from the
-  beginning. If the gate fails only on the budget, LICENSE or the
+  beginning. If the gate fails only on the budget or the
   `vendored` field before V0 merges, say so in your report and send
   READY-TO-MERGE. The orchestrator merges V0 first, then gives you REBASE.
 - Do not add the skills to any `Phase`. They attach by name to the UE
@@ -35,9 +34,8 @@ do not touch: Rust code, teammates, other skills.
 ## STEPS
 
 0. Create the worktree.
-1. Copy the 30 verbatim skills with `rsync -a --exclude='.*'`, then add the
-   repo-root `LICENSE` to each. Check: `diff -r` against the source shows
-   only the added LICENSE.
+1. Copy the 30 verbatim skills with `rsync -a --exclude='.*'`. Check: `diff -r` against the source shows
+   no difference.
 2. Adapt `ue-project-context` exactly as the report says: keep step 1 and
    the document template, and replace the interview with `[unknown]` markers
    and one `QUESTION:` that lists unknowns in the skill's order. Keep the

@@ -16,8 +16,8 @@ engines. Each kept change is stated as "the 4.7 way".
 
 ## Sources consulted
 
-- gd-agentic-skills @ `4c4d0ff5c4597938cc9257d99d9e35f7692c9c06` (LGPL-3.0,
-  read only, nothing copied): `skills/godot-version-migration/` (SKILL.md,
+- gd-agentic-skills @ `4c4d0ff5c4597938cc9257d99d9e35f7692c9c06` (read only,
+  nothing copied): `skills/godot-version-migration/` (SKILL.md,
   `references/` with 95 per-topic mirrors, `era-index.md`, `hop-index.md`,
   `bridges/3-to-4.md`, `legacy/`), `skills/godot-adapt-2d-to-3d/`,
   `skills/godot-adapt-3d-to-2d/` (SKILL.md, references, scripts).

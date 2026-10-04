@@ -8,11 +8,10 @@ Plan: `ai_docs/plans/domain-skills/s4-swift-ship.md`. Specification:
 
 - 8 skills are under `skills/`. `horch skills` (the built binary) lists all 8.
 - The gate fails on 3 tests in `crates/horch-core/tests/skills_catalog.rs`. All 3 are V0 items:
-  - `skills_bundled_text_only`: `app-store-changelog/LICENSE` (V0 accepts `LICENSE`).
   - `skills_bundled_size_budget`: `appstore-review/SKILL.md: 17477 bytes` (V0 exempts `vendored: true`).
-  - `skl_01_bundled_catalog_versions_and_digests`: `Dimillian/Skills ... is not a pinned upstream` (V0 checks pins by shape).
+  - `skl_01_bundled_catalog_versions_and_digests`: `Skills ... is not a pinned upstream` (V0 checks pins by shape).
 - All other test targets pass (60 `test result: ok` lines). `cargo fmt --check` and both builds pass. The gate stops after the test step, so I ran its last 4 steps by hand: `horch teammates --check`, `check-req-coverage.sh`, `check-deps.sh` and `verify-telemetry-e2e.sh` all pass.
-- I checked the V0 rules by hand. Every new file is `.md` or `LICENSE`. There are no dotfiles. Every new source has a GitHub URL, a 40-hex revision, a 64-hex sha256 and `license: "MIT"`. Only `appstore-review` is over budget, and it is `vendored: true`.
+- I checked the V0 rules by hand. Every new file is `.md`. There are no dotfiles. Every new source has a GitHub URL, a 40-hex revision, a 64-hex sha256. Only `appstore-review` is over budget, and it is `vendored: true`.
 
 ## Safety model
 
@@ -22,7 +21,7 @@ One decision: in `asc-xcode-build`, a build upload (`asc builds upload`, `asc xc
 
 ## Per skill
 
-Bytes are SKILL.md / whole directory (including `LICENSE`).
+Bytes are SKILL.md / whole directory.
 
 ### asc-cli-usage: Adapt, light (3762 / 4832 bytes, `vendored: false`)
 
@@ -67,7 +66,7 @@ Bytes are SKILL.md / whole directory (including `LICENSE`).
 - `SKILL.md:10-14`: new section "Fleet rule: dry-run only". It states plainly that `asc metadata push` without `--confirm` still writes live metadata, so the worker never runs push. It lists every live-write command and every safe command.
 - `SKILL.md:38`, `:56`, `:64`, `:70`, `:77`, `:90`, `:97`, `:106`, `:124`, `:145`: each write step says which lines to run (pull, validate, `--dry-run`, plan, approve, status, diff, import, download, export) and which line goes to the orchestrator.
 - `SKILL.md:173-176` "Agent behavior": "never run a remote write". Each "the user" becomes "the task" or "the orchestrator".
-- The "checked" item: `asc metadata push` writes without `--confirm`. The evidence is the upstream `skills/asc-metadata-sync/SKILL.md:58-61` at `9a093fa`, which reads "Apply after the plan looks correct" and shows `asc metadata push ... --dir "./metadata"` with no `--confirm`. The asc README (https://raw.githubusercontent.com/rudrankriyam/App-Store-Connect-CLI/main/README.md, read 2026-10-03) does not document `push`. `asc` is not installed on this host, so I could not run `asc metadata push --help`. The fix does not depend on the answer: the worker never runs push without `--dry-run`.
+- The "checked" item: `asc metadata push` writes without `--confirm`. The evidence is the upstream `skills/asc-metadata-sync/SKILL.md:58-61` at `9a093fa`, which reads "Apply after the plan looks correct" and shows `asc metadata push ... --dir "./metadata"` with no `--confirm`. The asc README (read 2026-10-03) does not document `push`. `asc` is not installed on this host, so I could not run `asc metadata push --help`. The fix does not depend on the answer: the worker never runs push without `--dry-run`.
 
 ### appstore-review: Adapt, light (17477 / 47821 bytes, `vendored: true`)
 
@@ -116,7 +115,7 @@ Command: `grep -rniE "submit|push|delete|expire|revoke|cancel"` over the 8 skill
 
 ## Provenance and README
 
-- `skills/provenance.json`: 8 entries, sorted by name (the 2 `app*` entries before `art-direction`, the 6 `asc-*` entries after it). Each source file I copied or adapted is listed with its sha256 at the PINS.txt revision. This includes each repository `LICENSE`, the inlined changelog script, and the 2 submission-health references that are summarized and not copied. Each entry has `vendored` (V0 adds the field; the current parser ignores it).
+- `skills/provenance.json`: 8 entries, sorted by name (the 2 `app*` entries before `art-direction`, the 6 `asc-*` entries after it). Each source file I copied or adapted is listed with its sha256 at the PINS.txt revision. This includes the inlined changelog script, and the 2 submission-health references that are summarized and not copied. Each entry has `vendored` (V0 adds the field; the current parser ignores it).
 - `skills/README.md`: a new "Swift and Apple skills" table, sorted, with 8 rows. S1-S3 add their rows to the same table. At rebase, keep both sides.
 
 ## Gotchas

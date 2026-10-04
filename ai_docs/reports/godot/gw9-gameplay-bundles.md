@@ -15,7 +15,7 @@ Engine: Godot 4.7.2.stable.official.ed1daf0bf.
 | `godot-quest-system` | SKILL.md, references/branching-and-timing.md, references/ui-and-world.md | 9,686 B | quest-system |
 
 Provenance for each: `sources: []`, `vendored: false`, adaptation "own text,
-consulted thedivergentai/gd-agentic-skills@4c4d0ff: <dirs>". The README
+consulted gd-agentic-skills@4c4d0ff: <dirs>". The README
 "Godot skills" table has one `own text` row per bundle.
 
 ## Method

@@ -1,6 +1,6 @@
 # GW5 godot-combined: systems and worlds
 
-Unit GW5 (worker opus-78) built 7 combined skills. Each one is the GodotPrompter v1.14.0 skill (MIT, `3e8d0f005f9604e1dbdad3de693e39555384c5af`), renamed by `scripts/godot/rename.py`, plus new `references/*.md` in own text and own code. The new references hold only what gd-agentic-skills (`4c4d0ff5c4597938cc9257d99d9e35f7692c9c06`, LGPL-3.0) covers and GodotPrompter lacks. Nothing from gd-agentic was copied.
+Unit GW5 (worker opus-78) built 7 combined skills. Each one is the GodotPrompter v1.14.0 skill (`3e8d0f005f9604e1dbdad3de693e39555384c5af`), renamed by `scripts/godot/rename.py`, plus new `references/*.md` in own text and own code. The new references hold only what gd-agentic-skills (`4c4d0ff5c4597938cc9257d99d9e35f7692c9c06`) covers and GodotPrompter lacks. Nothing from gd-agentic was copied.
 
 ## Commits
 
@@ -10,7 +10,7 @@ Unit GW5 (worker opus-78) built 7 combined skills. Each one is the GodotPrompter
 | `cf1c525` | `godot-dialogue-system`, `godot-procedural-generation`, `godot-2d-essentials` |
 | the GW5 commit that adds this report | `godot-3d-essentials`, `godot-animation-system` |
 
-Each `SKILL.md` changed in 2 places only: the `description:` keeps the upstream text and adds an "Also covers ..." sentence (450 to 730 bytes in total), and a "Fleet additions" list at the end names each new reference. Each provenance entry has `vendored: true`, the upstream files and `LICENSE` as `sources`, and the `adaptation` text from the common method.
+Each `SKILL.md` changed in 2 places only: the `description:` keeps the upstream text and adds an "Also covers ..." sentence (450 to 730 bytes in total), and a "Fleet additions" list at the end names each new reference. Each provenance entry has `vendored: true`, the upstream files as `sources`, and the `adaptation` text from the common method.
 
 ## How the work was checked
 

@@ -30,7 +30,7 @@ The legacy `Bundle` keeps working for launch (A10 replaces the exposure).
   Callers: `teammates.rs:680`, `codex.rs:394`, `launch.rs:100` and tests,
   `crates/horch/src/main.rs:405`, `cmd/worker.rs:116`, `cmd/spawn.rs:327`,
   `cmd/recipes.rs:578`. `crates/horch-core/build.rs` embeds the skill files.
-  `skills/provenance.json` pins upstream `MattMakes/skill-marketplace` at
+  `skills/provenance.json` pins upstream `skill-marketplace` at
   `d47670328c59a3311a9b4149bc5f8f33f0a92754` with per-skill `source_sha256`.
 - Oracles you must keep green, unchanged: `oracle_skills_match` (briefing
   text per teammate × phase in `crates/horch-core/tests/oracles/skills/`),

@@ -1,7 +1,7 @@
 # GW9 godot-gameplay-bundles: loops, combat, economy, quests
 
 Follow `ai_docs/plans/godot/00-godot-conventions.md`. Own text only (the
-sources are gd-agentic, LGPL).
+sources are gd-agentic, read for facts only).
 
 ## GOAL
 
@@ -26,7 +26,7 @@ state machine, resource pattern, event bus) instead of repeating it; run
 per bundle in a scratch project (`.worktrees/_scratch/godot-<role>/`): it
 loads and a short headless script exercises it. Commit per bundle with the
 lock. Provenance: `sources: []`, `vendored: false`, "own text, consulted
-thedivergentai/gd-agentic-skills@4c4d0ff: <dirs>".
+gd-agentic-skills@4c4d0ff: <dirs>".
 
 ## FILES
 

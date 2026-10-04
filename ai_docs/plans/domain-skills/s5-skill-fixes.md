@@ -5,9 +5,9 @@ Starts after S3, S4 and W2 are merged (they all write `skills/provenance.json`).
 
 ## GOAL
 
-1. `swiftdata-pro` covers `@ModelActor`: add vanab's
+1. `swiftdata-pro` covers `@ModelActor`: add swiftdata-agent-skill's
    `references/concurrency-and-actors.md`
-   (`/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/vanab_swiftdata-agent-skill/swiftdata-expert-skill/references/`)
+   (`/Users/mascott/projects/multi-herdr/.worktrees/_sources/swift/swiftdata-agent-skill/swiftdata-expert-skill/references/`)
    as a reference, checked against report §5 (MV default, `@concurrent` only
    for CPU-bound work, CloudKit rules), with its own provenance source.
    Link it from SKILL.md.

@@ -1,7 +1,7 @@
 # GW8 godot-genre-blueprints: one router bundle for all 27 genres
 
 Follow `ai_docs/plans/godot/00-godot-conventions.md`. Own text only: every
-source here is gd-agentic (LGPL), so nothing is copied.
+source here is gd-agentic, read for facts only, so nothing is copied.
 
 ## GOAL
 
@@ -27,7 +27,7 @@ skill.
 
 Commit in batches (router + 6 to 9 genres per commit) with the lock.
 Provenance: `sources: []`, `vendored: false`, adaptation "own text, consulted
-thedivergentai/gd-agentic-skills@4c4d0ff: <the 28 dirs>".
+gd-agentic-skills@4c4d0ff: <the 28 dirs>".
 
 ## FILES
 

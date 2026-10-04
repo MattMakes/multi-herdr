@@ -1,6 +1,6 @@
 # Brief: branch, commit, push, and open the PR
 
-Repo: /Users/mascott/projects/multi-herdr. Current branch: `main`. Remote `origin` is GitHub (`MattMakes/multi-herdr`), `gh` is logged in.
+Repo: /Users/mascott/projects/multi-herdr. Current branch: `main`. Remote `origin` is GitHub (`multi-herdr`), `gh` is logged in.
 
 ## Steps, in order
 1. `git status --short`. Expected uncommitted work: modified `crates/horch-core/tests/golden_prompts.rs`, `teammates/README.md`, `teammates/_base/fleet-orchestrator.md`, `teammates/_base/fleet-worker.md`; untracked `ai_docs/plans/env-research/`, `ai_docs/plans/tiling-manager-spec.md`, `ai_docs/plans_to_improve.md`, `ai_docs/reports/env-research/`, `ai_docs/reports/layout-survey.md`, and `.herdr-orchestrator/`. If anything else is modified, stop and report it with `horch tell orchestrator` before committing.

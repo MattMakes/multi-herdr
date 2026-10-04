@@ -22,7 +22,7 @@ Unit: `followups`. Branch: `ds/followups`. Author: opus-31.
 
 ## Step 2: skills README
 
-The intro now names 2 families. They are the process skills from `MattMakes/skill-marketplace` and the design skills from the 7 MIT design repositories. The intro also names the 2 bundles that belong to neither family (`orchestrate`, `skill-creator`). One sentence under "Source mapping" says that a path with no repository name is a `skill-marketplace` path. I did not change any table rows.
+The intro now names 2 families. They are the process skills from `skill-marketplace` and the design skills from the 7 design repositories. The intro also names the 2 bundles that belong to neither family (`orchestrate`, `skill-creator`). One sentence under "Source mapping" says that a path with no repository name is a `skill-marketplace` path. I did not change any table rows.
 
 ## Step 3: flake causes
 

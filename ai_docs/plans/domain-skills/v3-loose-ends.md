@@ -9,7 +9,7 @@ No follow-up from the V0–V2 reports stays open:
 2. `horch teammates --matrix` shows `available_skills`, `operator_skills`,
    `offer_when` and `requires`.
 3. `skill-creator` uses the multi-source provenance shape (`sources`,
-   `license: "Apache-2.0"`, `vendored: true`), so `EXEMPT_FROM_BUDGET` and the
+  , `vendored: true`), so `EXEMPT_FROM_BUDGET` and the
    pin-check skip for it go away (keep only a text-only exemption if its
    scripts need one).
 4. The two fake-opencode e2e flakes have a root cause and a fix:

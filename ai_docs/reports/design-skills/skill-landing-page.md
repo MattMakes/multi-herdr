@@ -36,11 +36,11 @@ Paths are relative to `_sources/design-skills/`.
 
 | Source part | Went to |
 |---|---|
-| felix-huber pipeline (analyze, generate, review, open) | `SKILL.md` workflow; `review-loop.md` sections 2 and 5 |
-| felix-huber context-to-brief prompt (users, emotional journey, differentiation, conventions) | `SKILL.md` step 1 brief read |
-| felix-huber 3-paragraph design prompt | `review-loop.md` section 1 (direction note) |
-| felix-huber review prompt (bugs, CSS, a11y, responsive, design) | `review-loop.md` rubric items 4, 5, 7, 8, 9 |
-| felix-huber style library (25 styles, 7 families) | `hero.md` section 4 family table (condensed to 7 families) |
+| ui-landingpage-generator-skill pipeline (analyze, generate, review, open) | `SKILL.md` workflow; `review-loop.md` sections 2 and 5 |
+| ui-landingpage-generator-skill context-to-brief prompt (users, emotional journey, differentiation, conventions) | `SKILL.md` step 1 brief read |
+| ui-landingpage-generator-skill 3-paragraph design prompt | `review-loop.md` section 1 (direction note) |
+| ui-landingpage-generator-skill review prompt (bugs, CSS, a11y, responsive, design) | `review-loop.md` rubric items 4, 5, 7, 8, 9 |
+| ui-landingpage-generator-skill style library (25 styles, 7 families) | `hero.md` section 4 family table (condensed to 7 families) |
 | banner-design workflow, rules, sizes, styles | `hero.md` section 5 |
 | `landing.csv` 34 patterns | `sections.md` section 2 (merged to 14 patterns) and section 3 per-section notes |
 | `products.csv` landing column | `sections.md` "Starting pattern by product family" (12 families) |
@@ -74,15 +74,15 @@ Paths are relative to `_sources/design-skills/`.
 
 | Conflict | Resolution | Why |
 |---|---|---|
-| felix-huber asks for "high-impact" motion, gradient meshes, noise and dramatic shadows; taste-skill bans glows, decoration and motion for show | Motion is last, optional, one orchestrated device, with a reason per animation. Texture only when the direction note asks for it. | Intentional restraint is checkable; "high impact" is not. Both sources agree on "one orchestrated page load beats scattered effects". |
-| felix-huber picks a random style; taste-skill says the audience picks | The brief read picks the aesthetic family. | A landing page has a conversion goal and an audience. |
+| ui-landingpage-generator-skill asks for "high-impact" motion, gradient meshes, noise and dramatic shadows; taste-skill bans glows, decoration and motion for show | Motion is last, optional, one orchestrated device, with a reason per animation. Texture only when the direction note asks for it. | Intentional restraint is checkable; "high impact" is not. Both sources agree on "one orchestrated page load beats scattered effects". |
+| ui-landingpage-generator-skill picks a random style; taste-skill says the audience picks | The brief read picks the aesthetic family. | A landing page has a conversion goal and an audience. |
 | `landing.csv` puts the CTA in several places (hero, sticky, bottom); taste-skill bans duplicate CTA intent | Repeat the primary CTA freely, but with one label per intent. | Both rules hold together: repetition helps conversion, differing labels confuse. |
 | taste-skill 9.D asks for "organic, messy data" (47.2%); taste-skill 4.9 and `landing.csv` ban unverified numbers | No invented numbers. Real numbers with a source, or a marked placeholder. | Fake-but-plausible data ships to production by accident and misleads visitors. |
 | taste-skill makes an image-generation tool mandatory when present, then picsum | Supplied assets first, then real UI, then generated images if allowed, then CSS art, then a labeled placeholder. | Harness-neutral, no runtime download, and brand assets beat generated stock. |
 | taste-skill makes dark mode mandatory for consumer pages; it also locks one theme per page | One page-level theme (light, dark or auto). If auto, review both. | Dual themes double the review work; the brief decides. |
 | banner-design puts the CTA bottom right | Applies to banners only. In the page hero the CTA follows the reading order. | Different formats. |
 | `landing.csv` lists "key features (3-5)" as cards; taste-skill bans 3 equal cards | Keep 3-6 features, but in a varied layout (bento, split rows, tabs). | The content is fine; the identical-card layout is the problem. |
-| felix-huber bans Inter and system fonts outright; taste-skill allows Inter for neutral and public-sector briefs | Font choice is out of scope here and deferred to `ui-taste`. | Avoid duplicating D01. |
+| ui-landingpage-generator-skill bans Inter and system fonts outright; taste-skill allows Inter for neutral and public-sector briefs | Font choice is out of scope here and deferred to `ui-taste`. | Avoid duplicating D01. |
 
 ## Example trigger lines
 
@@ -98,7 +98,7 @@ Paths are relative to `_sources/design-skills/`.
 
 ## Provenance and gate
 
-- `skills/provenance.json` entry `landing-page` lists 9 sources (3 repositories) at the PINS.txt revisions, each with sha256 and `license: MIT`. `horch skills show landing-page` prints 9 `upstream:` lines.
+- `skills/provenance.json` entry `landing-page` lists 9 sources (3 repositories) at the PINS.txt revisions, each with sha256. `horch skills show landing-page` prints 9 `upstream:` lines.
 - `skills/README.md` has one row in "Design skills".
 - Gate: green on the 3rd run. Runs 1 and 2 failed in `crates/horch-e2e/tests/dataset.rs` (`sec_08_e2e_no_api_key_in_any_child`: "PRE-06 FAIL harness version unresolved: claude"; once `cmp_05_e2e_candidates_in_dataset_workspace`). The machine load average was about 7.7, with other worktrees building. These tests do not read skills. They pass alone. This is a timing flake to watch. After the rebase on D01 and D06, run 1 failed once more in the same file (`cmp_04_n_worktrees_same_base_modify_same_file`: empty numstat), at load average about 8.6. Run 2 was green.
 

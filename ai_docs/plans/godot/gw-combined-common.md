@@ -14,7 +14,7 @@ your skills and their sources (also in `ai_docs/reports/godot-wave.md`,
    GodotPrompter lacks. Only that list is added. Drop anything that is wrong
    on 4.7.2 (check with the doctool dump), deprecated, or a duplicate.
 3. Write `references/<topic>.md` in your own words and your own code (the
-   LGPL rule). Each reference starts with one line saying what it adds and
+   own-text rule). Each reference starts with one line saying what it adds and
    when to read it. Code blocks are complete, idiomatic Godot 4.7 GDScript
    (typed), and pass `gdscript_blocks_check.py` and `api_check.py`.
 4. Extend the `description:` (≤ 1024 bytes in total) to name the added
@@ -23,11 +23,8 @@ your skills and their sources (also in `ai_docs/reports/godot-wave.md`,
    are the only SKILL.md edits.
 5. Run both checks on the whole skill, including the upstream text. Record
    upstream findings in your report; do not edit upstream text.
-6. Provenance: `sources` = the GodotPrompter SKILL.md, every other copied
-   upstream file and the LICENSE (sha256 each, from rename.py's output);
-   `vendored: true`; `adaptation`: "rename to godot-* prefix; description
-   extended; references/<files> are own text, consulted
-   thedivergentai/gd-agentic-skills@4c4d0ff: <skill dirs>".
+6. `skills/copied.json`: `copied_files` = the copied SKILL.md and every other
+   copied file; `verbatim: true`. The own references are not listed.
 
 ## Commit
 

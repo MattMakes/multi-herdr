@@ -4,7 +4,7 @@ Branch `ds/skill-fixes`. 5 items, 1 commit each (item 4 is committed before item
 
 ## 1. swiftdata-pro: @ModelActor
 
-- Added `skills/swiftdata-pro/references/concurrency-and-actors.md` from `vanab/swiftdata-agent-skill` (`swiftdata-expert-skill/references/concurrency-and-actors.md`, revision `4819a538...`).
+- Added `skills/swiftdata-pro/references/concurrency-and-actors.md` from `swiftdata-agent-skill` (`swiftdata-expert-skill/references/concurrency-and-actors.md`, revision `4819a538...`).
 - Check against report §5: the file has no view-model or MV claim, so §5 "View architecture" does not apply.
 - 2 edits:
   - The upstream example passed a `Trip` model into an actor method. The same file says not to pass model instances across isolation boundaries. The example now takes plain values (`name`, `startDate`).

@@ -5,7 +5,7 @@ Unit slug: `skills-infra`. Branch: `ds/skills-infra`.
 ## GOAL
 
 The bundled skill catalog accepts a skill adapted from several upstream
-repositories (each with its own revision, path, sha256 and license), checks a
+repositories (each with its own revision, path and sha256), checks a
 size budget for every bundled skill, and no test hard-codes the number of
 bundled skills. Six skill units rebase on this unit, so it must land first and
 fast.
@@ -42,7 +42,7 @@ do not touch: any `skills/<id>/` directory, teammates, oracles.
 
 1. Create the worktree (conventions §3).
 2. Schema: a skill entry may have `sources: [{repository, revision, path,
-   sha256, license}]` in place of the single-source fields. Keep reading the
+   sha256}]` in place of the single-source fields. Keep reading the
    old fields (they map to a 1-item list). `Provenance` gets
    `sources: Vec<SourceRef>` (keep the old public fields only if a caller
    needs them; prefer one clean shape and update callers). Every bundled

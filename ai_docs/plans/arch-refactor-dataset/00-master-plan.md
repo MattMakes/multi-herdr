@@ -32,7 +32,7 @@ Spec A §18 says competition must be *a composition of ordinary executions*. So 
 | OD1 | One branch, `arch-refactor-dataset`, off `origin/combine-open-prs` @ `575c2c2`. One commit series per phase, and every commit builds and passes `just gate`. Phase boundaries can be cut into stacked PRs later, which meets Spec A's "phases 3–10 independently reviewable". No PR unless the operator asks. |
 | OD2 | The dataset binary is `multi-herdr-dataset`. `horch` keeps its name. |
 | OD3 | Dataset storage is `$HORCH_STATE_DIR/multi-herdr/<project-slug>/`. It must be a subdirectory, because `telemetry::collect::read_ledgers` parses every `state_root/*.json`. The marketplace store is `${XDG_DATA_HOME:-~/.local/share}/horch/` (Spec A §10). |
-| OD4 | Clef and Laya are **inert** in this branch. Both speak the System One API: `POST /v1/systemone` with typed `choice`/`score`/`noul` questions, returning a probability per option. Clef is Cloudflare's 27B/9B Apache-2.0 decision model; Laya is Convai's 421M local model, fine-tuned on `{state, questions, answers}`. We ship the seam, record eligible sets, planner propensities and `teacher: none`, export System-One/Laya-shaped rows, and add a **data-readiness report**. There is no HTTP client and no API keys. Clef is enabled only once readiness says the local data justifies it, and Laya later still. |
+| OD4 | Clef and Laya are **inert** in this branch. Both speak the System One API: `POST /v1/systemone` with typed `choice`/`score`/`noul` questions, returning a probability per option. Clef is Cloudflare's 27B/9B decision model; Laya is Convai's 421M local model, fine-tuned on `{state, questions, answers}`. We ship the seam, record eligible sets, planner propensities and `teacher: none`, export System-One/Laya-shaped rows, and add a **data-readiness report**. There is no HTTP client and no API keys. Clef is enabled only once readiness says the local data justifies it, and Laya later still. |
 | OD5 | **No promotion by default.** A round ends at DECIDED with a winner, NEEDS_INTERVENTION, or REJECTED. `--promote-to <branch>` or `multi-herdr-dataset promote <round>` runs the full deterministic PromotionEngine. |
 | OD6 | `sha2 0.10.9` is allowlisted for horch-core and horch-marketplace (NFR-06). It is already in Cargo.lock through herdr-install, so nothing new is downloaded. |
 | OD7 | UUIDv7 is minted by hand from v4 bytes (48-bit ms prefix, version nibble 7). The uuid feature set does not change. `ExecutionId` accepts legacy non-UUID ids (`rec-o1`, `perf-3`). |
@@ -299,7 +299,7 @@ fake-herdr gains `fail_split` and `fail_run`, and a split now adds the pane to i
 - Allowlist sha2: NFR-06 in `nfr.rs` and `check-deps.sh`.
 
 ### A9 Bundled skills become the catalog; SkillActivationPlan replaces Bundle
-- build.rs also compiles in `skills/provenance.json`, which already pins `MattMakes/skill-marketplace@d476703` and per-skill sha256.
+- build.rs also compiles in `skills/provenance.json`, which already pins `skill-marketplace@d476703` and per-skill sha256.
 - Add `skills/catalog.rs`: bundled entries are versioned `bundled+<digest12>` and carry upstream provenance, and lock entries are merged in.
 - `selection.rs` holds the deterministic phase selectors.
 - `activation.rs` adds the pure `plan_activation(teammate, phase, catalog, lock)`. Teammate `skills:` map to Explicit (expected), phase skills to Deterministic, and the rest to Available.
@@ -761,7 +761,7 @@ After B6, a final audit walks both verbatim specs section by section against `SP
 | LA-2 | After A6/A7: herdr-fleet, tile and spawn smokes. |
 | LA-3 | A real fleet with sonnet, codex-sol and opencode: session discovery, resume, and `horch cost` totals equal an A0 ledger copy. |
 | LA-4 | After A10: only activated skills are visible in Claude `/skills` and in codex's `CODEX_HOME`. |
-| LA-5 | `horch skills install MattMakes/skill-marketplace@<tag>` pins a SHA, then spawn works offline. |
+| LA-5 | `horch skills install skill-marketplace@<tag>` pins a SHA, then spawn works offline. |
 | LA-6 | B2 preflight numbers match Activity Monitor. |
 | LA-7 | B3 on a scratch repo with sonnet and codex-sol candidates: do the Claude/Codex trust dialogs stall panes in new worktrees? Test `--worktree-root` under a trusted parent. |
 | LA-8 | B4 with a real `claude -p` judge: bundle unchanged; `--json-schema` availability; strict-parse rejection rate. |

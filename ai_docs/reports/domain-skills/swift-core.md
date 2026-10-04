@@ -6,9 +6,8 @@ Plan: `ai_docs/plans/domain-skills/s1-swift-core.md`. Specification:
 
 ## Result
 
-7 skills are bundled. `target/debug/horch skills` lists all 7. Each skill
-directory has its upstream MIT `LICENSE` next to `SKILL.md`. Copied files:
-SKILL.md, `references/*.md` and LICENSE only. No `agents/`, `assets/`,
+7 skills are bundled. `target/debug/horch skills` lists all 7. Copied files:
+SKILL.md and `references/*.md` only. No `agents/`, `assets/`,
 `.claude-plugin/`, `gemini-extension.json` or dotfiles.
 
 | skill | verdict applied | `vendored` | SKILL.md bytes | dir bytes | files |
@@ -21,7 +20,7 @@ SKILL.md, `references/*.md` and LICENSE only. No `agents/`, `assets/`,
 | swiftui-liquid-glass | adapt | false | 3763 | 13293 | 3 |
 | swiftui-pro | adapt, light | false | 4261 | 29018 | 11 |
 
-Dir bytes include LICENSE. Every adapted skill fits the 12 KB / 160 KB budget.
+Every adapted skill fits the 12 KB / 160 KB budget.
 
 Commits:
 - `Skills: Add observability and swift-testing-pro`
@@ -34,13 +33,12 @@ Commits:
 
 `HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate` fails only on the 3
 V0 items in `crates/horch-core/tests/skills_catalog.rs`:
-- `skills_bundled_text_only`: `observability/LICENSE` (V0 allows `LICENSE`).
 - `skills_bundled_size_budget`: `observability/SKILL.md: 20138 bytes` (V0 exempts `vendored: true`).
 - `skl_01_bundled_catalog_versions_and_digests`: the new repositories are not in `DESIGN_SOURCE_PINS` (V0 replaces the list with a shape check).
 
 Each of these tests stops at its first panic. So I simulated the 3 V0 rules
-in an uncommitted copy of `skills_catalog.rs` (allow `*/LICENSE`, exempt
-`observability`, accept a github URL + 40-hex revision + licence). With
+in an uncommitted copy of `skills_catalog.rs` (exempt
+`observability`, accept a github URL + 40-hex revision). With
 that copy, 10 of 10 catalog tests pass. I then restored the file.
 
 `cmp_05_e2e_candidates_in_dataset_workspace` (`crates/horch-e2e/tests/dataset.rs:529`)
@@ -53,7 +51,7 @@ flake: 9 units ran gates at the same time.
 Line numbers are in our copy. "upstream:N" is the upstream line.
 
 ### observability (vendor)
-- No edits. `diff -r` against upstream shows only the added LICENSE and the dropped `agents/` dir.
+- No edits. `diff -r` against upstream shows only the dropped `agents/` dir.
 - `references/production-monitoring.md:67` names `github.com/open-telemetry/opentelemetry-swift`. It is a library, not a skill repository, so it stays.
 
 ### swiftui-pro (adapt, light)
@@ -67,7 +65,7 @@ Line numbers are in our copy. "upstream:N" is the upstream line.
 ### swift-concurrency-pro (adapt)
 - **Checked:** `references/testing.md:35,37,40`. Upstream said `.serialized` on a suite serializes only parameterized tests. Now: on a test function it affects only parameterized cases; on a suite it serializes every test function and sub-suite. Evidence: Apple's `ParallelizationTrait` documentation (the type behind `.serialized`) says: "When you add this trait to a test suite, that suite runs its contained test functions (including their cases, when parameterized) and sub-suites serially instead of in parallel." It also says the trait "has no effect when you apply it to a non-parameterized test function" (https://developer.apple.com/documentation/testing/parallelizationtrait). The vendored `swift-testing-pro/references/async-tests.md:10` says the same.
 - `references/new-features.md:78-79` (added): caller-actor `nonisolated` async needs `NonisolatedNonsendingByDefault`, which `SWIFT_APPROACHABLE_CONCURRENCY = YES` turns on. Points to `references/build-settings.md`.
-- `references/build-settings.md` (new): AvdLee `skills/swift-concurrency/SKILL.md:16-24` settings table plus its Xcode 26 note (`:26`). The "ask the developer to confirm" line (`:28`) becomes a message to the orchestrator. Own provenance source (AvdLee repo, pinned revision, sha256).
+- `references/build-settings.md` (new): Swift-Concurrency-Agent-Skill `skills/swift-concurrency/SKILL.md:16-24` settings table plus its Xcode 26 note (`:26`). The "ask the developer to confirm" line (`:28`) becomes a message to the orchestrator. Own provenance source (Swift-Concurrency-Agent-Skill repo, pinned revision, sha256).
 - `SKILL.md:33`: read build settings first, with the new reference. `SKILL.md:37`: ask gate → message. `SKILL.md:125`: reference entry for `build-settings.md`.
 - `references/testing.md:218`: link → `swift-testing-pro`. `references/actors.md:103`: link → `swiftui-pro`.
 - §5 `@concurrent`: `new-features.md:85-102` and `interop.md:53-71` already say CPU-heavy work only. No edit needed.
@@ -76,8 +74,8 @@ Line numbers are in our copy. "upstream:N" is the upstream line.
 - `SKILL.md:29`: ask gate → message.
 - `SKILL.md:19-20` (added): review steps for migrations/history and Core Data adoption. `SKILL.md:105-106` (added): reference entries.
 - `references/core-rules.md:5,14`: links → `swift-concurrency-pro`, `swiftui-pro`.
-- `references/migrations-and-history.md` (vanab): line 50 is the only `#Unique` mention. I kept it and added the CloudKit caveat (no `#Unique` or `.unique` with CloudKit, see `cloudkit.md`). That agrees with Hudson `cloudkit.md:5` and §5.
-- `references/core-data-adoption.md` (vanab): verbatim. Neither file mentions `#Unique` elsewhere.
+- `references/migrations-and-history.md`: line 50 is the only `#Unique` mention. I kept it and added the CloudKit caveat (no `#Unique` or `.unique` with CloudKit, see `cloudkit.md`). That agrees with Hudson `cloudkit.md:5` and §5.
+- `references/core-data-adoption.md`: verbatim. Neither file mentions `#Unique` elsewhere.
 
 ### swift-testing-pro (vendor + optional line)
 - `SKILL.md:28` (added): headless runs, `swift test --filter` and `xcodebuild test -only-testing:`.
@@ -102,13 +100,13 @@ Line numbers are in our copy. "upstream:N" is the upstream line.
 
 - **`swift-testing-pro` is `vendored: false`.** The plan says "vendor", but it also asks for the added line, so the copy is not verbatim. It fits the budget, so it needs no exemption. I also applied the fleet link rule to its 2 upstream-repo links. "vendored" stays an honest "verbatim" signal.
 - **`observability` is `vendored: true`.** Its 20 KB SKILL.md is over the 12 KB budget and the copy is verbatim.
-- **Provenance:** one entry per skill, appended after the existing entries, sorted by name among themselves. The existing list is not sorted, and `/tmp/dsmerge.sh` merges by name. Each entry lists LICENSE, SKILL.md and every reference copied or adapted, with sha256 of the upstream bytes and the PINS.txt revision.
+- **Provenance:** one entry per skill, appended after the existing entries, sorted by name among themselves. The existing list is not sorted, and `/tmp/dsmerge.sh` merges by name. Each entry lists SKILL.md and every reference copied or adapted, with sha256 of the upstream bytes and the PINS.txt revision.
 - **README:** new "Swift and Apple skills" section at the end of `skills/README.md`, rows sorted. Other Swift units add their rows to the same table.
 - Links to Apple documentation and to libraries stay. Only links to other upstream skill repositories became bundled skill names.
 
 ## Out of scope, noticed
 
-- `swiftdata-pro` still has no `@ModelActor` coverage. The report (§4.1) gives that as a reason to add vanab references, but the 2 named files do not cover it. vanab `references/concurrency-and-actors.md` does. Follow-up: add it, or cover `@ModelActor` in the Swift persona.
+- `swiftdata-pro` still has no `@ModelActor` coverage. The report (§4.1) gives that as a reason to add swiftdata-agent-skill references, but the 2 named files do not cover it. swiftdata-agent-skill `references/concurrency-and-actors.md` does. Follow-up: add it, or cover `@ModelActor` in the Swift persona.
 - `swiftui-liquid-glass` uses `.font(.system(size:))` on SF Symbol images (`SKILL.md:73,77`, `liquid-glass.md:94-158,258,262`). §5 forbids fixed sizes for text only, so I left them.
 - `swift-concurrency-pro/references/testing.md:90-171` uses `ViewModel` names in test examples. They show testing patterns, not architecture advice, so I left them.
 - The P-Swift unit must attach these 7 skills by name. No teammate change is in this unit.

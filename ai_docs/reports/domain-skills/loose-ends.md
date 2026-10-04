@@ -18,7 +18,7 @@ each item and after the rebase on `design-skills` (b0e816a).
 ## Item 3: skill-creator provenance
 
 - `skills/provenance.json`: the `skill-creator` entry now has `sources` (18
-  files, one per bundled file), `license: "Apache-2.0"` on each source, and
+  files, one per bundled file) on each source, and
   `vendored: true`. Revision `fa59bc9…` and the adaptation text are unchanged.
 - Evidence that the copy is verbatim: `diff -r` of
   `~/.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator`
@@ -31,7 +31,7 @@ each item and after the rebase on `design-skills` (b0e816a).
   removed. `vendored: true` now exempts `skill-creator` from the size budget.
   The pin-check skip for `skill-creator` is removed, so its sources pass
   `assert_pinned_upstream_shape`. A new `EXEMPT_FROM_TEXT_ONLY` holds only
-  `skill-creator`, because it ships `.py`, `.html` and `LICENSE.txt`.
+  `skill-creator`, because it ships `.py` and `.html` files.
 - No skill digest changed (provenance.json is a top-level file).
 
 ## Item 4: fake flakes

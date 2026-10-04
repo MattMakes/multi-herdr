@@ -43,7 +43,7 @@ offered only on Apple projects.
   - `codex-swift-reviewer`: agent codex, model and effort as §1 says (check
     the model name exists in the codex harness's known models), skills
     `swiftui-pro`, `swift-concurrency-pro`, read-only like `codex-reviewer`.
-- The §5 rules (and the `twostraws/SwiftAgents` list, in our own words) go in
+- The §5 rules (and the `SwiftAgents` list, in our own words) go in
   the persona bodies of the builders and the reviewers.
 - Count-dependent tests: the same list as P-UE
   (`ai_docs/plans/domain-skills/p1-ue-teammates.md` CONTEXT). The Codex

@@ -48,7 +48,7 @@ After you rebase on the `skills-infra` unit (D00), add one entry per skill to
 `skills/provenance.json` with the multi-source schema D00 defines: for each
 source file you adapted, the repository URL, the pinned revision from
 `PINS.txt`, the path, the sha256 of the original file
-(`shasum -a 256 <file>`), and `license: "MIT"`. Plus one `adaptation` line.
+(`shasum -a 256 <file>`). Plus one `adaptation` line.
 Add one row per skill to the table in `skills/README.md`.
 
 ## Check

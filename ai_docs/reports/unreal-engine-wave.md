@@ -2,7 +2,7 @@
 
 Which skills and teammates to add so a horch fleet can staff Unreal Engine
 work. The source is
-[quodsoler/unreal-engine-skills](https://github.com/quodsoler/unreal-engine-skills)
+unreal-engine-skills
 at `f3742d7b688690810df369802b90430324e380b9` (2026-09-28, "Updated skills for
 Unreal Engine 5.8"). This is a recommendation. Nothing in this report has been
 added to `skills/` or `teammates/` yet.
@@ -11,7 +11,7 @@ added to `skills/` or `teammates/` yet.
 
 - **Vendor all 31 upstream skills** into `skills/` as `ue-*` bundles. Copy 30
   of them verbatim. Adapt `ue-project-context` only, because it interviews a
-  human. Upstream is MIT, and every skill already passes the bundled-skill
+  human. Every skill already passes the bundled-skill
   checks in `skills.rs`.
 - **Add 11 `ue-*` teammates in two waves.** Wave 1 has six teammates and
   covers almost all UE C++ work: lead, gameplay, network, technical art, QA
@@ -34,7 +34,6 @@ added to `skills/` or `teammates/` yet.
 |---|---|
 | skills | 31, each a `SKILL.md` (408-499 lines) plus 0-3 `references/*.md` |
 | engine | UE 5.8. Upstream says it checked every API against the 5.8 headers and compiled every example (about 945 blocks) against 5.8 |
-| licence | MIT, © 2025 quodsoler |
 | size | 2.07 MB in total: about 30 KB per `SKILL.md` and about 35 KB of references per skill |
 | description length | 546-715 characters. The catalog limit is 1024 |
 | names | `ue-<area>`, lowercase with hyphens. All pass `catalog()` validation |
@@ -51,8 +50,7 @@ writes only the skills its teammate selects, so a non-UE pane pays nothing.
 ### Vendor verbatim (30)
 
 Copy `skills/<name>/` with its `references/` folder. Do not copy upstream's
-top-level `.DS_Store`: `build.rs` bundles every regular file it finds. Put
-upstream's `LICENSE` in the bundle, following the `skill-creator` precedent.
+top-level `.DS_Store`: `build.rs` bundles every regular file it finds.
 Add one `provenance.json` entry per skill with `source_repository`,
 `source_revision` and `source_sha256`. Add a row to the source mapping table
 in `skills/README.md`.
@@ -268,7 +266,7 @@ and not in `_base/fleet-worker.md`. Every UE persona needs:
 
 ## Suggested order
 
-1. Vendor the 31 skills, with provenance, licence and the test fix, and
+1. Vendor the 31 skills, with provenance and the test fix, and
    adapt `ue-project-context`. Check with `cargo test` and `horch skills`.
 2. Add the six wave-1 teammates. Run `horch teammates --check`.
 3. Write `ue-build-verify` and attach it. Try it on a sample project

@@ -29,8 +29,8 @@ test. The bundle is not vendored, so it gets no exemption.
 
 ## Sources consulted
 
-thedivergentai/gd-agentic-skills at `4c4d0ff5c4597938cc9257d99d9e35f7692c9c06`
-(LGPL-3.0), read-only clone in `.worktrees/_scratch/godot-src/`. I read the
+gd-agentic-skills at `4c4d0ff5c4597938cc9257d99d9e35f7692c9c06`,
+read-only clone in `.worktrees/_scratch/godot-src/`. I read the
 `SKILL.md` of each of the 28 directories and their script and reference
 indexes for facts: core loops, the systems each genre needs, the pitfalls.
 I copied nothing (operator decision 1): every sentence, table, scene tree and

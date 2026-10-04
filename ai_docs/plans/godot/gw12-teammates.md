@@ -34,7 +34,7 @@ like `app-release-preparer`: it ends at a plan for the orchestrator.
 - `docs/skills-and-teams.md`: the Godot row next to the Unreal Engine row.
 - `skills/README.md` "Godot skills" section intro: one paragraph that says
   what the section holds (GodotPrompter-only, combined, gd-agentic own text,
-  own skills; the LGPL rewrite rule; the 4.7 API checks). Fold in the intro
+  own skills; the own-text rule; the 4.7 API checks). Fold in the intro
   texts the units left: `.worktrees/_scratch/*/readme-intro.md` and
   `.worktrees/_scratch/*/unit*/readme-intro.md`. Edit `skills/README.md` only
   while you hold the skill lock (`.worktrees/skill-lock.sh acquire <role>`),

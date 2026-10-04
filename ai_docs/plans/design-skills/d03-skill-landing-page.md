@@ -23,7 +23,7 @@ other context.
   copy rules, hero and banner art direction, responsive and performance
   budgets, accessibility, and a generate-then-review loop with screenshots
   at 3 widths (for example 390, 768, 1440 px).
-- The felix-huber source generates with Gemini CLI and reviews with Claude.
+- The ui-landingpage-generator-skill source generates with Gemini CLI and reviews with Claude.
   Adapt that idea to the fleet rule: the worker generates and reviews in its
   own session (draft, screenshot, critique against a rubric, revise), and may
   ask the orchestrator for a separate critic worker. No nested agent CLI.

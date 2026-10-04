@@ -9,11 +9,11 @@ Unit: `skill-design-system`. Branch: `ds/skill-design-system`. Worker: opus-26.
 | `design-system` | 8,917 B | 95 KB (text) | tokens, components, shadcn-tailwind, styles, palettes, font-pairings, ux-guidelines, design-md-template |
 | `brand-identity` | 7,344 B | 31 KB (text) | voice, visual-identity, guidelines-template |
 
-Both are under the 12 KB body budget and the 160 KB directory budget without an exemption. Both are Markdown only: no CSV, no scripts, no images, no LICENSE files.
+Both are under the 12 KB body budget and the 160 KB directory budget without an exemption. Both are Markdown only: no CSV, no scripts, no images.
 
 ## Source inventory
 
-Sources are under `_sources/design-skills/`, pinned in `PINS.txt`. All are MIT.
+Sources are under `_sources/design-skills/`, pinned in `PINS.txt`.
 
 | Source | Files | Read | Use |
 |---|---|---|---|

@@ -20,7 +20,7 @@ house skill, `blender-ue-pipeline`, that carries those conventions.
 - Research (web), and write the findings in the report with sources:
   - Which Blender MCP server to use. Candidates include `ahujasid/blender-mcp`
     and any official Blender Foundation / Blender Lab MCP server. Compare:
-    licence, maintenance, transport (stdio vs socket to a Blender add-on),
+    maintenance, transport (stdio vs socket to a Blender add-on),
     whether Blender must be running with an add-on enabled, headless support
     (`blender --background` with a script), tool list, and security: an
     "execute arbitrary Python" tool means arbitrary code on the host; asset

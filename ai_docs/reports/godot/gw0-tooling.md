@@ -19,8 +19,7 @@ Tests: `python3 -m unittest discover -s scripts/godot/tests`. 19 of 19 pass. 2 o
 `scripts/godot/rename.py <upstream skills dir> <skill>... --out skills/ [--dry-run] [--json] [--force]`
 
 - The script copies the skill directory without dotfiles, renames it to `godot-<name>` (a name that starts with `godot-` stays the same), and sets `name:`. It does not change `description:` or any other frontmatter line.
-- The script copies the upstream `LICENSE` (the parent of the skills dir) next to `SKILL.md`.
-- The script prints `sha256  <upstream path>` for each upstream file. `--json` also prints the `sources` entries for `provenance.json` (repository, revision from `git rev-parse HEAD`, path, sha256, `MIT`).
+- The script prints `sha256  <upstream path>` for each upstream file. `--json` also prints the `sources` entries for `provenance.json` (repository, revision from `git rev-parse HEAD`, path, sha256).
 - `--dry-run` prints a unified diff and writes nothing. If the target exists, the script stops unless you give `--force`. `--force` overwrites only the copied files, so your own references stay.
 - The map is the full upstream list (56 skills), so a reference to a skill that you did not copy is also renamed. I searched all 56 skills for reference forms. The script rewrites these forms in the body of every `.md`:
   - `godot-prompter:<x>` and `godot-prompter:*` (the plugin form, 30 uses);

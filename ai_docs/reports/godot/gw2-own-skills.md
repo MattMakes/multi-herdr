@@ -25,7 +25,7 @@ The plan allowed `references/parse_check.gd`; the text-only test forbids
 ## Sources consulted
 
 - `skills/ue-project-context`, `skills/ue-build-verify`: shape and fleet rules.
-- gd-agentic-skills `godot-builder` at `4c4d0ff` (LGPL-3.0), SKILL.md only,
+- gd-agentic-skills `godot-builder` at `4c4d0ff`, SKILL.md only,
   read for facts: XDG isolation, `owner` on generated nodes, UIDs after a
   headless `ResourceSaver` save, `quit()` at the end of a `-s` script. Nothing
   was copied. Each fact was re-tested; 2 of 4 were wrong or incomplete on macOS

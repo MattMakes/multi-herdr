@@ -9,13 +9,15 @@ fleet gets **one** combined skill, not two. It follows the shape of
 
 These override any text below that says otherwise.
 
-1. **LGPL: rewrite.** No text, code or script from gd-agentic-skills is
-   copied into this repository. Workers read it as a source of facts and
-   techniques and write every reference and every code block in their own
-   words. Mark such content "own text, consulted
-   thedivergentai/gd-agentic-skills@4c4d0ff". Every bundle stays MIT (the
-   GodotPrompter base) or own text. Where the text below says "folded in",
-   "inlined" or "copied" for gd-agentic content, read "rewritten".
+1. **Own text for gd-agentic content.** No text, code or script from
+   gd-agentic-skills is copied into this repository. Workers read it as a
+   source of facts and techniques and write every reference and every code
+   block in their own words. Where the text below says "folded in",
+   "inlined" or "copied" for gd-agentic content, read "rewritten". The
+   operator rule of 2026-10-04 replaces the earlier licence reasoning: the
+   copies keep no licence file, licence reference or upstream credit (see
+   `ai_docs/plans/finish/g10-no-licence-references.md` and
+   `ai_docs/reports/finish/no-licence-references.md`).
 2. **Genres: ship all 27** in `godot-genre-blueprints`.
 3. **Version migration: support the latest only.** Target Godot 4.7 (4.7.2
    is the latest stable). Do not ship per-version migration tables for old
@@ -32,10 +34,10 @@ Sources, read-only clones at the pinned revisions:
 `.worktrees/_scratch/godot-src/GodotPrompter` and
 `.worktrees/_scratch/godot-src/gd-agentic-skills` (git-ignored).
 
-| source | revision | licence | content |
-|---|---|---|---|
-| [jame581/GodotPrompter](https://github.com/jame581/GodotPrompter) | `3e8d0f005f9604e1dbdad3de693e39555384c5af` (v1.14.0, 2026-09-20) | MIT | 56 skills (2.0 MB, `.md` only), 9 Claude agents, a SessionStart hook |
-| [thedivergentai/gd-agentic-skills](https://github.com/thedivergentai/gd-agentic-skills) | `4c4d0ff5c4597938cc9257d99d9e35f7692c9c06` (2026-09-09) | **LGPL-3.0** | 99 skills (17 MB: 2,418 `.gd`, 1,100 `.md`, 70 `.py`), 3 persona skills |
+| source | revision | content |
+|---|---|---|
+| GodotPrompter | `3e8d0f005f9604e1dbdad3de693e39555384c5af` (v1.14.0, 2026-09-20) | 56 skills (2.0 MB, `.md` only), 9 Claude agents, a SessionStart hook |
+| gd-agentic-skills | `4c4d0ff5c4597938cc9257d99d9e35f7692c9c06` (2026-09-09) | 99 skills (17 MB: 2,418 `.gd`, 1,100 `.md`, 70 `.py`), 3 persona skills |
 
 ## Summary
 
@@ -365,7 +367,7 @@ These are role rules, so they go in each persona body, not in
 - **No MCP server in wave 1.** The shell gives a worker everything `DONE:`
   needs.
 - Later, for visual QA: [Erodenn/godot-mcp-runtime](https://github.com/Erodenn/godot-mcp-runtime)
-  (MIT, no editor or addon; young, pin it and read its source first);
+  (no editor or addon; young, pin it and read its source first);
   fallback [Coding-Solo/godot-mcp](https://github.com/Coding-Solo/godot-mcp)
   0.1.1 (deny `launch_editor`). Avoid editor-addon servers: `godot-ai`
   (opt-out telemetry), GDAI, `ee0pdt`.

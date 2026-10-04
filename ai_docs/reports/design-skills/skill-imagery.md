@@ -12,7 +12,7 @@ Unit: `skill-imagery`. Branch: `ds/skill-imagery`. Skill written: `design-imager
 
 ## Source inventory
 
-Paths are relative to `_sources/design-skills/`. All MIT.
+Paths are relative to `_sources/design-skills/`.
 
 | Source file | Bytes | Content |
 |---|---|---|

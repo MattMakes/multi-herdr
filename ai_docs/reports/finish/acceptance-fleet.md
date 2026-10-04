@@ -117,7 +117,7 @@ Live verification with the fixed binary:
 ## LA-5: marketplace install pins a SHA, spawn works offline
 
 - I installed into an isolated store (`XDG_DATA_HOME=_scratch/la-fleet/data`):
-  `horch skills install MattMakes/skill-marketplace@game-design-v0.3.1 --path plugins/dev/skills/whats-next`.
+  `horch skills install skill-marketplace@game-design-v0.3.1 --path plugins/dev/skills/whats-next`.
 - The lock records `requested_revision: game-design-v0.3.1` and `resolved_commit: 652e8d281a7fe5f91de9f86d626c3ae5ccc64fe0`. That commit is the tag's peeled commit (`git ls-remote`). The digest is `sha256:1367…4969`.
 - `HORCH_GIT_BIN=/nonexistent horch skills doctor`: `1 skill(s) checked, 0 problem(s)`.
 - A scratch teammate `la-sonnet` (a copy of `sonnet` with `skills: [whats-next]`) was spawned with `HORCH_GIT_BIN=/nonexistent`. Its worker loaded the skills offline. The worker listed `horch:whats-next` with the 5 phase skills. The bundle copy is byte-identical to the store (`diff -r`).

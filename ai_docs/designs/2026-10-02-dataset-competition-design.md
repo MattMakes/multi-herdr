@@ -42,7 +42,7 @@ phase 8 (training Laya).
 |---|---|
 | OD2 | The dataset binary is `multi-herdr-dataset`. `horch` keeps its name. |
 | OD3 | Dataset storage is `$HORCH_STATE_DIR/multi-herdr/<project-slug>/`. It must be a subdirectory, because `telemetry::collect::read_ledgers` parses every `state_root/*.json`. The marketplace store is `${XDG_DATA_HOME:-~/.local/share}/horch/` (Spec A §10). |
-| OD4 | Clef and Laya are **inert** in this branch. Both speak the System One API: `POST /v1/systemone` with typed `choice`/`score`/`noul` questions, returning a probability per option. Clef is Cloudflare's 27B/9B Apache-2.0 decision model; Laya is Convai's 421M local model, fine-tuned on `{state, questions, answers}`. We ship the seam, record eligible sets, planner propensities and `teacher: none`, export System-One/Laya-shaped rows, and add a **data-readiness report**. There is no HTTP client and no API keys. Clef is enabled only once readiness says the local data justifies it, and Laya later still. |
+| OD4 | Clef and Laya are **inert** in this branch. Both speak the System One API: `POST /v1/systemone` with typed `choice`/`score`/`noul` questions, returning a probability per option. Clef is Cloudflare's 27B/9B decision model; Laya is Convai's 421M local model, fine-tuned on `{state, questions, answers}`. We ship the seam, record eligible sets, planner propensities and `teacher: none`, export System-One/Laya-shaped rows, and add a **data-readiness report**. There is no HTTP client and no API keys. Clef is enabled only once readiness says the local data justifies it, and Laya later still. |
 | OD5 | **No promotion by default.** A round ends at DECIDED with a winner, NEEDS_INTERVENTION, or REJECTED. `--promote-to <branch>` or `multi-herdr-dataset promote <round>` runs the full deterministic PromotionEngine. |
 
 ### 1.3 The inert Clef/Laya decision (OD4)
@@ -1726,7 +1726,7 @@ The hermetic suite cannot prove these. They use real herdr, claude and codex.
 | LA-2 | After A6/A7: herdr-fleet, tile and spawn smokes. |
 | LA-3 | A real fleet with sonnet, codex-sol and opencode: session discovery, resume, and `horch cost` totals equal an A0 ledger copy. |
 | LA-4 | After A10: only activated skills are visible in Claude `/skills` and in codex's `CODEX_HOME`. |
-| LA-5 | `horch skills install MattMakes/skill-marketplace@<tag>` pins a SHA, then spawn works offline. |
+| LA-5 | `horch skills install skill-marketplace@<tag>` pins a SHA, then spawn works offline. |
 | LA-6 | B2 preflight numbers match Activity Monitor. |
 | LA-7 | B3 on a scratch repo with sonnet and codex-sol candidates: do the Claude/Codex trust dialogs stall panes in new worktrees? Test `--worktree-root` under a trusted parent. |
 | LA-8 | B4 with a real `claude -p` judge: bundle unchanged; `--json-schema` availability; strict-parse rejection rate. |

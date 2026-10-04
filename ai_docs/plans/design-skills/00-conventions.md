@@ -5,11 +5,11 @@ completely before you start.
 
 ## 1. What this run builds
 
-- Design skills: the operator gave 7 public skill repositories (all MIT).
+- Design skills: the operator gave 7 public skill repositories.
   We combine and rewrite them into a small set of efficient bundled skills
   under `skills/<id>/`. We make them our own: rewritten, deduplicated,
-  harness-neutral. We do not copy LICENSE files. We record provenance in
-  `skills/provenance.json` (repository, revision, path, sha256, license).
+  harness-neutral. We record provenance in
+  `skills/provenance.json` (repository, revision, path, sha256).
 - New design personas (teammates) that use those skills.
 - A new harness: the Antigravity CLI agent.
 - A new command: `horch agent-list`.

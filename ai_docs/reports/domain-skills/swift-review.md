@@ -6,25 +6,25 @@ Plan: `ai_docs/plans/domain-skills/s3-swift-review.md`. Specification:
 
 ## Result
 
-9 skills under `skills/`. Each has its upstream `LICENSE` next to `SKILL.md`, an
+9 skills under `skills/`. Each has an
 entry in `skills/provenance.json` (sha256 of every copied upstream file, 40-hex pin
-from `PINS.txt`, `license: "MIT"`), and a row in the new "Swift and Apple skills"
+from `PINS.txt`), and a row in the new "Swift and Apple skills"
 table in `skills/README.md`. `./target/debug/horch skills` lists all 9.
 No skill is in a `Phase`. No Rust code or teammate changed.
 
 | skill | upstream | verdict applied | SKILL.md bytes | dir bytes | vendored |
 |---|---|---|---|---|---|
-| appkit-accessibility-auditor | rgmez/apple-accessibility-skills | Adapt, path only | 11,482 | 16,408 | no |
-| ios-simulator-run | Dimillian/Skills `ios-debugger-agent` | Adapt into a playbook | 3,198 | 4,270 | no |
-| swift-code-audit | jazzychad/ios-code-audit | Adapt, heavily | 9,360 | 27,271 | no |
-| swift-security-expert | ivan-magda/swift-security-skill | Adapt (cut 36%) | 30,899 | 482,666 | yes |
-| swiftdata-testing | akshaypimprikar/ios-swiftdata-testing-agent-skill | Adapt | 4,277 | 21,818 | no |
-| swiftui-accessibility-auditor | rgmez/apple-accessibility-skills | Adapt, path only | 7,352 | 11,866 | no |
-| swiftui-performance-audit | Dimillian/Skills | Adapt | 5,446 | 20,790 | no |
-| uikit-accessibility-auditor | rgmez/apple-accessibility-skills | Adapt, path only | 11,596 | 16,413 | no |
-| writing-for-interfaces | andrewgleave/skills | Adapt | 12,736 | 26,620 | yes |
+| appkit-accessibility-auditor | apple-accessibility-skills | Adapt, path only | 11,482 | 16,408 | no |
+| ios-simulator-run | Skills `ios-debugger-agent` | Adapt into a playbook | 3,198 | 4,270 | no |
+| swift-code-audit | ios-code-audit | Adapt, heavily | 9,360 | 27,271 | no |
+| swift-security-expert | swift-security-skill | Adapt (cut 36%) | 30,899 | 482,666 | yes |
+| swiftdata-testing | ios-swiftdata-testing-agent-skill | Adapt | 4,277 | 21,818 | no |
+| swiftui-accessibility-auditor | apple-accessibility-skills | Adapt, path only | 7,352 | 11,866 | no |
+| swiftui-performance-audit | Skills | Adapt | 5,446 | 20,790 | no |
+| uikit-accessibility-auditor | apple-accessibility-skills | Adapt, path only | 11,596 | 16,413 | no |
+| writing-for-interfaces | skills | Adapt | 12,736 | 26,620 | yes |
 
-Dir bytes include `LICENSE`. "Vendored" follows the plan rule: the references are
+"Vendored" follows the plan rule: the references are
 verbatim and the skill is over the 12 KB / 160 KB budget.
 
 ## Gate
@@ -37,23 +37,21 @@ prints `GATE GREEN`. The rebase conflicted only in `skills/README.md` (both side
 Before V0 merged, the gate failed only on the 3 V0 items,
 all in `crates/horch-core/tests/skills_catalog.rs`:
 
-- `skills_bundled_text_only`: `appkit-accessibility-auditor/LICENSE` (V0 step 2 allows `LICENSE`).
 - `skills_bundled_size_budget`: `swift-security-expert/SKILL.md: 30899 bytes` (V0 step 3 exempts `vendored: true`).
-- `skl_01_bundled_catalog_versions_and_digests`: `rgmez/apple-accessibility-skills ... is not a pinned upstream` (V0 step 4 checks the shape instead).
+- `skl_01_bundled_catalog_versions_and_digests`: `apple-accessibility-skills ... is not a pinned upstream` (V0 step 4 checks the shape instead).
 
 Every other test passes (`cargo test --workspace --no-fail-fast`), and `cargo fmt --check`,
 both builds, `horch teammates --check`, `check-req-coverage.sh`, `check-deps.sh` and
 `verify-telemetry-e2e.sh` pass. Because each failing test stops at its first hit, I
-checked the post-V0 rules with a script over all 9 skills: only `.md` files plus
-`LICENSE`; the 7 non-vendored skills are inside 12 KB / 160 KB; the 2 over budget
+checked the post-V0 rules with a script over all 9 skills: only `.md` files; the 7 non-vendored skills are inside 12 KB / 160 KB; the 2 over budget
 carry `vendored: true`; every source has a `https://github.com/<o>/<r>` repository, a
-40-hex revision, a 64-hex sha256 and a licence; every description is at most 1024
+40-hex revision, and a 64-hex sha256; every description is at most 1024
 bytes (largest: 466). The `vendored` field parses today because provenance parsing
 ignores unknown fields; `horch skills` loads the catalog without error.
 
 ## Per-skill edits and evidence
 
-### Step 1: the three rgmez auditors (path fix only)
+### Step 1: the three apple-accessibility-skills auditors (path fix only)
 
 - `swiftui-accessibility-auditor/SKILL.md:132`, `uikit-accessibility-auditor/SKILL.md:194`,
   `appkit-accessibility-auditor/SKILL.md:195`: `skills/<name>/checklist.md` becomes `checklist.md`.

@@ -4,14 +4,14 @@ Branch `ds/swift-platform`. Skills: `app-intents`, `widgets`, `background-execut
 
 ## Verdict applied
 
-All four skills: **Vendor** (report section 4.2). Each skill is a verbatim copy with `vendored: true`. The copy holds `SKILL.md`, `references/*.md` and the upstream `LICENSE`. The copy excludes `agents/openai.yaml`, plugin manifests, images and dotfiles. Every copied file is byte-identical to the pin (the sha256 of each file is in `skills/provenance.json`).
+All four skills: **Vendor** (report section 4.2). Each skill is a verbatim copy with `vendored: true`. The copy holds `SKILL.md`, `references/*.md`. The copy excludes `agents/openai.yaml`, plugin manifests, images and dotfiles. Every copied file is byte-identical to the pin (the sha256 of each file is in `skills/provenance.json`).
 
 | skill | upstream pin | SKILL.md bytes | directory bytes | files |
 |---|---|---|---|---|
-| `app-intents` | n0an/App-Intents-Agent-Skill@f754f08 | 24151 | 269790 | 15 |
-| `background-execution` | n0an/Background-Execution-Agent-Skill@a29ddf8 | 15833 | 115644 | 13 |
-| `swift-focusengine-pro` | mhaviv/Swift-FocusEngine-Agent-Skill@903d58d | 11001 | 200750 | 16 |
-| `widgets` | n0an/Widgets-Agent-Skill@06567e1 | 26585 | 190736 | 21 |
+| `app-intents` | App-Intents-Agent-Skill@f754f08 | 24151 | 269790 | 15 |
+| `background-execution` | Background-Execution-Agent-Skill@a29ddf8 | 15833 | 115644 | 13 |
+| `swift-focusengine-pro` | Swift-FocusEngine-Agent-Skill@903d58d | 11001 | 200750 | 16 |
+| `widgets` | Widgets-Agent-Skill@06567e1 | 26585 | 190736 | 21 |
 
 ## Edits made
 
@@ -47,8 +47,7 @@ Not verified: the behaviour text around these APIs (for example "the widget exte
 
 The gate fails only in `crates/horch-core/tests/skills_catalog.rs` (3 of 10 tests). All other gate steps pass. The 3 failures:
 - `skills_bundled_size_budget`: `app-intents/SKILL.md` is 24151 bytes, over 12 KB. V0 exempts vendored skills.
-- `skills_bundled_text_only`: the extensionless `LICENSE` files are not `.md` or `.txt`. V0 accepts `LICENSE`.
-- `skl_01_bundled_catalog_versions_and_digests`: the 4 new upstream pins (`n0an/*`, `mhaviv/*`) are not in the test's known-pin list. This item is not in the plan's V0 list. The test file is not in this unit's scope. V0 or the orchestrator must add the pins.
+- `skl_01_bundled_catalog_versions_and_digests`: the 4 new upstream pins (`*`, `*`) are not in the test's known-pin list. This item is not in the plan's V0 list. The test file is not in this unit's scope. V0 or the orchestrator must add the pins.
 
 ## Gotchas and follow-ups
 

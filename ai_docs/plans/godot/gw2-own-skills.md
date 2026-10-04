@@ -12,7 +12,7 @@ as own text, each proven on Godot 4.7.2 in scratch projects, as described in
 
 - Counterparts: `skills/ue-project-context`, `skills/ue-build-verify`
   (read both; match their shape and their fleet rules).
-- gd-agentic `godot-builder` may be consulted (LGPL rule: facts only).
+- gd-agentic `godot-builder` may be read for facts only (own-text rule).
 - Verify on 4.7.2, by running it, each "to verify" item in the report:
   per-instance `XDG_DATA_HOME`/`XDG_CONFIG_HOME` on macOS (does Godot honour
   them on macOS? where does it write user data and the editor settings
