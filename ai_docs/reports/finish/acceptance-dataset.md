@@ -117,7 +117,8 @@ So the default candidate worktree root (`~/.local/state/horch/multi-herdr/
 prompt, and making the default `<repo>/.worktrees/` would not prevent it.
 What matters is whether the operator trusted the repo itself once.
 
-Proposed product fix (the orchestrator makes it a unit after T5): PRE-13
+Product fix: landed on design-skills as PRE-14 (commit 2f2d672, opus-55,
+plan f2-trust-preflight) from this evidence. The proposal was: PRE-13
 reads both trust stores for the repo root (`~/.claude.json`
 `projects[<root>].hasTrustDialogAccepted`, `~/.codex/config.toml`
 `projects."<root>".trust_level`) for the harnesses in the plan, and fails
