@@ -22,7 +22,8 @@ use horch_core::evaluation::validator::{CommandValidator, GateSpec};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::fsx;
 use horch_core::ids::{ExperimentId, RoundId, TeammateName};
-use horch_core::measure::paths::DatasetPaths;
+use horch_core::measure::event::EventEnvelope;
+use horch_core::measure::paths::{component, DatasetPaths};
 use horch_core::measure::projection::{fold, RoundView};
 use horch_core::measure::recorder::JsonlRecorder;
 use horch_core::measure::redact::redact;
@@ -141,16 +142,15 @@ fn preflight_and_run(
     let round_id = RoundId::mint(now);
 
     // PRE-13 checks the root against the trusted directories, so it must be
-    // absolute. A relative root is relative to the project.
-    let root = match config.worktree_root.clone() {
-        Some(root) => root,
-        None => paths.default_worktree_root(experiment)?,
-    };
-    config.worktree_root = Some(if root.is_absolute() {
-        root
-    } else {
-        project.join(root)
-    });
+    // absolute. A relative root is relative to the project. Each experiment
+    // gets its own directory under the root, as under the default root, so
+    // the worktrees an earlier round kept never collide with this one's.
+    config.worktree_root = Some(experiment_worktree_root(
+        paths,
+        &project,
+        experiment,
+        config.worktree_root.as_deref(),
+    )?);
 
     let git = GitCli::new(ctx.bins.harness.git.clone());
     let head = preflight::repo_facts(&git, &project, &[], None).base_sha;
@@ -351,7 +351,9 @@ fn coordinate(
     };
     coordinator.close_workspace(&spec);
     let view = coordinator.view(&spec)?;
-    let (line, code) = outcome_line(&outcome, &view);
+    let events = store::read_all(paths)?.events;
+    let reason = latest_intervention(&events, r.round);
+    let (line, code) = outcome_line(&outcome, &view, reason.as_deref());
     println!("round {} {line}", r.round);
     Ok(code)
 }
@@ -359,7 +361,13 @@ fn coordinate(
 /// The last line `run`, `resume` and `promote` print, and the exit code:
 /// DECIDED, PROMOTED and COMPLETE 0; the budget 3; NEEDS_INTERVENTION 5;
 /// REJECTED 6.
-pub(super) fn outcome_line(outcome: &RoundOutcome, view: &RoundView) -> (String, u8) {
+///
+/// `reason` is the [`latest_intervention`] of the round.
+pub(super) fn outcome_line(
+    outcome: &RoundOutcome,
+    view: &RoundView,
+    reason: Option<&str>,
+) -> (String, u8) {
     match outcome {
         RoundOutcome::Decided => {
             let p = &view.promotion;
@@ -384,8 +392,8 @@ pub(super) fn outcome_line(outcome: &RoundOutcome, view: &RoundView) -> (String,
             exit::REJECTED,
         ),
         RoundOutcome::NeedsIntervention => (
-            match &view.needs_intervention {
-                Some(n) => format!("NEEDS_INTERVENTION: {}", n.reason),
+            match reason.or(view.needs_intervention.as_ref().map(|n| n.reason.as_str())) {
+                Some(reason) => format!("NEEDS_INTERVENTION: {reason}"),
                 None => "NEEDS_INTERVENTION".to_string(),
             },
             exit::NEEDS_INTERVENTION,
@@ -395,6 +403,38 @@ pub(super) fn outcome_line(outcome: &RoundOutcome, view: &RoundView) -> (String,
 
 /// How often the coordinator looks at its candidates.
 const TICK: Duration = Duration::from_millis(500);
+
+/// Why the round last stopped for the operator: its latest
+/// `round.needs_intervention` or `promotion.conflicted`, whichever came
+/// last. The projection keeps each kind apart, so after a second `promote`
+/// it alone cannot tell a new conflict from the first attempt's reason.
+fn latest_intervention(events: &[EventEnvelope], round: &RoundId) -> Option<String> {
+    let mut target: Option<String> = None;
+    let mut reason = None;
+    for e in events.iter().filter(|e| e.round_id.as_ref() == Some(round)) {
+        match e.kind.as_str() {
+            "operator.promote" => {
+                target = e.payload["target"].as_str().map(str::to_string);
+            }
+            "round.needs_intervention" => {
+                reason = e.payload["reason"].as_str().map(str::to_string);
+            }
+            "promotion.conflicted" => {
+                let paths: Vec<&str> = e.payload["paths"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|p| p.as_str()).collect())
+                    .unwrap_or_default();
+                let onto = target.as_deref().unwrap_or("the target");
+                reason = Some(format!(
+                    "the winner conflicts with {onto} in {}",
+                    paths.join(", ")
+                ));
+            }
+            _ => {}
+        }
+    }
+    reason
+}
 
 fn load_roster(ctx: &RuntimeContext) -> Result<Roster> {
     Roster::load_layered(
@@ -535,6 +575,26 @@ impl SavedRun {
     }
 }
 
+/// Where `experiment`'s worktrees go: `<root>/<experiment>` for an explicit
+/// `--worktree-root` (relative to `project` when relative), else the
+/// default root, which is per experiment already.
+fn experiment_worktree_root(
+    paths: &DatasetPaths,
+    project: &Path,
+    experiment: &ExperimentId,
+    explicit: Option<&Path>,
+) -> Result<PathBuf> {
+    let Some(root) = explicit else {
+        return Ok(paths.default_worktree_root(experiment)?);
+    };
+    let root = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        project.join(root)
+    };
+    Ok(root.join(component("experiment id", experiment.as_str())?))
+}
+
 /// The branch each planned candidate gets: `mh/exp/<exp8>/r<idx>/<label>`.
 fn planned_branches(
     experiment: &ExperimentId,
@@ -593,4 +653,89 @@ fn render_plan(plan: &RoundPlan) -> String {
         out.push_str(&format!("  no baseline: {reason}\n"));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(round: &RoundId, kind: &str, payload: serde_json::Value) -> EventEnvelope {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": "1.0.0",
+            "event_id": "01a10754-0000-7000-8000-000000000001",
+            "kind": kind,
+            "occurred_at": "2026-10-04T14:32:14.000Z",
+            "actor": "operator",
+            "experiment_id": "01a10753-3c91-7bd1-99e8-70f01d2b52d5",
+            "round_id": round.as_str(),
+            "idempotency_key": format!("{kind}:x"),
+            "payload": payload,
+        }))
+        .unwrap()
+    }
+
+    /// LA-9: a second `promote` that conflicts printed the first attempt's
+    /// dirty-checkout reason. The latest stop wins.
+    #[test]
+    fn the_latest_intervention_names_a_later_conflict() {
+        let round = RoundId::new("01a10753-3ca5-7399-b6b4-1dabda77e8db").unwrap();
+        let other = RoundId::new("01a10753-3ca5-7399-b6b4-1dabda77e8dc").unwrap();
+        let dirty = "refs/heads/la/t-dirty is checked out with local changes";
+        let mut events = vec![
+            event(
+                &round,
+                "operator.promote",
+                serde_json::json!({"target": "la/t-dirty"}),
+            ),
+            event(
+                &round,
+                "round.needs_intervention",
+                serde_json::json!({"reason": dirty, "source": "promotion"}),
+            ),
+        ];
+        assert_eq!(latest_intervention(&events, &round).as_deref(), Some(dirty));
+        events.push(event(
+            &round,
+            "operator.promote",
+            serde_json::json!({"target": "la/t-moved"}),
+        ));
+        events.push(event(
+            &round,
+            "promotion.conflicted",
+            serde_json::json!({"paths": ["textutil.py"]}),
+        ));
+        events.push(event(
+            &other,
+            "round.needs_intervention",
+            serde_json::json!({"reason": "another round", "source": "operator"}),
+        ));
+        assert_eq!(
+            latest_intervention(&events, &round).as_deref(),
+            Some("the winner conflicts with la/t-moved in textutil.py")
+        );
+        assert_eq!(latest_intervention(&events[..0], &round), None);
+    }
+
+    /// LA-11: with `--worktree-root`, a second experiment collided with the
+    /// worktrees an earlier NEEDS_INTERVENTION round kept at `<root>/<label>`.
+    #[test]
+    fn an_explicit_worktree_root_is_per_experiment() {
+        let paths = DatasetPaths::new(Path::new("/state"), Path::new("/proj"));
+        let one = ExperimentId::new("01a1073d-cb8c-759c-8334-e02289432c6b").unwrap();
+        let two = ExperimentId::new("01a1073f-5714-7933-8a6a-cd76f13cbd35").unwrap();
+        let root = |exp: &ExperimentId, explicit: Option<&str>| {
+            experiment_worktree_root(&paths, Path::new("/proj"), exp, explicit.map(Path::new))
+                .unwrap()
+        };
+        assert_eq!(
+            root(&one, Some("/wt")),
+            PathBuf::from("/wt/01a1073d-cb8c-759c-8334-e02289432c6b")
+        );
+        assert_ne!(root(&one, Some("/wt")), root(&two, Some("/wt")));
+        assert_eq!(
+            root(&one, Some("wt")),
+            PathBuf::from("/proj/wt/01a1073d-cb8c-759c-8334-e02289432c6b")
+        );
+        assert_eq!(root(&one, None), paths.default_worktree_root(&one).unwrap());
+    }
 }
