@@ -50,6 +50,9 @@ flowchart TB
 
 `<project>` is a slug of the project path. The state dir is
 `$HORCH_STATE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/horch`.
+The data root (the skill store: marketplace skills and their lock) is
+`$HORCH_DATA_DIR`, else `${XDG_DATA_HOME:-~/.local/share}/horch`.
+`HORCH_DATA_DIR` names the store itself: horch does not append `horch`.
 
 ## 2. The fleet: orchestrator and workers
 
@@ -89,6 +92,36 @@ sequenceDiagram
     H->>O: DONE message
     H->>W: start a detached re-tile, close the pane
 ```
+
+### What a pane command carries
+
+A pane is a fresh shell. It does not inherit the environment of the `horch`
+that opened it, so the pane command carries what the pane must see. Every
+pane command horch runs (`PaneShell::command_line_with_env` in
+`crates/horch-core/src/workspace/paneshell.rs`) does 2 things first:
+
+- It removes `ANTHROPIC_API_KEY`.
+- It sets `HORCH_DATA_DIR` to the data root of the `horch` that opened the
+  pane, so the pane, its agent and every `horch` command the agent runs use
+  the same skill store.
+
+The panes that get it:
+
+| Pane | Command | Built in |
+|---|---|---|
+| orchestrator | `horch pane-launch` | `crates/horch/src/cmd/recipes.rs` |
+| worker, dataset candidate | `horch worker <role>` | `crates/horch-core/src/execution/service.rs` |
+| dataset round root pane | `multi-herdr-dataset watch` | `crates/horch/src/dataset/run.rs` |
+| telemetry collector | `horch telemetry` | `crates/horch/src/cmd/telemetry.rs` |
+| smoke checks | `horch register <role>` | `crates/horch/src/cmd/smoke.rs` |
+
+The dataset judge is not a pane: `judge-job` is a detached child of the
+coordinator, so it inherits the coordinator's environment.
+
+The state dir travels separately: as `--state-dir` on the pane command when
+you override it, and in the brief (`state_dir`) for a worker. The brief
+carries the roster dir and the binary overrides too. The worker passes all
+of them on to its agent as `HORCH_*` variables.
 
 Side commands any time: `horch inbox` (live roles), `horch layout` /
 `horch tile` / `horch balance` (the pane grid), `horch quota` (the usage
