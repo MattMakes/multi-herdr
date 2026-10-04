@@ -261,6 +261,35 @@ fn pre_12_e2e_refuses_before_worktree_or_model() {
     assert!(violations(&h.log).is_empty(), "{:?}", violations(&h.log));
 }
 
+/// A plan with no candidate (every teammate excluded or over its usage
+/// limits) is the budget/quota refusal: exit 3, not the preflight exit 4.
+/// The report is still recorded, and nothing starts.
+#[test]
+fn pre_08_empty_plan_exits_3_before_worktree_or_model() {
+    let Some(h) = round_harness("pre08empty", &[], "", serde_json::json!({})) else {
+        return;
+    };
+    let out = run_round(&h, 2, &[]);
+    assert_eq!(out.status.code(), Some(3), "{}", text(&out));
+    assert!(
+        text(&out).contains("no candidate can run within the usage limits"),
+        "{}",
+        text(&out)
+    );
+    let events = events(&h);
+    assert_eq!(
+        kinds(&events),
+        [
+            "experiment.created",
+            "preflight.completed",
+            "experiment.aborted"
+        ]
+    );
+    assert_eq!(failed_checks(&events), ["PRE-08"]);
+    assert_no_worktree(&h);
+    assert_no_agent_launch(&h);
+}
+
 #[test]
 fn pre_14_untrusted_repo_refuses_before_worktree_or_model() {
     let Some(h) = harness("pre14") else { return };

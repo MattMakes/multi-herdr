@@ -200,6 +200,17 @@ fn preflight_and_run(
     println!("experiment {experiment}");
     print!("{}", render_plan(&plan));
     print!("{}", preflight::render(&report));
+    // An empty plan fails PRE-08, but the planner refused every candidate
+    // (excluded, or over its usage limits): that is the budget/quota
+    // refusal, exit 3 (dataset design §6 B2), not a failed machine check.
+    // The report is recorded and the experiment aborted all the same.
+    if plan.candidates.is_empty() && failed.iter().all(|id| id == "PRE-08") {
+        println!(
+            "REFUSED: no candidate can run within the usage limits. \
+             No worktree was created and no model was called."
+        );
+        return Ok(exit::BUDGET_REFUSED);
+    }
     if !failed.is_empty() {
         println!(
             "REFUSED: preflight failed ({}). No worktree was created and no model was called.",
@@ -208,10 +219,6 @@ fn preflight_and_run(
         return Ok(exit::PREFLIGHT_FAILED);
     }
     ctx.settings.faults.abort_if("abort-after-preflight");
-    if plan.candidates.is_empty() {
-        println!("REFUSED: no candidate can run within the usage limits.");
-        return Ok(exit::BUDGET_REFUSED);
-    }
     coordinate(
         ctx,
         paths,
