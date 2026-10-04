@@ -286,6 +286,32 @@ fn tel_session_recorded_when_agent_ends_fast() {
     assert_eq!(r["session_id"], minted.as_str(), "{r}");
 }
 
+/// The same for Prime, whose session file is in a directory only its launch
+/// knows: the launch marker carries that directory to `horch done`.
+#[test]
+fn tel_session_recorded_when_prime_ends_fast() {
+    let h = fleet("tel-fast-end-prime", "exec,stay");
+    let pane = spawn(&h, &["prime", "build the thing"]);
+    let fresh = records(&h)
+        .into_iter()
+        .find(|r| r["tier"] == "prime")
+        .expect("the spawn wrote a record");
+    let id = fresh["record_id"].as_str().unwrap().to_string();
+    let role = fresh["role"].as_str().unwrap().to_string();
+
+    // The fake has written its session file; `done` follows at once.
+    let file = wait_for("the fake's session file", || {
+        h.calls_of("prime")
+            .iter()
+            .find_map(|c| c["session_file"].as_str().map(str::to_owned))
+    });
+    done(&h, &pane, &role, &id);
+
+    let r = record(&h, &id);
+    assert_eq!(r["status"], "done", "{r}");
+    assert_eq!(r["session_id"], file.as_str(), "{r}");
+}
+
 #[test]
 fn arc_16_e2e_fail_split() {
     let h = fleet("arc16-split", "fail_split");

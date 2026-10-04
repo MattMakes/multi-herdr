@@ -8,8 +8,10 @@
 //! never made it.
 //!
 //! `pane split` adds a pane to the state, in the tab and workspace of the
-//! source pane, and answers with its id (`<workspace>:p<n>`). `pane close`
-//! removes the pane. Both stay recorded as violations.
+//! source pane, and answers with its id (`<workspace>:p<n>`). As in real
+//! herdr, an id is never given out twice: each workspace counts up in
+//! `next_pane`, and a closed pane's id is not reused. `pane close` removes
+//! the pane. Both stay recorded as violations.
 //!
 //! `HORCH_FAKE_SCENARIO` holds one scenario or a comma-separated list, for
 //! example `exec,fail_run`. Scenarios:
@@ -188,6 +190,7 @@ fn run(call: &mut Call) -> i32 {
             let entry = json!({
                 "workspace_id": ws, "label": label, "active_tab_id": tab,
                 "panes": [{"pane_id": pane, "workspace_id": ws, "tab_id": tab}],
+                "next_pane": 2,
                 "focused": !rest.contains(&"--no-focus"),
             });
             state["workspaces"].as_array_mut().unwrap().push(entry);
@@ -291,23 +294,34 @@ fn split_pane(state: &mut Value, from: &str) -> Value {
         return json!({"pane_id": format!("{from}-split")});
     };
     let wid = ws["workspace_id"].as_str().unwrap_or("w0").to_string();
+    // The workspace's counter, never the live panes: a closed pane's id is
+    // not given out again. A state without a counter (written by an older
+    // fake) starts above its highest live id.
+    let n = ws["next_pane"]
+        .as_u64()
+        .unwrap_or_else(|| highest_pane(ws, &wid) + 1);
+    ws["next_pane"] = json!(n + 1);
     let panes = ws["panes"].as_array_mut().unwrap();
     let tab = panes
         .iter()
         .find(|p| p["pane_id"].as_str() == Some(from))
         .map(|p| p["tab_id"].clone())
         .unwrap_or(Value::Null);
-    // The first free `<workspace>:p<n>`: ids are never reused while live.
-    let mut n = panes.len() + 1;
-    while panes
-        .iter()
-        .any(|p| p["pane_id"].as_str() == Some(format!("{wid}:p{n}").as_str()))
-    {
-        n += 1;
-    }
     let pane = json!({"pane_id": format!("{wid}:p{n}"), "workspace_id": wid, "tab_id": tab});
     panes.push(pane.clone());
     pane
+}
+
+/// The highest `n` among the workspace's live `<workspace>:p<n>` ids.
+fn highest_pane(ws: &Value, wid: &str) -> u64 {
+    let prefix = format!("{wid}:p");
+    ws["panes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p["pane_id"].as_str()?.strip_prefix(&prefix)?.parse().ok())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Remove a pane from the state and queue its process group for the kill,
@@ -414,4 +428,49 @@ fn exec_detached(pane: &str, command: &str) -> Option<u32> {
         cmd.process_group(0);
     }
     cmd.spawn().ok().map(|child| child.id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn one_workspace() -> Value {
+        json!({"workspaces": [{
+            "workspace_id": "w1", "label": "x", "active_tab_id": "w1:t1",
+            "panes": [{"pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1"}],
+            "next_pane": 2,
+        }], "next": 2})
+    }
+
+    fn id(pane: &Value) -> &str {
+        pane["pane_id"].as_str().unwrap()
+    }
+
+    /// A closed pane's id is never given out again, the newest one included.
+    #[test]
+    fn pane_ids_are_never_reused_after_a_close() {
+        let mut state = one_workspace();
+        assert_eq!(id(&split_pane(&mut state, "w1:p1")), "w1:p2");
+        assert_eq!(id(&split_pane(&mut state, "w1:p1")), "w1:p3");
+        assert!(remove_pane(&mut state, "w1:p3"));
+        assert!(remove_pane(&mut state, "w1:p2"));
+        assert_eq!(id(&split_pane(&mut state, "w1:p1")), "w1:p4");
+        assert!(find_pane(&state, "w1:p2").is_none());
+        assert!(find_pane(&state, "w1:p3").is_none());
+    }
+
+    /// A state an older fake wrote has no counter: ids start above the
+    /// highest live one.
+    #[test]
+    fn a_state_without_a_counter_starts_above_the_live_ids() {
+        let mut state = one_workspace();
+        let ws = &mut state["workspaces"][0];
+        ws.as_object_mut().unwrap().remove("next_pane");
+        ws["panes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"pane_id": "w1:p5", "workspace_id": "w1", "tab_id": "w1:t1"}));
+        assert_eq!(id(&split_pane(&mut state, "w1:p1")), "w1:p6");
+        assert_eq!(id(&split_pane(&mut state, "w1:p1")), "w1:p7");
+    }
 }
