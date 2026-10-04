@@ -53,7 +53,9 @@ pub struct MintedIds {
 pub struct PlanInputs<'a> {
     pub roster: &'a Roster,
     /// The roster's catalog (`Roster::skill_catalog`): bundled skills plus
-    /// the installed marketplace lock.
+    /// the installed marketplace lock. The shell adds the launching
+    /// teammate's `operator_skills` (`SkillCatalog::with_operator_skills`),
+    /// so the record lists them; planning itself reads no files.
     pub catalog: &'a SkillCatalog,
     /// `Some` when [`needs_gate`] said so.
     pub gate: Option<GateInputs<'a>>,

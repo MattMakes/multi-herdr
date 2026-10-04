@@ -126,7 +126,19 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         execution: ExecutionId::new(horch_core::mint_uuid())?,
         session: SessionId::new(horch_core::mint_uuid())?,
     };
-    let catalog = roster.skill_catalog()?;
+    // Planning reads no files, so the operator skills of the teammate that
+    // will launch are read here. Then the record lists them, as the launch
+    // bundle does.
+    let mut catalog = roster.skill_catalog()?;
+    let launching = req
+        .teammate
+        .as_ref()
+        .map(|t| t.as_str())
+        .or(existing.as_ref().map(|r| r.tier.as_str()));
+    if let Some(t) = launching.and_then(|name| roster.get(name)) {
+        let home = ctx.inherited.home_var.as_deref().map(std::path::Path::new);
+        catalog = catalog.with_operator_skills(t, home)?;
+    }
     let inputs = PlanInputs {
         roster: &roster,
         catalog: &catalog,
