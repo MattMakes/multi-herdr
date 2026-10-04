@@ -101,7 +101,7 @@ The 5 Mermaid blocks were not rendered locally (no `mmdc`; conventions
 forbid package managers). A script checked that every block has matching
 quotes and that every `subgraph` has an `end`.
 
-## Per-recipe confirmations (file:line, at 4ef7afa)
+## Per-recipe confirmations (file:line, rebased on `41506d2`)
 
 add-harness:
 - `crates/horch-core/src/harness/mod.rs:91` - `pub trait Harness`; `:262` `enum HarnessKind`; `:276` `ALL`; `:286,300,313,326,372` `as_str`, `binary`, `adapter`, `capabilities`, `FromStr`; `:409` `all_names_every_kind`; `:434` `legacy` table.
@@ -120,7 +120,7 @@ add-harness:
 - `crates/horch-core/tests/arch_scan.rs` `arc_10_harness_match_only_in_harness`: variants matched only under `harness/` and in `roster/validation.rs`; `pool_for` and `permission.rs` match strings or modes, not variants.
 
 add-skill:
-- `crates/horch-core/build.rs:55` - embeds every file under `skills/`.
+- `crates/horch-core/build.rs:60` - embeds every file under `skills/`.
 - `crates/horch-core/src/skills/selection.rs:12` - `phase_skills`.
 - `crates/horch-core/tests/skills_catalog.rs:21` `DESIGN_SOURCE_PINS`; `:53` `REPO_ORIGINAL`; `:108` `skl_01_...` (provenance required, pins, digests); `:222-223` 12 KiB / 160 KiB; `:250` text only.
 - `crates/horch/tests/baseline_cli.rs:72` `a0_skills_view` filters to A0 skills; `:149` `oracle_cli_skills_match`.
@@ -128,7 +128,7 @@ add-skill:
 
 add-teammate:
 - `justfile:111` `teammate-new`; `crates/horch/src/cmd/teammatescmd.rs:258` `new` (needs `--dir` or `HORCH_TEAMMATES_DIR`).
-- `crates/horch-core/build.rs:29` - `BUILTIN_TEAMMATES` glob.
+- `crates/horch-core/build.rs:34` - `BUILTIN_TEAMMATES` glob.
 - `crates/horch-core/tests/baseline_oracles.rs:70` `SKIP_NEW_TEAMMATES`; `:585` `TEAMMATES_AT_A0 = 33`; `:600` `arc_01_baseline_oracles_present` counts files.
 - `crates/horch-core/tests/skills_catalog.rs:79` `SKIP_NEW_TEAMMATES`.
 - `crates/horch-core/src/roster/validation.rs:610` phase arms; `:939,951` Claude fleet-pane count 24.
@@ -191,6 +191,17 @@ add-dataset-event:
    the 2 `validation.rs` tests and the rebuild before `teammates --check`
    after the walk.
 
+## Rebase
+
+Rebased on `design-skills` at `41506d2` (D11 and D14 merged). D11 added
+`google` to `teammates/_base/fleet-orchestrator.md:115`, so that open item is
+gone. D14 changed only `skills/motion-gsap` text. `a6da895` moved
+`crates/horch-core/build.rs` lines by 5; the line numbers above are updated.
+D12 and D13 are not merged yet; no page states a line number in
+`execution/lifecycle.rs`, `fake-herdr.rs`, `competition/promotion.rs`,
+`budget.rs` or `coordinator.rs`. The report cites `coordinator.rs` and
+`budget.rs` lines in the claim table; re-check them if D13 merges first.
+
 ## Not verified
 
 - Mermaid rendering (no renderer installed).
@@ -208,8 +219,6 @@ add-dataset-event:
 - `README.md` "Skills for each phase": "across all five harnesses".
   `teammates/_template.md` skills comment: "on all five agent harnesses".
   Antigravity exposes no skills.
-- `teammates/_base/fleet-orchestrator.md:115` and its golden still omit the
-  `google` pool (D10 open item; D11 owns it).
 - `ai_docs/plans/design-skills/00-conventions.md` §5 still permits new
   oracle files for a new teammate, which `arc_01` forbids.
 - STATUS.md D10 items `horch done` pane race and fake-herdr pane id reuse
