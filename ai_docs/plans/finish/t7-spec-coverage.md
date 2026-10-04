@@ -10,7 +10,7 @@ the design section and the test that now pin it.
 
 ## CONTEXT
 
-- T1–T6 closed every SPEC-TODO: the implemented, tested behaviour is the
+- T1–T6 closed every spec marker: the implemented, tested behaviour is the
   spec (`ai_docs/plans/finish/00-conventions.md`). Their reports, with
   per-marker tables, are in `ai_docs/reports/finish/spec-*.md`.
 - For each PENDING row: find the closed design section (grep the design
