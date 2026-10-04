@@ -1063,6 +1063,664 @@
       "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
     },
     {
+      "name": "godot-addon-development",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/addon-development/SKILL.md",
+          "sha256": "2a67193f9fcbe062dea68c32cf31d22f73cbd424b3e9b7b9fa0052f3cdd789b0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/addon-development/references/dock-panels.md",
+          "sha256": "c35890039f7531fd8627b26b46f3b77530d8e53bb9c2573e7ea5b8e5b7dd4ae8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/addon-development/references/gizmos-deep-dive.md",
+          "sha256": "a11f783935f5bfbafeedb9c1aa6cb89a48a8346c41d7505cddd99cc4e95f322e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/addon-development/references/inspector-plugins.md",
+          "sha256": "17caea915dc52e972e9ed5f494b7b9987ec5745eb60a79139929de8264b8aabd",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/addon-development/references/testing-plugins.md",
+          "sha256": "bad39ed4cc28e0bf48bca324f3f40e6640c9dc6f2151ab0703fcee29cdf07a17",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-assets-pipeline",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/assets-pipeline/SKILL.md",
+          "sha256": "7dbc4d807be87641ee0383f7be6db34950aa99b6d9d135ca879ceb5ba72da7ba",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/assets-pipeline/references/runtime-resource-loading.md",
+          "sha256": "6e2dea0148bd70e7334b1e9a10c3a14da9b72d86206e247d4adc7c30a4632bba",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-beehave",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/beehave/SKILL.md",
+          "sha256": "4f7a6c537692539ad920ebec833b343342689d7c0fde267b1c86bfe3e7ebadf1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/beehave/references/custom-nodes.md",
+          "sha256": "7a49aefe3c8c0528231515a735a7658b247561adf8002a03d3eeaad0a9f2570c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; the upstream text names the pinned addon version v2.9.2",
+      "vendored": true
+    },
+    {
+      "name": "godot-brainstorming",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-brainstorming/SKILL.md",
+          "sha256": "3de09749f7fd7871779bce915d5a27f561480789b94067303963b6c2ca2c7539",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-brainstorming/references/example-chest.md",
+          "sha256": "4d767dc7baaf074fbe3d40376f77c9b11695c9c8194d90d91b6ca12b68faa1de",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-brainstorming/references/node-selection.md",
+          "sha256": "edd30dd743fc5f9ee8cdedcefd69218bd0ff368999bcccd49e005be86d445dbe",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted for a fleet pane with no human: Step 1 and the intro keep the godot-grill hand-off but say the plan or the orchestrator can state the decisions; Step 3 'Design with approval' becomes 'Write the whole design, then ask once' (write the whole design, then send one QUESTION: listing the open items); Step 4 drops the offer to add an agent-instructions section, drops the 'Agent Instructions Injection' section and the ~/.godot-prompter/state file it reads, and names the create-plan skill where it named superpowers:writing-plans. Sections 1 to 6 and the design checklist are unchanged.",
+      "vendored": true
+    },
+    {
+      "name": "godot-csharp-godot",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/csharp-godot/SKILL.md",
+          "sha256": "fc7f3d1cc78dee030468f34f4e3b4bbd1c9aec110964636a98f62c6d3b6c628e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-csharp-signals",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/csharp-signals/SKILL.md",
+          "sha256": "c6bc2191a113b2878dde9b552e16bcdbd22f311718dc934e28ee39edc31ca8e9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/csharp-signals/references/awaiting-signals.md",
+          "sha256": "0881113f2cb7927f907f3b73cc58e1021a2dad6f4a43f4e942f73281bf5fcd48",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/csharp-signals/references/connecting-gdscript-signals.md",
+          "sha256": "38f29da885629c733aec7eaf5cf1bdb13eab3e5c70a47bbe47893b2c3173f6d0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/csharp-signals/references/custom-signal-patterns.md",
+          "sha256": "0af9be6884efc414b1083e83c58f188dc0936f9e65f063ea159e393654bb2724",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/csharp-signals/references/disconnecting.md",
+          "sha256": "6beeeaaefa0587919215b0438fbaef17bcdb3cf9ead8f324843f4ec9ccc9dec4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-dialogue-manager",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dialogue-manager/SKILL.md",
+          "sha256": "2171f6f8819dc00419c6b5f56160f18feb47b8012a0d3aa9e2f79d4974812011",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; the upstream text names the pinned addon version v3.10.4",
+      "vendored": true
+    },
+    {
+      "name": "godot-gdextension",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdextension/SKILL.md",
+          "sha256": "f295de63452f15f48f7caf3bc9f28599b1849173f1aabc90159083661f271ad6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdextension/references/debugging-native.md",
+          "sha256": "5a911f3ad26b804fff959f262264ebd24ba4c273bd61f1dab0bfca9eae77b9cc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdextension/references/rust-gdext.md",
+          "sha256": "f0f4737b6424832efa51d41b5134f90248c351cae9d99d1c33cdd037fc195543",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-gdscript-patterns",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-patterns/SKILL.md",
+          "sha256": "c4e33b54da1e222d47783f5476f93642ff93573a5179cebaac7275024f108373",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-patterns/references/abstract-classes.md",
+          "sha256": "7639ec30f2ff9f21b5b0c06b98ab94242e6a6ce5f017c0e2c8137a741bb4eaf2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-patterns/references/common-idioms.md",
+          "sha256": "9f0dda5d64afbf30b948a99bfee62d59b67739e63cb7ed2a8e8722811dde1ad9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-patterns/references/export-annotations.md",
+          "sha256": "cdb3ec65aea70c59e2885b23b0842be38e43c44b18fd4649215a5e17668b710d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-patterns/references/super-in-virtual-methods.md",
+          "sha256": "971fbb54821701185c5b6656771faa7b5f7d989bef8e07bf10b7652314952046",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/gdscript-patterns/references/variadic-functions.md",
+          "sha256": "c26cd3bf82ed709db2a305ebc16f8b625aa08b3fa6b00ac46bd6ae6ada8fb493",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-grill",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-grill/SKILL.md",
+          "sha256": "5c54cf39c5f74db40e6d521f2a374317b1eaba79267f3cba0d1c5666cc8e7832",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted for a fleet pane with no human: 'the user' becomes the operator or the orchestrator; the rounds section becomes 'Fill the record, then ask once' (write the decision record with each recommendation marked [proposed], then send one QUESTION: listing the open decisions, scope first; a [proposed] answer is valid until the orchestrator overrides it); the off-ramp and its no-gates paragraph, the 'frontier empties, confirm shared understanding' step and the 'ask the user for the record path' fallback are removed (the path defaults to docs/decisions/); the description, the anti-pattern table and the checklist are rewritten to match; the godot-mentor cross-reference is dropped (that skill is not carried). The intro, 'Decisions, not facts', the seeded dependency tree and the record template are unchanged apart from the wording above.",
+      "vendored": true
+    },
+    {
+      "name": "godot-hud-system",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/hud-system/SKILL.md",
+          "sha256": "8f5d864e576b42f74215407cce349c480ce5a6b8216eebdf12a498a8bb5588c4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/hud-system/references/damage-numbers.md",
+          "sha256": "6cd55f8707aea4b5b30084011b480c529c23a79a0103757426aaf61807395b8f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/hud-system/references/interaction-prompts.md",
+          "sha256": "4dcc64e4f9863a8295a99dd908d12798df5658b613e0c9102d53b581e1473f6a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/hud-system/references/minimap.md",
+          "sha256": "dbc6ce4bac6c2e0e7f80c82bf9fbb37984a87cc539a0ba35ca0e3d171492edcf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/hud-system/references/notifications.md",
+          "sha256": "c8de3796219a2bfb691fae296053a4f32cd7c6635f86cb00b23b1545a339da47",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-limboai",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/limboai/SKILL.md",
+          "sha256": "7dc6304b0241ec166191ed0d9d903135141d97fcebed9962f61aac379f388e35",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/limboai/references/hsm.md",
+          "sha256": "6ed6be9a2929fc52d2322e419fe366a3125532c60676ebcf85085f9d86f118a5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; the upstream text names the pinned addon version v1.8.0",
+      "vendored": true
+    },
+    {
+      "name": "godot-localization",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/localization/SKILL.md",
+          "sha256": "37e3f1f779326fa7f72f566130acf8c99d255c237e1df0cd1825ff1bd31c0382",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/localization/references/csv-plural-context.md",
+          "sha256": "342c489c48d2aef6345986476148b7a18d79345e5c1be04f3b45377fa58030e9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/localization/references/editor-preview.md",
+          "sha256": "2e1f2e3dfc83d7da787f27a77279c521c82a0a37ddeca59f23066681d1c341cb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/localization/references/locale-formatting.md",
+          "sha256": "6db53267e06d84798c3f9945df7c9fe9550d7dbf82a11bce4e7f61010aed6e7e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/localization/references/rtl-support.md",
+          "sha256": "16fa1c5e0064752f620521e370dbc4c380fc1328ea105e9f5d563808e52b9c01",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-math-essentials",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/math-essentials/SKILL.md",
+          "sha256": "535dcebba63dba9134f5e864c2c8b8fd76a5e4c326b640a2a63b365fb5d6b829",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/math-essentials/references/curves-and-paths.md",
+          "sha256": "70125f6d0f8b2b0421a48798db976818870a1cd08ad2a425ff07348ebdb894af",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/math-essentials/references/game-math-recipes.md",
+          "sha256": "054952a1127509e4244b9dd9870f34551cd23db60153b4d2b750625c9375ddce",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/math-essentials/references/random-numbers.md",
+          "sha256": "e7963a6fa0d190d6090f343568ace99a6b28102fd0ef10230495207cc3dc36ca",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-multithreading",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multithreading/SKILL.md",
+          "sha256": "061ceb63395612193e5d6bc3bf93c92aaa7bb9ff0da26a9b768b03c3133b6b5c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/multithreading/references/pitfalls.md",
+          "sha256": "9395dbe6311a3684ab5b3a585ccd85bdfa36f717d2f89015f310e97307a806e6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-phantom-camera",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/phantom-camera/SKILL.md",
+          "sha256": "aeafab663c26277549a81a6cf0430b86b34348fbb4cee2a2f3e912624bf2db90",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; the upstream text names the pinned addon version v0.11.0.2",
+      "vendored": true
+    },
+    {
+      "name": "godot-popochiu",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/popochiu/SKILL.md",
+          "sha256": "5a069697844f61b939b60a8e3923d10b7bdf731c28ff22a9833f751aa1e257cc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/popochiu/references/dialogs.md",
+          "sha256": "f2587c5d1a497bff347f5f757638307b704e31088350341bce7451a581d24bcf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/popochiu/references/gui.md",
+          "sha256": "9ad31038488b4ecdef3c2cad51a5f80058d6604361083939157a8bdfd70959c6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/popochiu/references/inventory.md",
+          "sha256": "08a6250c37e0832d374b0b3adc9f7272958d0d704e12735e46912942cbf6dfff",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/popochiu/references/pipeline.md",
+          "sha256": "7523db42cb5fd1bc9904288d220855a89f92034b23550cc3a687f0d82157d568",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; the upstream text names the pinned addon version v2.1.1",
+      "vendored": true
+    },
+    {
+      "name": "godot-responsive-ui",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/responsive-ui/SKILL.md",
+          "sha256": "aebf482527f8b0dd130d5afaa3815ec230dfd22fa4e368be38fd7b0c0bfee7fb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/responsive-ui/references/adaptive-layouts.md",
+          "sha256": "627e85f2fcdedfe12b36ddf0e0a815cd8344a58cda016a3177d36fb95fdbcacf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/responsive-ui/references/dpi-scaling.md",
+          "sha256": "d625b5c1ad288ff747ac94c8045506577a7d4db0f534b88b4a25b2d4e93f3f15",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/responsive-ui/references/mobile.md",
+          "sha256": "c1f89a31df28b6a76492daae26d7c8e079db9c8c6ac26c3d616a1722fab5bede",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/responsive-ui/references/pixel-art-setup.md",
+          "sha256": "40f88f86d701a2e66da63802df807d83c7ab2ad454ea173069fe8f8c459d1236",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
       "name": "handoff",
       "source_path": "plugins/dev/skills/whats-next/SKILL.md",
       "source_sha256": "7fdb41074e2868707e89c41d1f415f3422d6ce8718180d3076ba95b55e940814",

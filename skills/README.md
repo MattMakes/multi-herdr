@@ -149,3 +149,30 @@ The 3 `own text` skills are written in this repository and have no upstream copy
 | [ue-testing-debugging](ue-testing-debugging/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-testing-debugging/` | verbatim |
 | [ue-ui-umg-slate](ue-ui-umg-slate/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-ui-umg-slate/` | verbatim |
 | [ue-world-level-streaming](ue-world-level-streaming/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-world-level-streaming/` | verbatim |
+
+## Godot skills
+
+Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attaches them by name.
+
+18 skills are vendored from `jame581/GodotPrompter` (MIT, revision `3e8d0f005f9604e1dbdad3de693e39555384c5af`) and have no `gd-agentic-skills` twin. 16 are copies of the upstream skill directory, minus dotfiles, with the `godot-` prefix on the name and on every cross-reference, plus the upstream `LICENSE` next to `SKILL.md`. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human, and their `provenance.json` entries list the edits. Each entry has `"vendored": true`. The 5 addon skills name their pinned addon version in the text.
+
+| Skill | Upstream source | Copy |
+| --- | --- | --- |
+| [godot-addon-development](godot-addon-development/SKILL.md) | `jame581/GodotPrompter`: `skills/addon-development/` | renamed |
+| [godot-assets-pipeline](godot-assets-pipeline/SKILL.md) | `jame581/GodotPrompter`: `skills/assets-pipeline/` | renamed |
+| [godot-beehave](godot-beehave/SKILL.md) | `jame581/GodotPrompter`: `skills/beehave/` | renamed |
+| [godot-brainstorming](godot-brainstorming/SKILL.md) | `jame581/GodotPrompter`: `skills/brainstorming/` | adapted |
+| [godot-csharp-godot](godot-csharp-godot/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-godot/` | renamed |
+| [godot-csharp-signals](godot-csharp-signals/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-signals/` | renamed |
+| [godot-dialogue-manager](godot-dialogue-manager/SKILL.md) | `jame581/GodotPrompter`: `skills/dialogue-manager/` | renamed |
+| [godot-gdextension](godot-gdextension/SKILL.md) | `jame581/GodotPrompter`: `skills/gdextension/` | renamed |
+| [godot-gdscript-patterns](godot-gdscript-patterns/SKILL.md) | `jame581/GodotPrompter`: `skills/gdscript-patterns/` | renamed |
+| [godot-grill](godot-grill/SKILL.md) | `jame581/GodotPrompter`: `skills/grill/` | adapted |
+| [godot-hud-system](godot-hud-system/SKILL.md) | `jame581/GodotPrompter`: `skills/hud-system/` | renamed |
+| [godot-limboai](godot-limboai/SKILL.md) | `jame581/GodotPrompter`: `skills/limboai/` | renamed |
+| [godot-localization](godot-localization/SKILL.md) | `jame581/GodotPrompter`: `skills/localization/` | renamed |
+| [godot-math-essentials](godot-math-essentials/SKILL.md) | `jame581/GodotPrompter`: `skills/math-essentials/` | renamed |
+| [godot-multithreading](godot-multithreading/SKILL.md) | `jame581/GodotPrompter`: `skills/multithreading/` | renamed |
+| [godot-phantom-camera](godot-phantom-camera/SKILL.md) | `jame581/GodotPrompter`: `skills/phantom-camera/` | renamed |
+| [godot-popochiu](godot-popochiu/SKILL.md) | `jame581/GodotPrompter`: `skills/popochiu/` | renamed |
+| [godot-responsive-ui](godot-responsive-ui/SKILL.md) | `jame581/GodotPrompter`: `skills/responsive-ui/` | renamed |
