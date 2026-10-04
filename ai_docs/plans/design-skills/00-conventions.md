@@ -33,8 +33,8 @@ completely before you start.
 - Create your own worktree from the integration branch:
 
   ```
-  git -C /Users/mascott/projects/multi-herdr worktree add -b ds/<unit> /Users/mascott/projects/mh-wt/<unit> design-skills
-  cd /Users/mascott/projects/mh-wt/<unit>
+  git -C /Users/mascott/projects/multi-herdr worktree add -b ds/<unit> /Users/mascott/projects/multi-herdr/.worktrees/<unit> design-skills
+  cd /Users/mascott/projects/multi-herdr/.worktrees/<unit>
   ```
 
 - Do all work in your worktree. Use absolute paths. Use your own
@@ -98,3 +98,10 @@ Write every message in Simplified Technical English.
   4. Wait. On `REBASE`, repeat 1 to 4. On `MERGED`, run `horch done "<summary>"`.
 - Write a report to `ai_docs/reports/design-skills/<unit>.md` and commit it.
   Include decisions, what you dropped and why, gotchas, and follow-ups.
+
+## 8. Where worktrees live (from D16 on)
+
+New unit worktrees go under `/Users/mascott/projects/multi-herdr/.worktrees/<unit>`
+(git-ignored). Each has its own `target/` (2 to 8 GB). The orchestrator
+removes a worktree as soon as its unit merges. Older units in
+`/Users/mascott/projects/mh-wt/` finish where they are.
