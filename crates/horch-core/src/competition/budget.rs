@@ -74,12 +74,17 @@ pub(crate) trait UsageSource {
 #[derive(Debug, Clone)]
 pub struct UsageMeter {
     pub prices: BTreeMap<String, Price>,
+    /// The expected tokens of one candidate, by model: the estimates PRE-09
+    /// resolved for the round. A model missing here projects
+    /// [`DEFAULT_TOKEN_ESTIMATE`].
+    pub estimates: BTreeMap<String, TokenEstimate>,
 }
 
 impl Default for UsageMeter {
     fn default() -> Self {
         UsageMeter {
             prices: builtin_prices(),
+            estimates: BTreeMap::new(),
         }
     }
 }
@@ -107,12 +112,17 @@ impl UsageMeter {
         (total.to_micro_half_even(), source)
     }
 
-    /// The projected cost of one candidate on `model`: the default token
-    /// estimate at the table price. PRE-09 uses the same price, but first
-    /// looks for a configured or measured estimate ([`resolve_estimate`]).
-    /// 0 when the model has no price; its measured spend still counts.
+    /// The projected cost of one candidate on `model`: its entry in
+    /// `estimates` (what [`resolve_estimate`] gave PRE-09), else the default
+    /// token estimate, at the table price. 0 when the model has no price;
+    /// its measured spend still counts.
     pub fn projected(&self, model: &str) -> MicroUsd {
-        estimate_cost(&self.prices, model, DEFAULT_TOKEN_ESTIMATE)
+        let estimate = self
+            .estimates
+            .get(model)
+            .copied()
+            .unwrap_or(DEFAULT_TOKEN_ESTIMATE);
+        estimate_cost(&self.prices, model, estimate)
             .map_or(MicroUsd(0), NanoUsd::to_micro_half_even)
     }
 }

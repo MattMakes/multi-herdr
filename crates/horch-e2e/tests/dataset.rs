@@ -836,7 +836,7 @@ fn cmp_07_agent_exit() {
 fn cmp_07_timeout() {
     let Some(h) = pair(
         "cmp07timeout",
-        "caps:\n  candidate_deadline_s: 6\n",
+        "caps:\n  candidate_deadline_s: 20\n",
         serde_json::json!({"exit": "hang"}),
     ) else {
         return;
@@ -994,6 +994,50 @@ fn cmp_10_hard_budget_cancels_and_retains() {
     assert!(of_kind(&events, "judge.scheduled").is_empty());
     assert_every_spawn_ended(&h);
     assert_clean(&h);
+}
+
+/// G1: the live budget projects a running candidate with the estimate
+/// PRE-09 resolved, not the default. 2 at a time; A ends at once and B
+/// hangs to its deadline, so C starts while B runs. At $1.50 the limit is
+/// $1.35: the default projection of B ($1.60 or more) would stop C.
+#[test]
+fn cmp_10_configured_estimate_keeps_a_later_wave_running() {
+    let yaml = "caps:\n  max_parallel: 2\n  candidate_deadline_s: 20\n\
+                budget:\n  expected_tokens:\n    all:\n      input: 2000\n      output: 2000\n";
+    let Some(h) = round_harness(
+        "cmp10est",
+        &["sonnet", "codex-sol", "opus"],
+        yaml,
+        serde_json::json!({"A": done("a.txt"),
+                           "B": {"write": {"b.txt": "b\n"}, "exit": "hang"},
+                           "C": done("c.txt")}),
+    ) else {
+        return;
+    };
+    let out = dataset(
+        &h,
+        &[
+            "run",
+            "add a greeting",
+            "--candidates",
+            "3",
+            "--budget-usd",
+            "1.5",
+        ],
+        &[],
+    );
+    let events = events(&h);
+    let spawned: Vec<&str> = of_kind(&events, "candidate.spawned")
+        .iter()
+        .filter_map(|e| e["payload"]["label"].as_str())
+        .collect();
+    assert!(spawned.contains(&"C"), "{spawned:?}\n{}", text(&out));
+    let budget_cancels = of_kind(&events, "candidate.failed")
+        .into_iter()
+        .filter(|e| e["payload"]["failure"]["reason"] == "budget")
+        .count();
+    assert_eq!(budget_cancels, 0, "{}", text(&out));
+    unlock(&h.state);
 }
 
 #[test]
@@ -1298,7 +1342,7 @@ fn mea_10_every_spawn_has_terminal_event() {
     let Some(h) = round_harness(
         "mea10",
         &["sonnet", "codex-sol", "opus"],
-        "caps:\n  candidate_deadline_s: 6\n",
+        "caps:\n  candidate_deadline_s: 20\n",
         serde_json::json!({
             "A": done("a.txt"),
             "B": {"exit": "crash"},

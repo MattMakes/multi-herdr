@@ -1090,6 +1090,7 @@ mod tests {
         prices.insert("edge".into(), edge);
         let meter = UsageMeter {
             prices: prices.clone(),
+            ..UsageMeter::default()
         };
         // Without a configured or measured estimate, both use the default.
         let mut models: Vec<String> = prices.keys().cloned().collect();

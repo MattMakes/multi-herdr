@@ -138,7 +138,8 @@ has its expected tokens: `budget.expected_tokens` in
 `.multi-herdr/dataset.yaml` (per model, then `all`), then the measured usage
 of at least 3 earlier candidates of the same task on the same model, then a
 fixed default ($1.60 for a sonnet candidate). The PRE-09 detail names the
-source of each candidate. Keys and rules: dataset design §4.11.1.
+source of each candidate. Keys and rules: dataset design §4.11.1. Every
+`dataset.yaml` key with its default: [dataset-config.md](dataset-config.md).
 
 The last line of `run` names the outcome, and the exit code follows it:
 

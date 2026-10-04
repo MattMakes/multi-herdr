@@ -40,6 +40,8 @@ Each recipe names every file to change and the check for each step.
   `offer_when`, `requires`), `horch doctor`, the Unreal, Swift and design
   teams, `horch agent-list`, the Antigravity harness and
   `multi-herdr-dataset`.
+- [dataset-config.md](dataset-config.md): every `.multi-herdr/dataset.yaml`
+  key of `multi-herdr-dataset`, with its default.
 - [phase-skills.md](phase-skills.md): the phase catalogs, how each harness
   sees skills, and context measurements.
 - [runtime-skill-checks.md](runtime-skill-checks.md): native skill discovery

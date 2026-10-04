@@ -11,14 +11,16 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use horch_core::clock;
-use horch_core::competition::budget::UsageMeter;
-use horch_core::competition::config::{self, DatasetConfig, JudgeMode, RunFlags, Strategy};
+use horch_core::competition::budget::{resolve_estimate, MeasuredTokens, UsageMeter};
+use horch_core::competition::config::{
+    self, DatasetConfig, ExpectedTokens, JudgeMode, RunFlags, Strategy,
+};
 use horch_core::competition::coordinator::{monotonic, Coordinator, RoundOutcome, RoundSpec};
 use horch_core::competition::judging::DetachedLauncher;
 use horch_core::competition::model::RoundState;
 use horch_core::competition::observe::{self, TelemetryUsage};
 use horch_core::competition::planner::{plan_round, PlanInput, RoundPlan};
-use horch_core::competition::preflight::{evaluate, PreflightCandidate};
+use horch_core::competition::preflight::{evaluate, PreflightCandidate, TokenEstimate};
 use horch_core::competition::promotion::FaultFired;
 use horch_core::evaluation::validator::{CommandValidator, GateSpec};
 use horch_core::execution::store::ExecutionStore;
@@ -99,20 +101,40 @@ pub(crate) fn resume(
     let base_sha = x.created.base_sha.clone();
     let config = manifest_config(&paths, &experiment)?;
     let task = SavedRun::read(&paths, &experiment)?.task;
-    let (round, plan) = match x.rounds.last() {
+    let (round, plan, mut planned_models) = match x.rounds.last() {
         Some(round) => {
             let view = &projection.rounds[round];
             let plan = (view.state == RoundState::Planned)
                 .then(|| plan_for(ctx, &config, round, &base_sha))
                 .transpose()?;
-            (round.clone(), plan)
+            let models = view
+                .candidates
+                .iter()
+                .filter_map(|(l, c)| Some((l.clone(), c.planned.as_ref()?.model.to_string())))
+                .collect();
+            (round.clone(), plan, models)
         }
         None => {
             let round = RoundId::mint(clock::now());
             let plan = plan_for(ctx, &config, &round, &base_sha)?;
-            (round, Some(plan))
+            (round, Some(plan), Vec::new())
         }
     };
+    if let Some(p) = &plan {
+        planned_models.extend(
+            p.candidates
+                .iter()
+                .map(|c| (c.label.to_string(), c.model.to_string())),
+        );
+    }
+    // The measured usage PRE-09 saw is not kept, so a resumed round projects
+    // from `budget.expected_tokens` and the default only.
+    let estimates = meter_estimates(
+        planned_models.iter().map(|(l, m)| (l.as_str(), m.as_str())),
+        &BTreeMap::new(),
+        &config.budget.expected_tokens,
+        &BTreeMap::new(),
+    );
     coordinate(
         ctx,
         &paths,
@@ -122,6 +144,7 @@ pub(crate) fn resume(
             config: &config,
             task: &task,
             safe_n: report.safe_n,
+            estimates,
         },
         plan.as_ref(),
     )
@@ -231,6 +254,15 @@ fn preflight_and_run(
             config: &config,
             task,
             safe_n: report.safe_n,
+            estimates: meter_estimates(
+                pre_plan
+                    .candidates
+                    .iter()
+                    .map(|c| (c.label.as_str(), c.model.as_str())),
+                &pre_plan.expected_tokens,
+                &config.budget.expected_tokens,
+                &pre_plan.measured_tokens,
+            ),
         },
         Some(&plan),
     )
@@ -243,6 +275,36 @@ struct Round<'a> {
     config: &'a DatasetConfig,
     task: &'a str,
     safe_n: u32,
+    /// The live meter's expected tokens per model ([`meter_estimates`]).
+    estimates: BTreeMap<String, TokenEstimate>,
+}
+
+/// The expected tokens of each candidate model for the live meter, resolved
+/// as PRE-09 resolves them ([`resolve_estimate`]). The coordinator asks the
+/// meter by model, not by label: 2 labels of 1 model with different
+/// estimates get the per-kind maximum of both.
+fn meter_estimates<'a>(
+    candidates: impl Iterator<Item = (&'a str, &'a str)>,
+    per_label: &BTreeMap<String, TokenEstimate>,
+    configured: &ExpectedTokens,
+    measured: &BTreeMap<String, MeasuredTokens>,
+) -> BTreeMap<String, TokenEstimate> {
+    let mut out: BTreeMap<String, TokenEstimate> = BTreeMap::new();
+    for (label, model) in candidates {
+        let (e, _) = resolve_estimate(model, per_label.get(label).copied(), configured, measured);
+        out.entry(model.to_string())
+            .and_modify(|m| {
+                *m = TokenEstimate {
+                    input: m.input.max(e.input),
+                    cache_write_5m: m.cache_write_5m.max(e.cache_write_5m),
+                    cache_write_1h: m.cache_write_1h.max(e.cache_write_1h),
+                    cache_read: m.cache_read.max(e.cache_read),
+                    output: m.output.max(e.output),
+                }
+            })
+            .or_insert(e);
+    }
+    out
 }
 
 /// Run the round through the coordinator and map where it ended to an exit
@@ -284,7 +346,10 @@ fn coordinate(
     let usage = TelemetryUsage {
         locations: Locations::from_context(ctx),
     };
-    let meter = UsageMeter::default();
+    let meter = UsageMeter {
+        estimates: r.estimates.clone(),
+        ..UsageMeter::default()
+    };
     let worktree_root = r
         .config
         .worktree_root
@@ -688,6 +753,44 @@ fn render_plan(plan: &RoundPlan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The meter gets PRE-09's estimate per model: the plan's per-label value
+    /// first, then the config; 2 labels of 1 model keep the per-kind maximum.
+    /// A model with no source gets the default.
+    #[test]
+    fn meter_estimates_follow_pre_09_per_model() {
+        let est = |input, output| TokenEstimate {
+            input,
+            output,
+            ..TokenEstimate::default()
+        };
+        let configured = ExpectedTokens {
+            all: Some(est(10, 10)),
+            models: [("opus".to_string(), est(50, 5))].into(),
+        };
+        let per_label = [("B".to_string(), est(1, 99))].into();
+        let got = meter_estimates(
+            [("A", "sonnet"), ("B", "sonnet"), ("C", "opus")].into_iter(),
+            &per_label,
+            &configured,
+            &BTreeMap::new(),
+        );
+        assert_eq!(got["sonnet"], est(10, 99));
+        assert_eq!(got["opus"], est(50, 5));
+        let none = meter_estimates(
+            [("A", "sonnet")].into_iter(),
+            &BTreeMap::new(),
+            &ExpectedTokens::default(),
+            &BTreeMap::new(),
+        );
+        let (default, source) =
+            resolve_estimate("sonnet", None, &ExpectedTokens::default(), &BTreeMap::new());
+        assert_eq!(
+            source,
+            horch_core::competition::budget::EstimateSource::Default
+        );
+        assert_eq!(none["sonnet"], default);
+    }
 
     /// F7 (roster-resilience): a teammate file that does not parse gives one
     /// `warning:` line, and a second roster load prints nothing more.
