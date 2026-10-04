@@ -65,8 +65,11 @@ HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate
 
 - Oracles and goldens: `crates/horch-core/tests/oracles/` and
   `crates/horch-core/tests/golden/`.
-  - A NEW teammate may get NEW oracle files with `HORCH_BLESS=1` (only the
-    files for that teammate). Check `git status`: only new files may appear.
+  - A NEW teammate gets NO oracle files: add its name to
+    `SKIP_NEW_TEAMMATES` in `crates/horch-core/tests/baseline_oracles.rs`
+    and `skills_catalog.rs` (the A0 oracle counts are frozen). A new
+    teammate also needs its phase arm and the Claude count in the 2 tests
+    in `crates/horch-core/src/roster/validation.rs`.
   - An oracle or golden of an EXISTING teammate may change only when your
     plan says so. Then put the diff summary in your report.
   - Any other oracle or golden change: stop and send `QUESTION:` with the diff.

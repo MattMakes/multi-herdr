@@ -2,7 +2,7 @@
 
 "horch" multi-agent orchestration layouts for [herdr](https://herdr.dev), in Rust.
 
-Three binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
+Four binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
 Node required by horch itself. It runs on macOS, Linux and Windows; Codex phase
 skills currently require macOS/Linux or WSL. A `justfile` at
 the repo root wraps the common ones for people who like typing `just
@@ -11,6 +11,7 @@ herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 | binary            | what it does                                              |
 |-------------------|-----------------------------------------------------------|
 | `horch`           | Build and drive multi-agent herdr workspaces              |
+| `multi-herdr-dataset` | Competitive dataset rounds: N candidates, a blind judge, opt-in promotion (paid model calls) |
 | `herdr-install`   | Install the latest Herdr CLI                              |
 | `herdr-docs-sync` | Mirror the Herdr docs into `herdr-docs/`                  |
 
@@ -262,7 +263,8 @@ horch spawn --resume RECORD_ID --phase validation "Check the final diff"
 ```
 
 Research, plan, implementation and validation select portable native skill
-catalogs across all five harnesses. Role defaults and explicit `skills` live in
+catalogs on every harness that can expose skills (Antigravity cannot; see
+`horch agent-list`). Role defaults and explicit `skills` live in
 teammate YAML; resumes preserve the phase. Full workflows load on demand.
 See [the phase catalog, adapters and context measurements](docs/phase-skills.md).
 
@@ -411,7 +413,7 @@ horch telemetry                 # the collector and its screen (g, w, p, q); a v
 horch telemetry ensure          # open it in its own herdr workspace, never focused (horch fleet does this)
 horch usage --by plan --window 7d   # where the tokens went, every project
 horch agent-list                # every harness: binary, version, efforts, models, pool state
-horch quota --refresh           # the pools: claude, codex, opencode-zen, local
+horch quota --refresh           # the pools: claude, codex, opencode-zen, google, local
 horch route researcher          # what spawn would do right now: spawn, substitute, or refuse
 horch fleet auto                # Opus or Sol, whichever pool can serve it
 ```
@@ -554,6 +556,7 @@ junction, so an update never overwrites a running `herdr.exe`.
 | `HORCH_OPENCODE_BIN` | Which OpenCode CLI to launch. Defaults to `opencode`           |
 | `HORCH_PI_BIN`       | Which pi CLI to launch. Defaults to `pi`                       |
 | `HORCH_PRIME_BIN`    | Which Prime Agent CLI to launch. Defaults to `prime-agent`     |
+| `HORCH_ANTIGRAVITY_BIN` | Which Antigravity CLI to launch. Defaults to `agy`          |
 | `HORCH_STATE_DIR`    | Where ledgers live                                             |
 | `HORCH_PROJECT_DIR`  | Which project a ledger belongs to. Defaults to the cwd         |
 | `HORCH_WORKSPACE_ID` | Target workspace, when not running inside a herdr pane         |

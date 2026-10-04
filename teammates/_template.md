@@ -89,7 +89,8 @@ effort: xhigh
 subagent_model:
 
 # ─── skills ──────────────────────────────────────────────────────────────────
-# phase selects a portable repo-owned catalog on all five agent harnesses.
+# phase selects a portable repo-owned catalog on every harness that exposes
+# skills (not antigravity: agy has no skills-dir switch).
 # Values: research | plan | implementation | validation. null means no catalog.
 # `horch spawn --phase` overrides this; resume keeps its recorded phase.
 # skills adds named bundled skills to the phase catalog. Bodies load on demand.
