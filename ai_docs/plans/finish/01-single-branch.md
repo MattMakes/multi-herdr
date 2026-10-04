@@ -20,6 +20,9 @@ merge machinery for all new units.
   (a pathspec commit never picks up another worker's staged or unstaged
   changes). Never `git add -A`, `git add .`, `git commit -a`, `git stash`,
   `git checkout -- <path>` on a file you do not own, `git reset`, or `git rebase`.
+- Before you report COMMITTED, run `git show --stat HEAD` and check that
+  every file in it is yours. (On 2026-10-04 a commit swept another worker's
+  unfinished `launch.rs` edit into an unrelated commit.)
 - If git reports `index.lock` exists, wait 2 s and retry (another worker is
   committing). Never delete the lock.
 - Do not push. The orchestrator pushes after the full gate passes on the tip.
