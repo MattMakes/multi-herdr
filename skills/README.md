@@ -46,7 +46,18 @@ A source path with no repository name is a path in `MattMakes/skill-marketplace`
 
 ## Multi-source skills
 
-A skill may combine several upstream files, from several repositories. Its entry in [provenance.json](provenance.json) then lists `sources`, one item per adapted file: `{repository, revision, path, sha256, license}`. A skill written in this repository has `"sources": []` and an `adaptation` text. The older single-source fields (`source_path`, `source_sha256`, optional `source_repository` and `source_revision`) still parse as a 1-item list. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; `skill-creator` is exempt. `horch skills show <id>` prints each source.
+A skill may combine several upstream files, from several repositories. Its entry in [provenance.json](provenance.json) then lists `sources`, one item per adapted file: `{repository, revision, path, sha256, license}`. A skill written in this repository has `"sources": []` and an `adaptation` text. The older single-source fields (`source_path`, `source_sha256`, optional `source_repository` and `source_revision`) still parse as a 1-item list. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only (plus a `LICENSE` file); `skill-creator` and every vendored skill are exempt from the size budget (see [Vendored skills](#vendored-skills)). `horch skills show <id>` prints each source.
+
+## Vendored skills
+
+A skill is either vendored or adapted. A vendored skill is a verbatim copy of an upstream skill directory (`SKILL.md` and its references), without dotfiles. An adapted skill is a curated copy with a listed set of edits, plus the fleet rules: no subagents, no human approval gate (a message to the orchestrator instead), no machine paths and no `${CLAUDE_*}` variables. Both kinds keep the upstream `LICENSE` file next to `SKILL.md`, because the MIT licence requires the notice. A file named exactly `LICENSE` is the only file without a `.md` or `.txt` extension that a skill directory may hold. The provenance entry lists `sources` (a `https://github.com/<owner>/<repo>` repository, the full 40-hex revision, the path, the sha256 of each copied file and the licence) and `adaptation` (`"verbatim"` or the list of edits). A vendored skill also sets `"vendored": true`. That flag exempts it from the 12 KB and 160 KB budget, not from the text-only rule. `horch skills show <id>` prints `vendored: true` for it. The build never bundles a file or directory whose name starts with `.`.
+
+To re-vendor a skill at a new upstream revision:
+
+1. Bump the pin: update the upstream checkout and its `PINS.txt`, and write the new full revision into every `sources` item of the skill in `provenance.json`.
+2. Re-copy: replace the skill directory with the upstream files at that revision, keep `LICENSE`, and re-apply the listed edits for an adapted skill.
+3. Re-hash: write the new sha256 of each copied upstream file into its `sources` item.
+4. Re-run the gate: `HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`.
 
 ## Design skills
 

@@ -61,6 +61,10 @@ pub struct SourceRef {
 pub struct Provenance {
     pub sources: Vec<SourceRef>,
     pub adaptation: String,
+    /// A copy of an upstream skill directory (with its LICENSE). A vendored
+    /// skill is exempt from the bundled size budget.
+    #[serde(default)]
+    pub vendored: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +135,8 @@ struct ProvenanceSkill {
     source_path: Option<String>,
     source_sha256: Option<String>,
     adaptation: String,
+    #[serde(default)]
+    vendored: bool,
 }
 
 /// Parse the text of `skills/provenance.json` into one entry per skill name.
@@ -180,6 +186,7 @@ pub fn parse_provenance(text: &str) -> Result<BTreeMap<String, Provenance>> {
         let entry = Provenance {
             sources,
             adaptation: s.adaptation,
+            vendored: s.vendored,
         };
         if out.insert(name.clone(), entry).is_some() {
             bail!("provenance '{name}': duplicate entry");

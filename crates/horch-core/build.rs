@@ -82,6 +82,10 @@ fn main() {
 fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let entry = entry.unwrap();
+        // Dotfiles (`.DS_Store`, `.git`) are never part of a skill.
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
         let kind = entry.file_type().unwrap();
         assert!(
             !kind.is_symlink(),
