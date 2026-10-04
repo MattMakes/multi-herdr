@@ -152,9 +152,11 @@ The 3 `own text` skills are written in this repository and have no upstream copy
 
 ## Godot skills
 
-Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attaches them by name.
+Skills for the 19 `godot-*` teammates (see [`teammates/README.md`](../teammates/README.md)). They belong to no phase; a Godot teammate attaches them by name. The 64 skills are of 4 kinds, named in the Copy column: 18 **renamed** or **adapted** skills from `jame581/GodotPrompter` (MIT) with no `gd-agentic-skills` twin; 36 **combined** skills, each a GodotPrompter skill (renamed, with an extended description) plus `references/*.md` on the topics `thedivergentai/gd-agentic-skills` adds; and **own text**, which is 7 bundles made only from gd-agentic-skills facts (genres, gameplay loops, combat, economy, quests, dimension ports, version migration) and 3 skills of our own (`godot-project-context`, `godot-build-verify`, `godot-scene-files`). gd-agentic-skills is LGPL-3.0, so nothing from it is copied: workers read it as a source of facts and wrote each reference and code block in their own words, marked "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff". Every bundle is MIT (the GodotPrompter base) or own text. The skills target Godot 4.7 only (4.7.2 is the latest stable release): `scripts/godot/api_check.py` checks the engine calls in a skill against a `--doctool` dump of 4.7.2, and `scripts/godot/gdscript_blocks_check.py` parses its GDScript blocks on 4.7.2. GodotPrompter is frozen at v1.14.0.
 
 18 skills are vendored from `jame581/GodotPrompter` (MIT, revision `3e8d0f005f9604e1dbdad3de693e39555384c5af`) and have no `gd-agentic-skills` twin. 16 are copies of the upstream skill directory, minus dotfiles, with the `godot-` prefix on the name and on every cross-reference, plus the upstream `LICENSE` next to `SKILL.md`. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human, and their `provenance.json` entries list the edits. Each entry has `"vendored": true`. The 5 addon skills name their pinned addon version in the text.
+
+The 3 `own text` skills `godot-build-verify`, `godot-project-context` and `godot-scene-files` are written in this repository and have no upstream copy. Each command in them was run on Godot 4.7.2; their rows name what they consulted.
 
 | Skill | Upstream source | Copy |
 | --- | --- | --- |
