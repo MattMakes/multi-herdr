@@ -14,6 +14,14 @@ runs `sh -c 'unset ASC_CONFIG_PATH ASC_BYPASS_KEYCHAIN; asc ...'` stays inside
 the same OS boundary, because the boundary applies to the process, not to the
 command string.
 
+## Commits
+
+- `a2de49f`: the `sandbox:` field, the settings merge, the host check, the
+  roster checks and the template entry. The merge commit `6058563` sits on
+  top of it (another worker's merge; it changed none of these lines).
+- The next commit: the teammate block, the persona, the README section and
+  the launch test for the shipped teammate.
+
 ## Sources
 
 - Sandboxing: https://code.claude.com/docs/en/sandboxing (fetched 2026-10-04).
@@ -191,6 +199,21 @@ dummy files `~/.asc/horch-probe-dummy.txt`,
 
 Command 6 of probe 1 (`echo $ASC_PRIVATE_KEY` with a dummy value) needed
 approval in `-p` mode, so the env deny is verified from the docs only.
+
+## Teammate and persona changes
+
+- `teammates/app-release-preparer.md`: the `sandbox:` block from "The
+  teammate's block"; WebFetch and WebSearch denied; 6 upload patterns added
+  to `disallowed_tools`; the brief description says "Never uploads or
+  submits".
+- The persona no longer uploads. It writes the exact `asc builds upload
+  --app <APP_ID> --ipa build/export/<name>.ipa` command for a human. It keeps
+  build output under `build/`, never passes `-allowProvisioningUpdates`, and
+  reports `BLOCKED:` when the sandbox blocks a command.
+- `README.md`, section "App Store Connect key for app-release-preparer":
+  states the 3 lines (sandbox, key role, deny list), what the sandbox
+  enforces, and what it does not cover. The old sentence "the pane cannot
+  use your own key" was false before this unit; it is gone.
 
 ## Limits
 

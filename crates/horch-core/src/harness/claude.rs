@@ -623,6 +623,44 @@ mod tests {
         );
     }
 
+    /// The shipped release preparer launches inside the sandbox: only the
+    /// App Store Connect API host, the key directory re-opened, asc's
+    /// credential variables unset, and no way out.
+    #[test]
+    fn the_release_preparer_launches_sandboxed() {
+        let roster = crate::roster::Roster::builtin().unwrap();
+        let t = roster.require("app-release-preparer").unwrap();
+        let block = t.sandbox.as_ref().expect("a sandbox block");
+        assert!(sandbox_problems(block).is_empty());
+        for tool in ["WebFetch", "WebSearch", "Bash(asc builds upload *)"] {
+            assert!(t.disallowed_tools.iter().any(|d| d == tool), "{tool}");
+        }
+        let mut overlay = serde_json::Map::new();
+        overlay_sandbox(t, &mut overlay).unwrap();
+        let sandbox = &overlay["sandbox"];
+        assert_eq!(
+            sandbox["network"]["allowedDomains"],
+            json!(["api.appstoreconnect.apple.com"])
+        );
+        assert_eq!(sandbox["network"]["strictAllowlist"], true);
+        assert_eq!(sandbox["allowUnsandboxedCommands"], false);
+        assert_eq!(sandbox["failIfUnavailable"], true);
+        let fs = &sandbox["filesystem"];
+        for denied in ["~/.asc", "~/Library/Keychains", "~/.config"] {
+            assert!(fs["denyRead"].as_array().unwrap().contains(&json!(denied)));
+        }
+        assert!(fs["allowRead"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("~/.config/horch/asc")));
+        let vars = sandbox["credentials"]["envVars"].as_array().unwrap();
+        assert!(vars.contains(&json!({"name": "ASC_PRIVATE_KEY_PATH", "mode": "deny"})));
+        assert_eq!(
+            overlay["permissions"]["blockReadsOutsideWorkingDirectories"],
+            true
+        );
+    }
+
     /// A fleet pane launches with skills: the sandbox rides in the merged
     /// skills overlay too, and a teammate without the field gets no block.
     #[test]

@@ -327,9 +327,41 @@ under `operator_skills:`: `swiftui-whats-new-27` and `test-modernizer`.
 
 #### App Store Connect key for app-release-preparer
 
-`app-release-preparer` archives, uploads to internal TestFlight and audits
-review readiness. It never submits. The API key enforces this rule. The
-deny list in the teammate file is only a second line of defence.
+`app-release-preparer` archives, exports and audits review readiness. It
+never uploads and never submits. When the export is ready, it writes the
+exact upload command, and you run it.
+
+3 lines hold the release safety:
+
+1. **The OS sandbox.** The teammate's `sandbox:` block runs every Bash
+   command, and every process it starts, under Claude Code's sandbox
+   (Seatbelt on macOS, bubblewrap on Linux). `sh -c` and `unset` do not
+   change it. horch refuses to launch the pane on a host that cannot
+   sandbox, and Claude Code exits rather than run a command unsandboxed.
+   Inside the sandbox:
+   - Reads in your home directory are blocked, for Bash and for the Read
+     tool. Only the project, Xcode's directories under `~/Library` and
+     `~/.config/horch/asc/` are readable. `~/.asc`, `~/.config`,
+     `~/Library/Keychains` and altool's `private_keys` directories are
+     blocked by name too. Your login keychain is not in the keychain
+     search list, so asc cannot use the profiles stored there.
+   - asc's credential variables (`ASC_KEY_ID`, `ASC_PRIVATE_KEY`,
+     `ASC_PRIVATE_KEY_PATH` and the others) are unset before each command,
+     so a key in your shell does not reach asc.
+   - The network reaches `api.appstoreconnect.apple.com` only. Build
+     uploads, `xcrun altool`, `notarytool` and `-allowProvisioningUpdates`
+     need other hosts, so they fail.
+   - A command cannot retry outside the sandbox, and a project's
+     `.claude/settings.json` cannot widen it.
+2. **The key's role.** The sandbox keeps every other key out of reach. It
+   cannot limit what the configured key does at the allowed API host: a
+   submit or a price change is 1 API call there. So the key's role must
+   not allow those calls.
+3. **The deny list** in the teammate file blocks the asc commands that
+   submit, publish, change prices or upload. A Bash pattern alone can be
+   bypassed, so this is the last line.
+
+Set up the key:
 
 1. Create a team API key in App Store Connect, under Users and Access >
    Integrations > App Store Connect API. Give it a role that cannot submit
@@ -338,11 +370,11 @@ deny list in the teammate file is only a second line of defence.
      Developer, Marketing, Sales, Finance and Customer Support.
    - Admin and App Manager can submit apps. Admin, App Manager and
      Marketing can edit pricing and availability.
-   - Use **Developer**. It can upload builds and manage TestFlight, and it
-     cannot submit apps or edit pricing
+   - Use **Developer**. It cannot submit apps or edit pricing
      ([Apple: role permissions](https://developer.apple.com/support/roles/)).
 2. Download the `.p8` file. Apple lets you download it 1 time only. Keep
-   it outside every repository, with mode 600:
+   it in `~/.config/horch/asc/`, with mode 600. The sandbox can read the
+   key only there:
 
    ```sh
    mkdir -p ~/.config/horch/asc
@@ -378,11 +410,26 @@ deny list in the teammate file is only a second line of defence.
    `--validate` to test the key against Apple.
 
 The teammate sets `ASC_CONFIG_PATH` to that file and `ASC_BYPASS_KEYCHAIN=1`.
-asc then reads only that file: no `./.asc/config.json` in the project and no
-`~/.asc/config.json`. It also ignores the credentials in your keychain. So the
-pane cannot use your own key, which may have the Admin role. asc's
-authentication docs give this pair as the way to isolate an agent. The file
-holds the path to the key, never the key.
+These variables only choose asc's defaults. The sandbox is what keeps
+`./.asc/config.json`, `~/.asc/config.json`, your keychain and every other
+key file out of reach. The config file holds the path to the key, never
+the key.
+
+What the sandbox does not cover:
+
+- **Code signing.** The login keychain is outside the sandbox, so
+  `xcodebuild archive` cannot sign with an identity stored there. Either
+  put the distribution identity in a separate keychain under
+  `~/.config/horch/asc/` and add it to your keychain search list (not yet
+  tested with horch), or run the signed archive and export yourself.
+- **Swift packages.** Package hosts are outside the network list. Resolve
+  packages before the assignment, or add their hosts to the teammate's
+  `allowedDomains`.
+- **Tools outside the sandbox.** The Edit and Write tools, hooks and the
+  status line run with your access. The teammate loads no MCP servers and
+  has no WebFetch or WebSearch.
+- The sandbox needs Claude Code 2.1.285 or later. The design and the probes
+  are in `ai_docs/reports/finish/release-sandbox.md`.
 
 Until the config file and the `.p8` file exist, the teammate reports
 `BLOCKED:` with the missing path and does no release work.

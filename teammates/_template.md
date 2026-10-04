@@ -32,7 +32,8 @@ offer_when: []
 
 # Host tools this teammate cannot work without. `horch doctor` checks each one
 # when the project is offered this teammate. Values: xcode (`xcodebuild` on
-# PATH, with `sudo xcodebuild -runFirstLaunch` done).
+# PATH, with `sudo xcodebuild -runFirstLaunch` done), blender (`blender` on
+# PATH or `BLENDER_PATH`, and `blender --version` runs).
 requires: []
 
 # ─── inherited base prompt ───────────────────────────────────────────────────
