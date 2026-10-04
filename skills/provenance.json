@@ -1261,6 +1261,118 @@
       ],
       "adaptation": "Upstream copy with 2 added lines in SKILL.md (headless runs with swift test --filter and xcodebuild test -only-testing:, and exit tests are not available on iOS, tvOS, watchOS or visionOS). Links to other upstream skill repositories (async-tests.md, writing-better-tests.md) replaced by bundled skill names. Otherwise verbatim.",
       "vendored": false
+    },
+    {
+      "name": "swiftui-liquid-glass",
+      "sources": [
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "LICENSE",
+          "sha256": "df17aae89ce4705d0a6e5f7b46eeea3b9023967ecad948f8779b47039eb55a8b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-liquid-glass/SKILL.md",
+          "sha256": "53dfbe810cf2044b9c9fff5b2b9d9888053ac24b7d72e63258df8859571bc599",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-liquid-glass/references/liquid-glass.md",
+          "sha256": "76b075006934bd4bdba7df53fa046502db3c2f6cc3d383d58e56bff308468608",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy. liquid-glass.md: background-extension snippet now calls .backgroundExtensionEffect(); the nonexistent scrollExtensionMode(.underSidebar) is replaced by Apple's automatic scroll-under-sidebar behavior; foregroundColor becomes foregroundStyle; the 'always seek guides' sentence is deleted. SKILL.md verbatim.",
+      "vendored": false
+    },
+    {
+      "name": "swiftui-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "LICENSE",
+          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/SKILL.md",
+          "sha256": "8b58a171afc1dcf9c42d85414af2dc506c8c92bf2c77527adb4d52b884f4d715",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/accessibility.md",
+          "sha256": "708d09a35c950fd4c118bbb3cfcab13bb146e7d02084615307bbabc19e00a0e3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/api.md",
+          "sha256": "12fa73d65a19c9d08224f925801db8eec914b1cedf5b2f86a38cdda04a66377a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/data.md",
+          "sha256": "5cc50484c525f748839e12174c065f7ea5fdd4380ce04b6885a906ecd6e6a318",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/design.md",
+          "sha256": "03e35d46865cc6807255f3c8481cdbac7b3b0f61924185af84c1913d6c983c69",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/hygiene.md",
+          "sha256": "91d96f45f3ffa02f5553c288415f3c3d5f317cab7d8d9c6c60240ea6c44a2b01",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/navigation.md",
+          "sha256": "a3adb302455993aff85bbb6b5845ed2fcffa137c8b2ded99c937f3e4b7fcd77b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/performance.md",
+          "sha256": "1b503e3807e216d6b34b45f18bfba89214cea2fa1b88dd7ae8f482ebf0f03616",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/swift.md",
+          "sha256": "8c31c5f5f99b3fa9586f0260cd1a4b1688dc7bda5e8de2891eb3f9d6a791125a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/views.md",
+          "sha256": "79a166f6507e86744c0f73cfb583100f61a5da37e313ef4586b3b31136a73627",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy of the top-level skill (not the nested skills/swiftui-pro variant). SKILL.md: third-party-framework ask gate becomes a message to the orchestrator. hygiene.md: 'Offer to translate' becomes a message to the orchestrator. views.md: view-model rule made neutral (follow the codebase; MV in a new codebase; view models only for a test seam). data.md, swift.md, views.md: links to other upstream skill repositories replaced by bundled skill names.",
+      "vendored": false
     }
   ]
 }

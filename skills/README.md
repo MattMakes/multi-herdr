@@ -69,3 +69,5 @@ These skills come from MIT-licensed Swift skill repositories. Each keeps its ups
 | --- | --- | --- |
 | [observability](observability/SKILL.md) | vendored | `n0an/Observability-Agent-Skill`: `observability/` |
 | [swift-testing-pro](swift-testing-pro/SKILL.md) | adapted, light | `twostraws/Swift-Testing-Agent-Skill`: `swift-testing-pro/` |
+| [swiftui-liquid-glass](swiftui-liquid-glass/SKILL.md) | adapted | `Dimillian/Skills`: `swiftui-liquid-glass/` |
+| [swiftui-pro](swiftui-pro/SKILL.md) | adapted | `twostraws/SwiftUI-Agent-Skill`: `swiftui-pro/` (top-level copy) |
