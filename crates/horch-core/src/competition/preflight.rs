@@ -737,6 +737,26 @@ struct Projection {
     per_candidate: BTreeMap<String, i64>,
     /// Where each candidate's estimate came from, by label.
     sources: BTreeMap<String, EstimateSource>,
+    /// The tokens each candidate was projected with, by label.
+    estimates: BTreeMap<String, RecordedEstimate>,
+}
+
+/// The tokens PRE-09 projected one candidate with. The report records them
+/// in PRE-09's `measured.estimates`, by label, so a resumed round's live
+/// meter uses them ([`recorded_estimates`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedEstimate {
+    pub model: String,
+    pub tokens: TokenEstimate,
+}
+
+/// The estimates PRE-09 recorded in `report`, by label. Empty for a report
+/// written before they were recorded.
+pub fn recorded_estimates(report: &PreflightReport) -> BTreeMap<String, RecordedEstimate> {
+    report
+        .check("PRE-09")
+        .and_then(|c| serde_json::from_value(c.measured["estimates"].clone()).ok())
+        .unwrap_or_default()
 }
 
 /// Expected cost of every candidate at `prices`, summed in n$ and rounded
@@ -763,6 +783,7 @@ fn project(
     let mut unpriced = Vec::new();
     let mut per_candidate = BTreeMap::new();
     let mut sources = BTreeMap::new();
+    let mut estimates = BTreeMap::new();
     for c in candidates {
         let (tokens, source) = resolve_estimate(
             c.model.as_str(),
@@ -771,6 +792,13 @@ fn project(
             measured,
         );
         sources.insert(c.label.clone(), source);
+        estimates.insert(
+            c.label.clone(),
+            RecordedEstimate {
+                model: c.model.to_string(),
+                tokens,
+            },
+        );
         match estimate_cost(prices, c.model.as_str(), tokens) {
             Some(cost) => {
                 per_candidate.insert(c.label.clone(), cost.to_micro_half_even().0);
@@ -784,6 +812,7 @@ fn project(
         unpriced,
         per_candidate,
         sources,
+        estimates,
     }
 }
 
@@ -810,6 +839,7 @@ fn pre_09_budget(plan: &PreflightPlan, cost: &Projection) -> CheckResult {
         "estimate_source": cost.sources.iter()
             .map(|(label, source)| (label.clone(), source.to_string()))
             .collect::<BTreeMap<_, _>>(),
+        "estimates": cost.estimates,
     });
     if b.hard_usd_micro <= 0 {
         return check(

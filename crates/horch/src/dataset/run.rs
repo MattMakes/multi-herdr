@@ -20,7 +20,9 @@ use horch_core::competition::judging::DetachedLauncher;
 use horch_core::competition::model::RoundState;
 use horch_core::competition::observe::{self, TelemetryUsage};
 use horch_core::competition::planner::{plan_round, PlanInput, RoundPlan};
-use horch_core::competition::preflight::{evaluate, PreflightCandidate, TokenEstimate};
+use horch_core::competition::preflight::{
+    evaluate, recorded_estimates, PreflightCandidate, PreflightReport, TokenEstimate,
+};
 use horch_core::competition::promotion::FaultFired;
 use horch_core::evaluation::validator::{CommandValidator, GateSpec};
 use horch_core::execution::store::ExecutionStore;
@@ -127,14 +129,7 @@ pub(crate) fn resume(
                 .map(|c| (c.label.to_string(), c.model.to_string())),
         );
     }
-    // The measured usage PRE-09 saw is not kept, so a resumed round projects
-    // from `budget.expected_tokens` and the default only.
-    let estimates = meter_estimates(
-        planned_models.iter().map(|(l, m)| (l.as_str(), m.as_str())),
-        &BTreeMap::new(),
-        &config.budget.expected_tokens,
-        &BTreeMap::new(),
-    );
+    let estimates = resumed_estimates(&report, &planned_models, &config.budget.expected_tokens);
     coordinate(
         ctx,
         &paths,
@@ -305,6 +300,30 @@ fn meter_estimates<'a>(
             .or_insert(e);
     }
     out
+}
+
+/// The live meter's estimates for a resumed round: the tokens PRE-09
+/// recorded for each label ([`recorded_estimates`]) while the label keeps
+/// its model, else `budget.expected_tokens` and the default.
+fn resumed_estimates(
+    report: &PreflightReport,
+    planned_models: &[(String, String)],
+    configured: &ExpectedTokens,
+) -> BTreeMap<String, TokenEstimate> {
+    let recorded = recorded_estimates(report);
+    let per_label = planned_models
+        .iter()
+        .filter_map(|(label, model)| {
+            let r = recorded.get(label).filter(|r| &r.model == model)?;
+            Some((label.clone(), r.tokens))
+        })
+        .collect();
+    meter_estimates(
+        planned_models.iter().map(|(l, m)| (l.as_str(), m.as_str())),
+        &per_label,
+        configured,
+        &BTreeMap::new(),
+    )
 }
 
 /// Run the round through the coordinator and map where it ended to an exit
@@ -790,6 +809,76 @@ mod tests {
             horch_core::competition::budget::EstimateSource::Default
         );
         assert_eq!(none["sonnet"], default);
+    }
+
+    /// G9: a resumed round's meter uses the tokens PRE-09 recorded for each
+    /// label, read back from the `preflight.completed` event, not the
+    /// default. A label whose model changed gets the config or the default.
+    #[test]
+    fn resume_meter_uses_the_recorded_estimates() {
+        use horch_core::measure::event::{Actor, EventKind, PreflightCompleted};
+        use horch_core::measure::recorder::{NewEvent, Recorder};
+
+        let measured = TokenEstimate {
+            input: 2_000,
+            cache_read: 30_000,
+            output: 500,
+            ..TokenEstimate::default()
+        };
+        let report: PreflightReport = serde_json::from_value(serde_json::json!({
+            "schema_version": "1.0.0",
+            "checks": [{"id": "PRE-09", "status": "pass", "detail": "",
+                        "measured": {"estimate_source": {"A": "measured 3 runs", "B": "default"},
+                                     "estimates": {"A": {"model": "sonnet", "tokens": measured},
+                                                   "B": {"model": "opus", "tokens": measured}}}}],
+            "safe_n": 2, "waves": 1, "projected_cost_microusd": 0,
+            "machine": {"os": "macos", "arch": "aarch64", "cpus": 10,
+                        "mem_total_bytes": null, "mem_available_bytes": null,
+                        "disk_free_bytes": null, "disk_total_bytes": null,
+                        "gpu": "apple_silicon", "max_open_files": null, "max_processes": null},
+            "environment_digest": horch_core::measure::digest::sha256_bytes(b"e").to_string(),
+            "passed": true,
+        }))
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DatasetPaths::from_slug(tmp.path(), "fixture");
+        let exp = ExperimentId::new("01a10753-3c91-7bd1-99e8-70f01d2b52d5").unwrap();
+        let rec = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
+        rec.append(NewEvent {
+            kind: EventKind::PreflightCompleted(PreflightCompleted { report }),
+            actor: Actor::Coordinator,
+            experiment_id: exp.clone(),
+            round_id: None,
+            execution_id: None,
+            idempotency_key: "preflight.completed:x".into(),
+            occurred_at: clock::now(),
+        })
+        .unwrap();
+        drop(rec);
+        let events = store::read_all(&paths).unwrap().events;
+        let report = events
+            .iter()
+            .find_map(|e| match e.event() {
+                Ok(EventKind::PreflightCompleted(p)) => Some(p.report),
+                _ => None,
+            })
+            .unwrap();
+
+        // B was planned on opus; the resumed plan puts it on codex-sol.
+        let planned = [
+            ("A".to_string(), "sonnet".to_string()),
+            ("B".to_string(), "codex-sol".to_string()),
+        ];
+        let got = resumed_estimates(&report, &planned, &ExpectedTokens::default());
+        assert_eq!(got["sonnet"], measured);
+        let (default, _) = resolve_estimate(
+            "codex-sol",
+            None,
+            &ExpectedTokens::default(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(got["codex-sol"], default);
+        assert_ne!(measured, default);
     }
 
     /// F7 (roster-resilience): a teammate file that does not parse gives one

@@ -13,8 +13,9 @@ use horch_core::competition::config::{
     RunFlags, Strategy,
 };
 use horch_core::competition::preflight::{
-    evaluate, footprint_bytes, parse_git_version, storage_probe, CheckStatus, GitFacts,
-    PreflightCandidate, PreflightPlan, PreflightReport, StorageProbe, TokenEstimate,
+    evaluate, footprint_bytes, parse_git_version, recorded_estimates, storage_probe, CheckStatus,
+    GitFacts, PreflightCandidate, PreflightPlan, PreflightReport, RecordedEstimate, StorageProbe,
+    TokenEstimate,
 };
 use horch_core::harness::capabilities::HARNESS_FOOTPRINT_BYTES;
 use horch_core::harness::trust::{claude_trust, codex_trust, trust_fix, HarnessTrust, TrustState};
@@ -616,6 +617,33 @@ fn pre_09_configured_estimate_fits_the_task() {
     assert_eq!(r.projected_cost_microusd, MicroUsd(3_200_000));
     assert_eq!(status(&r, "PRE-09"), CheckStatus::Fail);
     assert!(detail(&r, "PRE-09").contains("A: default, B: default"));
+}
+
+/// G9: the report records the tokens PRE-09 projected each label with, so
+/// a resumed round's meter can read them back. A report without them reads
+/// as empty.
+#[test]
+fn pre_09_records_each_label_estimate() {
+    let mut p = two_sonnets_at_2_usd();
+    p.measured_tokens = BTreeMap::from([(
+        "sonnet".to_string(),
+        MeasuredTokens {
+            runs: MEASURED_MIN_RUNS,
+            estimate: la_sized(),
+        },
+    )]);
+    let mut r = evaluate(&p, &mac());
+    let want = RecordedEstimate {
+        model: "sonnet".into(),
+        tokens: la_sized(),
+    };
+    let got = recorded_estimates(&r);
+    assert_eq!(got.len(), 2);
+    assert_eq!(got["A"], want);
+    assert_eq!(got["B"], want);
+
+    r.checks.retain(|c| c.id != "PRE-09");
+    assert!(recorded_estimates(&r).is_empty());
 }
 
 /// The sources in order: the plan's per-label estimate, the config's model

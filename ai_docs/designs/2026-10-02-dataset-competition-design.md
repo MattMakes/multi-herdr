@@ -1222,10 +1222,17 @@ key is left out of the config digest when it is empty.
 The PRE-09 detail names the source of each label, such as `projected $0.340000
 (estimates: A: config all, B: config all) plus judge reserve $0.200000 is
 under the soft limit $1.600000`. `measured.estimate_source` has the same,
-by label.
+by label. `measured.estimates` records the tokens of each label and its
+model (`{"A": {"model": "sonnet", "tokens": {...}}}`,
+`pre_09_records_each_label_estimate`).
 
-The live budget does not use these sources yet: `UsageMeter::projected`
-(the coordinator's committed spend) still uses `DEFAULT_TOKEN_ESTIMATE`.
+The live budget uses the same estimates: `UsageMeter::projected` (the
+coordinator's committed spend) takes each model's estimate from `run`'s
+resolution. `resume` reads `measured.estimates` from the recorded report
+(`preflight::recorded_estimates`), so a resumed round projects what PRE-09
+projected; a label whose resumed plan has another model, or a report written
+before the key, falls back to `budget.expected_tokens` and the default
+(`resume_meter_uses_the_recorded_estimates`).
 
 PRE-12 as a requirement is the refusal itself. `dataset/run.rs` refuses a
 report with any `fail` with exit code 4. The events are `experiment.created`,
