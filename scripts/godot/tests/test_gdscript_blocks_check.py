@@ -66,7 +66,10 @@ class ExtractTest(unittest.TestCase):
 @unittest.skipIf(gbc.find_godot() is None, "no Godot")
 class ParseTest(unittest.TestCase):
     def setUp(self):
-        self.scratch = Path(tempfile.mkdtemp(dir=gbc.REPO / ".worktrees" / "_scratch"))
+        # A clean checkout (the gate's) has no .worktrees/_scratch yet.
+        parent = gbc.REPO / ".worktrees" / "_scratch"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.scratch = Path(tempfile.mkdtemp(dir=parent))
         self.addCleanup(shutil.rmtree, self.scratch, True)
 
     def test_sample(self):
