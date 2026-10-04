@@ -1238,7 +1238,12 @@ codex-cli 0.160.0) showed:
   folder does not trust a separate repository under it.
 - Claude records it in `~/.claude.json` as
   `projects["<root>"].hasTrustDialogAccepted: true`. The key is the
-  canonical path (`/private/tmp/...` on macOS).
+  canonical path (`/private/tmp/...` on macOS). With `CLAUDE_CONFIG_DIR`
+  set, Claude keeps the file at `$CLAUDE_CONFIG_DIR/.claude.json` instead
+  and does not read the home one (seen on claude 2.1.289);
+  `competition/preflight.rs:claude_config_file` picks the file from
+  `RuntimeContext.inherited.claude_config_dir`. Test
+  `claude_trust_follows_claude_config_dir`.
 - Codex records it in `$CODEX_HOME/config.toml` (default `~/.codex`) as a
   table `[projects."<root>"]` with `trust_level = "trusted"`.
 - agy asks "Do you trust the contents of this project?" on the first launch
@@ -1290,6 +1295,27 @@ an agent that later prints the same words from being stopped. The texts:
 
 Tests: `trust_dialog_matches_the_harness_dialogs`,
 `pre_14_trust_dialog_pane_ends_the_candidate_at_once`.
+
+#### 4.11.4 Candidate lifecycle: commits (F5)
+
+A candidate does not commit. `teammates/_base/competition-candidate.md`
+tells it to leave its changes, new files included, in the work tree; the
+coordinator commits them at freeze (`WorktreeManager::freeze`, which runs
+`commit_all`: every change and every untracked file, as the fixed freeze
+identity). The reason: a sandboxed Codex cannot write
+`<repo>/.git/worktrees/<label>` (the index lock of a linked worktree lives
+in the main repository's `.git`), so `git commit` fails inside the
+candidate (LA run, codex-terra). The sandbox is not widened to the common
+`.git`: a candidate could then rewrite other branches. A candidate that
+commits anyway is still frozen correctly (the freeze commit is then empty
+or absent, and the head is read from the main repository).
+
+The branch of a frozen candidate holds exactly one commit on the base,
+`candidate <label> frozen`, when the candidate did not commit. Tests:
+`cmp_07_blocked_commit_work_is_frozen` (fake Codex `commit: "blocked"`
+tries `git add` and `git commit` and fails; the changed tracked file and the
+new file are in the frozen numstat, and both candidates are eligible),
+`cmp_07_candidate_crash_kept_in_round`.
 
 ---
 
@@ -1421,7 +1447,7 @@ NEEDS_INTERVENTION, CLEANUP runs only on an operator `cleanup` command.
 |---|---|
 | Created | `crates/horch/src/bin/multi-herdr-dataset.rs`; `crates/horch/src/dataset/{run,preflight,status}.rs`; `vcs/{mod,git}.rs`; `runtime/machine.rs` (merged); `competition/{config,preflight}.rs`; e2e `Harness::with_git()` |
 | Command | `run <task> --candidates N --strategy diverse --budget-usd X --judge auto [--baseline <teammate>] [--promote-to <branch>] [--worktree-root <dir>] [--allow-dirty]` |
-| Exit codes | 0 ok, 3 budget/quota refusal, 4 preflight failed, 5 needs intervention, 6 rejected |
+| Exit codes | 0 ok, 3 budget/quota refusal, 4 preflight failed, 5 needs intervention, 6 rejected. A plan with no candidate (every teammate excluded or over its usage limits) fails PRE-08 and exits 3, not 4, when PRE-08 is its only failed check (`pre_08_empty_plan_exits_3_before_worktree_or_model`) |
 | Install | `horch install` and `just install` install both binaries |
 | Rule | a failing check emits `experiment.aborted` before any worktree or model; the report goes in `preflight.completed` and the manifest with `environment_digest` |
 | Tests | PRE-01..13, CMP-01, NFR-10 |
