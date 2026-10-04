@@ -86,6 +86,8 @@ sandbox:
   filesystem:
     # Darwin per-user temp and cache dirs: xcodebuild stages atomic saves
     # there. Build output goes to build/ in the project (see the persona).
+    # Without this entry `xcodebuild archive` fails with exit 65
+    # (ai_docs/reports/finish/release-verify.md).
     allowWrite: ["/private/var/folders"]
     # Named as well as closed by the block, so they stay closed if Claude
     # Code changes the block. ~/.asc is asc's own config; altool reads keys

@@ -211,7 +211,7 @@ and [`ai_docs/reports/domain-skills/swift-teammates.md`](../ai_docs/reports/doma
 | `swift-reviewer` | validation | claude, opus, high | `codex-sol` | Swift review: concurrency, modern API, performance, Keychain; never edits |
 | `swift-qa-engineer` | validation | claude, sonnet, high | none | Swift Testing, XCTest migration, simulator repros |
 | `apple-accessibility-auditor` | validation | claude, sonnet, high | `codex-terra` | VoiceOver, Dynamic Type, Voice Control, UI copy; never edits |
-| `app-release-preparer` | implementation | claude, sonnet, medium | none | archive, internal TestFlight upload, readiness audit, notes; never submits |
+| `app-release-preparer` | implementation | claude, sonnet, medium | none | archive, export, readiness audit, notes; writes the upload command for a human; never uploads or submits |
 | `codex-swift-reviewer` | validation | codex, gpt-5.6-sol, high | `opus` | cross-vendor Swift review of Claude-built changes |
 
 Every persona's first move is a toolchain check (`xcodebuild -version`,
@@ -230,9 +230,11 @@ house style for the points where the Swift skills disagree.
 operator owns: `ASC_CONFIG_PATH` (`~/.config/horch/asc/config.json`, with
 one key entry and an absolute `private_key_path`) and `ASC_BYPASS_KEYCHAIN`.
 Give it a key whose role cannot submit for review or change prices; that,
-not its deny list, is the release safety. It ends every App Store Connect
-write at a `--dry-run` plan for the orchestrator, and it has no fallback,
-because a fallback would drop the env and the deny list.
+not its deny list, is the release safety. It never uploads: it writes the
+exact upload command, and a human runs it. It ends every other App Store
+Connect write at a `--dry-run` plan for the orchestrator, and it has no
+fallback, because a fallback would drop the env, the sandbox and the deny
+list.
 
 `swift-developer` and `apple-platform-developer` set
 `operator_skills: {dir: ~/.agents/skills, names: [swiftui-whats-new-27, test-modernizer]}`.

@@ -1,6 +1,6 @@
 ---
 name: asc-xcode-build
-description: Build, archive, generate export options, export, upload, and manage Xcode version/build numbers with the current asc xcode helpers. Use when creating an IPA or PKG for App Store Connect, TestFlight, or registered-device release testing.
+description: Build, archive, generate export options, export, write the upload command for a human, and manage Xcode version/build numbers with the current asc xcode helpers. Use when creating an IPA or PKG for App Store Connect, TestFlight, or registered-device release testing.
 ---
 
 # Xcode build and export
@@ -15,7 +15,7 @@ Use this skill when you need to build an app from source and prepare it for App 
 
 ## Fleet rule: App Store Connect writes
 
-Local steps (version edits, `asc xcode build`, `archive`, `export` without `--wait`, `export-options generate`) change only local files; run them. A build upload (`asc builds upload`, `asc xcode export --wait`) writes to App Store Connect: run it only when your assignment names that upload, otherwise send the command to the orchestrator. Never run `asc publish`: it distributes the build to testers or to the App Store. Send the dry-run to the orchestrator instead with `horch tell orchestrator`: the exact command, the resolved IDs, and the artifact path. A human runs it.
+Local steps (version edits, `asc xcode build`, `archive`, `export` without `--wait`, `export-options generate`) change only local files; run them. Never upload, even when the assignment asks for it: a build upload (`asc builds upload`, `asc xcode export --wait`) and `asc publish` write to App Store Connect, and a human runs them. When the export succeeds, send the exact upload command to the orchestrator with `horch tell orchestrator`: the command with every value filled in, the resolved IDs, and the artifact path. In the fleet's release sandbox the upload hosts are blocked, so an upload fails anyway.
 
 ## Manage version and build numbers
 
@@ -129,7 +129,7 @@ An explicit `--export-options` plist cannot be combined with `--method`,
 signing, private publication, resumability, and live verification, report the
 need to the orchestrator instead of assembling those stages manually.
 
-To upload directly through Xcode and wait for App Store Connect processing, omit `--export-options` and add `--wait`:
+Xcode can also upload directly and wait for App Store Connect processing: omit `--export-options` and add `--wait`. This is an upload. Do not run it; send it to the orchestrator for a human (see the fleet rule):
 
 ```bash
 asc xcode export \
@@ -141,7 +141,7 @@ asc xcode export \
 
 ### 3. Upload or publish
 
-Fleet rule: the commands in this section write to App Store Connect. See "Fleet rule: App Store Connect writes" above. The `asc publish` commands are for the dry-run only.
+Fleet rule: the commands in this section write to App Store Connect. Never run them. Write the exact command for a human and send it to the orchestrator. See "Fleet rule: App Store Connect writes" above.
 
 Upload an exported IPA:
 
@@ -178,7 +178,7 @@ asc xcode archive \
   --output json
 ```
 
-If your macOS export produces a `.pkg`, export it with the helper, then upload the package:
+If your macOS export produces a `.pkg`, export it with the helper. The upload command below is for a human; send it to the orchestrator and do not run it:
 
 ```bash
 asc xcode export \

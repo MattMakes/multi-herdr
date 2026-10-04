@@ -216,8 +216,11 @@ assets for Unreal. It runs on Claude (opus, medium) and carries the
   available`). A reviewer reviews the source and says it had no build.
 - `app-release-preparer` reads its App Store Connect credential from a file
   that the operator owns. The key setup is in the Apple section of the
-  top-level [README](../README.md). It ends every App Store Connect write at a
-  `--dry-run` plan for the orchestrator and never submits.
+  top-level [README](../README.md). Its Bash commands run in an OS sandbox
+  that reaches only `api.appstoreconnect.apple.com`. It never uploads and
+  never submits: it writes the exact upload command, and a human runs it.
+  It ends every other App Store Connect write at a `--dry-run` plan for the
+  orchestrator.
 - `swift-developer` and `apple-platform-developer` set `operator_skills` for
   Apple's Xcode 27 skills (see "Operator skills"). A host without the export
   gets a warning, not a failure.

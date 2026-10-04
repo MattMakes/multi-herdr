@@ -538,7 +538,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "Adapted, light. A fleet rule: local build, archive and export steps run; a build upload runs only when the assignment names it; asc publish is never run and goes to the orchestrator as a dry-run. Links to the unbundled asc-ad-hoc-distribution and asc-signing-setup skills become reports to the orchestrator. MIT LICENSE kept.",
+      "adaptation": "Adapted, light. A fleet rule: local build, archive and export steps run; the agent never uploads (asc builds upload, asc xcode export --wait) or publishes, even when asked, and sends the exact command to the orchestrator for a human. Links to the unbundled asc-ad-hoc-distribution and asc-signing-setup skills become reports to the orchestrator. MIT LICENSE kept.",
       "vendored": false
     },
     {
