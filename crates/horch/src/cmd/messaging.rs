@@ -14,7 +14,7 @@ use horch_core::execution::store::to_execution;
 use horch_core::execution::ExecutionKind;
 use horch_core::harness::launch;
 use horch_core::messaging::delivery;
-use horch_core::messaging::mailbox::Mailbox;
+use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::arrange;
@@ -84,25 +84,39 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     )
 }
 
-/// List roles registered - and so reachable via `horch tell` - in this workspace.
+/// List roles registered in this workspace, and mark each one whose pane
+/// herdr no longer has.
+///
+/// A closed role stays in the list, marked, rather than hidden: its id file
+/// is still there, and a reader who sees why `horch tell` to it fails does
+/// not have to guess where the role went.
 pub fn inbox(ctx: &RuntimeContext) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
-    if !mailbox.exists() {
-        println!("no roles registered yet");
-        return Ok(());
-    }
-    let roles = mailbox.roles();
+    let roles = mailbox.role_states(&herdr);
     if roles.is_empty() {
         println!("no roles registered yet");
         return Ok(());
     }
-    let mut listing = String::new();
-    for (role, pane) in roles {
-        listing.push_str(&format!("{role:<12} {pane}\n"));
+    if roles.iter().any(|r| r.state == PaneState::Unknown) {
+        eprintln!("horch inbox: herdr did not answer, so pane states are unknown");
     }
-    output::print(&listing);
+    output::print(&inbox_listing(&roles));
     Ok(())
+}
+
+/// One line for each role: name, pane, and `(pane closed)` when herdr does
+/// not list the pane.
+fn inbox_listing(roles: &[RoleEntry]) -> String {
+    let mut listing = String::new();
+    for r in roles {
+        let mark = match r.state {
+            PaneState::Closed => "  (pane closed)",
+            PaneState::Open | PaneState::Unknown => "",
+        };
+        listing.push_str(&format!("{:<12} {}{mark}\n", r.role, r.pane));
+    }
+    listing
 }
 
 /// Orchestrator-facing: give a task to a LIVE worker.

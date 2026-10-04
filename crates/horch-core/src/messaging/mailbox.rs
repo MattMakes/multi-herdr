@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::runtime::RuntimeContext;
+use crate::workspace::client::WorkspaceClient;
 use crate::workspace::herdr::Herdr;
 use anyhow::{bail, Context, Result};
 
@@ -15,6 +16,24 @@ use crate::messaging::brief::Brief;
 
 /// A brief's file mode: what `std::fs::write` gave it under the usual umask.
 const BRIEF_MODE: u32 = 0o644;
+
+/// Whether herdr still has a registered role's pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneState {
+    Open,
+    /// herdr answered and does not list the pane.
+    Closed,
+    /// herdr did not answer.
+    Unknown,
+}
+
+/// One registered role, as [`Mailbox::role_states`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleEntry {
+    pub role: String,
+    pub pane: String,
+    pub state: PaneState,
+}
 
 /// The mailbox directory for one herdr workspace.
 #[derive(Debug, Clone)]
@@ -172,6 +191,29 @@ impl Mailbox {
             .collect();
         out.sort();
         out
+    }
+
+    /// Every registered role with whether herdr still has its pane, from one
+    /// `pane list` of this workspace. A worker whose pane closed without
+    /// `horch done` leaves its id file behind; this is how `horch inbox`
+    /// tells it apart. When herdr does not answer, every pane is
+    /// [`PaneState::Unknown`].
+    pub fn role_states(&self, ws: &dyn WorkspaceClient) -> Vec<RoleEntry> {
+        let open: Option<Vec<String>> = ws
+            .pane_list(&self.workspace_id)
+            .ok()
+            .map(|panes| panes.into_iter().map(|p| p.pane_id).collect());
+        self.roles()
+            .into_iter()
+            .map(|(role, pane)| {
+                let state = match &open {
+                    None => PaneState::Unknown,
+                    Some(open) if open.contains(&pane) => PaneState::Open,
+                    Some(_) => PaneState::Closed,
+                };
+                RoleEntry { role, pane, state }
+            })
+            .collect()
     }
 
     /// Map of pane id -> role, for labelling layout output.
