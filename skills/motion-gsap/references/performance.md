@@ -64,7 +64,7 @@ addEventListener("pointermove", (e) => { xTo(e.clientX); yTo(e.clientY); });
 
 - Kill or revert what you no longer show: route changes, closed modals, unmounted components.
 - Pause decorative loops when they leave the viewport (`ScrollTrigger` `toggleActions: "play pause resume pause"`).
-- GSAP's ticker runs on `requestAnimationFrame`, so it already stops in a hidden tab. `gsap.ticker.lagSmoothing()` keeps time sane after a stall; leave the default unless a smooth-scroll library needs `lagSmoothing(0)`.
+- GSAP's ticker runs on `requestAnimationFrame`, so the browser throttles it in a hidden tab. `gsap.ticker.lagSmoothing()` keeps time sane after a stall; leave the default unless a smooth-scroll library needs `lagSmoothing(0)`.
 
 ## Measure
 

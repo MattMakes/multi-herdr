@@ -10,7 +10,9 @@ npm install gsap            # all plugins are in this package and free, includin
 import { gsap } from "gsap";
 ```
 
-Do not create an `.npmrc` with a GreenSock token, do not use the old private registry, and do not tell anyone to buy a membership. Those instructions are out of date.
+Do not create an `.npmrc` with a GreenSock token, do not use the old private registry, do not install `@gsap/business`, `@gsap/shockingly` or `@gsap/club`, and do not tell anyone to buy a membership. Those instructions are out of date.
+
+The GSAP Standard License has one prohibited use: a no-code visual animation builder that competes with Webflow. If the project is such a tool, raise the license question before you add GSAP.
 
 ## Tween methods
 
@@ -45,7 +47,7 @@ t.kill();
 | `yoyo` | With `repeat`, alternate direction. |
 | `repeatDelay` | Seconds between repeats. |
 | `overwrite` | `false` (default); `true` kills all tweens of the same targets at once; `"auto"` kills only overlapping properties of other active tweens when this tween first renders. |
-| `immediateRender` | `true` by default for `from()` and `fromTo()`. |
+| `immediateRender` | `true` by default for `from()`, `fromTo()` and any tween with a `scrollTrigger`; `false` for other `to()` tweens. |
 | `paused` | Create paused. |
 | `onStart`, `onUpdate`, `onComplete`, `onRepeat`, `onReverseComplete` | Callbacks. `this` is the tween. |
 | `clearProps` | Comma list of properties (or `"all"`) to remove from inline style on completion. Clearing any transform property clears the whole transform. |
@@ -88,7 +90,7 @@ gsap.to(".item", { y: -20, stagger: { each: 0.1, from: "center" } });
 gsap.to(".cell", { scale: 0, stagger: { amount: 0.6, grid: "auto", from: "edges", ease: "power1.in" } });
 ```
 
-`each` is the gap between targets; `amount` is the total spread. `from`: `"start"`, `"center"`, `"edges"`, `"random"`, `"end"`, an index, or ratios like `[0.25, 0.75]`. `grid`: `[rows, columns]` or `"auto"`; `axis`: `"x"` or `"y"`.
+`each` is the gap between targets; `amount` is the total spread. `from`: `"start"`, `"center"`, `"edges"`, `"random"`, `"end"`, an index, or (with `grid`) ratios like `[0.25, 0.75]`. `grid`: `[rows, columns]` or `"auto"`; `axis`: `"x"` or `"y"`.
 
 ## Eases
 
@@ -122,7 +124,7 @@ Put the motion tokens here or in timeline `defaults`.
 
 ## gsap.matchMedia(): breakpoints and reduced motion
 
-`gsap.matchMedia()` (3.11+) runs a setup function while a media query matches. When it stops matching, GSAP reverts every animation and ScrollTrigger created in that run. It creates its own context: do not nest `gsap.context()` in it.
+`gsap.matchMedia()` (3.11+) runs a setup function while a media query matches. When it stops matching, GSAP reverts every animation and ScrollTrigger created in that run. It creates its own context and passes it to the handler, so you do not need a `gsap.context()` inside it.
 
 ```javascript
 const mm = gsap.matchMedia();

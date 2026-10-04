@@ -62,7 +62,7 @@ UI feedback (hover, press, toggle) stays at or below 0.3 s in every character.
 - Prefer transform aliases over the raw `transform` string and over layout properties. Prefer `autoAlpha` over `opacity` when an element fades to 0, so it stops taking clicks.
 - Set initial hidden states in a way that avoids a flash: use `gsap.from()`/`fromTo()` (they render their start state at once) or `gsap.set()` before first paint. Do not hide content with CSS that only JavaScript can reveal unless a reduced-motion and a no-JS path also reveal it.
 - When several `from()`/`fromTo()` tweens target the same property of the same element, set `immediateRender: false` on the later ones.
-- Use built-in ease names only (`power1` to `power4`, `back`, `elastic`, `expo`, `circ`, `sine`, `bounce`, `none`, each with `.in`, `.out`, `.inOut`). Use CustomEase for any other curve.
+- Use built-in ease names only (`power1` to `power4`, `back`, `elastic`, `expo`, `circ`, `sine`, `bounce`, each with `.in`, `.out`, `.inOut`; `none`; `steps(n)`). Use CustomEase for any other curve.
 - Store the return value of a tween or timeline you need to control. Kill or revert what you create: tweens, timelines, ScrollTriggers, SplitText, Draggable, Observer.
 - Scope selectors in components (`useGSAP` `scope`, `gsap.context(fn, root)` or `gsap.utils.selector`).
 - Call `ScrollTrigger.refresh()` after layout changes that are not a viewport resize (fonts, images, async content).

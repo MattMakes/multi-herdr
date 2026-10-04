@@ -1,6 +1,6 @@
 # GSAP plugins
 
-Every plugin is in the public `gsap` package and free for commercial use. Import from `gsap/<Name>` and register once, before first use:
+Every plugin is in the public `gsap` package and free for commercial use (license limit: see `core.md`). Import from `gsap/<Name>` and register once, before first use:
 
 ```javascript
 import { gsap } from "gsap";
@@ -61,7 +61,7 @@ gsap.to(window, { duration: 0.8, scrollTo: { y: "#pricing", offsetY: 80 } });
 gsap.to(listEl, { duration: 0.5, scrollTo: { x: "max" } });
 ```
 
-`scrollTo` keys: `x`, `y` (number, selector, element or `"max"`), `offsetX`, `offsetY`, `autoKill` (stop when the user scrolls). In reduced-motion mode, use `duration: 0` or native `scrollIntoView()`.
+`scrollTo` keys: `x`, `y` (number, selector, element or `"max"`), `offsetX`, `offsetY`, `autoKill` (stop when the user scrolls). A bare value scrolls `y`. Remove CSS `scroll-behavior: smooth` from the scroller: it conflicts with ScrollToPlugin. In reduced-motion mode, use `duration: 0` or native `scrollIntoView()`.
 
 ## Observer
 
@@ -70,7 +70,7 @@ gsap.registerPlugin(Observer);
 const obs = Observer.create({
   target: window,
   type: "wheel,touch,pointer",
-  wheelSpeed: -1,          // makes wheel direction match touch-drag direction
+  wheelSpeed: -1,          // inverts wheel deltas so wheel-down pages like a finger swipe up
   tolerance: 10,
   preventDefault: true,
   onDown: () => goTo(index - 1),
@@ -103,14 +103,14 @@ Flip.from(state, {                             // 3. invert and play
 | `Flip.from()` var | Meaning |
 |---|---|
 | `absolute` | Use `position: absolute` during the flip. Fixes flex and grid reflow problems. Default `false`. |
-| `scale` | Use `scaleX`/`scaleY` instead of `width`/`height` for the size change. Faster, but distorts children. Default `false`. |
+| `scale` | Use `scaleX`/`scaleY` instead of `width`/`height` for the size change. Typically faster, but children scale too. Default `false`. |
 | `nested` | Set `true` when flipping elements are inside other flipping elements, so offsets do not compound. |
-| `simple` | Skip rotation and skew calculations. Faster. |
-| `targets` | Limit the flip to these elements. |
+| `simple` | Skip the calculations for rotated, scaled or skewed containers. Faster with many targets. |
+| `targets` | Limit the flip to these elements. Set it when a framework re-renders new element instances, so Flip matches them by `data-flip-id`. |
 | `toggleClass` | Add a class during the flip. |
 | `zIndex` | z-index during the flip. |
 | `fade` | Cross-fade elements that swap (same `data-flip-id`). |
-| `onEnter`, `onLeave` | Animate elements that were added or removed. |
+| `onEnter`, `onLeave` | Animate elements that were added or removed. Leaving elements are visible only with `absolute: true`. |
 | `prune` | Drop targets that did not move. |
 
 Give matching elements across states the same `data-flip-id`. `Flip.getState(targets, { props: "backgroundColor,color" })` also records extra properties. `Flip.fit(el, target)` resizes one element to another's box.
@@ -124,8 +124,8 @@ Draggable.create(".slider-track", { type: "x", bounds: ".slider", inertia: true,
 Draggable.create(".knob", { type: "rotation", inertia: true });
 ```
 
-- `type`: `"x"`, `"y"`, `"x,y"`, `"top,left"`, `"rotation"`, `"scroll"`, `"scrollTop"`, `"scrollLeft"`.
-- `bounds`: element, selector or `{ minX, maxX, minY, maxY }`. `inertia: true` needs InertiaPlugin. `snap` works on the throw end value.
+- `type`: `"x,y"` (default), `"x"`, `"y"`, `"top,left"`, `"top"`, `"left"`, `"rotation"`.
+- `bounds`: element, selector or `{ minX, maxX, minY, maxY }`. `inertia: true` needs InertiaPlugin. `snap` sets where the throw lands.
 - Callbacks: `onPress`, `onDragStart`, `onDrag`, `onDragEnd`, `onRelease`, `onClick`, `onThrowUpdate`, `onThrowComplete`. `this.x`, `this.y`, `this.rotation` inside them.
 - A draggable control also needs a keyboard path (arrow keys or buttons).
 - `InertiaPlugin.track(el, "x")` tracks velocity; `gsap.to(el, { inertia: { x: "auto" } })` continues it to a stop.
@@ -145,9 +145,9 @@ SplitText.create(".headline", {
 
 | Var | Meaning |
 |---|---|
-| `type` | `"chars"`, `"words"`, `"lines"`, comma-separated. Split only what you animate. |
-| `mask` | `"lines"`, `"words"` or `"chars"`: adds a clipping wrapper, available on `self.masks`. |
-| `autoSplit` | Re-split on font load and width change. Create the animation inside `onSplit()` and return it, so SplitText reverts and syncs it on re-split. |
+| `type` | `"chars"`, `"words"`, `"lines"`, comma-separated. Default `"chars,words,lines"`. Split only what you animate. |
+| `mask` | `"lines"`, `"words"` or `"chars"` (one type only): adds a clipping wrapper, available on `self.masks`. |
+| `autoSplit` | Re-split when fonts load, and on a width change when `lines` are split. Default `false`. Create the animation inside `onSplit()` and return it, so SplitText reverts and syncs it on re-split. |
 | `aria` | `"auto"` (default: `aria-label` on the parent, `aria-hidden` on pieces), `"hidden"` or `"none"`. |
 | `charsClass`, `wordsClass`, `linesClass` | Class names; `"line++"` adds an index (`line1`, `line2`). |
 | `tag` | Wrapper tag, default `"div"`. Inline `span` pieces may not render transforms. |
@@ -205,7 +205,7 @@ gsap.to(".dot", { duration: 3, ease: "none",
   motionPath: { path: "#route", align: "#route", alignOrigin: [0.5, 0.5], autoRotate: true } });
 ```
 
-`path` accepts a path element, a selector, path data or an array of points; `curviness` (0 to 2) smooths point arrays; `start` and `end` (0 to 1) use part of the path.
+`path` accepts a path element, a selector, path data or an array of points; `curviness` (0 straight, 1 default, 2 very curvy) smooths point arrays; `start` and `end` (progress, default 0 and 1) use part of the path, and values outside 0 to 1 wrap around.
 
 ## Ease plugins
 
@@ -221,9 +221,9 @@ gsap.to(".bell", { rotation: 15, ease: "shake", duration: 0.8 });
 
 ```javascript
 gsap.to(".ball", { duration: 2, physics2D: { velocity: 250, angle: -60, gravity: 500 } });
-gsap.to(".obj", { duration: 2, physicsProps: { x: { velocity: 100, end: 300 }, y: { velocity: -50, acceleration: 200 } } });
+gsap.to(".obj", { duration: 2, physicsProps: { x: { velocity: 100, friction: 0.1 }, y: { velocity: -50, acceleration: 200 } } });
 ```
 
 ## Development only
 
-`GSDevTools.create({ animation: tl })` adds a scrubber. `MotionPathHelper.create(".dot", "#path")` edits a path. Remove both before you ship.
+`GSDevTools.create({ animation: tl })` adds a scrubber. `MotionPathHelper.create(tween)` makes the motion path of a tween editable in the browser (or pass an element to start a new path). Remove both before you ship.
