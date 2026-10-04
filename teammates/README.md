@@ -234,11 +234,21 @@ not its deny list, is the release safety. It ends every App Store Connect
 write at a `--dry-run` plan for the orchestrator, and it has no fallback,
 because a fallback would drop the env and the deny list.
 
-No Swift teammate sets `operator_skills:`, because `--check` fails when the
-directory is missing. To give `swift-developer` or
-`apple-platform-developer` Apple's Xcode 27 skills, run
-`xcrun agent skills export` and add, in a local copy of the file,
-`operator_skills: {dir: ~/.agents/skills, names: [swiftui-whats-new-27]}`.
+`swift-developer` and `apple-platform-developer` set
+`operator_skills: {dir: ~/.agents/skills, names: [swiftui-whats-new-27, test-modernizer]}`.
+These are Apple's Xcode 27 skills, which cannot ship in this repo. Export
+them on each Mac with Xcode 27 or later:
+
+```sh
+xcrun agent skills export --output-dir ~/.agents/skills
+```
+
+On a host without the export, `horch teammates --check` prints a `warning:`
+line for each missing skill and still passes. The launch skips the skill,
+and the worker's briefing says "Skipped: operator skill <name> is not
+installed on this host". A skill that changes or disappears between
+`horch spawn` and the worker's start fails the launch, because the worker
+must run the skill digests that the ledger recorded.
 
 ## The effort-matrix personas
 
