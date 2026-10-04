@@ -130,3 +130,9 @@ These skills come from MIT-licensed Swift skill repositories. Each keeps its ups
 | [ue-testing-debugging](ue-testing-debugging/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-testing-debugging/` | verbatim |
 | [ue-ui-umg-slate](ue-ui-umg-slate/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-ui-umg-slate/` | verbatim |
 | [ue-world-level-streaming](ue-world-level-streaming/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-world-level-streaming/` | verbatim |
+## Unreal Engine skills
+
+| Skill | Upstream source | Copy |
+| --- | --- | --- |
+| [ue-build-verify](ue-build-verify/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging` and `ue-module-build-system`)* | own text |
+| [ue-editor-scripting](ue-editor-scripting/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging`)* | own text |
