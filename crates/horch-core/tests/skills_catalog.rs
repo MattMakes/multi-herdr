@@ -17,7 +17,12 @@ use horch_marketplace::LockEntry;
 const PINNED_REPOSITORY: &str = "https://github.com/MattMakes/skill-marketplace";
 const PINNED_COMMIT: &str = "d47670328c59a3311a9b4149bc5f8f33f0a92754";
 /// Skills written in this repository: their provenance has no sources.
-const REPO_ORIGINAL: &[&str] = &["orchestrate", "ue-build-verify", "ue-editor-scripting"];
+const REPO_ORIGINAL: &[&str] = &[
+    "blender-ue-pipeline",
+    "orchestrate",
+    "ue-build-verify",
+    "ue-editor-scripting",
+];
 
 const PHASES: [Option<Phase>; 5] = [
     None,
@@ -48,6 +53,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "app-release-preparer",
     "apple-accessibility-auditor",
     "apple-platform-developer",
+    "blender-artist",
     "codex-swift-reviewer",
     "design-critic",
     "design-director",
