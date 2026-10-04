@@ -8,7 +8,7 @@ Plan: `ai_docs/plans/finish/g3-worker-env.md`. Worker opus-71, 2026-10-04.
 |---|---|---|
 | 1. No pane process holds a `FORBIDDEN_ENV` name | `48c7a13` | `paneshell::tests::every_command_line_first_removes_every_forbidden_name`, the 2 changed exact-line tests, e2e `lifecycle::pane_command_removes_a_forbidden_key_before_horch_starts` |
 | 2. The worker reads the skill store its spawner read | `8873d0d` | `brief::tests::arc_07_brief_v1_readable`, `brief::tests::a_v2_brief_round_trips_and_keeps_the_v1_keys`, e2e `skills_exposure::worker_reads_the_skill_store_its_spawner_read` |
-| 3. Every roster load prints the F7 warnings | see `git log -- ai_docs/reports/finish/worker-env.md` | `judge_job::tests::roster_warnings_are_printed`, e2e `lifecycle::worker_warns_once_about_a_teammate_file_that_does_not_load` |
+| 3. Every roster load prints the F7 warnings | `a68a51a` | `judge_job::tests::roster_warnings_are_printed`, e2e `lifecycle::worker_warns_once_about_a_teammate_file_that_does_not_load` |
 
 ## 1. `env -u` in every pane command
 
