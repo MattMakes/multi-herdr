@@ -1035,7 +1035,7 @@ pub fn parse_source(spec: &str) -> Result<SkillSource, MarketplaceError>;
 // "owner/repo[@rev]" → https://github.com/owner/repo; "https://…[@rev]"; "file://…"; absolute path.
 // @rev of 40 hex → Commit; else tag, then branch, at resolve time.
 
-// manifest.rs — SPEC-TODO(Spec A §10): the manifest key list.
+// manifest.rs — the manifest key list (Spec A §10) is the table below the store layout.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillManifest {
@@ -1118,6 +1118,30 @@ Install pipeline:
 Rejection rules: absolute paths, `..` components, symlinks, over 512 files,
 a file over 1 MiB, total over 8 MiB, unknown manifest keys (so no hooks), and
 credentials in a URL (userinfo, or a `token=` query).
+
+**The SKILL.md manifest keys (Spec A §10).** The frontmatter is the YAML
+between a leading `---` line and the next `---` line (CRLF reads as LF). It
+uses only these 5 keys:
+
+| Key | Required | Type | Rule |
+|---|---|---|---|
+| `name` | yes | string | `[a-z0-9-]`, not empty, no leading or trailing `-`, no `--`; equals the skill directory name when that is known |
+| `description` | yes | string | not empty after trim; at most 1024 bytes (`MAX_DESCRIPTION_BYTES`) |
+| `license` | no | string | free text, not checked |
+| `metadata` | no | map of string to string | free text, not checked |
+| `allowed-tools` | no | any YAML (a string or a list in practice) | kept as YAML, not checked |
+
+- Any other key is a `Manifest` error (`deny_unknown_fields`). `hooks` is the
+  key this rule exists for: a skill never brings hooks.
+- A missing frontmatter, bad YAML or an unknown key is `Manifest`. A name or
+  description rule is `SkillMd`.
+- `SKILL.md` must be a regular UTF-8 file; a symlinked `SKILL.md` is
+  `Manifest` before it is read.
+- Code: `crates/horch-marketplace/src/manifest.rs:SkillManifest::parse`,
+  `SkillManifest::read`, `model.rs:is_valid_skill_name`. Tests:
+  `manifest.rs:tests::accepts_known_keys`, `tests::rejects_bad_frontmatter`,
+  `tests/marketplace.rs:mkt_06_rejects_hooks`,
+  `mkt_06_rejects_invalid_skill_md`.
 
 ---
 

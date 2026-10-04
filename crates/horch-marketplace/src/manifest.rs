@@ -12,9 +12,9 @@ use crate::model::is_valid_skill_name;
 
 pub const MAX_DESCRIPTION_BYTES: usize = 1024;
 
-/// SPEC-TODO(Spec A §10): the allowed key list is `name`, `description`,
-/// `license`, `metadata` and `allowed-tools` until Spec A §10 is in the
-/// repository. Any other key, `hooks` included, is rejected.
+/// The allowed keys are `name`, `description`, `license`, `metadata` and
+/// `allowed-tools`. Any other key, `hooks` included, is rejected. The key
+/// list is specified in the architecture design §4.10 (Spec A §10).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillManifest {
