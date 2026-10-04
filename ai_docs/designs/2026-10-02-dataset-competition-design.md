@@ -727,6 +727,14 @@ because the text enters the judge prompt, the bundle `schema_digest` and the
 judge policy digest. Version 1.0.1 differs from 1.0.0 only in the schema's
 `description`, `$id` and `schema_version` constant.
 
+The schema file is the full contract, but the harness API enforces only
+part of it. When `headless_command` passes `--json-schema`, the top-level
+`$schema` key and the top-level `allOf`/`anyOf`/`oneOf` keys are stripped,
+because the claude CLI and its API reject them (`harness/headless.rs`). So
+the conditional rule on `winner` (required for `winner`, null otherwise)
+and every label rule are enforced locally by `parse_judgment`, not by the
+API. The judge also reads the unstripped schema in its prompt.
+
 **Abstain and RejectAll.** `reject_all` is the judge's finding that no
 candidate is acceptable, so the round ends `Rejected{JudgeRejected}` with no
 operator step. `abstain` says the evidence does not decide, so the operator

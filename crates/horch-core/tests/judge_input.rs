@@ -351,7 +351,8 @@ fn jdg_01_judge_teammate_check() {
         .persona
         .trim_start()
         .starts_with("You are a blind evaluator."));
-    assert!(!t.persona.contains("SPEC-TODO"));
+    // Split so a repository grep for the marker does not match this test.
+    assert!(!t.persona.contains(&["SPEC", "-TODO"].concat()));
     for file in [
         "`task.md`",
         "`rubric.md`",
