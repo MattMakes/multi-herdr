@@ -16,7 +16,7 @@ flowchart TB
     subgraph setup["Setup (once)"]
         I["just install"] --> HI["horch install<br/>(horch and multi-herdr-dataset on PATH)"]
         I --> HF["writes ~/.local/bin/herdr-fleet"]
-        HI --> DOC["horch doctor<br/>(herdr reachable?)"]
+        HI --> DOC["horch doctor<br/>(herdr reachable? roster, tools, effort overrides)"]
         DOC --> SM["horch smoke messaging / fleet / tile<br/>(self-checks)"]
         HI --> AL["horch agent-list<br/>(which agent CLIs are installed;<br/>no herdr, no model call)"]
         MK["horch skills install / horch marketplace<br/>(install a skill once, pinned)"]
