@@ -68,6 +68,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "design-critic",
     "design-director",
     "design-system-engineer",
+    "godot-ui-developer",
     "judge",
     "landing-page-builder",
     "motion-engineer",
