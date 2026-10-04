@@ -373,14 +373,15 @@ const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// fake-herdr `exec` pane commands running: `horch worker` and a `stay`
 /// fake run for ever. Teardown sends SIGTERM to the process group of every
 /// pane that fake-herdr recorded and that is still the same group (the
-/// leader's start time matches, see [`crate::process::is_same_group`]), and
+/// leader's start time matches, see [`horch_core::procid::is_same_group`]), and
 /// to the group of every process whose command line names the harness root
 /// (a fake, a pane whose start was never recorded). A process of those
 /// groups, or one that names the root, that still runs after
 /// [`REAP_GRACE`] leaked: it gets SIGKILL and is returned.
 #[cfg(unix)]
 fn reap(root: &Path, log: &Path) -> Vec<String> {
-    use crate::process::{is_same_group, processes, signal_groups, Process};
+    use crate::process::{processes, signal_groups, Process};
+    use horch_core::procid::is_same_group;
     let mut state = log.as_os_str().to_owned();
     state.push(".state.json");
     let state: Value = std::fs::read_to_string(&state)
@@ -401,8 +402,8 @@ fn reap(root: &Path, log: &Path) -> Vec<String> {
         .flatten()
         .filter_map(|(pane, pid)| {
             let pid = u32::try_from(pid.as_u64()?).ok()?;
-            let started = state["started"][pane.as_str()].as_str()?;
-            is_same_group(&all, pid, started).then_some(pid)
+            let started = state["started"][pane.as_str()].as_u64()?;
+            is_same_group(pid, started).then_some(pid)
         })
         .collect();
     let names_root =

@@ -74,14 +74,14 @@ fn main() {
     // Kill only after the state is saved and unlocked: a pane that closes
     // itself kills this very process.
     for (pgid, started) in std::mem::take(&mut *KILL.lock().unwrap()) {
-        kill_group(pgid, started.as_deref());
+        kill_group(pgid, started);
     }
     std::process::exit(code);
 }
 
 /// Process groups to kill once the call is done, with their leader's start
 /// time when `pane run` recorded it.
-static KILL: std::sync::Mutex<Vec<(u64, Option<String>)>> = std::sync::Mutex::new(Vec::new());
+static KILL: std::sync::Mutex<Vec<(u64, Option<u64>)>> = std::sync::Mutex::new(Vec::new());
 
 /// `$HORCH_FAKE_LOG.state.lock/`, a mkdir lock. The holder writes its pid
 /// into `pid` in the lock dir.
@@ -288,8 +288,7 @@ fn run(call: &mut Call) -> i32 {
                     state["pids"][*pane] = json!(pid);
                     // With the pid, the start time: `pane close` kills the
                     // group only while its leader is this process.
-                    #[cfg(unix)]
-                    if let Some(started) = horch_e2e::process::started(pid) {
+                    if let Some(started) = horch_core::procid::start_time(pid) {
                         state["started"][*pane] = json!(started);
                     }
                     save(&state);
@@ -402,7 +401,7 @@ fn remove_pane(state: &mut Value, pane: &str) -> bool {
     let started = state["started"]
         .as_object_mut()
         .and_then(|m| m.remove(pane))
-        .and_then(|s| s.as_str().map(str::to_owned));
+        .and_then(|s| s.as_u64());
     if let Some(pid) = state["pids"].as_object_mut().and_then(|m| m.remove(pane)) {
         if let Some(pid) = pid.as_u64() {
             KILL.lock().unwrap().push((pid, started));
@@ -459,7 +458,7 @@ fn close_workspace(state: &mut Value, ws: &str) {
 /// and a pane command that has ended frees it for any other program. A kill
 /// of a reused group id can end another test run, even a whole gate. A
 /// group without a recorded start time is not killed.
-fn kill_group(pgid: u64, started: Option<&str>) {
+fn kill_group(pgid: u64, started: Option<u64>) {
     if cfg!(windows) {
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pgid.to_string(), "/T", "/F"])
@@ -468,11 +467,11 @@ fn kill_group(pgid: u64, started: Option<&str>) {
     }
     #[cfg(unix)]
     {
-        use horch_e2e::process::{is_same_group, processes, signal_groups};
         let (Ok(group), Some(started)) = (u32::try_from(pgid), started) else {
             return;
         };
-        if is_same_group(&processes(), group, started) {
+        if horch_core::procid::is_same_group(group, started) {
+            use horch_e2e::process::signal_groups;
             signal_groups(&[group], "TERM");
         }
     }
