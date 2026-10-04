@@ -48,3 +48,15 @@ do not touch: code, teammates, skills.
    files it touches.
 2. Gate (docs only; it must stay green). Commit `Docs: Add the junior handbook`.
 3. Report: the pages and what you verified. Follow conventions §7.
+
+## EXECUTION (added by the orchestrator)
+
+The staff-engineer wrote `d15-junior-handbook-impl.md` (tasks T0 to T8,
+acceptance JH-01 to JH-14). The executor follows that file task by task, with
+this file as the goal and the file list. Also fix these, found during
+planning (they are now in scope, and the executor owns those lines):
+- `crates/horch-core/src/lib.rs` module table (about line 16) and the
+  `README.md` Architecture table omit Antigravity (`harness/antigravity.rs`).
+- `docs/phase-skills.md` line 3 says sixteen skills; `skills/` has 24
+  bundles. Fix the count and say that design skills attach by name, not by
+  phase.
