@@ -446,9 +446,6 @@ fn coordinate(
     };
     coordinator.close_workspace(&spec);
     let view = coordinator.view(&spec)?;
-    if view.state == RoundState::Complete {
-        super::cleanup::remove_empty_dirs(&view);
-    }
     let events = store::read_all(paths)?.events;
     let reason = latest_intervention(&events, r.round);
     let (line, code) = outcome_line(&outcome, &view, reason.as_deref());

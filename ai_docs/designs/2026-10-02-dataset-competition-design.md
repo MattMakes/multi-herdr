@@ -95,9 +95,11 @@ coordinator sets. `run`, `resume`, `status`, `promote`, `rollback` and
 `cleanup` print `target: <repo> @ <HEAD, 12 chars>` as their first line.
 The candidate worktrees go to `<root>/<exp>/<label>/`, where `<root>` is
 `--worktree-root` (relative to the project) or `<dataset root>/worktrees`;
-a promotion's temp worktrees go to `<root>/<exp>/_promote/`. After a
-COMPLETE round, the empty `<root>/<exp>/_promote/` and `<root>/<exp>/` are
-removed (non-recursive, finding F7).
+a promotion's temp worktrees go to `<root>/<exp>/_promote/`. The round
+cleanup itself (`competition/cleanup.rs`, `remove_empty_dirs`) removes the
+empty `<root>/<exp>/_promote/` and `<root>/<exp>/` (non-recursive, finding
+F7), so the coordinator's end of round, `cleanup`, `promote` and `resume`
+leave none.
 
 ```
 <root>/

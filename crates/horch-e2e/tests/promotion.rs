@@ -202,6 +202,24 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// G9: a COMPLETE round leaves no `<root>/<experiment>/` (nor its
+/// `_promote/`): the coordinator's cleanup removes them when empty.
+fn assert_no_round_dirs(events: &[Value]) {
+    let created = of_kind(events, "worktree.created");
+    assert!(!created.is_empty(), "no worktree.created event");
+    for e in created {
+        let dir = Path::new(e["payload"]["path"].as_str().unwrap())
+            .parent()
+            .unwrap();
+        assert!(
+            !dir.join("_promote").exists(),
+            "{}/_promote stays",
+            dir.display()
+        );
+        assert!(!dir.exists(), "{} stays", dir.display());
+    }
+}
+
 fn of_kind<'a>(events: &'a [Value], kind: &str) -> Vec<&'a Value> {
     events.iter().filter(|e| e["kind"] == kind).collect()
 }
@@ -453,6 +471,8 @@ fn pro_08_promote_to_and_promote_cmd() {
     // The target had moved past the round's base: cherry-picked.
     assert_eq!(receipt["strategy"], "cherry_pick");
     assert_eq!(receipts(&h).len(), 2);
+    // `promote` removed its `_promote/` and the round's empty directory.
+    assert_no_round_dirs(&events2);
     // The cherry-picked commit carries the winner's file on top of round 1.
     let label = winner(&events2, &second)["label"]
         .as_str()
@@ -637,6 +657,7 @@ fn pro_cleanup_needs_force_from_intervention() {
     assert_eq!(candidate_branches(&h).len(), 2);
     assert_eq!(round_state(&h, &round), "COMPLETE");
     let events = events(&h);
+    assert_no_round_dirs(&events);
     let completed = of_kind(&events, "round.completed");
     assert_eq!(completed.len(), 1);
     assert_eq!(

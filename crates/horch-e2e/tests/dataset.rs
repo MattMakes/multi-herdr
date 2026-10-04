@@ -503,6 +503,24 @@ fn candidate_records(h: &Harness) -> Vec<Value> {
         .collect()
 }
 
+/// G9: a COMPLETE round leaves no `<root>/<experiment>/` (nor its
+/// `_promote/`): the coordinator's cleanup removes them when empty.
+fn assert_no_round_dirs(events: &[Value]) {
+    let created = of_kind(events, "worktree.created");
+    assert!(!created.is_empty(), "no worktree.created event");
+    for e in created {
+        let dir = Path::new(e["payload"]["path"].as_str().unwrap())
+            .parent()
+            .unwrap();
+        assert!(
+            !dir.join("_promote").exists(),
+            "{}/_promote stays",
+            dir.display()
+        );
+        assert!(!dir.exists(), "{} stays", dir.display());
+    }
+}
+
 /// The events of one kind.
 fn of_kind<'a>(events: &'a [Value], kind: &str) -> Vec<&'a Value> {
     events.iter().filter(|e| e["kind"] == kind).collect()
@@ -1152,6 +1170,9 @@ fn crash_and_resume_in(
     let events = events(&h);
     assert_eq!(of_kind(&events, "round.created").len(), 1, "{point}");
     assert_eq!(of_kind(&events, "candidate.spawned").len(), 2, "{point}");
+    if round_state(&h) == "COMPLETE" {
+        assert_no_round_dirs(&events);
+    }
     assert_rebuild_equal(&h);
     assert_every_spawn_ended(&h);
     assert_clean(&h);
