@@ -86,13 +86,24 @@ pub enum Session<'a> {
 /// with [`crate::runtime::process::inherit_env`], so a value the builder set
 /// on the command still wins, as it did when this was exported into the
 /// parent's environment.
-pub(crate) fn teammate_env(teammate: &Teammate) -> Vec<(String, String)> {
+///
+/// An `env` value that starts with `~/` expands against `home`, like a
+/// teammate path. The CLI starts without a shell, so nothing else expands
+/// it, and a committed file cannot carry an absolute home path.
+pub(crate) fn teammate_env(teammate: &Teammate, home: Option<&Path>) -> Vec<(String, String)> {
     let mut out = BTreeMap::new();
     if let Some(sub) = &teammate.subagent_model {
         out.insert("CLAUDE_CODE_SUBAGENT_MODEL".to_string(), sub.clone());
     }
     for (key, value) in &teammate.env {
-        out.insert(key.clone(), value.clone());
+        let value = if value.starts_with("~/") {
+            crate::roster::expand_home(value, home)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            value.clone()
+        };
+        out.insert(key.clone(), value);
     }
     out.into_iter().collect()
 }
@@ -327,15 +338,9 @@ pub(crate) fn agent_command(
     skills: Option<&crate::skills::Bundle>,
     child_env: Vec<(String, String)>,
 ) -> Result<Command> {
-    let mut cmd = command_with_skills_in(
-        &LaunchEnv::from_context(ctx),
-        teammate,
-        session,
-        prompt,
-        None,
-        skills,
-    )?;
-    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate));
+    let env = LaunchEnv::from_context(ctx);
+    let mut cmd = command_with_skills_in(&env, teammate, session, prompt, None, skills)?;
+    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, env.home()));
     crate::runtime::process::inherit_env(&mut cmd, child_env);
     crate::runtime::process::strip_forbidden(&mut cmd);
     Ok(cmd)
@@ -566,6 +571,32 @@ mod tests {
         cmd.get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    /// `~/` in an `env` value expands against the launch's home: the CLI gets
+    /// no shell, and asc refuses a relative `ASC_CONFIG_PATH`. Only a leading
+    /// `~/` expands; with no home the value stays as written.
+    #[test]
+    fn teammate_env_expands_a_leading_tilde_against_home() {
+        let mut t = Teammate::default();
+        t.env.insert("A".into(), "~/.config/x.json".into());
+        t.env.insert("B".into(), "a~/b".into());
+        t.env.insert("C".into(), "~".into());
+        let home = Path::new("/home/op");
+        assert_eq!(
+            teammate_env(&t, Some(home)),
+            vec![
+                ("A".to_string(), "/home/op/.config/x.json".to_string()),
+                ("B".to_string(), "a~/b".to_string()),
+                ("C".to_string(), "~".to_string()),
+            ]
+        );
+        assert_eq!(teammate_env(&t, None)[0].1, "~/.config/x.json");
+
+        let r = Roster::builtin().unwrap();
+        let env = teammate_env(r.require("app-release-preparer").unwrap(), Some(home));
+        let config = env.iter().find(|(k, _)| k == "ASC_CONFIG_PATH").unwrap();
+        assert_eq!(config.1, "/home/op/.config/horch/asc/config.json");
     }
 
     #[test]

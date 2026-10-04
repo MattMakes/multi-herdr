@@ -69,6 +69,7 @@ fn check_oracle(rel: &str, actual: &str) {
 /// fails. Never give one of these an oracle file.
 const SKIP_NEW_TEAMMATES: &[&str] = &[
     "antigravity",
+    "app-release-preparer",
     "apple-accessibility-auditor",
     "apple-platform-developer",
     "codex-swift-reviewer",
