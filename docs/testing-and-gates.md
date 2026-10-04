@@ -18,9 +18,10 @@ run under `git rebase -x` inherited `GIT_DIR`, and test fixtures that ran
 `git init` and `git commit` wrote into the real repository. The gate script now
 unsets every variable that aims git at a repository (`GIT_DIR`,
 `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
-`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`,
-`GIT_PREFIX`), and each git child that horch starts has the same list removed
-(`REPO_ENV` in `crates/horch-marketplace/src/git.rs`). That is a second line
+`GIT_CONFIG*`, and the others in the list), including the numbered
+`GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`. Each git child that horch
+starts has the same variables removed (`REPO_ENV` in
+`crates/horch-marketplace/src/git.rs`, 18 names plus the numbered pairs). That is a second line
 of defence. Do not depend on it.
 
 | # | step | a failure means | open first |

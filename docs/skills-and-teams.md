@@ -142,6 +142,7 @@ for each of the others and still exits 0.
 | herdr installed and reachable | `herdr` is not on `PATH`, or `herdr workspace list` fails (exit 1) |
 | roster | `horch teammates --check` has problems; doctor counts the teammates and the ones offered in this project |
 | `requires:` | an offered teammate needs `xcode`, and `xcodebuild -checkFirstLaunchStatus` fails or `xcodebuild` is missing |
+| harness | a harness binary is found but `--version` fails; the quota probe marks it broken and routing skips its teammates |
 | effort overrides | `CLAUDE_CODE_EFFORT_LEVEL`, `maxEffortLevel` in `~/.claude/settings.json`, or `model_reasoning_effort` in `~/.codex/config.toml` overrides every teammate's effort |
 
 Run it from the project directory, so the offer filter reads that project.

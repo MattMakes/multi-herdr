@@ -33,7 +33,7 @@ I did not run `horch doctor` itself (needs a herdr server); its checks come from
 
 ## Not done, outside scope
 
-- The `install-checks` unit is not merged. When it merges, update the `horch doctor` table in `docs/skills-and-teams.md`.
+- `horch doctor` table includes the broken-harness check from the merged install-checks work.
 - After the rebase: `docs/recipes/add-teammate.md` keeps the operator-skills text of ds/operator-skills; `docs/skills-and-teams.md` follows its warning behaviour.
 - `gate-slot.sh` lives in the git-ignored `.worktrees/`, so a fresh clone lacks it. Decide whether to move it to `scripts/`.
 - `docs/phase-skills.md` was not re-checked against the 33 `ue-*` and 28 Swift skills.
