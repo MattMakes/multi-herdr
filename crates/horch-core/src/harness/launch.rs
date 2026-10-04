@@ -300,7 +300,8 @@ fn install_skills(
         req.record.as_ref().map(|r| r.record_id),
         &ctx.paths.state_root.join("skill-bundles"),
     );
-    crate::skills::Bundle::install_from(&ctx.paths.state_root, req.teammate, catalog, &name)
+    let home = ctx.inherited.home_var.as_deref().map(Path::new);
+    crate::skills::Bundle::install_from(&ctx.paths.state_root, req.teammate, catalog, &name, home)
 }
 
 /// The record id when it is one plain path component that no directory in

@@ -556,3 +556,305 @@ fn skl_08_materialize_rejects_path_like_execution_ids() {
         "two executions never share a directory"
     );
 }
+
+// ─── available_skills and operator_skills ──────────────────────────────────
+
+/// The `{who}:` problems `--check` reports for `t`, on the repo roster with
+/// `home` as the launch home.
+fn check_problems(t: Teammate, home: Option<&Path>) -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
+    let mut roster = Roster::load_layered(home, None, Some(dir.to_str().unwrap())).unwrap();
+    let who = t.name.clone();
+    roster.insert_for_test(t);
+    roster
+        .check()
+        .into_iter()
+        .filter(|p| p.contains(&who))
+        .collect()
+}
+
+/// A valid fleet worker to vary: the repo's `backend-developer`, renamed.
+fn probe() -> Teammate {
+    Teammate {
+        name: "probe".into(),
+        ..repo_roster().require("backend-developer").unwrap().clone()
+    }
+}
+
+/// `available_skills:` are activated as Offered, so they are materialized,
+/// and the briefing names them under "Also available" without their
+/// description. A phase skill named there stays Deterministic.
+#[test]
+fn available_skills_are_materialized_and_named_without_description() {
+    let catalog = SkillCatalog::bundled().unwrap();
+    let t = Teammate {
+        name: "offered".into(),
+        skills: vec!["tdd".into()],
+        available_skills: vec!["trace".into(), "debug".into()],
+        phase: Some(Phase::Implementation),
+        ..Teammate::default()
+    };
+    let plan = plan_activation(&t, t.phase, &catalog).unwrap();
+    let policy: BTreeMap<&str, InvocationPolicy> = plan
+        .activated
+        .iter()
+        .map(|r| (r.id.as_str(), r.policy))
+        .collect();
+    assert_eq!(policy["tdd"], InvocationPolicy::Explicit);
+    assert_eq!(policy["trace"], InvocationPolicy::Offered);
+    assert_eq!(policy["debug"], InvocationPolicy::Deterministic);
+    assert!(plan.available.iter().all(|r| r.id.as_str() != "trace"));
+    assert_eq!(
+        skills::selected(&t).unwrap(),
+        ["check", "debug", "execute", "handoff", "tdd", "trace"]
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let files = MaterializedSkills::materialize(&plan, &catalog, tmp.path(), "offered")
+        .unwrap()
+        .unwrap();
+    assert!(files.skills_dir().join("trace/SKILL.md").is_file());
+    let text = briefing::render(
+        &plan,
+        &catalog,
+        &BriefingContext {
+            phase: t.phase,
+            declared: &t.skills,
+            namespace: Some("horch"),
+            plugin_lines: &[],
+            skills_dir: &files.skills_dir(),
+        },
+    );
+    let also = text
+        .lines()
+        .find(|l| l.starts_with("Also available in this phase: "))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(also.contains("horch:trace"), "{also}");
+    let trace = catalog.lookup("trace").unwrap();
+    let words: String = trace
+        .description
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(!text.contains(&words), "no description for trace:\n{text}");
+    assert!(text.contains("- horch:tdd: "), "{text}");
+
+    // Without a phase or skills, the offered skill alone makes a bundle.
+    let only = Teammate {
+        name: "only-offered".into(),
+        available_skills: vec!["trace".into()],
+        ..Teammate::default()
+    };
+    let plan = plan_activation(&only, None, &catalog).unwrap();
+    assert_eq!(plan.activated_ids(), ["trace"]);
+    let text = briefing::render(
+        &plan,
+        &catalog,
+        &BriefingContext {
+            phase: None,
+            declared: &only.skills,
+            namespace: None,
+            plugin_lines: &[],
+            skills_dir: tmp.path(),
+        },
+    );
+    assert!(text.contains("Available native skills: trace."), "{text}");
+    assert!(!text.contains(&words), "{text}");
+}
+
+/// `--check` refuses an unknown offered skill, one already in `skills:`,
+/// and an orchestrator-only one.
+#[test]
+fn available_skills_check_errors() {
+    let unknown = Teammate {
+        available_skills: vec!["no-such-skill".into()],
+        ..probe()
+    };
+    let problems = check_problems(unknown, None);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("unknown bundled skill 'no-such-skill'")),
+        "{problems:?}"
+    );
+
+    let mut twice = probe();
+    twice.available_skills = vec![twice.skills[0].clone()];
+    let problems = check_problems(twice, None);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("both in skills and in available_skills")),
+        "{problems:?}"
+    );
+
+    let orchestrate = Teammate {
+        available_skills: vec!["orchestrate".into()],
+        ..probe()
+    };
+    let problems = check_problems(orchestrate, None);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("'orchestrate' belongs to the orchestrator only")),
+        "{problems:?}"
+    );
+
+    let fine = Teammate {
+        available_skills: vec!["trace".into()],
+        ..probe()
+    };
+    assert_eq!(check_problems(fine, None), Vec::<String>::new());
+}
+
+/// Write `<dir>/<name>/SKILL.md` with `body` after the frontmatter, plus one
+/// reference file.
+fn operator_skill(dir: &Path, name: &str, body: &str) {
+    let skill = dir.join(name);
+    std::fs::create_dir_all(skill.join("references")).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: Operator probe skill {name}.\n---\n{body}\n"),
+    )
+    .unwrap();
+    std::fs::write(skill.join("references/notes.md"), "notes\n").unwrap();
+}
+
+fn operator(dir: &str, names: &[&str]) -> Option<horch_core::roster::OperatorSkills> {
+    Some(horch_core::roster::OperatorSkills {
+        dir: dir.into(),
+        names: names.iter().map(|n| (*n).to_owned()).collect(),
+    })
+}
+
+/// `--check` reads the operator directory the launch will read, with `~/`
+/// expanded against the roster's home, and refuses a missing directory, a
+/// missing name, a name clash with a catalog skill, and a subagent skill.
+#[test]
+fn operator_skills_check_errors() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".agents/skills");
+    operator_skill(&dir, "test-modernizer", "Modernize tests.");
+    operator_skill(&dir, "device-interaction", "Drive the device.");
+    operator_skill(
+        &dir,
+        "helper",
+        "You are a SUBAGENT skill. Start it with the Agent tool.",
+    );
+    operator_skill(&dir, "tdd", "A clash.");
+    let with = |o| Teammate {
+        operator_skills: o,
+        ..probe()
+    };
+    let problems = |o| check_problems(with(o), Some(home.path())).join("\n");
+
+    assert_eq!(
+        problems(operator("~/.agents/skills", &["test-modernizer"])),
+        ""
+    );
+    let p = problems(operator("~/no-such-dir", &["test-modernizer"]));
+    assert!(
+        p.contains("operator_skills dir '~/no-such-dir' does not exist"),
+        "{p}"
+    );
+    let p = problems(operator("~/.agents/skills", &["missing"]));
+    assert!(
+        p.contains("operator skill 'missing' is not in '~/.agents/skills'"),
+        "{p}"
+    );
+    let p = problems(operator("~/.agents/skills", &["device-interaction"]));
+    assert!(
+        p.contains("'device-interaction' is a subagent skill"),
+        "{p}"
+    );
+    let p = problems(operator("~/.agents/skills", &["helper"]));
+    assert!(p.contains("'helper' is a subagent skill"), "{p}");
+    assert!(p.contains("SUBAGENT skill"), "{p}");
+    let p = problems(operator("~/.agents/skills", &["tdd"]));
+    assert!(p.contains("'tdd' has the name of a catalog skill"), "{p}");
+    let p = problems(operator("~/.agents/skills", &[]));
+    assert!(p.contains("operator_skills names no skill"), "{p}");
+    let p = problems(operator(
+        "~/.agents/skills",
+        &["test-modernizer", "test-modernizer"],
+    ));
+    assert!(p.contains("'test-modernizer' is named twice"), "{p}");
+
+    // A harness without skills cannot load them.
+    let none = Teammate {
+        agent: HarnessKind::None,
+        model: None,
+        skills: Vec::new(),
+        phase: None,
+        operator_skills: operator("~/.agents/skills", &["test-modernizer"]),
+        ..probe()
+    };
+    let p = check_problems(none, Some(home.path())).join("\n");
+    assert!(
+        p.contains("cannot load with disabled skills or no agent"),
+        "{p}"
+    );
+}
+
+/// An operator skill is copied into the bundle with its references, is
+/// versioned by its tree digest, and is EXPECTED in the briefing with its
+/// description. A source that changes between plan and copy fails.
+#[test]
+fn operator_skills_materialize_with_a_digest_and_an_expected_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("exported");
+    operator_skill(&dir, "test-modernizer", "Modernize tests.");
+    let t = Teammate {
+        name: "swifty".into(),
+        skills: vec!["tdd".into()],
+        operator_skills: operator(dir.to_str().unwrap(), &["test-modernizer"]),
+        ..Teammate::default()
+    };
+    let state = tmp.path().join("state");
+    let bundle = skills::Bundle::install(&state, &t).unwrap().unwrap();
+    let plan = bundle.plan();
+    let modernizer = plan
+        .activated
+        .iter()
+        .find(|r| r.id.as_str() == "test-modernizer")
+        .unwrap();
+    assert_eq!(modernizer.policy, InvocationPolicy::Explicit);
+    assert!(
+        modernizer.version.0.starts_with("operator+"),
+        "{modernizer:?}"
+    );
+    assert!(modernizer.source.starts_with("operator:"), "{modernizer:?}");
+    let copied = bundle.skills_dir().join("test-modernizer");
+    assert!(copied.join("SKILL.md").is_file());
+    assert!(copied.join("references/notes.md").is_file());
+    assert_eq!(
+        horch_marketplace::integrity::tree_digest(&copied).unwrap(),
+        modernizer.digest.to_string()
+    );
+    let brief = bundle.briefing_in(&t, None);
+    assert!(
+        brief.contains("- horch:tdd: ")
+            && brief.contains("- horch:test-modernizer: Operator probe skill test-modernizer."),
+        "{brief}"
+    );
+    // The source is never touched.
+    assert!(dir.join("test-modernizer/SKILL.md").is_file());
+
+    // The plan pins the digest; a source edited after planning fails.
+    let catalog = SkillCatalog::bundled()
+        .unwrap()
+        .with_operator_skills(&t, None)
+        .unwrap();
+    let plan = plan_activation(&t, None, &catalog).unwrap();
+    std::fs::write(dir.join("test-modernizer/references/notes.md"), "changed\n").unwrap();
+    let err = MaterializedSkills::materialize(&plan, &catalog, &state, "changed").unwrap_err();
+    assert!(
+        format!("{err:#}").contains("the operator directory changed"),
+        "{err:#}"
+    );
+
+    // Without the extension, the field activates nothing: the catalog
+    // decides, so `plan_launch` needs no filesystem.
+    let plain = plan_activation(&t, None, &SkillCatalog::bundled().unwrap()).unwrap();
+    assert_eq!(plain.activated_ids(), ["tdd"]);
+}

@@ -299,3 +299,92 @@ fn skl_06_e2e_marketplace_offline() {
     assert_eq!(strings(&r["skills"]), ["demo", "tdd"], "{r}");
     assert!(!r.to_string().contains(NOT_ACTIVATED), "{r}");
 }
+
+/// Write an operator skill directory `<home>/.agents/skills/<name>/`, as
+/// `xcrun agent skills export` would, and overlay teammate `name` on `agent`
+/// that names `tdd` in `skills:` and the operator skill in
+/// `operator_skills:`, with the directory written `~/`-relative.
+fn operator_world(test: &str, name: &str, agent: &str, model: &str) -> Harness {
+    let h = world(test, name, agent, model, &["tdd"]);
+    let skill = h.home.join(".agents/skills/test-modernizer");
+    std::fs::create_dir_all(skill.join("references")).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: test-modernizer\ndescription: Operator-local test modernizer.\n---\nbody\n",
+    )
+    .unwrap();
+    std::fs::write(skill.join("references/notes.md"), "notes\n").unwrap();
+    // `--check` insists that a Claude fleet pane denies the Agent tool.
+    let deny = if agent == "claude" {
+        "disallowed_tools: [Agent]\n"
+    } else {
+        ""
+    };
+    std::fs::write(
+        h.home.join(format!(".config/horch/teammates/{name}.md")),
+        format!(
+            "---\nname: {name}\nbrief_description: Operator skills probe.\nbase: fleet-worker\n\
+             agent: {agent}\nmodel: {model}\nskills: [tdd]\n{deny}\
+             operator_skills:\n  dir: ~/.agents/skills\n  names: [test-modernizer]\n---\nProbe.\n"
+        ),
+    )
+    .unwrap();
+    h
+}
+
+/// The operator skill reaches the Claude pane through the bundle plugin,
+/// and the briefing names it as expected, with its description. The
+/// operator's directory is left as it was.
+#[test]
+fn operator_skills_e2e_exposure_claude() {
+    let h = operator_world("opskc", "op-claude", "claude", "sonnet");
+    let check = h.run(&["teammates", "--check"]);
+    assert!(!text(&check).contains("op-claude"), "{}", text(&check));
+    let r = launch(&h, "op-claude", || {});
+    assert_eq!(strings(&r["skills"]), ["tdd", "test-modernizer"], "{r}");
+    dirs_in_bundle(&r);
+    let prompts = serde_json::to_string(&h.calls_of("claude")).unwrap();
+    assert!(
+        prompts.contains("- horch:test-modernizer: Operator-local test modernizer."),
+        "{prompts}"
+    );
+    assert!(h
+        .home
+        .join(".agents/skills/test-modernizer/SKILL.md")
+        .is_file());
+}
+
+/// The same operator skill reaches a codex pane, linked in its private
+/// `CODEX_HOME`.
+#[test]
+fn operator_skills_e2e_exposure_codex() {
+    if cfg!(windows) {
+        return;
+    }
+    let h = operator_world("opskx", "op-codex", "codex", "gpt-5.6-sol");
+    let r = launch(&h, "op-codex", || {});
+    assert_eq!(strings(&r["skills"]), ["tdd", "test-modernizer"], "{r}");
+    let files = strings(&r["files"]);
+    assert!(
+        files.contains(&"test-modernizer/SKILL.md".to_string()),
+        "{r}"
+    );
+    assert!(
+        files.contains(&"test-modernizer/references/notes.md".to_string()),
+        "{r}"
+    );
+}
+
+/// `horch teammates --check` names a missing operator skill.
+#[test]
+fn operator_skills_e2e_check_fails_on_a_missing_name() {
+    let h = operator_world("opskm", "op-missing", "claude", "sonnet");
+    std::fs::remove_dir_all(h.home.join(".agents/skills/test-modernizer")).unwrap();
+    let check = h.run(&["teammates", "--check"]);
+    assert!(!check.status.success(), "{}", text(&check));
+    assert!(
+        text(&check).contains("operator skill 'test-modernizer' is not in '~/.agents/skills'"),
+        "{}",
+        text(&check)
+    );
+}

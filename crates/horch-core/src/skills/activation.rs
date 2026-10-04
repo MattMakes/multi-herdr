@@ -1,7 +1,7 @@
 //! Which skills a teammate gets in a phase, and why.
 //!
-//! Pure: only the teammate's `skills:`, the phase and the catalog decide. No
-//! NLP and no model call.
+//! Pure: only the teammate's `skills:`, `available_skills:`, the phase and
+//! the catalog decide. No NLP and no model call.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,7 +10,7 @@ use horch_marketplace::SkillVersion;
 use serde::{Deserialize, Serialize};
 
 use super::catalog::{CatalogEntry, SkillCatalog};
-use super::selection::{check, phase_skills};
+use super::selection::{check, operator_names, phase_skills};
 use crate::ids::SkillId;
 use crate::measure::digest::Digest;
 use crate::roster::{Phase, Teammate};
@@ -23,6 +23,9 @@ pub enum InvocationPolicy {
     Explicit,
     /// Brought in by the phase selector.
     Deterministic,
+    /// Named in the teammate's `available_skills:`: materialized, and named
+    /// in the briefing without a description.
+    Offered,
     /// In the catalog, not activated.
     Available,
 }
@@ -52,7 +55,7 @@ impl ResolvedSkillRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillActivationPlan {
-    /// Explicit and Deterministic skills, sorted by id.
+    /// Explicit, Deterministic and Offered skills, sorted by id.
     pub activated: Vec<ResolvedSkillRef>,
     /// Every other catalog skill, sorted by id.
     pub available: Vec<ResolvedSkillRef>,
@@ -67,35 +70,51 @@ impl SkillActivationPlan {
     }
 }
 
-/// Teammate `skills:` map to Explicit, the phase's skills to Deterministic,
-/// and every other catalog skill to Available. A skill named both ways is
-/// Explicit. Fails as the legacy selection does: on an unknown skill, or on
-/// skills for a teammate that cannot load them.
+/// Teammate `skills:` and operator skills map to Explicit, the phase's
+/// skills to Deterministic, `available_skills:` to Offered, and every other
+/// catalog skill to Available. A skill named more than one way takes the
+/// first of that order. Fails as the legacy selection does: on an unknown
+/// skill, or on skills for a teammate that cannot load them.
+///
+/// Operator skills are Explicit only when `catalog` holds them, that is,
+/// when the caller extended it with `SkillCatalog::with_operator_skills`.
 pub fn plan_activation(
     teammate: &Teammate,
     phase: Option<Phase>,
     catalog: &SkillCatalog,
 ) -> Result<SkillActivationPlan> {
-    let explicit: BTreeSet<String> = teammate.skills.iter().cloned().collect();
-    let mut names = explicit.clone();
-    if let Some(phase) = phase {
-        names.extend(phase_skills(phase).iter().map(|s| (*s).to_owned()));
-    }
+    let mut explicit: BTreeSet<String> = teammate.skills.iter().cloned().collect();
+    let phased: BTreeSet<String> = phase
+        .map(|p| phase_skills(p).iter().map(|s| (*s).to_owned()).collect())
+        .unwrap_or_default();
+    let offered: BTreeSet<String> = teammate.available_skills.iter().cloned().collect();
+    let names: BTreeSet<String> = explicit
+        .iter()
+        .chain(&phased)
+        .chain(&offered)
+        .cloned()
+        .collect();
     check(teammate, &names, catalog)?;
+    explicit.extend(
+        operator_names(teammate)
+            .filter(|n| catalog.lookup(n).is_some_and(CatalogEntry::is_operator))
+            .map(str::to_owned),
+    );
     let mut activated = Vec::new();
     let mut available = Vec::new();
     for entry in catalog.entries() {
         let name = entry.id.as_str();
-        if explicit.contains(name) {
-            activated.push(ResolvedSkillRef::new(entry, InvocationPolicy::Explicit));
-        } else if names.contains(name) {
-            activated.push(ResolvedSkillRef::new(
-                entry,
-                InvocationPolicy::Deterministic,
-            ));
+        let policy = if explicit.contains(name) {
+            InvocationPolicy::Explicit
+        } else if phased.contains(name) {
+            InvocationPolicy::Deterministic
+        } else if offered.contains(name) {
+            InvocationPolicy::Offered
         } else {
             available.push(ResolvedSkillRef::new(entry, InvocationPolicy::Available));
-        }
+            continue;
+        };
+        activated.push(ResolvedSkillRef::new(entry, policy));
     }
     Ok(SkillActivationPlan {
         activated,

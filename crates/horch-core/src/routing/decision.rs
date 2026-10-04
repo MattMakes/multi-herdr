@@ -85,7 +85,8 @@ impl Decision {
 /// From the fallback: every field that says HOW to launch - agent, model,
 /// args, env, tool lists, permission mode, plugins, MCP, settings, and the
 /// rest of the Claude-shaped fields. From the original: name, description,
-/// base, persona, phase, skills, generic, hidden. Effort stays the
+/// base, persona, phase, skills (with available and operator skills),
+/// generic, hidden. Effort stays the
 /// original's when the fallback's agent and model accept it.
 pub fn merge(original: &Teammate, fallback: &Teammate) -> Teammate {
     let mut m = fallback.clone();
@@ -95,6 +96,8 @@ pub fn merge(original: &Teammate, fallback: &Teammate) -> Teammate {
     m.persona = original.persona.clone();
     m.phase = original.phase;
     m.skills = original.skills.clone();
+    m.available_skills = original.available_skills.clone();
+    m.operator_skills = original.operator_skills.clone();
     m.generic = original.generic;
     m.hidden = original.hidden;
     m.first_instruction = original.first_instruction.clone();
@@ -623,6 +626,25 @@ mod bal_tables {
         let mut xhigh_claude = r.clone();
         xhigh_claude.effort = Some("bogus".into());
         assert_eq!(merge(&xhigh_claude, &f).effort, f.effort);
+    }
+
+    /// A fallback launch keeps the persona's offered and operator skills, and
+    /// never takes the fallback's.
+    #[test]
+    fn merge_keeps_the_original_available_and_operator_skills() {
+        let mut r = t("researcher");
+        r.available_skills = vec!["trace".into()];
+        r.operator_skills = Some(crate::roster::OperatorSkills {
+            dir: "~/.agents/skills".into(),
+            names: vec!["test-modernizer".into()],
+        });
+        let mut f = t("codex-sol");
+        f.available_skills = vec!["debug".into()];
+        f.operator_skills = None;
+        let m = merge(&r, &f);
+        assert_eq!(m.available_skills, r.available_skills);
+        assert_eq!(m.operator_skills, r.operator_skills);
+        assert_eq!(merge(&f, &r).operator_skills, None);
     }
 
     #[test]

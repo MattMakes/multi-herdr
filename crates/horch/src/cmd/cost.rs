@@ -170,12 +170,14 @@ fn family(phase: Option<Phase>, role: &str) -> String {
 }
 
 /// The skills a teammate is expected to use, as the transcripts name them:
-/// bundled ones bare (`tdd`), plugin ones qualified (`code:review`).
+/// bundled and operator ones bare (`tdd`), plugin ones qualified
+/// (`code:review`).
 fn expected_skills(roster: Option<&Roster>, teammate: &str) -> Vec<String> {
     let Some(t) = roster.and_then(|r| r.get(teammate)) else {
         return Vec::new();
     };
     let mut out: Vec<String> = t.skills.clone();
+    out.extend(t.operator_skills.iter().flat_map(|o| o.names.clone()));
     for (plugin, skills) in &t.plugin_skills {
         out.extend(skills.iter().map(|s| format!("{plugin}:{s}")));
     }

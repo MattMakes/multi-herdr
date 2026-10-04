@@ -99,6 +99,32 @@ phase: null
 plugin_dirs: []
 skills: []
 
+# available_skills offers further catalog skills by NAME ONLY: each one is
+# materialized with the launch and named under "Also available" in the
+# briefing, without its description. Use it for a related skill that is worth
+# one name in the briefing, not a full description. The harness still lists
+# every materialized skill's description in its own skill list, so keep the
+# list short. A name in both skills and available_skills fails --check.
+available_skills: []
+
+# operator_skills copies skills from a directory on the operator's machine
+# into the launch bundle, on every harness that exposes skills. They are
+# never compiled in and never copied into this repo. Example, for skills that
+# `xcrun agent skills export` wrote:
+#   operator_skills:
+#     dir: ~/.agents/skills
+#     names: [swiftui-whats-new-27, test-modernizer]
+# - `~/` expands against the launch's home.
+# - Each name must be <dir>/<name>/SKILL.md, with a matching `name:`.
+# - They are EXPECTED skills, named with their descriptions, like skills:.
+# - A name that is also a bundled or marketplace skill fails: one bundle
+#   directory cannot hold both.
+# - A subagent skill (device-interaction, or a body that says "SUBAGENT
+#   skill" or "Agent tool") fails: fleet panes start no subagents.
+# - Launch copies each directory and checks the copy's digest.
+# `horch teammates --check` fails on a missing dir or name.
+operator_skills: null
+
 # claude only. claude.ai-synced skills are off in every fleet pane; set
 # `inherit_claudeai_skills: true` to keep them. (horch puts
 # syncClaudeAiSkills: false in its --settings overlay; that hides the
