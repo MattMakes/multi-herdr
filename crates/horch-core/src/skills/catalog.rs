@@ -4,13 +4,15 @@
 //! Bundled skills come from the compiled-in `skills/` tree and are versioned
 //! `bundled+<digest12>`. Marketplace lock entries merge in on top. A
 //! teammate's `operator_skills:` merge in per launch, versioned
-//! `operator+<digest12>`. Only [`SkillCatalog::installed`], [`check_store`]
-//! and [`SkillCatalog::with_operator_skills`] read the filesystem. Nothing
-//! here reads the environment.
+//! `operator+<digest12>`, and its `plugin_skills:` as `<plugin>:<skill>`,
+//! versioned `<plugin version>+<digest12>`. Only [`SkillCatalog::installed`],
+//! [`check_store`] and [`SkillCatalog::with_operator_skills`] read the
+//! filesystem. Nothing here reads the environment.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{anyhow, bail, Context, Result};
 use horch_marketplace::{
@@ -45,6 +47,12 @@ pub enum CatalogSource {
     /// A teammate's `operator_skills:`: read at launch from `<dir>/<id>/` on
     /// the operator's machine. `dir` is already expanded.
     Operator { dir: PathBuf },
+    /// A skill a teammate names in `plugin_skills:`, read at launch from an
+    /// external Claude plugin. `plugin` is the plugin's id
+    /// (`<plugin>@<marketplace>`, or `<plugin>@inline` for a `plugin_dirs`
+    /// entry); `dir` is the skill's directory in the original plugin. The
+    /// harness loads it from a filtered copy, not from the bundle.
+    Plugin { plugin: String, dir: PathBuf },
 }
 
 /// One upstream file a bundled skill was adapted from.
@@ -102,7 +110,13 @@ impl CatalogEntry {
             } => format!("{source}@{commit}"),
             CatalogSource::Marketplace { source, .. } => source.clone(),
             CatalogSource::Operator { dir } => format!("operator:{}", dir.display()),
+            CatalogSource::Plugin { plugin, .. } => format!("plugin:{plugin}"),
         }
+    }
+
+    /// Whether this entry is a skill of an external plugin (`plugin_skills:`).
+    pub fn is_plugin(&self) -> bool {
+        matches!(self.source, CatalogSource::Plugin { .. })
     }
 
     /// Whether this entry came from a teammate's `operator_skills:`.
@@ -240,7 +254,18 @@ pub fn parse_provenance(text: &str) -> Result<BTreeMap<String, Provenance>> {
 
 impl SkillCatalog {
     /// The compiled-in skills, validated, with their upstream provenance.
+    /// Built once per process: the files are compiled in, and digesting them
+    /// on every call made `Roster::check` (one call per teammate) slow. A
+    /// clone is cheap, because the entries hold `&'static` file bytes.
     pub fn bundled() -> Result<SkillCatalog> {
+        static BUNDLED: OnceLock<std::result::Result<SkillCatalog, String>> = OnceLock::new();
+        BUNDLED
+            .get_or_init(|| Self::bundled_uncached().map_err(|e| format!("{e:#}")))
+            .clone()
+            .map_err(|msg| anyhow!(msg))
+    }
+
+    fn bundled_uncached() -> Result<SkillCatalog> {
         let mut provenance = parse_provenance(BUNDLED_PROVENANCE)?;
         let mut entries = BTreeMap::new();
         for (path, bytes) in BUNDLED_SKILL_FILES {
@@ -383,8 +408,13 @@ impl SkillCatalog {
         Ok(self)
     }
 
-    /// This catalog plus `teammate`'s `operator_skills:`, read from disk.
-    /// `~/` in the directory expands against `home`, the launch's home.
+    /// This catalog plus the skills `teammate` brings from the operator's
+    /// machine, read from disk: its `operator_skills:` and its
+    /// `plugin_skills:` ([`SkillCatalog::with_plugin_skills`]). `~/`
+    /// expands against `home`, the launch's home. The spawn, `horch fleet`,
+    /// the competition coordinator and the launch all extend the catalog
+    /// through this call, so the ledger record and the launch's skill check
+    /// (SKL-04) see the same skills.
     ///
     /// A skill this host does not have (no directory, or no `<dir>/<name>/`)
     /// is skipped and recorded in [`SkillCatalog::skipped_operator`]: the
@@ -396,6 +426,72 @@ impl SkillCatalog {
     /// say). The name rules apply on every host, so a clash fails even where
     /// the skill is missing. A teammate without the field changes nothing.
     pub fn with_operator_skills(
+        self,
+        teammate: &Teammate,
+        home: Option<&Path>,
+    ) -> Result<SkillCatalog> {
+        self.with_operator_dir(teammate, home)?
+            .with_plugin_skills(teammate, home)
+    }
+
+    /// This catalog plus `teammate`'s `plugin_skills:`, one entry per named
+    /// skill: id `<plugin>:<skill>` (the name the agent lists it under),
+    /// version `<plugin version>+<digest12>` (`plugin+<digest12>` when the
+    /// plugin has no version), and the marketplace tree digest of the skill
+    /// directory in the original plugin. A catalog id has no `:`, so a
+    /// plugin skill never shadows one. Nothing changes for a teammate
+    /// without the field, with `disable_skills`, or on an agent that does
+    /// not load skills as plugins. Fails on a plugin or skill that does not
+    /// resolve, as the launch would.
+    pub fn with_plugin_skills(
+        mut self,
+        teammate: &Teammate,
+        home: Option<&Path>,
+    ) -> Result<SkillCatalog> {
+        if teammate.plugin_skills.is_empty()
+            || teammate.disable_skills
+            || teammate.agent.adapter().skill_namespace().is_none()
+        {
+            return Ok(self);
+        }
+        let who = &teammate.name;
+        for named in crate::harness::claude_plugins::named_skills(teammate, home)
+            .with_context(|| format!("{who}: plugin_skills"))?
+        {
+            let name = format!("{}:{}", named.plugin, named.skill);
+            let id = SkillId::new(name.as_str())
+                .with_context(|| format!("{who}: plugin skill '{name}'"))?;
+            let digest: Digest = named
+                .digest
+                .parse()
+                .with_context(|| format!("{who}: plugin skill '{name}' digest"))?;
+            let version = format!(
+                "{}+{}",
+                named.version.as_deref().unwrap_or("plugin"),
+                digest.short12()
+            );
+            self.entries.insert(
+                name,
+                CatalogEntry {
+                    id,
+                    version: SkillVersion(version),
+                    source: CatalogSource::Plugin {
+                        plugin: named.plugin_key,
+                        dir: named.dir,
+                    },
+                    digest,
+                    description: named.description,
+                    provenance: None,
+                    skill_file_bytes: named.skill_file_bytes,
+                    files: Vec::new(),
+                },
+            );
+        }
+        Ok(self)
+    }
+
+    /// This catalog plus `teammate`'s `operator_skills:`.
+    fn with_operator_dir(
         mut self,
         teammate: &Teammate,
         home: Option<&Path>,

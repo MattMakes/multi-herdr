@@ -315,6 +315,92 @@ fn tel_02_fleet_writes_orchestrator_record() {
     assert_eq!(orch["task"], "(orchestrating)");
 }
 
+/// `horch fleet` records the orchestrator's plugin skills as the worker
+/// spawn does: `<plugin>:<skill>` refs next to the catalog skills, so the
+/// launch's skill check (SKL-04) accepts the record and the orchestrator
+/// starts. The orchestrator here is the built-in one plus a plugin `code`
+/// with skills `review` and `lint`, of which it names `review`.
+#[cfg(unix)]
+#[test]
+fn tel_02_fleet_records_the_orchestrators_plugin_skills() {
+    let mut h = Harness::new("tel02p");
+    let _collector = CollectorGuard(h.state.clone());
+    h.set("HORCH_FAKE_SCENARIO", "exec");
+    let root = h.home.join("plugins/code");
+    std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+    std::fs::write(
+        root.join(".claude-plugin/plugin.json"),
+        r#"{"name":"code","version":"1.2.0"}"#,
+    )
+    .unwrap();
+    for skill in ["review", "lint"] {
+        let dir = root.join("skills").join(skill);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {skill}\ndescription: Plugin {skill}.\n---\nbody\n"),
+        )
+        .unwrap();
+    }
+    // `$HORCH_TEAMMATES_DIR` (the repo's folder in the harness) wins over
+    // `~/.config`, so the test points it at an edited copy.
+    let teammates = h.root.join("teammates");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates"),
+        &teammates,
+    );
+    let builtin = std::fs::read_to_string(teammates.join("orchestrator.md")).unwrap();
+    assert!(builtin.contains("\nagent: claude\n"));
+    let overlay = builtin.replacen(
+        "\nagent: claude\n",
+        "\nagent: claude\nplugin_dirs: [~/plugins/code]\nplugin_skills:\n  code: [review]\n",
+        1,
+    );
+    std::fs::write(teammates.join("orchestrator.md"), overlay).unwrap();
+    h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
+
+    let project = h.project.to_string_lossy().into_owned();
+    let out = h.run(&["fleet", "--cwd", &project]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    // The launch accepted the record: the (fake) claude started.
+    wait_for("the orchestrator's claude", || {
+        h.calls_of("claude").iter().any(|c| {
+            c["argv"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|x| x == "--session-id"))
+        })
+    });
+    let slug: String = project
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                b as char
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut orch = Value::Null;
+    wait_for("the orchestrator record in the ledger", || {
+        let found = std::fs::read_to_string(ledger_path(&h, &slug))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Vec<Value>>(&t).ok())
+            .and_then(|rs| rs.into_iter().find(|r| r["kind"] == "orchestrator"));
+        found.map(|r| orch = r).is_some()
+    });
+    let skills = orch["skills"].as_array().unwrap();
+    let ids: Vec<&str> = skills.iter().map(|s| s["id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&"code:review"), "{ids:?}");
+    assert!(ids.contains(&"orchestrate"), "{ids:?}");
+    assert!(!ids.contains(&"code:lint"), "{ids:?}");
+    let review = skills.iter().find(|s| s["id"] == "code:review").unwrap();
+    assert_eq!(review["source"], "plugin:code@inline", "{review}");
+    assert!(
+        review["version"].as_str().unwrap().starts_with("1.2.0+"),
+        "{review}"
+    );
+}
+
 #[test]
 fn tel_02_resume_refuses_orchestrator() {
     let mut h = corpus("tel02r");

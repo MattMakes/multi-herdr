@@ -332,9 +332,10 @@ fn install_skills(
         home,
     )?;
     // The worker must run the skills the ledger recorded at spawn (SKL-04).
-    // The catalog and the operator directory are read again here, so a
-    // skill that changed, vanished or appeared since the spawn fails the
-    // launch. The copy itself is digest-checked against this plan.
+    // The catalog, the operator directory and the `plugin_skills` plugins
+    // are read again here, so a skill that changed, vanished or appeared
+    // since the spawn fails the launch. Each copy (the bundle's, and the
+    // filtered plugin copy) is digest-checked against this plan.
     if let Some(target) = &req.record {
         let record = crate::execution::store::ExecutionStore::open_in(ctx)?
             .get(target.record_id)
@@ -1208,10 +1209,19 @@ mod tests {
                 serde_json::json!({"name": name, "version": "1.0.0"})
             );
         };
+        let install = |t: &Teammate, env: &LaunchEnv| {
+            crate::skills::Bundle::install_from(
+                &tmp.path().join("state"),
+                t,
+                crate::skills::SkillCatalog::bundled().unwrap(),
+                &crate::mint_uuid(),
+                env.home(),
+            )
+            .unwrap()
+            .unwrap()
+        };
         let launch = |t: &Teammate, env: &LaunchEnv| {
-            let bundle = crate::skills::Bundle::install(&tmp.path().join("state"), t)
-                .unwrap()
-                .unwrap();
+            let bundle = install(t, env);
             let a = argv(
                 &command_with_skills_in(env, t, Session::Unmanaged, "p", None, Some(&bundle))
                     .unwrap(),
@@ -1244,12 +1254,46 @@ mod tests {
         );
         check_copy(&copy, "code");
         assert_eq!(overlay_of(&a)["enabledPlugins"]["code@inline"], true);
+        // The plan (and so the ledger record) pins the named skill only.
+        let review = bundle
+            .plan()
+            .activated
+            .iter()
+            .find(|r| r.id.as_str() == "code:review")
+            .unwrap_or_else(|| panic!("{:?}", bundle.plan().activated));
+        assert_eq!(review.source, "plugin:code@inline");
+        assert!(review.version.0.starts_with("1.0.0+"), "{review:?}");
+        assert_eq!(
+            review.digest.to_string(),
+            horch_marketplace::integrity::tree_digest(&root.join("skills/review")).unwrap()
+        );
+        assert!(!bundle.plan().activated_ids().contains(&"code:lint"));
         // The briefing names the reinforced one with its description.
         let brief = bundle.briefing_in(&t, None);
         assert!(brief.contains("- code:review: Does review."), "{brief}");
         assert!(!brief.contains("code:lint"), "{brief}");
         drop(bundle);
         assert!(!copy.exists(), "the copy goes with the bundle");
+
+        // A skill edited after the plan: the copy differs from the pinned
+        // digest, and the launch fails.
+        let bundle = install(&t, &LaunchEnv::for_test());
+        std::fs::write(root.join("skills/review/scripts/run.sh"), "echo edited\n").unwrap();
+        let err = command_with_skills_in(
+            &LaunchEnv::for_test(),
+            &t,
+            Session::Unmanaged,
+            "p",
+            None,
+            Some(&bundle),
+        )
+        .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("plugin skill 'code:review'") && err.contains("the plan pins"),
+            "{err}"
+        );
+        drop(bundle);
 
         // An installed plugin: the copy is appended, every install goes off.
         let installed = tmp.path().join("cache/dev");

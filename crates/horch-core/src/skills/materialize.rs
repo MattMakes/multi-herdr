@@ -51,6 +51,12 @@ impl MaterializedSkills {
                     entry.version
                 );
             }
+            // A plugin skill loads from the harness's filtered copy of its
+            // plugin, which checks that copy's bytes; the bundle's own
+            // skills directory never holds it.
+            if entry.is_plugin() {
+                continue;
+            }
             let target = out.skills_dir().join(skill.id.as_str());
             let from = match &entry.source {
                 CatalogSource::Bundled => None,
@@ -64,6 +70,7 @@ impl MaterializedSkills {
                     })?)
                 }
                 CatalogSource::Operator { .. } => entry.operator_dir(),
+                CatalogSource::Plugin { .. } => unreachable!("skipped above"),
             };
             if let Some(from) = from {
                 if !from.is_dir() {

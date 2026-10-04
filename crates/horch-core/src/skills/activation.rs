@@ -36,7 +36,9 @@ pub struct ResolvedSkillRef {
     pub id: SkillId,
     pub version: SkillVersion,
     pub digest: Digest,
-    /// `bundled`, or the marketplace source spec with `@<commit>` for git.
+    /// `bundled`, the marketplace source spec with `@<commit>` for git,
+    /// `operator:<dir>`, or `plugin:<plugin>@<marketplace>` (`@inline` for a
+    /// `plugin_dirs` plugin).
     pub source: String,
     pub policy: InvocationPolicy,
 }
@@ -59,8 +61,11 @@ pub struct SkillActivationPlan {
     pub activated: Vec<ResolvedSkillRef>,
     /// Every other catalog skill, sorted by id.
     pub available: Vec<ResolvedSkillRef>,
-    /// External Claude plugins and their named skills. They are not catalog
-    /// skills and never enter `activated` or `available` (SKL-07).
+    /// External Claude plugins and their named skills, as the teammate
+    /// names them. A plugin skill never activates a catalog skill of the
+    /// same name (SKL-07). It enters `activated` as `<plugin>:<skill>`
+    /// only when the caller extended the catalog with
+    /// `SkillCatalog::with_plugin_skills`, so the ledger records it.
     pub plugin_skills: BTreeMap<String, Vec<String>>,
 }
 
@@ -78,6 +83,8 @@ impl SkillActivationPlan {
 ///
 /// Operator skills are Explicit only when `catalog` holds them, that is,
 /// when the caller extended it with `SkillCatalog::with_operator_skills`.
+/// The same holds for plugin skills (`<plugin>:<skill>` entries); a plugin
+/// entry the teammate does not name is neither activated nor available.
 pub fn plan_activation(
     teammate: &Teammate,
     phase: Option<Phase>,
@@ -100,10 +107,21 @@ pub fn plan_activation(
             .filter(|n| catalog.lookup(n).is_some_and(CatalogEntry::is_operator))
             .map(str::to_owned),
     );
+    let plugin: BTreeSet<String> = teammate
+        .plugin_skills
+        .iter()
+        .flat_map(|(p, skills)| skills.iter().map(move |s| format!("{p}:{s}")))
+        .collect();
     let mut activated = Vec::new();
     let mut available = Vec::new();
     for entry in catalog.entries() {
         let name = entry.id.as_str();
+        if entry.is_plugin() {
+            if plugin.contains(name) {
+                activated.push(ResolvedSkillRef::new(entry, InvocationPolicy::Explicit));
+            }
+            continue;
+        }
         let policy = if explicit.contains(name) {
             InvocationPolicy::Explicit
         } else if phased.contains(name) {

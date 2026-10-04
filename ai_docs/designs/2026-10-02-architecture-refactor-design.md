@@ -1185,6 +1185,35 @@ impl Drop for MaterializedSkills { /* removes only files it created */ }
 validated `SkillId` (MKT-01 forbids the dependency the other way). The core
 converts at the boundary.
 
+Plugin skills in the record (G4, 2026-10-04). A teammate's `plugin_skills:`
+names skills of external Claude plugins. They are not catalog skills, and a
+plugin skill never activates a catalog skill of the same name (SKL-07). The
+ledger still records them, so the launch's skill check (SKL-04) covers them:
+
+- `SkillCatalog::with_operator_skills` also calls
+  `SkillCatalog::with_plugin_skills`. Every caller that records or launches
+  (spawn, `horch fleet`, the competition coordinator, the worker launch)
+  extends the catalog through this one call, so all of them see the same
+  plugin skills. `execution/plan.rs` did not change.
+- Id: `<plugin>:<skill>`, the name Claude Code lists the skill under. A
+  catalog id has no `:`, so a plugin entry never clashes with one.
+- Source: `CatalogSource::Plugin`, labelled `plugin:<plugin>@<marketplace>`
+  for an installed plugin and `plugin:<plugin>@inline` for a `plugin_dirs`
+  plugin (the ids Claude Code gives them).
+- Version: `<plugin version>+<digest12>`. The plugin version comes from the
+  `installed_plugins.json` record, else from the manifest; `plugin` when
+  neither has one.
+- Digest: `horch_marketplace::integrity::tree_digest` of the skill directory
+  in the original plugin, the same digest the filtered copy is checked with.
+- `plan_activation` puts a named plugin entry in `activated` as Explicit.
+  An unnamed plugin entry is in neither list.
+- `MaterializedSkills` skips plugin entries: the Claude adapter loads them
+  from the filtered plugin copy (`harness/claude_plugins.rs`), and that copy
+  must hold the digest the plan pinned, else the launch fails.
+- Only a teammate on an agent that loads skills as plugins, without
+  `disable_skills`, gets plugin entries. A plugin that does not resolve
+  fails the spawn, as it would fail the launch.
+
 ### 4.10 Marketplace (A8)
 
 ```rust

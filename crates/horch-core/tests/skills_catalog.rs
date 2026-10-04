@@ -576,6 +576,124 @@ fn skl_07_plugin_skills_separate() {
     );
 }
 
+/// `SkillCatalog::bundled` is built once and cloned: 2 calls give equal
+/// catalogs.
+#[test]
+fn bundled_catalog_is_the_same_on_every_call() {
+    let first = SkillCatalog::bundled().unwrap();
+    let second = SkillCatalog::bundled().unwrap();
+    assert!(!first.is_empty());
+    assert_eq!(first, second);
+}
+
+/// A catalog extended for a teammate holds its named plugin skills as
+/// `<plugin>:<skill>`, and the plan activates them (Explicit), so the
+/// ledger records them (SKL-04). An unnamed plugin skill is in neither
+/// list, and a plugin skill named like a bundled one still does not
+/// activate the bundled one (SKL-07).
+#[test]
+fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("code");
+    std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+    std::fs::write(
+        root.join(".claude-plugin/plugin.json"),
+        r#"{"name":"code"}"#,
+    )
+    .unwrap();
+    for skill in ["review", "tdd", "lint"] {
+        let dir = root.join("skills").join(skill);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {skill}\ndescription: Plugin {skill}.\n---\n"),
+        )
+        .unwrap();
+    }
+    let t = Teammate {
+        name: "plugged".into(),
+        agent: HarnessKind::Claude,
+        phase: Some(Phase::Plan),
+        plugin_dirs: vec![root.to_string_lossy().into_owned()],
+        plugin_skills: [(
+            "code".to_string(),
+            vec!["review".to_string(), "tdd".to_string()],
+        )]
+        .into(),
+        ..Teammate::default()
+    };
+    let bundled = SkillCatalog::bundled().unwrap();
+    let catalog = bundled.clone().with_operator_skills(&t, None).unwrap();
+    assert_eq!(catalog.len(), bundled.len() + 2);
+    let entry = catalog.lookup("code:review").unwrap();
+    assert!(entry.is_plugin());
+    assert_eq!(entry.description, "Plugin review.");
+    let digest = horch_marketplace::integrity::tree_digest(&root.join("skills/review")).unwrap();
+    assert_eq!(entry.digest.to_string(), digest);
+    // No plugin version: the label says plugin.
+    assert_eq!(
+        entry.version.0,
+        format!("plugin+{}", &digest["sha256:".len()..][..12])
+    );
+
+    let plan = plan_activation(&t, t.phase, &catalog).unwrap();
+    let review = plan
+        .activated
+        .iter()
+        .find(|r| r.id.as_str() == "code:review")
+        .unwrap();
+    assert_eq!(review.policy, InvocationPolicy::Explicit);
+    assert_eq!(review.source, "plugin:code@inline");
+    assert_eq!(
+        plan.activated_ids(),
+        [
+            "code:review",
+            "code:tdd",
+            "create-plan",
+            "handoff",
+            "pre-flight"
+        ]
+    );
+    let all: Vec<&str> = plan
+        .activated
+        .iter()
+        .chain(&plan.available)
+        .map(|r| r.id.as_str())
+        .collect();
+    assert!(!all.contains(&"code:lint"), "{all:?}");
+    let tdd = plan.available.iter().find(|r| r.id.as_str() == "tdd");
+    assert_eq!(tdd.unwrap().policy, InvocationPolicy::Available);
+
+    // An agent that does not load skills as plugins, and a teammate with
+    // skills off, add nothing.
+    for other in [
+        Teammate {
+            agent: HarnessKind::Codex,
+            ..t.clone()
+        },
+        Teammate {
+            disable_skills: true,
+            ..t.clone()
+        },
+    ] {
+        let c = bundled.clone().with_operator_skills(&other, None).unwrap();
+        assert_eq!(c.len(), bundled.len());
+    }
+    // A plugin that does not resolve fails the extension, as the launch would.
+    let missing = Teammate {
+        plugin_dirs: Vec::new(),
+        ..t.clone()
+    };
+    let err = format!(
+        "{:#}",
+        bundled
+            .clone()
+            .with_operator_skills(&missing, None)
+            .unwrap_err()
+    );
+    assert!(err.contains("plugin 'code' is neither"), "{err}");
+}
+
 #[test]
 fn skl_08_briefing_matches_baseline_modulo_path() {
     let catalog = SkillCatalog::bundled().unwrap();

@@ -35,6 +35,8 @@ pub(crate) struct Plugin {
     /// came from a `plugin_dirs` entry, which `--plugin-dir` already loads.
     pub installed_key: Option<String>,
     pub root: PathBuf,
+    /// The installed record's `version`, else the manifest's `version`.
+    pub version: Option<String>,
     /// `(name, description)` of every skill the plugin ships, sorted by name.
     pub skills: Vec<(String, String)>,
 }
@@ -103,15 +105,17 @@ pub(crate) fn resolve_in(
                 name: plugin.to_string(),
                 installed_key: None,
                 root: dir.clone(),
+                version: manifest_version(dir),
                 skills: read_skills(dir)?,
             });
         }
     }
-    if let Some((key, root)) = installed.and_then(|v| installed_root(v, plugin, home)) {
+    if let Some((key, root, version)) = installed.and_then(|v| installed_root(v, plugin, home)) {
         return Ok(Plugin {
             name: plugin.to_string(),
             installed_key: Some(key),
             skills: read_skills(&root)?,
+            version: version.or_else(|| manifest_version(&root)),
             root,
         });
     }
@@ -124,11 +128,20 @@ pub(crate) fn resolve_in(
 /// A plugin directory's name: `.claude-plugin/plugin.json`'s `name`, else the
 /// directory's own name.
 fn plugin_name(dir: &Path) -> Option<String> {
+    manifest_field(dir, "name")
+        .or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// `.claude-plugin/plugin.json`'s `version`, if the plugin has one.
+fn manifest_version(dir: &Path) -> Option<String> {
+    manifest_field(dir, "version")
+}
+
+fn manifest_field(dir: &Path, field: &str) -> Option<String> {
     let manifest = std::fs::read_to_string(dir.join(".claude-plugin/plugin.json")).ok();
     manifest
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_owned))
-        .or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .and_then(|v| v.get(field).and_then(|n| n.as_str()).map(str::to_owned))
 }
 
 /// The operator's installed-plugins registry under `home` (`$HOME`), if it
@@ -138,14 +151,15 @@ pub(crate) fn installed_plugins_in(home: Option<&Path>) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-/// Find `plugin` in `installed_plugins.json`. Keys are `name@marketplace`;
-/// the value is an install record, or (version 2 of the file) a list of them,
-/// each carrying an `installPath`.
+/// Find `plugin` in `installed_plugins.json`: its key, install path and
+/// recorded `version`. Keys are `name@marketplace`; the value is an install
+/// record, or (version 2 of the file) a list of them, each carrying an
+/// `installPath`.
 fn installed_root(
     installed: &Value,
     plugin: &str,
     home: Option<&Path>,
-) -> Option<(String, PathBuf)> {
+) -> Option<(String, PathBuf, Option<String>)> {
     let plugins = installed.get("plugins")?.as_object()?;
     for (key, value) in plugins {
         let name = key.split('@').next().unwrap_or(key);
@@ -158,7 +172,11 @@ fn installed_root(
         };
         for record in records {
             if let Some(path) = record.get("installPath").and_then(|p| p.as_str()) {
-                return Some((key.clone(), expand_home(path, home)));
+                let version = record
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                return Some((key.clone(), expand_home(path, home), version));
             }
         }
     }
@@ -226,6 +244,67 @@ fn skill_dirs(root: &Path) -> Result<Vec<(String, String, PathBuf)>> {
     Ok(out)
 }
 
+/// One skill a teammate names in `plugin_skills`, as a launch would load it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NamedPluginSkill {
+    pub plugin: String,
+    pub skill: String,
+    /// `<plugin>@<marketplace>` for an installed plugin, `<plugin>@inline`
+    /// for one from `plugin_dirs`: the id Claude Code gives the plugin.
+    pub plugin_key: String,
+    /// The plugin's version, when its install record or manifest has one.
+    pub version: Option<String>,
+    pub description: String,
+    /// The skill's directory in the original plugin.
+    pub dir: PathBuf,
+    /// Byte length of the skill's SKILL.md.
+    pub skill_file_bytes: usize,
+    /// `tree_digest` of `dir`: the same digest [`materialize_filtered`]
+    /// checks its copy against.
+    pub digest: String,
+}
+
+/// Every skill `teammate` names in `plugin_skills`, resolved under `home`
+/// (`$HOME`) and digested. Fails as [`resolve_all_in`] does, and on a skill
+/// tree the digest rules refuse (a symlink, say).
+pub(crate) fn named_skills(
+    teammate: &Teammate,
+    home: Option<&Path>,
+) -> Result<Vec<NamedPluginSkill>> {
+    let mut out = Vec::new();
+    for (plugin, wanted) in resolve_all_in(teammate, home)? {
+        let plugin_key = plugin
+            .installed_key
+            .clone()
+            .unwrap_or_else(|| format!("{}@inline", plugin.name));
+        let dirs = skill_dirs(&plugin.root)?;
+        for skill in wanted {
+            let (_, description, dir) = dirs
+                .iter()
+                .find(|(name, _, _)| *name == skill)
+                .with_context(|| {
+                    format!("plugin skill '{}:{skill}' has no directory", plugin.name)
+                })?;
+            let digest = horch_marketplace::integrity::tree_digest(dir)
+                .map_err(|e| anyhow::anyhow!("plugin skill '{}:{skill}': {e}", plugin.name))?;
+            let skill_file_bytes = std::fs::metadata(dir.join("SKILL.md"))
+                .map(|m| m.len() as usize)
+                .unwrap_or(0);
+            out.push(NamedPluginSkill {
+                plugin: plugin.name.clone(),
+                skill,
+                plugin_key: plugin_key.clone(),
+                version: plugin.version.clone(),
+                description: description.clone(),
+                dir: dir.clone(),
+                skill_file_bytes,
+                digest,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// The directory under a skills bundle that holds the filtered plugins.
 pub(crate) const FILTERED_DIR: &str = "plugins";
 
@@ -254,13 +333,15 @@ const MANIFEST_LEFT_OUT: [&str; 2] = ["skills", "commands"];
 /// A copy is the plugin minus its commands and every skill the teammate did
 /// not name. Its agents, hooks, MCP and LSP servers, scripts and other files
 /// stay: `plugin_skills` narrows skills, not tools. Each named skill's copy
-/// must hold the same bytes as its source (`tree_digest`), or the launch
-/// fails.
+/// must hold the bytes the bundle's plan pinned for `<plugin>:<skill>` (the
+/// digest the ledger recorded, SKL-04), or, for a skill the plan lacks, the
+/// bytes of its source (`tree_digest`); else the launch fails.
 pub(crate) fn materialize_filtered(
     teammate: &Teammate,
-    bundle: &Path,
+    skills: &crate::skills::Bundle,
     home: Option<&Path>,
 ) -> Result<Vec<String>> {
+    let bundle = skills.root();
     let mut dirs: Vec<String> = teammate.plugin_dirs.clone();
     for (plugin, wanted) in resolve_all_in(teammate, home)? {
         let name = plugin.name.as_str();
@@ -268,7 +349,16 @@ pub(crate) fn materialize_filtered(
             bail!("plugin name '{name}' cannot name a directory");
         }
         let copy = bundle.join(FILTERED_DIR).join(name);
-        filtered_copy(&plugin, &wanted, &copy)?;
+        let pinned = |skill: &str| {
+            let id = format!("{name}:{skill}");
+            skills
+                .plan()
+                .activated
+                .iter()
+                .find(|r| r.id.as_str() == id)
+                .map(|r| r.digest.to_string())
+        };
+        filtered_copy(&plugin, &wanted, &copy, pinned)?;
         let copy = copy.to_string_lossy().into_owned();
         let original = teammate
             .plugin_dirs
@@ -282,8 +372,14 @@ pub(crate) fn materialize_filtered(
     Ok(dirs)
 }
 
-/// Copy `plugin` to `to` with only the `wanted` skills.
-fn filtered_copy(plugin: &Plugin, wanted: &[String], to: &Path) -> Result<()> {
+/// Copy `plugin` to `to` with only the `wanted` skills. `pinned` gives the
+/// digest a skill's copy must have; `None` pins the source's digest.
+fn filtered_copy(
+    plugin: &Plugin,
+    wanted: &[String],
+    to: &Path,
+    pinned: impl Fn(&str) -> Option<String>,
+) -> Result<()> {
     std::fs::create_dir_all(to.join(".claude-plugin"))
         .with_context(|| format!("creating {}", to.display()))?;
     let manifest_path = plugin.root.join(".claude-plugin/plugin.json");
@@ -324,15 +420,17 @@ fn filtered_copy(plugin: &Plugin, wanted: &[String], to: &Path) -> Result<()> {
             horch_marketplace::integrity::tree_digest(dir)
                 .map_err(|e| anyhow::anyhow!("plugin skill '{}:{name}': {e}", plugin.name))
         };
-        let expected = digest(&from)?;
+        let (expected, by) = match pinned(&name) {
+            Some(d) => (d, "the plan pins".to_string()),
+            None => (digest(&from)?, format!("{} holds", from.display())),
+        };
         copy_entry(&from, &target)?;
         let actual = digest(&target)?;
         if actual != expected {
             bail!(
-                "plugin skill '{}:{name}': the copy holds {actual}, {} holds {expected}; \
+                "plugin skill '{}:{name}': the copy holds {actual}, {by} {expected}; \
                  the plugin changed during the launch",
-                plugin.name,
-                from.display()
+                plugin.name
             );
         }
     }

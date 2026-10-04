@@ -60,8 +60,7 @@ impl Harness for Claude {
         )?;
         let mut adjusted = teammate.clone();
         // Each plugin_skills plugin loads as a filtered copy in the bundle.
-        adjusted.plugin_dirs =
-            super::claude_plugins::materialize_filtered(teammate, skills.root(), home)?;
+        adjusted.plugin_dirs = super::claude_plugins::materialize_filtered(teammate, skills, home)?;
         // plugin_dirs precede scalar flags in the Claude builder, which
         // fences variadic --plugin-dir parsing away from the briefing.
         adjusted
