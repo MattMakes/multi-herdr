@@ -18,6 +18,11 @@
 //! NOT searched: a worker's cwd is the target project, and a stray folder there
 //! would silently re-brief the fleet.
 //!
+//! The built-ins must always parse (a test pins it). An overlay file can be
+//! ahead of the binary, so one that does not parse is skipped: the earlier
+//! definition of its name stays, `load_warnings` names the file and the
+//! error, and `--check` fails on it.
+//!
 //! | module         | holds |
 //! |----------------|-------|
 //! | `teammate`   | the frontmatter types and the orchestrator-only constants |

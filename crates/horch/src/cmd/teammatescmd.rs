@@ -272,7 +272,7 @@ fn matrix_table(rows: &[MatrixRow]) -> String {
 
 /// Validate the roster. Exit code is what CI and `horch doctor` care about.
 pub fn check(ctx: &RuntimeContext) -> Result<ExitCode> {
-    let roster = super::load_roster(ctx, None)?;
+    let roster = super::load_roster_unwarned(ctx, None)?;
     let problems = roster.check();
     // Warnings (design 13.3 rule 6) never fail the check.
     for w in horch_core::roster::validation::fallback_warnings(&roster) {

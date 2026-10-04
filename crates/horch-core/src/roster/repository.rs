@@ -25,6 +25,54 @@ pub struct Roster {
     /// What the project directory holds, for `offer_when`. `None`: nothing
     /// was gathered, and every non-hidden teammate is offered.
     pub(crate) project: Option<ProjectFacts>,
+    /// Overlay files that did not read or parse, keyed on teammate name.
+    /// The rest of the roster loads without them; see [`Roster::load_warnings`].
+    pub(crate) broken_teammates: BTreeMap<String, BrokenFile>,
+    /// The same for `_base/` files, keyed on base name.
+    pub(crate) broken_bases: BTreeMap<String, BrokenFile>,
+    /// The overlay file each overlaid teammate or base came from. A name
+    /// missing here is the built-in.
+    teammate_origins: BTreeMap<String, PathBuf>,
+    base_origins: BTreeMap<String, PathBuf>,
+}
+
+/// One overlay file that did not load.
+#[derive(Debug, Clone)]
+pub(crate) struct BrokenFile {
+    path: PathBuf,
+    error: String,
+    /// What is used instead: "the built-in" or an earlier file. `None`: the
+    /// name is not in the roster at all.
+    fallback: Option<String>,
+}
+
+impl BrokenFile {
+    fn warning(&self, kind: &str, name: &str) -> String {
+        let used = match &self.fallback {
+            Some(f) => format!("using {f} instead"),
+            None => format!("{kind} '{name}' is not available"),
+        };
+        format!(
+            "{kind} '{name}' did not load from {}: {}; {used}",
+            self.path.display(),
+            self.error
+        )
+    }
+}
+
+fn fallback_for(origins: &BTreeMap<String, PathBuf>, name: &str, loaded: bool) -> Option<String> {
+    if !loaded {
+        return None;
+    }
+    Some(match origins.get(name) {
+        Some(path) => format!("the earlier {}", path.display()),
+        None => format!("the built-in '{name}'"),
+    })
+}
+
+fn read_parsed<T>(path: &Path, parse: impl FnOnce(&str) -> Result<T>) -> Result<T, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("reading: {e}"))?;
+    parse(&text).map_err(|e| format!("{e:#}"))
 }
 
 impl Roster {
@@ -78,28 +126,76 @@ impl Roster {
     }
 
     /// Read one directory over the top of what is already loaded.
+    ///
+    /// A file that does not read or parse never fails the load: an overlay
+    /// can be ahead of this binary (a new field value), and one such file
+    /// must not take every other teammate down. The file is recorded instead,
+    /// the earlier definition of its name stays, and [`Roster::load_warnings`]
+    /// and [`Roster::check`] report it. Only an unreadable directory fails.
     pub fn overlay(&mut self, dir: &Path) -> Result<()> {
         let base_dir = dir.join("_base");
         if base_dir.is_dir() {
             for (stem, path) in md_files(&base_dir)? {
-                let text = std::fs::read_to_string(&path)
-                    .with_context(|| format!("reading {}", path.display()))?;
-                let base =
-                    parse_base(&stem, &text).with_context(|| format!("in {}", path.display()))?;
-                self.bases.insert(stem, base);
+                match read_parsed(&path, |text| parse_base(&stem, text)) {
+                    Ok(base) => {
+                        self.bases.insert(stem.clone(), base);
+                        self.broken_bases.remove(&stem);
+                        self.base_origins.insert(stem, path);
+                    }
+                    Err(error) => {
+                        let loaded = self.bases.contains_key(&stem);
+                        let fallback = fallback_for(&self.base_origins, &stem, loaded);
+                        self.broken_bases.insert(
+                            stem,
+                            BrokenFile {
+                                path,
+                                error,
+                                fallback,
+                            },
+                        );
+                    }
+                }
             }
         }
         for (stem, path) in md_files(dir)? {
             if stem.starts_with('_') {
                 continue;
             }
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let t =
-                parse_teammate(&stem, &text).with_context(|| format!("in {}", path.display()))?;
-            self.teammates.insert(stem, t);
+            match read_parsed(&path, |text| parse_teammate(&stem, text)) {
+                Ok(t) => {
+                    self.teammates.insert(stem.clone(), t);
+                    self.broken_teammates.remove(&stem);
+                    self.teammate_origins.insert(stem, path);
+                }
+                Err(error) => {
+                    let loaded = self.teammates.contains_key(&stem);
+                    let fallback = fallback_for(&self.teammate_origins, &stem, loaded);
+                    self.broken_teammates.insert(
+                        stem,
+                        BrokenFile {
+                            path,
+                            error,
+                            fallback,
+                        },
+                    );
+                }
+            }
         }
         Ok(())
+    }
+
+    /// One line per overlay file that did not load: the file, the error and
+    /// what is used instead. Commands print these; `--check` fails on them.
+    pub fn load_warnings(&self) -> Vec<String> {
+        let bases = self
+            .broken_bases
+            .iter()
+            .map(|(name, b)| b.warning("base", name));
+        let teammates = self
+            .broken_teammates
+            .iter()
+            .map(|(name, b)| b.warning("teammate", name));
+        bases.chain(teammates).collect()
     }
 
     /// Add or replace one teammate. For tests that need a roster variant.
@@ -116,6 +212,9 @@ impl Roster {
     pub fn require(&self, name: &str) -> Result<&Teammate> {
         match self.teammates.get(name) {
             Some(t) => Ok(t),
+            None if self.broken_teammates.contains_key(name) => {
+                bail!("{}", self.broken_teammates[name].warning("teammate", name))
+            }
             None => bail!(
                 "unknown teammate '{name}'. Available: {}",
                 self.names().join(", ")

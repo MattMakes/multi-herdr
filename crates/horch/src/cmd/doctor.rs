@@ -17,7 +17,7 @@ use horch_core::workspace::herdr::Herdr;
 pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     check(ctx)?;
     println!("herdr is installed and its server is reachable.");
-    let mut roster = super::load_roster(ctx, None)?;
+    let mut roster = super::load_roster_unwarned(ctx, None)?;
     // Count and check what a fleet started here would offer (`offer_when`).
     if let Ok(project) = ctx.paths.project() {
         roster = roster.with_project_facts(super::recipes::project_facts(&project));

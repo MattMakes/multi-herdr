@@ -135,3 +135,136 @@ fn arc_08_roster_never_calls_herdr() {
     }
     assert!(scanned >= 9, "only {scanned} files scanned");
 }
+
+/// F7: a teammate file whose `requires` names a value this binary does not
+/// know, as when the live roster is ahead of the installed `horch`.
+fn write_ahead(dir: &Path, name: &str) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let text = opus_saying("ahead of the binary")
+        .replacen("\n---\n", "\nrequires: [no-such-tool]\n---\n", 1)
+        .replace("name: opus", &format!("name: {name}"));
+    let path = dir.join(format!("{name}.md"));
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+#[test]
+fn f7_builtin_roster_always_parses() {
+    let r = Roster::builtin().expect("every compiled-in teammate and base parses");
+    assert!(r.load_warnings().is_empty());
+    assert!(r.names().len() >= 33, "{:?}", r.names());
+}
+
+#[test]
+fn f7_bad_overlay_file_skips_only_that_teammate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("teammates");
+    let path = write_ahead(&dir, "newcomer");
+    write_opus(&dir, "overlaid opus");
+
+    let r = Roster::load_layered(None, Some(&dir), None).unwrap();
+    assert_eq!(
+        r.require("opus").unwrap().brief_description,
+        "overlaid opus"
+    );
+    assert_eq!(r.sources, vec![dir.clone()]);
+    assert!(!r.names().contains(&"newcomer"));
+
+    let warnings = r.load_warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let w = &warnings[0];
+    assert!(w.contains(&path.display().to_string()), "{w}");
+    assert!(w.contains("unknown variant `no-such-tool`"), "{w}");
+    assert!(w.contains("teammate 'newcomer' is not available"), "{w}");
+
+    // Spawn by name: the parse error, not "unknown teammate".
+    let err = format!("{:#}", r.require("newcomer").unwrap_err());
+    assert!(!err.contains("unknown teammate"), "{err}");
+    assert!(err.contains("unknown variant `no-such-tool`"), "{err}");
+    assert!(err.contains(&path.display().to_string()), "{err}");
+
+    // The gate stays strict.
+    assert!(r.check().contains(w), "{:?}", r.check());
+}
+
+#[test]
+fn f7_bad_override_of_builtin_falls_back_to_builtin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("teammates");
+    write_ahead(&dir, "opus");
+
+    let r = Roster::load_layered(None, Some(&dir), None).unwrap();
+    let builtin = Roster::builtin().unwrap();
+    assert_eq!(
+        r.require("opus").unwrap().brief_description,
+        builtin.require("opus").unwrap().brief_description
+    );
+    let warnings = r.load_warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("using the built-in 'opus' instead"),
+        "{warnings:?}"
+    );
+    assert!(r.check().contains(&warnings[0]), "{:?}", r.check());
+}
+
+#[test]
+fn f7_bad_layer_keeps_the_earlier_layer_and_a_later_layer_heals() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let user = home.join(".config/horch/teammates");
+    let roster_override = tmp.path().join("override");
+    let explicit = tmp.path().join("explicit");
+    write_opus(&user, "from the user overlay");
+    write_ahead(&roster_override, "opus");
+
+    let r = Roster::load_layered(Some(&home), Some(&roster_override), None).unwrap();
+    assert_eq!(
+        r.require("opus").unwrap().brief_description,
+        "from the user overlay"
+    );
+    let warnings = r.load_warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let earlier = format!(
+        "using the earlier {} instead",
+        user.join("opus.md").display()
+    );
+    assert!(warnings[0].contains(&earlier), "{warnings:?}");
+
+    write_opus(&explicit, "from the explicit dir");
+    let r = Roster::load_layered(
+        Some(&home),
+        Some(&roster_override),
+        Some(explicit.to_str().unwrap()),
+    )
+    .unwrap();
+    assert_eq!(
+        r.require("opus").unwrap().brief_description,
+        "from the explicit dir"
+    );
+    assert!(r.load_warnings().is_empty(), "{:?}", r.load_warnings());
+}
+
+#[test]
+fn f7_bad_base_file_keeps_the_builtin_base() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("teammates");
+    std::fs::create_dir_all(dir.join("_base")).unwrap();
+    let path = dir.join("_base/fleet-worker.md");
+    std::fs::write(&path, "no frontmatter here\n").unwrap();
+
+    let r = Roster::load_layered(None, Some(&dir), None).unwrap();
+    let builtin = Roster::builtin().unwrap();
+    assert_eq!(
+        r.base("fleet-worker").unwrap().body,
+        builtin.base("fleet-worker").unwrap().body
+    );
+    let warnings = r.load_warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("base 'fleet-worker'"), "{warnings:?}");
+    assert!(
+        warnings[0].contains(&path.display().to_string()),
+        "{warnings:?}"
+    );
+    assert!(r.check().contains(&warnings[0]), "{:?}", r.check());
+}

@@ -29,7 +29,20 @@ use horch_core::skills::SkillCatalog;
 /// The roster as this context sees it: the built-ins, `~/.config/horch/teammates`,
 /// `$HORCH_TEAMMATES_DIR`, then `explicit`. Skill names are judged against
 /// the bundled skills plus the installed marketplace skills.
+///
+/// An overlay file that does not load prints one warning to stderr and
+/// leaves the rest of the roster usable.
 pub fn load_roster(ctx: &RuntimeContext, explicit: Option<&str>) -> Result<Roster> {
+    let roster = load_roster_unwarned(ctx, explicit)?;
+    for w in roster.load_warnings() {
+        eprintln!("warning: {w}");
+    }
+    Ok(roster)
+}
+
+/// [`load_roster`] without the warnings, for a check that reports the same
+/// files as problems.
+pub fn load_roster_unwarned(ctx: &RuntimeContext, explicit: Option<&str>) -> Result<Roster> {
     Roster::load_layered(
         ctx.inherited.home_var.as_deref().map(Path::new),
         ctx.bins.roster_override.as_deref(),

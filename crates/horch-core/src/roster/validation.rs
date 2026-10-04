@@ -456,7 +456,9 @@ impl Roster {
     /// Everything wrong with the loaded roster, as human-readable lines.
     /// Empty means healthy.
     pub fn check(&self) -> Vec<String> {
-        let mut problems = Vec::new();
+        // A file that did not load is a problem here, though loading goes on
+        // without it: the gate stays strict.
+        let mut problems = self.load_warnings();
         for t in self.teammates.values() {
             problems.extend(self.check_teammate(t));
         }
