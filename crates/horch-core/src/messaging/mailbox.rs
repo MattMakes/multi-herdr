@@ -13,6 +13,9 @@ use anyhow::{bail, Context, Result};
 /// The brief moved to [`crate::messaging::brief`] in A2.
 use crate::messaging::brief::Brief;
 
+/// A brief's file mode: what `std::fs::write` gave it under the usual umask.
+const BRIEF_MODE: u32 = 0o644;
+
 /// The mailbox directory for one herdr workspace.
 #[derive(Debug, Clone)]
 pub struct Mailbox {
@@ -171,11 +174,14 @@ impl Mailbox {
         self.roles().into_iter().map(|(r, p)| (p, r)).collect()
     }
 
+    /// Write `brief` atomically: the worker never reads half of one.
     pub fn write_brief(&self, brief: &Brief) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
+        std::fs::create_dir_all(&self.dir)
+            .with_context(|| format!("creating mailbox {}", self.dir.display()))?;
         let path = self.brief_path(&brief.role);
         let json = serde_json::to_string_pretty(brief)?;
-        std::fs::write(&path, json).with_context(|| format!("writing brief {}", path.display()))
+        crate::fsx::write_atomic(&path, json.as_bytes(), BRIEF_MODE)
+            .with_context(|| format!("writing brief {}", path.display()))
     }
 
     pub fn read_brief(&self, role: &str) -> Result<Brief> {
