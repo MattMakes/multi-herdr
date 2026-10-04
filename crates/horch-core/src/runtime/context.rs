@@ -159,6 +159,10 @@ pub struct Settings {
     pub machine_file: Option<PathBuf>,
     /// `HORCH_PROBE_TIMEOUT_MS`.
     pub probe_timeout: Option<Duration>,
+    /// `HORCH_TELL_GRACE_MS`: how long `horch tell` waits for herdr to see an
+    /// agent in a pane whose role registered that recently. `None` is the
+    /// default ([`crate::messaging::delivery::TELL_GRACE`]).
+    pub tell_grace: Option<Duration>,
     /// `HORCH_FAULT`.
     pub faults: Faults,
 }
@@ -310,6 +314,9 @@ impl RuntimeContext {
             probe_timeout: nonempty("HORCH_PROBE_TIMEOUT_MS")
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map(Duration::from_millis),
+            tell_grace: nonempty("HORCH_TELL_GRACE_MS")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .map(Duration::from_millis),
             faults: Faults::parse(env.var("HORCH_FAULT").as_deref()),
         };
 
@@ -400,6 +407,7 @@ mod tests {
             .with("HORCH_QUOTA_FILE", "/q.json")
             .with("HORCH_MACHINE_FILE", "/m.json")
             .with("HORCH_PROBE_TIMEOUT_MS", "250")
+            .with("HORCH_TELL_GRACE_MS", "0")
             .with("HORCH_FAULT", "after-append,abort-after-append")
             .with("OPENCODE_CONFIG_CONTENT", "{}")
             .with("CODEX_HOME", "/codex")
@@ -463,6 +471,7 @@ mod tests {
         assert_eq!(s.quota_file, Some(PathBuf::from("/q.json")));
         assert_eq!(s.machine_file, Some(PathBuf::from("/m.json")));
         assert_eq!(s.probe_timeout, Some(Duration::from_millis(250)));
+        assert_eq!(s.tell_grace, Some(Duration::ZERO));
         assert!(s.faults.has("after-append") && s.faults.has("abort-after-append"));
 
         let i = &ctx.inherited;
@@ -500,6 +509,7 @@ mod tests {
         assert_eq!(ctx.settings.now, None);
         assert_eq!(ctx.settings.tiling, TilingMode::Automatic);
         assert_eq!(ctx.settings.probe_timeout, None);
+        assert_eq!(ctx.settings.tell_grace, None);
         assert!(ctx.settings.faults.is_empty());
         assert_eq!(ctx.inherited, Inherited::default());
         assert_eq!(ctx.worker, None);

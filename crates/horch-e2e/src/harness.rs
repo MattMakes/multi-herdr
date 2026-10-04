@@ -282,6 +282,9 @@ impl Harness {
             "HORCH_FAKE_LOG".into(),
             self.log.to_string_lossy().into_owned(),
         );
+        // Fake panes never show an agent, so `horch tell` gives a fresh role
+        // no grace here (the grace has its own tests in horch-core).
+        env.insert("HORCH_TELL_GRACE_MS".into(), "0".into());
         env.insert(
             "CODEX_HOME".into(),
             self.home.join(".codex").to_string_lossy().into_owned(),

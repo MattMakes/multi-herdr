@@ -63,11 +63,22 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     } else {
         text
     };
-    // An agent that is still starting drops typed text, so wait it out.
+    // An agent that is still starting drops typed text, so wait it out. A
+    // role that registered just now may not show its agent yet.
+    let grace = ctx.settings.tell_grace.unwrap_or(delivery::TELL_GRACE);
+    let fresh = mailbox
+        .registered_at(role)
+        .and_then(|at| at.elapsed().ok())
+        .is_some_and(|age| age < grace);
     delivery::send_line_when_ready(
         &herdr,
         &target,
         &line,
+        if fresh {
+            grace
+        } else {
+            std::time::Duration::ZERO
+        },
         &delivery::Readiness::DEFAULT,
         &delivery::Timing::DEFAULT,
     )

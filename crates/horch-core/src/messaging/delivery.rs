@@ -154,20 +154,39 @@ pub fn deliver_when_idle(
     send_line_with(ws, pane, text, timing)
 }
 
+/// How long after a role registers `horch tell` treats a pane with no agent
+/// as one whose agent has not shown yet. A worker registers before its agent
+/// starts, and opencode took 1.6 s more to show (LA-3).
+pub const TELL_GRACE: Duration = Duration::from_secs(30);
+
 /// [`send_line_with`], but first wait out an agent that is still starting
-/// in `pane` ([`starting`]): what `horch tell` and `horch assign` do.
+/// in `pane`: what `horch tell` and `horch assign` do.
 ///
-/// A pane with no agent, or an agent in any known state (a busy one too),
-/// gets the line at once, exactly as before. An error when the agent is
-/// still starting after `wait.timeout`: nothing was typed.
+/// - herdr sees an agent that is starting ([`starting`]): wait until it is
+///   not, up to `wait.timeout`, else an error and nothing typed.
+/// - herdr sees no agent and `grace` is not zero (the role registered less
+///   than [`TELL_GRACE`] ago): wait up to `grace` for an agent to show, then
+///   as above. When none shows, the line goes as before.
+/// - Otherwise (no agent and no grace, or an agent in a known state, a busy
+///   one too) the line goes at once, exactly as before.
 pub fn send_line_when_ready(
     ws: &dyn WorkspaceClient,
     pane: &str,
     message: &str,
+    grace: Duration,
     wait: &Readiness,
     timing: &Timing,
 ) -> Result<()> {
-    let booting = ws.pane_get(pane).is_ok_and(|p| starting(&p));
+    let has_agent = |p: &Pane| p.agent.as_deref().is_some_and(|a| !a.is_empty());
+    let first = ws.pane_get(pane).ok();
+    let mut booting = first.as_ref().is_some_and(starting);
+    if !grace.is_zero() && first.as_ref().is_some_and(|p| !has_agent(p)) {
+        let appear = Readiness {
+            timeout: grace,
+            poll: wait.poll,
+        };
+        booting = wait_for(ws, pane, &appear, has_agent);
+    }
     if booting && !wait_for(ws, pane, wait, |p| !starting(p)) {
         bail!(
             "the agent in pane {pane} was still starting after {} s, so the message was not typed",
