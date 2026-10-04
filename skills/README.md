@@ -158,6 +158,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 
 | Skill | Upstream source | Copy |
 | --- | --- | --- |
+| [godot-2d-essentials](godot-2d-essentials/SKILL.md) | `jame581/GodotPrompter`: `skills/2d-essentials/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-tilemap-mastery` | combined |
 | [godot-ability-system](godot-ability-system/SKILL.md) | `jame581/GodotPrompter`: `skills/ability-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-ability-system/`, `godot-rpg-stats/`) | combined |
 | [godot-addon-development](godot-addon-development/SKILL.md) | `jame581/GodotPrompter`: `skills/addon-development/` | renamed |
 | [godot-ai-navigation](godot-ai-navigation/SKILL.md) | `jame581/GodotPrompter`: `skills/ai-navigation/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-ai-navigation/`, `godot-navigation-pathfinding/`) | combined |
@@ -172,6 +173,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-csharp-signals](godot-csharp-signals/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-signals/` | renamed |
 | [godot-dedicated-server](godot-dedicated-server/SKILL.md) | `jame581/GodotPrompter`: `skills/dedicated-server/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-server-architecture/`, `godot-multiplayer-networking/`) | combined |
 | [godot-dialogue-manager](godot-dialogue-manager/SKILL.md) | `jame581/GodotPrompter`: `skills/dialogue-manager/` | renamed |
+| [godot-dialogue-system](godot-dialogue-system/SKILL.md) | `jame581/GodotPrompter`: `skills/dialogue-system/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-dialogue-system` | combined |
 | [godot-dimension-port](godot-dimension-port/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills` `godot-adapt-2d-to-3d` and `godot-adapt-3d-to-2d`; checked against Godot 4.7.2)* | own text |
 | [godot-economy-system](godot-economy-system/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-economy-system/`; code run on Godot 4.7.2)* | own text |
 | [godot-export-pipeline](godot-export-pipeline/SKILL.md) | `jame581/GodotPrompter`: `skills/export-pipeline/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-export-builds/`, `godot-platform-desktop/`, `godot-platform-web/`, `godot-platform-console/`, `godot-adapt-mobile-to-desktop/`) | combined |
@@ -194,6 +196,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-physics-system](godot-physics-system/SKILL.md) | `jame581/GodotPrompter`: `skills/physics-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-2d-physics/`, `godot-physics-3d/`, `godot-raycasting-queries/`) | combined |
 | [godot-player-controller](godot-player-controller/SKILL.md) | `jame581/GodotPrompter`: `skills/player-controller/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-characterbody-2d/`) | combined |
 | [godot-popochiu](godot-popochiu/SKILL.md) | `jame581/GodotPrompter`: `skills/popochiu/` | renamed |
+| [godot-procedural-generation](godot-procedural-generation/SKILL.md) | `jame581/GodotPrompter`: `skills/procedural-generation/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-procedural-generation` | combined |
 | [godot-project-context](godot-project-context/SKILL.md) | *(none - repo-original; shape of `ue-project-context`; run on Godot 4.7.2)* | own text |
 | [godot-quest-system](godot-quest-system/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-quest-system/`; code run on Godot 4.7.2)* | own text |
 | [godot-responsive-ui](godot-responsive-ui/SKILL.md) | `jame581/GodotPrompter`: `skills/responsive-ui/` | renamed |

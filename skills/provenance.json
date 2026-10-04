@@ -1063,6 +1063,62 @@
       "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
     },
     {
+      "name": "godot-2d-essentials",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/2d-essentials/SKILL.md",
+          "sha256": "03c65d8c26e2da35def0f819361f12f9cef050b515d49b29294c35b95656811e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/2d-essentials/references/2d-particles.md",
+          "sha256": "737e03af277f5170421c0f9036c58a99e82b64f558f6368f4f28c29c165bb4b3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/2d-essentials/references/custom-drawing.md",
+          "sha256": "090e2e0c9b6d0ba8219563879a4e3f5918322910a508ea8f4c07ba75d7b27b9c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/2d-essentials/references/lights-and-shadows.md",
+          "sha256": "823cdd0efac7dfc8c3d3efa22b69ca1c98997ee3eadb84535437caa1ba0d9f77",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/2d-essentials/references/parallax.md",
+          "sha256": "663155249f71092cc268244078ed472881d1777ad04ef8f0ebac0b125fdb3785",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/2d-essentials/references/tilemap.md",
+          "sha256": "0bf4c9245b754def98a5fb38590a53387450a8f8f372f8643a0ed103d0621f85",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; references/tilemap-runtime.md is own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-tilemap-mastery; Fact fixes on 4.7: references/tilemap.md physics quadrants are set by physics_quadrant_size (4.5+), not rendering_quadrant_size (4.7.2 doctool dump: separate TileMapLayer members; upgrading_to_godot_4.5, checked by unit GW10)",
+      "vendored": true
+    },
+    {
       "name": "godot-ability-system",
       "sources": [
         {
@@ -1520,6 +1576,62 @@
         }
       ],
       "adaptation": "rename to godot-* prefix; the upstream text names the pinned addon version v3.10.4",
+      "vendored": true
+    },
+    {
+      "name": "godot-dialogue-system",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dialogue-system/SKILL.md",
+          "sha256": "b34f0b7494f106aef111e4cb41a146ce4d249951a0f6a35389cd0cf9a22572d2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dialogue-system/references/branching-and-conditions.md",
+          "sha256": "f30fabbab6845634659e9b6077921dfcb5be9b5818d6ea53f2803a37a5d5ac45",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dialogue-system/references/dialogue-manager.md",
+          "sha256": "c7e71cf7817b0e3d5320b6651360da6836b0c2f74ad73b3332bd1e502a68f77e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dialogue-system/references/external-formats.md",
+          "sha256": "cacaf99e97d33c4c7f53c6b5b2101a3fef6759858f11f8d6a77ba73732af796b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dialogue-system/references/ui-presentation.md",
+          "sha256": "3f0f5b02ce9e12954e8481c790188951d30866aa2f55ec168455ba3551153ae4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dialogue-system/references/variable-interpolation.md",
+          "sha256": "d5f53b8dcd8ad59a42c2c62751f729c635b4ae176b899d2ceb83e4abbd8d52a3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; references/events-validation-state.md, references/localization-voice-portraits.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-dialogue-system",
       "vendored": true
     },
     {
@@ -2342,6 +2454,55 @@
         }
       ],
       "adaptation": "rename to godot-* prefix; the upstream text names the pinned addon version v2.1.1",
+      "vendored": true
+    },
+    {
+      "name": "godot-procedural-generation",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/procedural-generation/SKILL.md",
+          "sha256": "e091599b444b8e872f2813351c090d0124254ee1b8842f4d617fcf932d7174e7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/procedural-generation/references/bsp-dungeons.md",
+          "sha256": "a76396a653bc1844c2d1105d1b7af4f12541e6eb4081b535c73777aae04ebbe5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/procedural-generation/references/cellular-automata.md",
+          "sha256": "7c71d14f7674f55e52cdff0d1abedc6b8589ee542d3133db95ac1b2e93bc9b7e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/procedural-generation/references/noise-generation.md",
+          "sha256": "bff30ee7baf1374cb3322ef04f860d9a2af58b97767a2faa4e00ee10421ffa4d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/procedural-generation/references/wave-function-collapse.md",
+          "sha256": "4ad7d0d9c10425b09fe62cb2aa266da63caa65fad847ba4154da22ae500a2f9b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; references/placement-and-layout.md, references/threaded-chunks.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-procedural-generation",
       "vendored": true
     },
     {
