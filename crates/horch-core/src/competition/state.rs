@@ -218,7 +218,13 @@ pub const TABLE: &[(RoundState, &str, RoundState)] = &[
     (Promoted, "round.cleanup_started", Cleanup),
     (Promoted, "promotion.rolled_back", Promoted),
     (Complete, "promotion.rolled_back", Complete),
-    // The operator stops a live round.
+    // The operator stops a live round. A worktree that cannot be made stops
+    // the round for the operator too.
+    (
+        Provisioning,
+        "round.needs_intervention:operator",
+        NeedsIntervention,
+    ),
     (
         Running,
         "round.needs_intervention:operator",

@@ -463,6 +463,80 @@ fn pre_14_trust_dialog_pane_ends_the_candidate_at_once() {
     }
 }
 
+/// A worktree that cannot be made (here: B's path is taken) stops the round
+/// for the operator, with the reason, before any candidate starts; the
+/// operator's `cleanup --force` then removes the worktree that was made
+/// (LA-11 found the round stuck in PROVISIONING).
+#[test]
+fn provisioning_failure_needs_the_operator_and_cleans_up() {
+    use horch_core::competition::cleanup::{CleanupOptions, CleanupOutcome, RoundCleanup};
+    use horch_core::competition::model::RoundState;
+
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let taken = w.root.join("worktrees").join("B");
+    std::fs::create_dir_all(&taken).unwrap();
+    std::fs::write(taken.join("other.txt"), "an earlier round\n").unwrap();
+    let CrashRound {
+        recorder,
+        store,
+        round,
+        outcome,
+        ..
+    } = crash_round(&w, &roster, |_| {});
+    assert_eq!(outcome, RoundOutcome::NeedsIntervention);
+    assert!(store.read().unwrap().is_empty(), "no candidate started");
+
+    let events = recorder.read_all().unwrap().events;
+    let projection = fold(&events);
+    assert!(
+        projection.anomalies.is_empty(),
+        "{:?}",
+        projection.anomalies
+    );
+    let view = &projection.rounds[&round];
+    assert_eq!(view.state, RoundState::NeedsIntervention);
+    let reason = events
+        .iter()
+        .find(|e| e.kind == "round.needs_intervention")
+        .and_then(|e| e.payload["reason"].as_str().map(str::to_string))
+        .unwrap();
+    assert!(reason.contains("creating the worktree of B"), "{reason}");
+    assert!(reason.contains("--force"), "{reason}");
+    let made = view.candidates["A"].worktree.as_ref().unwrap().path.clone();
+    assert!(made.is_dir());
+    assert!(view.candidates["B"].worktree.is_none());
+
+    let cleaned = RoundCleanup {
+        git: &w.git,
+        recorder: &recorder,
+        paths: &DatasetPaths::new(&w.ctx.paths.state_root, &w.repo),
+        faults: &Faults::default(),
+        repo: w.repo.clone(),
+    }
+    .run(
+        &round,
+        view,
+        CleanupOptions {
+            prune_branches: false,
+            force: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        cleaned,
+        CleanupOutcome::Done {
+            removed: vec!["A".to_string()],
+            failed: Vec::new(),
+        }
+    );
+    assert!(!made.exists());
+    assert!(taken.join("other.txt").is_file(), "B's path is not ours");
+    let projection = fold(&recorder.read_all().unwrap().events);
+    assert_eq!(projection.rounds[&round].state, RoundState::Complete);
+    assert!(projection.anomalies.is_empty());
+}
+
 /// A candidate teammate with `operator_skills` gets them on its ledger
 /// record, as a `horch spawn` worker does: the coordinator reads the
 /// operator dir before it plans the launch.

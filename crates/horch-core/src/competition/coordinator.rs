@@ -254,7 +254,14 @@ impl<G: GitClient> Coordinator<'_, G> {
                 spec.round
             );
         }
-        self.provision(spec)?;
+        // A round stopped for the operator stays stopped: only `promote` or
+        // `cleanup` moves it on.
+        if matches!(view.state, RoundState::NeedsIntervention) {
+            return Ok(RoundOutcome::NeedsIntervention);
+        }
+        if !self.provision(spec)? {
+            return Ok(RoundOutcome::NeedsIntervention);
+        }
         if !self
             .view(spec)?
             .candidates
@@ -288,7 +295,9 @@ impl<G: GitClient> Coordinator<'_, G> {
     }
 
     /// One worktree per candidate, all from the round's base SHA (CMP-04).
-    fn provision(&self, spec: &RoundSpec) -> Result<()> {
+    /// `false` when a worktree cannot be made: the round then needs the
+    /// operator, and `cleanup --force` removes the worktrees already made.
+    fn provision(&self, spec: &RoundSpec) -> Result<bool> {
         let view = self.view(spec)?;
         let base = view.created.base_sha.clone();
         if base.is_empty() {
@@ -305,9 +314,25 @@ impl<G: GitClient> Coordinator<'_, G> {
             }
             let wt = self.worktree_spec(spec, &view, label, &base);
             let mgr = WorktreeManager { git: self.git };
-            let path = mgr
-                .create(&wt)
-                .with_context(|| format!("creating the worktree of {label}"))?;
+            let path = match mgr.create(&wt) {
+                Ok(path) => path,
+                Err(e) => {
+                    self.emit(
+                        spec,
+                        EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
+                            reason: format!(
+                                "creating the worktree of {label}: {e:#}; \
+                                 `cleanup {} --force` removes the worktrees already made",
+                                spec.round
+                            ),
+                            source: InterventionSource::Operator,
+                        }),
+                        format!("needs_intervention:{}", spec.round),
+                        None,
+                    )?;
+                    return Ok(false);
+                }
+            };
             let recorded = self.emit(
                 spec,
                 EventKind::WorktreeCreated(WorktreeCreated {
@@ -324,7 +349,7 @@ impl<G: GitClient> Coordinator<'_, G> {
                 self.fault(&format!("{ABORT_AFTER_WORKTREE}:{made}"))?;
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     // ── the dataset workspace ───────────────────────────────────────────
