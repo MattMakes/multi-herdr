@@ -1241,7 +1241,7 @@ codex-cli 0.160.0) showed:
   canonical path (`/private/tmp/...` on macOS). With `CLAUDE_CONFIG_DIR`
   set, Claude keeps the file at `$CLAUDE_CONFIG_DIR/.claude.json` instead
   and does not read the home one (seen on claude 2.1.289);
-  `competition/preflight.rs:claude_config_file` picks the file from
+  `harness/trust.rs:claude_config_file` picks the file from
   `RuntimeContext.inherited.claude_config_dir`. Test
   `claude_trust_follows_claude_config_dir`.
 - Codex records it in `$CODEX_HOME/config.toml` (default `~/.codex`) as a
