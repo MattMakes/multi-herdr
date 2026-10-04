@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fsx;
 use crate::ids::{RoundId, SessionId};
+use crate::procid;
 use crate::runtime::RuntimeContext;
 
 pub const HEARTBEAT_FILE: &str = "heartbeat";
@@ -64,6 +65,11 @@ pub struct JudgeJobSpec {
 pub struct Heartbeat {
     pub pid: u32,
     pub at: String,
+    /// The job's [`procid::start_time`]. With it, a pid that ended and was
+    /// given to another program is not the job: not alive, not killed.
+    /// `None` in a heartbeat written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<u64>,
 }
 
 /// `exit.json`: how the job ended.
@@ -117,7 +123,8 @@ pub struct JobFacts {
     pub heartbeat: Option<Heartbeat>,
     /// When the coordinator created `job.log` (the spawn), if it did.
     pub spawned_at: Option<DateTime<Utc>>,
-    /// Whether the heartbeat's pid is alive.
+    /// Whether the heartbeat's pid is alive and, when the heartbeat has a
+    /// start time, is still the job.
     pub pid_alive: bool,
 }
 
@@ -166,7 +173,9 @@ pub(crate) fn job_facts(job_dir: &Path) -> JobFacts {
     JobFacts {
         output: job_dir.join(OUTPUT_FILE).is_file(),
         exit,
-        pid_alive: heartbeat.as_ref().is_some_and(|h| fsx::pid_alive(h.pid)),
+        pid_alive: heartbeat
+            .as_ref()
+            .is_some_and(|h| procid::alive(h.pid, h.started)),
         heartbeat,
         spawned_at,
     }
@@ -258,18 +267,30 @@ fn open_log(path: &Path) -> Result<std::fs::File> {
         .with_context(|| format!("opening {}", path.display()))
 }
 
-/// Kill a lost job and everything it started. The job leads its own session
-/// and process group, so the group id is its pid.
-pub(crate) fn kill_job(pid: u32) {
-    if pid == 0 {
-        return;
+/// Kill the job of `hb` and everything it started, and say whether a
+/// signal was sent. The job leads its own session and process group, so the
+/// group id is its pid.
+///
+/// Only while the pid is still the job: same pid, same start time. The pid
+/// comes from a file, and a job that has ended frees it for any other
+/// program. A heartbeat without a start time names no process for certain,
+/// so it is not killed either.
+pub(crate) fn kill_job(hb: &Heartbeat) -> bool {
+    let Some(started) = hb.started else {
+        return false;
+    };
+    if !procid::is_same(hb.pid, started) {
+        return false;
     }
     #[cfg(unix)]
     unsafe {
-        // SAFETY: plain syscalls on a pid we started; failure is ignored.
-        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        // SAFETY: plain syscalls on the job's pid, checked just above (and
+        // `is_same` refuses 0 and values that turn negative); failure is
+        // ignored.
+        libc::kill(-(hb.pid as libc::pid_t), libc::SIGKILL);
+        libc::kill(hb.pid as libc::pid_t, libc::SIGKILL);
     }
+    cfg!(unix)
 }
 
 #[cfg(test)]
@@ -297,6 +318,52 @@ mod tests {
             "judge-job --round r1 --attempt 2 --input-dir /b --session-id s1 \
              --model opus --effort high --timeout-s 1"
         );
+    }
+
+    #[test]
+    fn heartbeat_shape() {
+        let old: Heartbeat = serde_json::from_str(r#"{"pid":7,"at":"x"}"#).unwrap();
+        assert_eq!(old.started, None, "a heartbeat from before start times");
+        let hb = Heartbeat {
+            pid: 7,
+            at: "x".into(),
+            started: Some(42),
+        };
+        assert_eq!(
+            serde_json::to_string(&hb).unwrap(),
+            r#"{"pid":7,"at":"x","started":42}"#
+        );
+    }
+
+    /// A job record is killed only while its pid is still the job. The
+    /// processes here are this test's own children; a record that does not
+    /// match is never signalled.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn kill_job_only_kills_the_same_process() {
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let started = procid::start_time(pid).unwrap();
+        let hb = |started| Heartbeat {
+            pid,
+            at: "x".into(),
+            started,
+        };
+        assert!(
+            !kill_job(&hb(None)),
+            "no start time: not the job for certain"
+        );
+        assert!(!kill_job(&hb(Some(started + 1))), "a reused pid");
+        assert_eq!(child.try_wait().unwrap(), None, "the child still runs");
+        assert!(kill_job(&hb(Some(started))));
+        assert!(!child.wait().unwrap().success(), "killed");
+        // Ended and reaped: its pid is free, and the record names nothing.
+        assert!(!kill_job(&hb(Some(started))));
+        assert!(!kill_job(&Heartbeat {
+            pid: 0,
+            at: "x".into(),
+            started: Some(0),
+        }));
     }
 
     #[test]

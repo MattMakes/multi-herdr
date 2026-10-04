@@ -181,7 +181,9 @@ pub fn poll(env: &JudgeEnv, round_id: &RoundId, now: DateTime<Utc>) -> Result<Ju
                 chrono::Duration::from_std(limit).is_ok_and(|limit| now - at > limit)
             });
             if overdue {
-                kill_job(pid);
+                if let Some(hb) = job_facts(&job_dir).heartbeat {
+                    kill_job(&hb);
+                }
                 return fail(env, round_id, &round, attempt, JudgeFailure::TimedOut, None);
             }
             Ok(JudgingStatus::Waiting)
@@ -195,8 +197,11 @@ pub fn poll(env: &JudgeEnv, round_id: &RoundId, now: DateTime<Utc>) -> Result<Ju
             fail(env, round_id, &round, attempt, cause, exit.code)
         }
         JobState::Lost => {
-            if let Some(hb) = job_facts(&job_dir).heartbeat {
-                kill_job(hb.pid);
+            // Lost covers a dead pid, and a stale heartbeat whose pid now
+            // names another program: kill only a job that is still itself.
+            let facts = job_facts(&job_dir);
+            if let (Some(hb), true) = (facts.heartbeat, facts.pid_alive) {
+                kill_job(&hb);
             }
             fail(env, round_id, &round, attempt, JudgeFailure::Lost, None)
         }

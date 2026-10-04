@@ -29,10 +29,12 @@ fn jdg_08_restart_discovers_job() {
     let fresh_hb = |pid| Heartbeat {
         pid,
         at: "2026-10-02T12:00:25Z".into(),
+        started: None,
     };
     let old_hb = Heartbeat {
         pid: 7,
         at: "2026-10-02T11:59:00Z".into(),
+        started: None,
     };
     let crash = JobExit {
         reason: ExitReason::Crash,
@@ -144,6 +146,7 @@ fn jdg_08_restart_discovers_job() {
         &serde_json::to_string(&Heartbeat {
             pid: me,
             at: horch_core::clock::stamp(Utc::now()),
+            started: horch_core::procid::start_time(me),
         })
         .unwrap(),
     );
@@ -356,9 +359,12 @@ impl JobLauncher for FakeLauncher {
             job,
             Some(FakeJob::AnswerNoHeartbeat(_) | FakeJob::CrashNoHeartbeat)
         ) {
+            // This test process stands in for the job; no start time, so
+            // the coordinator never kills it.
             let hb = Heartbeat {
                 pid: std::process::id(),
                 at: horch_core::clock::stamp(Utc::now()),
+                started: None,
             };
             write(dir, HEARTBEAT_FILE, &serde_json::to_string(&hb)?);
         }
@@ -1114,6 +1120,7 @@ fn jdg_08_overdue_job_times_out() {
         let hb = Heartbeat {
             pid: stuck.id(),
             at: horch_core::clock::stamp(at),
+            started: horch_core::procid::start_time(stuck.id()),
         };
         write(
             &job_dir,
@@ -1149,4 +1156,61 @@ fn jdg_08_overdue_job_times_out() {
     assert_eq!(launcher.launched.borrow().len(), 2);
     let status = stuck.wait().unwrap();
     assert!(!status.success(), "the stuck job was not killed");
+}
+
+/// JDG-08: a lost job is killed only while its pid is still the job. A
+/// stale heartbeat whose pid now names another process (same pid, another
+/// start time) is recorded lost, and that process gets no signal. A stale
+/// heartbeat of the job itself, still running, kills it. Each `sleep` is
+/// this test's own child.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn jdg_08_lost_job_kills_only_the_same_process() {
+    let w = World::new();
+    w.round(true);
+    let launcher = FakeLauncher::new(Vec::new());
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+    start(&env, &round_id()).unwrap();
+    let mut other = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let pid = other.id();
+    let started = horch_core::procid::start_time(pid).unwrap();
+    let stale = |attempt: u32, started: u64| {
+        let hb = Heartbeat {
+            pid,
+            at: horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(5)),
+            started: Some(started),
+        };
+        write(
+            &w.paths.job_dir(&round_id(), attempt).unwrap(),
+            HEARTBEAT_FILE,
+            &serde_json::to_string(&hb).unwrap(),
+        );
+    };
+
+    // The job's pid was given to another process.
+    stale(1, started + 1);
+    assert_eq!(
+        poll(&env, &round_id(), Utc::now()).unwrap(),
+        JudgingStatus::Waiting
+    );
+    let failed: Vec<Value> = w
+        .events()
+        .iter()
+        .filter(|e| e.kind == "judge.failed")
+        .map(|e| e.payload.clone())
+        .collect();
+    assert_eq!(failed, [json!({"attempt": 1, "cause": {"kind": "lost"}})]);
+    assert_eq!(other.try_wait().unwrap(), None, "a stranger was signalled");
+
+    // The job itself still runs, but its heartbeat stopped.
+    stale(2, started);
+    poll(&env, &round_id(), Utc::now()).unwrap();
+    assert!(
+        !other.wait().unwrap().success(),
+        "the lost job was not killed"
+    );
 }

@@ -109,6 +109,9 @@ fn heartbeat(dir: std::path::PathBuf, stop: Arc<AtomicBool>) -> std::thread::Joi
 fn beat(dir: &Path, pid: u32) {
     let hb = Heartbeat {
         pid,
+        // The coordinator kills this job only while its pid has this start
+        // time: never a later program that was given the pid.
+        started: horch_core::procid::start_time(pid),
         // Wall-clock, never a pinned HORCH_NOW: the coordinator compares it
         // with real file times.
         at: horch_core::clock::stamp(chrono::Utc::now()),
@@ -249,6 +252,7 @@ mod tests {
         thread.join().unwrap();
         let hb: Heartbeat = serde_json::from_slice(&std::fs::read(written).unwrap()).unwrap();
         assert_eq!(hb.pid, std::process::id());
+        assert_eq!(hb.started, horch_core::procid::start_time(hb.pid));
     }
 
     #[test]
