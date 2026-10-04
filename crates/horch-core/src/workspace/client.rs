@@ -23,6 +23,9 @@ pub trait WorkspaceClient {
     fn workspace_create(&self, label: &str, cwd: Option<&str>, focus: bool)
         -> Result<NewWorkspace>;
     fn workspace_close(&self, workspace: &str) -> Result<()>;
+    /// True when the herdr server answers at all. A failed pane call on a
+    /// reachable server means the pane is gone.
+    fn server_reachable(&self) -> bool;
 }
 
 impl WorkspaceClient for Herdr {
@@ -63,5 +66,8 @@ impl WorkspaceClient for Herdr {
     }
     fn workspace_close(&self, workspace: &str) -> Result<()> {
         Herdr::workspace_close(self, workspace)
+    }
+    fn server_reachable(&self) -> bool {
+        Herdr::server_reachable(self)
     }
 }

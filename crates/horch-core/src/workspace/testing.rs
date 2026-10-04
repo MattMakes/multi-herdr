@@ -24,6 +24,8 @@ struct State {
     failures: Vec<(&'static str, String)>,
     next_pane: u32,
     next_workspace: u32,
+    /// The server does not answer: every call fails.
+    unreachable: bool,
 }
 
 #[derive(Debug, Default)]
@@ -42,6 +44,12 @@ impl FakeWorkspace {
             .borrow_mut()
             .failures
             .push((method, message.to_owned()));
+    }
+
+    /// Make the server stop answering (`false`) or answer again (`true`).
+    /// While it does not answer, every call fails.
+    pub fn set_reachable(&self, reachable: bool) {
+        self.state.borrow_mut().unreachable = !reachable;
     }
 
     /// Set the text that `pane_read` returns for `pane`.
@@ -71,6 +79,9 @@ impl FakeWorkspace {
             method,
             args: args.iter().map(|a| (*a).to_owned()).collect(),
         });
+        if st.unreachable {
+            return Err(anyhow!("herdr: no server is running"));
+        }
         if let Some(i) = st.failures.iter().position(|(m, _)| *m == method) {
             let (_, message) = st.failures.remove(i);
             return Err(anyhow!(message));
@@ -217,6 +228,10 @@ impl WorkspaceClient for FakeWorkspace {
         st.panes.retain(|(w, _)| w != workspace);
         Ok(())
     }
+
+    fn server_reachable(&self) -> bool {
+        self.enter("server_reachable", &[]).is_ok()
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +257,19 @@ mod tests {
         fake.pane_close(&id).unwrap();
         assert_eq!(fake.pane_ids(), vec!["p1".to_owned()]);
         assert!(fake.pane_get(&id).is_err());
+    }
+
+    #[test]
+    fn an_unreachable_server_fails_every_call_until_it_answers() {
+        let fake = FakeWorkspace::new();
+        fake.workspace_create("w", None, false).unwrap();
+        assert!(fake.server_reachable());
+        fake.set_reachable(false);
+        assert!(!fake.server_reachable());
+        assert!(fake.pane_get("p1").is_err());
+        fake.set_reachable(true);
+        assert!(fake.server_reachable());
+        fake.pane_get("p1").unwrap();
     }
 
     #[test]
