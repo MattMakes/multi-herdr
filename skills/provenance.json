@@ -1488,6 +1488,27 @@
       "vendored": false
     },
     {
+      "name": "godot-component-system",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/component-system/SKILL.md",
+          "sha256": "d583e7f92182d159b8b8db53ddd7035f2ec6fb37251d51f67b0b6be8412340fe",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{orchestrator-components.md, ui-tool-composition.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-composition, godot-composition-apps",
+      "vendored": true
+    },
+    {
       "name": "godot-csharp-godot",
       "sources": [
         {
@@ -1653,6 +1674,62 @@
         }
       ],
       "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{host-operations.md, host-security.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-server-architecture, godot-multiplayer-networking; Fact fixes on 4.7: the feature tag table row 'headless | --headless CLI flag' said --headless sets a 'headless' feature tag; it sets none (tested on 4.7.2: OS.has_feature(\"headless\") is false under --headless, DisplayServer.get_name() returns \"headless\"), so the row now says to check DisplayServer.get_name()",
+      "vendored": true
+    },
+    {
+      "name": "godot-dependency-injection",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dependency-injection/SKILL.md",
+          "sha256": "da5bfb0b507cb5809ba01ef4dea736c52d91b67f4268b7fbc4f7ca8c90459685",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dependency-injection/references/autoloads.md",
+          "sha256": "cdca18834d8ab56da89f4c76116beed96dc138fe93294a5b61c0534bf0f9ae46",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dependency-injection/references/export-injection.md",
+          "sha256": "3a72dd6748ba575b9e9c53219bdbe1f5931a8377fd98a96de05d8a3ae5ca48e4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dependency-injection/references/scene-injection.md",
+          "sha256": "cb7554c926962742556521c6df12858b869fe339b6cbf734bc9ca302c9e6d2ef",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dependency-injection/references/service-locator.md",
+          "sha256": "dbd2e75252bd10f7ff071c4237e3d25091a507654e3f67586f322897d0aa76b5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/dependency-injection/references/testing-with-di.md",
+          "sha256": "5eb8d1c98add28ef56b253418c1d87398f185e7be5a24d8a8a01ab6fdee47cd7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{autoload-lifecycle.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-autoload-architecture",
       "vendored": true
     },
     {

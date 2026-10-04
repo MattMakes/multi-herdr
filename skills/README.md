@@ -170,10 +170,12 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-camera-system](godot-camera-system/SKILL.md) | `jame581/GodotPrompter`: `skills/camera-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-camera-systems/`) | combined |
 | [godot-code-review](godot-code-review/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-code-review/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-auditor/`, `godot-analyst/`) | combined |
 | [godot-combat-system](godot-combat-system/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-combat-system/`, `godot-turn-system/`; code run on Godot 4.7.2)* | own text |
+| [godot-component-system](godot-component-system/SKILL.md) | `jame581/GodotPrompter`: `skills/component-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-composition/`, `godot-composition-apps/`) | combined |
 | [godot-csharp-godot](godot-csharp-godot/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-godot/` | renamed |
 | [godot-csharp-signals](godot-csharp-signals/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-signals/` | renamed |
 | [godot-debugging](godot-debugging/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-debugging/`; own-text references, consulted gd-agentic-skills `godot-debugging-profiling` | combined |
 | [godot-dedicated-server](godot-dedicated-server/SKILL.md) | `jame581/GodotPrompter`: `skills/dedicated-server/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-server-architecture/`, `godot-multiplayer-networking/`) | combined |
+| [godot-dependency-injection](godot-dependency-injection/SKILL.md) | `jame581/GodotPrompter`: `skills/dependency-injection/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-autoload-architecture/`) | combined |
 | [godot-dialogue-manager](godot-dialogue-manager/SKILL.md) | `jame581/GodotPrompter`: `skills/dialogue-manager/` | renamed |
 | [godot-dialogue-system](godot-dialogue-system/SKILL.md) | `jame581/GodotPrompter`: `skills/dialogue-system/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-dialogue-system` | combined |
 | [godot-dimension-port](godot-dimension-port/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills` `godot-adapt-2d-to-3d` and `godot-adapt-3d-to-2d`; checked against Godot 4.7.2)* | own text |
