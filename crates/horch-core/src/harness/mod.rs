@@ -341,21 +341,6 @@ impl HarnessKind {
         self.adapter().model_takes_effort(model)
     }
 
-    /// Whether this agent takes `tools` / `allowed_tools` / `disallowed_tools`.
-    ///
-    /// Claude has `--tools` and the two `--*allowedTools` lists; pi and Prime
-    /// Agent have `--tools`, and pi alone adds `--exclude-tools`. Codex and
-    /// OpenCode have neither.
-    pub fn takes_tool_lists(self) -> bool {
-        self.capabilities().tool_lists
-    }
-
-    /// Whether a denylist of tool names has anywhere to go. Prime Agent 0.9.4
-    /// has `--tools` and `--no-tools` but no `--exclude-tools`.
-    pub fn takes_tool_denylist(self) -> bool {
-        self.capabilities().tool_denylist
-    }
-
     /// Claude-shaped teammate fields this agent has no way to express. See
     /// [`Harness::validate`].
     pub(crate) fn unsupported_fields(self, t: &Teammate) -> Vec<&'static str> {
@@ -473,8 +458,6 @@ mod tests {
                 HarnessKind::Antigravity | HarnessKind::None => SkillExposure::None,
             };
             assert_eq!(c.skill_exposure, exposure, "{kind}");
-            assert_eq!(kind.takes_tool_lists(), tools, "{kind}");
-            assert_eq!(kind.takes_tool_denylist(), denylist, "{kind}");
             assert_eq!(
                 crate::roster::effort::valid_efforts(kind),
                 efforts,

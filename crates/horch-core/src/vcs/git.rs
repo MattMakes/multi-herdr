@@ -102,7 +102,6 @@ pub trait GitClient {
         expected_old: &str,
     ) -> anyhow::Result<bool>;
     fn cherry_pick(&self, dir: &Path, range: &str, id: &GitIdentity) -> anyhow::Result<CherryPick>;
-    fn merge_ff_only(&self, dir: &Path, rev: &str) -> anyhow::Result<()>;
     /// `read-tree -m -u <old> <new>` in the checkout `dir`: move its index
     /// and files from the tree of `old` to the tree of `new`. HEAD and refs
     /// do not move. A local change in a path that differs between the two
@@ -539,12 +538,6 @@ impl GitClient for GitCli {
             );
         }
         Ok(CherryPick::Conflict { paths })
-    }
-
-    fn merge_ff_only(&self, dir: &Path, rev: &str) -> anyhow::Result<()> {
-        refuse_option(rev)?;
-        self.run(dir, &["merge", "--ff-only", "--quiet", rev])?;
-        Ok(())
     }
 
     fn read_tree_update(&self, dir: &Path, old: &str, new: &str) -> anyhow::Result<()> {

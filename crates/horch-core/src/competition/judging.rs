@@ -57,9 +57,6 @@ pub(crate) const ABORT_AFTER_JUDGMENT_WRITTEN: &str = "abort-after-judgment-writ
 /// After `winner.selected`.
 pub(crate) const ABORT_AFTER_WINNER_SELECTED: &str = "abort-after-winner-selected";
 
-/// The longest one judge attempt may run, unless the config says otherwise.
-pub const DEFAULT_JUDGE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
-
 /// Starts one judge attempt. The real one is [`DetachedLauncher`]; tests
 /// give a fake that writes the job files itself.
 pub trait JobLauncher {

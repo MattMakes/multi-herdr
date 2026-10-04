@@ -437,17 +437,6 @@ impl ExecutionStore {
         self.insert(from_execution(e))
     }
 
-    /// The newest execution with this idempotency key
-    /// ([`Execution::idempotency_key`]). Records that do not convert are
-    /// skipped: they predate every keyed kind.
-    pub fn find_by_idempotency(&self, key: &str) -> Result<Option<Execution>> {
-        Ok(self
-            .read()?
-            .iter()
-            .filter_map(|r| to_execution(r).ok())
-            .rfind(|e| e.idempotency_key().as_deref() == Some(key)))
-    }
-
     /// The pane exists and runs the worker command: `Starting`, with its pane.
     pub fn mark_starting(&self, key: &str, pane: &str) -> Result<()> {
         let at = crate::clock::now_stamp();

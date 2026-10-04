@@ -381,10 +381,6 @@ fn git_update_ref_cas_mismatch_is_false() {
         .is_err());
     assert!(f.git.rev_parse(&f.repo, "--all").is_err());
 
-    // A fast-forward-only merge moves main to `target` (already at next).
-    f.git_in(&f.repo, &["reset", "-q", "--hard", &base]);
-    f.git.merge_ff_only(&f.repo, "target").unwrap();
-    assert_eq!(f.git.head(&f.repo).unwrap(), next);
     assert!(f.git.version().unwrap().starts_with("git version "));
     assert_eq!(f.git.toplevel(&f.repo).unwrap(), f.repo);
 }

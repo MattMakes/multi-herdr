@@ -26,9 +26,6 @@ use crate::runtime::RuntimeContext;
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::paneshell::PaneShell;
 
-/// A brief's file mode: what `std::fs::write` gave it under the usual umask.
-const BRIEF_MODE: u32 = 0o644;
-
 /// Why a spawn did not start a worker.
 #[derive(Debug)]
 pub enum SpawnError {
@@ -197,7 +194,7 @@ impl ExecutionService<'_> {
         }
     }
 
-    /// Write the brief atomically: the worker never reads half of one.
+    /// Build the brief and write it to the mailbox.
     fn write_brief(&self, plan: &ExecutionPlan) -> Result<()> {
         let ctx = self.ctx;
         let text = |p: Option<&Path>| {
@@ -230,13 +227,7 @@ impl ExecutionService<'_> {
             report_to: plan.report_to,
         };
         brief.set_overrides(ctx.bins.overrides.clone());
-        let dir = self.mailbox.dir();
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("creating mailbox {}", dir.display()))?;
-        let path = dir.join(format!("{}.brief.json", brief.role));
-        let json = serde_json::to_string_pretty(&brief)?;
-        crate::fsx::write_atomic(&path, json.as_bytes(), BRIEF_MODE)
-            .with_context(|| format!("writing brief {}", path.display()))
+        self.mailbox.write_brief(&brief)
     }
 
     /// Split the requested pane, or this process's own.

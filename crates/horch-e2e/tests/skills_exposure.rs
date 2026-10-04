@@ -293,19 +293,9 @@ fn skl_06_e2e_marketplace_offline() {
     assert!(!said.contains("unknown bundled skill 'demo'"), "{said}");
 
     // No git from here on: a launch needs neither the network nor git.
+    // `horch spawn` checks the names against the installed catalog.
     h.set("HORCH_GIT_BIN", "/nonexistent");
-    // `horch spawn` still checks names against the compiled-in catalog
-    // (`skills::ensure_supported`) until U26 switches it to
-    // `ensure_supported_in`. So the spawn reads a file without `demo`, and
-    // `demo` is added to the teammate the brief carries to the worker.
-    teammate(&h, "skl-market", "claude", "sonnet", &["tdd"]);
-    let r = launch(&h, "skl-market", || {
-        let path = h.tmp.join("herdr-orchestration-w1/skl-market-1.brief.json");
-        let mut brief: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        brief["resolved"]["skills"] = serde_json::json!(["demo", "tdd"]);
-        std::fs::write(&path, brief.to_string()).unwrap();
-    });
+    let r = launch(&h, "skl-market", || {});
     assert_eq!(strings(&r["skills"]), ["demo", "tdd"], "{r}");
     assert!(!r.to_string().contains(NOT_ACTIVATED), "{r}");
 }

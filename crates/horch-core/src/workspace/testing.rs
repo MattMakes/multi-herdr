@@ -64,10 +64,6 @@ impl FakeWorkspace {
             .collect()
     }
 
-    pub fn workspace_ids(&self) -> Vec<String> {
-        self.state.borrow().workspaces.clone()
-    }
-
     /// Log the call, then fire an injected failure for it if one waits.
     fn enter(&self, method: &'static str, args: &[&str]) -> Result<()> {
         let mut st = self.state.borrow_mut();

@@ -26,11 +26,6 @@ impl SplitMix64 {
         z ^ (z >> 31)
     }
 
-    /// A uniform float in [0, 1), from the top 53 bits.
-    pub fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-
     /// A uniform integer in [0, n), without modulo bias. Panics when `n` is 0.
     pub fn below(&mut self, n: u64) -> u64 {
         assert!(n > 0, "SplitMix64::below(0)");
@@ -127,10 +122,6 @@ mod tests {
         let big = u64::MAX / 2 + 2;
         for _ in 0..10_000 {
             assert!(g.below(big) < big);
-        }
-        for _ in 0..1_000 {
-            let f = g.next_f64();
-            assert!((0.0..1.0).contains(&f));
         }
     }
 

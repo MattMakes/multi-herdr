@@ -7,7 +7,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::harness::HarnessKind;
-use crate::ids::{ExecutionId, ExperimentId, JudgmentId, ModelId, RoundId, TaskId, TeammateName};
+use crate::ids::{ExecutionId, ExperimentId, ModelId, RoundId, TaskId, TeammateName};
 use crate::measure::digest::Digest;
 use crate::measure::event::{OutcomeKind, SlotKind};
 use crate::usage::money::MicroUsd;
@@ -123,28 +123,6 @@ pub struct Candidate {
     pub effort: Option<String>,
     pub slot: SlotKind,
     pub propensity: f64,
-}
-
-/// One validation of one frozen candidate.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ValidationRun {
-    pub validation_id: String,
-    pub label: CandidateLabel,
-    pub head_sha: String,
-    pub mechanical_score: f64,
-    pub eligible: bool,
-}
-
-/// Where a round's judgment is, and what it was made from. The judgment
-/// itself is `evaluation::judgment::Judgment`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JudgmentRef {
-    pub judgment_id: JudgmentId,
-    pub round_id: RoundId,
-    pub attempt: u32,
-    pub input_digest: Digest,
-    pub judge_policy_digest: Digest,
-    pub output_digest: Digest,
 }
 
 /// An opt-in promotion of a round's winner (OD5).
