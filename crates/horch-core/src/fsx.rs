@@ -180,10 +180,43 @@ pub enum Created {
 
 /// Write `path` once. An existing file with the same bytes is accepted; one
 /// with different bytes is a [`FsxError::Conflict`].
+///
+/// The bytes go to a temp file first, which is then hard-linked to `path`.
+/// The link is atomic and fails when `path` exists, so a reader sees no file
+/// or the whole file, never an empty or half-written one. (A reader that
+/// polled the judge's `output.json` between its create and its write parsed
+/// an empty answer and ran the judge again.)
 pub fn create_immutable(path: &Path, bytes: &[u8], mode: u32) -> Result<Created> {
-    let (parent, _) = parent_and_name(path)?;
-    let mut f = match create_new_file(path, mode) {
-        Ok(f) => f,
+    create_immutable_with(path, bytes, mode, || {})
+}
+
+/// [`create_immutable`], with `written` run once the temp file holds the
+/// bytes and before `path` is linked.
+fn create_immutable_with(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    written: impl FnOnce(),
+) -> Result<Created> {
+    let (parent, name) = parent_and_name(path)?;
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let tmp = parent.join(format!(
+        ".{name}.new-{}-{}",
+        std::process::id(),
+        &nonce[..12]
+    ));
+    let linked: Result<std::io::Result<()>> = (|| {
+        let mut f = io(&tmp, create_new_file(&tmp, mode))?;
+        set_mode(&tmp, mode)?;
+        io(&tmp, f.write_all(bytes))?;
+        io(&tmp, f.sync_all())?;
+        drop(f);
+        written();
+        Ok(std::fs::hard_link(&tmp, path))
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    match linked? {
+        Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             let existing = io(path, std::fs::read(path))?;
             return if existing == bytes {
@@ -195,18 +228,7 @@ pub fn create_immutable(path: &Path, bytes: &[u8], mode: u32) -> Result<Created>
             };
         }
         Err(e) => return io(path, Err(e)),
-    };
-    let written = (|| {
-        set_mode(path, mode)?;
-        io(path, f.write_all(bytes))?;
-        io(path, f.sync_all())
-    })();
-    if written.is_err() {
-        // A half-written immutable file would read as a conflict forever.
-        drop(f);
-        let _ = std::fs::remove_file(path);
     }
-    written?;
     sync_dir(parent)?;
     Ok(Created::Written)
 }
@@ -499,6 +521,30 @@ mod tests {
         let err = create_immutable(&p, b"two", PRIVATE_FILE).unwrap_err();
         assert!(matches!(err, FsxError::Conflict { .. }), "{err}");
         assert_eq!(std::fs::read(&p).unwrap(), b"one");
+    }
+
+    /// F4: until the bytes are all written, `path` does not exist, so a
+    /// poll never reads an empty or partial file. No temp file is left.
+    #[test]
+    fn create_immutable_shows_no_partial_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("output.json");
+        let mut seen = None;
+        let made = create_immutable_with(&p, b"answer", PRIVATE_FILE, || {
+            seen = Some(p.exists());
+        })
+        .unwrap();
+        assert_eq!(made, Created::Written);
+        assert_eq!(seen, Some(false), "the file was visible before its bytes");
+        assert_eq!(std::fs::read(&p).unwrap(), b"answer");
+        let names: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["output.json"], "no temp file is left behind");
+        let err = create_immutable(&p, b"other", PRIVATE_FILE).unwrap_err();
+        assert!(matches!(err, FsxError::Conflict { .. }), "{err}");
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
     }
 
     #[test]

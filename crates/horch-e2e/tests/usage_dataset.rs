@@ -153,6 +153,10 @@ fn exp_07_candidate_and_judge_in_usage() {
         assert_eq!(r["tokens"]["output"], 500, "{r}");
         assert!(r["cost"].as_f64().unwrap() > 0.0, "{r}");
     }
+    // One judge run: a second one (a valid answer misread as Lost or
+    // Malformed) is a real second session, and `cost` prices both (F4).
+    let judge_runs = std::fs::read_to_string(script(&h, ".judge.count")).unwrap();
+    assert_eq!(judge_runs.trim(), "1", "{report:#}");
     let judge = row(&|r| r["teammate"] == "judge");
     assert_eq!(judge["tokens"]["input"], 3000, "{judge}");
     assert!(judge["cost"].as_f64().unwrap() > 0.0, "{judge}");

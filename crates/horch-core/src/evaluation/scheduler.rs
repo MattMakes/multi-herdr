@@ -160,9 +160,26 @@ pub fn decide(facts: &JobFacts, now: DateTime<Utc>, stale_after: Duration) -> Jo
 
 /// Read the facts of `job_dir`. Never writes.
 pub(crate) fn job_facts(job_dir: &Path) -> JobFacts {
+    job_facts_with(job_dir, || {})
+}
+
+/// [`job_facts`], with `between` run after the liveness look and before the
+/// result files are read.
+///
+/// The order matters. The job writes `output.json`, then `exit.json`, then
+/// exits. Liveness is looked at first: a job that was alive then and has
+/// ended since left its files before it ended, so the file reads see them.
+/// Files read first could miss an answer that a job wrote and then exited
+/// right after, and its dead pid would read as Lost: a valid answer thrown
+/// away and the judge run again.
+fn job_facts_with(job_dir: &Path, between: impl FnOnce()) -> JobFacts {
     let heartbeat: Option<Heartbeat> = std::fs::read(job_dir.join(HEARTBEAT_FILE))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
+    let pid_alive = heartbeat
+        .as_ref()
+        .is_some_and(|h| procid::alive(h.pid, h.started));
+    between();
     let exit = std::fs::read(job_dir.join(EXIT_FILE))
         .ok()
         .map(|b| serde_json::from_slice::<JobExit>(&b).ok());
@@ -173,9 +190,7 @@ pub(crate) fn job_facts(job_dir: &Path) -> JobFacts {
     JobFacts {
         output: job_dir.join(OUTPUT_FILE).is_file(),
         exit,
-        pid_alive: heartbeat
-            .as_ref()
-            .is_some_and(|h| procid::alive(h.pid, h.started)),
+        pid_alive,
         heartbeat,
         spawned_at,
     }
@@ -444,6 +459,52 @@ mod tests {
             at: "x".into(),
             started: Some(0),
         }));
+    }
+
+    /// F4: the job answers and exits while the coordinator looks. The hook
+    /// puts the whole end of the job (output, exit file, exit) between the
+    /// liveness look and the file reads. The answer is found; the job is
+    /// not Lost.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_job_that_answers_and_exits_mid_look_is_not_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let hb = Heartbeat {
+            pid,
+            at: crate::clock::stamp(Utc::now()),
+            started: procid::start_time(pid),
+        };
+        std::fs::write(
+            dir.path().join(HEARTBEAT_FILE),
+            serde_json::to_vec(&hb).unwrap(),
+        )
+        .unwrap();
+        let facts = job_facts_with(dir.path(), || {
+            std::fs::write(dir.path().join(OUTPUT_FILE), b"{}").unwrap();
+            let exit = JobExit {
+                reason: ExitReason::Ok,
+                code: Some(0),
+            };
+            std::fs::write(
+                dir.path().join(EXIT_FILE),
+                serde_json::to_vec(&exit).unwrap(),
+            )
+            .unwrap();
+            child.kill().unwrap();
+            child.wait().unwrap();
+        });
+        assert!(facts.output, "{facts:?}");
+        assert!(matches!(
+            decide(&facts, Utc::now(), DEFAULT_STALE_AFTER),
+            JobState::OutputPresent(_)
+        ));
+        // The same job seen after it ended: still the answer, never Lost.
+        assert!(matches!(
+            discover(dir.path(), Utc::now(), DEFAULT_STALE_AFTER),
+            JobState::OutputPresent(_)
+        ));
     }
 
     #[test]
