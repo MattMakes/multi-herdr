@@ -17,6 +17,20 @@ fn fake(h: &Harness, name: &str, args: &[&str]) -> Output {
     cmd.output().expect("running a fake")
 }
 
+/// A fake's `--version` line. A failure names how the fake ended, so an
+/// empty answer under load shows its exit status or signal.
+fn version(h: &Harness, name: &str) -> String {
+    let out = fake(h, name, &["--version"]);
+    assert!(
+        out.status.success() && !out.stdout.is_empty(),
+        "{name} --version: {}, stdout {:?}, stderr {:?}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 fn json(o: &Output) -> Value {
     serde_json::from_slice(&o.stdout)
         .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&o.stdout)))
@@ -163,10 +177,7 @@ fn fake_herdr_close_kills_the_exec_process() {
 #[test]
 fn fake_opencode_session_list_matches_cwd() {
     let mut h = Harness::new("fakes-opencode");
-    assert_eq!(
-        String::from_utf8_lossy(&fake(&h, "opencode", &["--version"]).stdout).trim(),
-        "1.18.33"
-    );
+    assert_eq!(version(&h, "opencode"), "1.18.33");
 
     // The same call horch makes, through the library that parses it.
     let listed = fake(&h, "opencode", &["session", "list", "--format", "json"]);
@@ -260,10 +271,7 @@ fn fake_opencode_writes_transcript_rows_when_asked() {
 #[test]
 fn fake_prime_creates_session_file() {
     let mut h = Harness::new("fakes-prime");
-    assert_eq!(
-        String::from_utf8_lossy(&fake(&h, "prime-agent", &["--version"]).stdout).trim(),
-        "0.9.4"
-    );
+    assert_eq!(version(&h, "prime-agent"), "0.9.4");
     let base = h.state.join("prime/prime-1-abc");
     let sessions = base.join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
