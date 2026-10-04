@@ -987,59 +987,104 @@ pub fn evaluate(plan: &PreflightPlan, snapshot: &MachineSnapshot) -> PreflightRe
 
 ## 5. Round state machine (CMP-03)
 
-`SPEC-TODO(Spec B round states)`: the master plan names only the states from
-JUDGING_BACKGROUND on. The earlier states below follow the B2/B3 flow.
+This is the complete state list and transition table. The code is
+`competition/model.rs:RoundState` (16 states, serialized
+`SCREAMING_SNAKE_CASE`) and `competition/state.rs:TABLE`;
+`competition/state.rs:transition` is the only place a state changes.
+`cmp_03_transition_table` (`crates/horch-core/tests/competition_planner.rs`)
+checks every row of `TABLE` and checks that every other (state, event) pair
+is refused.
 
 States: `CREATED`, `PREFLIGHT`, `ABORTED`, `PLANNED`, `PROVISIONING`,
 `RUNNING`, `VALIDATING`, `JUDGING_BACKGROUND`, `DECIDED`, `REVALIDATING`,
 `PROMOTING`, `PROMOTED`, `NEEDS_INTERVENTION`, `REJECTED`, `CLEANUP`,
 `COMPLETE`.
 
+The master plan names only the states from JUDGING_BACKGROUND on. The
+states before it follow the B2 and B3 flow, because each one is a point
+where the coordinator waits for a different event set and a crash must
+resume from it (§7.2). The first 4 states (CREATED, PREFLIGHT, ABORTED,
+PLANNED) belong to the experiment (`measure/projection.rs:ExperimentView`).
+A round is born PLANNED: `round.created` is valid only while its experiment
+is PLANNED.
+
+An event name with a `:<condition>` suffix is the event plus the condition
+that picks the target (`competition/state.rs:RoundEvent`). `:last` means
+every other candidate already passed this step. `candidate.ended` is
+`candidate.completed` or `candidate.failed`. `promotion.requested` is not an
+event in the log: the fold applies it after `winner.selected` with
+`promotion: requested`, and after `operator.promote`.
+
 ### 5.1 Default path (no promotion, OD5)
 
 | From | Event / condition | To |
 |---|---|---|
 | CREATED | `experiment.created` | PREFLIGHT |
-| PREFLIGHT | `preflight.completed` (passed) | PLANNED |
-| PREFLIGHT | `experiment.aborted` (a check failed; no worktree, no model) | ABORTED |
-| PLANNED | `round.created`, every `candidate.planned` | PROVISIONING |
-| PROVISIONING | every `worktree.created` | RUNNING |
-| RUNNING | `candidate.spawned` per wave; `candidate.completed` / `candidate.failed` per candidate | RUNNING |
-| RUNNING | every candidate terminal, or round deadline | VALIDATING |
-| VALIDATING | `candidate.frozen` + `validation.completed` per terminal candidate | VALIDATING |
-| VALIDATING | every candidate validated; ≥ 1 eligible | JUDGING_BACKGROUND |
-| VALIDATING | 0 eligible | REJECTED (`winner.rejected{no_eligible}`, judge skipped) |
-| JUDGING_BACKGROUND | `judge.scheduled`, `judge.started`, `judge.failed` (attempt < 2) | JUDGING_BACKGROUND |
-| JUDGING_BACKGROUND | `judge.completed` + `winner.selected{promotion: not_requested}` | DECIDED |
-| JUDGING_BACKGROUND | `judge.completed` + outcome NeedsIntervention, or `judge.failed` on attempt 2 | NEEDS_INTERVENTION |
-| JUDGING_BACKGROUND | `judge.completed` + `winner.rejected` | REJECTED |
-| DECIDED | no promotion requested | CLEANUP |
-| REJECTED | — | CLEANUP |
-| CLEANUP | every worktree removed (failures → `worktree.cleanup_failed`, branches kept) | COMPLETE |
-| NEEDS_INTERVENTION | operator: `promote <round>` (only from a DECIDED winner) or `cleanup` | DECIDED or CLEANUP |
+| PREFLIGHT | `preflight.completed:passed` | PLANNED |
+| PREFLIGHT | `preflight.completed:failed` (`experiment.aborted` follows; no worktree, no model) | PREFLIGHT |
+| CREATED, PREFLIGHT | `experiment.aborted` | ABORTED |
+| PLANNED | `round.created`, `candidate.planned` | PLANNED |
+| PLANNED | `candidate.planned:last` | PROVISIONING |
+| PROVISIONING | `worktree.created` | PROVISIONING |
+| PROVISIONING | `worktree.created:last` | RUNNING |
+| RUNNING | `candidate.spawned`, `candidate.ended` | RUNNING |
+| RUNNING | `candidate.ended:last` (a candidate past `caps.candidate_deadline_s` ends as `candidate.failed{timed_out}`) | VALIDATING |
+| VALIDATING | `candidate.frozen`, `validation.completed` | VALIDATING |
+| VALIDATING | `validation.completed:last`, ≥ 1 eligible | JUDGING_BACKGROUND |
+| VALIDATING | `validation.completed:none_eligible` | VALIDATING |
+| VALIDATING | `winner.rejected{no_eligible}` (judge skipped; only after every candidate is validated and none is eligible) | REJECTED |
+| JUDGING_BACKGROUND | `judge.scheduled`, `judge.started`, `judge.completed`, `judge.failed` (attempt < 2) | JUDGING_BACKGROUND |
+| JUDGING_BACKGROUND | `judge.failed:last_attempt` (attempt 2) | NEEDS_INTERVENTION |
+| JUDGING_BACKGROUND | `winner.selected{promotion: not_requested}` (after `judge.completed`) | DECIDED |
+| JUDGING_BACKGROUND | `winner.rejected` (after `judge.completed`) | REJECTED |
+| JUDGING_BACKGROUND | `round.needs_intervention:judge` (after `judge.completed`; for example a tie) | NEEDS_INTERVENTION |
+| DECIDED, REJECTED | `round.cleanup_started` | CLEANUP |
+| CLEANUP | `round.completed` (failures → `worktree.cleanup_failed`, branches kept) | COMPLETE |
 
 ### 5.2 `--promote-to` / `promote <round>` path
 
 | From | Event / condition | To |
 |---|---|---|
-| DECIDED | promotion requested | REVALIDATING |
-| REVALIDATING | worktree HEAD or branch ≠ frozen SHA | REJECTED (`winner.rejected{stale_judgment}`) |
-| REVALIDATING | integrate (ff or cherry-pick in a temp worktree) conflicts | NEEDS_INTERVENTION (`promotion.conflicted`, worktrees kept) |
-| REVALIDATING | gates fail on the integrated commit | REJECTED (`winner.rejected{revalidation_failed}`) |
-| REVALIDATING | gates pass; target checked out and dirty | NEEDS_INTERVENTION |
-| REVALIDATING | gates pass; `promotion.started{dest_before, planned_after}` | PROMOTING |
-| PROMOTING | publish (CAS `update-ref`, or `merge --ff-only` in the clean checkout) → receipt via `create_immutable` → `promotion.completed` | PROMOTED |
-| PROMOTING | CAS lost (ref ≠ dest_before) | NEEDS_INTERVENTION |
-| PROMOTED | receipt durable | CLEANUP |
-| REJECTED | — | CLEANUP |
-| CLEANUP | — | COMPLETE |
-| COMPLETE | `rollback` (CAS back to dest_before) → `promotion.rolled_back` | COMPLETE |
+| DECIDED | `promotion.requested` | REVALIDATING |
+| REVALIDATING | `winner.rejected{stale_judgment}` (worktree HEAD or branch ≠ frozen SHA) or `{revalidation_failed}` (gates fail on the integrated commit) | REJECTED |
+| REVALIDATING | `promotion.conflicted` (the cherry-pick in the temp worktree conflicts; worktrees kept) | NEEDS_INTERVENTION |
+| REVALIDATING | `round.needs_intervention:promotion` (target checked out and dirty) | NEEDS_INTERVENTION |
+| REVALIDATING | `promotion.started{dest_before, planned_after}` | PROMOTING |
+| PROMOTING | `promotion.completed` (after the publish and the receipt via `create_immutable`) | PROMOTED |
+| PROMOTING | `promotion.conflicted`, `round.needs_intervention:promotion` (CAS lost: ref ≠ dest_before) | NEEDS_INTERVENTION |
+| PROMOTED | `round.cleanup_started` | CLEANUP |
+| PROMOTED, COMPLETE | `promotion.rolled_back` (`rollback`: CAS back to dest_before) | same state |
+
+### 5.3 Operator transitions
+
+| From | Event / condition | To |
+|---|---|---|
+| RUNNING, VALIDATING, JUDGING_BACKGROUND, DECIDED, REVALIDATING, PROMOTING | `round.needs_intervention:operator` | NEEDS_INTERVENTION |
+| NEEDS_INTERVENTION | `operator.promote` (`promote <round>`; only a round with a winner) | DECIDED |
+| COMPLETE | `operator.promote` (`promote <round>` of a collected round; its branches are kept) | DECIDED |
+| NEEDS_INTERVENTION | `round.cleanup_started` (only the operator's `cleanup` command) | CLEANUP |
 
 Every other pair is invalid. `measure::projection::fold` records an invalid
-transition as an anomaly and does not apply it. No path reaches PROMOTED
-without DECIDED → REVALIDATING → PROMOTING
+transition as an anomaly and does not apply it. The fold also checks what
+the table cannot see: a `winner.selected` must cite the recorded judgment
+and an eligible label, a judge attempt number must follow the last one, a
+`round.needs_intervention:judge` needs a judgment, an `outcome.recorded` is
+valid only in DECIDED, PROMOTED, CLEANUP or COMPLETE, and
+`round.completed.final_outcome` must match the state cleanup started from
+(`mea_05_round_needs_intervention_and_completion_checks`,
+`mea_05_invalid_transition_is_an_anomaly_and_not_applied`). No path reaches
+PROMOTED without DECIDED → REVALIDATING → PROMOTING
 (`cmp_03_prop_no_invalid_path_to_promoted`). NEEDS_INTERVENTION keeps every
 worktree.
+
+`promote <round>` re-enters at DECIDED from COMPLETE as well as from
+NEEDS_INTERVENTION. The master plan says it "later re-enters at DECIDED",
+and a default round is COMPLETE by then; cleanup keeps candidate branches,
+so the promotion revalidates from the branch
+(`operator_promote_reenters_revalidation` in
+`crates/horch-core/tests/promotion.rs`, `pro_08_promote_to_and_promote_cmd`
+in `crates/horch-e2e/tests/promotion.rs`). A second promotion of a promoted
+round is refused.
 
 Master plan note: the B5 text lists `NEEDS_INTERVENTION → CLEANUP → COMPLETE`
 and also "NEEDS_INTERVENTION keeps everything". This design resolves it: from

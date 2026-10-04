@@ -10,8 +10,8 @@
 //! event kind, with a `:<condition>` suffix when the condition picks the
 //! target state.
 //!
-//! SPEC-TODO(Spec B round states): the states before JUDGING_BACKGROUND
-//! follow the B2/B3 flow, not Spec B text.
+//! The state list and every row of [`TABLE`] are dataset design §5, which
+//! also says why the states before JUDGING_BACKGROUND exist.
 
 use std::fmt;
 
@@ -253,8 +253,8 @@ pub const TABLE: &[(RoundState, &str, RoundState)] = &[
     // `promote <round>` (a round with a winner) or `cleanup`.
     (NeedsIntervention, "operator.promote", Decided),
     (NeedsIntervention, "round.cleanup_started", Cleanup),
-    // SPEC-TODO(Spec B §promote): `promote <round>` "later re-enters at
-    // DECIDED"; a default round is COMPLETE by then, its branches kept.
+    // `promote <round>` re-enters a collected round at DECIDED: a default
+    // round is COMPLETE by then, its branches kept (design §5.3).
     (Complete, "operator.promote", Decided),
 ];
 
