@@ -2,7 +2,10 @@
 
 import contextlib
 import io
+import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +18,7 @@ import api_check  # noqa: E402
 FIXTURE = HERE / "fixtures" / "api_check"
 DOCTOOL = FIXTURE / "doctool"
 CONTENT = FIXTURE / "content"
+CLASSES = FIXTURE / "classes"
 
 
 def run(*args):
@@ -56,6 +60,56 @@ class ApiCheckTest(unittest.TestCase):
             code, out = run(CONTENT)
         self.assertEqual(code, 0)
         self.assertEqual(out, "skipped: no Godot\n")
+
+    def test_bare_class_names_must_exist(self):
+        known = api_check.load_known_classes(CLASSES / "known_classes.txt")
+        api = api_check.Api.load(DOCTOOL)
+        found = [u.text() for u in api_check.check_file(api, CLASSES / "types.md", known)]
+        path = CLASSES / "types.md"
+        self.assertEqual(found, [
+            f"{path}:8: unknown class NoSuchClass",
+            f"{path}:9: unknown class Gone",
+            f"{path}:9: unknown class MissingType",
+            f"{path}:11: unknown class Phantom",
+            f"{path}:12: unknown class Ghost",
+            f"{path}:14: unknown class Lost",
+            f"{path}:20: unknown class Missing",
+        ])
+
+    def test_bundle_classes_and_known_list(self):
+        known = api_check.load_known_classes(CLASSES / "known_classes.txt")
+        api = api_check.Api.load(DOCTOOL)
+        path = CLASSES / "skill" / "SKILL.md"
+        found = [u.text() for u in api_check.check_file(api, path, known)]
+        # SkillThing: references/defs.md; KnownAddon: listed for "skill";
+        # OtherAddon: listed for another skill only.
+        self.assertEqual(found, [f"{path}:6: unknown class OtherAddon"])
+
+    def test_deprecated_names_fail_in_own_text(self):
+        code, out = run("--doctool", DOCTOOL, CLASSES / "deprecated.md")
+        path = CLASSES / "deprecated.md"
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), [
+            f"{path}:4: deprecated Node.old_make_things (Use [method add_child] instead.)",
+            f"{path}:5: deprecated OldNode (Use [Node] instead.)",
+            f"{path}:6: deprecated Node.old_make_things (Use [method add_child] instead.)",
+        ])
+
+    def test_deprecated_names_report_only_in_upstream(self):
+        code, out = run("--doctool", DOCTOOL, "--strict-own", CLASSES / "provenance.json", CLASSES / "up")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(out.splitlines()), 3)
+        self.assertTrue(all("(upstream, report only) deprecated" in x for x in out.splitlines()))
+
+    def test_deprecated_json_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dump = Path(tmp) / "dump"
+            shutil.copytree(DOCTOOL, dump)
+            (dump / "deprecated.json").write_text(json.dumps({"Node": {"add_child": "Gone."}}))
+            api = api_check.Api.load(dump)
+            self.assertEqual(api.deprecation("Node", "add_child"), "Gone.")
+            self.assertEqual(api.deprecation("Node", "old_make_things"), "Use [method add_child] instead.")
+            self.assertIsNone(api.deprecation("Node", "is_inside_tree"))
 
     def test_snake(self):
         self.assertEqual(api_check.snake("IsActionPressed"), "is_action_pressed")

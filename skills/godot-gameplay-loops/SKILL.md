@@ -91,6 +91,7 @@ Do not repeat their content here. Read them when the loop needs them.
 | Enemy pathing in a wave | `godot-ai-navigation` |
 | Many-enemy performance, pools, MultiMesh | `godot-optimization` |
 | Counters, timers and progress bars on screen | `godot-hud-system` |
+| The genre around the loop: core loop, systems, scene tree | `godot-genre-blueprints` |
 
 ## Prove the loop
 

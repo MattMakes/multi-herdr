@@ -93,6 +93,9 @@ in full.
 - **The server decides in online games.** Clients send intents; the server
   validates and applies (`godot-multiplayer-basics`,
   `godot-multiplayer-sync`).
+- **Repeatable loops have a skill.** Waves, harvest and idle gains, time
+  trials, revival, collection and secrets: `godot-gameplay-loops` has the
+  manager for each. The references name it where the loop is core.
 - **`StringName` for hot identifiers.** State names, flags and action names
   that are compared often: `&"idle"`.
 

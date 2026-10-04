@@ -4,7 +4,6 @@
 Usage:
     scripts/godot/rename.py <upstream skills dir> <skill> [<skill>...] --out skills/
     scripts/godot/rename.py ... --dry-run     # print the diff, write nothing
-    scripts/godot/rename.py ... --json        # print provenance `sources` entries
 
 For each named skill the script:
 - copies `<upstream skills dir>/<skill>/` (minus dotfiles) to
@@ -19,9 +18,6 @@ For each named skill the script:
     skills/<x>/              -> skills/godot-<x>/
     "<x> skill"              -> "godot-<x> skill"
     an indented "<x>/" line  -> "godot-<x>/"   (directory trees)
-- copies the upstream `LICENSE` (the parent of the skills dir) next to
-  `SKILL.md`;
-- prints `sha256  <repo-relative path>` for each upstream file it copied.
 
 A target directory that exists is an error unless you pass `--force`; with
 `--force` the copied files are overwritten and other files (your own
@@ -32,14 +28,10 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import hashlib
-import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_REPOSITORY = "https://github.com/jame581/GodotPrompter"
 
 
 def new_name(name: str) -> str:
@@ -120,20 +112,6 @@ def transform(rel: Path, text: str, rewrite, name: str) -> str:
     return front + rewrite(body)
 
 
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def git_revision(path: Path) -> str | None:
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return out.stdout.strip() or None
-
 
 def skill_files(src: Path) -> list[Path]:
     files = []
@@ -151,32 +129,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("skills_dir", type=Path, help="the upstream skills/ directory")
     ap.add_argument("skills", nargs="+", help="upstream skill names to copy")
     ap.add_argument("--out", type=Path, required=True, help="target skills/ directory")
-    ap.add_argument("--license", type=Path, help="upstream LICENSE (default: <skills dir>/../LICENSE)")
     ap.add_argument("--dry-run", action="store_true", help="print the diff, write nothing")
     ap.add_argument("--force", action="store_true", help="overwrite copied files in an existing target")
-    ap.add_argument("--json", action="store_true", help="print provenance sources entries as JSON")
-    ap.add_argument("--repository", default=DEFAULT_REPOSITORY)
-    ap.add_argument("--revision", help="upstream revision (default: git rev-parse HEAD)")
     args = ap.parse_args(argv)
 
     skills_dir: Path = args.skills_dir.resolve()
-    repo_root = skills_dir.parent
-    license_path = (args.license or repo_root / "LICENSE").resolve()
-    if not license_path.is_file():
-        print(f"rename.py: no LICENSE at {license_path}", file=sys.stderr)
-        return 2
     all_names = upstream_skills(skills_dir)
     unknown = [s for s in args.skills if s not in all_names]
     if unknown:
         print(f"rename.py: not an upstream skill: {', '.join(unknown)}", file=sys.stderr)
         return 2
-    revision = args.revision or git_revision(skills_dir)
-    if args.json and not revision:
-        print("rename.py: --json needs --revision (the skills dir is not in a git clone)", file=sys.stderr)
-        return 2
     rewrite = build_rewriter(all_names)
 
-    sources: dict[str, list[dict]] = {}
     for skill in args.skills:
         name = new_name(skill)
         src = skills_dir / skill
@@ -184,19 +148,9 @@ def main(argv: list[str] | None = None) -> int:
         if dst.exists() and not args.force and not args.dry_run:
             print(f"rename.py: {dst} exists (pass --force to overwrite the copied files)", file=sys.stderr)
             return 1
-        entries = []
-        plan = [(src / rel, rel) for rel in skill_files(src)] + [(license_path, Path("LICENSE"))]
-        for upstream, rel in plan:
-            upstream_rel = upstream.relative_to(repo_root).as_posix()
-            digest = sha256(upstream)
-            print(f"{digest}  {upstream_rel}")
-            entries.append({
-                "repository": args.repository,
-                "revision": revision,
-                "path": upstream_rel,
-                "sha256": digest,
-                "license": "MIT",
-            })
+        for rel in skill_files(src):
+            upstream = src / rel
+            upstream_rel = upstream.as_posix()
             raw = upstream.read_bytes()
             try:
                 text = raw.decode("utf-8")
@@ -208,14 +162,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry_run:
                 old = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
                 new = out_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
-                sys.stdout.writelines(difflib.unified_diff(old, new, f"a/{upstream_rel}", f"b/{target.as_posix()}"))
+                sys.stdout.writelines(difflib.unified_diff(old, new,
+                    f"a/{upstream_rel}", f"b/{target.as_posix()}"))
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(out_bytes)
-        sources[name] = entries
-
-    if args.json:
-        print(json.dumps(sources, indent=2))
     return 0
 
 

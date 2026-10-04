@@ -114,23 +114,23 @@ Godot 4.6 also adds two new controls to the **AgX** tonemapper:
 
 | Property | Description |
 |----------|-------------|
-| `tonemap_white` | White point — the luminance at which the scene clips to pure white |
-| `tonemap_contrast` | Contrast of the AgX sigmoid curve |
+| `tonemap_agx_white` | White point — the luminance at which the scene clips to pure white (AgX only; other tonemappers use `tonemap_white`) |
+| `tonemap_agx_contrast` | Contrast of the AgX sigmoid curve (AgX only) |
 
 ```gdscript
 var env: Environment = $WorldEnvironment.environment
 env.tonemap_mode = Environment.TONE_MAPPER_AGX
 # New AgX controls (Godot 4.6+)
-env.tonemap_white = 1.0       # default; increase for brighter highlights
-env.tonemap_contrast = 1.0    # default; increase for more contrast
+env.tonemap_agx_white = 16.29     # default; lower it for brighter highlights
+env.tonemap_agx_contrast = 1.25   # default; increase for more contrast
 ```
 
 ```csharp
 var env = GetNode<WorldEnvironment>("WorldEnvironment").Environment;
 env.TonemapMode = Godot.Environment.ToneMapper.Agx;
 // New AgX controls (Godot 4.6+)
-env.TonemapWhite = 1.0f;
-env.TonemapContrast = 1.0f;
+env.TonemapAgxWhite = 16.29f;
+env.TonemapAgxContrast = 1.25f;
 ```
 
 > **When to use AgX:** AgX maintains hue as brightness increases, which avoids the "neon burn" artefact common with ACES on saturated emissives. The new `white` and `contrast` controls let you match a specific look reference.

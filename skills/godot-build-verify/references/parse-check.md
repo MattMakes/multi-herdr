@@ -12,6 +12,10 @@ How it decides, measured on 4.7.2:
 - A `.tscn` or `.tres` that does not parse loads as `null`.
 - A scene with a wrong `parent=` or a missing `ext_resource` file still loads.
   Only the grep catches those (`godot-scene-files`, "Prove the change").
+- A call to a member that an engine class does not have, on a typed
+  variable (`var b: Node2D` then `b.no_such_method()`), still loads, and
+  `can_instantiate()` is `true`. Only an unknown name on `self` is a parse
+  error. The tests and the smoke run catch the rest.
 
 It skips `.godot/`, every folder whose name starts with `.`, every folder that
 holds a `.gdignore`, and the folder names given with `--skip=`.

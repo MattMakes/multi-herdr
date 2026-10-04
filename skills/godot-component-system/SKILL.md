@@ -420,3 +420,4 @@ Own text, written for the fleet and checked on Godot 4.7.2.
 
 - [references/orchestrator-components.md](references/orchestrator-components.md) — orchestrator root, input/move/facing components, status effects, registry, validation, isolation test
 - [references/ui-tool-composition.md](references/ui-tool-composition.md) — composition for `Control` screens, tools and editor docks: logic/view split, focus, saveable state
+- Typed hits on this hurtbox (damage types, resistances, critical hits, one hit per swing) and turn-based combat: **godot-combat-system**

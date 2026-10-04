@@ -25,7 +25,7 @@ This skill assumes you already know typed parameters, `@onready`, `await`, `matc
 
 ## 2. Performance idioms
 
-**Static vars and methods** (Godot 4.4+) avoid per-instance overhead:
+**Static vars and methods** (static vars since Godot 4.1) avoid per-instance overhead:
 
 ```gdscript
 class_name Tally extends Node

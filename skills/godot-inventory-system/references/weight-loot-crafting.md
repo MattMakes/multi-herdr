@@ -65,6 +65,10 @@ extends Resource
 @export var max_count: int = 1
 ```
 
+`godot-economy-system` (`references/shops-and-loot.md`) has a simpler
+`LootTable` that rolls 1 item id. Both scripts declare `class_name LootTable`,
+so a project keeps one of them (or renames one).
+
 ```gdscript
 # loot_table.gd
 class_name LootTable

@@ -16,7 +16,7 @@ survive the night or a threat → push into a harder area or tier.
 | Needs | hunger, thirst, warmth, stamina; decay scaled by activity | this reference |
 | Inventory | stack limits or weight, durability per item | `godot-inventory-system` |
 | Crafting | recipes as data, discovery when materials are found | `godot-resource-pattern` |
-| Gathering | harvestable nodes, yield scaled by tool tier | `godot-component-system` |
+| Gathering | harvestable nodes, yield scaled by tool tier | `godot-gameplay-loops` (harvest), `godot-component-system` |
 | Building | grid or socket snapping, placement checks | `godot-3d-essentials` (GridMap), `godot-physics-system` |
 | World | noise terrain, biomes, threaded chunk generation | `godot-procedural-generation`, `godot-multithreading` |
 | Day and night | one clock; spawns and temperature follow it | `godot-event-bus` |

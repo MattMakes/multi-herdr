@@ -361,7 +361,7 @@ func get_path_to(target: Vector2) -> PackedVector2Array:
 
 ```csharp
 // No code change needed — NavigationServer2D calls work identically.
-public PackedVector2Array GetPathTo(Vector2 target)
+public Vector2[] GetPathTo(Vector2 target)
 {
     var map = GetWorld2D().GetNavigationMap();
     return NavigationServer2D.MapGetPath(map, GlobalPosition, target, true);

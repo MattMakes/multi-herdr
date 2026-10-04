@@ -14,7 +14,7 @@ or a boss) → return to old locks → new areas and shortcuts open.
 |---|---|---|
 | Precise movement | the platformer base: coyote time, buffer, wall jump | `godot-player-controller`, `platformer.md` |
 | Ability states | dash, double jump, wall cling as states that unlock | `godot-state-machine`, `godot-ability-system` |
-| World state | abilities, opened doors, defeated bosses, collected items; global | `godot-save-load`, `godot-dependency-injection` (autoloads) |
+| World state | abilities, opened doors, defeated bosses, collected items; global | `godot-save-load`, `godot-dependency-injection` (autoloads), `godot-gameplay-loops` (collection, secrets) |
 | Rooms | one scene per room, threaded load, door-to-door spawn | `godot-scene-organization` |
 | Map | grid of visited cells, fog until visited | `godot-ui`, `godot-2d-essentials` |
 | Room camera | limits per room, smooth hand-off at doors | `godot-camera-system`, `godot-phantom-camera` |

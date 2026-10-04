@@ -14,12 +14,12 @@ tune the car → learn the track's best line → race again.
 | system | what this genre needs | skill |
 |---|---|---|
 | Vehicle physics | `VehicleBody3D` for arcade, or a `RigidBody3D` with ray springs for karts | `godot-physics-system` |
-| Laps and checkpoints | ordered checkpoints, lap count, position ranking | this reference |
+| Laps and checkpoints | ordered checkpoints, lap count, position ranking | `godot-gameplay-loops` (time trial), this reference (ranking) |
 | AI drivers | follow a racing line with look-ahead, rubber-banding | `godot-ai-navigation`, `godot-math-essentials` (curves) |
 | Chase camera | smooth follow, FOV grows with speed | `godot-camera-system` |
 | Engine and tyre sound | pitch from RPM, skid sounds | `godot-audio-system` |
 | Speed feel | FOV, shake, wind lines, motion blur, skid marks | `godot-particles-vfx`, `godot-shader-basics` |
-| Ghost and replays | sampled transforms at a fixed rate | `godot-save-load` |
+| Ghost and replays | sampled transforms at a fixed rate | `godot-gameplay-loops` (time trial), `godot-save-load` |
 | Garage | parts and stats as Resources | `godot-resource-pattern`, `godot-economy-system` |
 | HUD | speedometer, lap timer, position, minimap | `godot-hud-system` |
 

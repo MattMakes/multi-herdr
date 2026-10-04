@@ -19,6 +19,7 @@ set a new goal. The player writes the goals; the game supplies the rules.
 | Threads | meshing and generation in worker tasks | `godot-multithreading` |
 | Material rules | interactions from properties (density, burns, melts) | this reference |
 | Tools | brush, dig, place as interchangeable Resources | `godot-resource-pattern` |
+| Gathering | dig or harvest a cell, yield, respawn | `godot-gameplay-loops` (harvest) |
 | Saves | compressed chunk data, only changed chunks | `godot-save-load` |
 | Multiplayer | server validates every edit | `godot-multiplayer-sync` |
 

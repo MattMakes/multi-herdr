@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="OldNode" inherits="Node" api_type="core" deprecated="Use [Node] instead.">
+</class>

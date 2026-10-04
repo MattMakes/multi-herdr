@@ -1,0 +1,3 @@
+# test list
+KnownAddon: skill  # an addon
+OtherAddon: some-other-skill  # allowed elsewhere only

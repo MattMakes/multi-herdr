@@ -18,7 +18,7 @@ minutes.
 | Click to move | ray from camera to ground, path, attack-move | `godot-input-handling`, `godot-ai-navigation` |
 | Hero abilities | QWER, cooldowns, mana, skill-shot indicators | `godot-ability-system`, `godot-combat-system` |
 | Status effects | stun, slow, silence as data with a duration | `godot-ability-system` |
-| Minions and jungle | waves on a timer, lane paths, leashing camps | `godot-ai-navigation`, `godot-state-machine` |
+| Minions and jungle | waves on a timer, lane paths, leashing camps | `godot-gameplay-loops` (waves), `godot-ai-navigation`, `godot-state-machine` |
 | Fog of war | team vision, grid or texture mask | `godot-shader-basics` |
 | Gold and items | shop, bounties | `godot-economy-system`, `godot-inventory-system` |
 

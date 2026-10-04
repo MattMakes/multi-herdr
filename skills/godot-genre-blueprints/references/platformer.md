@@ -18,7 +18,7 @@ next level adds a twist. Precision platformers respawn in under a second.
 | Camera | smoothing, look-ahead, room limits | `godot-camera-system`, `godot-phantom-camera` |
 | Animation | idle, run, jump, fall, land states from velocity | `godot-animation-system` |
 | Juice | squash and stretch, dust, landing shake, sounds | `godot-tween-animation`, `godot-particles-vfx`, `godot-audio-system` |
-| Checkpoints and progress | last checkpoint, collectibles, level unlocks | `godot-save-load` |
+| Checkpoints and progress | last checkpoint, collectibles, level unlocks | `godot-gameplay-loops` (revival, collection), `godot-save-load` |
 | Assist options | slower game speed, extra jumps, remapping | `godot-input-handling` |
 
 ## Scene tree (4.7)

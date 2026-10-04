@@ -17,7 +17,7 @@ repeat until one side's base falls.
 | Commands | move, attack-move, gather, build; shift-queue | `godot-state-machine`, `godot-gdscript-patterns` (command pattern) |
 | Unit movement | paths, avoidance, formations | `godot-ai-navigation` |
 | Camera | edge scroll, pan, zoom, minimap jump | `godot-camera-system` |
-| Economy | gather, carry, drop off, spend; supply cap | `godot-economy-system` |
+| Economy | gather, carry, drop off, spend; supply cap | `godot-economy-system`, `godot-gameplay-loops` (harvest) |
 | Building placement | grid snap, ghost preview, valid-area check | `godot-physics-system` |
 | Fog of war | per-team vision mask | `godot-shader-basics` |
 | Enemy commander | build orders, attack waves | `godot-limboai` or `godot-beehave` |

@@ -15,7 +15,7 @@ wave or the base falls.
 | system | what this genre needs | skill |
 |---|---|---|
 | Paths | `Path2D` with `PathFollow2D` for fixed lanes, or grid paths for mazing | `godot-2d-essentials`, `godot-ai-navigation` |
-| Waves | wave Resources: enemy type, count, interval, delay | `godot-resource-pattern` |
+| Waves | wave Resources: enemy type, count, interval, delay | `godot-gameplay-loops` (waves), `godot-resource-pattern` |
 | Towers | idle → acquire → wind-up → fire states, upgrades | `godot-state-machine` |
 | Targeting | first, last, strongest, weakest; range cache | this reference |
 | Projectiles | pooled nodes; server-level bodies for very large counts | `godot-combat-system`, `godot-optimization` |

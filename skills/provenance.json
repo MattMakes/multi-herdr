@@ -1199,7 +1199,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; references/gridmap-and-csg.md, references/lighting-budget-and-bakes.md, references/materials-advanced.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-3d-lighting, skills/godot-3d-materials, skills/godot-3d-world-building; API fixes on 4.7.2: references/environment-and-post.md Environment.TONE_MAP_FILMIC -> Environment.TONE_MAPPER_FILMIC; Environment.TONE_MAP_AGX -> Environment.TONE_MAPPER_AGX",
+      "adaptation": "rename to godot-* prefix; description extended; references/gridmap-and-csg.md, references/lighting-budget-and-bakes.md, references/materials-advanced.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-3d-lighting, skills/godot-3d-materials, skills/godot-3d-world-building; API fixes on 4.7.2: references/environment-and-post.md Environment.TONE_MAP_FILMIC -> Environment.TONE_MAPPER_FILMIC; Environment.TONE_MAP_AGX -> Environment.TONE_MAPPER_AGX; API fixes on 4.7.2: references/environment-and-post.md AgX controls Environment.tonemap_contrast -> tonemap_agx_contrast and tonemap_white -> tonemap_agx_white (GDScript, C#, table; defaults 1.25 and 16.29 from the --doctool dump)",
       "vendored": true
     },
     {
@@ -1290,7 +1290,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix",
+      "adaptation": "rename to godot-* prefix; API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): references/inspector-plugins.md override _GenerateSmallPreview() -> _GenerateSmallPreviewAutomatically() (doctool: _generate_small_preview_automatically)",
       "vendored": true
     },
     {
@@ -1346,7 +1346,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{costs-links-obstacles-and-recovery.md, server-crowds-and-queries.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-ai-navigation, godot-navigation-pathfinding",
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{costs-links-obstacles-and-recovery.md, server-crowds-and-queries.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-ai-navigation, godot-navigation-pathfinding; API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): SKILL.md return type PackedVector2Array -> Vector2[] (C# has no PackedVector2Array; MapGetPath returns Vector2[]); references/steering-behaviors.md GD.RandRange (double) cast to float",
       "vendored": true
     },
     {
@@ -1430,7 +1430,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; references/2d-cutout-and-frame-events.md, references/player-tracks-and-libraries.md, references/tree-layering-and-root-motion.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-2d-animation, skills/godot-animation-player, skills/godot-animation-tree-mastery",
+      "adaptation": "rename to godot-* prefix; description extended; references/2d-cutout-and-frame-events.md, references/player-tracks-and-libraries.md, references/tree-layering-and-root-motion.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-2d-animation, skills/godot-animation-player, skills/godot-animation-tree-mastery; API fixes on 4.7.2: references/bone-constraints.md AimModifier3D/CopyTransformModifier3D bone_name, target_bone_name, source_bone_name, copy_* properties and AimModifier3D angle limits do not exist -> the per-setting API (setting_count, set_apply_bone_name, set_reference_type, set_reference_bone_name, set_forward_axis, set_use_euler, set_primary_rotation_axis, set_copy_*), GDScript and C#; references/ik-recipes.md FABRIK3D bone_chain/target_node and the tip_bone/root_bone sketches -> setting_count, set_root_bone_name, set_end_bone_name, set_target_node; C# names JacobianIk3D/TwoBoneIk3D -> JacobianIK3D/TwoBoneIK3D (--doctool dump, GodotSharp 4.7.2 build, run headless)",
       "vendored": true
     },
     {
@@ -1743,7 +1743,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix",
+      "adaptation": "rename to godot-* prefix; API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): references/awaiting-signals.md SignalAwaiter.AsTask() does not exist -> a 1-line async helper AsTask(SignalAwaiter) that awaits it",
       "vendored": true
     },
     {
@@ -1792,7 +1792,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/headless-and-in-game-diagnostics.md, references/leaks-and-orphans.md, references/logging-and-crash-context.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-debugging-profiling (debugging half)",
+      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/headless-and-in-game-diagnostics.md, references/leaks-and-orphans.md, references/logging-and-crash-context.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-debugging-profiling (debugging half); API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): references/performance-debugging.md Time.GetTicksUsec() into `long` -> `ulong`; references/systematic-method.md Engine.GetProcessFrames() field `long` -> `ulong`",
       "vendored": true
     },
     {
@@ -2146,7 +2146,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{typing-and-warnings.md, collections-and-callables.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-gdscript-mastery; API fixes on 4.7.2: references/tool-script-recipes.md Mesh.PRIMITIVE_LINE_LOOP -> Mesh.PRIMITIVE_LINE_STRIP (the loop is closed by one more vertex: `for i in segments + 1`); Fact fixes on 4.7: references/tool-script-recipes.md marks DebugDraw as a third-party addon, not an engine class (no DebugDraw class in the 4.7.2 --doctool dump)",
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{typing-and-warnings.md, collections-and-callables.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-gdscript-mastery; API fixes on 4.7.2: references/tool-script-recipes.md Mesh.PRIMITIVE_LINE_LOOP -> Mesh.PRIMITIVE_LINE_STRIP (the loop is closed by one more vertex: `for i in segments + 1`); Fact fixes on 4.7: references/tool-script-recipes.md marks DebugDraw as a third-party addon, not an engine class (no DebugDraw class in the 4.7.2 --doctool dump); Fact fixes on 4.7: SKILL.md static vars 'Godot 4.4+' -> since Godot 4.1 (CHANGELOG.md at tag 4.1-stable: 'Add support for static variables in GDScript (GH-76264)')",
       "vendored": true
     },
     {
@@ -2509,7 +2509,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix",
+      "adaptation": "rename to godot-* prefix; API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): references/random-numbers.md `int i = GD.Randi()` -> `uint` (Randi returns uint), GD.RandfRange/GD.RandiRange -> GD.RandRange (GD has no RandfRange/RandiRange in C#); SKILL.md C# Basis.IsOrthonormal() -> IsEqualApprox(Orthonormalized()) (the C# Basis struct has no IsOrthonormal)",
       "vendored": true
     },
     {
@@ -2649,7 +2649,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{interest-management.md, rollback-netcode.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-multiplayer-networking, godot-adapt-single-to-multiplayer",
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{interest-management.md, rollback-netcode.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-multiplayer-networking, godot-adapt-single-to-multiplayer; API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): SKILL.md AddVisibilityFilter(Callable.From<int>(IsPeerInRange)) -> Callable.From<int, bool> (the filter returns bool)",
       "vendored": true
     },
     {
@@ -2796,7 +2796,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/particle-lifecycle-and-pooling.md, references/particle-shaders-and-scale.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-particles",
+      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/particle-lifecycle-and-pooling.md, references/particle-shaders-and-scale.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-particles; API fixes on 4.7.2: references/subemitters.md ParticleProcessMaterial.sub_emitter_node / SubEmitterNode does not exist -> GPUParticles3D.sub_emitter (a NodePath on the parent particles node; --doctool dump, run headless), setup step 2 and the Inspector note corrected",
       "vendored": true
     },
     {
@@ -2922,7 +2922,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{3d-stairs-hover-and-vehicles.md, queries-and-casts.md, server-bodies-and-bullets.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-2d-physics, godot-physics-3d, godot-raycasting-queries; Fact fixes on 4.7: Jolt is the default physics engine for new 3D projects since 4.6, not 4.4 (SKILL.md lines 25 and 140; godot-docs 4.7 upgrading_to_godot_4.6, GH-105737)",
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{3d-stairs-hover-and-vehicles.md, queries-and-casts.md, server-bodies-and-bullets.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-2d-physics, godot-physics-3d, godot-raycasting-queries; Fact fixes on 4.7: Jolt is the default physics engine for new 3D projects since 4.6, not 4.4 (SKILL.md lines 25 and 140; godot-docs 4.7 upgrading_to_godot_4.6, GH-105737); API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): references/ragdoll-recipes.md PhysicalBonesStartSimulation(new StringName[] ...) -> new Godot.Collections.Array<StringName> { ... }",
       "vendored": true
     },
     {
@@ -3186,7 +3186,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix",
+      "adaptation": "rename to godot-* prefix; API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): SKILL.md GetVisibleRect().Size into Vector2I -> Vector2 (matches the GDScript line); references/mobile.md DisplayServer.ScreenOrientationEnum -> DisplayServer.ScreenOrientation",
       "vendored": true
     },
     {
@@ -3353,7 +3353,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{observers-debug-and-utility.md, pushdown-and-transitions.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-state-machine-advanced",
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{observers-debug-and-utility.md, pushdown-and-transitions.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-state-machine-advanced; API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): SKILL.md GD.RandRange (double) cast to float in new Vector2(...)",
       "vendored": true
     },
     {
@@ -3590,7 +3590,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{comfort-and-locomotion.md, session-and-performance.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-platform-vr; API fixes on 4.7.2: XRHandTracker.HAND_JOINT_INDEX_TIP -> XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP (references/hand-tracking.md, GDScript and C#); XRSpatialAnchor (no such class) -> OpenXRSpatialAnchorCapability.create_new_anchor() returning OpenXRAnchorTracker, followed by an XRAnchor3D node (SKILL.md section 9 GDScript and C# examples, the bullet and the checklist line rewritten)",
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{comfort-and-locomotion.md, session-and-performance.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-platform-vr; API fixes on 4.7.2: XRHandTracker.HAND_JOINT_INDEX_TIP -> XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP (references/hand-tracking.md, GDScript and C#); XRSpatialAnchor (no such class) -> OpenXRSpatialAnchorCapability.create_new_anchor() returning OpenXRAnchorTracker, followed by an XRAnchor3D node (SKILL.md section 9 GDScript and C# examples, the bullet and the checklist line rewritten); API fixes on 4.7.2 (C#, dotnet build against GodotSharp 4.7.2 (scripts/godot/csharp_blocks_check.py)): SKILL.md Viewport.UseXr -> UseXR; references/grabbing-objects.md C# Generic6DOFJoint3D -> Generic6DofJoint3D (the GDScript name stays Generic6DOFJoint3D)",
       "vendored": true
     },
     {

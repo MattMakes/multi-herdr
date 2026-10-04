@@ -48,8 +48,8 @@ public async Task<bool> WaitForSignalWithTimeout(float timeoutSeconds)
 {
     // Build a timeout task using Godot's SceneTreeTimer.
     var timer = GetTree().CreateTimer(timeoutSeconds);
-    var timeoutTask = ToSignal(timer, SceneTreeTimer.SignalName.Timeout).AsTask();
-    var signalTask  = ToSignal(this, SignalName.Died).AsTask();
+    var timeoutTask = AsTask(ToSignal(timer, SceneTreeTimer.SignalName.Timeout));
+    var signalTask  = AsTask(ToSignal(this, SignalName.Died));
 
     var completed = await Task.WhenAny(signalTask, timeoutTask);
 
@@ -62,6 +62,10 @@ public async Task<bool> WaitForSignalWithTimeout(float timeoutSeconds)
     GD.Print("Timed out waiting for signal.");
     return false;
 }
+
+// SignalAwaiter has no AsTask() in Godot 4.7: awaiting it in an async
+// method turns it into a Task that Task.WhenAny can race.
+private static async Task<Variant[]> AsTask(SignalAwaiter awaiter) => await awaiter;
 ```
 
 ### Timeout pattern with `CancellationTokenSource`
@@ -77,7 +81,7 @@ public async Task ListenUntilCancelled(CancellationToken token)
     {
         // ToSignal does not accept a CancellationToken directly;
         // wrap it in a task-race pattern.
-        var signalTask  = ToSignal(this, SignalName.ItemCollected).AsTask();
+        var signalTask  = AsTask(ToSignal(this, SignalName.ItemCollected)); // helper above
         var cancelTask  = Task.Delay(Timeout.Infinite, token);
 
         var completed = await Task.WhenAny(signalTask, cancelTask);

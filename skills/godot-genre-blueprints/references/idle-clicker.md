@@ -15,7 +15,7 @@ for a permanent multiplier) → grow faster than the last run.
 |---|---|---|
 | Big numbers | mantissa and exponent, compare, add, multiply, format | this reference |
 | Generators and upgrades | cost growth, output rate; data in Resources | `godot-resource-pattern`, `godot-economy-system` |
-| Offline progress | real elapsed time between sessions | `godot-save-load` |
+| Offline progress | real elapsed time between sessions | `godot-gameplay-loops` (harvest: idle and offline gains), `godot-save-load` |
 | Prestige | separate run state from permanent state | `godot-save-load` |
 | Number labels and panels | update on change, not every frame | `godot-ui`, `godot-hud-system` |
 | Click feedback | pooled floating numbers, tweens | `godot-tween-animation` |

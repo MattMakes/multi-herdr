@@ -120,6 +120,10 @@ checks (`godot-inventory-system`); the trade is data: two
 
 ## Loot tables
 
+`godot-inventory-system` (`references/weight-loot-crafting.md`) has a
+`LootTable` with several rolls and a count per item. Both scripts declare
+`class_name LootTable`, so a project keeps one of them (or renames one).
+
 ```gdscript
 class_name LootTable
 extends Resource

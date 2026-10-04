@@ -73,6 +73,7 @@ position.
 
 ```gdscript
 extends SceneTree
+# api-check: allow TileMap (this converter reads the deprecated node on purpose)
 
 ## Usage: Godot --headless --path . -s res://tilemap_to_layers.gd -- res://a.tscn [res://b.tscn ...]
 ## Replaces each TileMap in each scene with a Node2D of the same name and

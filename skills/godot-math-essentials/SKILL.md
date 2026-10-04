@@ -177,7 +177,8 @@ if not global_transform.basis.is_orthonormal():
 ```
 
 ```csharp
-if (!GlobalTransform.Basis.IsOrthonormal())
+// The C# Basis struct has no IsOrthonormal() in 4.7.2; compare with the orthonormalized basis.
+if (!GlobalTransform.Basis.IsEqualApprox(GlobalTransform.Basis.Orthonormalized()))
 {
     GlobalTransform = new Transform3D(
         GlobalTransform.Basis.Orthonormalized(), GlobalPosition);

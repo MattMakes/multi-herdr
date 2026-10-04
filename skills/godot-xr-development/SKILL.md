@@ -58,7 +58,7 @@ public partial class XRMain : Node3D
     {
         var xrInterface = XRServer.FindInterface("OpenXR");
         if (xrInterface != null && xrInterface.IsInitialized())
-            GetViewport().UseXr = true;
+            GetViewport().UseXR = true;
         else
             GD.PushError("OpenXR not available");
     }
