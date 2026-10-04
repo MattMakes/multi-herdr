@@ -84,7 +84,7 @@ Search: `git grep -iP "\b(MIT|LGPL|Apache|BSD|licen[cs]e|NOTICE)\b"` plus
 | provenance data | `skills/provenance.json` (repositories, revisions, licences, credits) | 1 file | replaced by `copied.json` |
 | licence/credit in code and tests | `catalog.rs`, `build.rs`, `skillscmd.rs`, `skills_catalog.rs`, Godot scripts and tests, `rename.py`, manifest fixture | 12 files | rewritten |
 | skill frontmatter | `license: MIT`, `author: <person>` | 13 SKILL.md | removed |
-| skill text | "Adapted from ... (MIT)", addon `· MIT ·`, "upstream skill", GodotPrompter, GreenSock | 11 files | rewritten |
+| skill text | "Adapted from ... (MIT)", addon `· MIT ·`, "upstream skill", source project and vendor names | 11 files | rewritten |
 | README tables | "Upstream source" columns, licence intro | `skills/README.md` | rewritten |
 | docs, teammates | provenance, vendor, licence, Anthropic credit, `MIT` tool tag | 9 files | rewritten |
 | ai_docs | about 100 licence lines and 283 owner/credit lines in 55 files | 63 files | licence text removed; owners and source URLs removed; bare repository names kept as working facts (orchestrator decision) |
