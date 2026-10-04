@@ -207,15 +207,6 @@ impl Ledger {
             .update_key(key, |r| r.effort = effort.map(str::to_owned))
     }
 
-    /// Record what routing decided for a session. `None` clears it.
-    pub fn set_routing(
-        &self,
-        key: &str,
-        routing: Option<&crate::routing::decision::RoutingProvenance>,
-    ) -> Result<()> {
-        self.store.update_key(key, |r| r.routing = routing.cloned())
-    }
-
     /// True when any record already claims this session id. Used to stop two
     /// concurrently spawned codex workers from harvesting the same rollout file.
     pub fn has_session(&self, session_id: &str) -> Result<bool> {
