@@ -12,7 +12,7 @@ Branch `ds/docs-refresh`. Date 2026-10-04. Plan: `ai_docs/plans/finish/k1-docs-r
 | `horch doctor` checks | README 1 line ("herdr reachable") | roster, `requires`, effort overrides not listed | README paragraph; table in the new page; `command-flow.md` node |
 | Unreal team, Git LFS, UE 5.8 | `teammates/README.md` | no handbook how-to | summary and rules in the new page, link to `git-lfs.md` |
 | Swift team, MobileBuildMCP, app-release-preparer | `teammates/README.md` | no handbook how-to | summary in the new page; the Apple section of `README.md` is not edited (opus-56) |
-| Blender teammate | none | not merged | row in the new page that links to `teammates/README.md` (UE and Blender rows are not edited here) |
+| Blender teammate | `teammates/README.md` | no usage page | section "Blender and the Unreal team" in the new page |
 | design team | `teammates/README.md` (members) | no usage page | summary in the new page |
 | `horch agent-list` | README, `command-flow.md` | no output description | section in the new page |
 | Antigravity harness | README table, `add-harness.md` | no usage facts in 1 place | section in the new page |
@@ -33,6 +33,7 @@ I did not run `horch doctor` itself (needs a herdr server); its checks come from
 
 ## Not done, outside scope
 
-- The Blender teammate and the `install-checks` unit are not merged on `design-skills`. When they merge, update the Blender row and the `horch doctor` table in `docs/skills-and-teams.md`.
+- The `install-checks` unit is not merged. When it merges, update the `horch doctor` table in `docs/skills-and-teams.md`.
+- After the rebase: `docs/recipes/add-teammate.md` keeps the operator-skills text of ds/operator-skills; `docs/skills-and-teams.md` follows its warning behaviour.
 - `gate-slot.sh` lives in the git-ignored `.worktrees/`, so a fresh clone lacks it. Decide whether to move it to `scripts/`.
 - `docs/phase-skills.md` was not re-checked against the 33 `ue-*` and 28 Swift skills.

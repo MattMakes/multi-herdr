@@ -104,10 +104,11 @@ enum: a typo fails when the roster loads.
 Apple's Xcode 27 skills are an example. Export them on your machine:
 
 ```bash
-xcrun agent skills export          # writes skill directories, for example to ~/.agents/skills
+xcrun agent skills export --output-dir ~/.agents/skills   # Xcode 27 or later
 ```
 
-Then name them in a local copy of a teammate file:
+`swift-developer` and `apple-platform-developer` already name 2 of them. For
+another teammate, name them in a local copy of its file:
 
 ```yaml
 operator_skills:
@@ -118,14 +119,18 @@ operator_skills:
 - The launch copies each `<dir>/<name>/` into the skill bundle and checks
   the copy's tree digest. The version is `operator+<digest12>`.
 - On Claude the skill appears as `horch:<name>`, like a bundled skill.
-- `horch teammates --check` fails on a missing `dir`, a missing name, an
-  invalid `SKILL.md`, a name that is named twice, a name that a bundled skill
-  already has, and a subagent skill (`device-interaction`, or a `SKILL.md`
-  with "SUBAGENT skill" or "Agent tool"). There is no `operator:` prefix:
-  rename 1 of the 2 skills.
-- No shipped teammate sets `operator_skills`, because `--check` then fails on
-  a machine that lacks the directory.
-- The ledger record that `horch spawn` writes lists the operator skills.
+- A host that lacks the skill is normal, because each host exports its own
+  copy. When `dir` or `<dir>/<name>/` does not exist, `horch teammates --check`
+  prints a `warning:` line and passes. The launch skips the skill, and the
+  briefing says "Skipped: operator skill <name> is not installed on this
+  host", so the worker tells the orchestrator.
+- `horch teammates --check` fails on a name that is named twice, a name that a
+  bundled skill already has, a `dir` that exists but cannot be read, an
+  invalid or unreadable `SKILL.md`, and a subagent skill (`device-interaction`,
+  or a `SKILL.md` with "SUBAGENT skill" or "Agent tool"). The name rules apply
+  on every host. There is no `operator:` prefix: rename 1 of the 2 skills.
+- The ledger record that `horch spawn` writes lists the operator skills that
+  the launch copied.
 
 ## What `horch doctor` checks
 
@@ -153,7 +158,7 @@ each team.
 | Unreal Engine (11 `ue-*`) | `*.uproject` | 31 `ue-*` skills vendored from `quodsoler/unreal-engine-skills`, plus 2 house skills, `ue-build-verify` and `ue-editor-scripting` | read `.agents/ue-project-context.md` first; never write asset bytes; check the engine headers; 1 build at a time; a `DONE:` that names target, configuration and filter; the Git LFS lock rules |
 | Swift and Apple (7) | `*.xcodeproj`, `*.xcworkspace` or `Package.swift` | 28 Swift and Apple skills | check the toolchain first; the builders carry `mobilebuildmcp` |
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
-| Blender | see [teammates/README.md](../teammates/README.md) | | works with the Unreal team through the Blender MCP server |
+| Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline` | Blender Lab MCP server; hands FBX exports to the Unreal team |
 
 ### Unreal Engine and Git LFS
 
@@ -176,6 +181,30 @@ each team.
 - Check the whole team: `horch teammates --check`. Watch the briefing size
   with `horch teammates --matrix`.
 
+### Blender and the Unreal team
+
+`blender-artist` models, retopologizes, UV-unwraps, bakes, rigs and exports
+assets for Unreal. It runs on Claude (opus, medium) and carries the
+`blender-ue-pipeline` skill.
+
+- It drives Blender through the Blender Lab MCP server (v1.0.3), pinned by
+  commit in `teammates/blender-artist.md`. The server has no telemetry, no
+  network tools and no API key.
+- Warning: `uvx blender-mcp` installs a different, community project. Use the
+  pinned launch line in the teammate file.
+- Headless tools (`*_for_cli`) need only a `blender` binary on `PATH`, or
+  `BLENDER_PATH` set to it. Live tools need Blender 5.1 or later with the
+  Blender Lab add-on open, and the operator must say so.
+- Without `blender` on `PATH`, the first run reports `BLOCKED:`.
+- The add-on and the community add-on both default to port 9876. Run only 1.
+- It writes 1 FBX per asset and a `<AssetName>.handoff.md` (scale, axes,
+  bounds in centimetres, facing). `ue-technical-artist` and
+  `ue-tools-engineer` import the files; they send Blender work to
+  `blender-artist`.
+- The Git LFS lock rules from the Unreal section apply to the exports.
+- Choice of server, rules and evidence:
+  `ai_docs/reports/finish/blender.md`.
+
 ### Swift and Apple, MobileBuildMCP, App Store Connect
 
 - The panes that build carry `mobilebuildmcp` (formerly XcodeBuildMCP),
@@ -188,8 +217,9 @@ each team.
   that the operator owns. The key setup is in the Apple section of the
   top-level [README](../README.md). It ends every App Store Connect write at a
   `--dry-run` plan for the orchestrator and never submits.
-- To give a Swift teammate Apple's Xcode 27 skills, use `operator_skills`
-  (above).
+- `swift-developer` and `apple-platform-developer` set `operator_skills` for
+  Apple's Xcode 27 skills (see "Operator skills"). A host without the export
+  gets a warning, not a failure.
 
 ### The design team
 
