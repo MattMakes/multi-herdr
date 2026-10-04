@@ -102,10 +102,9 @@ impl std::error::Error for EventError {}
 
 macro_rules! event_kinds {
     ($($(#[$meta:meta])* $variant:ident => $name:literal,)*) => {
-        /// Every event kind, plus [`EventKind::Unknown`].
-        ///
-        /// SPEC-TODO(Spec B event list): the master plan names these kinds;
-        /// confirm the list and every payload against Spec B verbatim.
+        /// Every event kind, plus [`EventKind::Unknown`]. The list and every
+        /// payload are dataset design §4.1, which names the writer and the
+        /// idempotency key of each kind.
         #[derive(Debug, Clone, PartialEq)]
         pub enum EventKind {
             $($(#[$meta])* $variant($variant),)*
@@ -188,12 +187,12 @@ event_kinds! {
     PromotionRolledBack => "promotion.rolled_back",
     WorktreeCleanupFailed => "worktree.cleanup_failed",
     OutcomeRecorded => "outcome.recorded",
-    /// SPEC-TODO(Spec B event list): added by the orchestrator so a rebuild
-    /// reaches NEEDS_INTERVENTION without a failed judge or promotion event.
+    /// The round stops for the operator. A rebuild reaches NEEDS_INTERVENTION
+    /// through it when no failed judge or promotion event does (design §4.1).
     RoundNeedsIntervention => "round.needs_intervention",
-    /// SPEC-TODO(Spec B event list): added so a rebuild reaches CLEANUP.
+    /// Cleanup begins; a rebuild reaches CLEANUP through it (design §4.1).
     RoundCleanupStarted => "round.cleanup_started",
-    /// SPEC-TODO(Spec B event list): added so a rebuild reaches COMPLETE.
+    /// Cleanup ended; a rebuild reaches COMPLETE through it (design §4.1).
     RoundCompleted => "round.completed",
     /// The operator's `promote <round>`: a promotion of the round's winner
     /// into `target`, after the round ended without one (B5).

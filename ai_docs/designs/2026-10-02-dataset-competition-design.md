@@ -330,8 +330,8 @@ pub struct EventEnvelope {
 #[serde(rename_all = "snake_case")]
 pub enum Actor { Coordinator, Worker, JudgeJob, Operator }
 
-/// SPEC-TODO(Spec B event list): the master plan names these kinds; confirm
-/// the list and every payload against Spec B verbatim.
+/// The complete event list (27 kinds). `EventKind::KNOWN` holds the dotted
+/// names in this order; `mea_02_envelope_roundtrip_every_kind` pins it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventKind {
     ExperimentCreated(ExperimentCreated),       // "experiment.created"
@@ -357,6 +357,10 @@ pub enum EventKind {
     PromotionRolledBack(PromotionRolledBack),   // "promotion.rolled_back"
     WorktreeCleanupFailed(WorktreeCleanupFailed), // "worktree.cleanup_failed"
     OutcomeRecorded(OutcomeRecorded),           // "outcome.recorded"
+    RoundNeedsIntervention(RoundNeedsIntervention), // "round.needs_intervention"
+    RoundCleanupStarted(RoundCleanupStarted),   // "round.cleanup_started"
+    RoundCompleted(RoundCompleted),             // "round.completed"
+    OperatorPromote(OperatorPromote),           // "operator.promote"
     /// An unknown kind, kept byte-for-byte so a newer writer's events survive
     /// a rebuild by an older reader (MEA-02).
     Unknown { kind: String, payload: serde_json::Value },
@@ -391,20 +395,77 @@ pub struct JudgeScheduled { pub attempt: u32, pub input_digest: Digest, pub judg
 pub struct JudgeStarted { pub attempt: u32, pub pid: u32 }
 pub struct JudgeCompleted { pub attempt: u32, pub judgment_id: JudgmentId, pub output_digest: Digest }
 pub struct JudgeFailed { pub attempt: u32, pub cause: JudgeFailure }
-pub enum JudgeFailure { Crashed { code: Option<i32> }, TimedOut, Lost, Malformed { error: String }, OverCap }
+pub enum JudgeFailure { Crashed { code: Option<i32> }, TimedOut, Lost, Malformed { error: String }, OverCap } // #[serde(tag = "kind")]
 pub struct WinnerSelected { pub label: String, pub execution_id: ExecutionId, pub head_sha: String,
                             pub judgment_id: JudgmentId, pub promotion: PromotionIntent }
 pub enum PromotionIntent { NotRequested, Requested { target: String } }   // "not_requested" | {"requested":…}
 pub struct WinnerRejected { pub reason: RejectReason }
 pub enum RejectReason { NoEligible, JudgeRejected, BelowConfidence, Tie, StaleJudgment, RevalidationFailed }
-pub struct PromotionStarted { pub target: String, pub dest_before: String, pub planned_after: String, pub strategy: PromotionStrategy }
+pub struct PromotionStarted { pub target: String, pub dest_before: String, pub planned_after: String, pub strategy: PromotionStrategy,
+                              #[serde(default)] pub publish: String,            // "update_ref_cas" | "update_ref_cas_read_tree"
+                              #[serde(default)] pub validation_ids: Vec<String> } // the revalidation of planned_after
 pub struct PromotionCompleted { pub receipt_digest: Digest, pub dest_after: String }
 pub struct PromotionConflicted { pub paths: Vec<String> }
 pub struct PromotionRolledBack { pub target: String, pub restored: String }
 pub struct WorktreeCleanupFailed { pub label: String, pub path: PathBuf, pub error: String }
 pub struct OutcomeRecorded { pub kind: OutcomeKind, pub post_merge_score: f64, pub note: Option<String> }
 pub enum OutcomeKind { Regression, Revert, Verified }
+pub struct RoundNeedsIntervention { pub reason: String, pub source: InterventionSource }
+pub enum InterventionSource { Judge, Promotion, Operator }
+pub struct RoundCleanupStarted {}                     // worktrees go, branches stay
+pub struct RoundCompleted { pub final_outcome: FinalOutcome }
+pub enum FinalOutcome { Winner, Rejected, NeedsIntervention, Promoted } // the state cleanup started from
+pub struct OperatorPromote { pub target: String }
 ```
+
+`PromotionStarted.publish` names the publish step; `merge_ff_only` is its
+legacy spelling in events written before D17, and an event written before B5
+has it empty. `RoundCompleted.final_outcome` must match the state the round
+held at `round.cleanup_started` (DECIDED → `winner`, REJECTED → `rejected`,
+PROMOTED → `promoted`, NEEDS_INTERVENTION → `needs_intervention`); the fold
+records any other value as an anomaly.
+
+**Who writes each event, and its idempotency key.** Every event is written
+by the coordinator process except where the actor column says otherwise. The
+key makes a re-run append a no-op (MEA-04). `<from>` is the round state when
+cleanup started; `<n>` is the judge or promotion attempt.
+
+| Kind | Actor | Written by (`path:symbol`) | Idempotency key |
+|---|---|---|---|
+| `experiment.created` | coordinator | `horch/src/dataset/preflight.rs:record` | `experiment.created:<exp>` |
+| `preflight.completed` | coordinator | `horch/src/dataset/preflight.rs:record` | `preflight.completed:<exp>` |
+| `experiment.aborted` | coordinator | `horch/src/dataset/preflight.rs:record` | `experiment.aborted:<exp>` |
+| `round.created` | coordinator | `competition/coordinator.rs` | `round.created:<round>` |
+| `candidate.planned` | coordinator | `competition/coordinator.rs` | `plan:<round>:<label>` |
+| `worktree.created` | coordinator | `competition/coordinator.rs` | `worktree:<round>:<label>` |
+| `candidate.spawned` | coordinator | `competition/coordinator.rs` | `spawn:<round>:<label>` |
+| `candidate.completed`, `candidate.failed` | coordinator | `competition/coordinator.rs` | `ended:<round>:<label>` |
+| `candidate.frozen` | coordinator | `competition/coordinator.rs` | `freeze:<round>:<label>` |
+| `validation.completed` | coordinator | `competition/coordinator.rs` | `validation:<round>:<label>` |
+| `judge.scheduled`, `judge.started`, `judge.completed`, `judge.failed` | coordinator | `competition/judging.rs` | `<kind>:<round>:<n>` |
+| `winner.selected` | coordinator | `competition/judging.rs` | `winner:<round>` |
+| `winner.rejected` | coordinator | `judging.rs` (judge verdict), `coordinator.rs` (0 eligible), `promotion.rs` (stale or failed revalidation) | `winner:<round>`, `winner.rejected:<round>`, `promotion.rejected:<round>:<n>` |
+| `promotion.started`, `promotion.conflicted` | coordinator | `competition/promotion.rs` | `<kind>:<round>:<n>` |
+| `promotion.completed` | coordinator | `competition/promotion.rs` | `promotion.completed:<round>` |
+| `promotion.rolled_back` | operator | `competition/promotion.rs` (`rollback`) | `promotion.rolled_back:<round>` |
+| `worktree.cleanup_failed` | coordinator | `competition/cleanup.rs` | `worktree.cleanup_failed:<round>:<from>:<label>` |
+| `outcome.recorded` | operator | `dataset/outcome.rs` | `outcome:<round>:<kind>:<occurred_at>` |
+| `round.needs_intervention` | coordinator | `judging.rs` (source `judge`), `promotion.rs` (source `promotion`), `coordinator.rs` | `needs_intervention:<round>`, `round.needs_intervention:promotion:<round>:<n>` |
+| `round.cleanup_started` | coordinator | `competition/cleanup.rs` | `round.cleanup_started:<round>:<from>` |
+| `round.completed` | coordinator | `competition/cleanup.rs` | `round.completed:<round>:<from>` |
+| `operator.promote` | operator | `horch/src/dataset/promote.rs` | `operator.promote:<round>:<n>` |
+
+The last 4 kinds are not in the master plan. They exist so a rebuild from
+the log alone reaches every state of §5: without `round.needs_intervention`
+a judge tie or a dirty target leaves no event that moves the round, and
+without `round.cleanup_started` / `round.completed` a rebuild never reaches
+CLEANUP or COMPLETE. `operator.promote` records the operator's re-entry at
+DECIDED. Tests: `mea_02_envelope_roundtrip_every_kind` (every kind
+round-trips, and `EventKind::KNOWN` equals this list),
+`mea_02_unknown_kind_preserved`, `mea_02_known_kind_bad_payload_is_an_error`,
+`mea_05_round_needs_intervention_and_completion_checks`,
+`mea_05_full_lifecycles_fold_without_anomalies` (all in
+`crates/horch-core/tests/measure.rs`).
 
 ### 4.2 Recorder and store (B1)
 
