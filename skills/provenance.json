@@ -1745,6 +1745,48 @@
       "vendored": false
     },
     {
+      "name": "godot-event-bus",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/event-bus/SKILL.md",
+          "sha256": "9fd57b7f11c593546478a88dbd2759f2d4fdd4fadb596551e64e9c1ecb529fea",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/event-bus/references/anti-patterns.md",
+          "sha256": "2baf0f15d6228bd397bd5fda1e8c4278a0d89a2412af6f65bead0c3c479b8bda",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/event-bus/references/testing.md",
+          "sha256": "87c259086277e000dee9ce3ab0f8042af482e43f97adfcaeec83fc347e01c305",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/event-bus/references/typed-signals.md",
+          "sha256": "365d8d61a58dda545526a3544cad321256be76be09393044d27f200d71f4f3c1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{connection-lifetime.md, inspecting-connections.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-signal-architecture",
+      "vendored": true
+    },
+    {
       "name": "godot-export-pipeline",
       "sources": [
         {
@@ -2729,6 +2771,27 @@
       "adaptation": "Own text, written in this repository. Shape follows skills/ue-project-context (scan, [unknown], one QUESTION:). Setting keys and defaults checked against the Godot 4.7.2 class reference (doc/classes/ProjectSettings.xml at 4.7.2-stable); the scan script in references/context-scan.md was run on 6 scratch projects; evidence in ai_docs/reports/godot/gw2-own-skills.md."
     },
     {
+      "name": "godot-project-setup",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-project-setup/SKILL.md",
+          "sha256": "43071fe4de8919ecdfade0c858986da260c875f60a49aa1a9bbf343d5fb914a2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{naming-and-layout.md, settings-and-metadata.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-project-foundations; Fact fixes on 4.7: SKILL.md checklist, CI parse check no longer relies on `godot --headless --check-only`, which exits 0 on a parse error (test run on 4.7.2, ai_docs/reports/godot/gw3-combined.md)",
+      "vendored": true
+    },
+    {
       "name": "godot-quest-system",
       "sources": [],
       "adaptation": "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: quest-system. Quest definitions, quest log, branching, timers, tracker HUD and quest givers. Typed GDScript, parse-checked and run headless on Godot 4.7.2.",
@@ -2837,6 +2900,27 @@
       "sources": [],
       "vendored": false,
       "adaptation": "Own text, written in this repository; own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-builder (SKILL.md only; facts re-tested on 4.7.2, nothing copied). Every rule and the worked example were run on Godot 4.7.2 (macOS); evidence in ai_docs/reports/godot/gw2-own-skills.md. references/fleet-additions.md carries GW10's verified fact on the 4.6 scene format (godotengine/godot GH-106837, GH-103352)."
+    },
+    {
+      "name": "godot-scene-organization",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/scene-organization/SKILL.md",
+          "sha256": "48d8fee8036e5d1a630a6154057afa86524f6b9df1f28cc138e040c74f08ef19",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{scene-loading.md, scene-transitions.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-scene-management",
+      "vendored": true
     },
     {
       "name": "godot-shader-basics",

@@ -178,6 +178,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-dialogue-system](godot-dialogue-system/SKILL.md) | `jame581/GodotPrompter`: `skills/dialogue-system/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-dialogue-system` | combined |
 | [godot-dimension-port](godot-dimension-port/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills` `godot-adapt-2d-to-3d` and `godot-adapt-3d-to-2d`; checked against Godot 4.7.2)* | own text |
 | [godot-economy-system](godot-economy-system/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-economy-system/`; code run on Godot 4.7.2)* | own text |
+| [godot-event-bus](godot-event-bus/SKILL.md) | `jame581/GodotPrompter`: `skills/event-bus/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-signal-architecture/`) | combined |
 | [godot-export-pipeline](godot-export-pipeline/SKILL.md) | `jame581/GodotPrompter`: `skills/export-pipeline/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-export-builds/`, `godot-platform-desktop/`, `godot-platform-web/`, `godot-platform-console/`, `godot-adapt-mobile-to-desktop/`) | combined |
 | [godot-gameplay-loops](godot-gameplay-loops/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-game-loop-collection/`, `godot-game-loop-harvest/`, `godot-game-loop-time-trial/`, `godot-game-loop-waves/`, `godot-mechanic-revival/`, `godot-mechanic-secrets/`; code run on Godot 4.7.2)* | own text |
 | [godot-gdextension](godot-gdextension/SKILL.md) | `jame581/GodotPrompter`: `skills/gdextension/` | renamed |
@@ -202,10 +203,12 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-popochiu](godot-popochiu/SKILL.md) | `jame581/GodotPrompter`: `skills/popochiu/` | renamed |
 | [godot-procedural-generation](godot-procedural-generation/SKILL.md) | `jame581/GodotPrompter`: `skills/procedural-generation/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-procedural-generation` | combined |
 | [godot-project-context](godot-project-context/SKILL.md) | *(none - repo-original; shape of `ue-project-context`; run on Godot 4.7.2)* | own text |
+| [godot-project-setup](godot-project-setup/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-project-setup/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-project-foundations/`) | combined |
 | [godot-quest-system](godot-quest-system/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-quest-system/`; code run on Godot 4.7.2)* | own text |
 | [godot-responsive-ui](godot-responsive-ui/SKILL.md) | `jame581/GodotPrompter`: `skills/responsive-ui/` | renamed |
 | [godot-save-load](godot-save-load/SKILL.md) | `jame581/GodotPrompter`: `skills/save-load/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-save-load-systems` | combined |
 | [godot-scene-files](godot-scene-files/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |
+| [godot-scene-organization](godot-scene-organization/SKILL.md) | `jame581/GodotPrompter`: `skills/scene-organization/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-scene-management/`) | combined |
 | [godot-shader-basics](godot-shader-basics/SKILL.md) | `jame581/GodotPrompter`: `skills/shader-basics/`; own-text references, consulted gd-agentic-skills `godot-shaders-basics` | combined |
 | [godot-state-machine](godot-state-machine/SKILL.md) | `jame581/GodotPrompter`: `skills/state-machine/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-state-machine-advanced/`) | combined |
 | [godot-testing](godot-testing/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-testing/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-testing-patterns/`) | combined |
