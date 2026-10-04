@@ -167,8 +167,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     sync_dir(parent)
 }
 
-/// Replace `path` durably. The same as [`write_atomic`]; the dataset code
-/// names its "replace" writes with this.
+/// Replace `path` durably. The same as [`write_atomic`]. No caller uses it
+/// yet: it is the "replace" discipline that `ai_docs/designs/2026-10-02-dataset-competition-design.md` §2.3 (MEA-09)
+/// names, and `mea_09_replace_durable` tests it.
 pub fn replace_durable(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     write_atomic(path, bytes, mode)
 }
