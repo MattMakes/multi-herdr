@@ -177,7 +177,7 @@ codex-reviewer-1 found that D20's `REPO_ENV` (9 names) missed names that
     old code.
   - `tests/vcs.rs` `cmp_09_a_passed_gates_background_child_is_killed`
     still passes. It covers the group kill after a normal exit.
-- The pidfd path compiles and runs only on Linux. It was not run here.
+- The pidfd path type-checks for `aarch64-unknown-linux-gnu`. It was not run here.
 
 ### 2. The Prime socket (MEDIUM)
 
@@ -219,9 +219,12 @@ codex-reviewer-1 found that D20's `REPO_ENV` (9 names) missed names that
 
 ## Gotchas and follow-ups
 
-- The Linux code compiles and runs only on Linux. This machine has no Linux
-  target installed, so CI (or a Linux host) is the first run of
-  `group_members`, `started_by` and `stat_field` there.
+- The Linux code type-checks: `cargo check` and `cargo clippy -- -D
+  warnings` for `-p horch-core -p horch-marketplace --all-targets --target
+  aarch64-unknown-linux-gnu` pass, with no errors and no warnings. No
+  dependency needed a C toolchain for the check. The Linux code did not
+  run: CI (or a Linux host) is the first run of `group_members`,
+  `started_by`, `stat_field` and the pidfd path.
 - Recent Linux kernels count start times on `CLOCK_BOOTTIME`. Older
   kernels count `CLOCK_MONOTONIC`, which differs after a suspend. Then
   an orphan can look newer than it is, and is kept (safe side).
