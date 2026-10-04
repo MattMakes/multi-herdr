@@ -136,3 +136,15 @@ These skills come from MIT-licensed Swift skill repositories. Each keeps its ups
 | --- | --- | --- |
 | [ue-build-verify](ue-build-verify/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging` and `ue-module-build-system`)* | own text |
 | [ue-editor-scripting](ue-editor-scripting/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging`)* | own text |
+These skills attach by name to the Swift teammates; none belongs to a phase. Each keeps its upstream MIT `LICENSE` next to `SKILL.md`. The App Store skills never change App Store Connect: each live write becomes a dry-run sent to the orchestrator.
+
+| Skill | Upstream source | Kind |
+| --- | --- | --- |
+| [app-store-changelog](app-store-changelog/SKILL.md) | `Dimillian/Skills`: `app-store-changelog/` (SKILL.md, references; the `git log` script is inlined) | adapted |
+| [appstore-review](appstore-review/SKILL.md) | `3paws-ai/mobile-ai-skills`: `skills/appstore-review/` (SKILL.md, `references/appstore-review-ref.md`) | adapted, vendored |
+| [asc-cli-usage](asc-cli-usage/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-cli-usage/SKILL.md` | adapted |
+| [asc-crash-triage](asc-crash-triage/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-crash-triage/SKILL.md` | verbatim |
+| [asc-id-resolver](asc-id-resolver/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-id-resolver/SKILL.md` | verbatim |
+| [asc-metadata-sync](asc-metadata-sync/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-metadata-sync/SKILL.md` | adapted, dry-run only |
+| [asc-submission-health](asc-submission-health/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-submission-health/` (SKILL.md, `references/readiness-repairs.md`) | adapted, diagnosis only |
+| [asc-xcode-build](asc-xcode-build/SKILL.md) | `rudrankriyam/app-store-connect-cli-skills`: `skills/asc-xcode-build/SKILL.md` | adapted |
