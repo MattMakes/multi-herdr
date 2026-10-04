@@ -175,6 +175,7 @@ fn preflight_and_run(
         ctx,
         GatherInput {
             paths,
+            task,
             config: &config,
             candidates,
             git: git_facts,

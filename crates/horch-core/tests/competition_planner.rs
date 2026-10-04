@@ -380,6 +380,7 @@ fn config() -> DatasetConfig {
             soft_usd_micro: 40_000_000,
             hard_usd_micro: 50_000_000,
             judge_reserve_usd_micro: 5_000_000,
+            ..BudgetConfig::default()
         },
         judge: JudgeConfig::default(),
         baseline: None,

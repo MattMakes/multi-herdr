@@ -65,6 +65,7 @@ fn config() -> DatasetConfig {
             soft_usd_micro: usd(40),
             hard_usd_micro: usd(50),
             judge_reserve_usd_micro: usd(5),
+            ..BudgetConfig::default()
         },
         judge: JudgeConfig::default(),
         baseline: None,
@@ -122,6 +123,7 @@ fn plan() -> PreflightPlan {
         artifacts_bytes: GIB,
         local_model_bytes: 0,
         expected_tokens: BTreeMap::new(),
+        measured_tokens: BTreeMap::new(),
         trust_root: Some(PathBuf::from(APP)),
         trust: vec![trusted("claude"), trusted("codex")],
     }
@@ -488,6 +490,7 @@ fn pre_09_budget_projection_soft_limit() {
         soft_usd_micro: usd(10),
         hard_usd_micro: usd(20),
         judge_reserve_usd_micro: usd(2),
+        ..BudgetConfig::default()
     };
     let r = evaluate(&p, &mac());
     assert_eq!(r.projected_cost_microusd, MicroUsd(7_520_000));
@@ -520,6 +523,7 @@ fn pre_09_budget_projection_soft_limit() {
             input: 1_000_000,
             cache_read: 0,
             output: 0,
+            ..TokenEstimate::default()
         },
     );
     assert_eq!(
@@ -540,6 +544,7 @@ fn pre_09_budget_projection_soft_limit() {
                 input: 0,
                 cache_read: 5,
                 output: 0,
+                ..TokenEstimate::default()
             },
         );
     }

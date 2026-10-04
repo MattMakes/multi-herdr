@@ -5,6 +5,7 @@
 //! micro-dollars; `--budget-usd` is parsed digit by digit, never through a
 //! float, so `12.345678` is exactly 12 345 678 µ$.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -12,6 +13,7 @@ use std::str::FromStr;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::competition::preflight::TokenEstimate;
 use crate::evaluation::winner::WinnerPolicy;
 use crate::ids::TeammateName;
 
@@ -89,12 +91,34 @@ impl FromStr for Strategy {
 
 /// Budgets in whole micro-dollars. A hard ceiling of 0 means none is
 /// configured; preflight (PRE-09) refuses such a run.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetConfig {
     pub soft_usd_micro: i64,
     pub hard_usd_micro: i64,
     pub judge_reserve_usd_micro: i64,
+    /// Left out of the config digest when empty, so a config without the
+    /// key keeps the digest it had before the key existed.
+    #[serde(default, skip_serializing_if = "ExpectedTokens::is_empty")]
+    pub expected_tokens: ExpectedTokens,
+}
+
+/// `budget.expected_tokens`: the tokens one candidate is expected to use,
+/// the first source of PRE-09's projection. `models` is keyed by the
+/// candidate's model id as the roster names it (`sonnet`, `gpt-5.5`) and
+/// wins over `all`. Each estimate gives any of `input`, `cache_write_5m`,
+/// `cache_write_1h`, `cache_read`, `output`; a kind left out is 0.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExpectedTokens {
+    pub all: Option<TokenEstimate>,
+    pub models: BTreeMap<String, TokenEstimate>,
+}
+
+impl ExpectedTokens {
+    pub fn is_empty(&self) -> bool {
+        self.all.is_none() && self.models.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +249,7 @@ struct BudgetFile {
     soft_usd_micro: Option<i64>,
     hard_usd_micro: Option<i64>,
     judge_reserve_usd_micro: Option<i64>,
+    expected_tokens: Option<ExpectedTokens>,
 }
 
 /// Load `<project>/.multi-herdr/dataset.yaml` (when present), apply `flags`
@@ -263,6 +288,7 @@ fn merge(file: DatasetFile, flags: &RunFlags) -> Result<DatasetConfig> {
         judge_reserve_usd_micro: budget_file
             .judge_reserve_usd_micro
             .unwrap_or(percent_of(hard, DEFAULT_JUDGE_RESERVE_PERCENT)),
+        expected_tokens: budget_file.expected_tokens.unwrap_or_default(),
     };
     let mut judge = file.judge.unwrap_or_default();
     if let Some(mode) = flags.judge {
@@ -326,6 +352,18 @@ pub fn validate(config: &DatasetConfig) -> Result<()> {
                 Usd(b.judge_reserve_usd_micro),
                 Usd(b.hard_usd_micro)
             );
+        }
+    }
+    let expected = &b.expected_tokens;
+    if expected.all.is_some_and(|e| e.is_zero()) {
+        bail!("budget.expected_tokens.all must give at least 1 token");
+    }
+    for (model, estimate) in &expected.models {
+        if model.trim().is_empty() {
+            bail!("budget.expected_tokens.models has an empty model name");
+        }
+        if estimate.is_zero() {
+            bail!("budget.expected_tokens.models.{model} must give at least 1 token");
         }
     }
     for gate in &config.gates {

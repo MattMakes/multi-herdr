@@ -24,8 +24,11 @@
 //! limit is at most 0 and the action is CancelRunning.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
-use crate::competition::config::BudgetConfig;
+use serde::{Deserialize, Serialize};
+
+use crate::competition::config::{BudgetConfig, ExpectedTokens};
 use crate::competition::preflight::{TokenEstimate, DEFAULT_TOKEN_ESTIMATE};
 use crate::usage::money::{nano_per_token, CostSource, MicroUsd, NanoUsd};
 use crate::usage::{builtin_prices, price_for, Price, Tokens, Usage};
@@ -123,11 +126,118 @@ pub(crate) fn estimate_cost(
 ) -> Option<NanoUsd> {
     let tokens = Tokens {
         input: estimate.input,
+        cache_write_5m: estimate.cache_write_5m,
+        cache_write_1h: estimate.cache_write_1h,
         cache_read: estimate.cache_read,
         output: estimate.output,
-        ..Tokens::default()
     };
     price_for(prices, model).and_then(|p| nano_cost(&p, &tokens))
+}
+
+/// Earlier candidates of a task needed on one model before PRE-09 trusts
+/// their measured usage. 1 run can be an outlier; 3 show a range.
+pub const MEASURED_MIN_RUNS: u32 = 3;
+/// The most recent candidates of a task, per model, that the measured
+/// estimate looks at. An older run can predate a change of the task's code.
+pub const MEASURED_WINDOW: usize = 10;
+
+/// Where PRE-09 found a candidate's expected tokens, in order of precedence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "source")]
+pub enum EstimateSource {
+    /// The plan's own per-label estimate (tests and callers that know better).
+    Plan,
+    /// `budget.expected_tokens.models.<model>`.
+    ConfigModel,
+    /// `budget.expected_tokens.all`.
+    ConfigAll,
+    /// The earlier candidates of the same task on the same model.
+    Measured { runs: u32 },
+    /// [`DEFAULT_TOKEN_ESTIMATE`].
+    Default,
+}
+
+impl fmt::Display for EstimateSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EstimateSource::Plan => write!(f, "plan"),
+            EstimateSource::ConfigModel => write!(f, "config model"),
+            EstimateSource::ConfigAll => write!(f, "config all"),
+            EstimateSource::Measured { runs } => write!(f, "measured {runs} runs"),
+            EstimateSource::Default => write!(f, "default"),
+        }
+    }
+}
+
+/// The measured usage of one model on one task: the per-kind maximum over
+/// the latest [`MEASURED_WINDOW`] runs, and how many runs that is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeasuredTokens {
+    pub runs: u32,
+    pub estimate: TokenEstimate,
+}
+
+/// The tokens PRE-09 expects of one candidate on `model`, and their source.
+/// The order: the plan's per-label estimate, `budget.expected_tokens` (the
+/// model entry, then `all`), the measured usage when it has at least
+/// [`MEASURED_MIN_RUNS`] runs, then [`DEFAULT_TOKEN_ESTIMATE`].
+pub fn resolve_estimate(
+    model: &str,
+    per_label: Option<TokenEstimate>,
+    configured: &ExpectedTokens,
+    measured: &BTreeMap<String, MeasuredTokens>,
+) -> (TokenEstimate, EstimateSource) {
+    if let Some(e) = per_label {
+        return (e, EstimateSource::Plan);
+    }
+    if let Some(e) = configured.models.get(model) {
+        return (*e, EstimateSource::ConfigModel);
+    }
+    if let Some(e) = configured.all {
+        return (e, EstimateSource::ConfigAll);
+    }
+    match measured.get(model) {
+        Some(m) if m.runs >= MEASURED_MIN_RUNS => {
+            (m.estimate, EstimateSource::Measured { runs: m.runs })
+        }
+        _ => (DEFAULT_TOKEN_ESTIMATE, EstimateSource::Default),
+    }
+}
+
+/// The measured estimate per model from `runs`: (model, tokens) of each
+/// earlier candidate of one task, oldest first. Runs with no token are
+/// left out (no transcript was found).
+///
+/// The estimate is the maximum of each token kind over the latest
+/// [`MEASURED_WINDOW`] runs, not the mean: PRE-09 checks a ceiling, and with
+/// 3 to 10 runs a high percentile is the maximum. The LA runs of one small
+/// task varied by 30 % in cache reads.
+pub fn measured_from_runs(
+    runs: impl IntoIterator<Item = (String, TokenEstimate)>,
+) -> BTreeMap<String, MeasuredTokens> {
+    let mut by_model: BTreeMap<String, Vec<TokenEstimate>> = BTreeMap::new();
+    for (model, tokens) in runs {
+        if !tokens.is_zero() {
+            by_model.entry(model).or_default().push(tokens);
+        }
+    }
+    by_model
+        .into_iter()
+        .map(|(model, all)| {
+            let latest = &all[all.len().saturating_sub(MEASURED_WINDOW)..];
+            let estimate = latest
+                .iter()
+                .fold(TokenEstimate::default(), |m, t| TokenEstimate {
+                    input: m.input.max(t.input),
+                    cache_write_5m: m.cache_write_5m.max(t.cache_write_5m),
+                    cache_write_1h: m.cache_write_1h.max(t.cache_write_1h),
+                    cache_read: m.cache_read.max(t.cache_read),
+                    output: m.output.max(t.output),
+                });
+            let runs = latest.len() as u32;
+            (model, MeasuredTokens { runs, estimate })
+        })
+        .collect()
 }
 
 /// The date of [`builtin_prices`].

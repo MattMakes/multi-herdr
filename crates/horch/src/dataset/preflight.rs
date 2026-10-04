@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use horch_core::competition::budget::{measured_from_runs, MeasuredTokens};
 use horch_core::competition::config::DatasetConfig;
+use horch_core::competition::observe::load_usage_records;
 use horch_core::competition::preflight::{
     storage_probe, CheckStatus, GitFacts, PoolFacts, PreflightCandidate, PreflightPlan,
     PreflightReport, StorageProbe,
@@ -27,6 +29,7 @@ use horch_core::measure::event::{
 use horch_core::measure::paths::DatasetPaths;
 use horch_core::measure::recorder::{NewEvent, Recorder};
 use horch_core::measure::redact::redact;
+use horch_core::measure::{projection, store};
 use horch_core::routing::quota::{pool_for, QuotaView};
 use horch_core::routing::quota_probe::harness_version;
 use horch_core::runtime::fault::Faults;
@@ -157,6 +160,8 @@ pub(crate) fn pool_facts(view: &QuotaView, candidates: &[PreflightCandidate]) ->
 /// The inputs [`gather`] needs besides the context.
 pub(crate) struct GatherInput<'a> {
     pub paths: &'a DatasetPaths,
+    /// The task text: PRE-09 reads the measured usage of its earlier runs.
+    pub task: &'a str,
     pub config: &'a DatasetConfig,
     pub candidates: Vec<PreflightCandidate>,
     pub git: GitFacts,
@@ -170,6 +175,7 @@ pub(crate) fn gather(
 ) -> (PreflightPlan, MachineSnapshot) {
     let GatherInput {
         paths,
+        task,
         config,
         candidates,
         git,
@@ -237,6 +243,7 @@ pub(crate) fn gather(
         // candidates run 1 at a time (dataset design 4.11.1, decision 2).
         local_model_bytes: 0,
         expected_tokens: BTreeMap::new(),
+        measured_tokens: measured_tokens(paths, task),
         trust_root,
         trust,
     };
@@ -351,6 +358,41 @@ struct Manifest<'a> {
     preflight: &'a PreflightReport,
 }
 
+/// What the earlier candidates of `task` used, per model, for PRE-09: each
+/// candidate of a round of the same task id that has a usage record. A
+/// dataset that cannot be read gives no measurement, and PRE-09 uses the
+/// next source.
+fn measured_tokens(paths: &DatasetPaths, task: &str) -> BTreeMap<String, MeasuredTokens> {
+    let (Ok(task_id), Ok(read)) = (task_id_of(task), store::read_all(paths)) else {
+        return BTreeMap::new();
+    };
+    let view = projection::fold(&read.events);
+    let usage = load_usage_records(paths);
+    // Round ids are UUIDv7: the map's order is the order of creation.
+    let runs = view
+        .rounds
+        .values()
+        .filter(|r| {
+            view.experiments
+                .get(&r.experiment_id)
+                .is_some_and(|e| e.created.task_id == task_id)
+        })
+        .flat_map(|r| r.candidates.values())
+        .filter_map(|c| {
+            let planned = c.planned.as_ref()?;
+            let record = usage.get(c.execution_id.as_ref()?.as_str())?;
+            Some((planned.model.as_str().to_string(), record.tokens.into()))
+        });
+    measured_from_runs(runs)
+}
+
+/// The task id of `task`: `task-` and 12 hex digits of its SHA-256. Every
+/// run of the same text has the same id.
+fn task_id_of(task: &str) -> Result<TaskId> {
+    let digest = sha256_bytes(task.as_bytes());
+    Ok(TaskId::new(format!("task-{}", digest.short12()))?)
+}
+
 /// Record `experiment.created` and `preflight.completed`, write the
 /// manifest, and on any Fail record `experiment.aborted`. Returns the
 /// failed check ids.
@@ -361,7 +403,7 @@ pub(crate) fn record(
     faults: &Faults,
 ) -> Result<Vec<String>> {
     let task_digest = sha256_bytes(f.task.as_bytes());
-    let task_id = TaskId::new(format!("task-{}", task_digest.short12()))?;
+    let task_id = task_id_of(f.task)?;
     let config_digest = digest_json(&f.plan.config);
     let repo_digest = digest_json(&serde_json::json!({
         "toplevel": f.plan.git.toplevel,

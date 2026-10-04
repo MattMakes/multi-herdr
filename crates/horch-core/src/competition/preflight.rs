@@ -17,8 +17,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::competition::budget::estimate_cost;
-use crate::competition::config::DatasetConfig;
+use crate::competition::budget::{estimate_cost, resolve_estimate, EstimateSource, MeasuredTokens};
+use crate::competition::config::{DatasetConfig, ExpectedTokens};
 use crate::fsx::DirLock;
 use crate::harness::trust::{asks_for_trust, trust_fix, HarnessTrust, TrustState};
 use crate::harness::HarnessKind;
@@ -26,7 +26,7 @@ use crate::ids::{ModelId, TeammateName};
 use crate::measure::digest::{digest_json, Digest};
 use crate::runtime::machine::{GpuClass, Known, MachineSnapshot};
 use crate::usage::money::{MicroUsd, NanoUsd};
-use crate::usage::{builtin_prices, Price};
+use crate::usage::{builtin_prices, Price, Tokens};
 
 pub(crate) const REPORT_SCHEMA_VERSION: &str = "1.0.0";
 
@@ -40,8 +40,11 @@ pub(crate) const FDS_PER_CANDIDATE: u64 = 256;
 /// Processes one candidate needs.
 pub(crate) const PROCS_PER_CANDIDATE: u64 = 64;
 /// Tokens one candidate is expected to use when the plan has no estimate.
+/// The last of PRE-09's sources (see [`crate::competition::budget::resolve_estimate`]).
 pub(crate) const DEFAULT_TOKEN_ESTIMATE: TokenEstimate = TokenEstimate {
     input: 200_000,
+    cache_write_5m: 0,
+    cache_write_1h: 0,
     cache_read: 3_000_000,
     output: 60_000,
 };
@@ -93,12 +96,35 @@ pub struct StorageProbe {
     pub rename_ok: bool,
 }
 
-/// Expected tokens for one candidate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Expected tokens for one candidate, in the 5 kinds [`crate::usage::Price`]
+/// prices. A kind left out of `dataset.yaml` is 0.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct TokenEstimate {
     pub input: u64,
+    pub cache_write_5m: u64,
+    pub cache_write_1h: u64,
     pub cache_read: u64,
     pub output: u64,
+}
+
+impl TokenEstimate {
+    /// No token of any kind.
+    pub fn is_zero(&self) -> bool {
+        *self == TokenEstimate::default()
+    }
+}
+
+impl From<Tokens> for TokenEstimate {
+    fn from(t: Tokens) -> Self {
+        TokenEstimate {
+            input: t.input,
+            cache_write_5m: t.cache_write_5m,
+            cache_write_1h: t.cache_write_1h,
+            cache_read: t.cache_read,
+            output: t.output,
+        }
+    }
 }
 
 /// Everything [`evaluate`] looks at besides the machine.
@@ -124,8 +150,12 @@ pub struct PreflightPlan {
     pub artifacts_bytes: u64,
     /// Memory of the local model a `pi` candidate loads.
     pub local_model_bytes: u64,
-    /// Expected tokens per candidate label; `DEFAULT_TOKEN_ESTIMATE` otherwise.
+    /// Expected tokens per candidate label. It wins over every other source
+    /// of PRE-09's estimate; the CLI leaves it empty.
     pub expected_tokens: BTreeMap<String, TokenEstimate>,
+    /// What earlier candidates of the same task used, per model
+    /// ([`crate::competition::budget::measured_estimates`]).
+    pub measured_tokens: BTreeMap<String, MeasuredTokens>,
     /// The main repository root: the harnesses key their trust on it, also
     /// for a linked worktree.
     pub trust_root: Option<PathBuf>,
@@ -200,7 +230,7 @@ pub fn evaluate(plan: &PreflightPlan, snapshot: &MachineSnapshot) -> PreflightRe
     let bounds = Bounds::of(plan, snapshot);
     let safe_n = bounds.safe_n(n);
     let waves = n.div_ceil(safe_n);
-    let cost = project_cost(&plan.candidates, &plan.expected_tokens, &builtin_prices());
+    let cost = project_cost(plan, &builtin_prices());
 
     let checks = vec![
         pre_01_git(plan),
@@ -705,24 +735,42 @@ struct Projection {
     total: MicroUsd,
     unpriced: Vec<String>,
     per_candidate: BTreeMap<String, i64>,
+    /// Where each candidate's estimate came from, by label.
+    sources: BTreeMap<String, EstimateSource>,
 }
 
 /// Expected cost of every candidate at `prices`, summed in n$ and rounded
-/// once. Each candidate is priced by [`estimate_cost`], as the live budget
-/// prices it.
-fn project_cost(
+/// once. Each candidate's tokens come from [`resolve_estimate`] and are
+/// priced by [`estimate_cost`], as the live budget prices them.
+fn project_cost(plan: &PreflightPlan, prices: &BTreeMap<String, Price>) -> Projection {
+    project(
+        &plan.candidates,
+        &plan.expected_tokens,
+        &plan.config.budget.expected_tokens,
+        &plan.measured_tokens,
+        prices,
+    )
+}
+
+fn project(
     candidates: &[PreflightCandidate],
-    expected_tokens: &BTreeMap<String, TokenEstimate>,
+    per_label: &BTreeMap<String, TokenEstimate>,
+    configured: &ExpectedTokens,
+    measured: &BTreeMap<String, MeasuredTokens>,
     prices: &BTreeMap<String, Price>,
 ) -> Projection {
     let mut total = NanoUsd(0);
     let mut unpriced = Vec::new();
     let mut per_candidate = BTreeMap::new();
+    let mut sources = BTreeMap::new();
     for c in candidates {
-        let tokens = expected_tokens
-            .get(&c.label)
-            .copied()
-            .unwrap_or(DEFAULT_TOKEN_ESTIMATE);
+        let (tokens, source) = resolve_estimate(
+            c.model.as_str(),
+            per_label.get(&c.label).copied(),
+            configured,
+            measured,
+        );
+        sources.insert(c.label.clone(), source);
         match estimate_cost(prices, c.model.as_str(), tokens) {
             Some(cost) => {
                 per_candidate.insert(c.label.clone(), cost.to_micro_half_even().0);
@@ -735,7 +783,17 @@ fn project_cost(
         total: total.to_micro_half_even(),
         unpriced,
         per_candidate,
+        sources,
     }
+}
+
+/// `A: config (sonnet), B: default`: the estimate source of each label.
+fn sources_text(sources: &BTreeMap<String, EstimateSource>) -> String {
+    sources
+        .iter()
+        .map(|(label, source)| format!("{label}: {source}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn pre_09_budget(plan: &PreflightPlan, cost: &Projection) -> CheckResult {
@@ -749,6 +807,9 @@ fn pre_09_budget(plan: &PreflightPlan, cost: &Projection) -> CheckResult {
         "hard_microusd": b.hard_usd_micro,
         "per_candidate_microusd": cost.per_candidate,
         "unpriced": cost.unpriced,
+        "estimate_source": cost.sources.iter()
+            .map(|(label, source)| (label.clone(), source.to_string()))
+            .collect::<BTreeMap<_, _>>(),
     });
     if b.hard_usd_micro <= 0 {
         return check(
@@ -759,8 +820,9 @@ fn pre_09_budget(plan: &PreflightPlan, cost: &Projection) -> CheckResult {
         );
     }
     let projected = format!(
-        "projected {} plus judge reserve {}",
+        "projected {} (estimates: {}) plus judge reserve {}",
         usd(cost.total.0),
+        sources_text(&cost.sources),
         usd(b.judge_reserve_usd_micro)
     );
     if with_judge > b.hard_usd_micro {
@@ -1029,6 +1091,7 @@ mod tests {
         let meter = UsageMeter {
             prices: prices.clone(),
         };
+        // Without a configured or measured estimate, both use the default.
         let mut models: Vec<String> = prices.keys().cloned().collect();
         models.push("gemini-3-1-pro".into());
         for model in models {
@@ -1039,7 +1102,13 @@ mod tests {
                 model: ModelId::new(model.as_str()).unwrap(),
                 effort: None,
             };
-            let p = project_cost(&[c], &BTreeMap::new(), &prices);
+            let p = project(
+                &[c],
+                &BTreeMap::new(),
+                &ExpectedTokens::default(),
+                &BTreeMap::new(),
+                &prices,
+            );
             let preflight = p.per_candidate.get("A").copied().unwrap_or(0);
             assert_eq!(preflight, meter.projected(&model).0, "{model}");
             assert_eq!(
@@ -1093,6 +1162,7 @@ mod tests {
             artifacts_bytes: 0,
             local_model_bytes: 0,
             expected_tokens: BTreeMap::new(),
+            measured_tokens: BTreeMap::new(),
             trust_root: None,
             trust: Vec::new(),
         };
