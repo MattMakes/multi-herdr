@@ -51,7 +51,7 @@ Read these first, in full:
 
 ## Shared index files: the lock
 
-`skills/provenance.json` and `skills/README.md` are edited by many units.
+`skills/provenance.json`, `skills/README.md` and, for own-text skills (empty `sources`), the `REPO_ORIGINAL` list in `crates/horch-core/tests/skills_catalog.rs` are edited by many units.
 Edit them only while you hold the lock, and commit them before you release:
 
 ```bash
