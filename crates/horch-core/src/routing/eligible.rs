@@ -37,6 +37,9 @@ pub enum ExclusionReason {
     ExcludedByConfig,
     /// The caller's cost estimate exceeds its budget.
     OverBudget,
+    /// The price table has no price for the model, so no budget can count
+    /// it. The planner applies this rule.
+    Unpriced,
 }
 
 impl ExclusionReason {
@@ -53,6 +56,7 @@ impl ExclusionReason {
             ExclusionReason::AgentNone => "agent_none",
             ExclusionReason::ExcludedByConfig => "excluded_by_config",
             ExclusionReason::OverBudget => "over_budget",
+            ExclusionReason::Unpriced => "unpriced",
         }
     }
 }

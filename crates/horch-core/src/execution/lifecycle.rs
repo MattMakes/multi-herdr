@@ -85,9 +85,20 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
     // The record holds the summary now. The dataset coordinator closes the
     // pane of a candidate whose record is done, so from here on it can close
     // this pane first, at any step. A pane that is gone is closed: the steps
-    // that need only the workspace still run, and nothing fails.
+    // that need only the workspace still run, and nothing fails. When herdr
+    // itself does not answer, the pane may still be open: the same steps
+    // run, and `done` fails at the end so the caller knows.
+    let mut unreachable = None;
     let pane = match ws.pane_get(req.pane) {
         Ok(pane) => Some(pane),
+        Err(e) if !ws.server_reachable() => {
+            eprintln!(
+                "horch done: herdr is unreachable ({e:#}); the summary is recorded, \
+                 but this pane may still be open"
+            );
+            unreachable = Some(e);
+            None
+        }
         Err(e) => {
             eprintln!("horch done: this pane is gone ({e:#}); it is closed already");
             None
@@ -120,12 +131,25 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
         steps.settle(workspace);
     }
 
+    if let Some(e) = unreachable {
+        return Err(e.context(
+            "herdr is unreachable: the summary is recorded, but this pane may still be open",
+        ));
+    }
     let Some(pane) = pane else {
         return Ok(());
     };
-    match ws.pane_close(&pane.pane_id) {
-        Err(e) if ws.pane_get(&pane.pane_id).is_ok() => Err(e),
-        _ => Ok(()),
+    let Err(e) = ws.pane_close(&pane.pane_id) else {
+        return Ok(());
+    };
+    if ws.pane_get(&pane.pane_id).is_ok() {
+        Err(e)
+    } else if !ws.server_reachable() {
+        Err(e.context(
+            "herdr is unreachable: the summary is recorded, but this pane may still be open",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -572,6 +596,108 @@ mod tests {
         let err = done(&ws, &steps, &request(&pane)).unwrap_err();
         assert!(err.to_string().contains("herdr is down"), "{err}");
         assert_eq!(ws.pane_ids(), [pane]);
+    }
+
+    /// `done` steps that stop herdr (the server, not the pane) at a step,
+    /// or close the pane there, and record what ran.
+    struct HerdrDown<'a> {
+        ws: &'a FakeWorkspace,
+        pane: &'a str,
+        /// `true`: the pane closes at `at`; `false`: herdr stops answering.
+        close_pane: bool,
+        at: Step,
+        ran: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl HerdrDown<'_> {
+        fn reach(&self, step: Step) {
+            if step != self.at {
+                return;
+            }
+            if self.close_pane {
+                self.ws.pane_close(self.pane).unwrap();
+            } else {
+                self.ws.set_reachable(false);
+            }
+        }
+    }
+
+    impl DoneSteps for HerdrDown<'_> {
+        fn mark_done(&self, _: &str, summary: &str) -> Result<()> {
+            self.ran.borrow_mut().push(format!("mark_done {summary}"));
+            self.reach(Step::PaneGet);
+            Ok(())
+        }
+        fn report(&self, _: &str) -> Result<()> {
+            unreachable!("the request reports to nobody")
+        }
+        fn record_session(&self, workspace: &str, _: &str, _: &str) -> Result<()> {
+            self.ran
+                .borrow_mut()
+                .push(format!("record_session {workspace}"));
+            Ok(())
+        }
+        fn unregister(&self, workspace: &str, _: &str) {
+            self.ran
+                .borrow_mut()
+                .push(format!("unregister {workspace}"));
+        }
+        fn settle(&self, workspace: &str) {
+            self.ran.borrow_mut().push(format!("settle {workspace}"));
+            self.reach(Step::Close);
+        }
+    }
+
+    /// After the summary is recorded, an unreachable herdr makes `done`
+    /// fail: the pane may still be open. A gone pane on a reachable herdr
+    /// is success. Both at `pane get` and at the close.
+    #[test]
+    fn done_fails_when_herdr_is_unreachable_but_not_when_the_pane_is_gone() {
+        for at in [Step::PaneGet, Step::Close] {
+            for workspace in [Some("w1"), None] {
+                for close_pane in [false, true] {
+                    let ws = FakeWorkspace::new();
+                    let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+                    let steps = HerdrDown {
+                        ws: &ws,
+                        pane: &pane,
+                        close_pane,
+                        at,
+                        ran: Default::default(),
+                    };
+                    let req = DoneRequest {
+                        record_id: "r1",
+                        role: "candidate-A",
+                        pane: &pane,
+                        workspace,
+                        summary: "finished",
+                        report_to: ReportTarget::None,
+                    };
+                    let case = format!("{at:?}, {workspace:?}, close_pane {close_pane}");
+                    let got = done(&ws, &steps, &req);
+                    let ran = steps.ran.into_inner();
+                    assert_eq!(ran[0], "mark_done finished", "{case}");
+                    let known = workspace.is_some() || at == Step::Close;
+                    assert_eq!(ran.len(), if known { 4 } else { 1 }, "{case}: {ran:?}");
+                    ws.set_reachable(true);
+                    if close_pane {
+                        got.unwrap_or_else(|e| panic!("{case}: {e:#}"));
+                        assert!(ws.pane_ids().is_empty(), "{case}");
+                    } else {
+                        let err = got.expect_err(&case);
+                        assert!(
+                            format!("{err:#}").contains("herdr is unreachable"),
+                            "{case}: {err:#}"
+                        );
+                        assert_eq!(ws.pane_ids(), [pane.clone()], "{case}");
+                    }
+                    assert!(
+                        ws.calls().iter().any(|c| c.method == "server_reachable"),
+                        "{case}"
+                    );
+                }
+            }
+        }
     }
 
     /// A step of [`done`] before which the pane can vanish.

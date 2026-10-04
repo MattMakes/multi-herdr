@@ -18,11 +18,12 @@ use horch_core::measure::event::{EventKind, InterventionSource, SlotKind};
 use horch_core::measure::testkit::{property, SplitMix64};
 use horch_core::roster::Roster;
 use horch_core::routing::decision::RoutingDecision;
-use horch_core::routing::eligible::{EligibilityFilter, Verdict};
+use horch_core::routing::eligible::{EligibilityFilter, ExclusionReason, Verdict};
 use horch_core::routing::policy::Policy;
 use horch_core::routing::quota::{QuotaFile, QuotaView};
 use horch_core::teacher::TeacherRef;
 use horch_core::usage::money::MicroUsd;
+use horch_core::usage::{builtin_prices, price_for};
 
 // ─── CMP-03: the round state table ──────────────────────────────────────────
 
@@ -503,6 +504,65 @@ fn cmp_06_planner_deterministic() {
     let mut g = Fixture::new("all-ok");
     g.config.baseline = Some(tm("sonnet"));
     assert_eq!(g.plan("rnd-1", 4, None), a);
+}
+
+/// The same round id gives the same plan, and every planned slot has a
+/// price. An eligible teammate whose model the price table does not know
+/// is excluded with the reason `unpriced`, so the exploration slot never
+/// draws it, and as a baseline it is not planned.
+#[test]
+fn cmp_06_plan_is_deterministic_and_priced() {
+    let mut f = Fixture::new("all-ok");
+    let mut nova = f.roster.get("codex-terra").unwrap().clone();
+    nova.name = "codex-nova".into();
+    nova.model = Some("gpt-9-nova".into());
+    f.roster.insert_for_test(nova);
+    let prices = builtin_prices();
+    assert!(price_for(&prices, "gpt-9-nova").is_none());
+
+    for i in 0..200 {
+        let round = format!("rnd-{i}");
+        let plan = f.plan(&round, 4, Some("sonnet"));
+        assert_eq!(plan, f.plan(&round, 4, Some("sonnet")), "{round}");
+        for c in &plan.candidates {
+            assert!(
+                price_for(&prices, c.model.as_str()).is_some(),
+                "{round}: {} on {} has no price",
+                c.teammate,
+                c.model
+            );
+        }
+        let nova = plan
+            .eligible_set
+            .iter()
+            .find(|e| e.teammate.as_str() == "codex-nova")
+            .unwrap();
+        assert_eq!(nova.verdict, Verdict::Excluded(ExclusionReason::Unpriced));
+    }
+
+    // The reason is in the recorded payload.
+    let created = round_created_payload(&f.plan("rnd-1", 4, Some("sonnet")));
+    let json = EventKind::RoundCreated(created).payload();
+    let nova = json["eligible_set"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["teammate"] == "codex-nova")
+        .unwrap()
+        .clone();
+    assert_eq!(nova["verdict"], "excluded");
+    assert_eq!(nova["reason"], "unpriced");
+
+    // An unpriced baseline is not planned; the plan says why.
+    let plan = f.plan("rnd-1", 3, Some("codex-nova"));
+    assert!(plan
+        .candidates
+        .iter()
+        .all(|c| c.teammate.as_str() != "codex-nova"));
+    assert_eq!(
+        plan.baseline.missing_reason().unwrap(),
+        "codex-nova: model gpt-9-nova has no price"
+    );
 }
 
 #[test]

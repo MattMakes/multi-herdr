@@ -524,7 +524,7 @@ fn pro_03_ff() {
         RoundState::Promoted
     );
 
-    // Checked out and clean: merge --ff-only in that checkout.
+    // Checked out and clean: a ref swap, then read-tree in that checkout.
     let Some(f) = Fixture::new() else { return };
     let PromotionResult::Promoted(receipt) = f
         .engine(&v, &faults)
@@ -534,7 +534,7 @@ fn pro_03_ff() {
         panic!("not promoted")
     };
     assert_eq!(receipt.strategy, PromotionStrategy::FastForward);
-    assert_eq!(receipt.publish, "merge_ff_only");
+    assert_eq!(receipt.publish, "update_ref_cas_read_tree");
     assert_eq!(f.git.head(&f.repo).unwrap(), f.candidate.head_sha);
     assert_eq!(
         std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
@@ -808,7 +808,7 @@ fn pro_03_checked_out_publish_is_cas() {
     let PromotionResult::Promoted(receipt) = got else {
         panic!("{got:?}")
     };
-    assert_eq!(receipt.publish, "merge_ff_only");
+    assert_eq!(receipt.publish, "update_ref_cas_read_tree");
     assert_eq!(f.git.head(&f.repo).unwrap(), f.candidate.head_sha);
     assert_eq!(f.rev("refs/heads/main"), f.candidate.head_sha);
     assert_eq!(
@@ -862,6 +862,54 @@ fn pro_03_checked_out_publish_is_cas() {
         "new\n"
     );
     assert_eq!(ref_moves(&f, "refs/heads/main"), before);
+}
+
+/// The checked-out publish is recorded as what it does: a ref swap, then
+/// `read-tree`. A `promotion.started` or a receipt written before D17 says
+/// `merge_ff_only` for the same mode: the receipt still parses, and a
+/// restart still moves the checkout's files.
+#[test]
+fn pro_03_checked_out_publish_label() {
+    let Some(f) = Fixture::new() else { return };
+    let v = f.validator(true);
+    let crash = Faults::parse(Some(ABORT_AFTER_PROMOTION_STARTED));
+    let target = f.target("main");
+    f.engine(&v, &crash)
+        .promote(&f.candidate, &target, &f.plan())
+        .unwrap_err();
+    let mut started = started_of(&f.events());
+    assert_eq!(started.publish, "update_ref_cas_read_tree");
+
+    // A crash between the swap and the tree update, under an old label.
+    f.sh(
+        &f.repo,
+        &[
+            "update-ref",
+            "refs/heads/main",
+            &f.candidate.head_sha,
+            &f.base,
+        ],
+    );
+    started.publish = "merge_ff_only".into();
+    let PromotionResult::Promoted(receipt) = f
+        .engine(&v, &no_faults())
+        .resume_promotion(&f.candidate, &target, &f.plan(), &started)
+        .unwrap()
+    else {
+        panic!("not promoted")
+    };
+    assert_eq!(receipt.publish, "merge_ff_only");
+    assert_eq!(f.git.head(&f.repo).unwrap(), f.candidate.head_sha);
+    assert_eq!(f.git.status_porcelain(&f.repo).unwrap(), "");
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("new.txt")).unwrap(),
+        "new\n"
+    );
+
+    // The receipt on disk round-trips with the old label.
+    let file = f.paths.promotion(&f.plan().round).unwrap();
+    let back: PromotionReceipt = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(back, receipt);
 }
 
 // ─── PRO-04 ─────────────────────────────────────────────────────────────────

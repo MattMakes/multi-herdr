@@ -13,8 +13,9 @@
 //! 4. The integrated commit is validated again (PRO-02).
 //! 5. Publish: a compare-and-swap `update-ref`. When a clean worktree has
 //!    the target checked out, its index and files then follow by
-//!    `read-tree -m -u` (the receipt calls that mode `merge_ff_only`). A
-//!    dirty checkout is never touched (PRO-03).
+//!    `read-tree -m -u` (the receipt calls that mode
+//!    `update_ref_cas_read_tree`). A dirty checkout is never touched
+//!    (PRO-03).
 //! 6. `promotion.started` is recorded before the publish, the receipt is
 //!    written with `create_immutable` after it, then `promotion.completed`
 //!    (PRO-05).
@@ -86,6 +87,9 @@ pub enum PromotionStrategy {
 }
 
 /// The receipt's `publish` value of a checked-out publish.
+const UPDATE_REF_CAS_READ_TREE: &str = "update_ref_cas_read_tree";
+/// The same publish as recorded before D17, when the checked-out mode was
+/// `merge --ff-only`. Old events and receipts keep it; resume accepts it.
 const MERGE_FF_ONLY: &str = "merge_ff_only";
 
 /// How the target branch moves.
@@ -93,9 +97,9 @@ const MERGE_FF_ONLY: &str = "merge_ff_only";
 pub(crate) enum PublishMode {
     /// No worktree has the target checked out.
     UpdateRefCas,
-    /// The target is checked out, clean, in `checkout`. The name is the
-    /// receipt's; the publish is a ref swap and then a tree update.
-    MergeFfOnly { checkout: PathBuf },
+    /// The target is checked out, clean, in `checkout`: a ref swap, then
+    /// `read-tree -m -u` in the checkout.
+    CasReadTree { checkout: PathBuf },
 }
 
 impl PublishMode {
@@ -103,7 +107,7 @@ impl PublishMode {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             PublishMode::UpdateRefCas => "update_ref_cas",
-            PublishMode::MergeFfOnly { .. } => MERGE_FF_ONLY,
+            PublishMode::CasReadTree { .. } => UPDATE_REF_CAS_READ_TREE,
         }
     }
 }
@@ -141,7 +145,8 @@ pub struct PromotionReceipt {
     pub dest_before: String,
     pub dest_after: String,
     pub strategy: PromotionStrategy,
-    /// `update_ref_cas` or `merge_ff_only`.
+    /// `update_ref_cas` or `update_ref_cas_read_tree`; `merge_ff_only` in
+    /// a receipt written before D17 for the second mode.
     pub publish: String,
     pub validation_ids: Vec<String>,
     pub judgment_id: JudgmentId,
@@ -379,7 +384,7 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         target: &BranchRef,
         started: &PromotionStarted,
     ) -> Result<Option<String>> {
-        if started.publish != MERGE_FF_ONLY {
+        if ![UPDATE_REF_CAS_READ_TREE, MERGE_FF_ONLY].contains(&started.publish.as_str()) {
             return Ok(None);
         }
         let CheckoutLocation::CheckedOut { path, .. } = self
@@ -505,7 +510,7 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
             {
                 CheckoutLocation::NotCheckedOut => Ok(PublishMode::UpdateRefCas),
                 CheckoutLocation::CheckedOut { path, clean: true } => {
-                    Ok(PublishMode::MergeFfOnly { checkout: path })
+                    Ok(PublishMode::CasReadTree { checkout: path })
                 }
                 CheckoutLocation::CheckedOut { path, clean: false } => Err(format!(
                     "{} is checked out with local changes in {}",
@@ -539,7 +544,7 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
                     )))
                 }
             }
-            PublishMode::MergeFfOnly { checkout } => self.publish_checked_out(checkout, started),
+            PublishMode::CasReadTree { checkout } => self.publish_checked_out(checkout, started),
         }
     }
 
@@ -558,7 +563,7 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
     ///    commit made in the short window between steps 2 and 3.
     ///
     /// Any mismatch is `Lost`, so the round needs the operator; before
-    /// step 4 nothing stays moved. The receipt keeps the name `merge_ff_only` for this mode.
+    /// step 4 nothing stays moved.
     fn publish_checked_out(
         &self,
         checkout: &std::path::Path,
