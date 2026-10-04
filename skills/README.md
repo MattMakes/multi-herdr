@@ -161,9 +161,11 @@ The 3 `own text` skills `godot-build-verify`, `godot-project-context` and `godot
 | Skill | Upstream source | Copy |
 | --- | --- | --- |
 | [godot-2d-essentials](godot-2d-essentials/SKILL.md) | `jame581/GodotPrompter`: `skills/2d-essentials/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-tilemap-mastery` | combined |
+| [godot-3d-essentials](godot-3d-essentials/SKILL.md) | `jame581/GodotPrompter`: `skills/3d-essentials/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-3d-lighting`, `godot-3d-materials`, `godot-3d-world-building` | combined |
 | [godot-ability-system](godot-ability-system/SKILL.md) | `jame581/GodotPrompter`: `skills/ability-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-ability-system/`, `godot-rpg-stats/`) | combined |
 | [godot-addon-development](godot-addon-development/SKILL.md) | `jame581/GodotPrompter`: `skills/addon-development/` | renamed |
 | [godot-ai-navigation](godot-ai-navigation/SKILL.md) | `jame581/GodotPrompter`: `skills/ai-navigation/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-ai-navigation/`, `godot-navigation-pathfinding/`) | combined |
+| [godot-animation-system](godot-animation-system/SKILL.md) | `jame581/GodotPrompter`: `skills/animation-system/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-2d-animation`, `godot-animation-player`, `godot-animation-tree-mastery` | combined |
 | [godot-assets-pipeline](godot-assets-pipeline/SKILL.md) | `jame581/GodotPrompter`: `skills/assets-pipeline/` | renamed |
 | [godot-audio-system](godot-audio-system/SKILL.md) | `jame581/GodotPrompter`: `skills/audio-system/`; own-text references, consulted gd-agentic-skills `godot-audio-systems` | combined |
 | [godot-beehave](godot-beehave/SKILL.md) | `jame581/GodotPrompter`: `skills/beehave/` | renamed |

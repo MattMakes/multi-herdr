@@ -1119,6 +1119,90 @@
       "vendored": true
     },
     {
+      "name": "godot-3d-essentials",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/SKILL.md",
+          "sha256": "1208b31c061edddf58f5ed08ba8eaf794558a2caa3c563c02d6d0696d7f6f535",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/references/common-pitfalls.md",
+          "sha256": "d02b05d9732c29df9eea3d8169bd25d3c0059c1bfb4f4e9ae9434e5d37f00784",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/references/decals.md",
+          "sha256": "0ecfdb7f480564fe4c8e898dfc82c218780529f17fda188e15876831046ca1e7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/references/environment-and-post.md",
+          "sha256": "bfc80aeb2207c3f4ebae2b9bc75cfe42044272b475991fed964ee2f771f2e34b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/references/fog-recipes.md",
+          "sha256": "9cfac460f5bf790f5e451349738892eb77445e7418a0b3d8874c822d2d48aa3a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/references/global-illumination.md",
+          "sha256": "7a6bbb4ce5d59dbf0e14f45bb1d30342f7028baa7b21ac7b4df9c0e2f7100d33",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/references/godot-4.7-additions.md",
+          "sha256": "139c091917de0bb1cff2d493809c9435413889c88a2c3aad83da845716624c62",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/references/lod-and-culling.md",
+          "sha256": "6fe802e4966d12fa60456777ceb8162e6f281c1bbdc4e88091049f00f05a91db",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/references/materials-and-lighting-recipes.md",
+          "sha256": "3426c885efc58eebb32842199052a0d9430ca9f6bb9f7e61ea4d9b1755e00a8d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/3d-essentials/references/renderer-comparison.md",
+          "sha256": "e3b67b68e678799a74076b4f817b2a75493eb175bda4c87f6906e81fc92b769f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; references/gridmap-and-csg.md, references/lighting-budget-and-bakes.md, references/materials-advanced.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-3d-lighting, skills/godot-3d-materials, skills/godot-3d-world-building; API fixes on 4.7.2: references/environment-and-post.md Environment.TONE_MAP_FILMIC -> Environment.TONE_MAPPER_FILMIC; Environment.TONE_MAP_AGX -> Environment.TONE_MAPPER_AGX",
+      "vendored": true
+    },
+    {
       "name": "godot-ability-system",
       "sources": [
         {
@@ -1263,6 +1347,90 @@
         }
       ],
       "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{costs-links-obstacles-and-recovery.md, server-crowds-and-queries.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-ai-navigation, godot-navigation-pathfinding",
+      "vendored": true
+    },
+    {
+      "name": "godot-animation-system",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/SKILL.md",
+          "sha256": "a77e5974560e433710070b21a440940cb19c602f14bd0def7509c6053b48b4e4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/references/bone-constraints.md",
+          "sha256": "720864a282ea7bb7bc839fff0c5a7bf5796ecde1783ec5bf0a37de024794a3fe",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/references/common-pitfalls.md",
+          "sha256": "afc349b7d04e088f4cf3912088ab3415628ee661fe9565c5943124e138aaba7b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/references/common-recipes.md",
+          "sha256": "09e7cb4d6d338054f58038d00b494d1610439fc908076fe9710ed785b4c86c09",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/references/ik-recipes.md",
+          "sha256": "9093bb6424f8a5259adca1b1b17d5223f27ef778752b796105d67eda260aaa18",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/references/ik-solver-comparison.md",
+          "sha256": "0b4de6959288f168d3da2681faf5443413a352611b6a4d53af8825f5dc9e1d4e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/references/retargeting.md",
+          "sha256": "f317f406a4f3e05e17b136b918f4cf7eb45e17ddff5d272b78e5bb90da7a6711",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/references/skeleton-modifiers.md",
+          "sha256": "281527db39762ff6a5aa77ae99072ba4fe9068c27cdea38326d60182dabeb01c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/references/sprite-animation.md",
+          "sha256": "5e28741e05638decc06194b5b5b7a299743bd84bac6da4422ac23232cf1ec72f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/animation-system/references/state-machine-examples.md",
+          "sha256": "a1f5889ca4451b940d4ba8f99e9e6c5d130a8c109bfb89bd7a5d62b02c49ab48",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; references/2d-cutout-and-frame-events.md, references/player-tracks-and-libraries.md, references/tree-layering-and-root-motion.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-2d-animation, skills/godot-animation-player, skills/godot-animation-tree-mastery",
       "vendored": true
     },
     {
