@@ -348,126 +348,181 @@ Validation rules:
 
 ### 4.2 `runtime` (A2)
 
+Spec A §4 groups the runtime context in 6 parts: paths, herdr, bins,
+settings, inherited and worker. The code below is the spec
+(`horch-core/src/runtime/{context,paths,bins,fault,process}.rs`).
+`arc_05_context_from_map_env` (`runtime/context.rs`) pins every field that
+an environment sets. `arc_05_no_ambient_env_in_core` pins that only
+`runtime/` reads the environment.
+
 ```rust
 // runtime/context.rs
 pub trait EnvSource {
-    fn var(&self, key: &str) -> Option<String>;          // empty string counts as None
-    fn var_os(&self, key: &str) -> Option<std::ffi::OsString>;
-    fn current_dir(&self) -> std::io::Result<std::path::PathBuf>;
-    fn current_exe(&self) -> std::io::Result<std::path::PathBuf>;
+    fn var(&self, key: &str) -> Option<String>;          // raw; the caller decides if "" is unset
+    fn var_os(&self, key: &str) -> Option<OsString>;
+    fn current_dir(&self) -> Option<PathBuf>;
+    fn current_exe(&self) -> Option<PathBuf>;
+    fn temp_dir(&self) -> PathBuf;
 }
-/// The real process environment. Constructed only in `horch::bootstrap`.
+/// The real process environment. The only type in horch-core that reads it.
+/// `horch::bootstrap` builds the context from it.
 pub struct ProcessEnv;
-impl EnvSource for ProcessEnv { /* … */ }
-/// A fixed map for tests.
+/// A fixed environment for tests.
 #[derive(Debug, Clone, Default)]
 pub struct MapEnv {
-    pub vars: std::collections::BTreeMap<String, String>,
-    pub cwd: std::path::PathBuf,
-    pub exe: std::path::PathBuf,
+    pub vars: BTreeMap<String, String>,
+    pub cwd: Option<PathBuf>,
+    pub exe: Option<PathBuf>,
+    pub temp: Option<PathBuf>,                    // else $TMPDIR in vars, else /tmp
 }
-impl MapEnv { pub fn new(cwd: impl Into<PathBuf>) -> Self; pub fn with(self, key: &str, value: &str) -> Self; }
-impl EnvSource for MapEnv { /* … */ }
+impl MapEnv {
+    pub fn new(cwd: impl Into<PathBuf>) -> Self;
+    pub fn with(self, key: &str, value: &str) -> Self;
+    pub fn with_exe(self, exe: impl Into<PathBuf>) -> Self;
+}
 
-#[derive(Debug, Clone)]
+/// Everything horch reads from its environment, read once.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeContext {
     pub paths: Paths,
-    pub herdr: HerdrContext,
+    pub herdr: HerdrEnv,
     pub bins: Bins,
     pub settings: Settings,
-    pub env: Inherited,
+    pub inherited: Inherited,
+    pub worker: Option<WorkerEnv>,                // None when no HORCH_* worker variable is set
 }
 impl RuntimeContext {
-    pub fn from_env(env: &dyn EnvSource) -> anyhow::Result<RuntimeContext>;
+    pub fn from_env(env: &dyn EnvSource) -> anyhow::Result<RuntimeContext>; // errors on a bad id
+    pub fn prepend_own_dir_to_path(&mut self) -> Option<OsString>;
 }
 
-// runtime/paths.rs   (moved from ledger.rs:177-205)
-#[derive(Debug, Clone)]
-pub struct Paths {
-    pub project_dir: PathBuf,     // $HORCH_PROJECT_DIR, else cwd
-    pub state_root: PathBuf,      // $HORCH_STATE_DIR, else ${XDG_STATE_HOME:-$HOME/.local/state}/horch
-    pub data_root: PathBuf,       // ${XDG_DATA_HOME:-$HOME/.local/share}/horch  (marketplace store, OD3)
-    pub temp_root: PathBuf,       // std::env::temp_dir() at bootstrap
-    pub home: PathBuf,            // $HOME (USERPROFILE on windows), else "."
-}
-pub fn state_root(env: &dyn EnvSource, home: &Path) -> PathBuf;
-pub fn project_dir(env: &dyn EnvSource) -> anyhow::Result<PathBuf>;
-pub fn home_dir(env: &dyn EnvSource) -> PathBuf;
-
-#[derive(Debug, Clone, Default)]
-pub struct HerdrContext {
-    pub workspace: Option<WorkspaceId>,   // HERDR_WORKSPACE_ID
-    pub pane: Option<PaneId>,             // HERDR_PANE_ID
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HerdrEnv {
+    pub workspace: Option<WorkspaceId>,   // HORCH_WORKSPACE_ID (the public id, set once a worker registered)
+    pub pane: Option<PaneId>,             // HERDR_PANE_ID (herdr's internal id, `p_2`)
 }
 
-// runtime/bins.rs   (absorbs agent.rs resolvers)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bins {
-    pub roster_override: Option<PathBuf>,   // HORCH_TEAMMATES_DIR
-    pub current_exe: PathBuf,
-    pub horch_exe: PathBuf,                 // sibling `horch` of current_exe, then PATH
+    pub roster_override: Option<PathBuf>, // HORCH_TEAMMATES_DIR
+    pub current_exe: Option<PathBuf>,
+    pub horch_exe: PathBuf,               // sibling `horch` of current_exe, else `horch` on PATH, else `horch`
     pub harness: HarnessBins,
     pub overrides: BinOverrides,
 }
-#[derive(Debug, Clone)]
-pub struct HarnessBins {                    // resolved values
-    pub claude: PathBuf,   // HORCH_CLAUDE_BIN, else `cpx` on PATH, else `claude`
-    pub codex: PathBuf, pub opencode: PathBuf, pub pi: PathBuf,
-    pub prime: PathBuf,    // default `prime-agent`
-    pub herdr: PathBuf, pub sqlite3: PathBuf, pub ollama: PathBuf,
-    pub git: PathBuf,      // HORCH_GIT_BIN, else `git`
-}
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BinOverrides {                   // explicit HORCH_*_BIN values only; travel in Brief v2
-    pub claude: Option<PathBuf>, pub codex: Option<PathBuf>, pub opencode: Option<PathBuf>,
-    pub pi: Option<PathBuf>, pub prime: Option<PathBuf>, pub herdr: Option<PathBuf>,
-    pub sqlite3: Option<PathBuf>, pub ollama: Option<PathBuf>, pub git: Option<PathBuf>,
-}
-impl Bins { pub fn resolve(env: &dyn EnvSource, path_var: Option<&OsStr>) -> Bins; }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
-    pub clock: Clock,                         // Clock::System or Clock::Fixed(DateTime<Utc>) (HORCH_NOW, if the e2e uses it)
-    pub tiling: TilingMode,                   // HORCH_NO_TILE → Disabled
-    pub balance_override: Option<BalanceMode>,// HORCH_BALANCE
-    pub quota_file: Option<PathBuf>,          // HORCH_QUOTA_FILE
-    pub machine_file: Option<PathBuf>,        // HORCH_MACHINE_FILE (B2)
-    pub probe_timeout: std::time::Duration,   // HORCH_PROBE_TIMEOUT_MS
-    pub faults: Faults,                       // HORCH_FAULT
+    pub now: Option<DateTime<Utc>>,       // HORCH_NOW, when it parses
+    pub now_unparsable: Option<String>,   // HORCH_NOW, when it is set and does not parse (the clock warns once)
+    pub tiling: TilingMode,               // HORCH_TILE: `0`, `false`, `no`, `off` → Disabled
+    pub balance_override: Option<String>, // HORCH_BALANCE, raw
+    pub quota_file: Option<PathBuf>,      // HORCH_QUOTA_FILE
+    pub machine_file: Option<PathBuf>,    // HORCH_MACHINE_FILE (B2)
+    pub probe_timeout: Option<Duration>,  // HORCH_PROBE_TIMEOUT_MS
+    pub faults: Faults,                   // HORCH_FAULT
 }
 
-#[derive(Debug, Clone, Default)]
+/// Variables horch does not own but reads, or passes on to the tools it runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inherited {
-    pub opencode_config_content: Option<String>,  // OPENCODE_CONFIG_CONTENT
-    pub codex_home: Option<PathBuf>,              // CODEX_HOME
-    pub path: Option<OsString>,                   // PATH, for `which`
-    pub worker: Option<WorkerEnv>,
+    pub home_var: Option<OsString>,                // HOME exactly as set
+    pub path: Option<OsString>,                    // PATH
+    pub pathext: Option<String>,                   // PATHEXT (windows)
+    pub opencode_config_content: Option<String>,   // OPENCODE_CONFIG_CONTENT
+    pub codex_home: Option<PathBuf>,               // CODEX_HOME
+    pub claude_code_effort_level: Option<String>,  // CLAUDE_CODE_EFFORT_LEVEL
+    pub pi_session_dir: Option<PathBuf>,           // PI_CODING_AGENT_SESSION_DIR
+    pub opencode_db: Option<PathBuf>,              // HORCH_OPENCODE_DB
+    pub xdg_data_home: Option<PathBuf>,            // XDG_DATA_HOME
+    pub local_app_data: Option<PathBuf>,           // LOCALAPPDATA (windows)
+    pub hostname: Option<String>,                  // HOSTNAME, else COMPUTERNAME
+    pub herdr_session: Option<String>,             // HERDR_SESSION
 }
-#[derive(Debug, Clone)]
-pub struct WorkerEnv {                            // set only inside a worker pane
-    pub role: RoleName,                           // HORCH_ROLE
-    pub brief: PathBuf,                           // HORCH_BRIEF
+
+/// What a worker pane's agent and its horch children learn from the
+/// transport environment (`messaging::brief::Brief::transport_env`).
+/// An empty value counts as unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkerEnv {
+    pub role: Option<String>,         // HORCH_ROLE
+    pub teammate: Option<String>,     // HORCH_TEAMMATE
+    pub agent: Option<String>,        // HORCH_AGENT
+    pub model: Option<String>,        // HORCH_MODEL
+    pub record_id: Option<String>,    // HORCH_RECORD_ID
+    pub session_id: Option<String>,   // HORCH_SESSION_ID
+    pub resume: Option<String>,       // HORCH_RESUME
+    pub task: Option<String>,         // HORCH_TASK
 }
+
+// runtime/paths.rs
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paths {
+    pub cwd: Option<PathBuf>,             // the current directory at bootstrap
+    pub project_dir: Option<PathBuf>,     // $HORCH_PROJECT_DIR, else cwd
+    pub state_root: PathBuf,              // $HORCH_STATE_DIR, else ${XDG_STATE_HOME:-$HOME/.local/state}/horch
+    pub state_override: Option<PathBuf>,  // the explicit $HORCH_STATE_DIR, passed on to panes
+    pub data_root: PathBuf,               // ${XDG_DATA_HOME:-$HOME/.local/share}/horch (marketplace store, OD3)
+    pub temp_root: PathBuf,               // EnvSource::temp_dir() at bootstrap; mailboxes live under it
+    pub home: PathBuf,                    // $HOME (%USERPROFILE% on windows), else "."
+}
+
+// runtime/bins.rs
+/// Explicit HORCH_*_BIN values only. They travel in the worker's brief.
+/// An empty value is unset. Serde: each key skipped when None.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinOverrides {
+    pub claude: Option<PathBuf>,      // HORCH_CLAUDE_BIN
+    pub codex: Option<PathBuf>,       // HORCH_CODEX_BIN
+    pub opencode: Option<PathBuf>,    // HORCH_OPENCODE_BIN
+    pub pi: Option<PathBuf>,          // HORCH_PI_BIN
+    pub prime: Option<PathBuf>,       // HORCH_PRIME_BIN
+    pub antigravity: Option<PathBuf>, // HORCH_ANTIGRAVITY_BIN
+    pub herdr: Option<PathBuf>,       // HORCH_HERDR_BIN
+    pub sqlite3: Option<PathBuf>,     // HORCH_SQLITE3_BIN
+    pub ollama: Option<PathBuf>,      // HORCH_OLLAMA_BIN
+    pub git: Option<PathBuf>,         // HORCH_GIT_BIN
+}
+/// The resolved program for each tool: the override, else the default name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessBins {
+    pub claude: PathBuf,       // override, else `cpx` when it is on PATH, else `claude`
+    pub codex: PathBuf,        // `codex`
+    pub opencode: PathBuf,     // `opencode`
+    pub pi: PathBuf,           // `pi`
+    pub prime: PathBuf,        // `prime-agent`
+    pub antigravity: PathBuf,  // `agy`
+    pub herdr: PathBuf,        // `herdr`
+    pub sqlite3: PathBuf,      // `sqlite3`
+    pub ollama: PathBuf,       // `ollama`
+    pub git: PathBuf,          // `git`
+}
+impl HarnessBins { pub fn resolve(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> HarnessBins; }
 
 // runtime/fault.rs
-#[derive(Debug, Clone, Default)]
-pub struct Faults { points: Vec<String> }         // HORCH_FAULT, comma-separated
+pub const ABORT_EXIT_CODE: i32 = 86;
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Faults(BTreeSet<String>);              // HORCH_FAULT, comma-separated; blank entries ignored
 impl Faults {
     pub fn parse(raw: Option<&str>) -> Faults;
-    pub fn is(&self, point: &str) -> bool;        // exact match, e.g. "abort-after-execution-insert"
-    pub fn indexed(&self, prefix: &str) -> Option<String>; // "abort-after-worktree:<n>" → Some(n)
-    /// Exits the process with code 86 and a stderr line when `point` is armed.
+    pub fn has(&self, point: &str) -> bool;       // exact match, e.g. "abort-after-execution-insert"
+    pub fn points(&self) -> &BTreeSet<String>;
+    pub fn indexed(&self, prefix: &str) -> Option<String>; // "abort-after-worktree:2" → Some("2")
+    /// Exits with ABORT_EXIT_CODE and a stderr line when `point` is armed.
     pub fn abort_if(&self, point: &str);
 }
 
-// runtime/process.rs   (absorbs agent.rs `which`, tilecmd.rs:628 spawn_detached)
-pub fn which(path_var: &OsStr, name: &str) -> Option<PathBuf>;
-pub fn spawn_detached(cmd: std::process::Command) -> std::io::Result<u32>; // setsid on unix
-pub fn strip_forbidden(cmd: &mut std::process::Command);                   // removes FORBIDDEN_ENV
+// runtime/process.rs
+pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<PathBuf>;
+pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child>;  // setsid on unix
+pub(crate) fn strip_forbidden(cmd: &mut Command);                     // removes FORBIDDEN_ENV
 ```
 
-`SPEC-TODO(Spec A §4)`: the exact `RuntimeContext` field grouping. The fault
-abort exit code (86) is a design choice; change it if Spec A names one.
+The fault abort exit code is 86 (`runtime/fault.rs:ABORT_EXIT_CODE`).
+Spec A names no code. 86 is distinct from every exit code that `horch`
+(0 to 3, `horch/src/exit.rs`) and `multi-herdr-dataset` (0, 1, 3 to 6,
+`horch/src/dataset/mod.rs:exit`) use. `arc_16_crash_after_insert_not_live`
+(`horch-e2e/tests/lifecycle.rs`) pins it.
 
 ### 4.3 `execution::model` (A1) and legacy compatibility (A6)
 
@@ -529,44 +584,65 @@ pub enum SessionState { Pending, Known(SessionId), Unavailable }
 pub enum TilingMode { Automatic, Disabled }
 impl TilingMode { pub fn from_no_tile(no_tile: bool) -> TilingMode; }
 
+/// The work an execution was given.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
-    pub id: TaskId,
-    pub text: String,
-    pub phase: Option<Phase>,
-    pub plan: Option<String>,          // plan-file slug
+    pub id: Option<TaskId>,            // ledger `task_id`; set by callers that track tasks (B3)
+    pub text: String,                  // ledger `task`; the idle placeholder for a worker with no task
+    pub plan: Option<String>,          // ledger `plan`: the plan-file slug (`ai_docs/plans/<slug>.md`)
 }
 
+/// One run of one worker, orchestrator, candidate or judge: the typed view
+/// of one ledger record. Each comment names the ledger key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Execution {
-    pub id: ExecutionId,
-    pub kind: ExecutionKind,
-    pub teammate: TeammateName,
-    pub harness: HarnessKind,
-    pub model: ModelId,
-    pub effort: Option<String>,
-    pub phase: Option<Phase>,
-    pub role: RoleName,
-    pub worker: WorkerId,
-    pub task: Task,
-    pub status: ExecutionStatus,
-    pub session: SessionState,
-    pub exit_code: Option<i32>,
-    pub plan: Option<String>,
-    pub project: PathBuf,
-    pub workdir: PathBuf,
-    pub workspace: Option<WorkspaceId>,
-    pub pane: Option<PaneId>,
-    pub skills: Vec<ResolvedSkillRef>,
-    pub routing: Option<RoutingProvenance>,
-    pub history: Vec<HistoryEntry>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub finished_at: Option<DateTime<Utc>>,
+    pub id: ExecutionId,                  // record_id
+    pub kind: ExecutionKind,              // kind + experiment_id, round_id, label ("judge:<n>" for a judge)
+    pub teammate: TeammateName,           // tier
+    pub harness: HarnessKind,             // agent
+    pub model: String,                    // model
+    pub effort: Option<String>,           // effort
+    pub phase: Option<Phase>,             // phase
+    pub role: RoleName,                   // role
+    pub task: Task,                       // task_id, task, plan
+    pub status: ExecutionStatus,          // state, else derived from status
+    pub typed_status: bool,               // whether the record carries `state` (false before A6)
+    pub session: SessionState,            // session_id: null → Pending, "" → Unavailable, id → Known
+    pub exit_code: Option<i32>,           // exit_code
+    pub project: Option<PathBuf>,         // project
+    pub workdir: Option<PathBuf>,         // workdir; None → the agent runs in the project
+    pub workspace: Option<WorkspaceId>,   // workspace_id
+    pub pane: Option<PaneId>,             // pane_id
+    pub skills: Vec<ResolvedSkillRef>,    // skills
+    pub routing: Option<RoutingProvenance>, // routing
+    pub via: Option<String>,              // via: the fallback teammate whose launch settings ran
+    pub substitution_reason: Option<String>, // substitution_reason
+    pub history: Vec<HistoryEntry>,       // history
+    pub created_at: String,               // created_at, the ledger's text
+    pub updated_at: String,               // updated_at, the ledger's text
+    pub finished_at: Option<String>,      // finished_at, the ledger's text
+}
+impl Execution {
+    /// `spawn:<round>:<label>` for a candidate; None for every other kind.
+    pub fn idempotency_key(&self) -> Option<String>;
 }
 ```
 
-`SPEC-TODO(Spec A §4)`: the Execution field list verbatim.
+Spec A §4 Execution has the 25 fields above
+(`horch-core/src/execution/model.rs:Execution`). Every ledger key has one
+place in it, so `execution/store.rs:to_execution` and `from_execution`
+lose nothing. `arc_17_execution_conversion_lossless`
+(`horch-core/tests/execution_plan.rs`) pins the round trip on every legacy
+ledger oracle and on the candidate and judge kinds. Three choices differ
+from the first sketch of this design, each for one reason:
+
+- The timestamps stay the ledger's text, not `DateTime<Utc>`, so a record
+  that any earlier version wrote keeps its bytes.
+- `model` stays a `String`: no earlier version validated the ledger's
+  `model`, and a `ModelId` rejects an empty value, which would make such a
+  record unreadable.
+- There is no `worker: WorkerId` field: the worker id is
+  `<workspace>:<role>`, which `workspace` and `role` already give.
 
 **`LedgerRecordV1`** (`execution/legacy.rs`, A6). It is today's `Record`
 serde, byte for byte, plus optional skip-if-empty fields. Today's `Record`

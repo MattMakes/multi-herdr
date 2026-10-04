@@ -221,8 +221,9 @@ pub struct Task {
 /// a ledger record. [`crate::execution::store::to_execution`] and
 /// [`crate::execution::store::from_execution`] convert, losing nothing.
 ///
-/// `SPEC-TODO(Spec A §4)`: the field list verbatim. The timestamps stay the
-/// ledger's text, so a record written by any earlier version keeps its bytes.
+/// The field list is Spec A §4 (architecture design §4.3). The timestamps
+/// stay the ledger's text, so a record written by any earlier version keeps
+/// its bytes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Execution {
     pub id: ExecutionId,

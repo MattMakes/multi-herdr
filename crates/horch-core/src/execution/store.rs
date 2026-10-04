@@ -91,7 +91,8 @@ pub fn read_all_ledgers(state_root: &Path) -> Vec<(PathBuf, Vec<LedgerRecordV1>)
 }
 
 /// The `label` prefix that marks a judge record; the attempt follows it.
-/// `SPEC-TODO(Spec B)`: whether the judge attempt needs its own key.
+/// A judge has no key of its own: `round_id` plus `judge:<attempt>` is its
+/// key (architecture design §4.3).
 const JUDGE_LABEL: &str = "judge:";
 
 /// How long a `Planned` record may wait for its pane before a later spawn
