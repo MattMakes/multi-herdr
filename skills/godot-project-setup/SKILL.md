@@ -121,8 +121,6 @@ obj/
 .DS_Store
 Thumbs.db
 
-# GodotPrompter (if used in-project)
-.godot-prompter-cache/
 ```
 
 ## .gitattributes
@@ -458,7 +456,6 @@ Use this checklist after scaffolding a new project to verify everything is in pl
 - [ ] For C# projects: `.csproj` targets `net8.0`, `RootNamespace` set, `Nullable` enabled
 - [ ] For C# projects: all node scripts use `partial class`
 - [ ] Initial commit on `main` branch before adding game content
-- [ ] The project's agent instructions file (`CLAUDE.md`, or `AGENTS.md` / `GEMINI.md` if that is what the repo maintains) contains a `## GodotPrompter` section with the skill invocation rule (see `godot-brainstorming` for content)
 - [ ] CI pipeline (optional but recommended): runs a headless parse check that `load()`s every GDScript file and fails on errors (`godot --headless --check-only` exits 0 on a parse error, so its exit code is not a check)
 
 ## Fleet additions

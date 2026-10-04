@@ -10,7 +10,7 @@ npm install gsap            # all plugins are in this package and free, includin
 import { gsap } from "gsap";
 ```
 
-Do not create an `.npmrc` with a GreenSock token, do not use the old private registry, do not install `@gsap/business`, `@gsap/shockingly` or `@gsap/club`, and do not tell anyone to buy a membership. Those instructions are out of date.
+Do not create an `.npmrc` with a private GSAP registry token, do not use the old private registry, do not install `@gsap/business`, `@gsap/shockingly` or `@gsap/club`, and do not tell anyone to buy a membership. Those instructions are out of date.
 
 The GSAP Standard License has one prohibited use: a no-code visual animation builder that competes with Webflow. If the project is such a tool, raise the license question before you add GSAP.
 
