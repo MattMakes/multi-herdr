@@ -94,6 +94,11 @@ impl Roster {
                 problems.push(format!("{who}: base '{base}' does not exist in _base/"));
             }
         }
+        for pattern in &t.offer_when {
+            if let Some(problem) = super::offer::pattern_problem(pattern) {
+                problems.push(format!("{who}: offer_when pattern '{pattern}' {problem}"));
+            }
+        }
         // Anything the orchestrator can pick must be something it may spawn.
         if !t.hidden {
             if let Err(e) = Roster::is_spawnable(t) {

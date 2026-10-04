@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{PermissionMode, Phase};
+use super::{PermissionMode, Phase, Requirement};
 use crate::harness::HarnessKind;
 
 // `TEMPLATE` comes from the generated file above: the annotated `_template.md`,
@@ -192,6 +192,16 @@ pub struct Teammate {
     /// phase and skills stay this teammate's. See `balance_policy.rs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallbacks: Vec<String>,
+    /// Name globs (`*.uproject`). When set, the orchestrator is offered this
+    /// teammate only in a project with a matching file or directory at the
+    /// top level or one level down. `horch spawn <name>` works anywhere.
+    /// See `offer.rs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offer_when: Vec<String>,
+    /// Host tools this teammate needs. `horch doctor` checks them when the
+    /// project is offered this teammate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<Requirement>,
     /// The file body. Its meaning depends on `base`: a persona when `base` is
     /// set, the entire prompt when it is not.
     #[serde(skip)]
@@ -233,6 +243,8 @@ impl Default for Teammate {
             trains_on_input: false,
             first_instruction: None,
             fallbacks: Vec::new(),
+            offer_when: Vec::new(),
+            requires: Vec::new(),
             persona: String::new(),
         }
     }

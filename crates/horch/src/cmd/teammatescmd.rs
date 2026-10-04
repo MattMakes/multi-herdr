@@ -91,6 +91,15 @@ pub fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
                 agent_width = agent_width,
                 model_width = model_width
             ));
+            // Only for a teammate that sets it, so every other line stays as it was.
+            if !t.offer_when.is_empty() {
+                out.push_str(&format!(
+                    "    {:<width$}  offered when the project has: {}\n",
+                    "",
+                    t.offer_when.join(", "),
+                    width = width
+                ));
+            }
         }
     }
 
@@ -300,9 +309,12 @@ mod tests {
             .next()
             .unwrap();
         let documented: serde_yaml::Mapping = serde_yaml::from_str(front).unwrap();
-        // `fallbacks` is skipped when empty, so give it one entry to be listed.
+        // `fallbacks`, `offer_when` and `requires` are skipped when empty, so
+        // give each one entry to be listed.
         let actual = serde_yaml::to_value(Teammate {
             fallbacks: vec![String::new()],
+            offer_when: vec![String::new()],
+            requires: vec![horch_core::roster::Requirement::Xcode],
             ..Teammate::default()
         })
         .unwrap();
