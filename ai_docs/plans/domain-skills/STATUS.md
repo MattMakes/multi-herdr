@@ -8,7 +8,7 @@ Plans: this directory. Reports: `ai_docs/reports/domain-skills/`.
 | V0 vendoring-infra | v0-vendoring-infra.md | - | opus-38 | running |
 | V1 skill-fields | v1-skill-fields.md | - | opus-39 | running |
 | V2 roster-offer | v2-roster-offer.md | - | opus-40 | running |
-| W1 ue-vendor | w1-ue-vendor.md | V0 for the gate | sonnet-9 | running |
+| W1 ue-vendor | w1-ue-vendor.md | V0 for the gate | sonnet-9 | READY ac6cbf7, waits for V0 |
 | W2 ue-own | w2-ue-own.md | - | opus-41 | running |
 | S1 swift-core | s1-swift-core.md | V0 for the gate | opus-42 | READY b38b25a, waits for V0 |
 | S2 swift-platform | s2-swift-platform.md | V0 for the gate | sonnet-10 | READY 3b253dd, waits for V0 |
