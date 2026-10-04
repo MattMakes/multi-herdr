@@ -27,8 +27,8 @@ pub enum SkillsCommand {
         #[arg(long)]
         json: bool,
     },
-    /// One skill: id, version, source, digest, description, provenance and
-    /// install path.
+    /// One skill: id, version, source, digest, description, copied files
+    /// and install path.
     Show {
         id: String,
         #[arg(long)]
@@ -72,8 +72,8 @@ pub fn run(
 }
 
 /// `horch skills show <id>`. JSON keys: `id`, `version`, `source`,
-/// `digest`, `description`, `provenance` (null unless a bundled skill
-/// has an entry in `provenance.json`) and `install_path` (null for a
+/// `digest`, `description`, `copied` (null unless a bundled skill has an
+/// entry in `copied.json`) and `install_path` (null for a
 /// compiled-in skill).
 fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
     let catalog = SkillCatalog::installed(&ctx.paths.data_root)?;
@@ -87,7 +87,7 @@ fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
         "source": entry.source_label(),
         "digest": entry.digest.to_string(),
         "description": entry.description,
-        "provenance": entry.provenance,
+        "copied": entry.copied,
         "install_path": path.as_deref().map(|p| p.display().to_string()),
     });
     if json {
@@ -99,26 +99,15 @@ fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
     output::println(&format!("source:       {}", entry.source_label()));
     output::println(&format!("digest:       {}", entry.digest));
     output::println(&format!("description:  {}", printable(&entry.description)));
-    if let Some(p) = &entry.provenance {
-        if p.sources.is_empty() {
-            output::println("provenance:   original to this repository");
+    if let Some(c) = &entry.copied {
+        if c.copied_files.is_empty() {
+            output::println("copied:       none (own text)");
         }
-        for src in &p.sources {
-            output::println(&format!(
-                "upstream:     {}@{} {} sha256:{}{}",
-                src.repository,
-                src.revision,
-                src.path,
-                src.sha256,
-                src.license
-                    .as_ref()
-                    .map(|l| format!(" {l}"))
-                    .unwrap_or_default()
-            ));
+        for file in &c.copied_files {
+            output::println(&format!("copied:       {file}"));
         }
-        output::println(&format!("adaptation:   {}", printable(&p.adaptation)));
-        if p.vendored {
-            output::println("vendored:     true");
+        if c.verbatim {
+            output::println("verbatim:     true");
         }
     }
     output::println(&format!(

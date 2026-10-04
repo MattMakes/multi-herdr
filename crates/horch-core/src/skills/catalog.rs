@@ -22,7 +22,7 @@ use horch_marketplace::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{BUNDLED_PROVENANCE, BUNDLED_SKILL_FILES};
+use super::{BUNDLED_COPIED, BUNDLED_SKILL_FILES};
 use crate::ids::SkillId;
 use crate::measure::digest::Digest;
 use crate::roster::Teammate;
@@ -55,29 +55,18 @@ pub enum CatalogSource {
     Plugin { plugin: String, dir: PathBuf },
 }
 
-/// One upstream file a bundled skill was adapted from.
+/// Which files of a bundled skill were copied into this repository, per
+/// `skills/copied.json`. A skill written in this repository has no copied
+/// files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceRef {
-    pub repository: String,
-    pub revision: String,
-    pub path: String,
-    /// sha256 hex of the full original upstream file.
-    pub sha256: String,
-    /// The upstream license, when the entry records it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub license: Option<String>,
-}
-
-/// Where a bundled skill was adapted from, per `skills/provenance.json`.
-/// A skill written in this repository has no sources.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Provenance {
-    pub sources: Vec<SourceRef>,
-    pub adaptation: String,
-    /// A copy of an upstream skill directory (with its LICENSE). A vendored
-    /// skill is exempt from the bundled size budget.
+pub struct Copied {
+    /// Paths relative to the skill directory. A check reports a problem in a
+    /// copied file but does not fail on it.
+    pub copied_files: Vec<String>,
+    /// The skill directory is an unchanged copy. A verbatim skill is exempt
+    /// from the bundled size budget.
     #[serde(default)]
-    pub vendored: bool,
+    pub verbatim: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +79,7 @@ pub struct CatalogEntry {
     /// The SKILL.md `description`, as written. Empty for a marketplace entry:
     /// the lock does not carry it.
     pub description: String,
-    pub provenance: Option<Provenance>,
+    pub copied: Option<Copied>,
     /// Byte length of SKILL.md; 0 for a marketplace entry.
     pub skill_file_bytes: usize,
     /// `(path relative to the skill dir, bytes)`; empty for a marketplace
@@ -173,87 +162,43 @@ struct Metadata {
 }
 
 #[derive(Deserialize)]
-struct ProvenanceFile {
-    /// Defaults for an entry that uses the single-source fields.
-    source_repository: Option<String>,
-    source_revision: Option<String>,
-    skills: Vec<ProvenanceSkill>,
+struct CopiedFile {
+    skills: Vec<CopiedSkill>,
 }
 
-/// A skill lists its upstream files in `sources` (empty for a skill written
-/// in this repository), or uses the single-source fields, which map to a
-/// 1-item list. `source_path: null` marks a skill written in this repository.
 #[derive(Deserialize)]
-struct ProvenanceSkill {
+#[serde(deny_unknown_fields)]
+struct CopiedSkill {
     name: String,
-    sources: Option<Vec<SourceRef>>,
-    source_repository: Option<String>,
-    source_revision: Option<String>,
-    source_path: Option<String>,
-    source_sha256: Option<String>,
-    adaptation: String,
+    copied_files: Vec<String>,
     #[serde(default)]
-    vendored: bool,
+    verbatim: bool,
 }
 
-/// Parse the text of `skills/provenance.json` into one entry per skill name.
-pub fn parse_provenance(text: &str) -> Result<BTreeMap<String, Provenance>> {
-    let file: ProvenanceFile = serde_json::from_str(text).context("skills/provenance.json")?;
+/// Parse the text of `skills/copied.json` into one entry per skill name.
+pub fn parse_copied(text: &str) -> Result<BTreeMap<String, Copied>> {
+    let file: CopiedFile = serde_json::from_str(text).context("skills/copied.json")?;
     let mut out = BTreeMap::new();
     for s in file.skills {
         let name = s.name;
-        let sources = match s.sources {
-            Some(sources) => {
-                if s.source_path.is_some()
-                    || s.source_sha256.is_some()
-                    || s.source_repository.is_some()
-                    || s.source_revision.is_some()
-                {
-                    bail!("provenance '{name}': use either `sources` or the single-source fields");
-                }
-                sources
-            }
-            None => match s.source_path {
-                None => Vec::new(),
-                Some(path) => vec![SourceRef {
-                    repository: s
-                        .source_repository
-                        .or_else(|| file.source_repository.clone())
-                        .with_context(|| format!("provenance '{name}': no repository"))?,
-                    revision: s
-                        .source_revision
-                        .or_else(|| file.source_revision.clone())
-                        .with_context(|| format!("provenance '{name}': no revision"))?,
-                    path,
-                    sha256: s
-                        .source_sha256
-                        .with_context(|| format!("provenance '{name}': no source_sha256"))?,
-                    license: None,
-                }],
-            },
-        };
-        for src in &sources {
-            if src.sha256.len() != 64 || !src.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-                bail!(
-                    "provenance '{name}': '{}' sha256 is not 64 hex digits",
-                    src.path
-                );
+        for path in &s.copied_files {
+            if path.is_empty() || path.starts_with('/') || path.split('/').any(|c| c == "..") {
+                bail!("copied '{name}': '{path}' is not a path inside the skill directory");
             }
         }
-        let entry = Provenance {
-            sources,
-            adaptation: s.adaptation,
-            vendored: s.vendored,
+        let entry = Copied {
+            copied_files: s.copied_files,
+            verbatim: s.verbatim,
         };
         if out.insert(name.clone(), entry).is_some() {
-            bail!("provenance '{name}': duplicate entry");
+            bail!("copied '{name}': duplicate entry");
         }
     }
     Ok(out)
 }
 
 impl SkillCatalog {
-    /// The compiled-in skills, validated, with their upstream provenance.
+    /// The compiled-in skills, validated, with their copied files.
     /// Built once per process: the files are compiled in, and digesting them
     /// on every call made `Roster::check` (one call per teammate) slow. A
     /// clone is cheap, because the entries hold `&'static` file bytes.
@@ -266,7 +211,7 @@ impl SkillCatalog {
     }
 
     fn bundled_uncached() -> Result<SkillCatalog> {
-        let mut provenance = parse_provenance(BUNDLED_PROVENANCE)?;
+        let mut copied = parse_copied(BUNDLED_COPIED)?;
         let mut entries = BTreeMap::new();
         for (path, bytes) in BUNDLED_SKILL_FILES {
             let Some(name) = path.strip_suffix("/SKILL.md") else {
@@ -283,7 +228,14 @@ impl SkillCatalog {
                 .collect();
             let digest = tree_digest(&files);
             let id = SkillId::new(name).with_context(|| format!("{path}: skill id"))?;
-            let provenance = provenance.remove(name);
+            let copied = copied.remove(name);
+            for rel in copied.iter().flat_map(|c| &c.copied_files) {
+                if !files.iter().any(|(p, _)| p == rel) {
+                    bail!(
+                        "skills/copied.json: '{name}' lists '{rel}', which the skill does not have"
+                    );
+                }
+            }
             entries.insert(
                 name.to_owned(),
                 CatalogEntry {
@@ -292,11 +244,14 @@ impl SkillCatalog {
                     source: CatalogSource::Bundled,
                     digest,
                     description: meta.description,
-                    provenance,
+                    copied,
                     skill_file_bytes: bytes.len(),
                     files,
                 },
             );
+        }
+        if let Some(name) = copied.keys().next() {
+            bail!("skills/copied.json: '{name}' is not a bundled skill");
         }
         Ok(SkillCatalog {
             entries,
@@ -399,7 +354,7 @@ impl SkillCatalog {
                     },
                     digest,
                     description: String::new(),
-                    provenance: None,
+                    copied: None,
                     skill_file_bytes: 0,
                     files: Vec::new(),
                 },
@@ -481,7 +436,7 @@ impl SkillCatalog {
                     },
                     digest,
                     description: named.description,
-                    provenance: None,
+                    copied: None,
                     skill_file_bytes: named.skill_file_bytes,
                     files: Vec::new(),
                 },
@@ -579,7 +534,7 @@ impl SkillCatalog {
                     source: CatalogSource::Operator { dir: dir.clone() },
                     digest,
                     description: meta.description,
-                    provenance: None,
+                    copied: None,
                     skill_file_bytes: bytes.len(),
                     files: Vec::new(),
                 },

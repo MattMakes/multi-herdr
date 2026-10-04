@@ -7,16 +7,15 @@ use std::path::{Path, PathBuf};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::SkillId;
 use horch_core::roster::{Phase, Roster, Teammate};
-use horch_core::skills::catalog::{parse_provenance, SourceRef};
+use horch_core::skills::catalog::parse_copied;
 use horch_core::skills::{
     self, briefing, plan_activation, BriefingContext, CatalogSource, InvocationPolicy,
     MaterializedSkills, SkillCatalog, BUNDLED_SKILL_FILES,
 };
 use horch_marketplace::LockEntry;
 
-const PINNED_REPOSITORY: &str = "https://github.com/MattMakes/skill-marketplace";
-const PINNED_COMMIT: &str = "d47670328c59a3311a9b4149bc5f8f33f0a92754";
-/// Skills written in this repository: their provenance has no sources.
+/// Skills written in this repository: their `copied.json` entry lists no
+/// copied files.
 const REPO_ORIGINAL: &[&str] = &[
     "blender-ue-pipeline",
     "godot-build-verify",
@@ -165,127 +164,62 @@ fn skl_01_bundled_catalog_versions_and_digests() {
             "{id}"
         );
 
-        // A repo-original skill has an entry with no sources; every other
-        // skill names pinned upstream files.
-        let p = entry.provenance.as_ref().unwrap_or_else(|| panic!("{id}"));
-        assert!(!p.adaptation.trim().is_empty(), "{id}");
+        // A repo-original skill has an entry with no copied files; every
+        // other skill names at least one.
+        let c = entry.copied.as_ref().unwrap_or_else(|| panic!("{id}"));
         if REPO_ORIGINAL.contains(&id) {
-            assert!(p.sources.is_empty(), "{id}");
-            continue;
-        }
-        assert!(!p.sources.is_empty(), "{id}");
-        for src in &p.sources {
-            assert_eq!(src.sha256.len(), 64, "{id}");
-            assert!(is_hex(&src.sha256), "{id}");
-            assert!(!src.path.is_empty(), "{id}");
-            // The skill-marketplace upstream has one exact pin. Any other
-            // upstream (design, vendored) is checked by shape: a GitHub
-            // repository, a full commit and a licence.
-            if src.repository == PINNED_REPOSITORY {
-                assert_eq!(src.revision, PINNED_COMMIT, "{id}: {}", src.path);
-            } else {
-                assert_pinned_upstream_shape(id, src);
-            }
+            assert!(c.copied_files.is_empty(), "{id}");
+            assert!(!c.verbatim, "{id}");
+        } else {
+            assert!(!c.copied_files.is_empty(), "{id}");
         }
     }
 }
 
-/// A non-marketplace source names `https://github.com/<owner>/<repo>`, a
-/// 40-hex revision, a 64-hex sha256 and a non-empty licence.
-fn assert_pinned_upstream_shape(id: &str, src: &SourceRef) {
-    let repo = src
-        .repository
-        .strip_prefix("https://github.com/")
-        .unwrap_or_else(|| panic!("{id}: {} is not a GitHub repository", src.repository));
-    let parts: Vec<&str> = repo.split('/').collect();
-    assert!(
-        parts.len() == 2 && parts.iter().all(|p| !p.is_empty()),
-        "{id}: {} is not https://github.com/<owner>/<repo>",
-        src.repository
-    );
-    assert!(
-        src.revision.len() == 40 && is_hex(&src.revision),
-        "{id}: {} revision {} is not a full commit",
-        src.repository,
-        src.revision
-    );
-    assert!(
-        src.sha256.len() == 64 && is_hex(&src.sha256),
-        "{id}: {} sha256 is not 64 hex digits",
-        src.path
-    );
-    assert!(
-        src.license.as_deref().is_some_and(|l| !l.trim().is_empty()),
-        "{id}: {} has no licence",
-        src.path
-    );
-}
-
-/// A skill entry may list several upstream sources; the single-source
-/// fields still parse as a 1-item list; an original skill has none.
+/// `copied.json` parses one entry per skill; a path outside the skill
+/// directory, an unknown field and a duplicate name fail.
 #[test]
-fn skills_multi_source_provenance_parses() {
+fn skills_copied_parses() {
     let text = r#"{
       "skills": [
-        {
-          "name": "multi",
-          "sources": [
-            {"repository": "https://example.com/a", "revision": "aa11", "path": "x/SKILL.md",
-             "sha256": "SHA", "license": "MIT"},
-            {"repository": "https://example.com/b", "revision": "bb22", "path": "y/rules.md",
-             "sha256": "SHA"}
-          ],
-          "adaptation": "Merged.",
-          "vendored": true
-        },
-        {"name": "old", "source_repository": "https://example.com/c", "source_revision": "cc33",
-         "source_path": "z/SKILL.md", "source_sha256": "SHA", "adaptation": "Kept."},
-        {"name": "own", "source_path": null, "adaptation": "Original."}
+        {"name": "copy", "copied_files": ["SKILL.md", "references/a.md"], "verbatim": true},
+        {"name": "part", "copied_files": ["SKILL.md"]},
+        {"name": "own", "copied_files": []}
       ]
-    }"#
-    .replace("SHA", &"ab".repeat(32));
-    let parsed = parse_provenance(&text).unwrap();
-    let multi = &parsed["multi"];
-    assert_eq!(multi.sources.len(), 2);
-    assert_eq!(multi.sources[0].license.as_deref(), Some("MIT"));
-    assert!(multi.vendored);
-    assert!(!parsed["old"].vendored, "vendored defaults to false");
-    assert_eq!(multi.sources[1].repository, "https://example.com/b");
-    assert_eq!(multi.sources[1].license, None);
-    assert_eq!(parsed["old"].sources.len(), 1);
-    assert_eq!(parsed["old"].sources[0].revision, "cc33");
-    assert!(parsed["own"].sources.is_empty());
-    assert_eq!(parsed["own"].adaptation, "Original.");
+    }"#;
+    let parsed = parse_copied(text).unwrap();
+    assert_eq!(parsed["copy"].copied_files, ["SKILL.md", "references/a.md"]);
+    assert!(parsed["copy"].verbatim);
+    assert!(!parsed["part"].verbatim, "verbatim defaults to false");
+    assert!(parsed["own"].copied_files.is_empty());
 
-    // Mixing both shapes, a bad digest and a duplicate name fail.
-    let mixed = text.replace(
-        r#""name": "own", "source_path": null"#,
-        r#""name": "own", "sources": [], "source_path": "p""#,
-    );
-    assert!(parse_provenance(&mixed).is_err());
-    let bad = text.replacen(&"ab".repeat(32), "abc", 1);
-    assert!(parse_provenance(&bad).is_err());
-    let dup = text.replace(r#""name": "own""#, r#""name": "old""#);
-    assert!(parse_provenance(&dup).is_err());
+    for bad in ["../x.md", "/abs.md", ""] {
+        let text = text.replace("references/a.md", bad);
+        assert!(parse_copied(&text).is_err(), "{bad:?}");
+    }
+    let unknown = text.replace(r#""verbatim": true"#, r#""verbatim": true, "extra": 1"#);
+    assert!(parse_copied(&unknown).is_err());
+    let dup = text.replace(r#""name": "own""#, r#""name": "part""#);
+    assert!(parse_copied(&dup).is_err());
 }
 
-/// A vendored skill (`"vendored": true` in provenance.json) is an upstream
+/// A verbatim skill (`"verbatim": true` in copied.json) is an unchanged
 /// copy and is exempt from the size budget. Any other skill meets it.
 const MAX_SKILL_MD_BYTES: usize = 12 * 1024;
 const MAX_SKILL_DIR_BYTES: usize = 160 * 1024;
 
-/// Skill ids exempt from the size budget: every skill whose provenance says
-/// `vendored: true`.
+/// Skill ids exempt from the size budget: every skill whose copied.json
+/// entry says `verbatim: true`.
 ///
 /// A combined Godot skill (`godot-*`, Godot wave GW3-GW7) is a renamed
-/// GodotPrompter `SKILL.md` plus own references, and its entry also sets
-/// `vendored: true`. This rule already exempts it, both the `SKILL.md` limit
+/// copied `SKILL.md` plus own references, and its entry also sets
+/// `verbatim: true`. This rule already exempts it, both the `SKILL.md` limit
 /// and the directory limit, so it needs no case of its own.
 fn budget_exempt() -> BTreeSet<String> {
     let catalog = SkillCatalog::bundled().unwrap();
     catalog
         .entries()
-        .filter(|e| e.provenance.as_ref().is_some_and(|p| p.vendored))
+        .filter(|e| e.copied.as_ref().is_some_and(|c| c.verbatim))
         .map(|e| e.id.to_string())
         .collect()
 }
@@ -295,7 +229,7 @@ fn skills_bundled_size_budget() {
     let exempt = budget_exempt();
     let mut dirs: BTreeMap<&str, usize> = BTreeMap::new();
     for (path, bytes) in BUNDLED_SKILL_FILES {
-        // Top-level files (README.md, provenance.json) belong to no skill.
+        // Top-level files (README.md, copied.json) belong to no skill.
         let Some((id, rel)) = path.split_once('/') else {
             continue;
         };
@@ -315,13 +249,12 @@ fn skills_bundled_size_budget() {
     }
 }
 
-/// `skill-creator` is a verbatim upstream copy that ships Python scripts,
-/// HTML assets and `LICENSE.txt`. It is the only text-only exemption.
+/// `skill-creator` is a verbatim copy that ships Python scripts and HTML
+/// assets. It is the only text-only exemption.
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &["skill-creator"];
 
-/// Skill files are `.md` or `.txt`. A file named exactly `LICENSE` is
-/// allowed in any skill directory: a vendored or adapted skill keeps its
-/// upstream licence notice. Vendored skills are not exempt from this rule.
+/// Skill files are `.md` or `.txt`, and no skill ships a licence or notice
+/// file. Verbatim skills are not exempt from this rule.
 #[test]
 fn skills_bundled_text_only() {
     for (path, _) in BUNDLED_SKILL_FILES {
@@ -331,19 +264,30 @@ fn skills_bundled_text_only() {
         if EXEMPT_FROM_TEXT_ONLY.contains(&id) {
             continue;
         }
-        let name = path.rsplit('/').next().unwrap();
+        assert!(path.ends_with(".md") || path.ends_with(".txt"), "{path}");
+    }
+}
+
+/// No bundled skill ships a licence or notice file (operator rule,
+/// 2026-10-04: the copies are personal and carry no licence or credit).
+#[test]
+fn skills_bundled_no_licence_files() {
+    for (path, _) in BUNDLED_SKILL_FILES {
+        let name = path.rsplit('/').next().unwrap().to_ascii_uppercase();
         assert!(
-            name == "LICENSE" || path.ends_with(".md") || path.ends_with(".txt"),
+            !["LICENSE", "LICENCE", "NOTICE", "COPYING"]
+                .iter()
+                .any(|p| name.starts_with(p)),
             "{path}"
         );
     }
 }
 
-/// `skills/provenance.json` lists its skills sorted by name, so a merge that
+/// `skills/copied.json` lists its skills sorted by name, so a merge that
 /// appends an entry fails here instead of drifting.
 #[test]
-fn skills_provenance_sorted_by_name() {
-    let raw = std::fs::read_to_string(skills_dir().join("provenance.json")).unwrap();
+fn skills_copied_sorted_by_name() {
+    let raw = std::fs::read_to_string(skills_dir().join("copied.json")).unwrap();
     let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let names: Vec<&str> = doc["skills"]
         .as_array()
@@ -353,10 +297,7 @@ fn skills_provenance_sorted_by_name() {
         .collect();
     let mut sorted = names.clone();
     sorted.sort_unstable();
-    assert_eq!(
-        names, sorted,
-        "provenance.json skills are not sorted by name"
-    );
+    assert_eq!(names, sorted, "copied.json skills are not sorted by name");
 }
 
 /// Every skill table in `skills/README.md` is sorted by its first column,

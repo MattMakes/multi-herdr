@@ -62,14 +62,13 @@ fn main() {
         writeln!(bundled, "    ({relative:?}, include_bytes!({absolute:?})),").unwrap();
     }
     bundled.push_str("];\n");
-    // Upstream provenance of the bundled skills: the pinned marketplace
-    // commit and each original SKILL.md's sha256.
-    let provenance = skills.join("provenance.json");
-    println!("cargo:rerun-if-changed={}", provenance.display());
+    // Which files of each bundled skill were copied into this repository.
+    let copied = skills.join("copied.json");
+    println!("cargo:rerun-if-changed={}", copied.display());
     writeln!(
         bundled,
-        "pub static BUNDLED_PROVENANCE: &str = include_str!({:?});",
-        provenance.to_string_lossy()
+        "pub static BUNDLED_COPIED: &str = include_str!({:?});",
+        copied.to_string_lossy()
     )
     .unwrap();
     std::fs::write(

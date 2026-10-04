@@ -251,11 +251,11 @@ fn mkt_09_cli_list_show_json() {
     assert_eq!(
         keys(&show),
         [
+            "copied",
             "description",
             "digest",
             "id",
             "install_path",
-            "provenance",
             "source",
             "version"
         ]
@@ -265,7 +265,7 @@ fn mkt_09_cli_list_show_json() {
     assert!(show["version"].as_str().unwrap().starts_with("bundled+"));
     assert!(show["digest"].as_str().unwrap().starts_with("sha256:"));
     assert!(!show["description"].as_str().unwrap().is_empty());
-    assert!(show["provenance"].is_object());
+    assert!(show["copied"].is_object());
     assert!(show["install_path"].is_null());
 
     // An empty store lists no skills.
