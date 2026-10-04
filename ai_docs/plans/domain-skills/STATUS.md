@@ -10,7 +10,7 @@ Plans: this directory. Reports: `ai_docs/reports/domain-skills/`.
 | V2 roster-offer | v2-roster-offer.md | - | opus-40 | running |
 | W1 ue-vendor | w1-ue-vendor.md | V0 for the gate | sonnet-9 | running |
 | W2 ue-own | w2-ue-own.md | - | opus-41 | running |
-| S1 swift-core | s1-swift-core.md | V0 for the gate | opus-42 | running |
+| S1 swift-core | s1-swift-core.md | V0 for the gate | opus-42 | READY b38b25a, waits for V0 |
 | S2 swift-platform | s2-swift-platform.md | V0 for the gate | sonnet-10 | READY 3b253dd, waits for V0 |
 | S3 swift-review | s3-swift-review.md | V0 for the gate | opus-43 | running |
 | S4 swift-ship | s4-swift-ship.md | V0 for the gate | opus-44 | running |
