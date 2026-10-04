@@ -202,7 +202,15 @@ fn fake_herdr_answers_wait_output_like_herdr_0_8_2() {
         fake(
             &h,
             "herdr",
-            &["pane", "wait-output", &root, "--match", needle, "--timeout", ms],
+            &[
+                "pane",
+                "wait-output",
+                &root,
+                "--match",
+                needle,
+                "--timeout",
+                ms,
+            ],
         )
     };
     let missed = wait("SMOKE_TEST_42", "200");
@@ -216,7 +224,11 @@ fn fake_herdr_answers_wait_output_like_herdr_0_8_2() {
     assert!(found.status.success(), "{found:?}");
     assert_eq!(json(&found)["result"]["matched_line"], "SMOKE_TEST_42");
 
-    let gone = fake(&h, "herdr", &["pane", "wait-output", "w99:p9", "--match", "x"]);
+    let gone = fake(
+        &h,
+        "herdr",
+        &["pane", "wait-output", "w99:p9", "--match", "x"],
+    );
     assert_eq!(gone.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&gone.stderr).contains("pane_not_found"));
 }

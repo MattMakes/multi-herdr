@@ -14,8 +14,8 @@ use serde_json::Value;
 
 use crate::clock;
 use crate::routing::quota::{
-    parse_claude_usage, parse_codex_limits, Probed, QuotaFile, Window, POOL_CLAUDE, POOL_CODEX,
-    POOL_LOCAL, POOL_ZEN,
+    parse_claude_usage, parse_codex_limits, HarnessHealth, Probed, QuotaFile, Window, POOL_CLAUDE,
+    POOL_CODEX, POOL_LOCAL, POOL_ZEN,
 };
 
 /// A child process whose stdout is read line by line with a deadline.
@@ -177,27 +177,18 @@ fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, 
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{name} could not start: {e}"))?;
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut out = String::new();
-                if let Some(mut s) = child.stdout.take() {
-                    let _ = std::io::Read::read_to_string(&mut s, &mut out);
-                }
+                let (out, err) = drain(&mut child);
                 return if status.success() {
                     Ok(out)
                 } else {
-                    Err(format!(
-                        "{name} exited {}",
-                        status
-                            .code()
-                            .map(|c| c.to_string())
-                            .unwrap_or_else(|| "on a signal".into())
-                    ))
+                    Err(failure(&name, status, &err, &out))
                 };
             }
             Ok(None) if Instant::now() < deadline => {
@@ -225,19 +216,56 @@ pub(crate) fn probe_local(pi: &Path, ollama: &Path) -> Result<Vec<String>, Strin
         .collect())
 }
 
-/// The first line a harness prints for `--version`.
+/// What `<bin> --version` showed about a harness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionProbe {
+    /// It exited 0. The first line it printed.
+    Version(String),
+    /// It ran and failed: it exited non-zero or on a signal. Why, with the
+    /// first error line it printed (`pi --version exited 1: Error
+    /// [ERR_REQUIRE_ESM]: ...`).
+    Broken(String),
+    /// It did not start (not installed), timed out, or printed nothing.
+    NoAnswer,
+}
+
+impl VersionProbe {
+    pub fn version(self) -> Option<String> {
+        match self {
+            VersionProbe::Version(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn broken(&self) -> Option<&str> {
+        match self {
+            VersionProbe::Broken(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// The first line a harness prints for `--version`. `None` when it is
+/// broken or gives no answer; [`probe_version`] tells those apart.
 pub fn harness_version(bin: &Path) -> Option<String> {
+    probe_version(bin).version()
+}
+
+/// Run `<bin> --version` and judge the answer.
+pub fn probe_version(bin: &Path) -> VersionProbe {
     let mut cmd = Command::new(bin);
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
-    let mut child = cmd
+    let child = cmd
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
+        .spawn();
+    let Ok(mut child) = child else {
+        return VersionProbe::NoAnswer;
+    };
     // Generous: a loaded machine can take seconds just to start a binary,
     // and a missed version fails the dataset preflight.
     let deadline = Instant::now() + VERSION_TIMEOUT;
@@ -250,13 +278,32 @@ pub fn harness_version(bin: &Path) -> Option<String> {
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return VersionProbe::NoAnswer;
             }
         }
     };
+    let (out, err) = drain(&mut child);
     if !status.success() {
-        return None;
+        let name = bin
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return VersionProbe::Broken(failure(&format!("{name} --version"), status, &err, &out));
     }
+    // Some harnesses (Prime) print their version on stderr.
+    [out, err]
+        .iter()
+        .find_map(|t| {
+            t.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_string)
+        })
+        .map_or(VersionProbe::NoAnswer, VersionProbe::Version)
+}
+
+/// Read what an exited child wrote to its stdout and stderr.
+fn drain(child: &mut std::process::Child) -> (String, String) {
     let read = |pipe: Option<&mut dyn std::io::Read>| {
         let mut text = String::new();
         if let Some(p) = pipe {
@@ -266,12 +313,39 @@ pub fn harness_version(bin: &Path) -> Option<String> {
     };
     let out = read(child.stdout.as_mut().map(|p| p as &mut dyn std::io::Read));
     let err = read(child.stderr.as_mut().map(|p| p as &mut dyn std::io::Read));
-    // Some harnesses (Prime) print their version on stderr.
-    [out, err].iter().find_map(|t| {
-        t.lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .map(str::to_string)
+    (out, err)
+}
+
+/// `<name> exited <code>: <first error line>` for a failed command.
+fn failure(name: &str, status: std::process::ExitStatus, err: &str, out: &str) -> String {
+    let code = status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "on a signal".into());
+    match first_error_line(err).or_else(|| first_error_line(out)) {
+        Some(line) => format!("{name} exited {code}: {line}"),
+        None => format!("{name} exited {code}"),
+    }
+}
+
+/// The line of `text` that names the error: the first whose first word is
+/// an error kind (`Error`, `TypeError:`, `error:`), else the first that is
+/// not empty. A Node crash starts with a source location
+/// (`node:internal/modules/cjs/loader:1669`); the `Error [...]` line under
+/// it says what went wrong. Display only: nothing branches on it. Cut to
+/// 200 chars.
+fn first_error_line(text: &str) -> Option<String> {
+    let lines = || text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let line = lines()
+        .find(|l| {
+            let word = l.split([' ', ':', '[']).next().unwrap_or_default();
+            word.to_ascii_lowercase().ends_with("error")
+        })
+        .or_else(|| lines().next())?;
+    const MAX: usize = 200;
+    Some(match line.char_indices().nth(MAX) {
+        Some((at, _)) => format!("{}...", &line[..at]),
+        None => line.to_string(),
     })
 }
 
@@ -334,6 +408,9 @@ pub struct ProbeBins {
     pub pi: PathBuf,
     pub ollama: PathBuf,
     pub codex_sessions: PathBuf,
+    /// Every harness binary by harness name, for the `--version` health
+    /// check.
+    pub harnesses: Vec<(&'static str, PathBuf)>,
 }
 
 impl ProbeBins {
@@ -348,6 +425,10 @@ impl ProbeBins {
             pi: bins.pi.clone(),
             ollama: bins.ollama.clone(),
             codex_sessions,
+            harnesses: crate::harness::HarnessKind::ALL
+                .iter()
+                .filter_map(|k| Some((k.as_str(), k.binary(bins)?)))
+                .collect(),
         }
     }
 
@@ -377,9 +458,13 @@ pub(crate) fn probe_all(
     let stamp = clock::stamp(now);
     let timeout = timeout.unwrap_or(PROBE_TIMEOUT);
 
+    probe_harnesses(file, &bins.harnesses, &stamp);
+    let version_of = |name: &str| file.harnesses.get(name).and_then(|h| h.version.clone());
+    let (claude_version, codex_version) = (version_of("claude"), version_of("codex"));
+
     let claude = file.pools.entry(POOL_CLAUDE.into()).or_default();
     claude.probed_at = Some(stamp.clone());
-    claude.harness_version = harness_version(&bins.claude).or(claude.harness_version.take());
+    claude.harness_version = claude_version.or(claude.harness_version.take());
     match probe_claude(&bins.claude, timeout, temp_root) {
         Ok(p) => {
             claude.windows = p.windows;
@@ -392,7 +477,7 @@ pub(crate) fn probe_all(
 
     let codex = file.pools.entry(POOL_CODEX.into()).or_default();
     codex.probed_at = Some(stamp.clone());
-    codex.harness_version = harness_version(&bins.codex).or(codex.harness_version.take());
+    codex.harness_version = codex_version.or(codex.harness_version.take());
     match probe_codex(&bins.codex, timeout) {
         Ok(p) => {
             codex.windows = p.windows;
@@ -441,6 +526,34 @@ pub(crate) fn probe_all(
     }
 }
 
+/// Run every harness's `--version` in parallel and record the health of
+/// each in `file.harnesses`. A failure marks the harness broken; a later
+/// success clears it. No answer (not installed, timed out) is not a
+/// failure: it keeps the last version and clears the error.
+fn probe_harnesses(file: &mut QuotaFile, bins: &[(&'static str, PathBuf)], stamp: &str) {
+    let probes: Vec<(&'static str, VersionProbe)> = std::thread::scope(|s| {
+        let handles: Vec<_> = bins
+            .iter()
+            .map(|(name, bin)| (*name, s.spawn(move || probe_version(bin))))
+            .collect();
+        handles
+            .into_iter()
+            .map(|(name, h)| (name, h.join().unwrap_or(VersionProbe::NoAnswer)))
+            .collect()
+    });
+    for (name, probe) in probes {
+        if probe == VersionProbe::NoAnswer && !file.harnesses.contains_key(name) {
+            continue;
+        }
+        let h: &mut HarnessHealth = file.harnesses.entry(name.to_string()).or_default();
+        h.probed_at = Some(stamp.to_string());
+        h.error = probe.broken().map(str::to_owned);
+        if let VersionProbe::Version(v) = probe {
+            h.version = Some(v);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +583,71 @@ mod tests {
         } else {
             std::fs::copy(from, to).unwrap();
         }
+    }
+
+    /// A Node crash starts with a source location; the `Error [...]` line
+    /// names the fault.
+    #[test]
+    fn first_error_line_skips_the_node_source_location() {
+        let crash = "node:internal/modules/cjs/loader:1669\n      const err = new ERR_REQUIRE_ESM(filename,\n\nError [ERR_REQUIRE_ESM]: require() of ES Module x.js not supported.\n";
+        assert_eq!(
+            first_error_line(crash).as_deref(),
+            Some("Error [ERR_REQUIRE_ESM]: require() of ES Module x.js not supported.")
+        );
+        assert_eq!(
+            first_error_line("\n  plain failure\n").as_deref(),
+            Some("plain failure")
+        );
+        assert_eq!(first_error_line(" \n"), None);
+        assert_eq!(
+            first_error_line("at errorHandler (x.js:1)\nTypeError: x is undefined").as_deref(),
+            Some("TypeError: x is undefined")
+        );
+        let long = format!("Error: {}", "x".repeat(300));
+        assert_eq!(first_error_line(&long).unwrap().chars().count(), 203);
+    }
+
+    /// A fake harness that crashes is broken with its error line; one that is
+    /// missing gives no answer; once it works again the error clears.
+    #[cfg(unix)]
+    #[test]
+    fn a_crashing_harness_is_broken_until_it_recovers() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let fixed = tmp.path().join("fixed");
+        let bin = tmp.path().join("pi");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nif [ -e {} ]; then echo 0.70.0; exit 0; fi\n\
+                 echo 'node:internal/modules/cjs/loader:1669' >&2\n\
+                 echo 'Error [ERR_REQUIRE_ESM]: require() of ES Module' >&2\nexit 1\n",
+                fixed.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let broken = "pi --version exited 1: Error [ERR_REQUIRE_ESM]: require() of ES Module";
+        assert_eq!(probe_version(&bin), VersionProbe::Broken(broken.into()));
+        assert_eq!(harness_version(&bin), None);
+        let missing = tmp.path().join("absent");
+        assert_eq!(probe_version(&missing), VersionProbe::NoAnswer);
+
+        let bins = vec![("pi", bin.clone()), ("antigravity", missing)];
+        let mut file = QuotaFile::default();
+        probe_harnesses(&mut file, &bins, "2026-10-04T10:00:00Z");
+        assert_eq!(file.harnesses["pi"].error.as_deref(), Some(broken));
+        assert!(
+            !file.harnesses.contains_key("antigravity"),
+            "missing is not broken"
+        );
+
+        std::fs::write(&fixed, "").unwrap();
+        probe_harnesses(&mut file, &bins, "2026-10-04T10:05:00Z");
+        let pi = &file.harnesses["pi"];
+        assert_eq!(pi.error, None);
+        assert_eq!(pi.version.as_deref(), Some("0.70.0"));
+        assert_eq!(pi.probed_at.as_deref(), Some("2026-10-04T10:05:00Z"));
     }
 }

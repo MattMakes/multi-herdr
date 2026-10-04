@@ -184,3 +184,39 @@ fn agent_list_text_table_shows_a_row_per_harness() {
     assert!(text.contains("(not found)"));
     assert!(text.contains("fixture-codex (high)"));
 }
+
+/// A `pi` whose `--version` crashes (Node 22.9 and an ESM-only package) is
+/// found but `broken`, with its error line, and is not available.
+#[test]
+fn agent_list_reports_a_crashing_harness_as_broken() {
+    let w = World::new();
+    let pi = w.root.join("bin/pi");
+    std::fs::write(
+        &pi,
+        "#!/bin/sh\necho 'node:internal/modules/cjs/loader:1669' >&2\n\
+         echo 'Error [ERR_REQUIRE_ESM]: require() of ES Module cli.js not supported.' >&2\n\
+         exit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut envs = w.envs();
+    envs.retain(|(k, _)| *k != "HORCH_PI_BIN");
+    envs.push(("HORCH_PI_BIN", pi));
+    let envs: Vec<(&str, &Path)> = envs.iter().map(|(k, v)| (*k, v.as_path())).collect();
+
+    let rows: Vec<Value> = serde_json::from_str(&w.run(&["--json"], &envs)).unwrap();
+    let r = row(&rows, "pi");
+    let why = "pi --version exited 1: Error [ERR_REQUIRE_ESM]: require() of ES Module cli.js not supported.";
+    assert_eq!(r["found"], true);
+    assert_eq!(r["status"], "broken");
+    assert_eq!(r["available"], false);
+    assert_eq!(r["broken"], why);
+    assert_eq!(r["version"], Value::Null);
+    assert_eq!(row(&rows, "claude")["status"], "available");
+    assert_eq!(row(&rows, "opencode")["status"], "unavailable");
+
+    let text = w.run(&[], &envs);
+    let line = text.lines().find(|l| l.starts_with("pi ")).unwrap();
+    assert!(line.contains("broken"), "{line}");
+    assert!(line.contains(&format!("(broken: {why})")), "{line}");
+}

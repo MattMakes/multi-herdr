@@ -415,11 +415,8 @@ impl Herdr {
             .args(args)
             .output()
             .context("running herdr pane wait-output")?;
-        wait_outcome(
-            out.status.success(),
-            &String::from_utf8_lossy(&out.stderr),
-        )
-        .with_context(|| format!("herdr {} failed ({})", args.join(" "), out.status))
+        wait_outcome(out.status.success(), &String::from_utf8_lossy(&out.stderr))
+            .with_context(|| format!("herdr {} failed ({})", args.join(" "), out.status))
     }
 
     /// `herdr integration status`, or None when the subcommand is unavailable.
