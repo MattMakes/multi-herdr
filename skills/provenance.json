@@ -2714,9 +2714,16 @@
           "path": "swiftdata-expert-skill/references/core-data-adoption.md",
           "sha256": "414150186489315622a609020bbd65021e7ad4338a6327b3c262d8717b58b2d6",
           "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/vanab/swiftdata-agent-skill",
+          "revision": "4819a5381fa5fdce894451822917b1135c19e050",
+          "path": "swiftdata-expert-skill/references/concurrency-and-actors.md",
+          "sha256": "3b6a68e54d525e55abd297ea26bf575d7508035b69f8431c834042bc31d85f73",
+          "license": "MIT"
         }
       ],
-      "adaptation": "Curated copy. SKILL.md: third-party-framework ask gate becomes a message to the orchestrator; 2 review steps and reference entries for the vanab references. Added vanab references/migrations-and-history.md (with a CloudKit caveat on #Unique) and references/core-data-adoption.md (verbatim). Links to other upstream skill repositories replaced by bundled skill names.",
+      "adaptation": "Curated copy. SKILL.md: third-party-framework ask gate becomes a message to the orchestrator; 2 review steps and reference entries for the vanab references. Added vanab references/migrations-and-history.md (with a CloudKit caveat on #Unique) and references/core-data-adoption.md (verbatim). Added vanab references/concurrency-and-actors.md (@ModelActor): the example takes plain values instead of a model instance, and 2 bullets state the @concurrent rule (CPU-bound work only) and the CloudKit rules for background writers; linked from SKILL.md as a review step and a reference entry. Links to other upstream skill repositories replaced by bundled skill names.",
       "vendored": false
     },
     {
