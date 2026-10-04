@@ -988,6 +988,45 @@ pub struct ReadinessReport { pub arms: BTreeMap<String, ArmCoverage>, pub judged
 pub fn readiness(rows: &[ExportRow], t: &ReadinessThresholds) -> ReadinessReport;
 ```
 
+#### 4.10.1 Export row details
+
+This section is the spec for the export row's open points. It states the
+implemented, tested behaviour.
+
+- **Label policy.** `competition/planner.rs:LABEL_POLICY_VERSION` is
+  `"slot-order-1"`. Labels are `A`, `B`, … in slot order
+  (`CandidateLabel::from_index`). The version names the export directory
+  `exports/<label_policy_version>/`, so it is one path component
+  (`measure/paths.rs:component`). `export` and `readiness` use it when
+  `--label-policy` is not given. Test: `label_policy_version_is_slot_order_1_and_path_safe`.
+- **Task features.** `ExportState.task_features` has exactly these 4 keys.
+  Each one is a recorded setting of the experiment or round that is known
+  before the round is decided.
+
+  | Key | Value | Source |
+  |---|---|---|
+  | `budget_usd_micro` | the hard budget ceiling in µ$ | `experiment.created` |
+  | `candidates` | the planned candidate count | `experiment.created` |
+  | `round_index` | the round's index in its experiment, from 0 | `round.created` |
+  | `strategy` | the strategy string; `run` records `"diverse"` | `experiment.created` |
+
+  Tests: `exp_03_row_shape`, `exp_04_export_golden`.
+- **Score answers.** A `quality:<config_id>` answer is a System One answer
+  with `choice: null`, `confidence: null` and
+  `probabilities: {"score": <sum of the judge's component scores>}`
+  (`dataset/export.rs:SCORE_KEY`). Tests: `exp_03_row_shape`,
+  `exp_04_export_golden`.
+- **Readiness for Laya.** "≥ 50 runs per arm" means: at least
+  `clef_min_arms` (4) arms with ≥ `laya_runs_per_arm` (50) runs each, plus
+  ≥ `laya_judged_rounds` (500) judged rounds. Reason: a rarely explored arm
+  must not block Laya, and Clef already sets the arm count. The gap text is
+  `laya: arms with >= 50 runs <n>/4`. Test: `exp_05_coverage_and_verdict`.
+- **Outcome scores.** `outcome <round> --kind <kind>` records
+  `post_merge_score` from `--score`. Without `--score` the score is 1.0 for
+  `verified`, and 0.0 for `regression` and `revert`
+  (`crates/horch/src/dataset/cli.rs:OutcomeArg::default_score`). Tests:
+  `outcome_default_score_per_kind`, `exp_06_outcome_recorded_and_exported`.
+
 ### 4.11 Machine, preflight, config (B2)
 
 ```rust
@@ -1047,15 +1086,140 @@ pub struct PreflightReport {
     pub environment_digest: Digest,
     pub passed: bool,                         // no Fail
 }
-pub struct PreflightPlan { pub config: DatasetConfig, pub candidates: Vec<CandidatePlanned>,
-                           pub harness_versions: BTreeMap<HarnessKind, Option<String>>,
+pub struct PreflightPlan { pub config: DatasetConfig, pub candidates: Vec<PreflightCandidate>,
+                           pub harness_versions: BTreeMap<String, Option<String>>, // HarnessKind::as_str
+                           pub judge_harness: HarnessKind,
                            pub git: GitFacts, pub storage_probe: StorageProbe, pub herdr_reachable: bool,
-                           pub horch_exe: Option<PathBuf>, pub quota: QuotaView }
+                           pub horch_exe: Option<PathBuf>, pub pools: Vec<PoolFacts>,
+                           pub checkout_bytes: u64, pub build_bytes: u64, pub artifacts_bytes: u64,
+                           pub local_model_bytes: u64,
+                           pub expected_tokens: BTreeMap<String, TokenEstimate>, // by label
+                           pub trusted_parents: Vec<PathBuf> }
 /// Pure.
 pub fn evaluate(plan: &PreflightPlan, snapshot: &MachineSnapshot) -> PreflightReport;
 ```
 
-`SPEC-TODO(Spec B §3)`: the preflight check list and thresholds verbatim.
+#### 4.11.1 Preflight checks and thresholds (Spec B §3)
+
+This section is the spec. It states the implemented, tested behaviour of
+`competition/preflight.rs:evaluate` (pure) and of
+`crates/horch/src/dataset/preflight.rs:gather` (the facts). The unit tests
+are in `crates/horch-core/tests/preflight.rs` and in the `tests` module of
+`competition/preflight.rs`. The end-to-end tests are in
+`crates/horch-e2e/tests/dataset.rs`.
+
+**Thresholds.** Each threshold is a named constant.
+
+| Constant | Value | Where |
+|---|---|---|
+| `MIN_GIT_VERSION` | git 2.17 | `competition/preflight.rs` |
+| `CPUS_PER_CANDIDATE` | 2 cores | `competition/preflight.rs` |
+| `FDS_PER_CANDIDATE` | 256 open files | `competition/preflight.rs` |
+| `PROCS_PER_CANDIDATE` | 64 processes | `competition/preflight.rs` |
+| `DEFAULT_TOKEN_ESTIMATE` | 200,000 input, 3,000,000 cache-read, 60,000 output tokens per candidate | `competition/preflight.rs` |
+| `HARNESS_FOOTPRINT_BYTES` | 600 MiB resident per candidate (the `none` harness: 64 MiB) | `harness/capabilities.rs` |
+| local model | a `pi` candidate adds `local_model_bytes` to its footprint | `harness/capabilities.rs:Capabilities::footprint` |
+| `DEFAULT_DISK_HEADROOM_BYTES` | 10 GiB (`caps.disk_headroom_bytes`) | `competition/config.rs` |
+| `DEFAULT_LOG_CAP_BYTES` | 262,144 bytes per gate log | `competition/config.rs` |
+| `DEFAULT_OUTPUT_CAP_BYTES` | 1,048,576 bytes per candidate output | `competition/config.rs` |
+| `DEFAULT_SOFT_PERCENT` | soft limit = 80 % of the hard ceiling, when the file does not set it | `competition/config.rs` |
+| `DEFAULT_JUDGE_RESERVE_PERCENT` | judge reserve = 10 % of the hard ceiling, when the file does not set it | `competition/config.rs` |
+
+**Parallelism.** `N` is the number of planned candidates.
+`safe_n = max(1, min(N, caps.max_parallel, cpu, memory, fd, process, local_inference))`
+over the bounds that are known. `waves = ceil(N / safe_n)`.
+
+- `cpu` = CPU cores / `CPUS_PER_CANDIDATE`.
+- `memory` = how many candidates, in plan order, fit in available memory
+  by their footprint.
+- `fd` = the open-file limit / `FDS_PER_CANDIDATE`.
+- `process` = the process limit / `PROCS_PER_CANDIDATE`.
+- `local_inference` applies only when the plan has a `pi` candidate. Apple
+  Silicon: max(1, available memory / `local_model_bytes`), or 1 when the
+  model size is 0. Nvidia: the GPU count (at least 1). No GPU or unknown: 1.
+
+**Checks.** The report has exactly these 13 checks, in this order. A check
+has the status `pass`, `warn` or `fail`. `passed` is true when no check
+fails. A `warn` never refuses a run. The order and the all-pass base plan are pinned by
+`preflight_base_plan_passes_every_check_in_order`.
+
+| ID | Fail when | Warn when | Tests |
+|---|---|---|---|
+| PRE-01 | the project is not in a git repository; HEAD does not resolve; the tree is dirty without `--allow-dirty`; git worktrees are not supported; the git version is unknown or older than 2.17; a planned branch already exists; `--promote-to` is not a local branch or is a candidate branch | never | pre_01_git_root, pre_01_base_sha, pre_01_dirty_policy, pre_01_worktree_support, pre_01_namespace_free, pre_01_promote_target_problem_fails |
+| PRE-02 | `N × (checkout + build) + artifacts + headroom` > free disk. All N count, because every worktree stays until cleanup. | free disk is unknown | pre_02_disk_budget, pre_12_e2e_refuses_before_worktree_or_model |
+| PRE-03 | the footprint of the first wave (the first `safe_n` candidates in plan order) > available memory | available memory is unknown | pre_03_memory_footprint |
+| PRE-04 | never | the CPU count is unknown; the plan has `pi` candidates and no GPU (or an unknown GPU) | pre_04_local_inference_bound |
+| PRE-05 | the open-file or process limit allows 0 candidates | a limit is unknown; a limit allows fewer candidates than `min(N, max_parallel, cpu, memory)` | pre_05_rlimits |
+| PRE-06 | a candidate harness has no resolved version | never | pre_06_harness_resolution_before_worktree |
+| PRE-07 | a candidate harness has no resolved version | a candidate's quota pool is not `ok` (`tight`, `unknown`, `cooling`, `exhausted`, `broken`) | pre_07_probe_no_secret_persisted, pre_07_a_pool_that_is_not_ok_warns_and_does_not_refuse |
+| PRE-08 | the plan has 0 candidates | `safe_n < N` (the round runs in waves) | pre_08_safe_n_waves |
+| PRE-09 | the hard ceiling is not set (≤ 0); projected cost + judge reserve > hard ceiling | projected cost + judge reserve > soft limit; a candidate model has no price | pre_09_budget_projection_soft_limit, pre_09_projection_matches_the_live_budget |
+| PRE-10 | the judge harness (Claude, for the judge model `opus`) has no resolved version; the judge reserve is ≤ 0 | never | pre_10_judge_available_and_reserved |
+| PRE-11 | the storage probe fails to write, lock, fsync or rename in the dataset directory | never | pre_11_storage_probe |
+| PRE-12 | a candidate harness has no resolved version (the "round can start" row) | never | pre_12_e2e_refuses_before_worktree_or_model |
+| PRE-13 | herdr is not reachable; the horch executable is not found | the worktree root is not under a trusted directory | pre_13_herdr_and_horch_exe |
+
+PRE-09 prices each candidate with `competition/budget.rs:estimate_cost`, the
+same function the live budget uses. It uses the plan's token estimate for
+the label, or `DEFAULT_TOKEN_ESTIMATE`. It sums in n$ and rounds to µ$ once.
+
+PRE-12 as a requirement is the refusal itself. `dataset/run.rs` refuses a
+report with any `fail` with exit code 4. The events are `experiment.created`,
+`preflight.completed` and `experiment.aborted`, and nothing more. No worktree
+exists and no harness ran. The report is in `preflight.completed` and in
+`experiments/<id>/manifest.json`.
+
+**Report.** `PreflightReport` has `schema_version` "1.0.0", the 13 checks,
+`safe_n`, `waves`, `projected_cost_microusd`, the machine snapshot,
+`environment_digest` and `passed`. `environment_digest` is the digest of the
+machine snapshot, the harness versions and the git version. The budget is not
+part of it (`preflight_report_round_trips_and_digest_tracks_the_environment`).
+
+**Facts** (`crates/horch/src/dataset/preflight.rs:gather`):
+
+- `checkout_bytes`: the regular files under the git toplevel, without
+  `.git`, `target` and `node_modules`. Links are not followed.
+- `build_bytes`: the regular files under `<toplevel>/target`. 0 when the
+  project has no `target/` directory.
+- `artifacts_bytes`: `N × (output_cap + log_cap × max(1, gate count))`.
+- free disk: measured on the nearest existing ancestor of the worktree root,
+  or on the dataset root when no root is set.
+- `local_model_bytes`: 0.
+- `trusted_parents`: empty.
+- `pools`: the pool-wide state of each candidate's quota pool.
+- the judge harness: Claude.
+
+**Decisions** (these closed the Spec B §3 placeholders):
+
+1. A project never built here gets `build_bytes` = 0. The 10 GiB headroom
+   covers its first build, and the operator raises
+   `caps.disk_headroom_bytes` for a large one. Reason: a size with no
+   measurement behind it would refuse rounds on a guess. Test:
+   `tree_bytes_counts_a_never_built_project_as_zero_build`.
+2. A `pi` candidate's local model size is 0, because horch has no probe for
+   it. Then PRE-03 counts only the harness footprint, and on Apple Silicon
+   `local_inference` = 1. Reason: 1 local candidate at a time keeps 1 model
+   in memory, which is the safe bound when the size is unknown.
+3. No harness trust store is read, so `trusted_parents` is empty and PRE-13
+   warns for every worktree root. Reason: the trust stores are private
+   harness files, and LA-7 on the operator's Mac decides whether a trust
+   prompt stalls a pane. The candidate deadline turns a stall into a
+   `TimedOut` data point.
+4. A quota pool that is not `ok` makes PRE-07 warn, also when it is
+   `exhausted`. It never fails PRE-07. Reason: the planner already removes
+   every candidate whose pool blocks a spawn, for the candidate's model scope
+   (`routing/eligible.rs:ExclusionReason::PoolBlocked`). Preflight sees only
+   the pool-wide state, which can be stricter than the candidate's scope.
+
+#### 4.11.2 Judge mode (Spec B §3)
+
+`JudgeMode` has 1 value: `auto` (`competition/config.rs:JudgeMode`). In
+`auto` mode the judge runs as soon as every candidate is frozen. `--judge`
+and the `judge.mode` key of `.multi-herdr/dataset.yaml` refuse every other
+value with an error. Reason: the master plan names only `--judge auto`, and
+no other mode has an implementation. A new mode is a new enum value with its
+own tests. Tests: `cmp_01_cli_args` (`--judge manual` is refused),
+`judge_mode_auto_is_the_only_mode`.
 
 ---
 

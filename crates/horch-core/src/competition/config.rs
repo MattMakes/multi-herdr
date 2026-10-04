@@ -101,7 +101,7 @@ impl FromStr for JudgeMode {
     fn from_str(s: &str) -> Result<Self> {
         match s {
             "auto" => Ok(JudgeMode::Auto),
-            // SPEC-TODO(Spec B §3): the judge modes besides `auto`.
+            // `auto` is the only mode (dataset design 4.11.2).
             other => bail!("unknown judge mode {other:?} (expected \"auto\")"),
         }
     }
@@ -360,5 +360,23 @@ struct Usd(i64);
 impl fmt::Display for Usd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "${}.{:06}", self.0 / 1_000_000, self.0 % 1_000_000)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `auto` is the only judge mode, from the flag and from the file
+    /// (dataset design 4.11.2).
+    #[test]
+    fn judge_mode_auto_is_the_only_mode() {
+        assert_eq!("auto".parse::<JudgeMode>().unwrap(), JudgeMode::Auto);
+        for other in ["manual", "off", "Auto", ""] {
+            assert!(other.parse::<JudgeMode>().is_err(), "{other:?}");
+        }
+        let file = parse_file("judge:\n  mode: auto\n").unwrap();
+        assert_eq!(file.judge.unwrap().mode, JudgeMode::Auto);
+        assert!(parse_file("judge:\n  mode: manual\n").is_err());
     }
 }
