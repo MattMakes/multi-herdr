@@ -2105,6 +2105,1070 @@
       ],
       "adaptation": "Curated copy of the top-level skill (not the nested skills/swiftui-pro variant). SKILL.md: third-party-framework ask gate becomes a message to the orchestrator. hygiene.md: 'Offer to translate' becomes a message to the orchestrator. views.md: view-model rule made neutral (follow the codebase; MV in a new codebase; view models only for a test seam). data.md, swift.md, views.md: links to other upstream skill repositories replaced by bundled skill names.",
       "vendored": false
+    },
+    {
+      "name": "ue-actor-component-architecture",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-actor-component-architecture/SKILL.md",
+          "sha256": "ba94a6cd2d456bc267ddf3d962b6f29c5a0ed0e76b1992931731da0ffaa635b5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-actor-component-architecture/references/actor-lifecycle.md",
+          "sha256": "b1e35ef1a61ca1a4483d4cf2ca779e63e20e45a267538acf1b6724ba8fe26d0a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-actor-component-architecture/references/component-types.md",
+          "sha256": "a069b8911a0125b5f0904f985c866fe2bf4a9b77440d28fcff94a31f564c1480",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-ai-navigation",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ai-navigation/SKILL.md",
+          "sha256": "6fbd18a43272d5b64724bd9572ad27166742c19a002f01fe0897d9849578aba1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ai-navigation/references/behavior-tree-patterns.md",
+          "sha256": "cd020ce5a8064e4e21cff85a588783ab096b4ddab43406124e26688ba121f5f2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ai-navigation/references/eqs-reference.md",
+          "sha256": "0bd1ad967ed48423a5d5c9154996e8903a9819bce16e738b27f5ede26fa849ea",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-animation-system",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-animation-system/SKILL.md",
+          "sha256": "908909e0d765382ae496741c9e1b9a8980c19ef089c0a2f879f5ecb87b57ac26",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-animation-system/references/anim-notify-reference.md",
+          "sha256": "b30556683e592477a8f1edb7bfbbdc11b3e3c4c41117e9b38612da5b7c00aa24",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-animation-system/references/locomotion-setup.md",
+          "sha256": "e881c4f0b862315846bb43e4f885cce9a7e86e42b4b6675fc44f86e2e057593f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-async-threading",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-async-threading/SKILL.md",
+          "sha256": "8e728f4f68bb6d4b6cee2775da4fac672cdcd989213cdb1140315403b83aee05",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-async-threading/references/thread-safety-guide.md",
+          "sha256": "3b2be7cfe4d593ae42ff774e1d9d27c1f315d53d6379ef19cd1b5b65997d5c7c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-async-threading/references/threading-patterns.md",
+          "sha256": "6a5a8d914685ab372e916934496f95893b7167d91cc7476298ad457a67a80306",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-audio-system",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-audio-system/SKILL.md",
+          "sha256": "cea23f6254c0b1672c585aa9136b1b2317a988eaa0deae167634fb243318cd78",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-audio-system/references/audio-component-reference.md",
+          "sha256": "7dcf9b8b8f81c5e371eb61f3ca20c7b19e1efcfca37fa591956536ed3b6638a8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-audio-system/references/audio-setup-patterns.md",
+          "sha256": "c6984b405c10b54ec5ee2d6168c64d81178fd43bea5968e5ad880ccdd4ebc8eb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-blueprint-cpp-interop",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-blueprint-cpp-interop/SKILL.md",
+          "sha256": "c9e28acdfd39ea5c91d2f41f2bbf96c65b90d1273fd3f40c620828713f1486d6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-blueprint-cpp-interop/references/blueprint-meta-specifiers.md",
+          "sha256": "60b70bbd0e65a5b3ee7b66dac927f7c759b12892b28eb121529e1f6282e950f7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-blueprint-cpp-interop/references/blueprint-node-patterns.md",
+          "sha256": "58133517119af6378f4f480d8ea6f2cf8a8ca9429743f86cac5a7a196aa8007a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-character-movement",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-character-movement/SKILL.md",
+          "sha256": "e4d91fb3739f4aeb7f0c86809caeb5dc64e47bacebe0fb39c49248f364bd775f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-character-movement/references/cmc-extension-patterns.md",
+          "sha256": "02ba149f7c0047cf3cf128654ba812c834f1b22db55d8eb756d7b485911c5dc0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-character-movement/references/movement-pipeline.md",
+          "sha256": "fc4dfe308e53fca49dc533db4743dc7a5a49bc596d143c3539146ac961a68ab7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-cpp-foundations",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-cpp-foundations/SKILL.md",
+          "sha256": "7d6c5cfd389172b23ff966a6b2025a0ec23529a59a2fbab6e56c0568e9c6b550",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-cpp-foundations/references/container-patterns.md",
+          "sha256": "6fc61761fc158888195efb8a8ee1f41542e8f3a4fc1d3a6cdc8ca549c9affa9a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-cpp-foundations/references/delegate-patterns.md",
+          "sha256": "385f95a187d4ec6bcd559a325895afbd7f12a25b4743c211f6f108f78454683e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-cpp-foundations/references/property-specifiers.md",
+          "sha256": "531d5f9723bf7d062ce98485af433eb6701fd1de47392dda358ded655bcc8c47",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-data-assets-tables",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-data-assets-tables/SKILL.md",
+          "sha256": "a5e88905b48e8e09a488488e2f45e3dbb25f9c476f6417e33be57b388fb0ab47",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-data-assets-tables/references/asset-loading-patterns.md",
+          "sha256": "1987def83d5c5352c10ec58a6a46c14d5364394319e1be184d7d4f1f5285096c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-data-assets-tables/references/data-driven-design.md",
+          "sha256": "f876f33d4ec92ebcce961b63cddaecd0079bb127df29359b3e63bf8abf86c8b8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-editor-tools",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-editor-tools/SKILL.md",
+          "sha256": "6e8b27bfc7081af3de8481e8a77877e27a39c411db8ac80fcfd712d6a7189d11",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-editor-tools/references/detail-customization-patterns.md",
+          "sha256": "6c42a871317fd5225519e03d7fd72021dba84b59f660388d7d3fd72ae183d1b6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-editor-tools/references/editor-module-setup.md",
+          "sha256": "d2ba24e9cda66e1e3d3ce259b0157fc12bb0c714dc353f5bd6572886a8f9ebbf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-game-features",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-game-features/SKILL.md",
+          "sha256": "d588fefcb5c9a0efa0c86d2d79375727722d62e7563ac6a8c4048d2f66b6ff8e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-game-features/references/experience-system.md",
+          "sha256": "a6149a333d67a24382fc3b784bbc9940cadb1dd02ec82f5c525cf1e54b44413e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-game-features/references/game-feature-patterns.md",
+          "sha256": "4ffe2ca6ebc19f6f9939f9660d8d6a031cd841c9311771ee874067318efc9a51",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-gameplay-abilities",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-abilities/SKILL.md",
+          "sha256": "212a0ab0730570ef86fb115efba0925afd26ed4a8b652204a1c519dbf07dab0e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-abilities/references/ability-task-reference.md",
+          "sha256": "c744ec6daa3d35b6c89db2671a6ec9ebba713d3517f6d472f92e7db0a36896e0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-abilities/references/gameplay-effect-reference.md",
+          "sha256": "f91a2dfb901e43eadaf3258f6687a726cf23ccefdb847e74c83b2dc2f964b158",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-abilities/references/gas-setup-patterns.md",
+          "sha256": "f1effda479fb0fc965ed0a238c2648a5891ef927e553fa4626402c24e747839a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-gameplay-cameras",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-cameras/SKILL.md",
+          "sha256": "a1a5add9dc1e1f9107fb300dde91c3d3067c1bdcaa855d6e3a0c70459c21b96a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-cameras/references/classic-camera-stack.md",
+          "sha256": "2d4376b3e80566ce21ed6b8617760747f2c31b11c1a7f4307754bbf0ca6c1f63",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-cameras/references/gameplay-camera-system.md",
+          "sha256": "3661102b64081d60c69638c6b55bc0af82c9a046f6611f01b2131091626eed16",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-gameplay-framework",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-framework/SKILL.md",
+          "sha256": "6c9b3d21c4a5692640599a59bf7d16e64792ee22f75b100eddec6f5283980413",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-framework/references/framework-class-map.md",
+          "sha256": "e8a9206ad6fdf4a744e8057a1b93cd5e07cb6595ecb583dfc313f25cfb260714",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-gameplay-tags-messaging",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-tags-messaging/SKILL.md",
+          "sha256": "236c774aa5ff5e9b85db9692e458c8295f9d75c517afc42a074e0457d2cc99f8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-tags-messaging/references/gameplay-messaging.md",
+          "sha256": "01e47c7696e42b421a5e6721d0733751e45de60ed78f8829754e0b1929ecd872",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-tags-messaging/references/gameplay-tag-reference.md",
+          "sha256": "85248b0a1bfcebb8749af1d295d5ff042762d646db1fc8106268d11fdc4d4a2f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-input-system",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-input-system/SKILL.md",
+          "sha256": "548f4d898751a7dee7a09437c040f67f9bb3bfe6893ebe4d87e797875d4a34bb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-input-system/references/input-action-reference.md",
+          "sha256": "178eafafc566744252db22a74dbabb476abd482c3a3fe91d3b57704bead17f90",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-mass-entity",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mass-entity/SKILL.md",
+          "sha256": "c89c4f26840a349034a15b19e7089edb6b3cd32f4009dd0d5971502c074bc20f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mass-entity/references/mass-entity-patterns.md",
+          "sha256": "c39bf5e072665d4364351d98325adf4592a0108dd2e7a159b5736d911bf3b33e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mass-entity/references/mass-fragment-reference.md",
+          "sha256": "c859ef21b5c0b979b8fa7db3505df135b82fa610dc5f2636c538fc5f338723fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-materials-rendering",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-materials-rendering/SKILL.md",
+          "sha256": "ff708688124bffa3d92f4cd849255bc956f3da23ae96566f44c67b6491bbf0f6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-materials-rendering/references/global-shaders-rdg.md",
+          "sha256": "70687c70a274641ced3f892e8bfa9c13ce921d9b2ed99d7e6fb3d42f62a9ac9e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-materials-rendering/references/material-parameter-reference.md",
+          "sha256": "5d711f377adad1d5de2ea117532c829d5b4e853a5d40d0ecbd39d841cbcf59fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-materials-rendering/references/post-process-settings.md",
+          "sha256": "27c89c34e9555616bed60d28a9c4f22fdd4b72f834021947de4aee2b5ce78452",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-module-build-system",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-module-build-system/SKILL.md",
+          "sha256": "f73d2d5fdb0fae31012b7aa2633f4cee55e119b4ea19978df6c13f1395b8f1be",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-module-build-system/references/build-cs-reference.md",
+          "sha256": "bc5531f195c1ddf0d63c249462bf76d2845d959ca3365d752c7bd6520e3dbfb7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-module-build-system/references/common-build-errors.md",
+          "sha256": "bf1ff10a9054e6c1f6b70058aff10f3b9e802c753ccb3466340092e5b1942cf5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-mover",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mover/SKILL.md",
+          "sha256": "66514eea2001bd5012a0957143500632d324e08964d19d0992a7583cd0b5eb2a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mover/references/mover-recipes.md",
+          "sha256": "adde9bb624945035f9fad21e0c1ff95a8383f366aed708b9537e46fd52aadad7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mover/references/mover-reference.md",
+          "sha256": "dc2a99bb9e23bafffd1e4173e4d376a6d67c38a09935160bd74c02a1eb64f212",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-networking-replication",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-networking-replication/SKILL.md",
+          "sha256": "fb9bb8192da0da19a56507a2a91fa97378a5350266145083374c9bca27e6cd55",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-networking-replication/references/replication-patterns.md",
+          "sha256": "0b0d543c657663439edc81ed4b85bf00e1ec4ea5f598ecc14021d4fd08f7526e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-networking-replication/references/rpc-decision-guide.md",
+          "sha256": "3310873d471ce039ca21e822d829778555e516014e194acbc03841cb5bb62948",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-niagara-effects",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-niagara-effects/SKILL.md",
+          "sha256": "e42ef34b9fd1a29be4b0326d9a4878143585cfbc2b902ad98deee70751888b2d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-niagara-effects/references/niagara-data-interfaces.md",
+          "sha256": "22949681b5ed59ee606bd62882a3c5e05aa4b14731247c929fbbf7b0eddbb1e9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-niagara-effects/references/niagara-parameter-types.md",
+          "sha256": "eaed3449031a6dc34774480f5e841d66330f6fde202948fcdb44f81698743227",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-physics-collision",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-physics-collision/SKILL.md",
+          "sha256": "f1acd3813365d3e3d7e98ee0d280c7798b5873ba96d72d3d466c0a3506470f08",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-physics-collision/references/collision-channel-setup.md",
+          "sha256": "e949b9fb0162095d0dcbdde8256595c263bf211cabaf2a246bc921c354a953a8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-physics-collision/references/trace-patterns.md",
+          "sha256": "b3c139b0cb90854b4f75f87ea9b1baf3ce6bd36972f14a03a42935d5e1faf595",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-procedural-generation",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-procedural-generation/SKILL.md",
+          "sha256": "128b7a49d8288922aa2c636d9aa85553fd50f79d0a7446e01f8f356ca82f9d1e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-procedural-generation/references/pcg-node-reference.md",
+          "sha256": "c4a37e886cf349ddf71e1167081f21508e106fc1a015cf8e82b170a5e7503ccb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-procedural-generation/references/procedural-mesh-patterns.md",
+          "sha256": "8e26768f84a97ac6c1b1550f0a6a5bfd401db050fb6e694a41a02d7da5513be8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-project-context",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-project-context/SKILL.md",
+          "sha256": "69766ff96f466fdeb86ce1708361afdb2de8ffd8113c83b672be599e875f6b7c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted for a fleet pane with no human: the intro and the context section say the file is built from the codebase and one orchestrator reply; Step 1 ends by writing the draft (was: present it); Step 2 'Correct the draft' becomes 'Ask about the unknowns' (one QUESTION: to the orchestrator, unknowns in the skill's own order, [unknown] stays a valid final answer); Step 3 reports to the orchestrator; the fallback questionnaire becomes 'Fallback: no source tree' (mark fields [unknown], one QUESTION:); two Common Mistakes lines say orchestrator, and one new line forbids several questions. Step 1's scan, the 'What to scan' and plugin tables, the document template, the Deprecated table and the no-guessing rule are unchanged.",
+      "vendored": true
+    },
+    {
+      "name": "ue-sequencer-cinematics",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-sequencer-cinematics/SKILL.md",
+          "sha256": "2ecbf1d71d741725493f56576a1f1e9cb68b2cc2449b176b9002fd7a608a2661",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-sequencer-cinematics/references/sequencer-patterns.md",
+          "sha256": "a923274040110b8c62ff4bab3825f572552c1966784d9831567f6213e63e6592",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-serialization-savegames",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-serialization-savegames/SKILL.md",
+          "sha256": "2b17e7e40d6038c379c08f25247cd8cc18b04c87f36ddf240fca8bd7eb337718",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-serialization-savegames/references/save-system-architecture.md",
+          "sha256": "671876fa579ce878252e7a91afcf2c64cb25808180da3bc9e45381692b52bdda",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-state-trees",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-state-trees/SKILL.md",
+          "sha256": "715a9fac48da6610ca91f5dc0ef0e2462d0c23ea1f24ac8c454049e0e2f0148f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-state-trees/references/state-tree-mass-integration.md",
+          "sha256": "9e0df84985ffa1cbeb7a20fdd7de541fa2f14ce5acaa4ba823c1425c5beeac85",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-state-trees/references/state-tree-patterns.md",
+          "sha256": "3f32927617120364620d0233ade0f92031381a39fe665f36d28d09a1670b46b6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-testing-debugging",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-testing-debugging/SKILL.md",
+          "sha256": "a486848b5f88095f4b1e649ad1ffb73f17ab80b51f9a3afa4886629c0e7cfdd6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-testing-debugging/references/automation-test-patterns.md",
+          "sha256": "9dc8d33090d60db1350ac7f756b948500a602126d46979ba56827994818dc7de",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-testing-debugging/references/profiling-commands.md",
+          "sha256": "ebd53693a9fabb0012f22ec62a220f0ff7a7d83af5b52504160875cf9d64d506",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-ui-umg-slate",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ui-umg-slate/SKILL.md",
+          "sha256": "db75a03feda52407bf099e37e4e5363e36e331f5faf3cf820071f15b44a16b06",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ui-umg-slate/references/common-ui-setup.md",
+          "sha256": "5c8674e430fb06ea7b31772d91ba5d294ad0493afcdd0aa8fb4b493750af0e89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ui-umg-slate/references/slate-patterns.md",
+          "sha256": "073a1e7d61ffedfddd828002564eef689add5f283541ed373404165319ad7392",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ui-umg-slate/references/widget-types.md",
+          "sha256": "44a27000bd36ab2c503e9c2382ed93b3121f51b11c0859c02ec51ba405ac17f5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-world-level-streaming",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-world-level-streaming/SKILL.md",
+          "sha256": "a62f671000c79391d61c6f5b4d3d3c0049e9d71a7d1be8060f2b73b86bcc179f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-world-level-streaming/references/streaming-patterns.md",
+          "sha256": "1c2c3439140c95860739fc62f61e125a49d7481bcad6ef7fb4b0a6209ebbdce9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
     }
   ]
 }
