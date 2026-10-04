@@ -42,6 +42,22 @@ no_spec_todo() {
   fi
 }
 
+# Godot skills (ai_docs/plans/godot/gw0-tooling.md): every engine API name in
+# skills/godot-* must exist in Godot 4.7.2, and every gdscript block must
+# parse. A failing block in a file copied from GodotPrompter (a `sources`
+# path in skills/provenance.json) is reported, not failed. Both checks print
+# "skipped: no Godot" and pass when Godot is not installed.
+godot_skills() {
+  python3 -m unittest discover -s scripts/godot/tests
+  local dirs=(skills/godot-*/)
+  if [ ! -d "${dirs[0]}" ]; then
+    echo "skipped: no skills/godot-*"
+    return 0
+  fi
+  python3 scripts/godot/api_check.py "${dirs[@]}"
+  python3 scripts/godot/gdscript_blocks_check.py --strict-own skills/provenance.json "${dirs[@]}"
+}
+
 step no_spec_todo
 step cargo fmt --all --check
 step cargo build --workspace --all-targets
@@ -53,4 +69,5 @@ step env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammate
 step scripts/check-req-coverage.sh
 step scripts/check-deps.sh
 step scripts/verify-telemetry-e2e.sh
+step godot_skills
 echo "GATE GREEN"

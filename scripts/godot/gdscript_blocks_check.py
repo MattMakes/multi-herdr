@@ -22,17 +22,23 @@ that another block declares. When 2 blocks declare the same `class_name`,
 the first one registers it and the other is checked without its
 `class_name`.
 
+With `--strict-own skills/provenance.json`, a failing block in a file that
+provenance.json lists as copied from upstream is reported with
+"(upstream, report only)" and does not fail the run. Blocks in own files
+(not a `sources` path) still fail it.
+
 A `<!-- gdscript-check: skip -->` line just before the opening fence (blank
 lines between are allowed) skips the block.
 
 Godot is found through `GODOT_PATH`, `godot` on PATH, or the macOS app
 bundle. With no Godot the script prints "skipped: no Godot" and exits 0.
-Exit status: 0 when every block parses, 1 when any fails, 2 on a usage error.
+Exit status: 0 when every block parses, 1 when any (strict) block fails, 2 on a usage error.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -250,6 +256,24 @@ def report_line(b: Block) -> tuple[int, str]:
     return b.line, msg
 
 
+def copied_files(provenance: Path) -> set[Path]:
+    """Files that provenance.json lists as copied from upstream.
+
+    A source path `skills/<upstream name>/<rel>` is the file
+    `<provenance dir>/<skill>/<rel>`. Other sources (the LICENSE) are skipped.
+    Our edits to a copied file (an API fix, a "Fleet additions" list) do not
+    make it own text; a reference that is not a source is own text.
+    """
+    root = provenance.resolve().parent
+    out = set()
+    for entry in json.loads(provenance.read_text())["skills"]:
+        for src in entry.get("sources", []):
+            parts = src["path"].split("/")
+            if len(parts) >= 3 and parts[0] == "skills":
+                out.add(root / entry["name"] / "/".join(parts[2:]))
+    return out
+
+
 def files_under(paths: list[Path]) -> list[Path]:
     out = []
     for p in paths:
@@ -267,8 +291,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scratch", type=Path, help=f"parent of the scratch project (default {DEFAULT_SCRATCH})")
     ap.add_argument("--keep", action="store_true", help="keep the scratch project")
     ap.add_argument("--timeout", type=int, default=600, help="seconds per Godot run")
+    ap.add_argument(
+        "--strict-own", type=Path, metavar="PROVENANCE",
+        help="report, but do not fail on, blocks in files that PROVENANCE (skills/provenance.json) "
+        "lists as copied from upstream",
+    )
     ap.add_argument("paths", nargs="+", type=Path)
     args = ap.parse_args(argv)
+    upstream = copied_files(args.strict_own) if args.strict_own else set()
 
     godot = find_godot()
     if godot is None:
@@ -291,19 +321,21 @@ def main(argv: list[str] | None = None) -> int:
             shutil.rmtree(project, ignore_errors=True)
 
     failed = [b for b in blocks if b.passed is None]
+    strict = [b for b in failed if b.path.resolve() not in upstream]
     for b in failed:
         line, msg = report_line(b)
-        print(f"{b.path}:{line}: {msg}")
+        tag = "" if b in strict else " (upstream, report only)"
+        print(f"{b.path}:{line}:{tag} {msg}")
     whole = sum(1 for b in blocks if b.passed == "whole")
     extends = sum(1 for b in blocks if b.passed and b.passed.startswith("extends"))
     in_func = sum(1 for b in blocks if b.passed and b.passed.startswith("in a func"))
     print(
         f"gdscript_blocks_check: {len(files)} files, {len(blocks)} blocks, "
         f"{len(blocks) - len(failed)} parse ({whole} whole, {extends} with an added extends, "
-        f"{in_func} in a func), {len(failed)} fail",
+        f"{in_func} in a func), {len(failed)} fail ({len(failed) - len(strict)} upstream, report only)",
         file=sys.stderr,
     )
-    return 1 if failed else 0
+    return 1 if strict else 0
 
 
 if __name__ == "__main__":
