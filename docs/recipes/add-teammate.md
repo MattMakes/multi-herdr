@@ -28,6 +28,8 @@ In the steps, `<name>` is the teammate id, for example `design-critic`.
    orchestrator reads. Set `agent`, `model`, `effort`, `phase`, `skills`,
    `permission_mode` and tools. Drop `generic:` for a specialist. Do not use
    `fable` or `gpt-6-astra`: the top tier is reserved for the orchestrator.
+   Optional skill fields (see [Skill fields](#skill-fields)):
+   `available_skills` and `operator_skills`.
    A spawnable `agent: claude` teammate needs `disallowed_tools: [Agent]`.
    Do not put a colon followed by a space inside `brief_description`; it
    breaks the YAML.
@@ -85,6 +87,50 @@ In the steps, `<name>` is the teammate id, for example `design-critic`.
   [testing-and-gates.md](../testing-and-gates.md#horch_bless)).
 - Editing `skills/orchestrate/SKILL.md` changes `skill_file_bytes` in
   `crates/horch/tests/oracles/skills/skills-json.txt`.
+
+## Skill fields
+
+A teammate gets skills from 4 fields. Each one has a different cost in
+the worker's briefing.
+
+| field | what the worker gets | briefing cost |
+|---|---|---|
+| `phase` | the phase's bundled skills | names only |
+| `skills` | named bundled or marketplace skills, expected | name and description |
+| `available_skills` | named bundled or marketplace skills, offered | name only, under "Also available" |
+| `operator_skills` | skills from a directory on the operator's machine, expected | name and description |
+
+- Use `available_skills` for a related skill that the persona uses
+  sometimes. Each name is materialized. The harness still lists every
+  materialized skill's description in its own skill list, so keep the list
+  short. A name in both `skills` and `available_skills` fails `--check`.
+- Use `operator_skills` for a skill that cannot ship in this repo, for
+  example Apple's Xcode skills that `xcrun agent skills export` writes:
+
+  ```yaml
+  operator_skills:
+    dir: ~/.agents/skills
+    names: [swiftui-whats-new-27, test-modernizer]
+  ```
+
+  - `~/` expands against the launch's home (`$HOME` of the launch context).
+  - Each name must be `<dir>/<name>/SKILL.md` with a matching `name:`.
+  - The launch copies each directory into the skill bundle and checks the
+    copy's tree digest. The plan records the version as
+    `operator+<digest12>`. Every harness that exposes skills sees them.
+    On Claude they appear as `horch:<name>`, like bundled skills.
+  - `--check` fails on a missing `dir`, a missing name, a name that is
+    named twice, and a name that a bundled or marketplace skill already
+    has.
+  - `--check` refuses a subagent skill: `device-interaction`, or a SKILL.md
+    that contains "SUBAGENT skill" or "Agent tool". Fleet panes start no
+    subagents.
+  - The ledger record (`horch spawn`) does not list operator skills,
+    because `plan_launch` reads no files. The launch's bundle has them.
+  - A teammate with `operator_skills` passes `--check` only on a machine
+    that has the directory. Do not add it to a shipped teammate unless every
+    operator machine has the directory.
+- A fallback launch keeps all 4 fields of the original teammate.
 
 ## Gotchas
 
