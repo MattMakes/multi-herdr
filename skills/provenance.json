@@ -3066,7 +3066,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{budgets-leaks-and-network-tests.md, deterministic-tests.md, golden-state-tests.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-testing-patterns",
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{budgets-leaks-and-network-tests.md, deterministic-tests.md, golden-state-tests.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-testing-patterns; Fact fixes on 4.7: gdUnit4 runner `gdunit4_runner` / `--add-gdunit-test-runner` / `GdUnitRunner.gd -- --testsuites` / `GdUnit4CSharpApiLoader.cs` -> `bin/GdUnitCmdTool.gd -a <dir|file> --ignoreHeadlessMode`; gdUnit4 `--report-dir ./reports` -> `-rd res://reports`; 'exits non-zero on failure' -> gdUnit4 exit 0/100/101/103/105 and 0 with no tests, GUT exit 1 on a failed test but 0 on a broken test script or no tests; GUT `-goutput_dir` (not a GUT 9.7.1 option) -> `-gjunit_xml_file`; `-gexit` added to every GUT command; CI Godot 4.3.0 -> 4.7.2 (GUT 9.7.1 is the release for 4.7.x; gdUnit4 6.2.1 supports 4.5 to 4.7.1 by its README) (evidence: GW2 runs of gdUnit4 6.2.1 and GUT 9.7.1 on Godot 4.7.2, ai_docs/reports/godot/gw2-own-skills.md and skills/godot-build-verify/references/commands.md; option names from the addon sources gut/cli/gut_cli.gd and GdUnitTestCIRunner.gd)",
       "vendored": true
     },
     {

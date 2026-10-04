@@ -18,7 +18,7 @@ This skill covers test-driven development (TDD) for Godot 4.3+ projects using GU
 | Editor integration    | Built-in GUT panel               | Built-in inspector + panel        |
 | Mocking               | `double()` / `stub()` API        | `mock()` / `spy()` API            |
 | Scene testing         | `add_child_autofree()`           | `auto_free()` + scene runner      |
-| CI support            | `gut_cmdln.gd` CLI script        | `gdunit4_runner` CLI script       |
+| CI support            | `gut_cmdln.gd` CLI script        | `bin/GdUnitCmdTool.gd` CLI script |
 | C# support            | Minimal (GDScript wrappers only) | Native C# assertions + lifecycle  |
 | Maturity              | Established (Godot 3 + 4)        | Godot 4 focused, actively updated |
 | Best for              | Pure GDScript projects           | Mixed GDScript/C# or C#-only      |
@@ -64,7 +64,7 @@ res://
 
 ## Running Tests
 
-Both frameworks ship a CLI runner. **GUT:** `addons/gut/gut_cmdln.gd` invoked via `godot --headless --path . -s addons/gut/gut_cmdln.gd`. **gdUnit4:** `--add-gdunit-test-runner` argument, or via the editor "GdUnit Tests" dock. CI: tag-triggered or PR-triggered GitHub Action that installs Godot, runs the suite, exits non-zero on failure.
+Both frameworks ship a CLI runner. **GUT:** `addons/gut/gut_cmdln.gd` invoked via `godot --headless --path . -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit` (without `-gexit` it does not quit). **gdUnit4:** `addons/gdUnit4/bin/GdUnitCmdTool.gd` invoked via `godot --headless --path . -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessMode`, or via the editor "GdUnit Tests" dock. CI: tag-triggered or PR-triggered GitHub Action that installs Godot and runs the suite. GUT exits 1 on a failed test but 0 when a test script does not parse or no test is found; gdUnit4 exits 100 on a failed test, 101 on orphans and 105 on a broken script, and 0 when no test is found. So the CI step must also check the log (counts, `SCRIPT ERROR`), not only the exit code.
 
 > See [references/running-tests.md](references/running-tests.md) for full GUT and gdUnit4 CLI invocations + a copy-pasteable GitHub Actions workflow.
 
@@ -151,3 +151,4 @@ Avoid testing things that add noise without catching real bugs:
 - [references/deterministic-tests.md](references/deterministic-tests.md) — test layers, frame and physics stepping, headless limits, seeding, fuzzing
 - [references/golden-state-tests.md](references/golden-state-tests.md) — golden JSON state files and how to update them
 - [references/budgets-leaks-and-network-tests.md](references/budgets-leaks-and-network-tests.md) — performance budgets, orphan checks, multiplayer tests in one process
+- Runner exit codes and log checks for GUT 9.7.1 and gdUnit4 6.2.1: [references/running-tests.md](references/running-tests.md) and **godot-build-verify** `references/commands.md`

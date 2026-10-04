@@ -28,8 +28,10 @@ nothing copied). The SKILL.md edits are the extended `description:`, a
 
 - `930679a` batch 1: godot-export-pipeline, godot-mobile-development, godot-xr-development.
 - `b2c6fb8` batch 2: godot-multiplayer-basics, godot-multiplayer-sync, godot-dedicated-server.
-- Batch 3 (godot-testing, godot-code-review, this report): committed with
-  `.worktrees/godot-commit.sh`; the sha is in the `horch done` summary.
+- `46886bd` batch 3: godot-testing, godot-code-review, this report
+  (with `.worktrees/godot-commit.sh`).
+- Batch 4: the godot-testing runner fact fixes below and this report update
+  (with `.worktrees/godot-commit.sh`); the sha is in the `horch done` summary.
 
 Batches 1 and 2 were committed by hand under the lock, before the
 `godot-commit.sh` rule. GW2's uncommitted README lines were in the working
@@ -93,6 +95,25 @@ behaviour.
   class-like names found it.
 - `godot-dedicated-server/SKILL.md` feature tag table: fact fix (approved by
   the orchestrator). `--headless` sets no `headless` feature tag (test above).
+- `godot-testing` runner facts: fact fixes so the skill agrees with
+  **godot-build-verify** (`references/commands.md`). Evidence: GW2 ran
+  gdUnit4 6.2.1 and GUT 9.7.1 on Godot 4.7.2
+  (`ai_docs/reports/godot/gw2-own-skills.md`); option names come from the
+  addon sources (`gut/cli/gut_cli.gd`, `GdUnitTestCIRunner.gd`).
+  - `SKILL.md` table (line 21) and CI paragraph (line 67): `gdunit4_runner` and
+    `--add-gdunit-test-runner` -> `bin/GdUnitCmdTool.gd -a <dir|file>
+    --ignoreHeadlessMode`; "exits non-zero on failure" -> the real exit
+    codes and a log check; `-gexit` added to the GUT command.
+  - `references/running-tests.md`: `GdUnitRunner.gd -- --testsuites` and
+    `GdUnit4CSharpApiLoader.cs` (neither is a runner in 6.2.1) ->
+    `GdUnitCmdTool.gd`; `--report-dir ./reports` -> `-rd res://reports`;
+    an exit-code table (0 pass, 0 no tests, 100 fail, 101 orphans, 103
+    headless refusal, 105 broken script); GUT `-goutput_dir` (not a 9.7.1
+    option) -> `-gjunit_xml_file`; `-gexit` on every GUT command; the GUT
+    exit 0 on a broken script or no tests, and a CI step that greps the log;
+    CI Godot 4.3.0 -> 4.7.2.
+  - Not measured: the C# path (gdUnit4Net `dotnet test`), the `-c` flag
+    and `-gjunit_xml_file` output (taken from the addon help text).
 
 ## Upstream findings, not fixed
 
