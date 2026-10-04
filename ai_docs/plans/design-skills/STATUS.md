@@ -21,7 +21,7 @@ Gate: /tmp/igate-ds.sh
 | D12 | lifecycle-gaps | opus-32 | running |
 | D13 | competition-gaps | opus-33 | running |
 | D14 | gsap-factcheck | opus-34 | running |
-| D15 | junior-handbook | staff-engineer-2 | running |
+| D15 | junior-handbook | staff-engineer-2 (plan) -> opus-35 (execute) | running |
 | D16 | dead-code | - | queued after D12+D13 |
 
 Merge order: D00 first; then D01-D06 (tell each to rebase and add provenance), D09, D08; D07 last.
@@ -32,3 +32,4 @@ Notes:
 - Follow-ups: harness_version should read stderr (prime prints --version there; pi --version crashes here); SkillExposure::as_str; skills/README intro still says one upstream.
 - Orchestrator: harness_version 15 s + stderr. Merge helper /tmp/dsmerge.sh resolves README rows and provenance (union by name).
 - Open (from D10): fleet-orchestrator.md:115 and its golden do not list the google pool; horch done can still fail if its pane get runs after the coordinator closed the pane; fake-herdr reuses pane ids after close.
+- Lesson: staff-engineer is a plan-phase persona; it writes an implementation plan, not the deliverable. Give it planning, then hand the plan to an executor.
