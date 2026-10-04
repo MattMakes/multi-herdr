@@ -154,6 +154,9 @@ pub struct PromotionReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+// One value per promotion attempt: boxing the receipt saves nothing that
+// matters and adds a `Box` to every caller.
+#[allow(clippy::large_enum_variant)]
 pub enum PromotionResult {
     Promoted(PromotionReceipt),
     /// The target is untouched (or, after a lost race, someone else's), and

@@ -8,11 +8,10 @@
 //! Three states drive the suggestion:
 //!   * `unpaired` - a worker owns a full-height column, so split DOWN to pair it.
 //!   * `ragged`   - one row has a pane spanning a boundary the other row has, so
-//!                  split RIGHT from that pane to subdivide it.
+//!     split RIGHT from that pane to subdivide it.
 //!   * `complete` - every column is 2 tall, so split RIGHT from the top-rightmost
-//!                  pane to start a new column, then RIGHT from the
-//!                  bottom-rightmost to finish it (adding a column always takes
-//!                  two splits).
+//!     pane to start a new column, then RIGHT from the bottom-rightmost to
+//!     finish it (adding a column always takes two splits).
 
 use std::collections::HashMap;
 

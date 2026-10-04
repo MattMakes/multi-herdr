@@ -20,6 +20,7 @@
 //!   answers a winner over the bundle labels in `./manifest.json`;
 //!   `invalid` answers a fenced object; `crash` exits 3; `hang` blocks;
 //!   `oversize` prints a 2 MiB answer.
+//!
 //! `inspect_skills`: a pane launch also writes the `skills/` dir of each
 //! `--plugin-dir`, the plugin manifest names and the `--settings` value to
 //! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).

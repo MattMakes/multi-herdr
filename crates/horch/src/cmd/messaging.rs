@@ -10,6 +10,8 @@
 use anyhow::{bail, Context, Result};
 use horch_core::execution::lifecycle::{self, DoneRequest, DoneSteps, ReportTarget};
 use horch_core::execution::records::Ledger;
+use horch_core::execution::store::to_execution;
+use horch_core::execution::ExecutionKind;
 use horch_core::harness::launch;
 use horch_core::messaging::delivery;
 use horch_core::messaging::mailbox::Mailbox;
@@ -115,9 +117,13 @@ pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
     let workspace = ctx.herdr.workspace.as_ref().map(|w| w.to_string());
 
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let ledger = Ledger::open_in(ctx)?;
     lifecycle::done(
         &herdr,
-        &CliDone { ctx },
+        &CliDone {
+            ctx,
+            settle: !coordinator_owns_layout(&ledger, &record_id),
+        },
         &DoneRequest {
             record_id: &record_id,
             role: &role,
@@ -138,9 +144,30 @@ fn report_target(ctx: &RuntimeContext, workspace: Option<&str>, role: &str) -> R
         .map_or(ReportTarget::Orchestrator, |b| b.report_to)
 }
 
+/// Whether the dataset coordinator owns the layout this execution's pane is
+/// in. A candidate runs in the dataset workspace, which the coordinator lays
+/// out itself (its `watch` root pane and its candidate panes), and spawns
+/// with tiling off. A judge has no pane. Neither settles the grid on `done`.
+/// A record that cannot be read or typed settles, as every worker did.
+fn coordinator_owns_layout(ledger: &Ledger, record_id: &str) -> bool {
+    ledger
+        .get(record_id)
+        .ok()
+        .and_then(|r| to_execution(&r).ok())
+        .is_some_and(|e| {
+            matches!(
+                e.kind,
+                ExecutionKind::Candidate { .. } | ExecutionKind::Judge { .. }
+            )
+        })
+}
+
 /// The `done` steps against this process's ledger, mailbox and workspace.
 struct CliDone<'a> {
     ctx: &'a RuntimeContext,
+    /// `false` when the coordinator owns the layout: see
+    /// [`coordinator_owns_layout`].
+    settle: bool,
 }
 
 impl DoneSteps for CliDone<'_> {
@@ -157,7 +184,9 @@ impl DoneSteps for CliDone<'_> {
     }
 
     fn settle(&self, workspace: &str) {
-        arrange::settle_after_close(self.ctx, workspace);
+        if self.settle {
+            arrange::settle_after_close(self.ctx, workspace);
+        }
     }
 
     fn record_session(&self, workspace: &str, role: &str, record_id: &str) -> Result<()> {
@@ -194,4 +223,51 @@ fn require_env(key: &str, value: Option<String>) -> Result<String> {
     value.filter(|v| !v.is_empty()).with_context(|| {
         format!("{key} is unset (this command runs inside a `horch spawn` worker pane)")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horch_core::execution::legacy::Record;
+
+    fn record(
+        id: &str,
+        experiment: Option<&str>,
+        round: Option<&str>,
+        label: Option<&str>,
+    ) -> Record {
+        Record {
+            record_id: id.into(),
+            agent: "claude".into(),
+            tier: "sonnet".into(),
+            model: "sonnet".into(),
+            role: format!("{id}-1"),
+            task: "work".into(),
+            experiment_id: experiment.map(Into::into),
+            round_id: round.map(Into::into),
+            label: label.map(Into::into),
+            ..Record::default()
+        }
+    }
+
+    /// A candidate's or a judge's `done` leaves the dataset workspace's
+    /// layout to the coordinator. A fleet worker, and a record that is not
+    /// there, settle the grid as before.
+    #[test]
+    fn done_settles_only_outside_the_coordinator_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ledger = Ledger::for_project(tmp.path(), "/work/alpha");
+        ledger.insert(record("worker", None, None, None)).unwrap();
+        ledger
+            .insert(record("candidate", Some("e1"), Some("r1"), Some("A")))
+            .unwrap();
+        ledger
+            .insert(record("judge", None, Some("r1"), Some("judge:1")))
+            .unwrap();
+
+        assert!(!coordinator_owns_layout(&ledger, "worker"));
+        assert!(coordinator_owns_layout(&ledger, "candidate"));
+        assert!(coordinator_owns_layout(&ledger, "judge"));
+        assert!(!coordinator_owns_layout(&ledger, "missing"));
+    }
 }

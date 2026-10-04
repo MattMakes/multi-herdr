@@ -17,12 +17,14 @@ use horch_core::competition::coordinator::{
 };
 use horch_core::competition::judging::JobLauncher;
 use horch_core::competition::observe::TelemetryUsage;
-use horch_core::competition::planner::{plan_round, PlanInput};
+use horch_core::competition::planner::{config_id, plan_round, PlanInput, RoundPlan};
 use horch_core::evaluation::scheduler::JudgeJobSpec;
 use horch_core::evaluation::validator::CommandValidator;
 use horch_core::execution::store::{to_execution, ExecutionStore};
 use horch_core::execution::{ExecutionKind, ExecutionStatus, FailureKind, ReportTarget};
+use horch_core::harness::HarnessKind;
 use horch_core::ids::{ExperimentId, RoundId};
+use horch_core::ids::{ModelId, TeammateName};
 use horch_core::measure::event::{Actor, EventKind};
 use horch_core::measure::paths::DatasetPaths;
 use horch_core::measure::projection::fold;
@@ -153,10 +155,19 @@ fn fixed_round() -> RoundId {
     RoundId::new("0199a5b0-0000-7000-8000-0000000000c0").unwrap()
 }
 
-#[test]
-fn arc_24_candidates_are_ordinary_executions() {
-    let Some(w) = world() else { return };
-    let roster = roster();
+/// What [`crash_round`] leaves behind.
+struct CrashRound {
+    recorder: JsonlRecorder,
+    store: ExecutionStore,
+    experiment: ExperimentId,
+    round: RoundId,
+    outcome: RoundOutcome,
+}
+
+/// One 2-candidate round run in process, in which every candidate's agent
+/// writes `work.txt` and crashes. `shape` may change the plan before the
+/// round starts.
+fn crash_round(w: &World, roster: &Roster, shape: impl FnOnce(&mut RoundPlan)) -> CrashRound {
     let paths = DatasetPaths::new(&w.ctx.paths.state_root, &w.repo);
     let recorder = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
     let store = ExecutionStore::open(&w.ctx.paths, &w.repo);
@@ -182,18 +193,19 @@ fn arc_24_candidates_are_ordinary_executions() {
         Policy::default(),
         true,
     );
-    let plan = plan_round(&PlanInput {
+    let mut plan = plan_round(&PlanInput {
         round_id: &round,
         index: 0,
         base_sha: &w.base,
         n: 2,
         baseline: None,
-        roster: &roster,
+        roster,
         view: &view,
         filter: &EligibilityFilter::default(),
         config: &config,
     });
     assert_eq!(plan.candidates.len(), 2);
+    shape(&mut plan);
 
     // The experiment as `run` leaves it after preflight.
     let digest = || json!(format!("sha256:{}", "0".repeat(64)));
@@ -266,7 +278,7 @@ fn arc_24_candidates_are_ordinary_executions() {
         git: &w.git,
         workspace: &fake,
         store: &store,
-        roster: &roster,
+        roster,
         validator: &validator,
         usage: &usage,
         meter: &meter,
@@ -289,6 +301,26 @@ fn arc_24_candidates_are_ordinary_executions() {
         watch_command: "watch".into(),
     };
     let outcome = coordinator.start(&spec, &plan).unwrap();
+    CrashRound {
+        recorder,
+        store,
+        experiment,
+        round,
+        outcome,
+    }
+}
+
+#[test]
+fn arc_24_candidates_are_ordinary_executions() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let CrashRound {
+        recorder,
+        store,
+        experiment,
+        round,
+        outcome,
+    } = crash_round(&w, &roster, |_| {});
     // Every agent crashed: no eligible candidate, the round is rejected.
     assert_eq!(outcome, RoundOutcome::Rejected { budget: false });
 
@@ -373,6 +405,55 @@ fn arc_24_candidates_are_ordinary_executions() {
     let mut expected = vec![ledger, "multi-herdr".to_string()];
     expected.sort();
     assert_eq!(entries, expected);
+}
+
+/// A candidate teammate with `operator_skills` gets them on its ledger
+/// record, as a `horch spawn` worker does: the coordinator reads the
+/// operator dir before it plans the launch.
+#[test]
+fn arc_24_candidate_record_lists_operator_skills() {
+    let Some(w) = world() else { return };
+    let skill = w.root.join("home/.agents/skills/test-modernizer");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: test-modernizer\ndescription: Operator-local test modernizer.\n---\nbody\n",
+    )
+    .unwrap();
+    let overlay = w.root.join("teammates");
+    std::fs::create_dir_all(&overlay).unwrap();
+    std::fs::write(
+        overlay.join("op-probe.md"),
+        "---\nname: op-probe\nbrief_description: Operator skills probe.\nbase: fleet-worker\n\
+         agent: claude\nmodel: sonnet\nskills: [tdd]\ndisallowed_tools: [Agent]\n\
+         operator_skills:\n  dir: ~/.agents/skills\n  names: [test-modernizer]\n---\nProbe.\n",
+    )
+    .unwrap();
+    let mut roster = roster();
+    roster.overlay(&overlay).unwrap();
+
+    let probe: TeammateName = "op-probe".parse().unwrap();
+    let model = ModelId::new("sonnet").unwrap();
+    let run = crash_round(&w, &roster, |plan| {
+        for slot in &mut plan.candidates {
+            slot.teammate = probe.clone();
+            slot.harness = HarnessKind::Claude;
+            slot.model = model.clone();
+            slot.effort = None;
+            slot.config_id = config_id(&probe, HarnessKind::Claude, &model, None);
+        }
+    });
+    assert_eq!(run.outcome, RoundOutcome::Rejected { budget: false });
+
+    let records = run.store.read().unwrap();
+    assert_eq!(records.len(), 2, "{records:?}");
+    for record in &records {
+        assert_eq!(record.tier, "op-probe", "{}", record.record_id);
+        let ids: Vec<&str> = record.skills.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["tdd", "test-modernizer"], "{}", record.record_id);
+        let op = &record.skills[1];
+        assert!(op.version.0.starts_with("operator+"), "{:?}", op.version);
+    }
 }
 
 #[test]

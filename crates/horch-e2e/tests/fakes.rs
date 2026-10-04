@@ -417,3 +417,173 @@ fn harness_with_git_makes_repo() {
     assert!(plain.git_bin().is_none() && plain.head_sha().is_none());
     assert!(!plain.allows_program(&git));
 }
+
+/// Start fake herdr `args` in the sealed environment of `h` without waiting.
+fn start_herdr(h: &Harness, args: &[&str]) -> std::process::Child {
+    let mut cmd = Command::new(h.bin.join(format!("herdr{}", std::env::consts::EXE_SUFFIX)));
+    cmd.args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    h.seal(&mut cmd);
+    cmd.spawn().expect("starting fake herdr")
+}
+
+/// Wait up to `secs` for `child`. `None` when it still runs then.
+fn wait_up_to(child: &mut std::process::Child, secs: u64) -> Option<std::process::ExitStatus> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while std::time::Instant::now() < until {
+        if let Some(status) = child.try_wait().unwrap() {
+            return Some(status);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    None
+}
+
+/// The state lock dir of `h`'s fake herdr.
+fn state_lock(h: &Harness) -> std::path::PathBuf {
+    let mut p = h.log.clone().into_os_string();
+    p.push(".state.lock");
+    p.into()
+}
+
+/// A call made after the test removed its temp dir (a detached `horch tile`
+/// can make one) fails at once. It used to wait for the lock for ever.
+#[test]
+fn fake_herdr_fails_when_the_harness_root_is_gone() {
+    let mut h = Harness::new("fakes-gone");
+    // The fakes stay reachable; only the log's directory goes.
+    let gone = h.root.join("gone");
+    h.set("HORCH_FAKE_LOG", gone.join("fake.log").to_string_lossy());
+    let mut child = start_herdr(&h, &["pane", "list"]);
+    let Some(status) = wait_up_to(&mut child, 10) else {
+        let _ = child.kill();
+        panic!("fake herdr still waits for a lock in a removed directory");
+    };
+    assert!(!status.success());
+    let mut err = String::new();
+    std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut err).unwrap();
+    assert!(err.contains("the harness is gone"), "{err}");
+}
+
+/// A lock left by a dead call is taken over; a live holder's lock is kept,
+/// however long it holds it.
+#[cfg(unix)]
+#[test]
+fn fake_herdr_breaks_only_a_dead_holders_lock() {
+    let h = Harness::new("fakes-lock");
+    let lock = state_lock(&h);
+
+    let dead = Command::new("/usr/bin/true").spawn().unwrap();
+    let dead_pid = dead.id();
+    let mut dead = dead;
+    dead.wait().unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    std::fs::write(lock.join("pid"), dead_pid.to_string()).unwrap();
+    let mut child = start_herdr(&h, &["pane", "list"]);
+    let status = wait_up_to(&mut child, 10).expect("a dead holder's lock is taken over");
+    assert!(status.success());
+    assert!(!lock.exists(), "the call released the lock");
+
+    std::fs::create_dir(&lock).unwrap();
+    std::fs::write(lock.join("pid"), std::process::id().to_string()).unwrap();
+    let mut child = start_herdr(&h, &["pane", "list"]);
+    assert!(
+        wait_up_to(&mut child, 3).is_none(),
+        "a live holder's lock is kept"
+    );
+    std::fs::remove_file(lock.join("pid")).unwrap();
+    std::fs::remove_dir(&lock).unwrap();
+    let status = wait_up_to(&mut child, 10).expect("the call goes on once the lock is free");
+    assert!(status.success());
+}
+
+/// Whether a process with this pid runs.
+#[cfg(unix)]
+fn runs(pid: &str) -> bool {
+    Command::new("/bin/sh")
+        .args(["-c", &format!("kill -0 {} 2>/dev/null", pid.trim())])
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// Wait up to 10 s for `file` to hold a pid, and return it.
+#[cfg(unix)]
+fn pid_in(file: &Path) -> String {
+    let started = std::time::Instant::now();
+    loop {
+        let pid = std::fs::read_to_string(file).unwrap_or_default();
+        if !pid.trim().is_empty() {
+            return pid.trim().to_string();
+        }
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "no pid in {}",
+            file.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A test that ends with a pane open (it failed before `horch done`, or
+/// never closed it) leaves nothing running: teardown kills the pane's
+/// process group, and the test does not fail for it.
+#[cfg(unix)]
+#[test]
+fn teardown_kills_the_open_panes() {
+    let mut h = Harness::new("teardown-pane");
+    h.set("HORCH_FAKE_SCENARIO", "exec");
+    let created = json(&fake(&h, "herdr", &["workspace", "create", "--label", "t"]));
+    let root = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let pidfile = std::env::temp_dir().join(format!("teardown-pane-{}", std::process::id()));
+    let command = format!("echo $$ > {}; /bin/sleep 60", pidfile.display());
+    assert!(fake(&h, "herdr", &["pane", "run", &root, &command])
+        .status
+        .success());
+    let pid = pid_in(&pidfile);
+    let _ = std::fs::remove_file(&pidfile);
+    assert!(runs(&pid));
+    drop(h);
+    assert!(!runs(&pid), "teardown kills the pane command");
+}
+
+/// A process that outlives teardown's SIGTERM fails the test, and teardown
+/// kills it.
+#[cfg(unix)]
+#[test]
+fn teardown_fails_a_test_that_leaks_a_process() {
+    let h = Harness::new("teardown-leak");
+    // Named by the harness root, in its own process group, deaf to SIGTERM.
+    let stubborn = h.write_bin(
+        "stubborn",
+        b"#!/bin/sh\ntrap '' TERM\necho $$ > \"$1\"\nwhile :; do /bin/sleep 1; done\n",
+    );
+    let pidfile = h.tmp.join("stubborn.pid");
+    let mut cmd = Command::new(&stubborn);
+    // Not the test's own output: a pipe it held open would stall the run.
+    cmd.arg(&pidfile)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = cmd.spawn().unwrap();
+    let pid = pid_in(&pidfile);
+
+    let teardown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(h)));
+    // The process is this test's child: reap it, or it stays a zombie.
+    let ended = wait_up_to(&mut child, 2).is_some();
+    if !ended {
+        // SIGKILL, so this test never leaks the process itself.
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(ended, "teardown killed pid {pid}");
+    let panic = teardown.expect_err("a leaked process fails the test");
+    let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(message.contains("the test leaked"), "{message}");
+    assert!(message.contains("stubborn"), "{message}");
+}

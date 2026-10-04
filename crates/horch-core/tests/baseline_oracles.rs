@@ -96,8 +96,8 @@ fn oracle_names(roster: &Roster) -> Vec<String> {
         .names()
         .into_iter()
         .filter(|name| {
-            !(SKIP_NEW_TEAMMATES.contains(name)
-                && !oracles().join(format!("launch/{name}.json")).exists())
+            !SKIP_NEW_TEAMMATES.contains(name)
+                || oracles().join(format!("launch/{name}.json")).exists()
         })
         .map(str::to_string)
         .collect()

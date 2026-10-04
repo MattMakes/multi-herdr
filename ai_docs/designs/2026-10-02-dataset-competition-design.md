@@ -85,7 +85,6 @@ parses a dataset file (MEA-08).
   events/YYYY-MM-DD.jsonl              append-only event log (UTC day)
   events.lock/                         DirLock for appends and the idempotency index
   experiments/<exp>/manifest.json      experiment manifest, PreflightReport, environment_digest
-  experiments/<exp>/rounds/<round>.json  round projection (rebuildable)
   experiments/<exp>/artifacts/<round>/judge-input/{task.md, rubric.md, schema.json,
                                                    candidates/<L>/{diff.patch, validation.json},
                                                    manifest.json}
@@ -97,6 +96,11 @@ parses a dataset file (MEA-08).
   worktrees/<exp>/<label>/             default --worktree-root
 ```
 
+No projection is stored. `status`, `rebuild` and `export` fold the events on
+each read (MEA-05), so a projection file would be a second copy that can go
+stale. D19 deleted the `rounds/<round>.json` entry and
+`DatasetPaths::round_file`, which no code wrote or read.
+
 ```rust
 pub struct DatasetPaths { root: PathBuf }
 impl DatasetPaths {
@@ -107,7 +111,6 @@ impl DatasetPaths {
     pub fn events_lock_dir(&self) -> PathBuf;
     pub fn experiment_dir(&self, exp: &ExperimentId) -> PathBuf;
     pub fn manifest(&self, exp: &ExperimentId) -> PathBuf;
-    pub fn round_file(&self, exp: &ExperimentId, round: &RoundId) -> PathBuf;
     pub fn artifacts_dir(&self, exp: &ExperimentId, round: &RoundId) -> PathBuf;
     pub fn judge_input_dir(&self, exp: &ExperimentId, round: &RoundId) -> PathBuf;
     pub fn judgement(&self, round: &RoundId) -> PathBuf;

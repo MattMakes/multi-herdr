@@ -113,14 +113,6 @@ impl DatasetPaths {
         Ok(self.experiment_dir(exp)?.join("manifest.json"))
     }
 
-    pub fn rounds_dir(&self, exp: &ExperimentId) -> PathResult {
-        Ok(self.experiment_dir(exp)?.join("rounds"))
-    }
-
-    pub fn round_file(&self, exp: &ExperimentId, round: &RoundId) -> PathResult {
-        Ok(self.rounds_dir(exp)?.join(json_name(round)?))
-    }
-
     pub fn artifacts_dir(&self, exp: &ExperimentId, round: &RoundId) -> PathResult {
         Ok(self
             .experiment_dir(exp)?

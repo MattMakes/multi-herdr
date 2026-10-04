@@ -54,10 +54,7 @@ fn dataset_paths_reject_traversal_ids() {
         let round = RoundId::new(bad).unwrap();
         assert!(paths.experiment_dir(&exp).is_err(), "{bad:?}");
         assert!(paths.manifest(&exp).is_err(), "{bad:?}");
-        assert!(paths.rounds_dir(&exp).is_err(), "{bad:?}");
         assert!(paths.default_worktree_root(&exp).is_err(), "{bad:?}");
-        assert!(paths.round_file(&good_exp, &round).is_err(), "{bad:?}");
-        assert!(paths.round_file(&exp, &good_round).is_err(), "{bad:?}");
         assert!(paths.artifacts_dir(&good_exp, &round).is_err(), "{bad:?}");
         assert!(paths.judge_input_dir(&good_exp, &round).is_err(), "{bad:?}");
         assert!(paths.judgement(&round).is_err(), "{bad:?}");
@@ -987,7 +984,10 @@ fn pro_05_receipt_fields() {
     assert_eq!(receipt.schema_version, "1.0.0");
     assert_eq!(receipt.round_id.as_str(), "r-1");
     assert_eq!(receipt.label, "A");
-    assert_eq!(receipt.source_shas, [f.candidate.head_sha.clone()]);
+    assert_eq!(
+        receipt.source_shas,
+        std::slice::from_ref(&f.candidate.head_sha)
+    );
     assert_eq!(receipt.dest_ref, "refs/heads/target");
     assert_eq!(receipt.dest_before, f.base);
     assert_eq!(receipt.dest_after, f.candidate.head_sha);

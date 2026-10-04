@@ -239,7 +239,9 @@ mod tests {
             assert_eq!(claude.version.as_deref(), Some("2.1.0"));
             assert_eq!(claude.efforts, ["low", "medium", "high", "xhigh", "max"]);
             assert_eq!(claude.pools, ["claude"]);
-            let models: Vec<(Option<&str>, Vec<(&str, Option<&str>)>)> = claude
+            // (model, [(teammate, effort)])
+            type ModelRow<'a> = (Option<&'a str>, Vec<(&'a str, Option<&'a str>)>);
+            let models: Vec<ModelRow> = claude
                 .models
                 .iter()
                 .map(|m| {

@@ -343,10 +343,6 @@ fn dataset_paths_layout() {
             "/s/multi-herdr/p/experiments/e/manifest.json",
         ),
         (
-            paths.round_file(&exp, &round).unwrap(),
-            "/s/multi-herdr/p/experiments/e/rounds/r.json",
-        ),
-        (
             paths.judge_input_dir(&exp, &round).unwrap(),
             "/s/multi-herdr/p/experiments/e/artifacts/r/judge-input",
         ),

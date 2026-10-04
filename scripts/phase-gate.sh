@@ -14,6 +14,7 @@ step() {
 step cargo fmt --all --check
 step cargo build --workspace --all-targets
 step cargo build --workspace --bins
+step cargo clippy --workspace --all-targets -- -D warnings
 step cargo test --workspace --no-fail-fast
 step env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check
 # No arguments: the coverage check reads ai_docs/gates/architecture-refactor/CURRENT_PHASE.

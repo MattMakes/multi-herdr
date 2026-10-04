@@ -344,13 +344,112 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
+        let leaked = reap(&self.root, &self.log);
         if !std::thread::panicking() {
             check_built_fakes();
+            assert!(
+                leaked.is_empty(),
+                "the test leaked {} process(es) that outlived teardown by {:?}; \
+                 teardown killed them:\n{}",
+                leaked.len(),
+                REAP_GRACE,
+                leaked.join("\n")
+            );
         }
         if std::env::var_os("HORCH_E2E_KEEP").is_none() {
             let _ = std::fs::remove_dir_all(&self.root);
         }
     }
+}
+
+/// How long teardown waits for the harness's processes to end after it
+/// signals them.
+const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// End every process this harness started, and return the ones that
+/// leaked.
+///
+/// A test that fails before `horch done`, or never closes a pane, leaves
+/// fake-herdr `exec` pane commands running: `horch worker` and a `stay`
+/// fake run for ever. Teardown sends SIGTERM to the process group of every
+/// pane that fake-herdr recorded and that is still the same group (the
+/// leader's start time matches, see [`crate::process::is_same_group`]), and
+/// to the group of every process whose command line names the harness root
+/// (a fake, a pane whose start was never recorded). A process of those
+/// groups, or one that names the root, that still runs after
+/// [`REAP_GRACE`] leaked: it gets SIGKILL and is returned.
+#[cfg(unix)]
+fn reap(root: &Path, log: &Path) -> Vec<String> {
+    use crate::process::{is_same_group, processes, signal_groups, Process};
+    let mut state = log.as_os_str().to_owned();
+    state.push(".state.json");
+    let state: Value = std::fs::read_to_string(&state)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    // With the separator: one harness root can be a prefix of another's.
+    let mut marks = vec![format!("{}/", root.display())];
+    if let Ok(canonical) = std::fs::canonicalize(root) {
+        marks.push(format!("{}/", canonical.display()));
+    }
+    let me = std::process::id();
+    let all = processes();
+    let own_group = all.iter().find(|p| p.pid == me).map(|p| p.pgid);
+    let mut groups: Vec<u32> = state["pids"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(pane, pid)| {
+            let pid = u32::try_from(pid.as_u64()?).ok()?;
+            let started = state["started"][pane.as_str()].as_str()?;
+            is_same_group(&all, pid, started).then_some(pid)
+        })
+        .collect();
+    let names_root =
+        |p: &Process| p.pid != me && marks.iter().any(|m| p.command.contains(m.as_str()));
+    groups.extend(all.iter().filter(|p| names_root(p)).map(|p| p.pgid));
+    groups.retain(|g| *g > 1 && Some(*g) != own_group);
+    groups.sort_unstable();
+    groups.dedup();
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    signal_groups(&groups, "TERM");
+    // A group id stays ours while the group has members: no other process
+    // can be given it.
+    let left = || -> Vec<Process> {
+        processes()
+            .into_iter()
+            .filter(|p| p.pid != me && (groups.contains(&p.pgid) || names_root(p)))
+            .collect()
+    };
+    let until = std::time::Instant::now() + REAP_GRACE;
+    loop {
+        let left = left();
+        if left.is_empty() {
+            return Vec::new();
+        }
+        if std::time::Instant::now() >= until {
+            let mut kill: Vec<u32> = left
+                .iter()
+                .map(|p| p.pgid)
+                .filter(|g| *g > 1 && Some(*g) != own_group)
+                .collect();
+            kill.sort_unstable();
+            kill.dedup();
+            signal_groups(&kill, "KILL");
+            return left
+                .into_iter()
+                .map(|p| format!("{} {}", p.pid, p.command))
+                .collect();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(unix))]
+fn reap(_root: &Path, _log: &Path) -> Vec<String> {
+    Vec::new()
 }
 
 /// The size of each built fake when this test process first saw it.

@@ -285,7 +285,7 @@ mod tests {
             "code",
             &[("review", "Review a diff."), ("lint", "Lint.")],
         );
-        let found = resolve_in(&[local.clone()], None, "code", None).unwrap();
+        let found = resolve_in(std::slice::from_ref(&local), None, "code", None).unwrap();
         assert_eq!(found.installed_key, None);
         assert_eq!(
             found.skills,
@@ -300,7 +300,8 @@ mod tests {
             serde_json::json!({"plugins": {"dev@market": {"installPath": installed_dir}}}),
             serde_json::json!({"version": 2, "plugins": {"dev@market": [{"scope": "user", "installPath": installed_dir}]}}),
         ] {
-            let found = resolve_in(&[local.clone()], Some(&registry), "dev", None).unwrap();
+            let found =
+                resolve_in(std::slice::from_ref(&local), Some(&registry), "dev", None).unwrap();
             assert_eq!(found.installed_key.as_deref(), Some("dev@market"));
             assert_eq!(found.description("tdd"), Some("Red, green."));
         }

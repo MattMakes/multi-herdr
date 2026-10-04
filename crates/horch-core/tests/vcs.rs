@@ -347,7 +347,7 @@ fn git_cherry_pick_conflict_reports_paths() {
     );
     assert_eq!(
         f.git.rev_list(&f.repo, &format!("{main}..{head}")).unwrap(),
-        [head.clone()]
+        std::slice::from_ref(&head)
     );
     assert!(f.git.is_ancestor(&f.repo, &main, &head).unwrap());
     assert!(!f.git.is_ancestor(&f.repo, &head, &main).unwrap());

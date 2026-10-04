@@ -592,7 +592,7 @@ fn tile(ctx: &RuntimeContext) -> Result<ExitCode> {
             workers
                 .iter()
                 .zip(&before)
-                .filter(|((_, c), was)| !ticks(c).is_some_and(|now| now > **was))
+                .filter(|((_, c), was)| ticks(c).is_none_or(|now| now <= **was))
                 .map(|((p, _), was)| format!("pane {p} stopped counting at {was}")),
         );
     }

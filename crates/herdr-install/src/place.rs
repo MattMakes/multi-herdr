@@ -194,7 +194,7 @@ pub fn prune_old_releases(releases_dir: &Path, current: &Path, keep: usize) {
             Some((modified, e.path()))
         })
         .collect();
-    others.sort_by(|a, b| b.0.cmp(&a.0));
+    others.sort_by_key(|o| std::cmp::Reverse(o.0));
     for (_, path) in others.into_iter().skip(keep) {
         let _ = std::fs::remove_dir_all(path);
     }
