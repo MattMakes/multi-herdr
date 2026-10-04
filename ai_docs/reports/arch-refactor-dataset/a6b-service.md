@@ -44,7 +44,7 @@ store.find_by_idempotency("spawn:<round>:<label>")?  // Option<Execution>
   orchestrator. B3 must carry `report_to` to the worker (a Brief field) if
   candidates must not report.
 - A Judge record is written as `round_id` plus `label = "judge:<attempt>"`.
-  This is `SPEC-TODO(Spec B)`.
+  This is `SPEC-RESOLVED(Spec B)`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
 ## Order and the recovery rule
 
@@ -64,7 +64,7 @@ store.find_by_idempotency("spawn:<round>:<label>")?  // Option<Execution>
   `Done`. A non-zero code or a signal sets `Failed{AgentExited{code}}`. An
   orchestrator keeps its state. A record that is already terminal (after
   `horch done`) only gets `exit_code`. Ledger write errors are logged, and
-  the agent still starts. `SPEC-TODO(Spec A §8)`: the order verbatim.
+  the agent still starts. `SPEC-RESOLVED(Spec A §8)`: the order verbatim. (closed: ai_docs/designs/2026-10-02-architecture-refactor-design.md §1.3-§4.5, ai_docs/reports/finish/spec-a-core.md)
 
 ## Decisions
 

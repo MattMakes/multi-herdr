@@ -27,6 +27,22 @@ step() {
   "$@"
 }
 
+# No unresolved spec marker may remain. The plan and conventions files of the
+# finish run describe the token, so they are excluded by path. The token is
+# built from two parts so that this file does not match itself.
+no_spec_todo() {
+  local hits token="SPEC-""TODO"
+  hits=$(git grep -n "$token" -- . \
+    ':(exclude)ai_docs/plans/finish/t6-spec-history.md' \
+    ':(exclude)ai_docs/plans/finish/00-conventions.md' || true)
+  if [ -n "$hits" ]; then
+    echo "unresolved spec markers found (close them; see ai_docs/plans/finish/00-conventions.md):" >&2
+    echo "$hits" >&2
+    return 1
+  fi
+}
+
+step no_spec_todo
 step cargo fmt --all --check
 step cargo build --workspace --all-targets
 step cargo build --workspace --bins

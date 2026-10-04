@@ -22,7 +22,7 @@ cost. A small storage probe adapter backs PRE-11. All unit-tested.
   `ai_docs/designs/2026-10-02-dataset-competition-design.md` §4.11
   (`DatasetConfig`, `BudgetConfig`, `JudgeConfig`, `GateConfig`, `Caps`,
   `load`, `CheckStatus`, `CheckResult`, `PreflightReport`, `PreflightPlan`,
-  `evaluate`) and §3.2 (PRE table). `SPEC-TODO(Spec B §3)` marks the check
+  `evaluate`) and §3.2 (PRE table). `SPEC-RESOLVED(Spec B §3)` marks the check (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
   list and thresholds as provisional; keep the marker and choose sensible,
   documented thresholds.
 - Merged building blocks: `runtime::machine::{MachineSnapshot, Known, GpuClass}`
@@ -75,7 +75,7 @@ do not touch: every other file.
    unit's ids) still emit a check from the plan facts you have
    (`harness_versions` resolved for every candidate harness → Pass; any
    `None` → Fail) so the report is complete; their tests come later.
-   Rules (document each threshold in the report; mark `SPEC-TODO(Spec B §3)`):
+   Rules (document each threshold in the report; mark `SPEC-RESOLVED(Spec B §3)`): (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
    - PRE-01 git: Fail when no toplevel, no base SHA, dirty and not
      `allow_dirty`, worktrees unsupported (`git_version` < 2.17), or any
      planned branch name already taken.
@@ -132,4 +132,4 @@ do not touch: every other file.
 ## REPORT
 
 - `horch note` after each commit.
-- `horch done` summary: API, thresholds, deviations, SPEC-TODOs.
+- `horch done` summary: API, thresholds, deviations, SPEC-RESOLVEDs. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)

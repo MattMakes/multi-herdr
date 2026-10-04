@@ -98,7 +98,7 @@ candidate_labels_are_anonymous_letters.
 - The design wins over the plan: `DatasetPaths::new` takes the project path
   (plus `from_slug`), and the lock is `<root>/events.lock/`, not in the
   events dir.
-- The orchestrator added 3 kinds, each marked `SPEC-TODO(Spec B event list)`:
+- The orchestrator added 3 kinds, each marked `SPEC-RESOLVED(Spec B event list)`: (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §4.1/§4.3/§5, ai_docs/reports/finish/spec-b-events.md)
   `round.needs_intervention {reason, source: judge|promotion|operator}`,
   `round.cleanup_started {}`, `round.completed {final_outcome}`.
 - The orchestrator decided to type the placeholders before the golden was

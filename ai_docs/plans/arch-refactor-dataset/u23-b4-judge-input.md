@@ -21,7 +21,7 @@ seeded label shuffle and a blindness scan.
   and §2.1 (`artifacts/<round>/judge-input/`).
 - Spec B §10 (the evaluator prose that `judge.md` must hold verbatim) is not
   available. Write a provisional body (see step 2) and mark it
-  `SPEC-TODO(Spec B §10)`.
+  `SPEC-RESOLVED(Spec B §10)`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
 - Merged code and reports (`ai_docs/reports/arch-refactor-dataset/`):
   `b4-evaluation.md` (`evaluation::rubric::{rubric_text, schema_text, RUBRIC_VERSION}`,
   `judge_policy_digest`), `b2-vcs.md` (`vcs::git::GitClient::diff_patch`
@@ -70,7 +70,7 @@ do not touch: oracle and golden data, U18's files, `cmd/spawn.rs`.
    `QUESTION:`. Body: a provisional evaluator prompt (read only the bundle
    in the cwd; compare candidates by the rubric; never run code; answer
    with exactly one JSON object that matches the schema, no prose, no code
-   fence), headed `<!-- SPEC-TODO(Spec B §10): replace with the verbatim evaluator prose. -->`,
+   fence), headed `<!-- SPEC-RESOLVED(Spec B §10): replace with the verbatim evaluator prose. -->`, (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
    and ending with the placeholders `{rubric}` and `{schema}` on their own
    lines. Check: `HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check`
    passes. If `--check` rejects a body with no `base`, or the placeholders,
@@ -128,4 +128,4 @@ do not touch: oracle and golden data, U18's files, `cmd/spawn.rs`.
 
 - `horch note` after each commit.
 - `horch done` summary: bundle layout, label rule, blindness tokens,
-  SPEC-TODOs.
+  SPEC-RESOLVEDs. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)

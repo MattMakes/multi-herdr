@@ -312,7 +312,66 @@ fn install_skills(
         &ctx.paths.state_root.join("skill-bundles"),
     );
     let home = ctx.inherited.home_var.as_deref().map(Path::new);
-    crate::skills::Bundle::install_from(&ctx.paths.state_root, req.teammate, catalog, &name, home)
+    let bundle = crate::skills::Bundle::install_from(
+        &ctx.paths.state_root,
+        req.teammate,
+        catalog,
+        &name,
+        home,
+    )?;
+    // The worker must run the skills the ledger recorded at spawn (SKL-04).
+    // The catalog and the operator directory are read again here, so a
+    // skill that changed, vanished or appeared since the spawn fails the
+    // launch. The copy itself is digest-checked against this plan.
+    if let Some(target) = &req.record {
+        let record = crate::execution::store::ExecutionStore::open_in(ctx)?
+            .get(target.record_id)
+            .with_context(|| format!("reading the skills recorded for {}", target.record_id))?;
+        let launched = bundle
+            .as_ref()
+            .map(|b| b.plan().activated.as_slice())
+            .unwrap_or_default();
+        if let Some(why) = skill_drift(&record.skills, launched) {
+            bail!(
+                "the skills changed since {} was spawned: {why}. \
+                 Spawn the worker again to record the current skills",
+                target.record_id
+            );
+        }
+    }
+    Ok(bundle)
+}
+
+/// How the skills this launch resolved differ from the ones the ledger
+/// recorded at spawn, by id, version and digest; `None` when they match.
+/// The invocation policy and the source label do not count: the bytes do.
+fn skill_drift(
+    recorded: &[crate::skills::activation::ResolvedSkillRef],
+    launched: &[crate::skills::activation::ResolvedSkillRef],
+) -> Option<String> {
+    let key = |r: &crate::skills::activation::ResolvedSkillRef| {
+        (r.id.as_str().to_owned(), (r.version.0.clone(), r.digest))
+    };
+    let recorded: BTreeMap<_, _> = recorded.iter().map(key).collect();
+    let launched: BTreeMap<_, _> = launched.iter().map(key).collect();
+    let mut problems = Vec::new();
+    for (id, (version, digest)) in &recorded {
+        match launched.get(id) {
+            None => problems.push(format!("'{id}' ({version}) is missing now")),
+            Some((v, d)) if (v, d) != (version, digest) => problems.push(format!(
+                "'{id}' was {version} (digest {}) and is {v} (digest {}) now",
+                digest.short12(),
+                d.short12()
+            )),
+            Some(_) => {}
+        }
+    }
+    for (id, (version, _)) in &launched {
+        if !recorded.contains_key(id) {
+            problems.push(format!("'{id}' ({version}) was not recorded"));
+        }
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
 }
 
 /// The record id when it is one plain path component that no directory in

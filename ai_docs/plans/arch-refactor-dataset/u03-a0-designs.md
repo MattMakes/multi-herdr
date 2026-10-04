@@ -110,10 +110,10 @@ do not touch: every other file.
       `promotion.started`, `promotion.completed`, `promotion.conflicted`,
       `promotion.rolled_back`, `worktree.cleanup_failed`, `outcome.recorded`,
       plus an `Unknown` variant that preserves the raw JSON; mark the list
-      `SPEC-TODO(Spec B event list)`), `NewEvent`, `Recorder`, `Appended`,
+      `SPEC-RESOLVED(Spec B event list)`), `NewEvent`, `Recorder`, `Appended`, (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §4.1/§4.3/§5, ai_docs/reports/finish/spec-b-events.md)
       `WorkerRun` 1.0.0 fields, money types, `GitClient`, `WorktreeManager`,
       `FrozenCandidate`, `Validator`, `ValidationReport`, `JudgeInput`,
-      `Judgment` (mark `SPEC-TODO(Spec B §11)`), `WinnerPolicy`,
+      `Judgment` (mark `SPEC-RESOLVED(Spec B §11)`), `WinnerPolicy`, (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
       `WinnerOutcome`, `PromotionEngine`, `PromotionReceipt`, the teacher
       types, the export row, `MachineSnapshot`, `PreflightReport`,
       `DatasetConfig`.
@@ -158,5 +158,5 @@ do not touch: every other file.
 ## REPORT
 
 - `horch note` after each doc.
-- `horch done` summary: ID counts per family, every SPEC-TODO, and any master
+- `horch done` summary: ID counts per family, every SPEC-RESOLVED, and any master (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
   plan inconsistency you found.

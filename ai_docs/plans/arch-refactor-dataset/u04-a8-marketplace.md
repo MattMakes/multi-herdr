@@ -29,7 +29,7 @@ tests of phase A8 pass. No CLI is added (that is A11).
   into one catalog in core. Your crate defines the `Bundled` source type only;
   it does not embed the bundled files.
 - Spec A §10 text is not available. Mark the manifest shape
-  `SPEC-TODO(Spec A §10)`.
+  `SPEC-RESOLVED(Spec A §10)`. (closed: ai_docs/designs/2026-10-02-architecture-refactor-design.md §4.10/§6, ai_docs/reports/finish/spec-a-marketplace.md)
 - U01 adds the `horch-marketplace` allowlist to `scripts/check-deps.sh` and
   `nfr_06` in `crates/horch-core/tests/nfr.rs`. Before READY-TO-MERGE, rebase
   onto `arch-refactor-dataset` after U01 merged. If U01 has not merged when
@@ -68,7 +68,7 @@ installer.rs lockfile.rs integrity.rs git.rs fsx.rs error.rs`.
 - `manifest.rs`: `SkillManifest` parsed from the SKILL.md frontmatter with
   `#[serde(deny_unknown_fields)]`. Allowed keys: `name`, `description`,
   `license`, `metadata` (a string map), `allowed-tools`. Any other key (for
-  example `hooks`) is rejected. Mark the key list `SPEC-TODO(Spec A §10)`.
+  example `hooks`) is rejected. Mark the key list `SPEC-RESOLVED(Spec A §10)`. (closed: ai_docs/designs/2026-10-02-architecture-refactor-design.md §4.10/§6, ai_docs/reports/finish/spec-a-marketplace.md)
 - `git.rs`: `pub struct GitRunner { bin: PathBuf }` and
   `pub fn run(&self, dir: &Path, args: &[&str]) -> Result<GitOutput, GitError>`.
   The child env: clear nothing globally, but always set
@@ -163,4 +163,4 @@ installer.rs lockfile.rs integrity.rs git.rs fsx.rs error.rs`.
 ## REPORT
 
 - `horch note` after each 2 or 3 modules.
-- `horch done` summary: public API, store layout, lock format, SPEC-TODOs.
+- `horch done` summary: public API, store layout, lock format, SPEC-RESOLVEDs. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)

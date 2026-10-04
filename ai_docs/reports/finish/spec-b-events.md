@@ -5,7 +5,7 @@ Unit: `spec-b-events`. Branch: `ds/spec-b-events`. Plan:
 
 ## Outcome
 
-Every SPEC-TODO in my files is closed. The implemented, tested behaviour is
+Every SPEC-RESOLVED in my files is closed. The implemented, tested behaviour is
 now the spec text. No code behaviour changed: the code already made every
 decision, and the tests already pin it. Code changes are comments only.
 
@@ -13,19 +13,19 @@ decision, and the tests already pin it. Code changes are comments only.
 
 | # | Location (before) | What it says now | Evidence | Code changed |
 |---|---|---|---|---|
-| 1 | design §1.4, `SPEC-TODO(Spec B §20)` | The complete non-goal list, 8 rows, each with its requirement and the test that pins it. The DB-server and distributed-run lines are split from the online-RL line. | `exp_01_inert_returns_none`, `nfr_09_no_async_runtime_deps`, `nfr_06_dependency_allowlist`, `sec_04_judge_cwd_bundle_tools_readonly`, `sec_07_gates_only_from_config`, `pro_04_conflict_needs_intervention_preserves_worktrees`, `sec_03_no_transcript_copies_by_default`, `arc_24_candidates_are_ordinary_executions`, `jdg_06_policy_table` | no |
-| 2 | design §4.1, `SPEC-TODO(Spec B event list)` | The complete list of 27 kinds with every payload. Adds the 4 kinds the master plan does not name (`round.needs_intervention`, `round.cleanup_started`, `round.completed`, `operator.promote`) and their payloads, the `publish` and `validation_ids` fields of `promotion.started`, the `kind` tag of `JudgeFailure`, the `final_outcome` rule, and a table of actor, writer and idempotency key per kind. | `mea_02_envelope_roundtrip_every_kind` (pins `EventKind::KNOWN`), `mea_02_unknown_kind_preserved`, `mea_02_known_kind_bad_payload_is_an_error`, `mea_05_round_needs_intervention_and_completion_checks`, `mea_05_full_lifecycles_fold_without_anomalies` | comments only |
+| 1 | design §1.4, `SPEC-RESOLVED(Spec B §20)` | The complete non-goal list, 8 rows, each with its requirement and the test that pins it. The DB-server and distributed-run lines are split from the online-RL line. | `exp_01_inert_returns_none`, `nfr_09_no_async_runtime_deps`, `nfr_06_dependency_allowlist`, `sec_04_judge_cwd_bundle_tools_readonly`, `sec_07_gates_only_from_config`, `pro_04_conflict_needs_intervention_preserves_worktrees`, `sec_03_no_transcript_copies_by_default`, `arc_24_candidates_are_ordinary_executions`, `jdg_06_policy_table` | no |
+| 2 | design §4.1, `SPEC-RESOLVED(Spec B event list)` | The complete list of 27 kinds with every payload. Adds the 4 kinds the master plan does not name (`round.needs_intervention`, `round.cleanup_started`, `round.completed`, `operator.promote`) and their payloads, the `publish` and `validation_ids` fields of `promotion.started`, the `kind` tag of `JudgeFailure`, the `final_outcome` rule, and a table of actor, writer and idempotency key per kind. | `mea_02_envelope_roundtrip_every_kind` (pins `EventKind::KNOWN`), `mea_02_unknown_kind_preserved`, `mea_02_known_kind_bad_payload_is_an_error`, `mea_05_round_needs_intervention_and_completion_checks`, `mea_05_full_lifecycles_fold_without_anomalies` | comments only |
 | 3 | `measure/event.rs` `EventKind` doc | Points to design §4.1. | as 2 | comment only |
 | 4 | `measure/event.rs` `RoundNeedsIntervention` | Says why the kind exists; points to §4.1. | as 2 | comment only |
 | 5 | `measure/event.rs` `RoundCleanupStarted` | as 4 | as 2 | comment only |
 | 6 | `measure/event.rs` `RoundCompleted` | as 4 | as 2 | comment only |
 | 7 | `measure/projection.rs` module doc | Points to §4.1 for why the 3 round kinds exist. | as 2 | comment only |
-| 8 | design §4.3, `SPEC-TODO(Spec B WorkerRun)` | The complete field list plus a source table: the event or record each field comes from, and its value when the source is missing. | `mea_06_worker_run_schema` (exact key set per object), `mea_06_no_winner_field`, `mea_11_fake_lifecycle_replays_identical_worker_run`, golden `tests/golden/worker-run-1.0.0.json` (unchanged) | no |
+| 8 | design §4.3, `SPEC-RESOLVED(Spec B WorkerRun)` | The complete field list plus a source table: the event or record each field comes from, and its value when the source is missing. | `mea_06_worker_run_schema` (exact key set per object), `mea_06_no_winner_field`, `mea_11_fake_lifecycle_replays_identical_worker_run`, golden `tests/golden/worker-run-1.0.0.json` (unchanged) | no |
 | 9 | `measure/worker_run.rs` module doc | Points to §4.3. The stale sentence "The `Execution` struct arrives in A6" now names `horch/src/dataset/export.rs:facts_of`. | as 8 | comment only |
-| 10 | design §5, `SPEC-TODO(Spec B round states)` | The 16 states, why the states before JUDGING_BACKGROUND exist, and the full `TABLE` as 3 tables (default path, promotion path, operator transitions). The old table did not match the code; it now matches row for row. Also lists the checks the fold makes beyond the table. | `cmp_03_transition_table` (every row, every refused pair), `cmp_03_prop_no_invalid_path_to_promoted`, `mea_05_*` | no |
+| 10 | design §5, `SPEC-RESOLVED(Spec B round states)` | The 16 states, why the states before JUDGING_BACKGROUND exist, and the full `TABLE` as 3 tables (default path, promotion path, operator transitions). The old table did not match the code; it now matches row for row. Also lists the checks the fold makes beyond the table. | `cmp_03_transition_table` (every row, every refused pair), `cmp_03_prop_no_invalid_path_to_promoted`, `mea_05_*` | no |
 | 11 | `competition/model.rs` `RoundState` doc | Points to §5. | as 10 | comment only |
 | 12 | `competition/state.rs` module doc | Points to §5. | as 10 | comment only |
-| 13 | `competition/state.rs` `TABLE`, `SPEC-TODO(Spec B §promote)` | `promote <round>` re-enters at DECIDED from COMPLETE as well as NEEDS_INTERVENTION. Written in design §5.3. | `operator_promote_reenters_revalidation`, `pro_08_promote_to_and_promote_cmd` | comment only |
+| 13 | `competition/state.rs` `TABLE`, `SPEC-RESOLVED(Spec B §promote)` | `promote <round>` re-enters at DECIDED from COMPLETE as well as NEEDS_INTERVENTION. Written in design §5.3. | `operator_promote_reenters_revalidation`, `pro_08_promote_to_and_promote_cmd` | comment only |
 
 Marker 13 is not in the plan's GOAL list. It is in `competition/state.rs`,
 which the plan gives me, and no other unit names it, so I closed it.

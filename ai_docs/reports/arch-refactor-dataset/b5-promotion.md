@@ -142,10 +142,10 @@ The engine does not emit these events.
 - PRO-07 uses mode 0555 on the worktree dir. `git worktree remove --force`
   then fails, and the other worktrees are still removed.
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
 - None new. The `operator.promote` kind sits under the existing
-  `SPEC-TODO(Spec B event list)` on `EventKind`.
+  `SPEC-RESOLVED(Spec B event list)` on `EventKind`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §4.1/§4.3/§5, ai_docs/reports/finish/spec-b-events.md)
 
 ## Tests
 

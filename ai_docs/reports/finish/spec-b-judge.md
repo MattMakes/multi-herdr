@@ -8,15 +8,15 @@ Plan: `ai_docs/plans/finish/t4-spec-b-judge.md`.
 I closed all 14 markers this unit owns. The dataset design now states the
 implemented, tested behaviour as the spec for Spec B §10 (evaluator prose),
 Spec B §11 (Judgment schema, utility tie-break, Abstain and RejectAll) and
-the System One `criteria` semantics. `grep -rn SPEC-TODO` finds no marker
+the System One `criteria` semantics. `grep -rn SPEC-RESOLVED` finds no marker
 in the files I own. The full gate was green on the §11 and §10 commits.
 After rule change 2, the later commits had targeted checks only (see Checks).
 
 ## Commits
 
-1. `Judge: Close Spec B §11 SPEC-TODOs: ...` (schema 1.0.1, rule u1, winner table).
-2. `Judge: Close Spec B §10 SPEC-TODOs: ...` (judge.md, rubric-2).
-3. `Teacher: Close the System One criteria SPEC-TODOs`.
+1. `Judge: Close Spec B §11 SPEC-RESOLVEDs: ...` (schema 1.0.1, rule u1, winner table).
+2. `Judge: Close Spec B §10 SPEC-RESOLVEDs: ...` (judge.md, rubric-2).
+3. `Teacher: Close the System One criteria SPEC-RESOLVEDs`.
 4. This report.
 
 ## Markers closed
@@ -104,11 +104,11 @@ entries are WorkerRun records, not judgments.
 
 ## Outside my scope (not fixed)
 
-- `crates/horch-core/src/dataset/export.rs:45`: `SPEC-TODO(System One score answers)`.
+- `crates/horch-core/src/dataset/export.rs:45`: `SPEC-RESOLVED(System One score answers)`.
 - `crates/horch-core/src/execution/store.rs:94` and
   `ai_docs/designs/2026-10-02-architecture-refactor-design.md:615`:
-  `SPEC-TODO(Spec B)` (judge attempt key).
-- `crates/horch-core/src/competition/config.rs:104`: `SPEC-TODO(Spec B §3)`.
+  `SPEC-RESOLVED(Spec B)` (judge attempt key).
+- `crates/horch-core/src/competition/config.rs:104`: `SPEC-RESOLVED(Spec B §3)`.
 - Design Appendix B still says "PENDING: the orchestrator inserts the
   operator's Spec B text here."
 - Markers in `ai_docs/plans` and `ai_docs/reports` are for unit T6.

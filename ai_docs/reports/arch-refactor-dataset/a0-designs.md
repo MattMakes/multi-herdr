@@ -67,7 +67,7 @@ lists ARC-02, ARC-03 and ARC-04.
 4. ARC-11's Tests cell is shorthand (`arc_11_codex_/opencode_discovery_by_workdir`).
 5. Multi-phase cells (`A6/A12`, `B3–B5`) have no whitespace around the separator.
 
-## SPEC-TODO markers
+## SPEC-RESOLVED markers (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
 | Marker | Where |
 |---|---|
@@ -93,7 +93,7 @@ lists ARC-02, ARC-03 and ARC-04.
 - The coverage check reads the Phase column. Today `CURRENT_PHASE` lists no
   phase, so the gate does not require tests for these IDs yet.
 - When Spec A and Spec B arrive, fill Appendix A and Appendix B. Then
-  resolve every SPEC-TODO and renumber the `PENDING spec text` rows in
+  resolve every SPEC-RESOLVED and renumber the `PENDING spec text` rows in (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
   `SPEC-COVERAGE.md`.
 - When a merged unit's code differs from a signature in these docs, the
   merged code wins. Update the design in the same phase.

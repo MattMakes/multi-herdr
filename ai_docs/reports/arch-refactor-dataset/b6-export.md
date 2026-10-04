@@ -66,11 +66,11 @@ removed round-id guard failed the forged-round test.
   `{config: 1.0}`, `confidence` = null.
 - **Quality answers.** `{"choice":null,"probabilities":{"score":<sum>},"confidence":null}`.
   The sum exists only there. `component_quality` keeps every component.
-  Without a judgment the answer is null. `SPEC-TODO(System One score answers)`.
+  Without a judgment the answer is null. `SPEC-RESOLVED(System One score answers)`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
 - **Duplicate config ids** in one round are an error, because the
   `quality:<config_id>` keys would collide. The B3 planner keeps them distinct.
 - **`task_features`.** `budget_usd_micro`, `candidates`, `round_index` and
-  `strategy`. `SPEC-TODO(Spec B export state)`.
+  `strategy`. `SPEC-RESOLVED(Spec B export state)`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
 - **`promotion`.** A field that the design does not have:
   `{"dest_after": …}` from `promotions/<round>.json` read as a JSON value,
   else null. `// B5: typed once PromotionReceipt lands`. A receipt without
@@ -87,7 +87,7 @@ removed round-id guard failed the forged-round test.
   next level only, as `clef: judged rounds 12/50`,
   `clef: arms with >= 10 runs 2/4`, `clef: distinct tasks 5/30`,
   `laya: judged rounds 50/500`, `laya: arms with >= 50 runs 0/4`.
-  `SPEC-TODO(Spec B readiness)`: Laya's "≥ 50 runs per arm" is read as
+  `SPEC-RESOLVED(Spec B readiness)`: Laya's "≥ 50 runs per arm" is read as (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
   "at least `clef_min_arms` arms with ≥ 50 runs".
 - **Policy file.** `{"schema_version":"1.0.0","readiness":{…}}` with
   `deny_unknown_fields`. An override file replaces all the thresholds.

@@ -14,6 +14,9 @@ Status values:
 - `PENDING spec text`: the verbatim spec is not in the repository yet. The
   row is a placeholder. Fill it from Appendix A or Appendix B.
 
+The finish run closed every unresolved spec marker. The gate step `no_spec_todo`
+in `scripts/phase-gate.sh` fails if a new one appears.
+
 Update this file at the end of every phase (master plan §5, step 3).
 
 **Final audit.** After B6, the final audit walks both verbatim specs (the

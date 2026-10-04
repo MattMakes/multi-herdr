@@ -66,7 +66,7 @@ an idempotency key, so `resume` re-enters the same loop:
   then pane close, then the event. Leftover panes of ended agents are closed.
 - Budget: `UsageMeter` prices every candidate session from its transcript
   (`usage::read_session`, the `horch cost` readers). `committed` is 0
-  (`SPEC-TODO(Spec B §budget)`: no per-candidate spend estimate). Cancel
+  (`SPEC-RESOLVED(Spec B §budget)`: no per-candidate spend estimate). Cancel (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
   closes panes and records `cancelled{budget}`; candidates not started are
   `cancelled{budget}` too. Data stays.
 - Disk: `runtime::machine::probe` on the worktree root's disk against
@@ -155,9 +155,9 @@ an idempotency key, so `resume` re-enters the same loop:
   attempts (the job inherits `HORCH_FAULT`), so the round ends in
   NEEDS_INTERVENTION (exit 5).
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
-- `SPEC-TODO(Spec B §budget)`: the expected spend of a running candidate
+- `SPEC-RESOLVED(Spec B §budget)`: the expected spend of a running candidate (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
   (`committed` is 0), in `coordinator.rs`.
 
 ## Outside my scope (not fixed)

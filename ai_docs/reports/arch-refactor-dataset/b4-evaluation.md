@@ -69,13 +69,13 @@ SEC-06 as ok. The other B4 IDs belong to later units.
 - **`JudgmentRecord`** derives `Serialize` and `Deserialize`, without
   `deny_unknown_fields`, because the design does not put it there.
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
-- `judgment.rs` `Judgment`: SPEC-TODO(Spec B §11) the Judgment schema verbatim.
-- `winner.rs` `TieBreak`: SPEC-TODO(Spec B §11) the utility definition.
-- `winner.rs` `decide_winner`: SPEC-TODO(Spec B §11) the Abstain and RejectAll mappings.
-- `winner.rs` `utility_winner`: SPEC-TODO(Spec B §11 utility) the tied labels and the rule.
-- `rubric-1.md` and the schema `description`: SPEC-TODO(Spec B §10/§11) provisional.
+- `judgment.rs` `Judgment`: SPEC-RESOLVED(Spec B §11) the Judgment schema verbatim. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
+- `winner.rs` `TieBreak`: SPEC-RESOLVED(Spec B §11) the utility definition. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
+- `winner.rs` `decide_winner`: SPEC-RESOLVED(Spec B §11) the Abstain and RejectAll mappings. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
+- `winner.rs` `utility_winner`: SPEC-RESOLVED(Spec B §11 utility) the tied labels and the rule. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
+- `rubric-1.md` and the schema `description`: SPEC-RESOLVED(Spec B §10/§11) provisional. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
 
 ## For later units
 

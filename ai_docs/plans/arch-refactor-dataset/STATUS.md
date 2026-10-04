@@ -40,7 +40,7 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 
 ## Open items
 - Spec A / Spec B verbatim text: requested from operator. Needed for design appendices, judge.md (§10), Judgment schema (§11), event list, CHECKLIST (§16), final audit.
-- SPEC-TODO from U29: Spec B §3 build_bytes estimate, local_model_bytes, trusted_parents (PRE-13 warns every run); outcome default score per kind.
+- SPEC-RESOLVED from U29: Spec B §3 build_bytes estimate, local_model_bytes, trusted_parents (PRE-13 warns every run); outcome default score per kind. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
 
 - Running: none. All units merged.
 
@@ -81,12 +81,12 @@ Later: A6 (split store early after U06+A1), A7b messaging, A9 after A8+A3, A10, 
 - Merged U29 b2-binary (CLI in dataset/cli.rs, dispatch dataset/mod.rs).
 - Merged U28 a10-exposure (A10 landed).
 - Merged U26 a6b-service (A6 landed). spawn.rs 241 lines (target ~150), worker.rs 27.
-- SPEC-TODO from U26: Spec A §4 Execution fields; Spec A §8 SpawnRequest fields and worker startup order; Spec B judge attempt key (label judge:N).
+- SPEC-RESOLVED from U26: Spec A §4 Execution fields; Spec A §8 SpawnRequest fields and worker startup order; Spec B judge attempt key (label judge:N). (closed: ai_docs/designs/2026-10-02-architecture-refactor-design.md §1.3-§4.5, ai_docs/reports/finish/spec-a-core.md)
 - Merged U34 tel02-flake (guard + retrying read; flake not reproduced).
 - Merged U31 b4-judge-job (B4 landed; full-round e2e and B4 crash points pending on U30). Gotchas in b4-judge-job.md 'Gotchas for U30 and U32'.
 - U30 now also owns jdg_e2e_round_decided and the B4 crash points (no judging stub).
 - Merged U30 b3-coordinator (B3 landed). Kernel gaps: worker dying before set_running leaves Starting+live pane (deadline only); CommandValidator gets no HORCH_FAULT set (fail-gate unreachable from run) -> U35.
-- SPEC-TODO from U30: Spec B §budget expected spend of a running candidate (committed = 0).
+- SPEC-RESOLVED from U30: Spec B §budget expected spend of a running candidate (committed = 0). (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
 - Merged U35 worker-startup-failure (enter_context/register failure -> Failed(AgentExited{None})).
 - Gap (from U32): codex session discovery polls every 3 s; a worker that ends sooner never records its session id -> no cost. Fix: final discovery attempt at agent exit / horch done.
 - Merged U36 session-discovery-race, U32 b5-cli (B5, B6 landed; A9 marked). cmp_07_timeout/mea_10 deadline 2->6 s (load flake). U37 dataset-gaps: exp8 collision + --promote-to preflight.

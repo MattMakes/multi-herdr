@@ -109,6 +109,6 @@ An unknown round is an error: exit 1, `no such round <id>`.
 - `crates/horch-core/tests/execution_store.rs` still has the unused import
   warning (`KIND_ORCHESTRATOR`).
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
 None new.

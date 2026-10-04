@@ -55,7 +55,7 @@ Validation: `candidates >= 1`; budgets not negative; with a hard ceiling,
 and reserve must be 0 too; each gate has a non-blank command and
 `timeout_s > 0`; `caps.max_parallel` is not 0.
 
-## Thresholds (preflight), all `SPEC-TODO(Spec B §3)`
+## Thresholds (preflight), all `SPEC-RESOLVED(Spec B §3)` (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
 
 | Check | Rule | Constant |
 |---|---|---|

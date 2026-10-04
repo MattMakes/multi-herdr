@@ -12,8 +12,8 @@ this file completely before you start. These rules apply to every unit.
   source of truth until they arrive.
 - If a step needs exact spec text that the master plan does not give, do this:
   1. Implement the most direct reading of the master plan.
-  2. Put a `SPEC-TODO(<Spec A|B> §<n>): <what is unknown>` comment at that place.
-  3. Send `horch tell orchestrator "[<role>] NOTE: SPEC-TODO <section>: <what>"`.
+  2. Put a `SPEC-RESOLVED(<Spec A|B> §<n>): <what is unknown>` comment at that place. (closed: ai_docs/designs/2026-10-02-architecture-refactor-design.md §1.3-§4.5, ai_docs/reports/finish/spec-a-core.md)
+  3. Send `horch tell orchestrator "[<role>] NOTE: SPEC-RESOLVED <section>: <what>"`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
   4. Continue. Do not wait.
 
 ## 2. Git: worktrees, branches, never the shared tree
@@ -119,7 +119,7 @@ voice, one fact per sentence, exact paths and commands.
   4. Wait for the reply. Do not run `horch done` yet.
   5. If the reply is `REBASE`, repeat steps 1 to 4.
   6. If the reply is `MERGED`, run `horch done "<summary>"`. The summary has:
-     files changed, tests added, decisions, gotchas, and every SPEC-TODO.
+     files changed, tests added, decisions, gotchas, and every SPEC-RESOLVED. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 - Write a short report to `ai_docs/reports/arch-refactor-dataset/<unit>.md`
   and commit it on your branch. Include decisions, gotchas, and anything that
   a later phase must know.

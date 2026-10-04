@@ -170,6 +170,6 @@ text into every harness. Source review only; no scanner.
 - `crates/horch-core/tests/execution_store.rs` warns about an unused import
   `KIND_ORCHESTRATOR` (in the base).
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
 None added.

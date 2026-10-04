@@ -101,9 +101,9 @@ file). `file` is the `b/` path of the last `diff --git` header, or
   the manifest is written last, then the dirs become 0500.
 - **Diff cap.** `DIFF_CAP_BYTES` = 1 MiB per candidate.
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
-- `teammates/judge.md`: `SPEC-TODO(Spec B §10)` the verbatim evaluator
+- `teammates/judge.md`: `SPEC-RESOLVED(Spec B §10)` the verbatim evaluator (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
   prose. The body is provisional.
 
 ## Gotchas for later units

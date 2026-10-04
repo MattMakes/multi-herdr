@@ -89,7 +89,7 @@ on `refs/heads/main`, which is after the check. It has 4 cases:
 ## Gap 2: committed spend (`budget.rs`, `coordinator.rs`)
 
 Policy (the orchestrator's decision pending the Spec B §budget text; the
-`SPEC-TODO(Spec B §budget)` is replaced by a comment that says this):
+`SPEC-RESOLVED(Spec B §budget)` is replaced by a comment that says this): (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
 
 - Each running candidate: committed = max(measured so far, projected). In
   `BudgetPolicy::check` terms, `committed` is the further spend, so the

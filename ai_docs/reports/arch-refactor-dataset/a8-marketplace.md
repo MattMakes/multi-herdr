@@ -183,7 +183,7 @@ telemetry e2e). `./scripts/check-req-coverage.sh --phase A8`: MKT-01..08,
 MKT-10, NFR-06 and NFR-07 ok. `HORCH_REQUIRE_GIT=1 cargo test -p
 horch-marketplace`: 22 of 22 pass (14 integration, 8 unit).
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
-- `SPEC-TODO(Spec A §10)` in `src/manifest.rs`: the SKILL.md key
+- `SPEC-RESOLVED(Spec A §10)` in `src/manifest.rs`: the SKILL.md key (closed: ai_docs/designs/2026-10-02-architecture-refactor-design.md §4.10/§6, ai_docs/reports/finish/spec-a-marketplace.md)
   allowlist (`name description license metadata allowed-tools`).

@@ -68,7 +68,7 @@ A `RoundEvent` is an event kind plus the condition that picks the target
   NEEDS_INTERVENTION.
 - NEEDS_INTERVENTION → DECIDED (`operator.promote`) or CLEANUP
   (`round.cleanup_started`, operator only).
-- COMPLETE → DECIDED (`operator.promote`): see SPEC-TODO below.
+- COMPLETE → DECIDED (`operator.promote`): see SPEC-RESOLVED below. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §4.1/§4.3/§5, ai_docs/reports/finish/spec-b-events.md)
 - `promotion.rolled_back`: PROMOTED and COMPLETE, self-loop.
 
 ## Gotchas
@@ -90,14 +90,14 @@ A `RoundEvent` is an event kind plus the condition that picks the target
 - No "round deadline" event exists. The coordinator reaches VALIDATING by
   emitting a terminal event (`candidate.failed` TimedOut) per candidate.
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
-- `SPEC-TODO(Spec B round states)`: states before JUDGING_BACKGROUND follow
+- `SPEC-RESOLVED(Spec B round states)`: states before JUDGING_BACKGROUND follow (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
   the B2/B3 flow (in `state.rs`).
-- `SPEC-TODO(Spec B §promote)`: the row COMPLETE → DECIDED on
+- `SPEC-RESOLVED(Spec B §promote)`: the row COMPLETE → DECIDED on (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §4.1/§4.3/§5, ai_docs/reports/finish/spec-b-events.md)
   `operator.promote`. The master plan says `promote <round>` "later
   re-enters at DECIDED"; design §5 lists only NEEDS_INTERVENTION.
-- `SPEC-TODO(Spec B label policy)`: `LABEL_POLICY_VERSION = "slot-order-1"`.
+- `SPEC-RESOLVED(Spec B label policy)`: `LABEL_POLICY_VERSION = "slot-order-1"`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §4.1/§4.3/§5, ai_docs/reports/finish/spec-b-events.md)
   It names the export directory, so it must stay path-safe.
 
 ## Tests

@@ -39,7 +39,7 @@ hidden: judge-job, promote, rollback, cleanup, watch  -> "not implemented in thi
   implemented, 3 budget/quota refusal, 4 preflight failed, 5 needs
   intervention, 6 rejected. Today only 0, 1, 2 and 4 occur.
 - `--score` defaults to 1.0 for `verified`, else 0.0
-  (`SPEC-TODO(Spec B §outcome)`).
+  (`SPEC-RESOLVED(Spec B §outcome)`). (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
 
 ## The preflight fact gatherer (`dataset/preflight.rs`)
 
@@ -76,9 +76,9 @@ Size estimates:
 - `checkout_bytes`: the files under the toplevel, without `.git`, `target`
   and `node_modules`, links not followed.
 - `build_bytes`: the size of `<toplevel>/target` when it exists, else 0.
-  `SPEC-TODO(Spec B §3)`.
+  `SPEC-RESOLVED(Spec B §3)`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
 - `artifacts_bytes`: N × (output cap + log cap × max(1, gates)).
-- `local_model_bytes` 0 and `trusted_parents` empty, both `SPEC-TODO(Spec B §3)`.
+- `local_model_bytes` 0 and `trusted_parents` empty, both `SPEC-RESOLVED(Spec B §3)`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
   With no trusted parents, PRE-13 warns on every run.
 
 ## No secret persisted (PRE-07, SEC-02)

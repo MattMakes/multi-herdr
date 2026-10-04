@@ -21,7 +21,7 @@ Commits: `B2: Add machine probe`, `B6: Add inert System One teacher seam`.
 - `RLIM_INFINITY` reports `Unknown`. `RLIMIT_NPROC` is read only on linux and macos.
 - A fixture that is unreadable or invalid gives an all-Unknown snapshot (os and arch "unknown"). It never falls back to a live probe.
 - No `std::env::var` call exists in the new files.
-- SPEC-TODO(System One criteria semantics) is on `Question::criteria`.
+- SPEC-RESOLVED(System One criteria semantics) is on `Question::criteria`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
 
 ## Gate state
 

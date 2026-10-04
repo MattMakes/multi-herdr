@@ -1,6 +1,6 @@
 # Junior checklist for every phase (arch-refactor-dataset)
 
-Status: provisional until the Spec A §16 text arrives.
+Status: final. The 15 items are Spec A §16 as the finish run closed it (architecture design §1.3, `ai_docs/reports/finish/spec-a-core.md`).
 
 Use this list for every commit and every phase of the arch-refactor-dataset
 branch. Copy the lines that you checked into the commit body, unchanged. If a
@@ -17,7 +17,7 @@ line does not apply, copy it and add `(n/a: <reason>)`.
 - [ ] No new `std::env` read outside `runtime/` and the binary's bootstrap.
 - [ ] No `ANTHROPIC_API_KEY` reaches a child process (`FORBIDDEN_ENV` strips it).
 - [ ] Tests are hermetic: no network, no real harness binary, no herdr server, no file outside a temp dir; real `git` only on temp repos.
-- [ ] Every moved module left a re-export shim (until A12).
+- [ ] No re-export shim module exists (`arc_25_no_shim_modules` passes).
 - [ ] Old ledgers, old briefs and old teammate frontmatter still load.
 - [ ] New `pub mod` lines in `crates/horch-core/src/lib.rs` are in alphabetical order; no other line changed.
 - [ ] The diff was re-read adversarially; the unit report lists gotchas.

@@ -191,7 +191,7 @@ fake-claude in the sealed harness. The coordinator side runs in-process
 - `--json-schema` is used when `claude --help` lists it (cached per
   process). LA-8 must confirm the real envelope's `structured_output` key.
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
 None new. The judge prose (`teammates/judge.md`, Spec B §10) and the
 Judgment schema (Spec B §11) remain open from U23 and U15.

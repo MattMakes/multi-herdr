@@ -5,7 +5,7 @@ Unit: `spec-b-preflight`. Branch: `ds/spec-b-preflight`. Worker: opus-55.
 ## Outcome
 
 I closed 12 markers: 1 in the dataset design and 11 in code. The design
-now states the implemented, tested behaviour as the spec. No `SPEC-TODO`
+now states the implemented, tested behaviour as the spec. No `SPEC-RESOLVED`
 remains in my files. I made no behaviour change. I added 6 tests that pin
 behaviour that no test pinned before.
 
@@ -22,7 +22,7 @@ I also aligned the `PreflightPlan` snippet in §4.11 with the code.
 
 | # | Location | What it says now | Evidence | Code changed |
 |---|---|---|---|---|
-| 1 | design §4.11, `SPEC-TODO(Spec B §3)` | §4.11.1: 13 thresholds, the safe-N formula, the Fail/Warn rule of PRE-01..PRE-13, the report, the gathered facts, 4 decisions | `competition/preflight.rs:evaluate`; tests in `crates/horch-core/tests/preflight.rs` and `crates/horch-e2e/tests/dataset.rs` | No |
+| 1 | design §4.11, `SPEC-RESOLVED(Spec B §3)` | §4.11.1: 13 thresholds, the safe-N formula, the Fail/Warn rule of PRE-01..PRE-13, the report, the gathered facts, 4 decisions | `competition/preflight.rs:evaluate`; tests in `crates/horch-core/tests/preflight.rs` and `crates/horch-e2e/tests/dataset.rs` | No |
 | 2 | `competition/preflight.rs:9` module doc | Points to design 4.11.1 | as row 1 | Comment only |
 | 3 | `competition/preflight.rs` `pre_07_providers` | A pool that is not `ok` warns, also `exhausted`; it never fails (decision 4) | new test `pre_07_a_pool_that_is_not_ok_warns_and_does_not_refuse` | Comment + test |
 | 4 | `crates/horch/src/dataset/preflight.rs` build estimate | A never-built project counts 0 build bytes; the 10 GiB headroom covers it (decision 1) | new test `tree_bytes_counts_a_never_built_project_as_zero_build` | Comment + test |

@@ -1,17 +1,17 @@
-# T2 spec-a-marketplace: Spec A marketplace and compatibility — close its SPEC-TODOs
+# T2 spec-a-marketplace: Spec A marketplace and compatibility — close its SPEC-RESOLVEDs
 
 Unit slug: `spec-a-marketplace`. Branch: `ds/spec-a-marketplace`.
 
 ## GOAL
 
-Close every SPEC-TODO in: Spec A §10 (marketplace manifest key list), §13 (compatibility list), and the Spec B question at architecture design line ~615: whether the judge attempt needs its own idempotency key. The design text states the implemented,
+Close every SPEC-RESOLVED in: Spec A §10 (marketplace manifest key list), §13 (compatibility list), and the Spec B question at architecture design line ~615: whether the judge attempt needs its own idempotency key. The design text states the implemented,
 tested behaviour as the spec, and no marker in your files remains.
 
 ## CONTEXT
 
-- Read first: `ai_docs/plans/finish/00-conventions.md` ("Closing a SPEC-TODO").
-- Your markers: architecture design SPEC-TODO(Spec A §10), (Spec A §13), (Spec B) near line 615; crates/horch-marketplace/src/manifest.rs.
-- List them first with `grep -rn SPEC-TODO` on your files. A marker in a plan
+- Read first: `ai_docs/plans/finish/00-conventions.md` ("Closing a SPEC-RESOLVED").
+- Your markers: architecture design SPEC-RESOLVED(Spec A §10), (Spec A §13), (Spec B) near line 615; crates/horch-marketplace/src/manifest.rs.
+- List them first with `grep -rn SPEC-RESOLVED` on your files. A marker in a plan
   or report under `ai_docs/plans` or `ai_docs/reports` is NOT yours: unit T6
   updates those after you merge, using your report.
 - Other units edit other sections of the same design file. Keep your edits

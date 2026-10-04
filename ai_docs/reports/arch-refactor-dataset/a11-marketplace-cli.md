@@ -166,6 +166,6 @@ Other notes for A10:
 - `cargo clippy` shows old warnings in `codex.rs`, `ledger.rs`,
   `measure/redact.rs` and `roster/operator.rs`. The gate does not run clippy.
 
-## SPEC-TODO
+## SPEC-RESOLVED (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)
 
 None added.

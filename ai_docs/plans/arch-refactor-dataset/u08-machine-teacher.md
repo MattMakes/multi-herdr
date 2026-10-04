@@ -101,7 +101,7 @@ do not touch: every other file.
    pub struct Answer { pub choice: Option<String>, pub probabilities: BTreeMap<String, f64>,
                        pub confidence: Option<f64> }
    ```
-   Mark `criteria` with `SPEC-TODO(System One criteria semantics)`.
+   Mark `criteria` with `SPEC-RESOLVED(System One criteria semantics)`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
 4. `teacher/mod.rs`: `pub trait DecisionModel { fn id(&self) -> &str; fn decide(&self, req: &DecisionRequest) -> Option<DecisionResponse>; }`
    and `pub struct TeacherRef { pub id: String, pub probabilities: Option<BTreeMap<String, f64>> }`
    with `TeacherRef::none()` → `{ id: "none", probabilities: None }` (serialized

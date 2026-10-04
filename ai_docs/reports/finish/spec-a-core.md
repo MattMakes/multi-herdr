@@ -13,13 +13,13 @@ Design file: `ai_docs/designs/2026-10-02-architecture-refactor-design.md`
 | # | Location (before) | What it says now | Evidence | Code changed |
 |---|---|---|---|---|
 | 1 | design line 15 (marker convention) | The finish run closed every spec placeholder marker; each place states tested behaviour and cites code and test. | this report | no |
-| 2 | design §1.3, `SPEC-TODO(Spec A §16)` | The 15 junior checklist items. Item 12 is now "no re-export shim" (`arc_25_no_shim_modules`), because A12 removed the shims. | `ai_docs/gates/architecture-refactor/CHECKLIST.md`, `scripts/phase-gate.sh`, `scripts/check-req-coverage.sh`, `scripts/check-deps.sh`, `nfr_05`/`nfr_06`/`nfr_09`/`nfr_11` (`horch-core/tests/nfr.rs`) | no |
-| 3 | design §2.4, `SPEC-TODO(Spec A §3)` | 14 module rules. Each row names the real scan test, its file, and the exact needles and file set. The CLI rule allows a call to a pure core function (`horch route` calls `routing::decision::decide`). | see "§3 scans" below | yes: 4 new scan tests |
-| 4 | design §4.2, `SPEC-TODO(Spec A §4)` (RuntimeContext) | `RuntimeContext{paths, herdr, bins, settings, inherited, worker}`, with every field and the variable behind it, `EnvSource`/`ProcessEnv`/`MapEnv`, `BinOverrides`/`HarnessBins` (10 tools, including `antigravity`), `Faults`. The abort exit code 86 is the spec. | `runtime/context.rs:RuntimeContext`, `arc_05_context_from_map_env`, `arc_05_no_ambient_env_in_core`, `runtime/fault.rs:ABORT_EXIT_CODE`, `arc_16_crash_after_insert_not_live` | no |
-| 5 | design §4.3, `SPEC-TODO(Spec A §4)` (Execution) | The 25 `Execution` fields with their ledger keys, and `Task{id, text, plan}`. 3 differences from the first sketch, each with its reason: text timestamps, `model: String`, no `worker` field. | `execution/model.rs:Execution`, `execution/store.rs:to_execution`/`from_execution`, `arc_17_execution_conversion_lossless` | comment only |
-| 6 | design §4.5, `// SPEC-TODO(Spec A §8)` (SpawnRequest) | The 14 `SpawnRequest` fields as the code has them (`resume`, `role`, `from_pane`, `direction`, `pinned`; no `session`, `balance`, `routing_mode`, `idempotency_key`). `ReportTarget` lives in `lifecycle.rs`. | `execution/model.rs:SpawnRequest`, `SpawnRequest::worker` | comment only |
-| 7 | design §4.5, `SPEC-TODO(Spec A §8)` (startup order) | `WorkerSteps` and the 7-step order: load_brief, enter_context, register, set_running, launch, agent_exited, return code (1 on a signal). Each step has its failure rule. | `execution/lifecycle.rs:run_worker`, `arc_18_worker_startup_order`, `arc_18_register_failure_records_failed`, `arc_18_enter_context_failure_records_failed`, `arc_18_agent_exit_recorded` | comment only |
-| 8 | design §3.4, `SPEC-TODO(Spec A §17)` | The 16 criterion texts are Spec A §17, as the master plan's table "Spec A §17 acceptance criteria (verbatim)" records them. The IDs' tests pin each row. | `00-master-plan.md` §4; `check-req-coverage.sh --through A12` exits 0 | no |
+| 2 | design §1.3, `SPEC-RESOLVED(Spec A §16)` | The 15 junior checklist items. Item 12 is now "no re-export shim" (`arc_25_no_shim_modules`), because A12 removed the shims. | `ai_docs/gates/architecture-refactor/CHECKLIST.md`, `scripts/phase-gate.sh`, `scripts/check-req-coverage.sh`, `scripts/check-deps.sh`, `nfr_05`/`nfr_06`/`nfr_09`/`nfr_11` (`horch-core/tests/nfr.rs`) | no |
+| 3 | design §2.4, `SPEC-RESOLVED(Spec A §3)` | 14 module rules. Each row names the real scan test, its file, and the exact needles and file set. The CLI rule allows a call to a pure core function (`horch route` calls `routing::decision::decide`). | see "§3 scans" below | yes: 4 new scan tests |
+| 4 | design §4.2, `SPEC-RESOLVED(Spec A §4)` (RuntimeContext) | `RuntimeContext{paths, herdr, bins, settings, inherited, worker}`, with every field and the variable behind it, `EnvSource`/`ProcessEnv`/`MapEnv`, `BinOverrides`/`HarnessBins` (10 tools, including `antigravity`), `Faults`. The abort exit code 86 is the spec. | `runtime/context.rs:RuntimeContext`, `arc_05_context_from_map_env`, `arc_05_no_ambient_env_in_core`, `runtime/fault.rs:ABORT_EXIT_CODE`, `arc_16_crash_after_insert_not_live` | no |
+| 5 | design §4.3, `SPEC-RESOLVED(Spec A §4)` (Execution) | The 25 `Execution` fields with their ledger keys, and `Task{id, text, plan}`. 3 differences from the first sketch, each with its reason: text timestamps, `model: String`, no `worker` field. | `execution/model.rs:Execution`, `execution/store.rs:to_execution`/`from_execution`, `arc_17_execution_conversion_lossless` | comment only |
+| 6 | design §4.5, `// SPEC-RESOLVED(Spec A §8)` (SpawnRequest) | The 14 `SpawnRequest` fields as the code has them (`resume`, `role`, `from_pane`, `direction`, `pinned`; no `session`, `balance`, `routing_mode`, `idempotency_key`). `ReportTarget` lives in `lifecycle.rs`. | `execution/model.rs:SpawnRequest`, `SpawnRequest::worker` | comment only |
+| 7 | design §4.5, `SPEC-RESOLVED(Spec A §8)` (startup order) | `WorkerSteps` and the 7-step order: load_brief, enter_context, register, set_running, launch, agent_exited, return code (1 on a signal). Each step has its failure rule. | `execution/lifecycle.rs:run_worker`, `arc_18_worker_startup_order`, `arc_18_register_failure_records_failed`, `arc_18_enter_context_failure_records_failed`, `arc_18_agent_exit_recorded` | comment only |
+| 8 | design §3.4, `SPEC-RESOLVED(Spec A §17)` | The 16 criterion texts are Spec A §17, as the master plan's table "Spec A §17 acceptance criteria (verbatim)" records them. The IDs' tests pin each row. | `00-master-plan.md` §4; `check-req-coverage.sh --through A12` exits 0 | no |
 | 9 | `execution/model.rs:224` | Pointer: "The field list is Spec A §4 (architecture design §4.3)." | as row 5 | comment |
 | 10 | `execution/model.rs:272` | Pointer: "The field list is Spec A §8 (architecture design §4.5)." | as row 6 | comment |
 | 11 | `execution/lifecycle.rs:179` | Pointer: "The order is Spec A §8 (architecture design §4.5)." | as row 7 | comment |
@@ -74,9 +74,9 @@ ARC-23 rows of the §3.1 table.
 - `CMP-02` in the dataset design does not list
   `cmp_02_evaluation_domain_has_no_adapter_imports`. The ID still has
   tests, so coverage passes.
-- Markers that stay, not mine: design `SPEC-TODO(Spec B)` (judge key,
-  T2 writes it in §4.3), `SPEC-TODO(Spec A §10)` (manifest keys),
-  `SPEC-TODO(Spec A §13)` (compatibility list).
+- Markers that stay, not mine: design `SPEC-RESOLVED(Spec B)` (judge key,
+  T2 writes it in §4.3), `SPEC-RESOLVED(Spec A §10)` (manifest keys),
+  `SPEC-RESOLVED(Spec A §13)` (compatibility list).
 
 ## Checks
 

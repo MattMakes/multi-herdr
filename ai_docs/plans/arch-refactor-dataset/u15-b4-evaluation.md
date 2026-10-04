@@ -24,7 +24,7 @@ No process, no file I/O beyond reading the compiled-in rubric and schema.
   `headless_command` (later B4 units).
 - Spec B §10 and §11 text is not available. The design marks the Judgment
   shape, the utility tie-break, and the Abstain/RejectAll mappings
-  `SPEC-TODO(Spec B §11)`. Keep those markers.
+  `SPEC-RESOLVED(Spec B §11)`. Keep those markers. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
 - Ownership: you own `RejectReason` (design §4.1 lists it among event
   payloads; U13 `b1-measure` uses a JSON placeholder until your type lands).
   Define it in `evaluation/winner.rs` with the variants
@@ -62,7 +62,7 @@ do not touch: every other file.
    named components (for example `correctness`, `tests`, `scope`,
    `maintainability`, `risk`), each scored 0..10, with one paragraph per
    component, and the instruction to answer with the JSON only. Head it with
-   `SPEC-TODO(Spec B §10/§11): provisional until the spec text arrives.`
+   `SPEC-RESOLVED(Spec B §10/§11): provisional until the spec text arrives.` (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
    `evaluation/rubric.rs`: `RUBRIC_VERSION = "rubric-1"`,
    `rubric_text()` and `schema_text()` via `include_str!`, `components()`
    (the component names parsed from the rubric, used by the parser to check
@@ -96,7 +96,7 @@ do not touch: every other file.
    `WinnerOutcome`, `decide_winner` exactly per the design table. For
    `TieBreak::Utility`, implement the simplest deterministic rule (highest
    sum of component scores among the tied labels, then label order) and
-   mark it `SPEC-TODO(Spec B §11 utility)`.
+   mark it `SPEC-RESOLVED(Spec B §11 utility)`. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §10/§11/§4.9, ai_docs/reports/finish/spec-b-judge.md)
    Component scores are kept as they are; nothing collapses them into one
    number stored anywhere.
 6. Tests in `crates/horch-core/tests/evaluation.rs`:
@@ -125,4 +125,4 @@ do not touch: every other file.
 
 - `horch note` after each commit.
 - `horch done` summary: API, the duplicate-key method, any error-text
-  matching, every SPEC-TODO.
+  matching, every SPEC-RESOLVED. (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3-§11, ai_docs/reports/finish/spec-b-preflight.md)

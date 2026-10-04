@@ -12,7 +12,7 @@ expected spend of candidates that are still running.
 
 - Read first: `00-conventions.md`, `ai_docs/reports/arch-refactor-dataset/b5-promotion.md`
   (gotcha: "A merge ff-only publish has no real CAS"), `b3-coordinator.md`
-  (`SPEC-TODO(Spec B §budget)`: committed spend is 0), `b3-planner.md`
+  (`SPEC-RESOLVED(Spec B §budget)`: committed spend is 0), `b3-planner.md` (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
   (`BudgetPolicy::check`), `b2-binary.md` (preflight projected cost per
   candidate).
 - Gap 1 (`crates/horch-core/src/competition/promotion.rs`, `vcs/git.rs`):
@@ -31,7 +31,7 @@ expected spend of candidates that are still running.
   each running candidate, committed = max(measured so far, its planned
   projected cost from the round plan); for the judge, its reserve until it
   completes. This matches what preflight PRE-09 promised. Replace the
-  `SPEC-TODO(Spec B §budget)` with a comment that states the policy and
+  `SPEC-RESOLVED(Spec B §budget)` with a comment that states the policy and (closed: ai_docs/designs/2026-10-02-dataset-competition-design.md §3/§4.11, ai_docs/reports/finish/spec-b-preflight.md)
   that it is the orchestrator's decision pending the Spec B text. Test:
   a round whose projected spend crosses the hard limit stops new launches
   before measured spend does.
