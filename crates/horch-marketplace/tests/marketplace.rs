@@ -756,6 +756,52 @@ fn git_env_cannot_reach_another_repository() {
     );
 }
 
+/// `REPO_ENV` holds every variable that the host git lists as local to a
+/// repository.
+#[test]
+fn repo_env_holds_every_local_env_var() {
+    let Some(repo) = Repo::new() else { return };
+    let out = repo
+        .runner()
+        .output(repo.tmp.path(), &["rev-parse", "--local-env-vars"])
+        .unwrap();
+    assert_eq!(out.status, 0, "{}", String::from_utf8_lossy(&out.stderr));
+    let listed = String::from_utf8(out.stdout).unwrap();
+    let missing: Vec<&str> = listed
+        .lines()
+        .filter(|v| !horch_marketplace::git::REPO_ENV.contains(v))
+        .collect();
+    assert!(missing.is_empty(), "not in REPO_ENV: {missing:?}");
+}
+
+/// Config from the environment (`GIT_CONFIG_PARAMETERS`, and
+/// `GIT_CONFIG_COUNT` with its numbered pairs) does not reach a git child.
+#[test]
+fn git_config_env_does_not_reach_git() {
+    let Some(repo) = Repo::new() else { return };
+    let aimed = repo
+        .runner()
+        .with_env("GIT_CONFIG_PARAMETERS", "'init.defaultbranch'='hijacked'")
+        .with_env("GIT_CONFIG_COUNT", "1")
+        .with_env("GIT_CONFIG_KEY_0", "init.defaultBranch")
+        .with_env("GIT_CONFIG_VALUE_0", "hijacked");
+    let dir = repo.tmp.path().join("fresh");
+    fs::create_dir(&dir).unwrap();
+    aimed.run(&dir, &["init", "--quiet"]).unwrap();
+    let head = fs::read_to_string(dir.join(".git/HEAD")).unwrap();
+    assert!(!head.contains("hijacked"), "{head}");
+    let one = repo
+        .runner()
+        .with_env("GIT_CONFIG_COUNT", "1")
+        .with_env("GIT_CONFIG_KEY_0", "init.defaultBranch")
+        .with_env("GIT_CONFIG_VALUE_0", "hijacked");
+    let dir = repo.tmp.path().join("fresh2");
+    fs::create_dir(&dir).unwrap();
+    one.run(&dir, &["init", "--quiet"]).unwrap();
+    let head = fs::read_to_string(dir.join(".git/HEAD")).unwrap();
+    assert!(!head.contains("hijacked"), "{head}");
+}
+
 #[test]
 fn nfr_07_git_only_on_temp_repos() {
     let spawn = concat!("Command", "::new(");

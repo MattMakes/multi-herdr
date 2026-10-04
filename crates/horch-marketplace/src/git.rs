@@ -14,27 +14,57 @@ use std::process::{Command, Stdio};
 const FORBIDDEN_ENV: [&str; 1] = ["ANTHROPIC_API_KEY"];
 
 /// Removed from every git child, so the `-C` directory alone selects the
-/// repository. A caller inside a git hook, or under `git rebase --exec`,
-/// has `GIT_DIR` set: on 2026-10-03 a gate run under `git rebase -x` let
-/// test fixtures `git init` and commit into the real repository. Every git
-/// child that horch or its tests start removes these with
-/// [`scrub_repo_env`].
-pub const REPO_ENV: [&str; 9] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY",
+/// repository and its config. A caller inside a git hook, or under
+/// `git rebase --exec`, has `GIT_DIR` set: on 2026-10-03 a gate run under
+/// `git rebase -x` let test fixtures `git init` and commit into the real
+/// repository. Every git child that horch or its tests start removes these
+/// with [`scrub_repo_env`].
+///
+/// The list holds every name of `git rev-parse --local-env-vars` (a test
+/// checks the host git), plus `GIT_NAMESPACE` and `GIT_CEILING_DIRECTORIES`.
+/// [`scrub_repo_env`] also removes the numbered `GIT_CONFIG_KEY_<n>` and
+/// `GIT_CONFIG_VALUE_<n>`.
+pub const REPO_ENV: [&str; 18] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_INTERNAL_SUPER_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
     "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
 ];
 
-/// Remove every [`REPO_ENV`] variable from `cmd`, a git child. Call it after
-/// any `env` call: a variable set on `cmd` is removed too.
+/// The prefixes of the numbered config variables that `GIT_CONFIG_COUNT`
+/// counts.
+const REPO_ENV_NUMBERED: [&str; 2] = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
+
+/// Remove every [`REPO_ENV`] variable and every `GIT_CONFIG_KEY_<n>` and
+/// `GIT_CONFIG_VALUE_<n>` from `cmd`, a git child: those this process has
+/// and those set on `cmd`. Call it after any `env` call.
 pub fn scrub_repo_env(cmd: &mut Command) {
     for k in REPO_ENV {
+        cmd.env_remove(k);
+    }
+    let numbered: Vec<OsString> = std::env::vars_os()
+        .map(|(k, _)| k)
+        .chain(cmd.get_envs().map(|(k, _)| k.to_os_string()))
+        .filter(|k| {
+            k.to_str()
+                .is_some_and(|k| REPO_ENV_NUMBERED.iter().any(|p| k.starts_with(p)))
+        })
+        .collect();
+    for k in numbered {
         cmd.env_remove(k);
     }
 }
