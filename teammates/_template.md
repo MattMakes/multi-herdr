@@ -163,12 +163,15 @@ disabled_skills: []
 # - The named skills go into the worker's briefing, each with its SKILL.md
 #   description, as skills it is expected to use. (The bundled `skills:` above
 #   get the same treatment.) A bare list of names reads as optional.
-# - Every OTHER skill of that plugin is switched off for this session, as a
-#   `"<plugin>:<skill>": "off"` skillOverrides entry. So a marketplace plugin
-#   that ships twenty skills exposes only the two this role should use.
+# - The pane loads a filtered copy of the plugin from its skills bundle
+#   (--plugin-dir): the named skills, no other skill and no command. Its
+#   agents, hooks, MCP servers and scripts stay. The installed original goes
+#   off for this session and the copy goes on, even with inherit_plugins:
+#   false. So a marketplace plugin that ships twenty skills exposes only the
+#   two this role should use. (Claude Code ignores skillOverrides for a
+#   plugin skill, so a switch-off entry cannot do this.)
 # - The plugin is found in plugin_dirs first, then in the operator's
-#   ~/.claude/plugins/installed_plugins.json. An installed one stays enabled
-#   even with inherit_plugins: false.
+#   ~/.claude/plugins/installed_plugins.json.
 # `horch teammates --check` fails on an unknown plugin or skill, and when the
 # teammate has neither a phase nor skills (the briefing could not name them).
 plugin_skills: {}

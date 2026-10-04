@@ -59,6 +59,9 @@ impl Harness for Claude {
                 .to_string(),
         )?;
         let mut adjusted = teammate.clone();
+        // Each plugin_skills plugin loads as a filtered copy in the bundle.
+        adjusted.plugin_dirs =
+            super::claude_plugins::materialize_filtered(teammate, skills.root(), home)?;
         // plugin_dirs precede scalar flags in the Claude builder, which
         // fences variadic --plugin-dir parsing away from the briefing.
         adjusted
@@ -148,6 +151,9 @@ pub(super) fn claude_command(
     }
     if teammate.disable_skills {
         cmd.arg("--disable-slash-commands");
+    } else {
+        // Only a filtered copy hides a plugin's other skills.
+        super::claude_plugins::check_filtered(teammate, env.home())?;
     }
     for dir in &teammate.plugin_dirs {
         cmd.arg("--plugin-dir").arg(env.expand_home(dir));
@@ -456,7 +462,8 @@ pub(crate) fn overlay_skill_switches(
     }
     // For the same reason a disabled `<plugin>:<skill>` switches its whole
     // plugin off (Claude Code 2.1.289, ai_docs/reports/finish/skill-overrides.md).
-    // `or_insert`: a plugin that plugin_skills keeps enabled stays enabled.
+    // `or_insert` keeps what plugin_skills set. Its filtered copy is
+    // `<plugin>@inline`, a key this loop never names, so it stays on.
     let enabled = operator_enabled_plugins(home);
     let installed = super::claude_plugins::installed_plugins_in(home);
     for name in &teammate.disabled_skills {
@@ -539,16 +546,23 @@ mod tests {
         assert_eq!(overlay["skillOverrides"]["herdr-worker"], "off");
     }
 
-    /// A plugin that plugin_skills keeps enabled stays enabled.
+    /// The filtered copy that plugin_skills switches on stays on when a
+    /// disabled skill switches its plugin off.
     #[test]
     fn plugin_skills_wins_over_a_disabled_plugin_skill() {
         let mut overlay = serde_json::Map::new();
-        overlay.insert("enabledPlugins".into(), json!({"herdr@m": true}));
+        overlay.insert(
+            "enabledPlugins".into(),
+            json!({"herdr@m": false, "herdr@inline": true}),
+        );
         let plugins = overlay["enabledPlugins"].as_object_mut().unwrap();
         for key in plugin_keys("herdr", &["herdr@m".into()], None) {
             plugins.entry(key).or_insert(json!(false));
         }
-        assert_eq!(overlay["enabledPlugins"], json!({"herdr@m": true}));
+        assert_eq!(
+            overlay["enabledPlugins"],
+            json!({"herdr@m": false, "herdr@inline": true})
+        );
         assert!(plugin_keys("herdr", &["herdrx@m".into()], None).is_empty());
     }
 

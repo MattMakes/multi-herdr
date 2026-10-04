@@ -1063,46 +1063,148 @@ mod tests {
     }
 
     /// `plugin_skills` narrows a plugin to the skills a teammate names: the
-    /// others go off by their plugin-qualified name, the named ones stay on,
-    /// and a `--check` catches a name the plugin does not ship.
+    /// pane loads a filtered copy from the skills bundle (the named skill,
+    /// the plugin's hooks and scripts, no other skill and no command), the
+    /// installed original goes off and the copy goes on. A launch without a
+    /// bundle fails, and a `--check` catches a name the plugin does not ship.
     #[test]
-    fn plugin_skills_switch_off_the_rest_of_the_plugin() {
+    fn plugin_skills_load_a_filtered_copy_of_the_plugin() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("code");
-        for skill in ["review", "lint", "format"] {
-            let dir = root.join("skills").join(skill);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join("SKILL.md"),
-                format!("---\nname: {skill}\ndescription: Does {skill}.\n---\n"),
+        let home = tmp.path().join("home");
+        let fixture = |root: &std::path::Path, name: &str| {
+            for skill in ["review", "lint", "format"] {
+                let dir = root.join("skills").join(skill);
+                std::fs::create_dir_all(dir.join("scripts")).unwrap();
+                std::fs::write(
+                    dir.join("SKILL.md"),
+                    format!("---\nname: {skill}\ndescription: Does {skill}.\n---\n"),
+                )
+                .unwrap();
+                std::fs::write(dir.join("scripts/run.sh"), "echo hi\n").unwrap();
+            }
+            for (rel, text) in [
+                (
+                    ".claude-plugin/plugin.json",
+                    format!(
+                        r#"{{"name":"{name}","version":"1.0.0","skills":["./extra/"],"commands":"./commands/"}}"#
+                    ),
+                ),
+                ("commands/deploy.md", "Deploy.".into()),
+                ("hooks/hooks.json", r#"{"hooks":{}}"#.into()),
+                ("scripts/shared.sh", "echo shared\n".into()),
+                (".in_use/123", "pid".into()),
+            ] {
+                let path = root.join(rel);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            }
+        };
+        let check_copy = |copy: &std::path::Path, name: &str| {
+            let skills: Vec<String> = std::fs::read_dir(copy.join("skills"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(skills, ["review"], "{}", copy.display());
+            assert!(copy.join("skills/review/scripts/run.sh").is_file());
+            assert!(copy.join("hooks/hooks.json").is_file());
+            assert!(copy.join("scripts/shared.sh").is_file());
+            assert!(!copy.join("commands").exists());
+            assert!(!copy.join(".in_use").exists());
+            let manifest: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(copy.join(".claude-plugin/plugin.json")).unwrap(),
             )
             .unwrap();
-        }
+            assert_eq!(
+                manifest,
+                serde_json::json!({"name": name, "version": "1.0.0"})
+            );
+        };
+        let launch = |t: &Teammate, env: &LaunchEnv| {
+            let bundle = crate::skills::Bundle::install(&tmp.path().join("state"), t)
+                .unwrap()
+                .unwrap();
+            let a = argv(
+                &command_with_skills_in(env, t, Session::Unmanaged, "p", None, Some(&bundle))
+                    .unwrap(),
+            );
+            (bundle, a)
+        };
+        let overlay_of = |a: &[String]| -> serde_json::Value {
+            let at = a.iter().position(|x| x == "--settings").unwrap();
+            serde_json::from_str(&a[at + 1]).unwrap()
+        };
         let r = Roster::builtin().unwrap();
+
+        // A plugin from plugin_dirs: its directory is swapped for the copy.
+        let root = tmp.path().join("code");
+        fixture(&root, "code");
         let mut t = r.require("opus").unwrap().clone();
         t.plugin_dirs = vec![root.to_string_lossy().into_owned()];
         t.plugin_skills.insert("code".into(), vec!["review".into()]);
-
-        let a =
-            argv(&command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap());
-        let at = a.iter().position(|x| x == "--settings").unwrap();
-        let overlay: serde_json::Value = serde_json::from_str(&a[at + 1]).unwrap();
-        let overrides = &overlay["skillOverrides"];
-        assert_eq!(overrides["code:lint"], "off", "{overlay}");
-        assert_eq!(overrides["code:format"], "off", "{overlay}");
-        assert!(overrides.get("code:review").is_none(), "{overlay}");
-
+        let (bundle, a) = launch(&t, &LaunchEnv::for_test());
+        let copy = bundle.root().join("plugins/code");
+        let dirs: Vec<&str> = a
+            .windows(2)
+            .filter(|w| w[0] == "--plugin-dir")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(
+            dirs,
+            [copy.to_str().unwrap(), bundle.root().to_str().unwrap()],
+            "{a:?}"
+        );
+        check_copy(&copy, "code");
+        assert_eq!(overlay_of(&a)["enabledPlugins"]["code@inline"], true);
         // The briefing names the reinforced one with its description.
-        let bundle = crate::skills::Bundle::install(tmp.path(), &t)
-            .unwrap()
-            .unwrap();
         let brief = bundle.briefing_in(&t, None);
         assert!(brief.contains("- code:review: Does review."), "{brief}");
         assert!(!brief.contains("code:lint"), "{brief}");
+        drop(bundle);
+        assert!(!copy.exists(), "the copy goes with the bundle");
+
+        // An installed plugin: the copy is appended, every install goes off.
+        let installed = tmp.path().join("cache/dev");
+        fixture(&installed, "dev");
+        std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
+        std::fs::write(
+            home.join(".claude/plugins/installed_plugins.json"),
+            serde_json::json!({"version": 2, "plugins": {
+                "dev@market": [{"installPath": installed}],
+                "dev@fork": [{"installPath": installed}]
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        let env = LaunchEnv {
+            home: Some(home.clone()),
+            ..LaunchEnv::for_test()
+        };
+        let mut t = r.require("opus").unwrap().clone();
+        t.plugin_skills.insert("dev".into(), vec!["review".into()]);
+        let (bundle, a) = launch(&t, &env);
+        let copy = bundle.root().join("plugins/dev");
+        assert!(
+            a.windows(2)
+                .any(|w| w[0] == "--plugin-dir" && w[1] == copy.to_str().unwrap()),
+            "{a:?}"
+        );
+        assert!(!a.iter().any(|x| x == installed.to_str().unwrap()), "{a:?}");
+        check_copy(&copy, "dev");
+        let enabled = &overlay_of(&a)["enabledPlugins"];
+        assert_eq!(enabled["dev@market"], false, "{enabled}");
+        assert_eq!(enabled["dev@fork"], false, "{enabled}");
+        assert_eq!(enabled["dev@inline"], true, "{enabled}");
+        drop(bundle);
+
+        // No bundle: nowhere for the copy, so the launch fails.
+        let err = command_in(&env, &t, Session::Unmanaged, "p", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("has no bundle"), "{err}");
 
         // A skill the plugin does not ship fails the launch and the check.
-        t.plugin_skills.insert("code".into(), vec!["deploy".into()]);
-        let err = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None)
+        t.plugin_skills.insert("dev".into(), vec!["deploy".into()]);
+        let err = command_in(&env, &t, Session::Unmanaged, "p", None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no skill 'deploy'"), "{err}");
