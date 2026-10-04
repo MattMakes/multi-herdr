@@ -18,11 +18,13 @@ use anyhow::{bail, Context, Result};
 
 use crate::execution::records::Ledger;
 use crate::execution::SessionMode;
+use crate::messaging::delivery::{self, Readiness, Timing};
 use crate::messaging::mailbox::Mailbox;
 use crate::roster::{ExecRule, Teammate};
 #[cfg(test)]
 use crate::runtime::BinOverrides;
 use crate::runtime::{HarnessBins, RuntimeContext};
+use crate::workspace::client::WorkspaceClient;
 use crate::workspace::herdr::Herdr;
 
 use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest};
@@ -264,6 +266,12 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     }
     crate::runtime::process::strip_forbidden(&mut cmd);
     let name = format!("{:?}", cmd.get_program());
+
+    // A resume on a CLI that drops its command-line prompt gets the prompt
+    // typed in, in the background, once the agent is idle.
+    if req.session.is_resume() && adapter.resume_prompt_typed() {
+        start_typed_prompt(ctx, req.role, req.prompt, req.record.as_ref());
+    }
 
     // Discovery runs only for a fresh session the agent mints itself, in the
     // background, while the agent holds the foreground.
@@ -524,6 +532,83 @@ fn marker_sessions_dir(marker: &Path) -> Option<PathBuf> {
 /// Prefers herdr's native `agent_session` (available when the agent's herdr
 /// integration is installed), falling back to the harness's own records for
 /// the target's workdir.
+/// Type a resumed session's prompt into this pane from a background
+/// thread ([`type_resumed_prompt`]). Without a pane id nothing can be typed,
+/// and the record says so at once.
+fn start_typed_prompt(
+    ctx: &RuntimeContext,
+    role: &str,
+    prompt: &str,
+    target: Option<&DiscoveryTarget<'_>>,
+) {
+    let ledger = target.and_then(|t| {
+        Ledger::open_in(ctx)
+            .ok()
+            .map(|l| (l, t.record_id.to_string()))
+    });
+    let orchestrator = target.and_then(|t| t.mailbox.pane_for("orchestrator"));
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let role = role.to_string();
+    let prompt = prompt.to_string();
+    let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
+    std::thread::spawn(move || {
+        let ledger = ledger.as_ref().map(|(l, id)| (l, id.as_str()));
+        type_resumed_prompt(
+            &herdr,
+            pane.as_deref(),
+            &prompt,
+            &role,
+            ledger,
+            orchestrator.as_deref(),
+            &Readiness::DEFAULT,
+            &Timing::DEFAULT,
+        );
+    });
+}
+
+/// Type `prompt` into `pane` once its agent is idle. When that fails, the
+/// worker's record gets a note that says why, and the orchestrator pane, if
+/// one is registered, gets a `BLOCKED` line: a resumed pane never sits idle
+/// with no task and no word. True when the prompt was typed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn type_resumed_prompt(
+    ws: &dyn WorkspaceClient,
+    pane: Option<&str>,
+    prompt: &str,
+    role: &str,
+    ledger: Option<(&Ledger, &str)>,
+    orchestrator: Option<&str>,
+    wait: &Readiness,
+    timing: &Timing,
+) -> bool {
+    let result = match pane {
+        Some(pane) => delivery::deliver_when_idle(ws, pane, prompt, wait, timing),
+        None => Err(anyhow::anyhow!(
+            "HERDR_PANE_ID is not set, so the resumed task cannot be typed"
+        )),
+    };
+    let Err(e) = result else {
+        return true;
+    };
+    let why = format!("resumed task not delivered: {e:#}");
+    eprintln!("horch worker[{role}]: {why}");
+    if let Some((ledger, record_id)) = ledger {
+        if let Err(e) = ledger.note(record_id, &why) {
+            eprintln!("horch worker[{role}]: recording the failure failed: {e:#}");
+        }
+    }
+    if let Some(orchestrator) = orchestrator {
+        let line = format!(
+            "[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. \
+             Send it again with horch assign {role} \"<task>\"."
+        );
+        if let Err(e) = delivery::send_line_with(ws, orchestrator, &line, timing) {
+            eprintln!("horch worker[{role}]: telling the orchestrator failed: {e:#}");
+        }
+    }
+    false
+}
+
 fn start_discovery(
     ctx: &RuntimeContext,
     role: &str,
@@ -1218,6 +1303,108 @@ mod tests {
             resumed.windows(2).any(|w| w == ["--session", "ses_abc"]),
             "{resumed:?}"
         );
+    }
+
+    /// LA-3: opencode 1.18.34 ignores `--prompt` beside `--session`, so a
+    /// resume also gets its prompt typed in. The argv keeps the flag, as the
+    /// A0 launch oracles freeze it.
+    #[test]
+    fn only_an_opencode_resume_types_its_prompt() {
+        assert!(HarnessKind::OpenCode.adapter().resume_prompt_typed());
+        for kind in [
+            HarnessKind::Claude,
+            HarnessKind::Codex,
+            HarnessKind::Pi,
+            HarnessKind::Prime,
+        ] {
+            assert!(!kind.adapter().resume_prompt_typed(), "{kind:?}");
+        }
+    }
+
+    /// A resumed prompt that never reaches an idle agent is not silent: the
+    /// record gets a note that says why, and the orchestrator a BLOCKED line.
+    #[test]
+    fn an_undelivered_resume_prompt_is_recorded_and_reported() {
+        use crate::messaging::delivery::{Readiness, Timing};
+        use crate::workspace::testing::FakeWorkspace;
+        let fast = Timing {
+            tail_timeout: Duration::from_millis(5),
+            poll_start: Duration::from_millis(1),
+            poll_max: Duration::from_millis(1),
+            settle_short: Duration::from_millis(1),
+            settle_long: Duration::from_millis(1),
+            second_enter: Duration::from_millis(1),
+        };
+        let wait = Readiness {
+            timeout: Duration::from_millis(20),
+            poll: Duration::from_millis(1),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let ledger = Ledger::for_project(tmp.path(), "/proj");
+        ledger
+            .add(
+                "rec-1",
+                "opencode",
+                "opencode-pickle",
+                "m",
+                "pickle-1",
+                Some("ses_1"),
+                "t",
+            )
+            .unwrap();
+        let ws = FakeWorkspace::new();
+        let created = ws.workspace_create("fleet", None, false).unwrap();
+        let worker = created.root_pane_id;
+        let orchestrator = ws
+            .pane_split(&worker, crate::workspace::model::Direction::Right)
+            .unwrap();
+        ws.set_agent_states(&worker, &[(Some("opencode"), Some("unknown"))]);
+
+        let typed = type_resumed_prompt(
+            &ws,
+            Some(&worker),
+            "TASK",
+            "pickle-1",
+            Some((&ledger, "rec-1")),
+            Some(&orchestrator),
+            &wait,
+            &fast,
+        );
+        assert!(!typed);
+        let history = ledger.get("rec-1").unwrap().history;
+        let note = history.iter().find(|h| h.event == "note").unwrap();
+        assert!(note.text.contains("resumed task not delivered"), "{note:?}");
+        assert!(note.text.contains("was not idle"), "{note:?}");
+        let prompts: Vec<_> = ws
+            .calls()
+            .into_iter()
+            .filter(|c| c.method == "agent_prompt")
+            .collect();
+        assert_eq!(prompts.len(), 1, "{prompts:?}");
+        assert_eq!(prompts[0].args[0], orchestrator);
+        assert!(prompts[0].args[1].starts_with("[pickle-1] BLOCKED: "));
+
+        // An idle agent gets the prompt and nothing is recorded.
+        let ws = FakeWorkspace::new();
+        let worker = ws
+            .workspace_create("fleet", None, false)
+            .unwrap()
+            .root_pane_id;
+        ws.set_agent_states(&worker, &[(Some("opencode"), Some("idle"))]);
+        assert!(type_resumed_prompt(
+            &ws,
+            Some(&worker),
+            "TASK",
+            "pickle-1",
+            None,
+            None,
+            &wait,
+            &fast
+        ));
+        assert!(ws
+            .calls()
+            .iter()
+            .any(|c| c.method == "agent_prompt" && c.args == [worker.clone(), "TASK".to_string()]));
     }
 
     /// pi CAN be told its session id, so the ledger knows the resume handle

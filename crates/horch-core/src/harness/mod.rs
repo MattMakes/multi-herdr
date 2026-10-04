@@ -118,6 +118,14 @@ pub trait Harness: Sync {
         Ok(Prepared::default())
     }
 
+    /// The CLI drops a prompt given on the command line of a resumed
+    /// session, so the launch also types the prompt into the pane once the
+    /// agent is idle
+    /// ([`crate::messaging::delivery::deliver_when_idle`]).
+    fn resume_prompt_typed(&self) -> bool {
+        false
+    }
+
     /// The harness's own command line. Call [`Harness::build_command`]
     /// instead, which removes the forbidden environment.
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command>;

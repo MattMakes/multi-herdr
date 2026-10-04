@@ -28,6 +28,14 @@ pub struct Pane {
     /// `Value`; use `Pane::agent_session_id` to read it.
     #[serde(default)]
     pub agent_session: Option<serde_json::Value>,
+    /// The agent herdr detects in the pane (`claude`, `opencode`), if any.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// herdr's view of that agent: `idle`, `working`, `blocked`, `done` or
+    /// `unknown`. An agent that is still starting reads `unknown`, and text
+    /// typed into it then is lost.
+    #[serde(default)]
+    pub agent_status: Option<String>,
 }
 
 impl Pane {
