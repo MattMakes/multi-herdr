@@ -278,6 +278,9 @@ pub fn check(ctx: &RuntimeContext) -> Result<ExitCode> {
     for w in horch_core::roster::validation::fallback_warnings(&roster) {
         eprintln!("warning: {w}");
     }
+    for w in horch_core::roster::validation::operator_skill_warnings(&roster) {
+        eprintln!("warning: {w}");
+    }
     if problems.is_empty() {
         output::println(&format!(
             "roster ok: {} teammates, {} offered to the orchestrator",

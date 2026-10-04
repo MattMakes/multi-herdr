@@ -413,17 +413,28 @@ fn operator_skills_e2e_exposure_codex() {
     );
 }
 
-/// `horch teammates --check` names a missing operator skill.
+/// `horch teammates --check` warns on an operator skill this host lacks
+/// and still passes. The launch skips the skill and the briefing says so.
 #[test]
-fn operator_skills_e2e_check_fails_on_a_missing_name() {
+fn operator_skills_e2e_check_warns_on_a_missing_name() {
     let h = operator_world("opskm", "op-missing", "claude", "sonnet");
     std::fs::remove_dir_all(h.home.join(".agents/skills/test-modernizer")).unwrap();
     let check = h.run(&["teammates", "--check"]);
-    assert!(!check.status.success(), "{}", text(&check));
+    assert!(check.status.success(), "{}", text(&check));
     assert!(
-        text(&check).contains("operator skill 'test-modernizer' is not in '~/.agents/skills'"),
+        text(&check).contains(
+            "warning: op-missing: operator skill test-modernizer is not installed on this host \
+             (no ~/.agents/skills/test-modernizer)"
+        ),
         "{}",
         text(&check)
+    );
+    let r = launch(&h, "op-missing", || {});
+    assert_eq!(strings(&r["skills"]), ["tdd"], "{r}");
+    let prompts = serde_json::to_string(&h.calls_of("claude")).unwrap();
+    assert!(
+        prompts.contains("Skipped: operator skill test-modernizer is not installed on this host"),
+        "{prompts}"
     );
 }
 

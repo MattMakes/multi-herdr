@@ -126,6 +126,30 @@ pub struct SkillCatalog {
     /// The marketplace store root (`<data_root>`) that marketplace entries'
     /// files live under. `None` for a catalog built from a lock in memory.
     store_root: Option<PathBuf>,
+    /// Operator skills that [`SkillCatalog::with_operator_skills`] skipped
+    /// because this host does not have them.
+    skipped_operator: Vec<SkippedOperatorSkill>,
+}
+
+/// An operator skill that this host does not have: its directory, or its
+/// `<dir>/<name>/`, does not exist. The launch goes on without it, the
+/// briefing says so, and `horch teammates --check` warns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedOperatorSkill {
+    pub name: String,
+    /// `<dir>/<name>` as the teammate file writes it, `~/` unexpanded.
+    pub path: String,
+}
+
+impl SkippedOperatorSkill {
+    /// The sentence for the briefing and the `--check` warning.
+    pub fn note(&self) -> String {
+        format!(
+            "operator skill {} is not installed on this host (no {}): ask the operator to run \
+             `xcrun agent skills export --output-dir <dir>` (Xcode 27 or later)",
+            self.name, self.path
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,7 +275,7 @@ impl SkillCatalog {
         }
         Ok(SkillCatalog {
             entries,
-            store_root: None,
+            ..SkillCatalog::default()
         })
     }
 
@@ -362,11 +386,15 @@ impl SkillCatalog {
     /// This catalog plus `teammate`'s `operator_skills:`, read from disk.
     /// `~/` in the directory expands against `home`, the launch's home.
     ///
-    /// Fails on a missing directory or skill, an invalid SKILL.md, a name
-    /// that a catalog skill already has (one bundle directory cannot hold
-    /// both), a subagent skill, or a tree the marketplace digest rules
-    /// refuse (a symlink, say). A teammate without the field changes
-    /// nothing.
+    /// A skill this host does not have (no directory, or no `<dir>/<name>/`)
+    /// is skipped and recorded in [`SkillCatalog::skipped_operator`]: the
+    /// skills are exported per host with Xcode, so one host may lack them.
+    /// Fails on a name that a catalog skill already has (one bundle
+    /// directory cannot hold both), a name given twice, a subagent skill, a
+    /// directory or skill that exists but cannot be read, an invalid
+    /// SKILL.md, or a tree the marketplace digest rules refuse (a symlink,
+    /// say). The name rules apply on every host, so a clash fails even where
+    /// the skill is missing. A teammate without the field changes nothing.
     pub fn with_operator_skills(
         mut self,
         teammate: &Teammate,
@@ -376,13 +404,6 @@ impl SkillCatalog {
             return Ok(self);
         };
         let who = &teammate.name;
-        let dir = crate::roster::expand_home(&operator.dir, home);
-        if !dir.is_dir() {
-            bail!(
-                "{who}: operator_skills dir '{}' does not exist",
-                operator.dir
-            );
-        }
         if operator.names.is_empty() {
             bail!("{who}: operator_skills names no skill");
         }
@@ -390,19 +411,55 @@ impl SkillCatalog {
             if operator.names[..i].contains(name) {
                 bail!("{who}: operator skill '{name}' is named twice");
             }
-            let skill_dir = dir.join(name);
-            let skill_md = skill_dir.join("SKILL.md");
             if self.entries.contains_key(name) {
                 bail!(
                     "{who}: operator skill '{name}' has the name of a catalog skill; \
                      rename one, or name the catalog skill in skills:"
                 );
             }
+            SkillId::new(name.as_str())
+                .with_context(|| format!("{who}: operator skill '{name}'"))?;
+            if let Some(why) = subagent_skill(name, b"") {
+                bail!(
+                    "{who}: operator skill '{name}' is a subagent skill ({why}); \
+                     fleet panes start no subagents"
+                );
+            }
+        }
+        let dir = crate::roster::expand_home(&operator.dir, home);
+        let skip_all = !exists(&dir, || {
+            format!("{who}: operator_skills dir '{}'", operator.dir)
+        })?;
+        if !skip_all {
+            if !dir.is_dir() {
+                bail!(
+                    "{who}: operator_skills dir '{}' is not a directory",
+                    operator.dir
+                );
+            }
+            std::fs::read_dir(&dir).with_context(|| {
+                format!(
+                    "{who}: operator_skills dir '{}' cannot be read",
+                    operator.dir
+                )
+            })?;
+        }
+        for name in &operator.names {
+            let skill_dir = dir.join(name);
+            let shown = format!("{}/{name}", operator.dir.trim_end_matches('/'));
+            if skip_all || !exists(&skill_dir, || format!("{who}: operator skill '{name}'"))? {
+                self.skipped_operator.push(SkippedOperatorSkill {
+                    name: name.clone(),
+                    path: shown,
+                });
+                continue;
+            }
             let id = SkillId::new(name.as_str())
                 .with_context(|| format!("{who}: operator skill '{name}'"))?;
-            let bytes = std::fs::read(&skill_md).map_err(|_| {
+            let skill_md = skill_dir.join("SKILL.md");
+            let bytes = std::fs::read(&skill_md).map_err(|e| {
                 anyhow!(
-                    "{who}: operator skill '{name}' is not in '{}': no {}",
+                    "{who}: operator skill '{name}' in '{}' has no readable {}: {e}",
                     operator.dir,
                     skill_md.display()
                 )
@@ -433,6 +490,12 @@ impl SkillCatalog {
             );
         }
         Ok(self)
+    }
+
+    /// The operator skills that [`SkillCatalog::with_operator_skills`]
+    /// skipped because this host does not have them, in `names:` order.
+    pub fn skipped_operator(&self) -> &[SkippedOperatorSkill] {
+        &self.skipped_operator
     }
 
     pub fn get(&self, id: &SkillId) -> Option<&CatalogEntry> {
@@ -517,6 +580,16 @@ fn version_dir(root: &Path, id: &str, version: &str) -> Result<PathBuf> {
         bail!("marketplace.lock: '{id}' version '{version}' cannot name a directory");
     }
     Ok(root.join("skills").join(id).join(version))
+}
+
+/// Whether `path` exists. `false` only for "not found"; any other error
+/// (a parent that cannot be searched, say) is a real error, named by `what`.
+fn exists(path: &Path, what: impl FnOnce() -> String) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(anyhow!("{}: {e}", what())),
+    }
 }
 
 /// Skills that only work by starting a subagent, which a fleet pane must
