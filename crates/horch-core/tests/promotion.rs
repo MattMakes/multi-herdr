@@ -22,6 +22,7 @@ use horch_core::evaluation::validator::{ValidationReport, Validator};
 use horch_core::evaluation::winner::RejectReason;
 use horch_core::ids::{ExecutionId, ExperimentId, JudgmentId, RoundId};
 use horch_core::measure::digest::sha256_bytes;
+use horch_core::measure::digest::Digest;
 use horch_core::measure::event::{
     Actor, EventEnvelope, EventKind, OperatorPromote, PromotionIntent, PromotionStarted,
     RoundCreated, WinnerSelected, WorktreeCreated, EVENT_SCHEMA_VERSION,
@@ -32,9 +33,10 @@ use horch_core::measure::projection::{
 };
 use horch_core::measure::recorder::JsonlRecorder;
 use horch_core::measure::store::StoreOptions;
+use horch_core::measure::NumstatLine;
 use horch_core::runtime::fault::Faults;
 use horch_core::teacher::TeacherRef;
-use horch_core::vcs::git::{GitCli, GitClient, GitIdentity};
+use horch_core::vcs::git::{CheckoutLocation, CherryPick, GitCli, GitClient, GitIdentity};
 use horch_core::vcs::worktree::{FrozenCandidate, WorktreeManager, WorktreeSpec};
 use horch_marketplace::git::GitRunner;
 use tempfile::TempDir;
@@ -620,6 +622,249 @@ fn pro_03_checked_out_dirty_needs_intervention() {
     assert_eq!(f.events()[0].payload["source"], "promotion");
     assert!(!f.paths.promotion(&f.plan().round).unwrap().exists());
     assert_eq!(f.temp_branches(), "");
+}
+
+/// The real client, with one hook: `race` runs once, just before the first
+/// compare-and-swap on `refs/heads/main`. That is the window between the
+/// publish's check of the checkout and its move.
+struct Racy<'a> {
+    git: &'a GitCli,
+    race: RefCell<Option<Box<dyn FnOnce() + 'a>>>,
+}
+
+impl GitClient for Racy<'_> {
+    fn toplevel(&self, dir: &Path) -> anyhow::Result<PathBuf> {
+        self.git.toplevel(dir)
+    }
+    fn head(&self, dir: &Path) -> anyhow::Result<String> {
+        self.git.head(dir)
+    }
+    fn current_branch(&self, dir: &Path) -> anyhow::Result<Option<String>> {
+        self.git.current_branch(dir)
+    }
+    fn status_porcelain(&self, dir: &Path) -> anyhow::Result<String> {
+        self.git.status_porcelain(dir)
+    }
+    fn version(&self) -> anyhow::Result<String> {
+        self.git.version()
+    }
+    fn worktree_add(
+        &self,
+        repo: &Path,
+        path: &Path,
+        branch: &str,
+        base: &str,
+    ) -> anyhow::Result<()> {
+        self.git.worktree_add(repo, path, branch, base)
+    }
+    fn worktree_remove(&self, repo: &Path, path: &Path, force: bool) -> anyhow::Result<()> {
+        self.git.worktree_remove(repo, path, force)
+    }
+    fn worktree_list(&self, repo: &Path) -> anyhow::Result<Vec<(PathBuf, Option<String>)>> {
+        self.git.worktree_list(repo)
+    }
+    fn commit_all(
+        &self,
+        dir: &Path,
+        message: &str,
+        id: &GitIdentity,
+    ) -> anyhow::Result<Option<String>> {
+        self.git.commit_all(dir, message, id)
+    }
+    fn rev_parse(&self, dir: &Path, rev: &str) -> anyhow::Result<Option<String>> {
+        self.git.rev_parse(dir, rev)
+    }
+    fn rev_list(&self, dir: &Path, range: &str) -> anyhow::Result<Vec<String>> {
+        self.git.rev_list(dir, range)
+    }
+    fn diff_numstat(&self, dir: &Path, base: &str, head: &str) -> anyhow::Result<Vec<NumstatLine>> {
+        self.git.diff_numstat(dir, base, head)
+    }
+    fn diff_patch(
+        &self,
+        dir: &Path,
+        base: &str,
+        head: &str,
+        cap_bytes: usize,
+    ) -> anyhow::Result<(String, bool)> {
+        self.git.diff_patch(dir, base, head, cap_bytes)
+    }
+    fn diff_digest(&self, dir: &Path, base: &str, head: &str) -> anyhow::Result<Digest> {
+        self.git.diff_digest(dir, base, head)
+    }
+    fn is_ancestor(&self, dir: &Path, a: &str, b: &str) -> anyhow::Result<bool> {
+        self.git.is_ancestor(dir, a, b)
+    }
+    fn update_ref_cas(
+        &self,
+        repo: &Path,
+        refname: &str,
+        new: &str,
+        expected_old: &str,
+    ) -> anyhow::Result<bool> {
+        if refname == "refs/heads/main" {
+            if let Some(race) = self.race.borrow_mut().take() {
+                race();
+            }
+        }
+        self.git.update_ref_cas(repo, refname, new, expected_old)
+    }
+    fn cherry_pick(&self, dir: &Path, range: &str, id: &GitIdentity) -> anyhow::Result<CherryPick> {
+        self.git.cherry_pick(dir, range, id)
+    }
+    fn merge_ff_only(&self, dir: &Path, rev: &str) -> anyhow::Result<()> {
+        self.git.merge_ff_only(dir, rev)
+    }
+    fn read_tree_update(&self, dir: &Path, old: &str, new: &str) -> anyhow::Result<()> {
+        self.git.read_tree_update(dir, old, new)
+    }
+    fn branch_checkout_location(
+        &self,
+        repo: &Path,
+        branch: &str,
+    ) -> anyhow::Result<CheckoutLocation> {
+        self.git.branch_checkout_location(repo, branch)
+    }
+}
+
+/// Promote into `main`, checked out clean in `f.repo`, with `race` run in
+/// the window between the publish's check and its move.
+fn promote_racing<'a>(f: &'a Fixture, race: impl FnOnce() + 'a) -> PromotionResult {
+    let racy = Racy {
+        git: &f.git,
+        race: RefCell::new(Some(Box::new(race))),
+    };
+    let v = f.validator(true);
+    let faults = no_faults();
+    let engine = GitPromotionEngine {
+        git: &racy,
+        validator: &v,
+        recorder: &f.recorder,
+        paths: &f.paths,
+        faults: &faults,
+    };
+    let got = engine
+        .promote(&f.candidate, &f.target("main"), &f.plan())
+        .unwrap();
+    assert!(racy.race.borrow().is_none(), "the race ran");
+    got
+}
+
+#[test]
+fn pro_03_checked_out_publish_is_cas() {
+    // A commit lands on the checked-out target after the check: the swap
+    // loses, and the target, HEAD and files are the racer's.
+    let Some(f) = Fixture::new() else { return };
+    let racer = RefCell::new(String::new());
+    let got = promote_racing(&f, || {
+        std::fs::write(f.repo.join("b.txt"), "racer\n").unwrap();
+        *racer.borrow_mut() = commit(&f.runner, &f.repo, "racer");
+    });
+    let PromotionResult::NeedsIntervention { reason } = got else {
+        panic!("{got:?}")
+    };
+    let racer = racer.into_inner();
+    assert!(reason.contains("moved from"), "{reason}");
+    assert_eq!(f.rev("refs/heads/main"), racer);
+    assert_eq!(f.git.head(&f.repo).unwrap(), racer);
+    assert_eq!(f.git.status_porcelain(&f.repo).unwrap(), "");
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
+        "one\ntwo\nthree\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("b.txt")).unwrap(),
+        "racer\n"
+    );
+    assert!(!f.repo.join("new.txt").exists());
+    assert_eq!(f.kinds(), ["promotion.started", "round.needs_intervention"]);
+    assert!(!f.paths.promotion(&f.plan().round).unwrap().exists());
+    assert_eq!(f.temp_branches(), "");
+
+    // A local edit lands after the check, in a path the promotion changes:
+    // the ref swap wins, git refuses the tree update, and the ref goes back.
+    let Some(f) = Fixture::new() else { return };
+    let got = promote_racing(&f, || {
+        std::fs::write(f.repo.join("a.txt"), "local edit\n").unwrap();
+    });
+    let PromotionResult::NeedsIntervention { reason } = got else {
+        panic!("{got:?}")
+    };
+    assert!(reason.contains("is back at"), "{reason}");
+    assert_eq!(f.rev("refs/heads/main"), f.base);
+    assert_eq!(f.git.head(&f.repo).unwrap(), f.base);
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
+        "local edit\n"
+    );
+    assert!(!f.repo.join("new.txt").exists());
+    assert_eq!(f.git.status_porcelain(&f.repo).unwrap(), " M a.txt");
+    assert_eq!(f.kinds(), ["promotion.started", "round.needs_intervention"]);
+    assert!(!f.paths.promotion(&f.plan().round).unwrap().exists());
+
+    // A local edit in a path the promotion does not change is kept, and
+    // the promotion goes through.
+    let Some(f) = Fixture::new() else { return };
+    let got = promote_racing(&f, || {
+        std::fs::write(f.repo.join("b.txt"), "local edit\n").unwrap();
+    });
+    let PromotionResult::Promoted(receipt) = got else {
+        panic!("{got:?}")
+    };
+    assert_eq!(receipt.publish, "merge_ff_only");
+    assert_eq!(f.git.head(&f.repo).unwrap(), f.candidate.head_sha);
+    assert_eq!(f.rev("refs/heads/main"), f.candidate.head_sha);
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
+        "one\ntwo by A\nthree\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("new.txt")).unwrap(),
+        "new\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("b.txt")).unwrap(),
+        "local edit\n"
+    );
+    assert_eq!(f.git.status_porcelain(&f.repo).unwrap(), " M b.txt");
+
+    // A crash between the ref swap and the tree update leaves `main` at
+    // the candidate and the files at the base. The restart moves the files
+    // and leaves the ref alone.
+    let Some(f) = Fixture::new() else { return };
+    let v = f.validator(true);
+    let crash = Faults::parse(Some(ABORT_AFTER_PROMOTION_STARTED));
+    let target = f.target("main");
+    f.engine(&v, &crash)
+        .promote(&f.candidate, &target, &f.plan())
+        .unwrap_err();
+    f.sh(
+        &f.repo,
+        &[
+            "update-ref",
+            "refs/heads/main",
+            &f.candidate.head_sha,
+            &f.base,
+        ],
+    );
+    assert_ne!(f.git.status_porcelain(&f.repo).unwrap(), "");
+    let before = ref_moves(&f, "refs/heads/main");
+    let started = started_of(&f.events());
+    let faults = no_faults();
+    for _ in 0..2 {
+        let got = f
+            .engine(&v, &faults)
+            .resume_promotion(&f.candidate, &target, &f.plan(), &started)
+            .unwrap();
+        assert!(matches!(got, PromotionResult::Promoted(_)), "{got:?}");
+    }
+    assert_eq!(f.git.head(&f.repo).unwrap(), f.candidate.head_sha);
+    assert_eq!(f.git.status_porcelain(&f.repo).unwrap(), "");
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("new.txt")).unwrap(),
+        "new\n"
+    );
+    assert_eq!(ref_moves(&f, "refs/heads/main"), before);
 }
 
 // ─── PRO-04 ─────────────────────────────────────────────────────────────────

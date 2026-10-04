@@ -367,3 +367,188 @@ fn arc_24_candidates_are_ordinary_executions() {
     expected.sort();
     assert_eq!(entries, expected);
 }
+
+#[test]
+fn cmp_10_committed_spend_counts_running_candidates() {
+    // 3 candidates, 2 at once, no measured spend at all. The hard limit
+    // minus the judge reserve is the projected cost of the first 2, so
+    // once they run the third never starts, and the 2 running are not
+    // cancelled.
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let paths = DatasetPaths::new(&w.ctx.paths.state_root, &w.repo);
+    let recorder = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
+    let store = ExecutionStore::open(&w.ctx.paths, &w.repo);
+    let fake = FakeWorkspace::new();
+    let meter = UsageMeter::default();
+
+    let mut config = config::load(
+        &w.repo,
+        &RunFlags {
+            task: "add a greeting".into(),
+            budget_usd: Some("100".into()),
+            ..RunFlags::default()
+        },
+    )
+    .unwrap();
+    config.candidates = 3;
+    config.worktree_root = Some(w.root.join("worktrees"));
+    let now = horch_core::clock::parse("2026-10-02T12:00:00Z").unwrap();
+    let experiment = ExperimentId::mint(now);
+    let round = RoundId::mint(now);
+    let view = QuotaView::new(
+        QuotaFile::read(&core_dir().join("tests/fixtures/telemetry/quota/all-ok.json")).unwrap(),
+        now,
+        Policy::default(),
+        true,
+    );
+    let plan = plan_round(&PlanInput {
+        round_id: &round,
+        index: 0,
+        base_sha: &w.base,
+        n: 3,
+        baseline: None,
+        roster: &roster,
+        view: &view,
+        filter: &EligibilityFilter::default(),
+        config: &config,
+    });
+    assert_eq!(plan.candidates.len(), 3);
+    // A and B start first (label order). Together they commit exactly the
+    // limit; C's model does not matter.
+    let first_two: i64 = plan
+        .candidates
+        .iter()
+        .filter(|c| ["A", "B"].contains(&c.label.as_str()))
+        .map(|c| meter.projected(c.model.as_str()).0)
+        .sum();
+    assert!(first_two > 0, "A or B has a priced model: {plan:?}");
+    config.budget.judge_reserve_usd_micro = 1_000_000;
+    config.budget.hard_usd_micro = 1_000_000 + first_two;
+    config.budget.soft_usd_micro = config.budget.hard_usd_micro;
+
+    // The experiment as `run` leaves it after preflight.
+    let digest = || json!(format!("sha256:{}", "0".repeat(64)));
+    for (kind, payload) in [
+        (
+            "experiment.created",
+            json!({"task_id": "task-1", "task_digest": digest(), "config_digest": digest(),
+                   "base_sha": w.base, "repo_digest": digest(), "environment_digest": digest(),
+                   "candidates": 3, "strategy": "diverse", "budget_usd_micro": 100_000_000,
+                   "promote_to": null}),
+        ),
+        (
+            "preflight.completed",
+            json!({"report": {"schema_version": "1.0.0", "checks": [], "safe_n": 2, "waves": 1,
+                   "projected_cost_microusd": 0,
+                   "machine": {"os": "macos", "arch": "aarch64", "cpus": 10,
+                               "mem_total_bytes": null, "mem_available_bytes": null,
+                               "disk_free_bytes": null, "disk_total_bytes": null,
+                               "gpu": "apple_silicon", "max_open_files": null,
+                               "max_processes": null},
+                   "environment_digest": digest(), "passed": true}}),
+        ),
+    ] {
+        recorder
+            .append(NewEvent {
+                kind: EventKind::from_parts(kind, &payload).unwrap(),
+                actor: Actor::Coordinator,
+                experiment_id: experiment.clone(),
+                round_id: None,
+                execution_id: None,
+                idempotency_key: format!("{kind}:{experiment}"),
+                occurred_at: now,
+            })
+            .unwrap();
+    }
+
+    // The agents: a started candidate runs for 3 ticks, then crashes.
+    let ticks = Cell::new(0u32);
+    let sleep = |_: Duration| {
+        ticks.set(ticks.get() + 1);
+        assert!(ticks.get() < 50, "the round never ended");
+        for r in store.read().unwrap() {
+            match r.execution_status() {
+                ExecutionStatus::Starting => {
+                    store
+                        .set_state(&r.record_id, ExecutionStatus::Running)
+                        .unwrap();
+                }
+                ExecutionStatus::Running if ticks.get() >= 3 => {
+                    store.record_exit(&r.record_id, Some(2)).unwrap();
+                }
+                _ => {}
+            }
+        }
+    };
+    let validator = CommandValidator::new(
+        Vec::new(),
+        paths.root().join("validation"),
+        Default::default(),
+    );
+    // No transcripts: the measured spend stays 0.
+    let usage = TelemetryUsage {
+        locations: Locations::under_home(&w.root.join("home"), &w.ctx.inherited),
+    };
+    let clock = monotonic(Utc::now);
+    let disk = || None;
+    let faults = Faults::default();
+    let coordinator = Coordinator {
+        ctx: &w.ctx,
+        recorder: &recorder,
+        paths: &paths,
+        git: &w.git,
+        workspace: &fake,
+        store: &store,
+        roster: &roster,
+        validator: &validator,
+        usage: &usage,
+        meter: &meter,
+        disk_free: &disk,
+        clock: &clock as &dyn Fn() -> DateTime<Utc>,
+        sleep: &sleep,
+        faults: &faults,
+        launcher: &NoJudge,
+    };
+    let spec = RoundSpec {
+        experiment: experiment.clone(),
+        round: round.clone(),
+        index: 0,
+        config: config.clone(),
+        task: "add a greeting".into(),
+        repo: w.repo.clone(),
+        worktree_root: w.root.join("worktrees"),
+        safe_n: 2,
+        tick: Duration::from_millis(1),
+        watch_command: "watch".into(),
+    };
+    let outcome = coordinator.start(&spec, &plan).unwrap();
+    assert_eq!(outcome, RoundOutcome::Rejected { budget: true });
+
+    // 2 candidates started and ran to their own end; the third was
+    // cancelled for the budget before it started.
+    let records = store.read().unwrap();
+    assert_eq!(records.len(), 2, "{records:?}");
+    for record in &records {
+        assert_eq!(
+            to_execution(record).unwrap().status,
+            ExecutionStatus::Failed {
+                failure: FailureKind::AgentExited { code: Some(2) }
+            }
+        );
+    }
+    let events = recorder.read_all().unwrap().events;
+    let r = &fold(&events).rounds[&round];
+    let unstarted: Vec<_> = r
+        .candidates
+        .values()
+        .filter(|c| c.spawned.is_none())
+        .collect();
+    assert_eq!(unstarted.len(), 1);
+    assert_eq!(
+        unstarted[0].failed.as_ref().unwrap().failure,
+        FailureKind::Cancelled {
+            reason: "budget".into()
+        }
+    );
+}

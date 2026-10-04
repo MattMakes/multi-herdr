@@ -11,6 +11,14 @@
 //!   candidates go on; no new candidate starts.
 //! - otherwise: [`BudgetAction::Continue`].
 //!
+//! `committed` (the coordinator's policy, the orchestrator's decision until
+//! Spec B §budget says otherwise): each running candidate counts the max of
+//! what it has spent and its projected cost ([`UsageMeter::projected`], the
+//! number preflight PRE-09 checked), minus what it has spent. The judge's
+//! reserve is held until the judge completes; it is already in `limit`.
+//! So a round whose projected spend crosses the limit stops launching
+//! before its measured spend does.
+//!
 //! A hard ceiling of 0 means none is configured. Preflight (PRE-09) refuses
 //! such a run, so this rule never sees it in a real round; if it does, the
 //! limit is at most 0 and the action is CancelRunning.
@@ -18,6 +26,7 @@
 use std::collections::BTreeMap;
 
 use crate::competition::config::BudgetConfig;
+use crate::competition::preflight::DEFAULT_TOKEN_ESTIMATE;
 use crate::usage::money::{nano_per_token, CostSource, MicroUsd, NanoUsd};
 use crate::usage::{builtin_prices, price_for, Price, Tokens, Usage};
 
@@ -93,6 +102,22 @@ impl UsageMeter {
             CostSource::Unpriced
         };
         (total.to_micro_half_even(), source)
+    }
+
+    /// The projected cost of one candidate on `model`: the default token
+    /// estimate at the table price, as preflight (PRE-09) projects it. 0
+    /// when the model has no price; its measured spend still counts.
+    pub fn projected(&self, model: &str) -> MicroUsd {
+        let t = DEFAULT_TOKEN_ESTIMATE;
+        let tokens = Tokens {
+            input: t.input,
+            cache_read: t.cache_read,
+            output: t.output,
+            ..Tokens::default()
+        };
+        price_for(&self.prices, model)
+            .and_then(|p| nano_cost(&p, &tokens))
+            .map_or(MicroUsd(0), NanoUsd::to_micro_half_even)
     }
 }
 
