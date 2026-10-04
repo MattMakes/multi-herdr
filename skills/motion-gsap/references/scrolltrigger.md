@@ -43,7 +43,7 @@ Defaults: `start: "top bottom"` (or `"top top"` when `pin: true`), `end: "bottom
 | `scrub` | `true` links progress directly to scroll; a number (for example `1`) is the catch-up time in seconds. |
 | `toggleActions` | 4 actions for onEnter, onLeave, onEnterBack, onLeaveBack. Each is `play`, `pause`, `resume`, `reset`, `restart`, `complete`, `reverse` or `none`. Default `"play none none none"`. |
 | `pin` | `true` pins the trigger; or a selector or element. Animate the children, not the pinned element. |
-| `pinSpacing` | Default `true`: adds padding so content after the pin waits. `false` or `"margin"`. |
+| `pinSpacing` | Default `true`: adds padding so content after the pin waits. `false` or `"margin"`. Defaults to `false` when the pin's parent is `display: flex`. |
 | `anticipatePin` | A small number (for example `1`) applies the pin slightly early to avoid a jump on fast scroll. |
 | `snap` | A number (increments of progress), an array, a function, `"labels"`, or `{ snapTo, duration, delay, ease }`. |
 | `once` | Kill the trigger after it reaches `end` once; the animation keeps its state. |
@@ -52,7 +52,7 @@ Defaults: `start: "top bottom"` (or `"top top"` when `pin: true`), `end: "bottom
 | `scroller` | A scrollable element instead of the viewport. |
 | `containerAnimation` | The horizontal tween of a fake horizontal scroll (see below). |
 | `invalidateOnRefresh` | Recompute function-based values on refresh. Use with responsive distances. |
-| `refreshPriority` | Lower refreshes first. Use when triggers are not created in page order. |
+| `refreshPriority` | Higher refreshes first (default `0`). Use only when triggers are not created in page order. |
 | `id` | For `ScrollTrigger.getById(id)`. |
 | `markers` | Development only. |
 | `onEnter`, `onLeave`, `onEnterBack`, `onLeaveBack`, `onToggle`, `onUpdate`, `onRefresh`, `onScrubComplete` | Callbacks get the instance (`self.progress`, `self.direction`, `self.isActive`, `self.getVelocity()`). |
@@ -161,7 +161,7 @@ gsap.fromTo(".progress", { scaleX: 0 }, { scaleX: 1, ease: "none", transformOrig
 ## Refresh and order
 
 - ScrollTrigger refreshes on viewport resize (debounced about 200 ms). Call `ScrollTrigger.refresh()` yourself after fonts load, images without fixed dimensions load, or async content changes the layout.
-- Refresh runs in creation order. Create triggers top to bottom, or set `refreshPriority` so the first section on the page has the lowest number. Wrong order breaks pin spacing.
+- Refresh runs in creation order. Create triggers top to bottom, or set `refreshPriority` so the first section on the page has the highest number. Wrong order breaks pin spacing.
 - Give images and media fixed dimensions or `aspect-ratio` so late loads do not move trigger positions.
 
 ## Third-party smooth scroll

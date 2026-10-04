@@ -20,10 +20,11 @@ The third argument of `.to()`, `.from()`, `.fromTo()`, `.add()`, `.set()` and `.
 | Value | Placement |
 |---|---|
 | `1` | At 1 s from the timeline start (absolute). |
+| omitted | At the end of the timeline (`"+=0"`), the default. |
 | `"+=0.5"` | 0.5 s after the end of the timeline. |
 | `"-=0.2"` | 0.2 s before the end of the timeline (overlap). |
 | `"<"` | At the start of the most recently added child. |
-| `">"` | At the end of the most recently added child (the default). |
+| `">"` | At the end of the most recently added child. |
 | `"<0.2"` | 0.2 s after the start of the most recently added child. |
 | `">-0.1"` | 0.1 s before the end of the most recently added child. |
 | `"<25%"` | At 25% of the most recently added child's duration. |
