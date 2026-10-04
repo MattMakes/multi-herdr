@@ -17,7 +17,7 @@ Plans: this directory. Reports: `ai_docs/reports/domain-skills/`.
 | V3 loose-ends | v3-loose-ends.md | V1 V2 | opus-46 | merged |
 | P-UE ue-teammates | p1-ue-teammates.md | W1 W2 V1 V2 | opus-48 | merged; builders' Codex fallback removed by the orchestrator |
 | P-Swift swift-teammates | p2-swift-teammates.md | S1-S4 V1 V2 | opus-49 | running |
-| S5 skill-fixes | s5-skill-fixes.md | S3 S4 W2 | sonnet-11 | running |
+| S5 skill-fixes | s5-skill-fixes.md | S3 S4 W2 | sonnet-11 | merged |
 
 Merge order: V0, then any skill unit (rebase on V0), V1, V2; personas last.
 Shared-file conflicts (`skills/provenance.json`, `skills/README.md`) are
