@@ -95,11 +95,11 @@ class ApiCheckTest(unittest.TestCase):
             f"{path}:6: deprecated Node.old_make_things (Use [method add_child] instead.)",
         ])
 
-    def test_deprecated_names_report_only_in_upstream(self):
-        code, out = run("--doctool", DOCTOOL, "--strict-own", CLASSES / "provenance.json", CLASSES / "up")
+    def test_deprecated_names_report_only_in_copied(self):
+        code, out = run("--doctool", DOCTOOL, "--strict-own", CLASSES / "copied.json", CLASSES / "up")
         self.assertEqual(code, 0)
         self.assertEqual(len(out.splitlines()), 3)
-        self.assertTrue(all("(upstream, report only) deprecated" in x for x in out.splitlines()))
+        self.assertTrue(all("(copied, report only) deprecated" in x for x in out.splitlines()))
 
     def test_deprecated_json_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:

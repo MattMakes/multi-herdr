@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Copy GodotPrompter skills into this catalog under `godot-*` names.
+"""Copy skills from a source skills directory into this catalog under `godot-*` names.
 
 Usage:
-    scripts/godot/rename.py <upstream skills dir> <skill> [<skill>...] --out skills/
+    scripts/godot/rename.py <source skills dir> <skill> [<skill>...] --out skills/
     scripts/godot/rename.py ... --dry-run     # print the diff, write nothing
 
 For each named skill the script:
-- copies `<upstream skills dir>/<skill>/` (minus dotfiles) to
+- copies `<source skills dir>/<skill>/` (minus dotfiles) to
   `<out>/godot-<skill>/` (a name that already starts with `godot-` is kept);
 - sets the frontmatter `name:` to the new name and never touches
   `description:` or any other frontmatter line;
-- rewrites references to every upstream skill (the full upstream list is the
+- rewrites references to every source skill (the full source list is the
   map, not only the skills you copy) in the body of every copied `.md` file:
     godot-prompter:<x>       -> godot-<x>   (godot-prompter:* -> godot-*)
     **<x>**                  -> **godot-<x>**
@@ -33,12 +33,11 @@ import sys
 from pathlib import Path
 
 
-
 def new_name(name: str) -> str:
     return name if name.startswith("godot-") else f"godot-{name}"
 
 
-def upstream_skills(skills_dir: Path) -> list[str]:
+def source_skills(skills_dir: Path) -> list[str]:
     return sorted(
         p.name
         for p in skills_dir.iterdir()
@@ -112,7 +111,6 @@ def transform(rel: Path, text: str, rewrite, name: str) -> str:
     return front + rewrite(body)
 
 
-
 def skill_files(src: Path) -> list[Path]:
     files = []
     for p in sorted(src.rglob("*")):
@@ -126,18 +124,18 @@ def skill_files(src: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("skills_dir", type=Path, help="the upstream skills/ directory")
-    ap.add_argument("skills", nargs="+", help="upstream skill names to copy")
+    ap.add_argument("skills_dir", type=Path, help="the source skills/ directory")
+    ap.add_argument("skills", nargs="+", help="source skill names to copy")
     ap.add_argument("--out", type=Path, required=True, help="target skills/ directory")
     ap.add_argument("--dry-run", action="store_true", help="print the diff, write nothing")
     ap.add_argument("--force", action="store_true", help="overwrite copied files in an existing target")
     args = ap.parse_args(argv)
 
     skills_dir: Path = args.skills_dir.resolve()
-    all_names = upstream_skills(skills_dir)
+    all_names = source_skills(skills_dir)
     unknown = [s for s in args.skills if s not in all_names]
     if unknown:
-        print(f"rename.py: not an upstream skill: {', '.join(unknown)}", file=sys.stderr)
+        print(f"rename.py: not a source skill: {', '.join(unknown)}", file=sys.stderr)
         return 2
     rewrite = build_rewriter(all_names)
 
@@ -149,9 +147,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"rename.py: {dst} exists (pass --force to overwrite the copied files)", file=sys.stderr)
             return 1
         for rel in skill_files(src):
-            upstream = src / rel
-            upstream_rel = upstream.as_posix()
-            raw = upstream.read_bytes()
+            source = src / rel
+            source_rel = source.as_posix()
+            raw = source.read_bytes()
             try:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
@@ -163,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
                 old = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
                 new = out_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
                 sys.stdout.writelines(difflib.unified_diff(old, new,
-                    f"a/{upstream_rel}", f"b/{target.as_posix()}"))
+                    f"a/{source_rel}", f"b/{target.as_posix()}"))
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(out_bytes)

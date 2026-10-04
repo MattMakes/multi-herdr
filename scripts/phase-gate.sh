@@ -44,8 +44,8 @@ no_spec_todo() {
 
 # Godot skills (ai_docs/plans/godot/gw0-tooling.md): every engine API name in
 # skills/godot-* must exist in Godot 4.7.2, and every gdscript block must
-# parse. A failing block in a file copied from GodotPrompter (a `sources`
-# path in skills/provenance.json) is reported, not failed; so is a deprecated
+# parse. A failing block in a copied file (a `copied_files` path in
+# skills/copied.json) is reported, not failed; so is a deprecated
 # API name in such a file (GW13). Both Godot checks print "skipped: no Godot"
 # and pass when Godot is not installed. xref_check needs no Godot: every
 # godot-<name> mention names a skill and every relative link resolves.
@@ -60,9 +60,9 @@ godot_skills() {
     return 0
   fi
   python3 scripts/godot/xref_check.py
-  python3 scripts/godot/api_check.py --strict-own skills/provenance.json "${dirs[@]}"
-  python3 scripts/godot/gdscript_blocks_check.py --strict-own skills/provenance.json "${dirs[@]}"
-  python3 scripts/godot/csharp_blocks_check.py --strict-own skills/provenance.json "${dirs[@]}"
+  python3 scripts/godot/api_check.py --strict-own skills/copied.json "${dirs[@]}"
+  python3 scripts/godot/gdscript_blocks_check.py --strict-own skills/copied.json "${dirs[@]}"
+  python3 scripts/godot/csharp_blocks_check.py --strict-own skills/copied.json "${dirs[@]}"
 }
 
 step no_spec_todo

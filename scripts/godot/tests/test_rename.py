@@ -1,9 +1,7 @@
 """Tests for scripts/godot/rename.py. Run: python3 -m unittest discover -s scripts/godot/tests"""
 
 import contextlib
-import hashlib
 import io
-import json
 import shutil
 import sys
 import tempfile
@@ -22,18 +20,18 @@ class RenameTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
-        self.upstream = self.tmp / "upstream"
-        shutil.copytree(FIXTURE, self.upstream)
+        self.source = self.tmp / "source"
+        shutil.copytree(FIXTURE, self.source)
         # Dotfiles are made here, not committed: git ignores some of them.
-        (self.upstream / "skills" / "state-machine" / ".DS_Store").write_bytes(b"\0")
-        (self.upstream / "skills" / ".hidden").mkdir()
-        (self.upstream / "skills" / ".hidden" / "SKILL.md").write_text("---\nname: x\n---\n")
+        (self.source / "skills" / "state-machine" / ".DS_Store").write_bytes(b"\0")
+        (self.source / "skills" / ".hidden").mkdir()
+        (self.source / "skills" / ".hidden" / "SKILL.md").write_text("---\nname: x\n---\n")
         self.out = self.tmp / "out"
 
     def run_rename(self, *args):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
-            code = rename.main([str(self.upstream / "skills"), *args, "--out", str(self.out), "--revision", "abc123"])
+            code = rename.main([str(self.source / "skills"), *args, "--out", str(self.out)])
         return code, stdout.getvalue()
 
     def test_copies_and_renames(self):
@@ -42,15 +40,10 @@ class RenameTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["godot-state-machine", "godot-ui"])
         files = sorted(p.relative_to(self.out).as_posix() for p in self.out.rglob("*") if p.is_file())
         self.assertEqual(files, [
-            "godot-state-machine/LICENSE",
             "godot-state-machine/SKILL.md",
             "godot-state-machine/references/more.md",
-            "godot-ui/LICENSE",
             "godot-ui/SKILL.md",
         ])
-        self.assertEqual(
-            (self.out / "godot-ui" / "LICENSE").read_bytes(), (self.upstream / "LICENSE").read_bytes()
-        )
 
     def test_rewrites_references_but_not_description(self):
         self.run_rename("state-machine")
@@ -75,19 +68,6 @@ class RenameTest(unittest.TestCase):
     def test_skills_not_copied_are_still_in_the_map(self):
         self.run_rename("godot-ui")
         self.assertIn("See **godot-state-machine**.", (self.out / "godot-ui" / "SKILL.md").read_text())
-
-    def test_prints_sha256_of_each_upstream_file(self):
-        _, out = self.run_rename("godot-ui")
-        lic = hashlib.sha256((self.upstream / "LICENSE").read_bytes()).hexdigest()
-        skill = hashlib.sha256((self.upstream / "skills" / "godot-ui" / "SKILL.md").read_bytes()).hexdigest()
-        self.assertEqual(out.splitlines(), [f"{skill}  skills/godot-ui/SKILL.md", f"{lic}  LICENSE"])
-
-    def test_json_sources(self):
-        _, out = self.run_rename("godot-ui", "--json")
-        sources = json.loads(out[out.index("{"):])["godot-ui"]
-        self.assertEqual([s["path"] for s in sources], ["skills/godot-ui/SKILL.md", "LICENSE"])
-        self.assertEqual({s["revision"] for s in sources}, {"abc123"})
-        self.assertEqual({s["license"] for s in sources}, {"MIT"})
 
     def test_dry_run_writes_nothing_and_shows_diff(self):
         code, out = self.run_rename("state-machine", "--dry-run")

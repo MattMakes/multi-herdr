@@ -23,17 +23,14 @@ SAMPLE = HERE / "fixtures" / "blocks" / "sample.md"
 
 
 def make_skills(root: Path) -> Path:
-    """A skills/ dir: godot-x/SKILL.md is copied upstream, references/own.md is own text."""
+    """A skills/ dir: godot-x/SKILL.md is copied, references/own.md is own text."""
     skill = root / "skills" / "godot-x"
     (skill / "references").mkdir(parents=True)
     shutil.copy(SAMPLE, skill / "SKILL.md")
     shutil.copy(SAMPLE, skill / "references" / "own.md")
-    source = {"repository": "https://github.com/jame581/GodotPrompter", "revision": "0" * 40,
-              "sha256": "0" * 64, "license": "MIT"}
-    provenance = {"skills": [{"name": "godot-x", "sources": [
-        {**source, "path": "skills/x/SKILL.md"}, {**source, "path": "LICENSE"}]}]}
-    path = root / "skills" / "provenance.json"
-    path.write_text(json.dumps(provenance))
+    copied = {"skills": [{"name": "godot-x", "copied_files": ["SKILL.md"]}]}
+    path = root / "skills" / "copied.json"
+    path.write_text(json.dumps(copied))
     return path
 
 
@@ -50,11 +47,11 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual([b.line for b in blocks], [6, 22, 33, 40, 47, 54])
         self.assertTrue(blocks[0].code.startswith("class_name Health\n"))
 
-    def test_copied_files_come_from_provenance_sources(self):
+    def test_copied_files_come_from_copied_json(self):
         with tempfile.TemporaryDirectory() as tmp:
-            provenance = make_skills(Path(tmp))
+            copied = make_skills(Path(tmp))
             self.assertEqual(
-                gbc.copied_files(provenance), {provenance.resolve().parent / "godot-x" / "SKILL.md"}
+                gbc.copied_files(copied), {copied.resolve().parent / "godot-x" / "SKILL.md"}
             )
 
     def test_no_godot_skips(self):
@@ -81,17 +78,17 @@ class ParseTest(unittest.TestCase):
         self.assertIn("6 blocks, 5 parse (3 whole, 1 with an added extends, 1 in a func), 1 fail", err)
         self.assertEqual(list(self.scratch.iterdir()), [], "the scratch project is removed")
 
-    def test_strict_own_reports_upstream_and_fails_own(self):
-        provenance = make_skills(self.scratch)
-        skill = provenance.parent / "godot-x"
-        code, out, err = run("--scratch", self.scratch, "--strict-own", provenance, skill / "SKILL.md")
+    def test_strict_own_reports_copied_and_fails_own(self):
+        copied = make_skills(self.scratch)
+        skill = copied.parent / "godot-x"
+        code, out, err = run("--scratch", self.scratch, "--strict-own", copied, skill / "SKILL.md")
         self.assertEqual(code, 0, out)
-        self.assertIn("SKILL.md:57: (upstream, report only) Parse Error:", out)
-        self.assertIn("1 fail (1 upstream, report only)", err)
-        code, out, err = run("--scratch", self.scratch, "--strict-own", provenance, skill)
+        self.assertIn("SKILL.md:57: (copied, report only) Parse Error:", out)
+        self.assertIn("1 fail (1 copied, report only)", err)
+        code, out, err = run("--scratch", self.scratch, "--strict-own", copied, skill)
         self.assertEqual(code, 1)
         self.assertIn("own.md:57: Parse Error:", out)
-        self.assertIn("2 fail (1 upstream, report only)", err)
+        self.assertIn("2 fail (1 copied, report only)", err)
 
 
 if __name__ == "__main__":

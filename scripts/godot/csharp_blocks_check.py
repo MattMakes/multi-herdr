@@ -2,7 +2,7 @@
 """Compile-check every ```csharp and ```cs code block in markdown files.
 
 Usage:
-    scripts/godot/csharp_blocks_check.py [--strict-own skills/provenance.json] [--scratch DIR] [--keep] <paths...>
+    scripts/godot/csharp_blocks_check.py [--strict-own skills/copied.json] [--scratch DIR] [--keep] <paths...>
 
 Each block goes into a scratch `Godot.NET.Sdk/<version>` project and
 `dotnet build` compiles them all. csc reports only the first stage that has
@@ -31,8 +31,8 @@ errors). `<!-- csharp-check: skip -->`
 on the line before the fence (blank lines between are allowed) skips the
 block.
 
-With `--strict-own skills/provenance.json`, a failing block in a file that
-provenance.json lists as copied from upstream prints with "(upstream, report
+With `--strict-own skills/copied.json`, a failing block in a file that
+copied.json lists as copied prints with "(copied, report
 only)" and does not fail the run (the rule of `gdscript_blocks_check.py`).
 
 The NuGet packages go to `<scratch>/nuget` (`NUGET_PACKAGES`) and the dotnet
@@ -264,11 +264,11 @@ def report_line(b: Block) -> tuple[int, str]:
     return b.line + max(line - best.first_line, 0), msg
 
 
-def copied_files(provenance: Path) -> set[Path]:
+def copied_files(copied_json: Path) -> set[Path]:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from gdscript_blocks_check import copied_files as copied
 
-    return {p.resolve() for p in copied(provenance)}
+    return {p.resolve() for p in copied(copied_json)}
 
 
 def files_under(paths: list[Path]) -> list[Path]:
@@ -289,9 +289,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep", action="store_true", help="keep the scratch project")
     ap.add_argument("--timeout", type=int, default=900, help="seconds for the dotnet build")
     ap.add_argument(
-        "--strict-own", type=Path, metavar="PROVENANCE",
-        help="report, but do not fail on, blocks in files that PROVENANCE (skills/provenance.json) "
-        "lists as copied from upstream",
+        "--strict-own", type=Path, metavar="COPIED",
+        help="report, but do not fail on, blocks in files that COPIED (skills/copied.json) "
+        "lists as copied",
     )
     ap.add_argument("paths", nargs="+", type=Path)
     args = ap.parse_args(argv)
@@ -299,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     if shutil.which("dotnet") is None:
         print("skipped: no dotnet")
         return 0
-    upstream = copied_files(args.strict_own) if args.strict_own else set()
+    copied = copied_files(args.strict_own) if args.strict_own else set()
     files = files_under(args.paths)
     blocks = [b for f in files for b in extract(f)]
     if not blocks:
@@ -321,15 +321,15 @@ def main(argv: list[str] | None = None) -> int:
             shutil.rmtree(project, ignore_errors=True)
 
     failed = [b for b in blocks if not b.passed]
-    strict = [b for b in failed if b.path.resolve() not in upstream]
+    strict = [b for b in failed if b.path.resolve() not in copied]
     for b in failed:
         line, msg = report_line(b)
-        tag = "" if b in strict else " (upstream, report only)"
+        tag = "" if b in strict else " (copied, report only)"
         print(f"{b.path}:{line}:{tag} {msg}")
     whole = sum(1 for b in blocks if b.passed and b.forms[0].name == "whole")
     print(
         f"csharp_blocks_check: {len(files)} files, {len(blocks)} blocks, {len(blocks) - len(failed)} compile "
-        f"({whole} whole), {len(failed)} fail ({len(failed) - len(strict)} upstream, report only)",
+        f"({whole} whole), {len(failed)} fail ({len(failed) - len(strict)} copied, report only)",
         file=sys.stderr,
     )
     return 1 if strict else 0

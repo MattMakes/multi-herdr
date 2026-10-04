@@ -56,11 +56,11 @@ class BuildTest(unittest.TestCase):
             "(are you missing a using directive or an assembly reference?)",
         ])
 
-    def test_upstream_blocks_report_only(self):
-        code, out, _ = run("--strict-own", FIXTURE / "provenance.json", FIXTURE / "up")
+    def test_copied_blocks_report_only(self):
+        code, out, _ = run("--strict-own", FIXTURE / "copied.json", FIXTURE / "up")
         self.assertEqual(code, 0)
         self.assertEqual(len(out.splitlines()), 2)
-        self.assertTrue(all("(upstream, report only)" in x for x in out.splitlines()))
+        self.assertTrue(all("(copied, report only)" in x for x in out.splitlines()))
 
 
 if __name__ == "__main__":

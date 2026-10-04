@@ -22,10 +22,10 @@ that another block declares. When 2 blocks declare the same `class_name`,
 the first one registers it and the other is checked without its
 `class_name`.
 
-With `--strict-own skills/provenance.json`, a failing block in a file that
-provenance.json lists as copied from upstream is reported with
-"(upstream, report only)" and does not fail the run. Blocks in own files
-(not a `sources` path) still fail it.
+With `--strict-own skills/copied.json`, a failing block in a file that
+copied.json lists as copied is reported with
+"(copied, report only)" and does not fail the run. Blocks in own files
+(not in `copied_files`) still fail it.
 
 A `<!-- gdscript-check: skip -->` line just before the opening fence (blank
 lines between are allowed) skips the block.
@@ -256,21 +256,19 @@ def report_line(b: Block) -> tuple[int, str]:
     return b.line, msg
 
 
-def copied_files(provenance: Path) -> set[Path]:
-    """Files that provenance.json lists as copied from upstream.
+def copied_files(copied: Path) -> set[Path]:
+    """Files that copied.json lists as copied.
 
-    A source path `skills/<upstream name>/<rel>` is the file
-    `<provenance dir>/<skill>/<rel>`. Other sources (the LICENSE) are skipped.
+    A `copied_files` path `<rel>` of skill `<skill>` is the file
+    `<copied.json dir>/<skill>/<rel>`.
     Our edits to a copied file (an API fix, a "Fleet additions" list) do not
     make it own text; a reference that is not a source is own text.
     """
-    root = provenance.resolve().parent
+    root = copied.resolve().parent
     out = set()
-    for entry in json.loads(provenance.read_text())["skills"]:
-        for src in entry.get("sources", []):
-            parts = src["path"].split("/")
-            if len(parts) >= 3 and parts[0] == "skills":
-                out.add(root / entry["name"] / "/".join(parts[2:]))
+    for entry in json.loads(copied.read_text())["skills"]:
+        for rel in entry["copied_files"]:
+            out.add(root / entry["name"] / rel)
     return out
 
 
@@ -292,13 +290,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep", action="store_true", help="keep the scratch project")
     ap.add_argument("--timeout", type=int, default=600, help="seconds per Godot run")
     ap.add_argument(
-        "--strict-own", type=Path, metavar="PROVENANCE",
-        help="report, but do not fail on, blocks in files that PROVENANCE (skills/provenance.json) "
-        "lists as copied from upstream",
+        "--strict-own", type=Path, metavar="COPIED",
+        help="report, but do not fail on, blocks in files that COPIED (skills/copied.json) "
+        "lists as copied",
     )
     ap.add_argument("paths", nargs="+", type=Path)
     args = ap.parse_args(argv)
-    upstream = copied_files(args.strict_own) if args.strict_own else set()
+    copied = copied_files(args.strict_own) if args.strict_own else set()
 
     godot = find_godot()
     if godot is None:
@@ -321,10 +319,10 @@ def main(argv: list[str] | None = None) -> int:
             shutil.rmtree(project, ignore_errors=True)
 
     failed = [b for b in blocks if b.passed is None]
-    strict = [b for b in failed if b.path.resolve() not in upstream]
+    strict = [b for b in failed if b.path.resolve() not in copied]
     for b in failed:
         line, msg = report_line(b)
-        tag = "" if b in strict else " (upstream, report only)"
+        tag = "" if b in strict else " (copied, report only)"
         print(f"{b.path}:{line}:{tag} {msg}")
     whole = sum(1 for b in blocks if b.passed == "whole")
     extends = sum(1 for b in blocks if b.passed and b.passed.startswith("extends"))
@@ -332,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"gdscript_blocks_check: {len(files)} files, {len(blocks)} blocks, "
         f"{len(blocks) - len(failed)} parse ({whole} whole, {extends} with an added extends, "
-        f"{in_func} in a func), {len(failed)} fail ({len(failed) - len(strict)} upstream, report only)",
+        f"{in_func} in a func), {len(failed)} fail ({len(failed) - len(strict)} copied, report only)",
         file=sys.stderr,
     )
     return 1 if strict else 0

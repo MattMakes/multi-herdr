@@ -37,8 +37,8 @@ which the editor writes to the user cache directory) because the
 `--doctool` dump from a release binary has no deprecation marks. With no
 marks it prints "deprecated: no data" on stderr and checks the rest.
 
-With `--strict-own skills/provenance.json`, a deprecated name in a file that
-provenance.json lists as copied from upstream prints with "(upstream, report
+With `--strict-own skills/copied.json`, a deprecated name in a file that
+copied.json lists as copied prints with "(copied, report
 only)" and does not fail the run (the rule of `gdscript_blocks_check.py`).
 Unknown names fail in every file.
 
@@ -248,9 +248,9 @@ class Unknown:
     kind: str = "unknown"
     message: str = ""
 
-    def text(self, upstream: bool = False) -> str:
+    def text(self, copied: bool = False) -> str:
         if self.kind == "deprecated":
-            tag = " (upstream, report only)" if upstream else ""
+            tag = " (copied, report only)" if copied else ""
             msg = " ".join(self.message.split())
             return f"{self.path}:{self.line}:{tag} deprecated {self.name}" + (f" ({msg})" if msg else "")
         return f"{self.path}:{self.line}: unknown {self.name}"
@@ -508,19 +508,19 @@ def ensure_doctool(godot: str) -> Path:
     return dump
 
 
-def copied_files(provenance: Path) -> set[Path]:
+def copied_files(copied_json: Path) -> set[Path]:
     from gdscript_blocks_check import copied_files as copied
 
-    return {p.resolve() for p in copied(provenance)}
+    return {p.resolve() for p in copied(copied_json)}
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--doctool", type=Path, help="a `Godot --doctool` dump directory")
     ap.add_argument(
-        "--strict-own", type=Path, metavar="PROVENANCE",
-        help="report, but do not fail on, deprecated names in files that PROVENANCE "
-        "(skills/provenance.json) lists as copied from upstream",
+        "--strict-own", type=Path, metavar="COPIED",
+        help="report, but do not fail on, deprecated names in files that COPIED "
+        "(skills/copied.json) lists as copied",
     )
     ap.add_argument("paths", nargs="+", type=Path)
     args = ap.parse_args(argv)
@@ -538,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
     api = Api.load(doctool)
     if not api.deprecated:
         print("deprecated: no data", file=sys.stderr)
-    upstream = copied_files(args.strict_own) if args.strict_own else set()
+    copied = copied_files(args.strict_own) if args.strict_own else set()
 
     files = files_under(args.paths)
     known = load_known_classes()
@@ -546,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     failing = 0
     report_only = 0
     for u in found:
-        up = u.kind == "deprecated" and u.path.resolve() in upstream
+        up = u.kind == "deprecated" and u.path.resolve() in copied
         print(u.text(up))
         if up:
             report_only += 1
@@ -555,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     unknown = sum(1 for u in found if u.kind == "unknown")
     print(
         f"api_check: {len(files)} files, {unknown} unknown names, "
-        f"{len(found) - unknown} deprecated ({report_only} upstream, report only)",
+        f"{len(found) - unknown} deprecated ({report_only} copied, report only)",
         file=sys.stderr,
     )
     return 1 if failing else 0
