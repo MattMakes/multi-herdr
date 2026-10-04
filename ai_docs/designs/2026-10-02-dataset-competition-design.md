@@ -1003,6 +1003,16 @@ part of it (`preflight_report_round_trips_and_digest_tracks_the_environment`).
    (`routing/eligible.rs:ExclusionReason::PoolBlocked`). Preflight sees only
    the pool-wide state, which can be stricter than the candidate's scope.
 
+#### 4.11.2 Judge mode (Spec B §3)
+
+`JudgeMode` has 1 value: `auto` (`competition/config.rs:JudgeMode`). In
+`auto` mode the judge runs as soon as every candidate is frozen. `--judge`
+and the `judge.mode` key of `.multi-herdr/dataset.yaml` refuse every other
+value with an error. Reason: the master plan names only `--judge auto`, and
+no other mode has an implementation. A new mode is a new enum value with its
+own tests. Tests: `cmp_01_cli_args` (`--judge manual` is refused),
+`judge_mode_auto_is_the_only_mode`.
+
 ---
 
 ## 5. Round state machine (CMP-03)
