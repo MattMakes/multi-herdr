@@ -1294,6 +1294,55 @@
       "vendored": true
     },
     {
+      "name": "godot-audio-system",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/audio-system/SKILL.md",
+          "sha256": "c3c1cad4d873877eab78bf9be037d2d0050a8f8f47e0164a77b4f1a7a4dd3f01",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/audio-system/references/audio-settings.md",
+          "sha256": "e132e3749b54a6e113375febc9211c667d144904e5b1ebfefca07d95c137fa08",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/audio-system/references/interactive-music.md",
+          "sha256": "084a1aead2cf25d181dd323929cc0ac25677b2b44a63670e26749561a6edf7ad",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/audio-system/references/music-manager.md",
+          "sha256": "ce95be0ff09165c9bfc825dcd13a8d5424d1e6717b95f7402a7fe7db550dfdcf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/audio-system/references/sfx-pooling.md",
+          "sha256": "81acb20d4def63d7a3ecc1e4cefda23234ff4a05a265426eb8ed96a3e856ee82",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/audio-clock-and-analysis.md, references/mixing-voices-and-ducking.md, references/spatial-acoustics.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-audio-systems",
+      "vendored": true
+    },
+    {
       "name": "godot-beehave",
       "sources": [
         {
@@ -2251,6 +2300,76 @@
         }
       ],
       "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-particles-vfx",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/particles-vfx/SKILL.md",
+          "sha256": "9b93cf690eb662b12f01a363a4f6deb748b1b83b584a88f58d6e775a4b59c14b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/particles-vfx/references/attractors-and-collision.md",
+          "sha256": "b6da90a0bd2f2aebd8d7e83ecb13cedc3c7f9541849c0344e8e1cfcef563db16",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/particles-vfx/references/flipbook-animation.md",
+          "sha256": "6f9ffc6027e8738ac5fbebf6227557ee78673fd7f2784f0aadff8fcea49f65fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/particles-vfx/references/performance-and-pitfalls.md",
+          "sha256": "6b43576d689aa49df0bcdb5b127c71e3690b0e57b1907d01cad7eb001ad96ded",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/particles-vfx/references/process-material-basics.md",
+          "sha256": "dc558772464ea45bf8bed3405b2dac1659a2de9cc036c3bcdc3087f2f8437ebb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/particles-vfx/references/subemitters.md",
+          "sha256": "aa40ccd5546ff7c6905e03c73158e7844224d6261606a3f366e2f515bd670329",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/particles-vfx/references/trails.md",
+          "sha256": "2f0b51606da7a1aa01399579dcedb264be8b452a1ed07da792fe900d3b341ba9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/particles-vfx/references/vfx-recipes.md",
+          "sha256": "f31992bdbd851be762ce553eb9fe8883187c912116a139541ed8d2bbf63c8ec8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/particle-lifecycle-and-pooling.md, references/particle-shaders-and-scale.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-particles",
       "vendored": true
     },
     {

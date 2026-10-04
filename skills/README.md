@@ -163,6 +163,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-addon-development](godot-addon-development/SKILL.md) | `jame581/GodotPrompter`: `skills/addon-development/` | renamed |
 | [godot-ai-navigation](godot-ai-navigation/SKILL.md) | `jame581/GodotPrompter`: `skills/ai-navigation/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-ai-navigation/`, `godot-navigation-pathfinding/`) | combined |
 | [godot-assets-pipeline](godot-assets-pipeline/SKILL.md) | `jame581/GodotPrompter`: `skills/assets-pipeline/` | renamed |
+| [godot-audio-system](godot-audio-system/SKILL.md) | `jame581/GodotPrompter`: `skills/audio-system/`; own-text references, consulted gd-agentic-skills `godot-audio-systems` | combined |
 | [godot-beehave](godot-beehave/SKILL.md) | `jame581/GodotPrompter`: `skills/beehave/` | renamed |
 | [godot-brainstorming](godot-brainstorming/SKILL.md) | `jame581/GodotPrompter`: `skills/brainstorming/` | adapted |
 | [godot-build-verify](godot-build-verify/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |
@@ -192,6 +193,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-multiplayer-basics](godot-multiplayer-basics/SKILL.md) | `jame581/GodotPrompter`: `skills/multiplayer-basics/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-adapt-single-to-multiplayer/`, `godot-multiplayer-networking/`) | combined |
 | [godot-multiplayer-sync](godot-multiplayer-sync/SKILL.md) | `jame581/GodotPrompter`: `skills/multiplayer-sync/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-multiplayer-networking/`, `godot-adapt-single-to-multiplayer/`) | combined |
 | [godot-multithreading](godot-multithreading/SKILL.md) | `jame581/GodotPrompter`: `skills/multithreading/` | renamed |
+| [godot-particles-vfx](godot-particles-vfx/SKILL.md) | `jame581/GodotPrompter`: `skills/particles-vfx/`; own-text references, consulted gd-agentic-skills `godot-particles` | combined |
 | [godot-phantom-camera](godot-phantom-camera/SKILL.md) | `jame581/GodotPrompter`: `skills/phantom-camera/` | renamed |
 | [godot-physics-system](godot-physics-system/SKILL.md) | `jame581/GodotPrompter`: `skills/physics-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-2d-physics/`, `godot-physics-3d/`, `godot-raycasting-queries/`) | combined |
 | [godot-player-controller](godot-player-controller/SKILL.md) | `jame581/GodotPrompter`: `skills/player-controller/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-characterbody-2d/`) | combined |
