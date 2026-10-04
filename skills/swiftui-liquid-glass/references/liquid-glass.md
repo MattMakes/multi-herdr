@@ -91,12 +91,12 @@ GlassEffectContainer(spacing: 40.0) {
     HStack(spacing: 40.0) {
         Image(systemName: "scribble.variable")
             .frame(width: 80.0, height: 80.0)
-            .font(.system(size: 36))
+            .font(.title2)
             .glassEffect()
 
         Image(systemName: "eraser.fill")
             .frame(width: 80.0, height: 80.0)
-            .font(.system(size: 36))
+            .font(.title2)
             .glassEffect()
     }
 }
@@ -119,7 +119,7 @@ GlassEffectContainer(spacing: 20.0) {
         ForEach(symbolSet.indices, id: \.self) { item in
             Image(systemName: symbolSet[item])
                 .frame(width: 80.0, height: 80.0)
-                .font(.system(size: 36))
+                .font(.title2)
                 .glassEffect()
                 .glassEffectUnion(id: item < 2 ? "1" : "2", namespace: namespace)
         }
@@ -148,14 +148,14 @@ var body: some View {
         HStack(spacing: 40.0) {
             Image(systemName: "scribble.variable")
                 .frame(width: 80.0, height: 80.0)
-                .font(.system(size: 36))
+                .font(.title2)
                 .glassEffect()
                 .glassEffectID("pencil", in: namespace)
 
             if isExpanded {
                 Image(systemName: "eraser.fill")
                     .frame(width: 80.0, height: 80.0)
-                    .font(.system(size: 36))
+                    .font(.title2)
                     .glassEffect()
                     .glassEffectID("eraser", in: namespace)
             }
@@ -255,11 +255,11 @@ struct BadgeView: View {
         ZStack {
             Image(systemName: "hexagon.fill")
                 .foregroundStyle(color)
-                .font(.system(size: 50))
+                .font(.largeTitle)
 
             Image(systemName: symbol)
                 .foregroundStyle(.white)
-                .font(.system(size: 30))
+                .font(.title)
         }
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
     }

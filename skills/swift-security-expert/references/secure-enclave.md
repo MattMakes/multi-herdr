@@ -63,9 +63,9 @@ enum SecureEnclaveError: Error {
 }
 ```
 
-The `#if targetEnvironment(simulator)` compile-time guard is essential. **`SecureEnclave.isAvailable` can return `true` on the Simulator** when the host Mac has SE hardware (T2/M-series), but actual key generation fails at runtime. This behavior varies across Xcode versions — some return `false` consistently, others reflect the host's hardware. The compile-time check eliminates the ambiguity entirely.
+The `#if targetEnvironment(simulator)` compile-time guard is essential. The Simulator has no Secure Enclave. Apple documents `SecureEnclave.isAvailable` only as "a Boolean value that indicates if the device supports Secure Enclave access" and does not say what it returns on the Simulator. It is usually `false` there, which silently takes the fallback path in simulator runs. Key creation on the Simulator fails at runtime. Do not rely on `isAvailable` alone to detect the Simulator. The compile-time check removes the ambiguity.
 
-> **Cross-validation note:** The Claude research source documents the simulator `isAvailable` returning `true` as a confirmed trap; the Parallel research source states `isAvailable` is always `false` on simulator. Real-world behavior depends on Xcode version and host hardware. The defensive pattern above (compile-time guard + runtime check) is correct regardless of which behavior your environment exhibits.
+> **Cross-validation note:** The two research sources disagreed: one reported `isAvailable` returning `true` on the Simulator, the other reported `false` always. Apple's documentation settles neither claim. Treat the Simulator value as undocumented. The defensive pattern above (compile-time guard + runtime check) is correct whichever value your environment returns.
 
 ```swift
 // ❌ INCORRECT: No availability check — crashes on simulator and old devices

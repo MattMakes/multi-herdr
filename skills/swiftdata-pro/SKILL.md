@@ -18,6 +18,7 @@ Review process:
 1. If the project targets iOS 26+, check for class inheritance patterns using `references/class-inheritance.md`.
 1. If the schema changes between releases, or the code reads persistent history, check versioning, migration plans, and history handling using `references/migrations-and-history.md`.
 1. If the project already uses Core Data, or shares a store between Core Data and SwiftData, follow `references/core-data-adoption.md`.
+1. If the code does background persistence, uses `@ModelActor`, or passes models between actors, check `references/concurrency-and-actors.md`.
 
 If doing partial work, load only the relevant reference files.
 
@@ -104,3 +105,4 @@ End of example.
 - `references/class-inheritance.md` - model subclassing for iOS 26+, including @available requirements, schema setup, and predicate filtering.
 - `references/migrations-and-history.md` - `VersionedSchema`, `SchemaMigrationPlan`, lightweight and custom stages, persistent history, and deletion tombstones.
 - `references/core-data-adoption.md` - full, incremental, and coexisting Core Data to SwiftData adoption, with a migration checklist.
+- `references/concurrency-and-actors.md` - `@ModelActor`, context isolation, passing identifiers across actors, undo limits, and history with concurrent writers.
