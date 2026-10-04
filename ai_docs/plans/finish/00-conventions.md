@@ -36,3 +36,13 @@ For each marker you own:
    design section. Never leave `SPEC-TODO`, `TODO(spec)` or "verbatim" placeholders.
 5. List every marker you closed in your report: location, what it now says,
    evidence, and whether code changed.
+
+## Gate load (added 2026-10-04)
+
+Ten full gates at once (load 40 on 18 cores) made each gate slow and flaky.
+- While working, run only the tests you touch (`cargo test -p <crate> --test
+  <file>`, `cargo clippy -p <crate>`, `rustfmt --check <files>`).
+- Run the full gate once, just before READY-TO-MERGE, through the slot
+  wrapper, which allows 3 gates at a time:
+  `HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 /Users/mascott/projects/multi-herdr/.worktrees/gate-slot.sh just gate`.
+- The orchestrator's merge gate does not take a slot.
