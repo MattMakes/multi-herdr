@@ -69,6 +69,7 @@ These skills come from MIT-licensed Swift skill repositories. Each keeps its ups
 | --- | --- | --- |
 | [observability](observability/SKILL.md) | vendored | `n0an/Observability-Agent-Skill`: `observability/` |
 | [swift-concurrency-pro](swift-concurrency-pro/SKILL.md) | adapted | `twostraws/Swift-Concurrency-Agent-Skill`: `swift-concurrency-pro/`; `AvdLee/Swift-Concurrency-Agent-Skill`: `skills/swift-concurrency/SKILL.md` (build-settings table) |
+| [swift-format-style](swift-format-style/SKILL.md) | adapted | `n0an/Swift-FormatStyle-Agent-Skill`: `swift-format-style/` |
 | [swift-testing-pro](swift-testing-pro/SKILL.md) | adapted, light | `twostraws/Swift-Testing-Agent-Skill`: `swift-testing-pro/` |
 | [swiftdata-pro](swiftdata-pro/SKILL.md) | adapted | `twostraws/SwiftData-Agent-Skill`: `swiftdata-pro/`; `vanab/swiftdata-agent-skill`: `swiftdata-expert-skill/references/migrations-and-history.md`, `core-data-adoption.md` |
 | [swiftui-liquid-glass](swiftui-liquid-glass/SKILL.md) | adapted | `Dimillian/Skills`: `swiftui-liquid-glass/` |

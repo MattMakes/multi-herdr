@@ -1319,6 +1319,69 @@
       "vendored": false
     },
     {
+      "name": "swift-format-style",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/SKILL.md",
+          "sha256": "8a4983d20be3fe0fce4df2f4b0058b4a68d0bdab42a137b5023ed8b4f7153e43",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/anti-patterns.md",
+          "sha256": "f672dabd3b20e38a081893662a0c200fdf9f2563127b2280a5afdcbf45af6495",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/date-styles.md",
+          "sha256": "6d680bac491d8565ac95c9df82f0edc0c931a1eda5c00d3d3a33e199c73a0c77",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/duration-styles.md",
+          "sha256": "fc902a6ec34c511e2e5843318b2a648b3851354bf77e1b258130aa35cc1b6d73",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/numeric-styles.md",
+          "sha256": "664a905ab951177d63afb79e3e000f60d420886b3d8c70229449a43908d92542",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/other-styles.md",
+          "sha256": "01b292e27a8c8bbd8d3d0fddcc27e792bdd8af51d01f90348bbdadb00b65dc22",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/swiftui.md",
+          "sha256": "7b239beb768bf0ef217b1fa8fef9eb86716445eb9fc80902f84c3a9c3c957f99",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy. anti-patterns.md: the fixed-format example uses .iso8601, or verbatim with en_US_POSIX and the Gregorian calendar (was calendar: .current). date-styles.md: one pitfall line on pinning the calendar for fixed formats. SKILL.md: 'Never use legacy Formatter' becomes 'for display'; description narrowed to values shown to the user.",
+      "vendored": false
+    },
+    {
       "name": "swift-testing-pro",
       "sources": [
         {
