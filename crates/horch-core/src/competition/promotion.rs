@@ -85,6 +85,9 @@ pub enum PromotionStrategy {
     CherryPick,
 }
 
+/// The receipt's `publish` value of a checked-out publish.
+const MERGE_FF_ONLY: &str = "merge_ff_only";
+
 /// How the target branch moves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PublishMode {
@@ -100,7 +103,7 @@ impl PublishMode {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             PublishMode::UpdateRefCas => "update_ref_cas",
-            PublishMode::MergeFfOnly { .. } => "merge_ff_only",
+            PublishMode::MergeFfOnly { .. } => MERGE_FF_ONLY,
         }
     }
 }
@@ -336,6 +339,10 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         let temp = TempIntegration::new(target, plan)?;
         let current = self.git.rev_parse(&target.repo, &started.target)?;
         if current.as_deref() == Some(started.planned_after.as_str()) {
+            if let Some(reason) = self.settle_checkout(target, started)? {
+                temp.discard(self.git)?;
+                return self.needs_intervention(candidate, plan, reason);
+            }
             return self.finish(candidate, target, plan, started, &started.publish, &temp);
         }
         if current.as_deref() == Some(started.dest_before.as_str()) {
@@ -360,6 +367,39 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
                 started.planned_after
             ),
         )
+    }
+
+    /// A checked-out publish that stopped between its ref swap and its tree
+    /// update leaves the checkout's index and files at `dest_before`. Run
+    /// the tree update again: when it already ran, the index matches
+    /// `planned_after` and git keeps it as it is. `Some(reason)` when git
+    /// refuses.
+    fn settle_checkout(
+        &self,
+        target: &BranchRef,
+        started: &PromotionStarted,
+    ) -> Result<Option<String>> {
+        if started.publish != MERGE_FF_ONLY {
+            return Ok(None);
+        }
+        let CheckoutLocation::CheckedOut { path, .. } = self
+            .git
+            .branch_checkout_location(&target.repo, &started.target)?
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .git
+            .read_tree_update(&path, &started.dest_before, &started.planned_after)
+            .err()
+            .map(|e| {
+                format!(
+                    "{} is at {} but the files of {} could not follow ({e:#})",
+                    started.target,
+                    started.planned_after,
+                    path.display()
+                )
+            }))
     }
 
     /// Move the target back from the receipt's `dest_after` to its

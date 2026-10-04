@@ -827,6 +827,44 @@ fn pro_03_checked_out_publish_is_cas() {
         "local edit\n"
     );
     assert_eq!(f.git.status_porcelain(&f.repo).unwrap(), " M b.txt");
+
+    // A crash between the ref swap and the tree update leaves `main` at
+    // the candidate and the files at the base. The restart moves the files
+    // and leaves the ref alone.
+    let Some(f) = Fixture::new() else { return };
+    let v = f.validator(true);
+    let crash = Faults::parse(Some(ABORT_AFTER_PROMOTION_STARTED));
+    let target = f.target("main");
+    f.engine(&v, &crash)
+        .promote(&f.candidate, &target, &f.plan())
+        .unwrap_err();
+    f.sh(
+        &f.repo,
+        &[
+            "update-ref",
+            "refs/heads/main",
+            &f.candidate.head_sha,
+            &f.base,
+        ],
+    );
+    assert_ne!(f.git.status_porcelain(&f.repo).unwrap(), "");
+    let before = ref_moves(&f, "refs/heads/main");
+    let started = started_of(&f.events());
+    let faults = no_faults();
+    for _ in 0..2 {
+        let got = f
+            .engine(&v, &faults)
+            .resume_promotion(&f.candidate, &target, &f.plan(), &started)
+            .unwrap();
+        assert!(matches!(got, PromotionResult::Promoted(_)), "{got:?}");
+    }
+    assert_eq!(f.git.head(&f.repo).unwrap(), f.candidate.head_sha);
+    assert_eq!(f.git.status_porcelain(&f.repo).unwrap(), "");
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("new.txt")).unwrap(),
+        "new\n"
+    );
+    assert_eq!(ref_moves(&f, "refs/heads/main"), before);
 }
 
 // ─── PRO-04 ─────────────────────────────────────────────────────────────────
