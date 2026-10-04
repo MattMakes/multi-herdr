@@ -9,11 +9,11 @@ use horch_core::competition::config::{
     load, parse_usd_micro, BudgetConfig, Caps, DatasetConfig, JudgeConfig, RunFlags, Strategy,
 };
 use horch_core::competition::preflight::{
-    claude_trust, codex_trust, evaluate, footprint_bytes, parse_git_version, storage_probe,
-    trust_fix, CheckStatus, GitFacts, HarnessTrust, PreflightCandidate, PreflightPlan,
-    PreflightReport, StorageProbe, TokenEstimate, TrustState,
+    evaluate, footprint_bytes, parse_git_version, storage_probe, CheckStatus, GitFacts,
+    PreflightCandidate, PreflightPlan, PreflightReport, StorageProbe, TokenEstimate,
 };
 use horch_core::harness::capabilities::HARNESS_FOOTPRINT_BYTES;
+use horch_core::harness::trust::{claude_trust, codex_trust, trust_fix, HarnessTrust, TrustState};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::{ModelId, TeammateName};
 use horch_core::runtime::machine::{GpuClass, Known, MachineSnapshot};

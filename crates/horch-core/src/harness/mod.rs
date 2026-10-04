@@ -17,6 +17,7 @@ pub(crate) mod none;
 pub mod opencode;
 pub(crate) mod pi;
 pub mod prime;
+pub mod trust;
 
 use std::ffi::OsString;
 use std::fmt;

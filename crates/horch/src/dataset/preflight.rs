@@ -12,12 +12,11 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use horch_core::competition::config::DatasetConfig;
 use horch_core::competition::preflight::{
-    asks_for_trust, claude_config_file, claude_trust, codex_trust, storage_probe, CheckStatus,
-    GitFacts, HarnessTrust, PoolFacts, PreflightCandidate, PreflightPlan, PreflightReport,
-    StorageProbe, TrustState, CLAUDE_TRUST_FILE, CODEX_TRUST_FILE,
+    storage_probe, CheckStatus, GitFacts, PoolFacts, PreflightCandidate, PreflightPlan,
+    PreflightReport, StorageProbe,
 };
 use horch_core::fsx;
-use horch_core::harness::codex::codex_home;
+use horch_core::harness::trust::{asks_for_trust, read_trust, HarnessTrust};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::{ExperimentId, TaskId};
 use horch_core::measure::digest::{digest_json, sha256_bytes, Digest};
@@ -279,50 +278,13 @@ fn harness_trust(
         .collect();
     harnesses.sort_unstable_by_key(|h| h.as_str());
     harnesses.dedup();
-    let home = &ctx.paths.home;
-    harnesses
-        .into_iter()
-        .map(|harness| match harness {
-            HarnessKind::Claude => match read_store(&claude_config_file(
-                home,
-                ctx.inherited.claude_config_dir.as_deref(),
-            )) {
-                Ok(text) => claude_trust(text.as_deref(), &roots),
-                Err(()) => unreadable(harness, CLAUDE_TRUST_FILE),
-            },
-            HarnessKind::Codex => {
-                let file =
-                    codex_home(home, ctx.inherited.codex_home.as_deref()).join("config.toml");
-                match read_store(&file) {
-                    Ok(text) => codex_trust(text.as_deref(), &roots),
-                    Err(()) => unreadable(harness, CODEX_TRUST_FILE),
-                }
-            }
-            other => HarnessTrust {
-                harness: other.as_str().to_string(),
-                state: TrustState::Unknown,
-                reason: format!("horch cannot read where {} keeps its trust", other.as_str()),
-            },
-        })
-        .collect()
-}
-
-/// The text of a trust store, `None` when it does not exist, `Err` when it
-/// cannot be read.
-fn read_store(path: &Path) -> std::result::Result<Option<String>, ()> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(()),
-    }
-}
-
-fn unreadable(harness: HarnessKind, file: &str) -> HarnessTrust {
-    HarnessTrust {
-        harness: harness.as_str().to_string(),
-        state: TrustState::Unknown,
-        reason: format!("{file} cannot be read"),
-    }
+    read_trust(
+        &harnesses,
+        &ctx.paths.home,
+        ctx.inherited.claude_config_dir.as_deref(),
+        ctx.inherited.codex_home.as_deref(),
+        &roots,
+    )
 }
 
 /// `path`, or its nearest ancestor that exists: the disk a new directory
@@ -507,6 +469,7 @@ pub(crate) fn render(report: &PreflightReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horch_core::harness::trust::TrustState;
 
     /// Every harness kind resolves by name, so preflight shows its version.
     #[test]
