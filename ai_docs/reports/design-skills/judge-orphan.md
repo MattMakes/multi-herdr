@@ -81,6 +81,42 @@ member start. Every orphan of the job started while the job was alive.
   `setsid`, `process_group` and `spawn_detached` in `src/` files that are
   not on its list. `procid.rs` uses none of these words.
 
+## Added: gate commands no longer inherit git repository variables
+
+The orchestrator assigned this after codex-reviewer-1's finding.
+
+- Defect: `evaluation/validator.rs` `spawn_and_wait` passed horch's own
+  `GIT_DIR`, `GIT_WORK_TREE` and the other `REPO_ENV` names to each
+  configured gate (`sh -c <command>`). A gate that runs git then changed the
+  repository that those variables name, not the candidate's worktree.
+- Fix: `spawn_and_wait` calls the shared
+  `horch_marketplace::git::scrub_repo_env(&mut cmd)` after every `env`
+  call, so a variable from `with_env` is removed too.
+- Test: `crates/horch-core/tests/vcs.rs`
+  `cmp_09_a_gate_cannot_reach_another_repository` uses D20's
+  `common::assert_decoy_untouched`. The child test
+  `gate_git_env_decoy_child` runs the gate `git init -q . && git
+  symbolic-ref HEAD refs/heads/hijacked` with `GIT_DIR` and `GIT_WORK_TREE`
+  aimed at a decoy. It asserts that the gate passed and that the worktree
+  HEAD is `refs/heads/hijacked`. The parent asserts that the decoy did not
+  change.
+  - Before the fix it failed: the gate's `git init` went into the decoy, so
+    the worktree had no `.git`.
+
+### Audit: other children without the scrub (not changed)
+
+Search: `rg -n 'Command::new' crates/*/src`. Only `GitRunner` and
+`validator.rs` call `scrub_repo_env` in product code.
+
+| Site | Runs git or user commands? | State |
+|---|---|---|
+| `evaluation/scheduler.rs` `schedule` (the judge job) and `harness/headless.rs` `headless_command` (the judge CLI) | The judge CLI is an agent that can run git in the sealed bundle | No scrub. Only `strip_forbidden`. Recommend: scrub both. |
+| `harness/launch.rs` (2 sites) and `harness/mod.rs` `build_command` (claude, codex, pi, opencode, antigravity panes and headless runs) | Agents run git all the time | No scrub. Only `strip_forbidden`. A horch started under `git rebase -x` or a git hook gives its `GIT_DIR` to every agent. Recommend: scrub in `strip_forbidden`, or next to it. |
+| `execution/lifecycle.rs` `run_horch`, `workspace/arrange.rs` `settle_after_close` | horch itself | Safe: horch's own git goes through `GitRunner`, which scrubs. |
+| `workspace/herdr.rs` | the herdr CLI | Not checked: whether a herdr pane gets the client's environment or the server's. |
+| `runtime/machine.rs`, `routing/quota_probe.rs`, `harness/prime.rs`, `harness/opencode.rs:40`, `harness/headless.rs` `help_lists`, `telemetry/readers.rs`, `horch/src/cmd/doctor.rs`, `horch/src/cmd/install.rs`, `herdr-install` | Version, status and quota probes | Safe: they run no git. |
+| Hooks | horch runs no user hooks. `GitRunner` sets `core.hooksPath=/dev/null`. | Safe. |
+
 ## Checks
 
 - The full gate (`HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`)

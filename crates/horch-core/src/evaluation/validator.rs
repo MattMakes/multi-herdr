@@ -163,6 +163,9 @@ impl CommandValidator {
         for key in FORBIDDEN_ENV {
             cmd.env_remove(key);
         }
+        // A gate that runs git works on its worktree, never on a repository
+        // that horch's own environment names.
+        horch_marketplace::git::scrub_repo_env(&mut cmd);
         // Its own process group, so a timeout kills everything the gate
         // started, not just `sh`.
         #[cfg(unix)]
