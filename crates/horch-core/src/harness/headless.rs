@@ -29,6 +29,15 @@ pub(crate) const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
 pub(crate) const HEADLESS_DENIED_TOOLS: [&str; 5] =
     ["Agent", "Edit", "Write", "NotebookEdit", "Bash"];
 
+/// Top-level schema keys that `--json-schema` cannot take. claude 2.1.289
+/// refuses a `$schema` it has no meta-schema for (2020-12), and the API
+/// refuses `allOf`, `anyOf` and `oneOf` at the top level (400). The strict
+/// parser still checks the full schema, including the winner rule that the
+/// top-level `allOf` states.
+const CLI_SCHEMA_DROPPED_KEYS: [&str; 8] = [
+    "$schema", "$id", "allOf", "anyOf", "oneOf", "if", "then", "else",
+];
+
 /// How long `claude --help` may take before the probe says "no".
 const HELP_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -47,7 +56,8 @@ pub fn judge_prompt(teammate: &Teammate) -> String {
 ///
 /// `schema` is the JSON schema text for `--json-schema`. Pass it only when
 /// [`supports_json_schema`] says the CLI has the flag. The flag takes the
-/// schema itself, not a path (`claude --help`, 2026-10).
+/// schema itself, not a path (`claude --help`, 2026-10). The command gets
+/// [`cli_schema`] of it.
 pub fn headless_command(
     ctx: &RuntimeContext,
     teammate: &Teammate,
@@ -126,12 +136,27 @@ pub fn headless_command(
     cmd.arg("--settings")
         .arg(serde_json::Value::Object(overlay).to_string());
     if let Some(schema) = schema {
-        cmd.arg("--json-schema").arg(schema);
+        cmd.arg("--json-schema").arg(cli_schema(schema));
     }
     cmd.stdin(Stdio::piped());
     crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, env.home()));
     crate::runtime::process::strip_forbidden(&mut cmd);
     Ok(cmd)
+}
+
+/// `schema` without the top-level keys `--json-schema` cannot take
+/// ([`CLI_SCHEMA_DROPPED_KEYS`]), as compact JSON. Text that is not a JSON
+/// object passes unchanged.
+pub(crate) fn cli_schema(schema: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(schema) {
+        Ok(serde_json::Value::Object(mut top)) => {
+            for key in CLI_SCHEMA_DROPPED_KEYS {
+                top.remove(key);
+            }
+            serde_json::Value::Object(top).to_string()
+        }
+        _ => schema.to_string(),
+    }
 }
 
 /// Whether `claude --help` at `bin` lists `--json-schema`. Probed once per
@@ -275,13 +300,81 @@ mod tests {
     }
 
     #[test]
-    fn headless_passes_the_schema_text_when_supported() {
+    fn headless_passes_the_cli_schema_when_supported() {
         let session = SessionId::new("s-1").unwrap();
         let cmd = headless_command(&ctx(), &judge(), &session, Some(schema_text())).unwrap();
+        let passed = value_of(&argv(&cmd), "--json-schema").unwrap();
+        assert_eq!(passed, cli_schema(schema_text()));
+        // claude 2.1.289 failed every judge run on these keys (LA-8,
+        // ai_docs/reports/finish/acceptance-dataset.md).
+        let top: serde_json::Value = serde_json::from_str(&passed).unwrap();
+        for key in CLI_SCHEMA_DROPPED_KEYS {
+            assert!(top.get(key).is_none(), "{key} reached --json-schema");
+        }
+    }
+
+    #[test]
+    fn cli_schema_only_drops_the_refused_top_level_keys() {
+        let full: serde_json::Value = serde_json::from_str(schema_text()).unwrap();
+        let cli: serde_json::Value = serde_json::from_str(&cli_schema(schema_text())).unwrap();
+        let mut expected = full.as_object().unwrap().clone();
+        for key in CLI_SCHEMA_DROPPED_KEYS {
+            expected.remove(key);
+        }
+        assert_eq!(cli, serde_json::Value::Object(expected));
+        assert_eq!(cli_schema("not json"), "not json");
+    }
+
+    /// The API-side schema never asks for less than the strict parser checks.
+    #[test]
+    fn cli_schema_keeps_every_field_the_strict_parser_checks() {
+        use crate::evaluation::judgment::{
+            ASSESSMENT_FIELDS, JUDGMENT_FIELDS, JUDGMENT_OPTIONAL_FIELDS, JUDGMENT_SCHEMA_VERSION,
+            VERDICTS,
+        };
+        use crate::evaluation::rubric::components;
+        use std::collections::BTreeSet;
+
+        fn keys(v: &serde_json::Value) -> BTreeSet<String> {
+            v.as_object().unwrap().keys().cloned().collect()
+        }
+        fn strings(v: &serde_json::Value) -> BTreeSet<String> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap().to_string())
+                .collect()
+        }
+        fn set(items: &[&str]) -> BTreeSet<String> {
+            items.iter().map(|s| s.to_string()).collect()
+        }
+
+        let cli: serde_json::Value = serde_json::from_str(&cli_schema(schema_text())).unwrap();
+        assert_eq!(cli["type"], "object");
+        assert_eq!(cli["additionalProperties"], false);
+        assert_eq!(keys(&cli["properties"]), set(JUDGMENT_FIELDS));
+        let required: BTreeSet<String> = set(JUDGMENT_FIELDS)
+            .difference(&set(JUDGMENT_OPTIONAL_FIELDS))
+            .cloned()
+            .collect();
+        assert_eq!(strings(&cli["required"]), required);
         assert_eq!(
-            value_of(&argv(&cmd), "--json-schema").as_deref(),
-            Some(schema_text())
+            cli["properties"]["schema_version"]["const"],
+            JUDGMENT_SCHEMA_VERSION
         );
+        assert_eq!(
+            strings(&cli["properties"]["verdict"]["enum"]),
+            set(VERDICTS)
+        );
+
+        let assessment = &cli["$defs"]["assessment"];
+        assert_eq!(assessment["additionalProperties"], false);
+        assert_eq!(keys(&assessment["properties"]), set(ASSESSMENT_FIELDS));
+        assert_eq!(strings(&assessment["required"]), set(ASSESSMENT_FIELDS));
+        let scores = &assessment["properties"]["scores"];
+        assert_eq!(scores["additionalProperties"], false);
+        assert_eq!(keys(&scores["properties"]), set(&components()));
+        assert_eq!(strings(&scores["required"]), set(&components()));
     }
 
     #[test]
