@@ -291,8 +291,10 @@ pub fn fleet(ctx: &RuntimeContext, cwd: Option<&str>, flavor: FleetFlavor) -> Re
         ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
     }
     let kind = flavor.pane_kind();
-    let roster = super::load_roster(ctx, None)?;
-    let teammate = roster.require(orchestrator_teammate(kind))?;
+    // The project's facts add its `skills_when` skills, here and at the
+    // pane launch, so the record and the launch agree.
+    let roster = super::load_roster(ctx, None)?.with_project_facts(project_facts(Path::new(&cwd)));
+    let teammate = &roster.for_launch(roster.require(orchestrator_teammate(kind))?.clone());
     let record_id = horch_core::mint_uuid();
     let session_id = teammate
         .agent
@@ -610,7 +612,7 @@ pub fn pane_launch(
         PaneKind::OrchestrationOrchestrator => "orchestration-orchestrator",
         PaneKind::OrchestrationClaude | PaneKind::OrchestrationCodex => "orchestration-worker",
     };
-    let mut teammate = roster.require(name)?.clone();
+    let mut teammate = roster.for_launch(roster.require(name)?.clone());
     // A fleet flavor passes the orchestrator's model; carry it on the teammate
     // too, so everything that reads the resolved teammate sees the model
     // actually launched, not the file's fallback.
