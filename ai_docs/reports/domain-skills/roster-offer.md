@@ -62,8 +62,12 @@ Unit `roster-offer`, branch `ds/roster-offer`. Plan:
 - The first gate run failed 1 test,
   `horch-e2e --test fakes fake_opencode_writes_transcript_rows_when_asked`
   (`launch.status.success()`). It passed 3 of 3 times alone, and the second
-  full gate was green. It does not touch the roster. I think it is a flake
-  under load from parallel worktree builds.
+  full gate was green. After the rebase, 1 gate run failed
+  `fake_opencode_session_list_matches_cwd` (`opencode --version` gave empty
+  stdout), and the next run was green. Both tests run the fake opencode
+  binary and do not touch the roster. They are flaky under load from
+  parallel worktree builds. Commit a4a0640 already works on this area. I did
+  not fix it because it is outside this unit.
 - `pane_launch` wiring itself has no direct test, because the function
   launches an agent. The prompts test covers the same roster path.
 
