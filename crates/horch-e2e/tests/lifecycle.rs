@@ -234,6 +234,52 @@ fn arc_26_e2e_lifecycle_matrix_antigravity() {
     lifecycle_in(h, "antigravity", "antigravity", "antigravity");
 }
 
+/// G3: the pane shell holds `ANTHROPIC_API_KEY` (herdr keeps the operator's
+/// environment), so the pane command removes it before horch starts. The
+/// recorded line runs again in a shell that holds the key, with a probe in
+/// place of horch, and the probe does not see the key.
+#[cfg(unix)]
+#[test]
+fn pane_command_removes_a_forbidden_key_before_horch_starts() {
+    let mut h = fleet("pane-env", "default");
+    h.set("ANTHROPIC_API_KEY", "SENTINEL");
+    let pane = spawn(&h, &["sonnet", "build the thing"]);
+    let ran = h
+        .calls_of("herdr")
+        .into_iter()
+        .find_map(|c| c["ran"].as_str().map(str::to_owned))
+        .expect("horch spawn ran a pane command");
+    assert!(
+        ran.starts_with("/usr/bin/env -u ANTHROPIC_API_KEY '"),
+        "{pane}: {ran}"
+    );
+
+    // The first quoted word is the horch binary.
+    let start = ran.find('\'').unwrap();
+    let end = start + 1 + ran[start + 1..].find('\'').unwrap();
+    let horch = &ran[start..=end];
+    let out_file = h.tmp.join("pane-probe.env");
+    let probe = h.write_bin(
+        "pane-probe",
+        b"#!/bin/sh\n/usr/bin/env > \"$PANE_PROBE_OUT\"\n",
+    );
+    let line = ran.replacen(horch, &format!("'{}'", probe.display()), 1);
+    let mut shell = std::process::Command::new("/bin/sh");
+    h.seal(&mut shell);
+    shell.arg("-c").arg(&line).env("PANE_PROBE_OUT", &out_file);
+    let out = shell.output().unwrap();
+    assert!(out.status.success(), "{line}\n{}", text(&out));
+    let env = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        env.lines().any(|l| l.starts_with("HORCH_FAKE_LOG=")),
+        "{env}"
+    );
+    assert!(
+        !env.lines().any(|l| l.starts_with("ANTHROPIC_API_KEY=")),
+        "{env}"
+    );
+}
+
 /// The keys that move agy off the operator's Google login never reach an
 /// agy child, even when the worker's own environment holds them.
 #[test]
