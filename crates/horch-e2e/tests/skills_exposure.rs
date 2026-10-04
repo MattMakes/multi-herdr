@@ -354,6 +354,44 @@ fn operator_skills_e2e_exposure_claude() {
         .is_file());
 }
 
+/// The spawn's ledger record lists the operator skill next to the catalog
+/// skill, with the operator version and the digest the launch copied.
+#[test]
+fn operator_skills_e2e_ledger_record_lists_them() {
+    let h = operator_world("opskr", "op-record", "claude", "sonnet");
+    launch(&h, "op-record", || {});
+    let slug: String = h
+        .project
+        .to_string_lossy()
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                b as char
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let ledger = std::fs::read_to_string(h.state.join(format!("{slug}.json"))).unwrap();
+    let records: Vec<Value> = serde_json::from_str(&ledger).unwrap();
+    let r = records
+        .iter()
+        .find(|r| r["tier"] == "op-record")
+        .unwrap_or_else(|| panic!("no op-record record in {ledger}"));
+    let ids: Vec<&str> = r["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["tdd", "test-modernizer"], "{r}");
+    let op = &r["skills"][1];
+    assert!(
+        op["version"].as_str().unwrap().starts_with("operator+"),
+        "{op}"
+    );
+}
+
 /// The same operator skill reaches a codex pane, linked in its private
 /// `CODEX_HOME`.
 #[test]

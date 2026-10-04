@@ -138,6 +138,14 @@ pub struct MatrixRow {
     pub phase: String,
     pub skills: Vec<String>,
     pub plugin_skills: Vec<String>,
+    /// Offered by name only (`available_skills`).
+    pub available_skills: Vec<String>,
+    /// Expected skills copied from the operator's machine, as `<dir>/<name>`.
+    pub operator_skills: Vec<String>,
+    /// Name globs that gate the offer; empty means always offered.
+    pub offer_when: Vec<String>,
+    /// Host tools `horch doctor` checks.
+    pub requires: Vec<String>,
     pub offered: bool,
     pub generic: bool,
     pub trains_on_input: bool,
@@ -168,6 +176,17 @@ pub fn matrix_row(t: &Teammate) -> MatrixRow {
             .iter()
             .flat_map(|(p, skills)| skills.iter().map(move |s| format!("{p}:{s}")))
             .collect(),
+        available_skills: t.available_skills.clone(),
+        operator_skills: t
+            .operator_skills
+            .iter()
+            .flat_map(|o| {
+                let dir = o.dir.trim_end_matches('/');
+                o.names.iter().map(move |n| format!("{dir}/{n}"))
+            })
+            .collect(),
+        offer_when: t.offer_when.clone(),
+        requires: t.requires.iter().map(|r| r.as_str().to_string()).collect(),
         offered: !t.hidden,
         generic: t.generic,
         trains_on_input: t.trains_on_input,
@@ -191,48 +210,64 @@ pub fn matrix(ctx: &RuntimeContext, json: bool) -> Result<()> {
         output::println(&serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
+    output::print(&matrix_table(&rows));
+    Ok(())
+}
+
+/// The markdown table of `horch teammates --matrix`.
+fn matrix_table(rows: &[MatrixRow]) -> String {
+    let list = |items: &[String]| {
+        if items.is_empty() {
+            "-".to_string()
+        } else {
+            items.join(", ")
+        }
+    };
     let mut out = String::from(
-        "| teammate | agent | model | effort | phase | expected skills | $/MTok in/out | notes |\n\
-         |---|---|---|---|---|---|---|---|\n",
+        "| teammate | agent | model | effort | phase | expected skills | available skills | $/MTok in/out | notes |\n\
+         |---|---|---|---|---|---|---|---|---|\n",
     );
-    for r in &rows {
-        let mut notes = Vec::new();
+    for r in rows {
+        let mut notes: Vec<String> = Vec::new();
         if !r.offered {
-            notes.push("hidden");
+            notes.push("hidden".into());
         }
         if r.generic {
-            notes.push("generic");
+            notes.push("generic".into());
         }
         if r.trains_on_input {
-            notes.push("trains on input");
+            notes.push("trains on input".into());
         }
         if !r.effort_is_explicit && r.effort == "inherits config.toml" {
-            notes.push("effort unset");
+            notes.push("effort unset".into());
+        }
+        if !r.offer_when.is_empty() {
+            notes.push(format!("offer when {}", r.offer_when.join(" or ")));
+        }
+        if !r.requires.is_empty() {
+            notes.push(format!("requires {}", r.requires.join(", ")));
         }
         let mut skills = r.skills.clone();
         skills.extend(r.plugin_skills.iter().cloned());
+        skills.extend(r.operator_skills.iter().map(|s| format!("operator:{s}")));
         let price = match (r.price_in, r.price_out) {
             (Some(i), Some(o)) => format!("{i} / {o}"),
             _ => "unknown".into(),
         };
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             r.name,
             r.agent,
             r.model,
             r.effort,
             r.phase,
-            if skills.is_empty() {
-                "-".into()
-            } else {
-                skills.join(", ")
-            },
+            list(&skills),
+            list(&r.available_skills),
             price,
             notes.join(", "),
         ));
     }
-    output::print(&out);
-    Ok(())
+    out
 }
 
 /// Validate the roster. Exit code is what CI and `horch doctor` care about.
@@ -363,6 +398,53 @@ mod tests {
                 assert!(row(name).effort_is_explicit, "{name}");
             }
         }
+    }
+
+    /// The skill fields and the offer gate reach both the JSON row and the
+    /// table.
+    #[test]
+    fn the_matrix_shows_skill_fields_and_the_offer_gate() {
+        let t = Teammate {
+            name: "ue-dev".into(),
+            agent: horch_core::harness::HarnessKind::Claude,
+            skills: vec!["unreal-cpp".into()],
+            available_skills: vec!["unreal-niagara".into()],
+            operator_skills: Some(horch_core::roster::OperatorSkills {
+                dir: "~/.xcode-skills/".into(),
+                names: vec!["swiftui-expert".into()],
+            }),
+            offer_when: vec!["*.uproject".into(), "*.xcodeproj".into()],
+            requires: vec![horch_core::roster::Requirement::Xcode],
+            ..Teammate::default()
+        };
+        let row = super::matrix_row(&t);
+        assert_eq!(row.available_skills, ["unreal-niagara"]);
+        assert_eq!(row.operator_skills, ["~/.xcode-skills/swiftui-expert"]);
+        assert_eq!(row.offer_when, ["*.uproject", "*.xcodeproj"]);
+        assert_eq!(row.requires, ["xcode"]);
+        let json = serde_json::to_value(&row).unwrap();
+        for key in [
+            "available_skills",
+            "operator_skills",
+            "offer_when",
+            "requires",
+        ] {
+            assert!(json.get(key).is_some(), "{key}");
+        }
+        let table = super::matrix_table(&[row]);
+        let line = table.lines().nth(2).unwrap();
+        assert!(
+            line.contains(
+                "| unreal-cpp, operator:~/.xcode-skills/swiftui-expert | unreal-niagara |"
+            ),
+            "{line}"
+        );
+        assert!(
+            line.contains("offer when *.uproject or *.xcodeproj, requires xcode"),
+            "{line}"
+        );
+        let header = table.lines().next().unwrap();
+        assert_eq!(header.matches('|').count(), line.matches('|').count());
     }
 
     /// The template must survive the same parser real teammates go through,

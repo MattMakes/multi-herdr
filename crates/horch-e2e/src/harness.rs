@@ -75,12 +75,17 @@ impl Harness {
         let built = bin_dir();
         for (name, fake) in FAKES {
             let from = built.join(exe(fake));
-            // A hard link, not a copy: macOS scans every new executable on
-            // its first run, and under load many fresh copies at once take
+            // A link, not a copy: macOS scans every new executable on its
+            // first run, and under load many fresh copies at once take
             // seconds to start. A link to the built file is scanned once.
             // So nothing may write through these names: use `write_bin`.
+            // On unix a symlink, not a hard link: syspolicyd scans an exec
+            // late under load and reads the file by a path it finds from
+            // the inode. With hard links that can be another harness's
+            // link, already deleted; syspolicyd then kills the process with
+            // SIGKILL ("Malware rejection"). The built file is never deleted.
             let to = h.bin.join(exe(name));
-            if std::fs::hard_link(&from, &to).is_err() {
+            if link_fake(&from, &to).is_err() {
                 std::fs::copy(&from, &to).expect("copying a fake");
             }
         }
@@ -274,7 +279,7 @@ impl Harness {
 
     /// Put an executable `name` with `contents` in `bin/` and return its
     /// path. An existing entry is removed first, never written through: it
-    /// can be a hard link to a built fake.
+    /// can be a link to a built fake.
     pub fn write_bin(&self, name: &str, contents: &[u8]) -> PathBuf {
         let path = self.bin.join(name);
         let _ = std::fs::remove_file(&path);
@@ -352,7 +357,7 @@ impl Drop for Harness {
 static BUILT_SIZES: std::sync::OnceLock<Vec<(PathBuf, u64)>> = std::sync::OnceLock::new();
 
 /// Every built fake exists, is not empty, and has the size it had when this
-/// test process started. The harness hard-links them into `bin/`, so a test
+/// test process started. The harness links them into `bin/`, so a test
 /// that writes through a linked name changes the built file itself; this
 /// fails that test instead of letting later tests run a broken fake.
 fn check_built_fakes() {
@@ -378,7 +383,7 @@ fn check_built_fakes() {
         assert!(
             now == *len && now > 0,
             "built fake {} changed from {len} to {now} bytes: a test wrote \
-             through a hard-linked name in a harness bin/; use Harness::write_bin",
+             through a linked name in a harness bin/; use Harness::write_bin",
             path.display()
         );
     }
@@ -396,6 +401,15 @@ pub fn repo_root() -> PathBuf {
 /// The telemetry fixture corpus.
 pub fn fixtures() -> PathBuf {
     repo_root().join("crates/horch-core/tests/fixtures/telemetry")
+}
+
+/// Link a built fake into a harness `bin/`: a symlink on unix, a hard link
+/// elsewhere.
+fn link_fake(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(from, to);
+    #[cfg(not(unix))]
+    return std::fs::hard_link(from, to);
 }
 
 fn unique() -> u128 {
