@@ -163,6 +163,9 @@ impl CommandValidator {
         for key in FORBIDDEN_ENV {
             cmd.env_remove(key);
         }
+        // A gate that runs git works on its worktree, never on a repository
+        // that horch's own environment names.
+        horch_marketplace::git::scrub_repo_env(&mut cmd);
         // Its own process group, so a timeout kills everything the gate
         // started, not just `sh`.
         #[cfg(unix)]
@@ -177,10 +180,12 @@ impl CommandValidator {
         };
         let deadline = Instant::now() + gate.timeout;
         loop {
-            if let Some(exit) = child.try_wait()? {
-                // Stragglers the gate left in the background go too.
-                kill_reaped_group(&mut child);
-                return Ok(exit_status(exit));
+            if leader_exited(&mut child)? {
+                // Stragglers the gate left in the background go too. The
+                // leader is not reaped yet, so its pid, and with it the
+                // group id, cannot be given to another program.
+                kill_group(&mut child);
+                return Ok(exit_status(child.wait()?));
             }
             if Instant::now() >= deadline {
                 kill_group(&mut child);
@@ -273,27 +278,32 @@ fn kill_group(child: &mut Child) {
     let _ = child.kill();
 }
 
-/// Kill the group of a gate leader that `try_wait` has already reaped: the
-/// stragglers it left in the background.
-///
-/// The leader's pid is free now, but POSIX gives no new process a pid while
-/// a process group with that id exists. So while no process has the pid,
-/// the group, if it has members, is still the gate's. A process that has
-/// the pid is another program, and its group may be its own: no signal.
+/// Whether the gate leader has exited, without reaping it: `waitid` with
+/// `WNOWAIT` leaves the zombie, so [`kill_group`] still names the gate's
+/// own group.
 #[cfg(unix)]
-fn kill_reaped_group(child: &mut Child) {
-    if may_kill_reaped_group(child.id()) {
-        kill_group(child);
+fn leader_exited(child: &mut Child) -> std::io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a valid siginfo_t to fill; the pid is this
+    // process's own unreaped child.
+    let r = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id() as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if r != 0 {
+        return Err(std::io::Error::last_os_error());
     }
+    // With WNOHANG and no exit yet, the pid field stays 0.
+    Ok(unsafe { info.si_pid() } != 0)
 }
 
 #[cfg(not(unix))]
-fn kill_reaped_group(_child: &mut Child) {}
-
-/// Whether the group of reaped leader `pid` is still the gate's.
-#[cfg(unix)]
-fn may_kill_reaped_group(pid: u32) -> bool {
-    !fsx::pid_alive(pid)
+fn leader_exited(child: &mut Child) -> std::io::Result<bool> {
+    Ok(child.try_wait()?.is_some())
 }
 
 fn exit_status(exit: ExitStatus) -> GateStatus {
@@ -406,19 +416,19 @@ mod tests {
         assert!(plain_name("c-1"));
     }
 
-    /// After the reap, a process that has the leader's pid is another
-    /// program (a reused pid): its group is not signalled. With no process
-    /// at the pid, the group is still the gate's.
+    /// An exited leader is seen but not reaped: its pid stays taken, so its
+    /// group id cannot go to another program before the group kill.
     #[cfg(unix)]
     #[test]
-    fn a_reaped_leaders_pid_that_runs_again_is_not_the_gate() {
-        let mut other = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        assert!(!may_kill_reaped_group(other.id()), "a running pid");
-        other.kill().unwrap();
-        other.wait().unwrap();
-        assert!(may_kill_reaped_group(other.id()), "no process has the pid");
+    fn an_exited_leader_stays_unreaped_until_the_group_kill() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !leader_exited(&mut child).unwrap() {
+            assert!(Instant::now() < until, "true did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(fsx::pid_alive(child.id()), "the zombie keeps the pid");
+        assert!(child.wait().unwrap().success(), "the exit status is kept");
+        assert!(!fsx::pid_alive(child.id()), "reaped");
     }
 }

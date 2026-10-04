@@ -1214,3 +1214,97 @@ fn jdg_08_lost_job_kills_only_the_same_process() {
         "the lost job was not killed"
     );
 }
+
+/// JDG-08: a job that died leaves its judge CLI running in its group. The
+/// Lost path kills each member that started before the last heartbeat (the
+/// orphaned CLI), and keeps a member that started after it: a later program
+/// in a group that reused the id would start after it too. The leader
+/// stands in for the job, in a new session like `schedule` gives it; each
+/// `sleep` stands in for a judge CLI.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn jdg_08_lost_job_kills_its_orphaned_judge_cli() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let w = World::new();
+    w.round(true);
+    let launcher = FakeLauncher::new(Vec::new());
+    let clock = || w.now();
+    let env = w.env(&launcher, &clock);
+    start(&env, &round_id()).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let (cli, later) = (tmp.path().join("cli"), tmp.path().join("later"));
+    let script = format!(
+        "sleep 60 </dev/null >/dev/null 2>&1 & echo $! > '{}'; read go; \
+         sleep 60 </dev/null >/dev/null 2>&1 & echo $! > '{}'",
+        cli.display(),
+        later.display()
+    );
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.args(["-c", &script]).stdin(Stdio::piped());
+    let mut leader = horch_core::runtime::process::spawn_detached(&mut cmd).unwrap();
+    let pid = leader.id();
+    let started = horch_core::procid::start_time(pid).unwrap();
+    let read_pid = |path: &Path| -> u32 {
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|t| t.trim().parse().ok())
+            {
+                return pid;
+            }
+            assert!(std::time::Instant::now() < until, "no {}", path.display());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let cli_pid = read_pid(&cli);
+    let cli_started = horch_core::procid::start_time(cli_pid).unwrap();
+    // The job's last heartbeat; then the job starts one more member and dies.
+    let hb = Heartbeat {
+        pid,
+        at: horch_core::clock::stamp(Utc::now()),
+        started: Some(started),
+    };
+    write(
+        &w.paths.job_dir(&round_id(), 1).unwrap(),
+        HEARTBEAT_FILE,
+        &serde_json::to_string(&hb).unwrap(),
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    leader.stdin.take().unwrap().write_all(b"go\n").unwrap();
+    let later_pid = read_pid(&later);
+    let later_started = horch_core::procid::start_time(later_pid).unwrap();
+    leader.wait().unwrap();
+    let alive = |pid, started| horch_core::procid::is_same(pid, started);
+    assert!(
+        alive(cli_pid, cli_started),
+        "the orphan runs before the poll"
+    );
+
+    poll(&env, &round_id(), Utc::now()).unwrap();
+    let failed: Vec<Value> = w
+        .events()
+        .iter()
+        .filter(|e| e.kind == "judge.failed")
+        .map(|e| e.payload.clone())
+        .collect();
+    assert_eq!(failed, [json!({"attempt": 1, "cause": {"kind": "lost"}})]);
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while alive(cli_pid, cli_started) && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let orphan_left = alive(cli_pid, cli_started);
+    let later_kept = alive(later_pid, later_started);
+    for (pid, started) in [(cli_pid, cli_started), (later_pid, later_started)] {
+        if alive(pid, started) {
+            // SAFETY: this test's own `sleep`, checked just above.
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        }
+    }
+    assert!(!orphan_left, "the orphaned judge CLI still runs");
+    assert!(
+        later_kept,
+        "a member that started after the heartbeat was killed"
+    );
+}

@@ -203,6 +203,26 @@ mod tests {
         assert_eq!(read_info(tmp.path()).unwrap().pid, std::process::id());
     }
 
+    /// A pid that names no single process (it would turn into -1, every
+    /// process, as a `pid_t`) is a dead holder.
+    #[test]
+    fn a_pid_out_of_range_is_a_stale_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(lock_dir(tmp.path())).unwrap();
+        for pid in [u32::MAX, 0] {
+            let info = LockInfo {
+                pid,
+                started_at: "2026-09-28T17:00:00Z".into(),
+                ..LockInfo::default()
+            };
+            std::fs::write(info_path(tmp.path()), serde_json::to_string(&info).unwrap()).unwrap();
+            assert!(
+                matches!(holder(tmp.path()), Holder::Stale(Some(_))),
+                "pid {pid}"
+            );
+        }
+    }
+
     /// A lock whose pid runs with another start time is stale: the pid was
     /// given to a later program. Without a start time (an old file), the
     /// pid alone decides, as before.

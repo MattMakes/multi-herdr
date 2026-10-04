@@ -10,11 +10,17 @@ cd "$(dirname "$0")/.."
 # gate run under `git rebase -x` inherited GIT_DIR, and test fixtures that
 # `git init` and commit wrote into the real repository (core.bare=true,
 # HEAD=main, 2 commits). The same list is REPO_ENV in
-# crates/horch-marketplace/src/git.rs. Rebase first, then run the gate;
-# never run it under `git rebase -x`.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
-  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE \
-  GIT_CEILING_DIRECTORIES GIT_PREFIX
+# crates/horch-marketplace/src/git.rs, with the numbered GIT_CONFIG_KEY_<n>
+# and GIT_CONFIG_VALUE_<n>. Rebase first, then run the gate; never run it
+# under `git rebase -x`.
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR \
+  GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_GRAFT_FILE \
+  GIT_IMPLICIT_WORK_TREE GIT_INDEX_FILE GIT_INTERNAL_SUPER_PREFIX \
+  GIT_NAMESPACE GIT_NO_REPLACE_OBJECTS GIT_OBJECT_DIRECTORY GIT_PREFIX \
+  GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE GIT_WORK_TREE
+for v in $(compgen -e | grep -E '^GIT_CONFIG_(KEY|VALUE)_' || true); do
+  unset "$v"
+done
 
 step() {
   echo "==> gate: $*"

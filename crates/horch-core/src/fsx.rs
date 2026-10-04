@@ -221,17 +221,19 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
 /// `DirLock` and the telemetry collector lock decide liveness with
 /// [`crate::procid::alive`], which also checks the start time.
 pub fn pid_alive(pid: u32) -> bool {
-    if pid == 0 {
+    // 0 and values above `i32::MAX` name a group or every process, not one.
+    let Some(os) = crate::procid::os_pid(pid) else {
         return false;
-    }
+    };
     #[cfg(unix)]
     {
         // Signal 0 checks existence and permission without sending anything.
-        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        let r = unsafe { libc::kill(os, 0) };
         r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
     #[cfg(windows)]
     {
+        let _ = os;
         std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
             .output()
@@ -240,6 +242,7 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(not(any(unix, windows)))]
     {
+        let _ = os;
         true
     }
 }

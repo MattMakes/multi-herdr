@@ -275,6 +275,12 @@ fn open_log(path: &Path) -> Result<std::fs::File> {
 /// comes from a file, and a job that has ended frees it for any other
 /// program. A heartbeat without a start time names no process for certain,
 /// so it is not killed either.
+///
+/// The group is signalled first, while the leader is checked to run: a
+/// running leader keeps its group id from being given out. The window is
+/// from the check to `killpg`: the leader would have to end, its group
+/// empty, and the id go to a new group between 2 calls. The leader itself
+/// gets [`procid::signal_same`], which closes its own window on Linux.
 pub(crate) fn kill_job(hb: &Heartbeat) -> bool {
     let Some(started) = hb.started else {
         return false;
@@ -283,14 +289,88 @@ pub(crate) fn kill_job(hb: &Heartbeat) -> bool {
         return false;
     }
     #[cfg(unix)]
-    unsafe {
-        // SAFETY: plain syscalls on the job's pid, checked just above (and
-        // `is_same` refuses 0 and values that turn negative); failure is
-        // ignored.
-        libc::kill(-(hb.pid as libc::pid_t), libc::SIGKILL);
-        libc::kill(hb.pid as libc::pid_t, libc::SIGKILL);
+    {
+        if let Some(group) = procid::os_pid(hb.pid) {
+            // SAFETY: plain syscall on the job's group, checked just above;
+            // failure is ignored.
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+        procid::signal_same(hb.pid, started, libc::SIGKILL);
     }
     cfg!(unix)
+}
+
+/// What [`kill_lost_job`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LostKill {
+    /// The job still ran as itself, and [`kill_job`] killed it and its group.
+    pub job: bool,
+    /// Members of the dead job's group that were killed: its orphans.
+    pub killed: Vec<u32>,
+    /// Members that started after the last heartbeat: not the job's.
+    pub kept: Vec<u32>,
+}
+
+/// Kill what is left of the lost job in `job_dir`.
+///
+/// A job that still runs as itself is killed with [`kill_job`]. A job whose
+/// pid no process has can leave its judge CLI running in its group. Each
+/// member of that group that started at or before the heartbeat file's
+/// last write is killed: it ran while the job was alive, so it is the job's.
+/// The id is not the job's for certain: once the job's group empties, a
+/// later program can get the pid, lead a group, and die. But that program
+/// started after the job died, so its members did too, and are kept. Each
+/// member's start time is checked again just before its signal. A pid that
+/// another program has now is never signalled. Windows lists no members:
+/// only [`kill_job`] applies there.
+pub(crate) fn kill_lost_job(job_dir: &Path) -> LostKill {
+    let path = job_dir.join(HEARTBEAT_FILE);
+    let Some(hb) = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Heartbeat>(&b).ok())
+    else {
+        return LostKill::default();
+    };
+    let mut done = LostKill {
+        job: kill_job(&hb),
+        ..LostKill::default()
+    };
+    let last_beat = std::fs::metadata(&path).and_then(|m| m.modified());
+    if done.job || fsx::pid_alive(hb.pid) {
+        return done;
+    }
+    let Ok(last_beat) = last_beat else {
+        return done;
+    };
+    for pid in procid::group_members(hb.pid) {
+        let ours = procid::started_by(pid, last_beat);
+        match procid::start_time(pid) {
+            Some(started) if ours && kill_member(pid, hb.pid, started) => done.killed.push(pid),
+            _ => done.kept.push(pid),
+        }
+    }
+    done
+}
+
+/// SIGKILL `pid` while it is still in group `pgid` with start time
+/// `started`, and say whether a signal was sent.
+fn kill_member(pid: u32, pgid: u32, started: u64) -> bool {
+    #[cfg(unix)]
+    {
+        let (Some(os), Some(group)) = (procid::os_pid(pid), procid::os_pid(pgid)) else {
+            return false;
+        };
+        // SAFETY: plain syscall; a pid that has gone answers -1.
+        if unsafe { libc::getpgid(os) } != group {
+            return false;
+        }
+        procid::signal_same(pid, started, libc::SIGKILL)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, pgid, started);
+        false
+    }
 }
 
 #[cfg(test)]

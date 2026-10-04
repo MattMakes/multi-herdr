@@ -655,3 +655,39 @@ fn git_env_cannot_reach_another_repository() {
 fn git_env_decoy_child() {
     assert!(Fixture::new().is_some());
 }
+
+/// A gate that runs git, under a horch whose environment has `GIT_DIR` and
+/// `GIT_WORK_TREE` aimed at a decoy repository, leaves the decoy unchanged:
+/// its git works on the candidate's worktree.
+#[test]
+fn cmp_09_a_gate_cannot_reach_another_repository() {
+    let Some(bin) = find_git() else { return };
+    common::assert_decoy_untouched(&bin, "gate_git_env_decoy_child");
+}
+
+#[test]
+#[ignore = "run by cmp_09_a_gate_cannot_reach_another_repository, with GIT_DIR set"]
+fn gate_git_env_decoy_child() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (report, worktree, _) = validate_in(
+        &tmp,
+        |_| {},
+        |artifacts| {
+            CommandValidator::new(
+                vec![gate(
+                    "git",
+                    "git init -q . && git symbolic-ref HEAD refs/heads/hijacked",
+                    10_000,
+                )],
+                artifacts,
+                BTreeSet::new(),
+            )
+        },
+    );
+    assert_eq!(report.gates[0].status, GateStatus::Passed);
+    assert_eq!(
+        read(&worktree.join(".git/HEAD")),
+        "ref: refs/heads/hijacked\n",
+        "the gate's git works on its worktree"
+    );
+}
