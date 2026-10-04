@@ -123,7 +123,7 @@ Both research providers independently identified overlapping anti-patterns. This
 
 **1. Tests that use the real keychain without cleanup.** Tests calling `SecItemAdd` directly leave state across runs. Second run fails with `errSecDuplicateItem` (-25299). AI generators rarely include `setUp`/`tearDown` cleanup.
 
-**2. Assuming Secure Enclave exists on simulator.** `SecureEnclave.isAvailable` returns `false` on every simulator. Tests calling `SecureEnclave.P256.Signing.PrivateKey()` directly throw `CryptoKitError` on simulator and crash CI.
+**2. Assuming Secure Enclave exists on simulator.** The Simulator has no Secure Enclave. Apple does not document the Simulator value of `SecureEnclave.isAvailable` (usually `false`), so do not rely on it. Tests calling `SecureEnclave.P256.Signing.PrivateKey()` directly throw `CryptoKitError` on simulator and crash CI.
 
 **3. Not testing error paths.** Real keychain code must handle `errSecDuplicateItem` (-25299), `errSecItemNotFound` (-25300), `errSecAuthFailed` (-25293), and `errSecInteractionNotAllowed` (-25308). AI generators almost never test these failure modes.
 
@@ -146,10 +146,10 @@ Understanding exactly what works where prevents entire categories of test failur
 | Keychain CRUD (`SecItemAdd`, etc.)                            | ✅ Works                              | ✅ Works                     |
 | CryptoKit software crypto (AES-GCM, ChaChaPoly, P256, SHA256) | ✅ Software                           | ✅ Hardware-accelerated      |
 | `kSecAttrAccessible` values                                   | ✅ Accepted but not hardware-enforced | ✅ Hardware-enforced         |
-| `SecureEnclave.isAvailable`                                   | Returns **false**                     | Returns **true** (A7+)       |
+| `SecureEnclave.isAvailable`                                   | Undocumented (usually false)          | Returns **true** (A7+)       |
 | `SecureEnclave.P256.Signing.PrivateKey()`                     | ❌ Throws                             | ✅ Works                     |
 | Biometric prompt on protected items                           | ❌ Skipped — value returned silently  | ✅ Shows prompt              |
-| `LAContext.canEvaluatePolicy(.biometrics)`                    | Returns **false**                     | Returns **true** if enrolled |
+| `LAContext.canEvaluatePolicy(.biometrics)`                    | Undocumented (usually false)          | Returns **true** if enrolled |
 | Face ID simulation via Xcode menu                             | ✅ Manual only                        | N/A (real hardware)          |
 | Post-quantum (ML-KEM, ML-DSA) iOS 26+                         | ✅ Software (iOS 26 runtime)          | ✅ Works                     |
 
