@@ -1300,6 +1300,41 @@
       "vendored": true
     },
     {
+      "name": "godot-export-pipeline",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/export-pipeline/SKILL.md",
+          "sha256": "39e0f14f94ef45694f448e294d7ddf9ea70ce99a6308fc45beaeb9547aa25d5f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/export-pipeline/references/ci-cd-github-actions.md",
+          "sha256": "5006013a65769a38d69a9a8779e09d259e3ad09b4c32ddffb8bd5f7866a07b02",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/export-pipeline/references/distribution-itch-steam.md",
+          "sha256": "ec3da01808c835193d99d7d5e9e753f10f60d08875ccb7b50382508a1b188827",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{console-targets.md, desktop-runtime.md, feature-tags-and-build-size.md, mobile-to-desktop-port.md, patch-packs-and-export-plugins.md, web-runtime.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-export-builds, godot-platform-desktop, godot-platform-web, godot-platform-console, godot-adapt-mobile-to-desktop",
+      "vendored": true
+    },
+    {
       "name": "godot-gdextension",
       "sources": [
         {
@@ -1580,6 +1615,48 @@
       "vendored": true
     },
     {
+      "name": "godot-mobile-development",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/mobile-development/SKILL.md",
+          "sha256": "743f9012b9042bf8e96fe77913e415796a49dceb283daf707229c10b671fcbc7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/mobile-development/references/crash-debugging.md",
+          "sha256": "9f327e8a8ebd1d79d0009bbfc9f08e0c0176f0f092d1e9b5ca09721b20ab82d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/mobile-development/references/iap-and-ads.md",
+          "sha256": "3ddfa65196feea6fd8f7b163f8358631cd1d88042fbdf800bbd1ddcdd83acd65",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/mobile-development/references/plugins.md",
+          "sha256": "a0ff9398d0489b488fec92e1632d1dd0d32b14f3ecfbfa101e9ddc43616e7dc1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{battery-and-background.md, desktop-to-mobile-port.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-platform-mobile, godot-adapt-desktop-to-mobile",
+      "vendored": true
+    },
+    {
       "name": "godot-multithreading",
       "sources": [
         {
@@ -1737,6 +1814,69 @@
       "sources": [],
       "vendored": false,
       "adaptation": "Own text, written in this repository; own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-builder (SKILL.md only; facts re-tested on 4.7.2, nothing copied). Every rule and the worked example were run on Godot 4.7.2 (macOS); evidence in ai_docs/reports/godot/gw2-own-skills.md. references/fleet-additions.md carries GW10's verified fact on the 4.6 scene format (godotengine/godot GH-106837, GH-103352)."
+    },
+    {
+      "name": "godot-xr-development",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/xr-development/SKILL.md",
+          "sha256": "ff47a1f4c5b9169f982e0fdde5b507c4958ef483e043684b6a64128b62beda40",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/xr-development/references/controllers-and-input.md",
+          "sha256": "3b34710f9aeba70ecc6bf368518a24554deb0cdfd8d4ed65f3e57262fbb21e56",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/xr-development/references/godot-4-5-features.md",
+          "sha256": "cdb1cf07534b74b365f43680fafdbc29feca1d6b403fcd80b37e5c7f741929fb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/xr-development/references/grabbing-objects.md",
+          "sha256": "33a3ad291f1b4d64431b0dbbafb72e5027356d4c87c3683254132bd0eb926115",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/xr-development/references/hand-tracking.md",
+          "sha256": "1561de6ad245fb5927dc4bb75994e3d4fcf7be91753d941d7447e204bd78c00b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/xr-development/references/passthrough.md",
+          "sha256": "0bd7fb2f10fc5150b625e65ac584f8000471e33873ad8160c7be05006a418c2c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/xr-development/references/xr-ui.md",
+          "sha256": "bef2faabd000bf46c3e5f4c9cdfedddd13e611ba95401047f9946b491098931b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{comfort-and-locomotion.md, session-and-performance.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-platform-vr; API fixes on 4.7.2: XRHandTracker.HAND_JOINT_INDEX_TIP -> XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP (references/hand-tracking.md, GDScript and C#); XRSpatialAnchor (no such class) -> OpenXRSpatialAnchorCapability.create_new_anchor() returning OpenXRAnchorTracker, followed by an XRAnchor3D node (SKILL.md section 9 GDScript and C# examples, the bullet and the checklist line rewritten)",
+      "vendored": true
     },
     {
       "name": "handoff",
