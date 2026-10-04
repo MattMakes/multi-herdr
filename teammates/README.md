@@ -178,6 +178,68 @@ shares the LFS objects in the common `.git/lfs`. The recommended
 `.gitattributes` and the full rules are in
 [`skills/ue-build-verify/references/git-lfs.md`](../skills/ue-build-verify/references/git-lfs.md).
 
+## The Godot team
+
+Nineteen `godot-*` specialists staff Godot 4 work. Each sets
+`offer_when: ["project.godot"]`, so the fleet orchestrator is offered them
+only when the project has a `project.godot` file at the top level or one
+level down. Each also sets `requires: [godot]`, and `horch doctor` then looks
+for the engine (`GODOT_PATH`, then `godot` on PATH, then the macOS app
+bundle) and checks that `--version` is 4.3 or later. `horch spawn godot-<name>`
+still works in any project. The selection and the skill choices are in
+[`ai_docs/reports/godot-wave.md`](../ai_docs/reports/godot-wave.md).
+
+| teammate | wave | phase | agent, model, effort | use for |
+|---|---|---|---|---|
+| `godot-tech-lead` | 1 | plan | claude, opus, high | runs first: writes `.agents/godot-project-context.md`; plans scenes, autoloads, features |
+| `godot-gameplay-programmer` | 1 | implementation | claude, opus, medium | player controllers, state machines, components, combat, game loops, input, physics |
+| `godot-systems-programmer` | 1 | implementation | claude, opus, medium | Resources, abilities, inventory, economy, quests, save/load, event bus |
+| `godot-ui-developer` | 1 | implementation | claude, opus, medium | Control scenes, themes, HUDs, menus, responsive layout, localization |
+| `godot-technical-artist` | 1 | implementation | claude, opus, medium | shaders, particles, 2D and 3D scenes, lighting, asset import, audio |
+| `godot-qa-engineer` | 1 | validation | claude, sonnet, high | headless parse checks, GUT and gdUnit4 tests, bug repros |
+| `godot-code-reviewer` | 1 | validation | claude, opus, high | GDScript and C# review; never edits |
+| `godot-animator` | 2 | implementation | claude, opus, medium | AnimationPlayer, AnimationTree, tweens, sprite animation |
+| `godot-ai-programmer` | 2 | implementation | claude, opus, medium | navigation, state machines, LimboAI and Beehave behavior trees |
+| `godot-network-engineer` | 2 | implementation | claude, opus, medium | MultiplayerAPI, RPCs, spawners, synchronizers, dedicated servers |
+| `godot-world-builder` | 2 | implementation | claude, opus, medium | TileMap layers, GridMap, CSG, procedural levels, cameras |
+| `godot-narrative-programmer` | 2 | implementation | claude, opus, medium | dialogue, Dialogue Manager, Popochiu, quests, localized text |
+| `godot-performance-engineer` | 2 | implementation | claude, opus, high | profiling, frame time, threads, physics cost, asset size |
+| `godot-release-engineer` | 2 | implementation | claude, sonnet, medium | export presets and builds, mobile and web targets; never uploads |
+| `godot-csharp-engineer` | 3 | implementation | claude, opus, medium | GDScript-C# interop, `dotnet build`, source generators |
+| `godot-tools-engineer` | 3 | implementation | claude, opus, medium | EditorPlugins, `@tool` scripts, inspector plugins, addon packaging |
+| `godot-native-engineer` | 3 | implementation | claude, opus, medium | GDExtension in C++, `godot-cpp`, per-platform libraries |
+| `godot-xr-developer` | 3 | implementation | claude, opus, medium | OpenXR, controllers, hand tracking, VR comfort, frame budget |
+| `godot-porting-engineer` | 3 | implementation | claude, opus, medium | upgrade to 4.7, 2D/3D ports, single to multiplayer, desktop to mobile |
+
+Every one runs on Claude. Only `godot-tech-lead` and `godot-code-reviewer`,
+which read and plan but never build, fall back to `codex-sol`. The builders
+and `godot-qa-engineer` have no fallback: a Godot import writes outside the
+project, to the user data directory, and a Codex pane runs with the network
+off and `workspace-write`. Nobody has tried that yet. Every implementation
+teammate and `godot-qa-engineer` carry `godot-build-verify`, and every seat
+that edits scenes carries `godot-scene-files`. `godot-code-reviewer` denies
+`Edit`, `Write` and `NotebookEdit`, the same as `ue-code-reviewer`.
+`godot-release-engineer` builds export artifacts and never uploads them (no
+`butler push`, no store upload); like `app-release-preparer`, it ends at a
+plan for the orchestrator. `available_skills:` names 3 related skills per
+teammate.
+
+C# is a language, not a domain. Every builder except `godot-csharp-engineer`
+sets `skills_when: {"*.csproj": [godot-csharp-godot, godot-csharp-signals]}`,
+so a C# project adds the 2 C# skills to its launch. `godot-csharp-engineer`
+carries them always and owns interop, .NET builds and source-generator
+problems.
+
+Each persona carries the same six standing rules: read
+`.agents/godot-project-context.md` first; treat `.tscn` and `.tres` files with
+care, never touch `.godot/` or `.import` files, and commit the `.uid`
+sidecars; check APIs against a `godot --doctool` dump of the project's engine;
+run headless only, with one import at a time per working copy; a `DONE:` that
+names the Godot version, the parse check and the tests with their result (and
+`dotnet build` on C#); use an addon skill only when that addon is in
+`addons/` at the pinned version. The `godot-*` skills target Godot 4.7, the
+latest stable release on 2026-10-04 (4.7.2).
+
 ## The Blender teammate
 
 | teammate | phase | agent, model, effort | use for |
