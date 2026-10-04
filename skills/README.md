@@ -60,3 +60,14 @@ A skill may combine several upstream files, from several repositories. Its entry
 | [motion-gsap](motion-gsap/SKILL.md) | `greensock/gsap-skills`: `skills/gsap-*/SKILL.md` (8 skills) and `examples/`; `akseolabs-seo/cinematic-ui`: motion parts of `SKILL.md`, `references/implementation-guardrails.md`, `references/data/camera-shots-50.md`, `references/data/interaction-effects-50.md` |
 | [ui-redesign](ui-redesign/SKILL.md) | `nutlope/hallmark`: `skills/hallmark/SKILL.md` and its `verbs/redesign.md`, `verbs/audit.md`, `study.md` references; `leonxlnx/taste-skill`: `skills/redesign-skill/`, `skills/taste-skill/`, `skills/output-skill/` |
 | [ui-taste](ui-taste/SKILL.md) | `nutlope/hallmark`: `skills/hallmark/SKILL.md` and 17 rule references; `leonxlnx/taste-skill`: `skills/taste-skill/`, `skills/taste-skill-v1/`, `skills/gpt-tasteskill/`, `skills/output-skill/`, `skills/redesign-skill/` |
+
+## Swift and Apple skills
+
+Verbatim copies of MIT-licensed upstream skills, each with its upstream `LICENSE`. They attach by name to the Swift teammates and belong to no phase.
+
+| Skill | Upstream source |
+| --- | --- |
+| [app-intents](app-intents/SKILL.md) | `n0an/App-Intents-Agent-Skill`: `app-intents/` (verbatim) |
+| [background-execution](background-execution/SKILL.md) | `n0an/Background-Execution-Agent-Skill`: `background-execution/` (verbatim) |
+| [swift-focusengine-pro](swift-focusengine-pro/SKILL.md) | `mhaviv/Swift-FocusEngine-Agent-Skill`: repository root (verbatim) |
+| [widgets](widgets/SKILL.md) | `n0an/Widgets-Agent-Skill`: `widgets/` (verbatim) |

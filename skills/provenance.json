@@ -1093,6 +1093,493 @@
         }
       ],
       "adaptation": "Merged hallmark and four taste-skill variants into one stack-neutral taste skill: rules per topic, ripgrep searches for named tells, measured hard gates and a six-axis rubric for review, and output-skill's complete-output rule; dropped theme and layout catalogs, dials, randomization rituals, stack-specific code and persuasion; conflicts resolved in ai_docs/reports/design-skills/skill-taste.md."
+    },
+    {
+      "name": "app-intents",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/SKILL.md",
+          "sha256": "fb712c0ec6d8d6d3ddb6b5cfee4287b9b9a4c4bd1c1c8b66b861d740ba5a2adc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/anti-patterns.md",
+          "sha256": "5df2315d6f132cd268610d3ff44d9e822c29cef98d47fe879653cb91a985233b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/assistant-schemas.md",
+          "sha256": "30f462ae86a5be48d50304a4e4fcb115dc905ba0478f11edb0cda4cce3e8458f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/dependencies.md",
+          "sha256": "c125da4c9d4fa60d99e5b1b42ddab18e5fb0138d0aa8a53fd6a7b9a0aa88c39f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/entities.md",
+          "sha256": "8c3132af45c29da15bd98287cfd2c8691364388f61840a4ac4f1ecbb5842bb15",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/fundamentals.md",
+          "sha256": "d98c7088c4cb944f6c2f2ac6e4ad96ee11402b9f697b278b78cf19a4e25a51b9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/long-running-and-execution.md",
+          "sha256": "52ec173396e5464097b5b54ee9f6b917e9920e4ca88b7ea66ac781bc1c877eee",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/onscreen-awareness.md",
+          "sha256": "15de75f6b2b673346d7ef967877052c351d85d1acffa206fbeb73ab08933399f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/open-and-snippet-intents.md",
+          "sha256": "b8589667561ceff6148eb8789e2f500069627acb2a0668006d559224e626b4cd",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/parameters.md",
+          "sha256": "d93a7872c5f198dbfb69425b92570eca44fe803c72e26908688d1a7149b0e531",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/shortcuts-and-siri.md",
+          "sha256": "c950209c1311b7adc0cf4e3a697c1e4e8b1149d05aafccf93cd3400294b19708",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/siri-intelligence.md",
+          "sha256": "8d48e3008fd8afc3408f279bc23957dfa3375194e618c11012fa9ee21fd4c666",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/spotlight.md",
+          "sha256": "c40bd01142755c99545a4d65559838722ea301c64ee1889faa977d0aff2ece9a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/testing-intents.md",
+          "sha256": "615f169a1c263b0c0d6759eccb2136c44006e88011f572eb074bb6bb905f88a1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
+    },
+    {
+      "name": "background-execution",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/SKILL.md",
+          "sha256": "5b8afdb49dcaca10dc287f1e027429f6c3bb50da6f0ef5b6a86c17cbd0429841",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/anti-patterns.md",
+          "sha256": "460272c3989dee57be748a90726e958292fca5b90f32f54b1d7e51ab47921e84",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-audio.md",
+          "sha256": "e68cacf3a83bbe74ee3fd6f9b4f1995c1cf58ba69705f858218b3841b8c79cb8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-modes.md",
+          "sha256": "d3b384283c4374505b5fd42bca81fef1eb068e910f535a7f13c6f528e3ea547b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-push.md",
+          "sha256": "d366b5a281d37e1074c41e5a1db66dc5772899deb9e600351c7322278851c286",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-url-session.md",
+          "sha256": "f954cad1db20c5c2e178165c1ed4c69055e62e5c9dd0ea3d45cebd672f250fe5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/bg-task-scheduler.md",
+          "sha256": "b4a29976525d00fc5aa9d8b48002871b4075e4a1c149dd19d204c66c074266dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/fundamentals.md",
+          "sha256": "e140da761fa3231a99dd4ded5ff4946ba08a46fd4bd66adee626e4571032b74b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/macos-background.md",
+          "sha256": "24a0a2704b84aaef1aab2b0353973302626deec2cb000cf1d3460117530b98a4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/swiftui-background-tasks.md",
+          "sha256": "e3e61064716e4f11042ce98aa5775f2831666a44795e927b247d53ae4bd31c65",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/task-assertions.md",
+          "sha256": "636bc4d054a6ead73bf9fd4137065080299550e72645220cd7d3ae57b6830322",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/testing-and-debugging.md",
+          "sha256": "76fa50aecffc9c3fccb3607d76767417cf66602afed732aa3e0a4b1b083b6cab",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
+    },
+    {
+      "name": "swift-focusengine-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "SKILL.md",
+          "sha256": "d9b6629e3ef2cdada37fdda400efc22d3584c17cb69fd9b3b6cfd942eff9bf7b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/accessibility-focus.md",
+          "sha256": "c0ce9e55160efad81bbee9bf79bad68e300496af846376dfd8870ed93d14a8ec",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/anti-patterns.md",
+          "sha256": "618db9d4b52cc00d5ab8b361dbb1f237cf3fb9d56bd87b68ec87f5df24daea0d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/async-focus.md",
+          "sha256": "d3ec16054e4b9968daf18c920ee02e60b0d2c51e1412a404f193f218a30ea52a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/debugging.md",
+          "sha256": "7a388961a4238f2d0b8ad47761ca72d1c650b32d6ea933ce6d2094634891630e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/focus-restoration.md",
+          "sha256": "bcadedfdec2fcba4a4cd2302c58afe22a6790dfeeefee637c2ced1744f4cfd04",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/focus-styling.md",
+          "sha256": "472f3001f706531e2bc615c6d21cbc15888602bd5cda650b098516ec3d5f4668",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/ios-focus.md",
+          "sha256": "3cff9b4f6087aeedb9f2405547f65978b81fdec183d691f741051148d1492101",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/layout-patterns.md",
+          "sha256": "fb3e7d409ba8597b0aa86827b58cc41dba9ab62716dd5dba65615a9a4b9e6007",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/macos-focus.md",
+          "sha256": "6421cae0829875c5283517708756ce32ae3d83fdbcdd0a93f0e55623982d8b48",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/realitykit-focus.md",
+          "sha256": "f0765a02e2792740f6cccd9bac877418dafe99de80b4d4e9b238c0580d25af35",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/swiftui-focus.md",
+          "sha256": "79c5461e5141c73eabc671e2609dc575891082cf26f20fff4ab4025083cd6c99",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/uikit-focus.md",
+          "sha256": "13ed60f467e711a415ad4f4a67a128bcee991260126ff060827829775755c2d2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/visionos-focus.md",
+          "sha256": "a953b2c260039037e98fbc93b8f3ff1b2793986b9b7c870f30f2a49219ba094f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/watchos-focus.md",
+          "sha256": "9d7b8ea0ec84731a447df17418889f813d691f0df06abab5fa750d9102b6c29d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "LICENSE",
+          "sha256": "ee62630c3e0aa7e01288a2c97fa33641a4cabbb014c28e7c98007ad4243040a8",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Upstream repository root is the skill; the directory is named for the skill. horch accepts the upstream version/author/tags frontmatter unchanged, so nothing moved under metadata."
+    },
+    {
+      "name": "widgets",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/SKILL.md",
+          "sha256": "c070435ebe6ee8e2ca5aca7312a4ad3f9acf60095ed949737a8a2dfc46e844d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/animations-and-transitions.md",
+          "sha256": "6fdb98bad3a8a1d651bedbf81d0639b79fb1b4dbb65557366db01fa22a507011",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/anti-patterns.md",
+          "sha256": "fdd2985e8d15e64f56c973c257b1a233d6c0bce4424fcfe144f33cfae47166d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/configuration-and-intents.md",
+          "sha256": "f5f3a1be352e98209d95447f407995b01cca860596a85fd8607b450c77b83c92",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/controls.md",
+          "sha256": "9a00e7e92494cf7b4df9800a35611c7aa0863583f96e29b94bf75169c0f1d772",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/data-and-networking.md",
+          "sha256": "049c5faa5eabb1d56588f5435c534533093e81ef97fca3ae216f3452667e7b8d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/deep-linking-and-navigation.md",
+          "sha256": "4acb36181ab6584097aa5700d174cace50a604cf176e82c9bb147a50d6c4e824",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/design-and-gallery.md",
+          "sha256": "286d914d0a906ba20ccabb07ca8c2f2651dc39522f482dc8dd04e84618e576b2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/families-and-layout.md",
+          "sha256": "4745e43a478898e6dbe312036840e5ac8c054d24b0ddd71b1760b8fe41057454",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/fundamentals.md",
+          "sha256": "034870ce188d5b6546468e1de8621fad908dd6a0dda6148a19edf24299104798",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/interactive-widgets.md",
+          "sha256": "95ad294c9effa7af798afe87ea64695689b6f42aa9ae2e0fef4703da033612fe",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/live-activities.md",
+          "sha256": "76e84edd928962c6e63d605e349bdcbdbbd9f27f1ac2c4ebce11b88f69e5c76f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/lock-screen-and-watch.md",
+          "sha256": "7398b9c98f1a33db0868a9e2dc4ab5471a579d4be00b4aa35e043b8d00dffade",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/migration-and-deprecations.md",
+          "sha256": "8d67aa66790d8836700333b38add3697678cdb5cc202a4aa5ac675931259361f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/platforms.md",
+          "sha256": "f0f44aa140c5c8854d35f1817d7351cd965f996d5622cf2577099e99c66faea2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/previews-and-testing.md",
+          "sha256": "b0781abfafc3412bdbf23eda4e362631b1139213ade406ab9cd224979d98ad3e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/relevance-and-smart-stacks.md",
+          "sha256": "c4237a3fdce8e2ac7edf70140f11d9f2315cd9022c2e6a3277ecfe153f6b4da1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/rendering-modes-and-tinting.md",
+          "sha256": "1790d28e5f27a2b53029cd6036e1c62adf34189dc448e857d5515419594f55ad",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/timeline-provider.md",
+          "sha256": "175c81c72b1eee4ec927d3595fc7cfc9682d1973c2b4a5fe6f415cdc9f2a610a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/worked-example.md",
+          "sha256": "94dbc4c22f5c0cee31e63fd311894034b5b9adef0f7baa956b8a0b5cca9197c2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
     }
   ]
 }
