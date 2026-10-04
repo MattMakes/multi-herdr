@@ -79,15 +79,22 @@ The decision is also in the SKL design text
   accepts the record (claude starts).
 
 Results:
-- `cargo test -p horch-core --test skills_catalog`: 21 of 21 pass.
+- `cargo test -p horch-core --test skills_catalog`: 22 of 22 pass, in
+  1.36 s (631.56 s before the memo below).
 - `cargo test -p horch-e2e --test skills_exposure`: 17 of 17 pass.
 - `cargo test -p horch-e2e --test e2e tel_02`: 3 of 3 pass.
 - `cargo test -p horch-core --test arch_scan`: 13 of 13 pass.
 - `cargo test -p horch-core --test execution_store`: 9 of 9 pass.
-- `cargo test -p horch-core --lib`: see the result line in the commit
-  report to the orchestrator.
+- `cargo test -p horch-core --lib`: 436 of 436 pass.
 - `cargo clippy -p horch-core -p horch-e2e --all-targets -- -D warnings`:
   clean. `rustfmt --check` on the changed `.rs` files: clean.
+
+## Bundled catalog memo (orchestrator priority request)
+
+`SkillCatalog::bundled()` digested every compiled-in skill on each call, and
+`Roster::check` calls it once per teammate. It is now built once per process
+in a `OnceLock<Result<SkillCatalog, String>>` and cloned on each call (the
+entries hold `&'static` bytes). Test: `bundled_catalog_is_the_same_on_every_call`.
 
 ## Limits
 
