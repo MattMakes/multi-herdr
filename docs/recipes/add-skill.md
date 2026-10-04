@@ -10,7 +10,7 @@ harness that exposes skills.
 - `skills/README.md`: what the bundles are and the "Deliberate adaptations"
   rules.
 - `ai_docs/plans/design-skills/01-skill-authoring.md`: shape, size budget,
-  section order, and how to make an upstream skill our own.
+  section order, and how to make a copied skill our own.
 - [phase-skills.md](../phase-skills.md): how a phase selects skills and how
   each harness sees them.
 
@@ -28,20 +28,20 @@ In the steps, `<id>` is the skill id, for example `ui-taste`.
    under `skills/` on the next build. Check:
    `cargo build --workspace --bins && ./target/debug/horch skills show <id>`
    prints the id, a `bundled+` version and the description.
-3. Add an entry to `skills/provenance.json`, in alphabetical order by name:
-   `name`, `sources` (1 item per adapted file: `repository`, `revision`,
-   `path`, `sha256`, `license`) and `adaptation`. A skill written here has
-   `"sources": []`. Check: `skl_01_bundled_catalog_versions_and_digests`.
-   It fails when the entry is missing, when a source is not a
-   `https://github.com/<owner>/<repo>` repository with a 40-hex revision, a
-   64-hex sha256 and a licence, and when a skill with no sources is not in
-   `REPO_ORIGINAL`. A new repo-original skill therefore also needs its id in
-   `REPO_ORIGINAL` in `crates/horch-core/tests/skills_catalog.rs`; ask before
-   you edit it. A new upstream needs no test change.
-   To copy an upstream skill verbatim instead, see
-   [Vendor an upstream skill](#vendor-an-upstream-skill).
-4. Add a row to `skills/README.md`, in alphabetical order: "Source mapping"
-   for a process skill, "Design skills" for a design skill. Check: read it.
+3. Add an entry to `skills/copied.json`, in alphabetical order by name:
+   `name`, `copied_files` (the copied files, relative to `skills/<id>/`) and
+   `verbatim` (`false` unless the directory is an unchanged copy). A skill
+   written here has `"copied_files": []`. Check:
+   `skl_01_bundled_catalog_versions_and_digests`. It fails when the entry is
+   missing, when a listed file does not exist, and when a skill with no
+   copied files is not in `REPO_ORIGINAL`. A new own-text skill therefore
+   also needs its id in `REPO_ORIGINAL` in
+   `crates/horch-core/tests/skills_catalog.rs`; ask before you edit it.
+   To copy a skill verbatim instead, see
+   [Copy a skill verbatim](#copy-a-skill-verbatim).
+4. Add a row to `skills/README.md`, in alphabetical order: "Process skills"
+   for a process skill, "Design skills" for a design skill. The second column
+   is the kind (see the list at the top of that file). Check: read it.
 5. Attach the skill. Choose 1:
    - By name, to specific teammates: add `<id>` to their `skills:` list.
      This is how the design skills and `orchestrate` attach. Check:
@@ -58,34 +58,33 @@ In the steps, `<id>` is the skill id, for example `ui-taste`.
 |---|---|---|
 | `skills/<id>/SKILL.md` | the skill | required |
 | `skills/<id>/references/*.md` | deep material | optional |
-| `skills/provenance.json` | 1 entry | required |
+| `skills/copied.json` | 1 entry | required |
 | `skills/README.md` | 1 row | required |
 | `teammates/<name>.md` | `skills:` entry | when attached by name |
 | `crates/horch-core/src/skills/selection.rs` | `phase_skills` | when attached to a phase |
 | `docs/phase-skills.md` | phase table | when attached to a phase |
-| `crates/horch-core/tests/skills_catalog.rs` | `REPO_ORIGINAL` | when a repo-original skill |
+| `crates/horch-core/tests/skills_catalog.rs` | `REPO_ORIGINAL` | when an own-text skill |
 
-## Vendor an upstream skill
+## Copy a skill verbatim
 
-A vendored skill is a verbatim copy. Use it when the upstream skill is good
-as it is (the 31 `ue-*` skills are an example).
+A verbatim skill is an unchanged copy. Use it when a skill is good as it is
+(the 30 verbatim `ue-*` skills are an example).
 
-1. Copy the upstream skill directory at the pinned revision into
-   `skills/<id>/`. Leave out dotfiles. Keep the upstream `LICENSE` file next
-   to `SKILL.md`. The directory name must equal `name:` in `SKILL.md`.
-2. Add the `provenance.json` entry with `"vendored": true`, `sources` (every
-   copied file, `LICENSE` included, with its sha256 and the licence) and
-   `"adaptation": "verbatim"`. That flag exempts the skill from the 12 KB and
-   160 KB size budget. It does not exempt it from the text-only rule.
+1. Copy the skill directory into `skills/<id>/`. Leave out dotfiles and any
+   licence or notice file. The directory name must equal `name:` in
+   `SKILL.md`.
+2. Add the `copied.json` entry with `"verbatim": true` and every copied file
+   in `copied_files`. That flag exempts the skill from the 12 KB and 160 KB
+   size budget. It does not exempt it from the text-only rule.
 3. Check: `cargo test -p horch-core --test skills_catalog` and
-   `horch skills show <id>` prints `vendored:     true`.
-4. To move to a new revision, follow "Re-vendor a skill" in
-   [skills-and-teams.md](../skills-and-teams.md#re-vendor-a-skill-at-a-new-upstream-revision).
+   `horch skills show <id>` prints `verbatim:     true`.
+4. To refresh it, follow "Refresh a copied skill" in
+   [skills-and-teams.md](../skills-and-teams.md#refresh-a-copied-skill).
 
 ## Tests and oracles
 
 - `crates/horch-core/tests/skills_catalog.rs` checks the catalog against the
-  directories, the digests, provenance and the size budget.
+  directories, the digests, `copied.json` and the size budget.
 - `horch skills` and `horch skills --json` oracles
   (`crates/horch/tests/oracles/skills/skills.txt`, `skills-json.txt`) do not
   change for a new skill: `oracle_cli_skills_match` in
@@ -114,6 +113,5 @@ as it is (the 31 `ue-*` skills are an example).
 ## Worked example
 
 `git show --stat e4b0262` (D01) added `ui-taste` and `ui-redesign`: 2 skill
-directories, 1 README row each, and their provenance entries. No Rust file
-changed. `git show --stat 9d7fa5a` (D00) added multi-source provenance to
-`crates/horch-core/src/skills/catalog.rs`.
+directories and 1 README row each. No Rust file changed. G10 replaced the
+skill provenance file with `skills/copied.json`.

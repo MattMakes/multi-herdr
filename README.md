@@ -668,9 +668,9 @@ stay readable and their sessions stay resumable.
 The roster has domain teams for Unreal Engine (Git LFS, UE 5.8), Swift and
 Apple platforms, and design. The orchestrator is offered a domain team only
 when the project has a matching file (`offer_when`). Skills are bundled
-(adapted, vendored or original) or come from your machine (`operator_skills`).
+(adapted, verbatim or own text) or come from your machine (`operator_skills`).
 [docs/skills-and-teams.md](docs/skills-and-teams.md) explains how to use each
-team, how to re-vendor a skill and what `horch agent-list` and
+team, how to refresh a copied skill and what `horch agent-list` and
 `multi-herdr-dataset` show. [docs/README.md](docs/README.md) is the
 contributor handbook, including the gate rules: never run the gate under
 `git rebase -x`, and run it through the slot wrapper when other gates run.

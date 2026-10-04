@@ -32,45 +32,47 @@ Show what is configured:
 horch teammates --matrix          # skills, available skills, offer gate, price
 horch teammates --matrix --json   # the same, with offer_when and requires
 horch skills                      # the bundled catalog and its context cost
-horch skills show ue-build-verify # 1 skill: digest, provenance, vendored flag
+horch skills show ue-build-verify # 1 skill: digest, copied files, verbatim flag
 ```
 
-## Bundled skills: adapted, vendored, repo-original
+## Bundled skills: adapted, verbatim, own text
 
-`skills/` holds 3 kinds of bundle. `skills/provenance.json` has 1 entry for
-each.
+`skills/` holds 3 kinds of bundle. `skills/copied.json` has 1 entry for
+each: `{"name", "copied_files", "verbatim"}`.
 
-| kind | what it is | `vendored` | size budget |
+| kind | what it is | `verbatim` | size budget |
 |---|---|---|---|
-| adapted | a curated copy with a listed set of edits and the fleet rules (no subagents, no approval gate, no machine paths) | no | `SKILL.md` at most 12 KB, directory at most 160 KB |
-| vendored | a verbatim copy of an upstream skill directory, without dotfiles, plus the upstream `LICENSE` | `true` | exempt |
-| repo-original | written here; `sources` is empty | no | as adapted |
+| adapted | a curated copy with a set of edits and the fleet rules (no subagents, no approval gate, no machine paths) | no | `SKILL.md` at most 12 KB, directory at most 160 KB |
+| verbatim | an unchanged copy of a skill directory, without dotfiles | `true` | exempt |
+| own text | written here; `copied_files` is empty | no | as adapted |
 
 Rules that the tests enforce (`crates/horch-core/tests/skills_catalog.rs`):
 
-- Every bundled skill has a `provenance.json` entry.
-- Each source has a `https://github.com/<owner>/<repo>` repository, a 40-hex
-  revision, a 64-hex sha256 and a licence.
-- A skill directory holds only `.md` and `.txt` files, plus a file named
-  exactly `LICENSE`. `skill-creator` is the one exception.
+- Every bundled skill has a `copied.json` entry, and every listed copied file
+  exists in the skill directory.
+- A skill in `REPO_ORIGINAL` has no copied files; every other skill has at
+  least 1.
+- A skill directory holds only `.md` and `.txt` files. `skill-creator` is the
+  one exception. No skill holds a licence or notice file.
 - The build skips every file and directory whose name starts with `.`.
 
-### Re-vendor a skill at a new upstream revision
+The Godot checks in the gate (`scripts/godot/*_check.py --strict-own
+skills/copied.json`) report a problem in a copied file and fail on a problem
+in any other file.
 
-1. Bump the pin: update the upstream checkout, and write the new full
-   revision into every `sources` item of the skill in `skills/provenance.json`.
-2. Re-copy the upstream files at that revision into `skills/<id>/`. Keep
-   `LICENSE`. For an adapted skill, re-apply the edits that its `adaptation`
-   field lists.
-3. Re-hash: write the new sha256 of each copied file into its `sources` item.
-4. Run the targeted check, then the gate:
+### Refresh a copied skill
+
+1. Copy the new files into `skills/<id>/`, without dotfiles. For an adapted
+   skill, re-apply its edits.
+2. Update `copied_files` in `skills/copied.json` when the file list changes.
+3. Run the targeted check, then the gate:
 
    ```bash
    cargo test -p horch-core --test skills_catalog
    horch skills show <id>     # prints the new digest
    ```
 
-The full rules are in [skills/README.md](../skills/README.md#vendored-skills).
+The full rules are in [skills/README.md](../skills/README.md#copied-files).
 
 ## Offering a domain team only where it fits
 
@@ -156,15 +158,15 @@ each team.
 
 | team | offered when the project has | skills | rules every member follows |
 |---|---|---|---|
-| Unreal Engine (11 `ue-*`) | `*.uproject` | 31 `ue-*` skills vendored from `quodsoler/unreal-engine-skills`, plus 2 house skills, `ue-build-verify` and `ue-editor-scripting` | read `.agents/ue-project-context.md` first; never write asset bytes; check the engine headers; 1 build at a time; a `DONE:` that names target, configuration and filter; the Git LFS lock rules |
-| Godot (19 `godot-*`) | `project.godot` | 64 `godot-*` skills: GodotPrompter skills (MIT), combined skills with own-text references from gd-agentic-skills facts, and own skills such as `godot-build-verify` and `godot-scene-files`; a `*.csproj` adds the 2 C# skills to each builder | read `.agents/godot-project-context.md` first; never touch `.godot/` or `.import`, commit `.uid` sidecars; check APIs with `godot --doctool`; headless only, 1 import at a time; a `DONE:` that names the Godot version, the parse check and the tests; addon skills only at the pinned addon version |
+| Unreal Engine (11 `ue-*`) | `*.uproject` | 31 copied `ue-*` skills, plus 2 house skills, `ue-build-verify` and `ue-editor-scripting` | read `.agents/ue-project-context.md` first; never write asset bytes; check the engine headers; 1 build at a time; a `DONE:` that names target, configuration and filter; the Git LFS lock rules |
+| Godot (19 `godot-*`) | `project.godot` | 64 `godot-*` skills: renamed copied skills, combined skills with own-text references, and own skills such as `godot-build-verify` and `godot-scene-files`; a `*.csproj` adds the 2 C# skills to each builder | read `.agents/godot-project-context.md` first; never touch `.godot/` or `.import`, commit `.uid` sidecars; check APIs with `godot --doctool`; headless only, 1 import at a time; a `DONE:` that names the Godot version, the parse check and the tests; addon skills only at the pinned addon version |
 | Swift and Apple (7) | `*.xcodeproj`, `*.xcworkspace` or `Package.swift` | 28 Swift and Apple skills | check the toolchain first; the builders carry `mobilebuildmcp` |
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
 | Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline` | Blender Lab MCP server; hands FBX exports to the Unreal team |
 
 ### Unreal Engine and Git LFS
 
-- Target: UE 5.8 (hotfix 5.8.3 on 2026-10-04). The 31 vendored skills target
+- Target: UE 5.8 (hotfix 5.8.3 on 2026-10-04). The 31 copied skills target
   it, so they stay verbatim (30 verbatim, `ue-project-context` adapted).
 - Version control is **Git LFS**, not Perforce. Binary assets are LFS files
   marked `lockable`. A worker locks an asset with `git lfs lock` only when the

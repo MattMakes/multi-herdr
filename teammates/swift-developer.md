@@ -43,7 +43,7 @@ operator_skills:
   dir: ~/.agents/skills
   names: [swiftui-whats-new-27, test-modernizer]
 
-# mobilebuildmcp (formerly XcodeBuildMCP, getsentry/MobileBuildMCP, MIT)
+# mobilebuildmcp (formerly XcodeBuildMCP, getsentry/MobileBuildMCP)
 # builds, tests, runs and drives the simulator without Xcode open. Pinned:
 # fleet launches are reproducible. MOBILEBUILDMCP_SENTRY_DISABLED stops its
 # default error telemetry to Sentry (fleet rule: no third-party telemetry

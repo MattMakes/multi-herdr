@@ -87,7 +87,7 @@ The orchestrator merges, runs the gate on the integration branch, and updates
 `/tmp/igate-ds.sh` and `/tmp/dsmerge.sh`). They are not in the repository,
 and this page does not describe them.
 
-Shared files (for example `skills/README.md`, `skills/provenance.json`,
+Shared files (for example `skills/README.md`, `skills/copied.json`,
 `SKIP_NEW_TEAMMATES`) get lines from several units. Each unit adds its lines
 in alphabetical order and keeps both sides at a rebase conflict.
 

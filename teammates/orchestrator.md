@@ -5,7 +5,7 @@ hidden: true
 base: fleet-orchestrator
 agent: claude
 phase: plan
-# skill-creator is a verbatim copy of Anthropic's (skills/provenance.json).
+# skill-creator is a verbatim copy (skills/copied.json).
 # It and orchestrate are orchestrator-only: `horch teammates --check` fails
 # any other teammate that names either, and every pane switches off the
 # ambient copies (the official plugin, the claude.ai-synced one).
