@@ -1558,6 +1558,55 @@
       "vendored": true
     },
     {
+      "name": "godot-debugging",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-debugging/SKILL.md",
+          "sha256": "15e997ee3cd52a902ce9da1442bb26b663e29b73cd77dcb48efc452f2b2bf5f8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-debugging/references/performance-debugging.md",
+          "sha256": "b299e4205fac72065c710f13720f477d028ad3f81c7f6aaf0160126183991209",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-debugging/references/scene-tree-debugging.md",
+          "sha256": "c7e94fc71327db43faec3650b4e6598463b44460370c24ab09a689dbd1184f33",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-debugging/references/signal-tracing.md",
+          "sha256": "fb1f9790231cb46a2454123a79b1886c43eda2b24a361074f819f5c33c18e5a8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-debugging/references/systematic-method.md",
+          "sha256": "4267f642e0c78d23651b20f8ebef335eb99421d92afec6fc5df0d4bbd857da40",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/headless-and-in-game-diagnostics.md, references/leaks-and-orphans.md, references/logging-and-crash-context.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-debugging-profiling (debugging half)",
+      "vendored": true
+    },
+    {
       "name": "godot-dedicated-server",
       "sources": [
         {
@@ -2300,6 +2349,55 @@
         }
       ],
       "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-optimization",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-optimization/SKILL.md",
+          "sha256": "bccea6c076bb71caf09869ac96ed5a8fdb48de4c17caf32401687d17c232f57f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-optimization/references/cpu-bottlenecks.md",
+          "sha256": "2b1e8cdee5236a80d24c76c22ad469d13ce837f538b91c1911df1e87c38f3aff",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-optimization/references/draw-calls.md",
+          "sha256": "e3e0660448773b3bfb0f47b33649f8e9be20d0351853a72ebe472ede2ea56984",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-optimization/references/memory-management.md",
+          "sha256": "365f6a682eebfc54bae727ca99653bdd0e4289011e509b834d152bfd206cb048",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-optimization/references/physics-tuning.md",
+          "sha256": "1079160ef0dbfd2f83a1d4fcb2d40e5ae30917bf3f43d2d7b9ce15294d4d3742",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/measuring-performance.md, references/scaling-techniques.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-performance-optimization, godot-debugging-profiling (profiling half); API fixes on 4.7.2: Performance.MEMORY_DYNAMIC -> Performance.MEMORY_STATIC_MAX (GDScript and C# blocks in references/memory-management.md); OS.gc() -> removed (no such method), the cache note now says reference counting frees a resource when its last reference goes",
       "vendored": true
     },
     {
