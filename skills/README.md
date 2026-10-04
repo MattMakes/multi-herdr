@@ -158,7 +158,9 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 
 | Skill | Upstream source | Copy |
 | --- | --- | --- |
+| [godot-ability-system](godot-ability-system/SKILL.md) | `jame581/GodotPrompter`: `skills/ability-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-ability-system/`, `godot-rpg-stats/`) | combined |
 | [godot-addon-development](godot-addon-development/SKILL.md) | `jame581/GodotPrompter`: `skills/addon-development/` | renamed |
+| [godot-ai-navigation](godot-ai-navigation/SKILL.md) | `jame581/GodotPrompter`: `skills/ai-navigation/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-ai-navigation/`, `godot-navigation-pathfinding/`) | combined |
 | [godot-assets-pipeline](godot-assets-pipeline/SKILL.md) | `jame581/GodotPrompter`: `skills/assets-pipeline/` | renamed |
 | [godot-beehave](godot-beehave/SKILL.md) | `jame581/GodotPrompter`: `skills/beehave/` | renamed |
 | [godot-brainstorming](godot-brainstorming/SKILL.md) | `jame581/GodotPrompter`: `skills/brainstorming/` | adapted |

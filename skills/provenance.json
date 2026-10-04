@@ -1063,6 +1063,48 @@
       "adaptation": "Harness-neutral, self-contained workflow; orchestrator coordination replaces interactive checkpoints."
     },
     {
+      "name": "godot-ability-system",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ability-system/SKILL.md",
+          "sha256": "f90fe4121a56bf5f4ae875aaae57b3dbcd66cbb8e5f0d597a8feaf3cf81292cb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ability-system/references/stat-modifiers.md",
+          "sha256": "9ec7c1716a66a8cad1d81dcc037b0ad8bb6d0edcd9bfe58dfbea1a8df5fed3e4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ability-system/references/tags-and-conditions.md",
+          "sha256": "aeaa981ef3e8a9a6d0129c9cb9bfb1b4f4918dfadf315032f79c4a1caea2a56c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ability-system/references/ui-binding.md",
+          "sha256": "c9c10d4319c5b5af08cdf7767783cc816503a63d25c9d18c52604496c5c251be",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{cooldown-rules-charges-and-combos.md, progression-and-formulas.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-ability-system, godot-rpg-stats; API fixes on 4.7.2: C# StringName.Empty -> new StringName() (references/stat-modifiers.md, references/tags-and-conditions.md); C# ImmunityTag != StringName.Empty -> !ImmunityTag.IsEmpty (references/tags-and-conditions.md)",
+      "vendored": true
+    },
+    {
       "name": "godot-addon-development",
       "sources": [
         {
@@ -1109,6 +1151,62 @@
         }
       ],
       "adaptation": "rename to godot-* prefix",
+      "vendored": true
+    },
+    {
+      "name": "godot-ai-navigation",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ai-navigation/SKILL.md",
+          "sha256": "60a859841843e61ff516772cc7f85ae397a04c056070dee587bbec20a4fdb48c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ai-navigation/references/async-baking.md",
+          "sha256": "b2952316fa2dd03577e4bf0794215759f22ed7e2d1a806b9af21f016a3e546cf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ai-navigation/references/behavior-trees.md",
+          "sha256": "f084c7efb0f206f275f96a273753aa4f296e9a1479b55337220edef5c88698d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ai-navigation/references/chase-attack.md",
+          "sha256": "f8ffb521b905e8a8e699b4f148566ba2eb2d7ac535adcaa193310af780d38f1f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ai-navigation/references/patrol-patterns.md",
+          "sha256": "032bdd2ef83e2768811992186e95b8a5c5ccba6c789608ad02d62af91442bcfa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/ai-navigation/references/steering-behaviors.md",
+          "sha256": "dbfb90a1e843bc13099c905930f657f012eddeb41e7ec4b77a74edb144cf7b4f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{costs-links-obstacles-and-recovery.md, server-crowds-and-queries.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-ai-navigation, godot-navigation-pathfinding",
       "vendored": true
     },
     {
