@@ -37,12 +37,14 @@ skills:
 
 # mobilebuildmcp (formerly XcodeBuildMCP, getsentry/MobileBuildMCP, MIT)
 # builds, tests, runs and drives the simulator without Xcode open. Pinned:
-# fleet launches are reproducible. The ui-automation workflow (snapshot_ui,
+# fleet launches are reproducible. MOBILEBUILDMCP_SENTRY_DISABLED stops its
+# default error telemetry to Sentry (fleet rule: no third-party telemetry
+# from agent panes; the value must be the string "true"). The ui-automation workflow (snapshot_ui,
 # tap, screenshot) and swift-package are off by default, so the env turns
 # them on.
 # context7 pulls current Apple API docs instead of training-set memory.
 mcp_servers:
-  mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,ui-automation,swift-package"}}
+  mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_SENTRY_DISABLED":"true","MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,ui-automation,swift-package"}}
   context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]

@@ -39,7 +39,9 @@ skills:
 # `asc review status`, `asc submit status`, `asc submit preflight`.
 # `-allowProvisioningUpdates` can create or change provisioning profiles in
 # the developer account; the persona passes it only when the assignment
-# names it, and the last pattern denies it on the first try.
+# names it, and the last pattern denies it on the first try. A `*` matches
+# at any position in a Bash rule (code.claude.com/docs/en/permissions,
+# "Wildcard patterns"), so the 2 mid-pattern rules below do match.
 disallowed_tools:
   - Agent
   - "Bash(asc submit create *)"
@@ -69,9 +71,12 @@ disallowed_tools:
 # ASC_BYPASS_KEYCHAIN keeps the operator's keychain profiles out. asc's
 # authentication docs give this pair as the way to isolate an agent.
 # `~/` expands against the launch's home: asc needs an absolute path.
+# ASC_TELEMETRY_DISABLED turns off asc's default telemetry (fleet rule: no
+# third-party telemetry from agent panes; asc 5.9.1 internal/telemetry/state.go).
 env:
   ASC_CONFIG_PATH: "~/.config/horch/asc/config.json"
   ASC_BYPASS_KEYCHAIN: "1"
+  ASC_TELEMETRY_DISABLED: "1"
 mcp_servers: {}
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
