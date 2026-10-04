@@ -253,6 +253,12 @@ pub fn harness_version(bin: &Path) -> Option<String> {
 
 /// Run `<bin> --version` and judge the answer.
 pub fn probe_version(bin: &Path) -> VersionProbe {
+    probe_version_within(bin, VERSION_TIMEOUT)
+}
+
+/// [`probe_version`] with its own deadline: no answer within `timeout` is
+/// [`VersionProbe::NoAnswer`].
+fn probe_version_within(bin: &Path, timeout: StdDuration) -> VersionProbe {
     let mut cmd = Command::new(bin);
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
@@ -266,9 +272,7 @@ pub fn probe_version(bin: &Path) -> VersionProbe {
     let Ok(mut child) = child else {
         return VersionProbe::NoAnswer;
     };
-    // Generous: a loaded machine can take seconds just to start a binary,
-    // and a missed version fails the dataset preflight.
-    let deadline = Instant::now() + VERSION_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -350,6 +354,8 @@ fn first_error_line(text: &str) -> Option<String> {
 }
 
 /// How long `harness_version` waits for `<bin> --version`.
+/// Generous: a loaded machine can take seconds just to start a binary, and
+/// a missed version fails the dataset preflight.
 const VERSION_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
 /// The newest `rate_limits` snapshot in any rollout under `sessions` (the
@@ -458,7 +464,7 @@ pub(crate) fn probe_all(
     let stamp = clock::stamp(now);
     let timeout = timeout.unwrap_or(PROBE_TIMEOUT);
 
-    probe_harnesses(file, &bins.harnesses, &stamp);
+    probe_harnesses(file, &bins.harnesses, &stamp, VERSION_TIMEOUT);
     let version_of = |name: &str| file.harnesses.get(name).and_then(|h| h.version.clone());
     let (claude_version, codex_version) = (version_of("claude"), version_of("codex"));
 
@@ -530,11 +536,16 @@ pub(crate) fn probe_all(
 /// each in `file.harnesses`. A failure marks the harness broken; a later
 /// success clears it. No answer (not installed, timed out) is not a
 /// failure: it keeps the last version and clears the error.
-fn probe_harnesses(file: &mut QuotaFile, bins: &[(&'static str, PathBuf)], stamp: &str) {
+fn probe_harnesses(
+    file: &mut QuotaFile,
+    bins: &[(&'static str, PathBuf)],
+    stamp: &str,
+    timeout: StdDuration,
+) {
     let probes: Vec<(&'static str, VersionProbe)> = std::thread::scope(|s| {
         let handles: Vec<_> = bins
             .iter()
-            .map(|(name, bin)| (*name, s.spawn(move || probe_version(bin))))
+            .map(|(name, bin)| (*name, s.spawn(move || probe_version_within(bin, timeout))))
             .collect();
         handles
             .into_iter()
@@ -609,9 +620,14 @@ mod tests {
 
     /// A fake harness that crashes is broken with its error line; one that is
     /// missing gives no answer; once it works again the error clears.
+    ///
+    /// The fake always exits, so the probes wait for it. With the 15 s
+    /// [`VERSION_TIMEOUT`], a fake starved by a loaded test run gives
+    /// `NoAnswer`, and the test fails.
     #[cfg(unix)]
     #[test]
     fn a_crashing_harness_is_broken_until_it_recovers() {
+        const UNTIL_IT_EXITS: StdDuration = StdDuration::from_secs(600);
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let fixed = tmp.path().join("fixed");
@@ -629,14 +645,18 @@ mod tests {
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let broken = "pi --version exited 1: Error [ERR_REQUIRE_ESM]: require() of ES Module";
-        assert_eq!(probe_version(&bin), VersionProbe::Broken(broken.into()));
+        assert_eq!(
+            probe_version_within(&bin, UNTIL_IT_EXITS),
+            VersionProbe::Broken(broken.into())
+        );
+        // `None` whether it is broken or (on a starved run) gives no answer.
         assert_eq!(harness_version(&bin), None);
         let missing = tmp.path().join("absent");
         assert_eq!(probe_version(&missing), VersionProbe::NoAnswer);
 
         let bins = vec![("pi", bin.clone()), ("antigravity", missing)];
         let mut file = QuotaFile::default();
-        probe_harnesses(&mut file, &bins, "2026-10-04T10:00:00Z");
+        probe_harnesses(&mut file, &bins, "2026-10-04T10:00:00Z", UNTIL_IT_EXITS);
         assert_eq!(file.harnesses["pi"].error.as_deref(), Some(broken));
         assert!(
             !file.harnesses.contains_key("antigravity"),
@@ -644,7 +664,7 @@ mod tests {
         );
 
         std::fs::write(&fixed, "").unwrap();
-        probe_harnesses(&mut file, &bins, "2026-10-04T10:05:00Z");
+        probe_harnesses(&mut file, &bins, "2026-10-04T10:05:00Z", UNTIL_IT_EXITS);
         let pi = &file.harnesses["pi"];
         assert_eq!(pi.error, None);
         assert_eq!(pi.version.as_deref(), Some("0.70.0"));
