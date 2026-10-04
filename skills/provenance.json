@@ -1207,6 +1207,118 @@
       "vendored": true
     },
     {
+      "name": "swift-concurrency-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "LICENSE",
+          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/SKILL.md",
+          "sha256": "95d3098b038a38f163259cb7404070f786fed846a5e8b864e6b34fa7600247f9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/actors.md",
+          "sha256": "7a77a0f06d0040a6813ec02cd4b1360df4bcfa501f93710bfb4296de9911d64f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/async-streams.md",
+          "sha256": "589ba0dad544b28b158702e239fe6a4077b6d1484c83b8fd51290192bf1ffc9a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/bridging.md",
+          "sha256": "c8eb60dcdd90f67cb3b8b1213fc55a56dd5c4a04f465d7aff7fdbd5c451e0498",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/bug-patterns.md",
+          "sha256": "2233f58e784a9b6cf13620133485fcf7e3150192a40e713369ebbddc820dec85",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/cancellation.md",
+          "sha256": "c83b4134b44ea5a0ee06e785bd0cb85616234469833f9677297b6fcddea1e1fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/diagnostics.md",
+          "sha256": "cc2debc6f430ed13fc3be3a7ce942e55bb1cf02a9804ebfb272f295b502c9569",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/hotspots.md",
+          "sha256": "199a9fa4beea4a550b3f63e07cddd441d72fd41d1e17e6f3255071a661ce1e6d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/interop.md",
+          "sha256": "b86cd716bd22b38d718e86b37b3d7dd1225b5ce93a53f88842ff6993e93ca566",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/new-features.md",
+          "sha256": "c721a187b57e9d94112972c9685c57f7129187df2d36add4df1a9c9e9aa9e541",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/structured.md",
+          "sha256": "1655b610fd1dafb7cf42b61457ff8229117c06879d0e9cc40460f437ba97895b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/testing.md",
+          "sha256": "4a1fc1aefb572bbdbd75a502a74df795af7e2212eec6836a4f353f9b725abffc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/unstructured.md",
+          "sha256": "d8063edf18bbe5abc9c628548b0100c4dd8defe3340c017d6fa4936eca17c456",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/AvdLee/Swift-Concurrency-Agent-Skill",
+          "revision": "d5770817d2622e1585b1f7eaebc791a9cb0959c8",
+          "path": "skills/swift-concurrency/SKILL.md",
+          "sha256": "8c667b2ff988251c7c291abe046b77d7b8fcfbe3b5ed36961e25e224b1ead491",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy. testing.md: .serialized on a suite serializes every test in it (was: parameterized tests only). new-features.md: caller-actor nonisolated async needs NonisolatedNonsendingByDefault / Approachable Concurrency. New references/build-settings.md from AvdLee SKILL.md:16-24 (settings table and Xcode 26 note; the ask-the-developer line becomes a message to the orchestrator). SKILL.md: third-party-framework ask gate becomes a message to the orchestrator; build-settings step and reference entry added. Links to other upstream skill repositories replaced by bundled skill names.",
+      "vendored": false
+    },
+    {
       "name": "swift-testing-pro",
       "sources": [
         {
@@ -1260,6 +1372,76 @@
         }
       ],
       "adaptation": "Upstream copy with 2 added lines in SKILL.md (headless runs with swift test --filter and xcodebuild test -only-testing:, and exit tests are not available on iOS, tvOS, watchOS or visionOS). Links to other upstream skill repositories (async-tests.md, writing-better-tests.md) replaced by bundled skill names. Otherwise verbatim.",
+      "vendored": false
+    },
+    {
+      "name": "swiftdata-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "LICENSE",
+          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/SKILL.md",
+          "sha256": "79164f3bc4942b8ca384057cbe951ca7715aecee4970bea38781d91ddb1c442e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/class-inheritance.md",
+          "sha256": "05b22c87e9864a47517ba095c9a870dc320f0e6f4cd85ff9f0b54c5ca356a41d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/cloudkit.md",
+          "sha256": "52a549b1713d55be183b79af595d37729426af0abea36ed05f932b718d8ee11f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/core-rules.md",
+          "sha256": "8bf45a2af28bfb0648303bb520d3d317d2794b56fcfabe599c4785ccdf02f80a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/indexing.md",
+          "sha256": "909167e538461bf517f8fc6b00bfe70d1c8ea19b12a4749088823c275de52a82",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/predicates.md",
+          "sha256": "623c3195fccdec0ec95c0291223ced7491025b04e59c0b4f4fe5ffd23eb1019b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/vanab/swiftdata-agent-skill",
+          "revision": "4819a5381fa5fdce894451822917b1135c19e050",
+          "path": "swiftdata-expert-skill/references/migrations-and-history.md",
+          "sha256": "dc69301a68343be1f63ae95cf9c77635412c3b67101837215fe6647a042bae85",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/vanab/swiftdata-agent-skill",
+          "revision": "4819a5381fa5fdce894451822917b1135c19e050",
+          "path": "swiftdata-expert-skill/references/core-data-adoption.md",
+          "sha256": "414150186489315622a609020bbd65021e7ad4338a6327b3c262d8717b58b2d6",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy. SKILL.md: third-party-framework ask gate becomes a message to the orchestrator; 2 review steps and reference entries for the vanab references. Added vanab references/migrations-and-history.md (with a CloudKit caveat on #Unique) and references/core-data-adoption.md (verbatim). Links to other upstream skill repositories replaced by bundled skill names.",
       "vendored": false
     },
     {
