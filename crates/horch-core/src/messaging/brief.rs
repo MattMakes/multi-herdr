@@ -67,13 +67,6 @@ pub struct Brief {
     /// back to the compiled-in copies and silently ignores local edits.
     #[serde(default)]
     pub teammates_dir: Option<String>,
-    /// The skill store (`data_root`) the spawner checked the teammate's
-    /// skills against. A pane does not inherit `$XDG_DATA_HOME` or
-    /// `$HORCH_DATA_DIR`, so without it the worker resolves skills in the
-    /// default store. The worker passes it on to its agent as
-    /// `HORCH_DATA_DIR`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_root: Option<String>,
     /// Schema 2: the directory the agent works in, when it is not the project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
@@ -164,11 +157,6 @@ impl Brief {
         if let Some(dir) = &self.teammates_dir {
             out.push(("HORCH_TEAMMATES_DIR".into(), dir.clone()));
         }
-        // The same for the skill store: the agent's `horch spawn` checks
-        // skills in the store this worker launched with.
-        if let Some(dir) = &self.data_root {
-            out.push(("HORCH_DATA_DIR".into(), dir.clone()));
-        }
         for (key, value) in self.overrides().env_pairs() {
             out.push((key.to_string(), value.to_string_lossy().into_owned()));
         }
@@ -235,7 +223,6 @@ mod tests {
             codex_bin: None,
             resolved: None,
             teammates_dir: Some("/roster".into()),
-            data_root: Some("/data/horch".into()),
             workdir: None,
             bin_overrides: BinOverrides::default(),
             report_to: crate::execution::ReportTarget::Orchestrator,
@@ -266,7 +253,6 @@ mod tests {
         assert_eq!(b.schema, 1);
         assert_eq!(b.session, SessionMode::Fresh(None));
         assert_eq!(b.workdir, None);
-        assert_eq!(b.data_root, None, "the worker keeps its own store");
         assert_eq!(b.workdir_or_project(), "/p");
         assert_eq!(
             b.bin_overrides,
@@ -279,6 +265,7 @@ mod tests {
         let env = b.transport_env();
         assert!(env.contains(&("HORCH_CLAUDE_BIN".into(), "/bin/fake-claude".into())));
         assert!(env.contains(&("HORCH_CODEX_BIN".into(), "/bin/fake-codex".into())));
+        // The skill store travels in the pane command, not the brief.
         assert!(!env.iter().any(|(k, _)| k == "HORCH_DATA_DIR"));
 
         // The oldest briefs have neither override nor task.
@@ -305,13 +292,12 @@ mod tests {
         assert_eq!(v["codex_bin"], serde_json::Value::Null);
         assert_eq!(v["bin_overrides"]["opencode"], "/o");
         assert_eq!(v["workdir"], "/wt");
-        assert_eq!(v["data_root"], "/data/horch");
+        assert!(v.get("data_root").is_none(), "{v}");
 
         let back = Brief::from_json(&v.to_string()).unwrap();
         assert_eq!(back.schema, 2);
         assert_eq!(back.bin_overrides.opencode, Some(PathBuf::from("/o")));
         assert_eq!(back.workdir_or_project(), "/wt");
-        assert_eq!(back.data_root.as_deref(), Some("/data/horch"));
     }
 
     #[test]
@@ -339,7 +325,6 @@ mod tests {
             ("HORCH_PROJECT_DIR", "/tmp/proj"),
             ("HORCH_STATE_DIR", "/state"),
             ("HORCH_TEAMMATES_DIR", "/roster"),
-            ("HORCH_DATA_DIR", "/data/horch"),
         ] {
             assert_eq!(env.get(key).map(String::as_str), Some(want), "{key}");
         }
@@ -347,5 +332,6 @@ mod tests {
             assert_eq!(env.get(*key), Some(&format!("/bin/{i}")), "{key}");
         }
         assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!env.contains_key("HORCH_DATA_DIR"));
     }
 }

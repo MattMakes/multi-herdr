@@ -222,7 +222,6 @@ impl ExecutionService<'_> {
             codex_bin: None,
             resolved: Some(launch.teammate.clone()),
             teammates_dir: text(ctx.bins.roster_override.as_deref()),
-            data_root: text(Some(&ctx.paths.data_root)),
             workdir: text(e.workdir.as_deref()),
             bin_overrides: Default::default(),
             report_to: plan.report_to,
@@ -249,13 +248,20 @@ impl ExecutionService<'_> {
         self.workspace.pane_split(&from, plan.workspace.direction)
     }
 
-    /// Run `horch worker <role>` in the new pane.
+    /// Run `horch worker <role>` in the new pane, with this process's skill
+    /// store as `HORCH_DATA_DIR`: a pane does not inherit this environment,
+    /// and the worker's agent inherits the worker's.
     fn run(&self, pane: &str, role: &str) -> Result<()> {
         if self.ctx.settings.faults.has("fail-pane-run") {
             return Err(anyhow!("HORCH_FAULT fail-pane-run"));
         }
         let exe = self.ctx.bins.exe()?;
-        let command = PaneShell::host().command_line(&exe, &["worker", role]);
+        let data_root = self.ctx.paths.data_root.to_string_lossy();
+        let command = PaneShell::host().command_line_with_env(
+            &exe,
+            &[("HORCH_DATA_DIR", data_root.as_ref())],
+            &["worker", role],
+        );
         self.workspace.pane_run(pane, &command)
     }
 

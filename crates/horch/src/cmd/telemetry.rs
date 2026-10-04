@@ -813,7 +813,12 @@ pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
         args.push("--state-dir".into());
         args.push(dir);
     }
-    let command = horch_core::workspace::paneshell::PaneShell::host().command_line(&exe, &args);
+    let data_root = ctx.paths.data_root.to_string_lossy();
+    let command = horch_core::workspace::paneshell::PaneShell::host().command_line_with_env(
+        &exe,
+        &[("HORCH_DATA_DIR", data_root.as_ref())],
+        &args,
+    );
     herdr.pane_run(&ws.root_pane_id, &command)?;
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until {

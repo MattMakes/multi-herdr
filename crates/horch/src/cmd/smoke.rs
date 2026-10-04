@@ -65,6 +65,13 @@ fn arithmetic_echo(shell: PaneShell) -> &'static str {
     }
 }
 
+/// `horch <args>` for a smoke pane, with this process's skill store as
+/// `HORCH_DATA_DIR`, as every pane horch starts has.
+fn horch_line(ctx: &RuntimeContext, shell: PaneShell, exe: &Path, args: &[&str]) -> String {
+    let data_root = ctx.paths.data_root.to_string_lossy();
+    shell.command_line_with_env(exe, &[("HORCH_DATA_DIR", data_root.as_ref())], args)
+}
+
 /// Cheap, self-verifying 2-pane check of the herdr messaging primitives
 /// (send-text + send-keys enter, and the mailbox registry).
 fn messaging(ctx: &RuntimeContext) -> Result<ExitCode> {
@@ -78,7 +85,7 @@ fn messaging(ctx: &RuntimeContext) -> Result<ExitCode> {
     let b = herdr.pane_split(&a, Direction::Right)?;
 
     for (pane, role) in [(&a, "a"), (&b, "b")] {
-        herdr.pane_run(pane, &shell.command_line(&exe, &["register", role]))?;
+        herdr.pane_run(pane, &horch_line(ctx, shell, &exe, &["register", role]))?;
     }
 
     // Registration shells out to `herdr pane get`; poll the mailbox rather than
@@ -154,7 +161,7 @@ fn fleet(ctx: &RuntimeContext) -> Result<ExitCode> {
     // `horch tell` target to report DONE to.
     herdr.pane_run(
         &ws.root_pane_id,
-        &shell.command_line(&exe, &["register", "orchestrator"]),
+        &horch_line(ctx, shell, &exe, &["register", "orchestrator"]),
     )?;
     if !poll(20, Duration::from_millis(500), || {
         mailbox.pane_for("orchestrator").is_some()
@@ -488,7 +495,7 @@ fn tile(ctx: &RuntimeContext) -> Result<ExitCode> {
     // refuses rather than moving the orchestrator like a worker.
     herdr.pane_run(
         &orchestrator,
-        &shell.command_line(&exe, &["register", "orchestrator"]),
+        &horch_line(ctx, shell, &exe, &["register", "orchestrator"]),
     )?;
     if !poll(20, Duration::from_millis(500), || {
         mailbox.pane_for("orchestrator").is_some()

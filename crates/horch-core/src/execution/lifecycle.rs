@@ -293,10 +293,6 @@ impl WorkerSteps for PaneWorker<'_> {
         if let Some(state_dir) = &brief.state_dir {
             self.ctx.paths.set_state_dir(state_dir);
         }
-        // The skill store the spawner checked the skills against.
-        if let Some(data_root) = &brief.data_root {
-            self.ctx.paths.data_root = PathBuf::from(data_root);
-        }
         self.ctx.apply_overrides(&brief.overrides());
         // The briefing tells the agent to run `horch tell` / `horch note` /
         // `horch done` by bare name, so this binary's directory has to be
@@ -482,7 +478,6 @@ mod tests {
             codex_bin: None,
             resolved: None,
             teammates_dir: Some("/roster".into()),
-            data_root: None,
             workdir: None,
             bin_overrides: BinOverrides::default(),
             report_to: crate::execution::ReportTarget::Orchestrator,

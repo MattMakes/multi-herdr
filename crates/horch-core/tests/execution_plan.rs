@@ -985,7 +985,6 @@ fn brief(record_id: &str) -> Brief {
         codex_bin: None,
         resolved: None,
         teammates_dir: None,
-        data_root: None,
         workdir: None,
         bin_overrides: Default::default(),
         report_to: horch_core::execution::ReportTarget::Orchestrator,

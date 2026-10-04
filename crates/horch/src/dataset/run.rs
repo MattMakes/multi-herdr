@@ -390,8 +390,10 @@ fn coordinate(
     let clock = monotonic(clock::now);
     let sleep = |d: Duration| std::thread::sleep(d);
     let exe = ctx.bins.exe()?;
-    let watch_command = PaneShell::host().command_line(
+    let data_root = ctx.paths.data_root.to_string_lossy();
+    let watch_command = PaneShell::host().command_line_with_env(
         &exe,
+        &[("HORCH_DATA_DIR", data_root.as_ref())],
         &[
             "watch".to_string(),
             r.experiment.to_string(),

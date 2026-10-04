@@ -300,13 +300,14 @@ fn skl_06_e2e_marketplace_offline() {
     assert!(!r.to_string().contains(NOT_ACTIVATED), "{r}");
 }
 
-/// G3 (LA-5): a split pane does not inherit `$XDG_DATA_HOME`. The brief
-/// carries the spawner's store, so the worker, run without the variable,
-/// still finds a skill installed only in that store.
+/// G3 (LA-5): a split pane does not inherit `$XDG_DATA_HOME`. The worker
+/// pane command sets the spawner's store as `HORCH_DATA_DIR` (G8; G3 used a
+/// brief field), so the worker, run without the variable, still finds a
+/// skill installed only in that store.
 ///
-/// G7: the worker's agent gets the store as `HORCH_DATA_DIR`, so a `horch`
-/// command it runs reads the same store. The orchestrator pane command
-/// sets `HORCH_DATA_DIR` too.
+/// G7: the worker's agent inherits `HORCH_DATA_DIR`, so a `horch` command
+/// it runs reads the same store. The orchestrator pane command sets
+/// `HORCH_DATA_DIR` too.
 #[cfg(unix)]
 #[test]
 fn worker_reads_the_skill_store_its_spawner_read() {
@@ -380,18 +381,27 @@ fn worker_reads_the_skill_store_its_spawner_read() {
     let brief_path = h.tmp.join("herdr-orchestration-w1/g3-market-1.brief.json");
     let brief: Value =
         serde_json::from_str(&std::fs::read_to_string(&brief_path).unwrap()).unwrap();
-    assert_eq!(
-        brief["data_root"].as_str(),
-        Some(data.join("horch").to_string_lossy().as_ref()),
-        "{brief}"
-    );
+    assert!(brief.get("data_root").is_none(), "{brief}");
 
-    // The pane's environment: no XDG_DATA_HOME.
-    let mut worker = h.horch(&["worker", "g3-market-1"]);
-    worker.env("HERDR_PANE_ID", &pane);
-    worker.env_remove("XDG_DATA_HOME");
+    // G8: the worker pane command names the store, and the worker runs
+    // from that line in a shell without `XDG_DATA_HOME`.
+    let set = format!("'HORCH_DATA_DIR={store}'");
+    let ran = h
+        .calls_of("herdr")
+        .into_iter()
+        .filter_map(|c| c["ran"].as_str().map(str::to_owned))
+        .find(|line| line.contains("'worker'"))
+        .expect("horch spawn ran a worker command");
+    assert!(ran.contains(&set), "{ran}");
+    let mut worker = std::process::Command::new("/bin/sh");
+    h.seal(&mut worker);
+    worker
+        .arg("-c")
+        .arg(&ran)
+        .env("HERDR_PANE_ID", &pane)
+        .env_remove("XDG_DATA_HOME");
     let out = worker.output().unwrap();
-    assert!(out.status.success(), "worker: {}", text(&out));
+    assert!(out.status.success(), "worker: {ran}\n{}", text(&out));
     let r = report(&h);
     assert_eq!(strings(&r["skills"]), ["demo", "tdd"], "{r}");
 
@@ -425,7 +435,6 @@ fn worker_reads_the_skill_store_its_spawner_read() {
         .filter_map(|c| c["ran"].as_str().map(str::to_owned))
         .find(|line| line.contains("'pane-launch'"))
         .expect("horch fleet ran a pane-launch command");
-    let set = format!("'HORCH_DATA_DIR={store}'");
     assert!(ran.contains(&set), "{ran}");
     let pane_env = h.tmp.join("orchestrator.env");
     let pane_probe = h.write_bin(
