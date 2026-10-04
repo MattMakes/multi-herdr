@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn accepts_known_keys() {
         let m = SkillManifest::parse(
-            "---\nname: tdd\ndescription: Use it.\nlicense: MIT\nmetadata:\n  a: b\nallowed-tools: Read, Grep\n---\nbody\n",
+            "---\nname: tdd\ndescription: Use it.\nlicense: personal\nmetadata:\n  a: b\nallowed-tools: Read, Grep\n---\nbody\n",
             Some("tdd"),
         )
         .unwrap();
