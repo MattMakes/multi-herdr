@@ -146,13 +146,6 @@ pub struct Focus {
     pub layout: Layout,
 }
 
-/// A freshly created tab and the shell pane herdr starts it with.
-#[derive(Debug, Clone)]
-pub struct NewTab {
-    pub tab_id: String,
-    pub root_pane_id: String,
-}
-
 /// A freshly created workspace and the pane it starts with.
 #[derive(Debug, Clone)]
 pub struct NewWorkspace {

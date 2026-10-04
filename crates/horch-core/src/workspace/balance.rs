@@ -2,7 +2,7 @@
 //!
 //! # Why this exists
 //!
-//! [`crate::workspace::layout::analyze`] decides whether the grid is ragged by unioning the
+//! `crate::workspace::layout::analyze_with` decides whether the grid is ragged by unioning the
 //! *exact integer* edges of every half-height pane and asking whether any pane
 //! strictly contains an edge the other row produced. It never reads the split
 //! tree. So identical column boundaries in both rows are not a nicety - they are

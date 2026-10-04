@@ -137,8 +137,10 @@ pub enum Orchestrator<'a> {
 /// Analyse a tab layout into a worker grid.
 ///
 /// `orchestrator` is the pane id the mailbox registered for the orchestrator role.
-/// When absent, the leftmost full-height pane is assumed to be it.
-pub fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
+/// When absent, the leftmost full-height pane is assumed to be it. Only the
+/// tests call it; the crate calls [`analyze_with`].
+#[cfg(test)]
+pub(crate) fn analyze(layout: &Layout, orchestrator: Option<&str>) -> Analysis {
     analyze_with(
         layout,
         match orchestrator.filter(|s| !s.is_empty()) {

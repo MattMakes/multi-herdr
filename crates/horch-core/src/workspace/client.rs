@@ -3,15 +3,12 @@
 //! [`WorkspaceClient`] lists the calls that spawn, delivery and teardown make.
 //! [`Herdr`] is the real implementation, and
 //! [`FakeWorkspace`](crate::workspace::testing::FakeWorkspace) is the in-memory
-//! one. No caller uses the trait yet; A7 part b moves them over.
+//! one.
 
 use anyhow::Result;
 
 use crate::workspace::herdr::Herdr;
 use crate::workspace::model::{Direction, NewWorkspace, Pane};
-
-/// The real client: it runs the `herdr` executable.
-pub type HerdrClient = Herdr;
 
 pub trait WorkspaceClient {
     fn pane_get(&self, pane: &str) -> Result<Pane>;

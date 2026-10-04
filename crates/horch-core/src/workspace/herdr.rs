@@ -64,12 +64,6 @@ struct MoveResult {
 }
 
 #[derive(Debug, Deserialize)]
-struct TabCreateResult {
-    tab: Tab,
-    root_pane: Pane,
-}
-
-#[derive(Debug, Deserialize)]
 struct WorkspaceCreateResult {
     workspace: Workspace,
     root_pane: Pane,
@@ -193,14 +187,6 @@ impl Herdr {
         Ok(r.layout)
     }
 
-    /// Which pane the tab holding `pane` hands the keyboard to.
-    ///
-    /// `pane layout` reports the focused pane of the whole tab, not of the pane
-    /// asked about, which is what a caller wants before it rearranges the tab.
-    pub fn focused_pane(&self, pane: Option<&str>) -> Result<Option<String>> {
-        Ok(self.pane_layout(pane)?.focused_pane_id)
-    }
-
     /// `herdr tab list --workspace <ws>`, in tab-strip order.
     ///
     /// Always scoped to a workspace: without `--workspace` herdr returns the tabs
@@ -216,41 +202,6 @@ impl Herdr {
     pub fn workspace_list(&self) -> Result<Vec<Workspace>> {
         let r: WorkspaceListResult = self.json(&["workspace", "list"])?;
         Ok(r.workspaces)
-    }
-
-    /// `herdr tab create`.
-    ///
-    /// Note that herdr starts the new tab with a shell pane, whose id comes back
-    /// as `root_pane_id`. A caller that wanted an empty tab has to close it - so
-    /// a caller moving an existing pane somewhere new is better served by
-    /// `Self::pane_move_new_tab`, which creates the tab around that pane and
-    /// adds no shell.
-    pub fn tab_create(&self, workspace_id: &str, label: &str, focus: bool) -> Result<NewTab> {
-        let mut args: Vec<&str> = vec![
-            "tab",
-            "create",
-            "--workspace",
-            workspace_id,
-            "--label",
-            label,
-        ];
-        args.push(if focus { "--focus" } else { "--no-focus" });
-        let r: TabCreateResult = self.json(&args)?;
-        Ok(NewTab {
-            tab_id: r.tab.tab_id,
-            root_pane_id: r.root_pane.pane_id,
-        })
-    }
-
-    /// `herdr tab close <tab>`.
-    ///
-    /// DESTRUCTIVE: this closes every pane in the tab, killing whatever runs in
-    /// them, and closing a workspace's last tab closes the workspace. It is not
-    /// how an emptied tab is disposed of - herdr closes a tab that loses its last
-    /// pane on its own - so `horch tile` never calls this.
-    pub fn tab_close(&self, tab_id: &str) -> Result<()> {
-        self.output(&["tab", "close", tab_id])?;
-        Ok(())
     }
 
     /// `herdr tab focus <tab>`. The only way to focus a specific pane's tab:
