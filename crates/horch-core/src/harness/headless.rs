@@ -129,7 +129,7 @@ pub fn headless_command(
         cmd.arg("--json-schema").arg(schema);
     }
     cmd.stdin(Stdio::piped());
-    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate));
+    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, env.home()));
     crate::runtime::process::strip_forbidden(&mut cmd);
     Ok(cmd)
 }

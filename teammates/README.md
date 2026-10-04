@@ -167,6 +167,53 @@ the engine headers, one build at a time per working copy, and a `DONE:` that
 names the target, the configuration and the automation filter with its
 result.
 
+## The Swift and Apple team
+
+Seven specialists staff Swift and Apple-platform work. Each sets
+`offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]`, so the fleet
+orchestrator is offered them only on an Apple project. All except
+`codex-swift-reviewer` set `requires: [xcode]`, so `horch doctor` checks
+`xcodebuild` and its first launch when the project is offered them. The
+selection and the skill choices are in
+[`ai_docs/reports/swift-fleet-skills-2026-10.md`](../ai_docs/reports/swift-fleet-skills-2026-10.md)
+and [`ai_docs/reports/domain-skills/swift-teammates.md`](../ai_docs/reports/domain-skills/swift-teammates.md).
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `swift-developer` | implementation | claude, opus, medium | none | SwiftUI features, SwiftData, Swift 6 concurrency |
+| `apple-platform-developer` | implementation | claude, opus, medium | none | App Intents, widgets, Live Activities, background tasks, focus |
+| `swift-reviewer` | validation | claude, opus, high | `codex-sol` | Swift review: concurrency, modern API, performance, Keychain; never edits |
+| `swift-qa-engineer` | validation | claude, sonnet, high | none | Swift Testing, XCTest migration, simulator repros |
+| `apple-accessibility-auditor` | validation | claude, sonnet, high | `codex-terra` | VoiceOver, Dynamic Type, Voice Control, UI copy; never edits |
+| `app-release-preparer` | implementation | claude, sonnet, medium | none | archive, internal TestFlight upload, readiness audit, notes; never submits |
+| `codex-swift-reviewer` | validation | codex, gpt-5.6-sol, high | `opus` | cross-vendor Swift review of Claude-built changes |
+
+Every persona's first move is a toolchain check (`xcodebuild -version`,
+`swift --version`, `xcrun simctl list devices available`). A builder or QA
+pane reports `BLOCKED:` without it; a reviewer or auditor reviews the source
+and says it had no build. The builders and QA have no fallback: a Codex pane
+is untested with Xcode and the simulator, and a fallback takes the
+fallback's MCP servers, so the build server would be gone.
+
+The panes that build carry `mobilebuildmcp` (formerly XcodeBuildMCP),
+pinned at 2.7.1, with the workflows each one needs switched on in the
+server's `env`. The builders, the reviewers and the auditor carry the report's
+house style for the points where the Swift skills disagree.
+
+`app-release-preparer` gets its App Store Connect credential from a file the
+operator owns: `ASC_CONFIG_PATH` (`~/.config/horch/asc/config.json`, with
+one key entry and an absolute `private_key_path`) and `ASC_BYPASS_KEYCHAIN`.
+Give it a key whose role cannot submit for review or change prices; that,
+not its deny list, is the release safety. It ends every App Store Connect
+write at a `--dry-run` plan for the orchestrator, and it has no fallback,
+because a fallback would drop the env and the deny list.
+
+No Swift teammate sets `operator_skills:`, because `--check` fails when the
+directory is missing. To give `swift-developer` or
+`apple-platform-developer` Apple's Xcode 27 skills, run
+`xcrun agent skills export` and add, in a local copy of the file,
+`operator_skills: {dir: ~/.agents/skills, names: [swiftui-whats-new-27]}`.
+
 ## The effort-matrix personas
 
 Eight more Claude specialists split the work by model tier and effort level

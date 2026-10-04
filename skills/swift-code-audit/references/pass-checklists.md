@@ -182,7 +182,7 @@ If a single root cause manifests in many sites, group with a list of locations u
 | `{PROJECT_PATH}` | Current working directory. |
 | `{EXCLUDED_DIRS}` | Read the project's agent docs (`AGENTS.md`, `CLAUDE.md`) for "do not edit" / archive directories; common ones: `Dead/`, `Pods/`, `.build/`. |
 | `{IOS_TARGET}` / `{MACOS_TARGET}` | `grep -h "IPHONEOS_DEPLOYMENT_TARGET\|MACOSX_DEPLOYMENT_TARGET" *.xcodeproj/project.pbxproj \| sort -u` |
-| `{BUILD_WARNINGS}` | The deduplicated warnings from the XcodeBuildMCP build tool or `xcodebuild ... 2>&1 \| grep warning:`. |
+| `{BUILD_WARNINGS}` | The deduplicated warnings from the MobileBuildMCP build tool or `xcodebuild ... 2>&1 \| grep warning:`. |
 | `{LOC}` / `{FILE_COUNT}` | `find . -name "*.swift" -not -path "./Dead/*" \| xargs wc -l \| tail -1` |
 | `{KNOWN_STALE_FILES}` | `find . -name '*OLD*' -o -name '*_OLD*' -o -name 'Old_*'` plus a quick grep for `#if false` at file top. |
 | `{KNOWN_DUPLICATES}` | Optional — leave blank on first run. If the codebase was audited before, seed Pass B with known dup paths. |

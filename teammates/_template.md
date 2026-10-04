@@ -288,6 +288,9 @@ mcp_config_files: []
 #   claude e.g. ["--permission-mode", "acceptEdits"]
 #   codex  e.g. ["-s", "workspace-write"] or ["-p", "some-codex-profile"]
 args: []
+# env: set on the CLI's process, never through a shell. A value that starts
+# with `~/` expands against the launch's home. NO SECRETS: point at a file the
+# operator owns instead (see app-release-preparer.md).
 env: {}
 
 # ─── first instruction ───────────────────────────────────────────────────────

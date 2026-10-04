@@ -38,7 +38,7 @@ Read the project's agent docs and README if present. They usually flag central s
 
 Run a build and extract every warning. This becomes the canonical input for the concurrency / deprecation portions of the audit — you should never have to *guess* whether concurrency warnings exist.
 
-Use the XcodeBuildMCP build tool if it is connected; it returns structured diagnostics. Otherwise use `xcodebuild`:
+Use the MobileBuildMCP build tool if it is connected (`build_sim`; `swift_package_build` for a Swift package, which needs the server's `swift-package` workflow); it returns structured diagnostics. Otherwise use `xcodebuild`:
 
 ```bash
 xcodebuild -project <Project>.xcodeproj -scheme "<Dev scheme>" -configuration Debug build 2>&1 \

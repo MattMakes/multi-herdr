@@ -1080,7 +1080,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "Adapted from ios-debugger-agent and renamed: a short XcodeBuildMCP playbook with bare tool names (no harness-specific prefix) and xcrun simctl fallbacks; the worker boots a simulator itself instead of asking the user; build failures and blockers go to the orchestrator; never erase or delete a simulator. Attached by name; belongs to no phase."
+      "adaptation": "Adapted from ios-debugger-agent and renamed: a short MobileBuildMCP (formerly XcodeBuildMCP) playbook with bare tool names (no harness-specific prefix), checked against the mobilebuildmcp 2.7.1 tool manifests (snapshot_ui and elementRef taps instead of describe_ui, session_set_defaults, automatic log capture instead of the removed log-capture tools, the simulator and ui-automation workflows named), and xcrun simctl fallbacks; the worker boots a simulator itself instead of asking the user; build failures and blockers go to the orchestrator; never erase or delete a simulator. Attached by name; belongs to no phase."
     },
     {
       "name": "landing-page",
@@ -1577,7 +1577,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "Heavily adapted from ios-code-audit and renamed: the three parallel Explore agents become three sequential passes the worker runs itself (references/agent-prompts.md becomes references/pass-checklists.md); the report goes to a path the orchestrator chooses, not CODE_AUDIT.md in the repository root; the swiftui-expert-skill step is dropped and its SwiftUI checks move into pass C; performance profiling points to the bundled swiftui-performance-audit; the Xcode MCP bridge call becomes the XcodeBuildMCP build tool or xcodebuild. Kept: compiler warnings as ground truth, verify every Critical claim, group findings by root cause, the concurrency and API-modernity checklist, the 12 numbered report sections. Attached by name; belongs to no phase."
+      "adaptation": "Heavily adapted from ios-code-audit and renamed: the three parallel Explore agents become three sequential passes the worker runs itself (references/agent-prompts.md becomes references/pass-checklists.md); the report goes to a path the orchestrator chooses, not CODE_AUDIT.md in the repository root; the swiftui-expert-skill step is dropped and its SwiftUI checks move into pass C; performance profiling points to the bundled swiftui-performance-audit; the Xcode MCP bridge call becomes the MobileBuildMCP build tool (build_sim or swift_package_build, names checked against mobilebuildmcp 2.7.1) or xcodebuild. Kept: compiler warnings as ground truth, verify every Critical claim, group findings by root cause, the concurrency and API-modernity checklist, the 12 numbered report sections. Attached by name; belongs to no phase."
     },
     {
       "name": "swift-concurrency-pro",

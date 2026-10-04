@@ -207,11 +207,9 @@ mod tests {
             None,
         );
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(
-            problems[0].contains("needed by swift-developer"),
-            "{}",
-            problems[0]
-        );
+        // The built-in Swift teammates need Xcode too, so they share the line.
+        assert!(problems[0].contains("(needed by "), "{}", problems[0]);
+        assert!(problems[0].contains("swift-developer"), "{}", problems[0]);
         assert!(problems[0].contains("-runFirstLaunch"), "{}", problems[0]);
         assert!(
             problems[0].contains("first launch pending"),
@@ -236,23 +234,26 @@ mod tests {
         );
     }
 
-    /// Nothing is checked when no offered teammate needs Xcode: not the
-    /// built-in roster, and not a Swift teammate this project is not offered.
+    /// Nothing is checked when no offered teammate needs Xcode: the built-in
+    /// Swift teammates need it, but a project without Apple files is not
+    /// offered them. An Apple project is, so xcodebuild is checked.
     #[test]
     fn xcode_is_not_checked_unless_an_offered_teammate_needs_it() {
         let empty = tempfile::tempdir().unwrap();
         let path = Some(empty.path().as_os_str());
-        assert!(requirement_problems(&Roster::builtin().unwrap(), path, None).is_empty());
+        let facts = |names: [&str; 1]| {
+            Roster::builtin()
+                .unwrap()
+                .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
+        };
+        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None).is_empty());
 
-        let mut r = Roster::builtin().unwrap();
-        r.insert_for_test(Teammate {
-            name: "swift-developer".into(),
-            brief_description: "Swift".into(),
-            requires: vec![Requirement::Xcode],
-            offer_when: vec!["Package.swift".into()],
-            ..Teammate::default()
-        });
-        let r = r.with_project_facts(horch_core::roster::ProjectFacts::from_names(["Cargo.toml"]));
-        assert!(requirement_problems(&r, path, None).is_empty());
+        let problems = requirement_problems(&facts(["Package.swift"]), path, None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("xcodebuild not found"),
+            "{}",
+            problems[0]
+        );
     }
 }
