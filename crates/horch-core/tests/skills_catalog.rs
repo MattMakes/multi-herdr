@@ -130,7 +130,7 @@ fn skl_01_bundled_catalog_versions_and_digests() {
             // repository, a full commit and a licence.
             if src.repository == PINNED_REPOSITORY {
                 assert_eq!(src.revision, PINNED_COMMIT, "{id}: {}", src.path);
-            } else if id != "skill-creator" {
+            } else {
                 assert_pinned_upstream_shape(id, src);
             }
         }
@@ -216,25 +216,20 @@ fn skills_multi_source_provenance_parses() {
     assert!(parse_provenance(&dup).is_err());
 }
 
-/// The first 16 skills are over a limit or carry non-text files and stay as
-/// they are. A vendored skill (`"vendored": true` in provenance.json) is an
-/// upstream copy and is exempt too. Any other new skill meets the budget.
-const EXEMPT_FROM_BUDGET: &[&str] = &["skill-creator"];
+/// A vendored skill (`"vendored": true` in provenance.json) is an upstream
+/// copy and is exempt from the size budget. Any other skill meets it.
 const MAX_SKILL_MD_BYTES: usize = 12 * 1024;
 const MAX_SKILL_DIR_BYTES: usize = 160 * 1024;
 
-/// Skill ids exempt from the size budget: the fixed list plus every skill
-/// whose provenance says `vendored: true`.
+/// Skill ids exempt from the size budget: every skill whose provenance says
+/// `vendored: true`.
 fn budget_exempt() -> BTreeSet<String> {
     let catalog = SkillCatalog::bundled().unwrap();
-    let mut exempt: BTreeSet<String> = EXEMPT_FROM_BUDGET.iter().map(|s| s.to_string()).collect();
-    exempt.extend(
-        catalog
-            .entries()
-            .filter(|e| e.provenance.as_ref().is_some_and(|p| p.vendored))
-            .map(|e| e.id.to_string()),
-    );
-    exempt
+    catalog
+        .entries()
+        .filter(|e| e.provenance.as_ref().is_some_and(|p| p.vendored))
+        .map(|e| e.id.to_string())
+        .collect()
 }
 
 #[test]
@@ -262,6 +257,10 @@ fn skills_bundled_size_budget() {
     }
 }
 
+/// `skill-creator` is a verbatim upstream copy that ships Python scripts,
+/// HTML assets and `LICENSE.txt`. It is the only text-only exemption.
+const EXEMPT_FROM_TEXT_ONLY: &[&str] = &["skill-creator"];
+
 /// Skill files are `.md` or `.txt`. A file named exactly `LICENSE` is
 /// allowed in any skill directory: a vendored or adapted skill keeps its
 /// upstream licence notice. Vendored skills are not exempt from this rule.
@@ -271,7 +270,7 @@ fn skills_bundled_text_only() {
         let Some((id, _)) = path.split_once('/') else {
             continue;
         };
-        if EXEMPT_FROM_BUDGET.contains(&id) {
+        if EXEMPT_FROM_TEXT_ONLY.contains(&id) {
             continue;
         }
         let name = path.rsplit('/').next().unwrap();
