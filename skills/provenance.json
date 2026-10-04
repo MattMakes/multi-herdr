@@ -1209,6 +1209,27 @@
       "adaptation": "Own text, written in this repository; own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-builder (SKILL.md only; facts re-tested on 4.7.2, nothing copied). Shape and fleet rules follow skills/ue-build-verify. Every command was run on Godot 4.7.2 (macOS) in scratch projects, with GUT v9.7.1 (aeb5d4f3f7f0a6c9b5e178876d6c99b791fda605) and gdUnit4 v6.2.1 (08ffc7c65b61b1b2edd545616061a99973c13ce1) exit codes measured, and dotnet build run with Godot.NET.Sdk 4.7.2; evidence in ai_docs/reports/godot/gw2-own-skills.md. The parse checker is a gdscript block in references/parse-check.md (bundles are text only)."
     },
     {
+      "name": "godot-code-review",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-code-review/SKILL.md",
+          "sha256": "bf7baf324b5d5ce9413593575e90bc4997a08935a8da7cd45809797f73361ac7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{never-lists.md, project-health-scoring.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-auditor, godot-analyst; the gd-agentic 'Aurelius' and 'Anara' persona voices are not carried",
+      "vendored": true
+    },
+    {
       "name": "godot-csharp-godot",
       "sources": [
         {
@@ -2079,6 +2100,62 @@
         }
       ],
       "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{observers-debug-and-utility.md, pushdown-and-transitions.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-state-machine-advanced",
+      "vendored": true
+    },
+    {
+      "name": "godot-testing",
+      "sources": [
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-testing/SKILL.md",
+          "sha256": "d16ab0a15b0ee47b8ddc24835f69b6e696ea384c6e248d78693f16bd7ea1b08f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-testing/gdunit4-reference.md",
+          "sha256": "38922f286318cda0718aeb7ac4d3bf6698a63bc8d1fffc3eca4395eaa54b99b1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-testing/gut-reference.md",
+          "sha256": "6252b7f29ac35c28cd1b09742944cfc29acb3426c2ccbab11c4fb06683a8808e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-testing/references/running-tests.md",
+          "sha256": "1e42a3ad8d5c95452234beb971dc26ad6bcf52a205e528b23ad70c083767003b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-testing/references/tdd-workflow.md",
+          "sha256": "5ab622ef6ceaf1a71d7a886ca250e4578bab6ef137204bd86624705c0c8c1b33",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "skills/godot-testing/references/testing-patterns.md",
+          "sha256": "706e4bbda686b51f3ff1cd13328ac444a81d9fc1b446c9b03fedccf4998f253d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/jame581/GodotPrompter",
+          "revision": "3e8d0f005f9604e1dbdad3de693e39555384c5af",
+          "path": "LICENSE",
+          "sha256": "075667c180b39c81507891dd1411f3861b7da6b860d9b912841ed9f949c66277",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "rename to godot-* prefix; description extended; a 'Fleet additions' list added at the end of SKILL.md; references/{budgets-leaks-and-network-tests.md, deterministic-tests.md, golden-state-tests.md} are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-testing-patterns",
       "vendored": true
     },
     {

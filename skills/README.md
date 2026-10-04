@@ -163,6 +163,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-beehave](godot-beehave/SKILL.md) | `jame581/GodotPrompter`: `skills/beehave/` | renamed |
 | [godot-brainstorming](godot-brainstorming/SKILL.md) | `jame581/GodotPrompter`: `skills/brainstorming/` | adapted |
 | [godot-build-verify](godot-build-verify/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |
+| [godot-code-review](godot-code-review/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-code-review/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-auditor/`, `godot-analyst/`) | combined |
 | [godot-csharp-godot](godot-csharp-godot/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-godot/` | renamed |
 | [godot-csharp-signals](godot-csharp-signals/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-signals/` | renamed |
 | [godot-dedicated-server](godot-dedicated-server/SKILL.md) | `jame581/GodotPrompter`: `skills/dedicated-server/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-server-architecture/`, `godot-multiplayer-networking/`) | combined |
@@ -187,4 +188,5 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-responsive-ui](godot-responsive-ui/SKILL.md) | `jame581/GodotPrompter`: `skills/responsive-ui/` | renamed |
 | [godot-scene-files](godot-scene-files/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |
 | [godot-state-machine](godot-state-machine/SKILL.md) | `jame581/GodotPrompter`: `skills/state-machine/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-state-machine-advanced/`) | combined |
+| [godot-testing](godot-testing/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-testing/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-testing-patterns/`) | combined |
 | [godot-xr-development](godot-xr-development/SKILL.md) | `jame581/GodotPrompter`: `skills/xr-development/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-platform-vr/`) | combined |
