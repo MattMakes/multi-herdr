@@ -858,6 +858,12 @@
       "adaptation": "Own text, written in this repository. Consulted as references, no text copied: quodsoler/unreal-engine-skills at f3742d7b688690810df369802b90430324e380b9 (MIT), skills ue-testing-debugging (SKILL.md, references/automation-test-patterns.md) and ue-module-build-system (SKILL.md, references/common-build-errors.md). Flags checked against Epic's UE 5.8 documentation; evidence in ai_docs/reports/domain-skills/ue-own.md."
     },
     {
+      "name": "ue-editor-scripting",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text, written in this repository. Consulted as references, no text copied: quodsoler/unreal-engine-skills at f3742d7b688690810df369802b90430324e380b9 (MIT), skill ue-testing-debugging (SKILL.md, references/automation-test-patterns.md) for the headless editor command line. Commands and Python API names checked against Epic's UE 5.8 documentation and Unreal Python 5.8 reference; evidence in ai_docs/reports/domain-skills/ue-own.md."
+    },
+    {
       "name": "ui-redesign",
       "sources": [
         {

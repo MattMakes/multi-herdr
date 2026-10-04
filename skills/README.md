@@ -77,3 +77,4 @@ To re-vendor a skill at a new upstream revision:
 | Skill | Upstream source | Copy |
 | --- | --- | --- |
 | [ue-build-verify](ue-build-verify/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging` and `ue-module-build-system`)* | own text |
+| [ue-editor-scripting](ue-editor-scripting/SKILL.md) | *(none - repo-original; consulted `quodsoler/unreal-engine-skills` `ue-testing-debugging`)* | own text |
