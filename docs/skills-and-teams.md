@@ -196,7 +196,8 @@ assets for Unreal. It runs on Claude (opus, medium) and carries the
 - Headless tools (`*_for_cli`) need only a `blender` binary on `PATH`, or
   `BLENDER_PATH` set to it. Live tools need Blender 5.1 or later with the
   Blender Lab add-on open, and the operator must say so.
-- Without `blender` on `PATH`, the first run reports `BLOCKED:`.
+- Without `blender` on `PATH` or `BLENDER_PATH`, `horch doctor` warns first.
+  Without it, the worker reports `BLOCKED:` on the first run.
 - The add-on and the community add-on both default to port 9876. Run only 1.
 - It writes 1 FBX per asset and a `<AssetName>.handoff.md` (scale, axes,
   bounds in centimetres, facing). `ue-technical-artist` and

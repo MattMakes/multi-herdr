@@ -133,6 +133,8 @@ the worker's briefing.
     copy's tree digest. The plan records the version as
     `operator+<digest12>`. Every harness that exposes skills sees them.
     On Claude they appear as `horch:<name>`, like bundled skills.
+  - A skill that changed between spawn and launch fails the launch: "the
+    skills changed since <id> was spawned ... Spawn the worker again".
   - A host that lacks the skill is normal: each host exports its own copy.
     When `dir` or `<dir>/<name>/` does not exist, `--check` prints a
     `warning:` line and passes. The launch skips the skill, and the

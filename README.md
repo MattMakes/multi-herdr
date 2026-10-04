@@ -251,8 +251,10 @@ does not exist.
 The operator may delete the `herdr-orchestrator` and `herdr-worker` symlinks
 from `~/.claude/skills`. If they stay, every Claude teammate switches them off
 by name with `disabled_skills`, which becomes a `skillOverrides: off` entry in
-the settings overlay; this is verified against Claude Code 2.1.278 to hide a
-`~/.claude/skills` entry and not only a plugin skill. `opus` and `sonnet` also
+the settings overlay. This hides a `~/.claude/skills` entry (verified against
+Claude Code 2.1.278). On 2.1.289 it does not hide a plugin skill: horch
+switches a plugin off with `enabledPlugins` (`inherit_plugins: false`) or loads
+a filtered copy (`plugin_skills`). `opus` and `sonnet` also
 name the `herdr` plugin's own copies, `herdr:herdr-orchestrator` and
 `herdr:herdr-worker`, because unlike the orchestrator and the eight Claude
 specialists they do not set `inherit_plugins: false`. The orchestrator briefing
@@ -323,6 +325,9 @@ under `operator_skills:`: `swiftui-whats-new-27` and `test-modernizer`.
   `warning:` and passes. The launch skips the skill, and the briefing tells
   the worker to ask you for the export.
 - `device-interaction` stays out: it is a subagent skill.
+- A skill that changed between spawn and launch fails the launch: "the
+  skills changed since <id> was spawned ... Spawn the worker again". Run
+  `horch spawn` again after you refresh the export.
 - See [the operator_skills field](docs/recipes/add-teammate.md).
 
 #### App Store Connect key for app-release-preparer

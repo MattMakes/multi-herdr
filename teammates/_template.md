@@ -146,14 +146,19 @@ operator_skills: null
 # anthropic-skills:<name> entries for this session only and moves nothing.)
 # disabled_skills switches further skills off by name, e.g. ["dev-prime"],
 # as skillOverrides "off" entries. Settings merge per key, so the operator's
-# own skillOverrides still apply. Verified against Claude Code 2.1.278: this
-# hides a ~/.claude/skills entry, not only a plugin skill.
+# own skillOverrides still apply. This hides a ~/.claude/skills entry
+# (verified against Claude Code 2.1.278). It does NOT hide a plugin skill:
+# Claude Code 2.1.289 ignores a skillOverrides entry such as
+# "herdr:herdr-worker" from --settings. To hide a plugin's skills, set
+# `inherit_plugins: false` (horch writes enabledPlugins, "<plugin>@<marketplace>":
+# false), or load a filtered copy with `plugin_skills` below.
 # The bundled Claude teammates use it for one thing: the operator's stale
 # herdr-orchestrator and herdr-worker skills, whose descriptions trigger on
 # "herdr" and "horch" and whose content predates this horch CLI. The repo
 # carries the real briefing in teammates/_base/, so those copies only mislead
 # a pane. A plugin's copy keeps its plugin prefix and is a different name;
-# switch those off with the prefix, or with inherit_plugins: false.
+# a skillOverrides entry cannot switch it off on 2.1.289. Use
+# inherit_plugins: false, or plugin_skills.
 inherit_claudeai_skills: false
 disabled_skills: []
 
@@ -168,8 +173,9 @@ disabled_skills: []
 #   agents, hooks, MCP servers and scripts stay. The installed original goes
 #   off for this session and the copy goes on, even with inherit_plugins:
 #   false. So a marketplace plugin that ships twenty skills exposes only the
-#   two this role should use. (Claude Code ignores skillOverrides for a
-#   plugin skill, so a switch-off entry cannot do this.)
+#   two this role should use. (Claude Code 2.1.289 ignores skillOverrides for
+#   a plugin skill, so horch switches the plugin off with enabledPlugins and
+#   loads this copy instead.)
 # - The plugin is found in plugin_dirs first, then in the operator's
 #   ~/.claude/plugins/installed_plugins.json.
 # `horch teammates --check` fails on an unknown plugin or skill, and when the

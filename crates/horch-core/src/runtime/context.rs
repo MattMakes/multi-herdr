@@ -177,6 +177,9 @@ pub struct Inherited {
     pub path: Option<OsString>,
     /// `PATHEXT` (Windows).
     pub pathext: Option<String>,
+    /// `BLENDER_PATH`: the Blender Lab MCP server's variable. `horch doctor`
+    /// checks it before `blender` on `PATH`.
+    pub blender_path: Option<OsString>,
     /// `OPENCODE_CONFIG_CONTENT`, raw.
     pub opencode_config_content: Option<String>,
     /// `CODEX_HOME`.
@@ -206,6 +209,7 @@ impl Inherited {
             home_var: env.var_os("HOME"),
             path: env.var_os("PATH"),
             pathext: env.var("PATHEXT"),
+            blender_path: env.var_os("BLENDER_PATH").filter(|p| !p.is_empty()),
             opencode_config_content: env.var("OPENCODE_CONFIG_CONTENT"),
             codex_home: nonempty_path(env, "CODEX_HOME"),
             claude_config_dir: nonempty_path(env, "CLAUDE_CONFIG_DIR"),

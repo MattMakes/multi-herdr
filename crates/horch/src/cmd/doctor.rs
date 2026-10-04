@@ -42,14 +42,11 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     }
     // Not fatal either: the fleet launches, but the teammate that needs the
     // tool stalls in its pane.
-    // `BLENDER_PATH` is the Blender Lab MCP server's own variable, read
-    // here because nothing else in horch uses it.
-    let blender_path = std::env::var_os("BLENDER_PATH").filter(|p| !p.is_empty());
     let tool_problems = requirement_problems(
         &roster,
         ctx.inherited.path.as_deref(),
         ctx.inherited.pathext.as_deref(),
-        blender_path.as_deref(),
+        ctx.inherited.blender_path.as_deref(),
     );
     for p in &tool_problems {
         eprintln!("warning: {p}");
