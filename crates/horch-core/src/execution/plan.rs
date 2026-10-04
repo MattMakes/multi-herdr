@@ -493,4 +493,29 @@ mod tests {
         );
         assert_eq!(resolve_phase(None, None, None), None);
     }
+
+    /// Planning is pure (Spec A §3): outside this test module, `plan.rs`
+    /// reads no file, starts no process, reads no environment, calls no
+    /// workspace and reads no clock. The shell passes `now` in.
+    #[test]
+    fn arc_15_plan_is_pure() {
+        let source = include_str!("plan.rs");
+        let code = &source[..source.find("#[cfg(test)]").unwrap()];
+        let forbidden = [
+            "std::fs",
+            "std::process",
+            "Command::new",
+            "std::env",
+            "workspace::",
+            "herdr",
+            "Utc::now",
+            "clock::now",
+        ];
+        let found: Vec<&str> = code
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| forbidden.iter().any(|f| line.contains(f)))
+            .collect();
+        assert!(found.is_empty(), "plan.rs is not pure: {found:#?}");
+    }
 }

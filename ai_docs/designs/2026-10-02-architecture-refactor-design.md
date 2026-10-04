@@ -140,29 +140,35 @@ horch (both bins)  ──►  horch-core  ──►  horch-marketplace
 
 ### 2.4 Module rules (Spec A §3) and the scan test that enforces each
 
-Every rule is a source-scan test. A scan test reads `.rs` files under
-`crates/*/src` as text and fails with the file and line of each violation.
+Spec A §3 states these module rules. The list is the master plan's list of
+8 rules plus 6 rules that phases A4 to B1 added. Every rule is a
+source-scan test. A scan reads `.rs` files as text and fails with the file
+and line of each violation. Unless the row says otherwise, a scan skips
+comment lines and `#[cfg(test)]` modules (`tests/arch_scan.rs:code_lines`).
+Every scan in this table fails on a planted violation.
 
 | Rule | Enforced by (test) | Phase | What the scan checks |
 |---|---|---|---|
-| roster never calls Herdr | `arc_19_herdr_parsing_contract` and `arc_27_tile_balance_pure` cover workspace purity; the roster rule itself is `arc_08_unknown_field_rejected`'s module scan | A3/A7 | `roster/**` has no `workspace::`, `herdr::`, `Herdr`, `std::process` |
-| routing never launches | `arc_12_decisions_match_baseline` (pure function signatures) and `arc_13_candidates_equivalent` | A5 | `routing/**` except `quota_probe.rs` and `snapshot.rs` has no `std::process`, `Command`, `workspace::` |
-| planning is pure | `arc_15_plan_deterministic` | A6 | `execution/plan.rs` has no `std::fs`, `std::process`, `std::env`, `workspace::`, `clock::now` |
-| telemetry observes and does not route | `arc_23_telemetry_reads_executions` | A6 | `telemetry/**` has no `routing::decision`, no `RoutingDecision` construction |
-| the marketplace knows nothing about teammates | `mkt_01_no_core_dependency` | A8 | `horch-marketplace` has no `horch-core` dependency and no `horch_core`, `teammate` (case-insensitive) in `src/` |
-| the CLI holds no policy | `arc_22_no_error_string_matching` | A6 | `crates/horch/src/cmd/**` does not match on error strings (`.to_string().contains(`, `msg.starts_with(`) and does not call `routing::balance::decide` directly |
-| prompts hold no execution policy | `cmp_15_candidate_task_carries_rules` with `golden_prompts` | B3 | `prompts/**` has no `HarnessKind::`, `BalanceMode`, `ExecutionStatus` |
-| domain code never calls `std::env` | `arc_05_no_ambient_env_in_core` | A2 | `horch-core/src/**` outside `runtime/` has no `std::env::var`, `env::var_os`, `set_var`, `remove_var`, `current_dir` |
-| harness match only in harness | `arc_10_harness_match_only_in_harness` | A4 | `HarnessKind::` match arms appear only in `harness/**` and `roster/validation.rs` |
-| skills core has no harness flags | `skl_05_core_skill_model_has_no_harness_flags` | A10 | `skills/**` has no `HarnessKind` |
-| source dispatch localized | `mkt_10_source_dispatch_localized` | A8 | `SkillSource::` match arms appear only in `resolver.rs` and the fetch module |
-| tile/balance pure | `arc_27_tile_balance_pure` | A7 | `workspace/{layout,tile,balance}.rs` import no client and no `std::process` |
-| competition domain free of adapters | `cmp_02_domain_has_no_adapter_imports` | B1 | `competition/model.rs`, `evaluation/{winner,parser}.rs` have no `vcs::`, `workspace::`, `std::process` |
-| shims removed | `arc_25_no_shim_modules` | A12 | no `pub use crate::…::*;` re-export shim module remains |
+| roster never calls Herdr | `arc_08_roster_never_calls_herdr` (`horch-core/src/roster/tests.rs`) | A3 | `roster/*.rs` except `tests.rs` (at least 9 files, whole text) has no `herdr`, `Herdr`, `std::process`, `std::env::var` |
+| routing never launches | `arc_13_routing_never_launches` (`horch-core/tests/routing.rs`) | A5 | the 6 files of `routing/` except `quota_probe.rs` and `snapshot.rs`, before `#[cfg(test)]`, have no `std::process`, `Command::new`, `std::fs`, `herdr`, `launch::`, `std::env::var` |
+| planning is pure | `arc_15_plan_is_pure` (`horch-core/src/execution/plan.rs`) | A6 | `execution/plan.rs` before `#[cfg(test)]` has no `std::fs`, `std::process`, `Command::new`, `std::env`, `workspace::`, `herdr`, `Utc::now`, `clock::now`; the shell passes `now` in `PlanInputs` |
+| telemetry observes and does not route | `arc_23_telemetry_never_routes` (`horch-core/tests/arch_scan.rs`) | A6 | `telemetry/**` has no `routing::balance`, `routing::decision`, `routing::eligible`, `RoutingDecision`, `decide(`; it may read `routing::{quota, policy, quota_probe, snapshot}` |
+| the marketplace knows nothing about teammates | `mkt_01_no_core_dependency` (`horch-marketplace/tests/marketplace.rs`) | A8 | `horch-marketplace/Cargo.toml` has no `horch-core`; no file in `src/` contains `horch_core` or `teammate` (case-insensitive, whole text) |
+| the CLI holds no policy | `arc_22_no_error_string_matching` and `arc_10_harness_match_only_in_harness` (`horch-core/tests/arch_scan.rs`) | A6 / A12 | `horch` and `horch-core` do not match on error text (`.to_string().contains(`, `format!("{…}").contains(`, `.contains("error`; 1 allowed entry, `telemetry/readers.rs` `FreeUsageLimitError`), and `horch/src/**` has no `HarnessKind::`/`Agent::` match arm |
+| prompts hold no execution policy | `arc_10_prompts_hold_no_execution_policy` (`horch-core/tests/arch_scan.rs`) | A6 | `prompts.rs` has no `HarnessKind`, `BalanceMode`, `ExecutionStatus`, `routing::` |
+| domain code never calls `std::env` | `arc_05_no_ambient_env_in_core` (`horch-core/tests/arch_scan.rs`) | A2 | `horch-core/src/**` outside `runtime/` has no `std::env::var`, `env::var_os`, `set_var`, `remove_var`, `std::env::current_dir`, `std::env::temp_dir` (`std::env::consts` is allowed) |
+| harness match only in harness | `arc_10_harness_match_only_in_harness` (`horch-core/tests/arch_scan.rs`) | A4 | `HarnessKind::`/`Agent::` match arms and `matches!` appear only in `horch-core/src/harness/**` and `roster/validation.rs`; a `==`/`!=` comparison is not a match |
+| skills core has no harness flags | `skl_05_core_skill_model_has_no_harness_flags` (`horch-core/tests/arch_scan.rs`) | A10 | `skills.rs` and `skills/**` (whole text, tests and comments included) have no `HarnessKind`, `Agent::`, `--plugin-dir`, `--skill`, `OPENCODE_CONFIG_CONTENT`, `CODEX_HOME` |
+| source dispatch localized | `mkt_10_source_dispatch_localized` (`horch-marketplace/tests/marketplace.rs`) | A8 | `SkillSource::`/`ResolvedOrigin::` patterns (and `Self::{Bundled,Local,Git}` in `model.rs`) appear only in `resolver.rs` and `source.rs` |
+| tile/balance pure | `arc_27_tile_balance_pure` (`horch-core/src/workspace/mod.rs`) | A7 | `workspace/{layout,tile,balance}.rs` have no `std::process`, `Command::new`, `Herdr`, `WorkspaceClient`, `crate::workspace::herdr`, `std::env` |
+| competition domain free of adapters | `cmp_02_domain_has_no_adapter_imports` (`horch-core/tests/measure.rs`), `cmp_02_planner_files_have_no_adapter_imports` (`horch-core/tests/competition_planner.rs`), `cmp_02_evaluation_domain_has_no_adapter_imports` (`horch-core/tests/arch_scan.rs`) | B1 / B3 / B4 | `competition/{model,state,planner,diversity,budget}.rs`, `measure/{event,projection,worker_run}.rs` and `evaluation/{winner,parser}.rs` have no `std::process`, `herdr`, `workspace::`, `launch::`, `vcs::`, `std::env`, `std::fs` (and no `Command`, except in the planner files) |
+| shims removed | `arc_25_no_shim_modules` (`horch-core/tests/arch_scan.rs`) | A12 | none of the 18 removed shim files exists; in the 4 crates no file only re-exports, and every `pub use` names the file's own child module (1 allowed entry: `skills/catalog.rs` re-exports `horch_marketplace as marketplace`) |
 
-The roster, routing and planning rules have no dedicated ID in the master
-plan. Their scans live inside the named tests above. `SPEC-TODO(Spec A §3)`:
-confirm the full rule list against the verbatim text.
+The CLI rule does not forbid a command from calling a pure core function:
+`horch route` calls `routing::decision::decide` to print the decision that
+`horch spawn` would make (BAL-06), and the rule is in core. The rule
+forbids policy written in the CLI: error-text matching and harness
+dispatch.
 
 ---
 
@@ -184,14 +190,14 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | ARC-05 | RuntimeContext; no ambient env | A2 | arc_05_no_ambient_env_in_core, arc_05_context_from_map_env |
 | ARC-06 | Env is child transport only | A2 | arc_06_transport_env_applied_to_child, arc_06_env_mutation_sites_reduced |
 | ARC-07 | Brief carries only inherited context | A2 | arc_07_brief_v1_readable, arc_07_e2e_bin_overrides_reach_worker |
-| ARC-08 | Roster split, strict serde | A3 | arc_08_unknown_field_rejected, arc_08_overlay_precedence, arc_08_legacy_frontmatter_corpus_parses, nfr_03 |
+| ARC-08 | Roster split, strict serde | A3 | arc_08_unknown_field_rejected, arc_08_roster_never_calls_herdr, arc_08_overlay_precedence, arc_08_legacy_frontmatter_corpus_parses, nfr_03 |
 | ARC-09 | Harness owns command lines | A4 | arc_09_argv_matches_baseline |
-| ARC-10 | Capabilities; dispatch-only lifecycle | A4 | arc_10_capabilities_match_legacy_predicates, arc_10_harness_match_only_in_harness |
+| ARC-10 | Capabilities; dispatch-only lifecycle | A4 | arc_10_capabilities_match_legacy_predicates, arc_10_harness_match_only_in_harness, arc_10_prompts_hold_no_execution_policy |
 | ARC-11 | Workdir-scoped discovery | A4 | arc_11_codex_discovery_by_workdir, arc_11_opencode_discovery_by_workdir, arc_11_canonical_tmp_paths |
 | ARC-12 | Pure routing equals baseline | A5 | arc_12_decisions_match_baseline, bal_03, bal_04, bal_05, bal_06, quo_07 |
-| ARC-13 | Eligible set and reasons | A5 | arc_13_exclusion_reasons, arc_13_candidates_equivalent |
+| ARC-13 | Eligible set and reasons | A5 | arc_13_exclusion_reasons, arc_13_candidates_equivalent, arc_13_routing_never_launches |
 | ARC-14 | Provenance on every execution | A5 | arc_14_provenance_on_spawn_substitute_resume |
-| ARC-15 | Pure planning | A6 | arc_15_plan_deterministic, arc_15_plan_table |
+| ARC-15 | Pure planning | A6 | arc_15_plan_deterministic, arc_15_plan_table, arc_15_plan_is_pure |
 | ARC-16 | Apply order; LaunchFailed; no phantoms | A6 | arc_16_split_failure_launch_failed, arc_16_run_failure_closes_pane, arc_16_e2e_fail_split, arc_16_crash_after_insert_not_live |
 | ARC-17 | Legacy DTO and compat | A6 | arc_17_legacy_ledgers_load_and_resume, arc_17_roundtrip_byte_identical, arc_17_old_reader_sees_compat_status |
 | ARC-18 | Worker workflow; exit code | A6 | arc_18_worker_startup_order, arc_18_agent_exit_recorded |
@@ -199,7 +205,7 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | ARC-20 | Delivery identical | A7 | arc_20_send_line_prompt_first, arc_20_fallback_waits_tail |
 | ARC-21 | done lifecycle order | A7 | arc_21_done_order |
 | ARC-22 | Thin CLI; typed errors; exit codes | A6 / A12 | bal_04 (exit 3), arc_22_no_error_string_matching |
-| ARC-23 | Telemetry uses executions | A6 | arc_23_telemetry_reads_executions, tel_* |
+| ARC-23 | Telemetry uses executions | A6 | arc_23_telemetry_reads_executions, arc_23_telemetry_never_routes, tel_* |
 | ARC-24 | Competition uses the kernel | B3 | arc_24_candidates_are_ordinary_executions |
 | ARC-25 | Shims removed; pub(crate) | A12 | arc_25_no_shim_modules |
 | ARC-26 | E2E lifecycle matrix for all 5 harnesses | A6 | arc_26_e2e_lifecycle_matrix_claude, arc_26_e2e_lifecycle_matrix_codex, arc_26_e2e_lifecycle_matrix_opencode, arc_26_e2e_lifecycle_matrix_pi, arc_26_e2e_lifecycle_matrix_prime |

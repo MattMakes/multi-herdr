@@ -573,3 +573,90 @@ fn arc_25_scan_tells_shims_from_module_apis() {
     assert_eq!(reexport("use a::B;"), None);
     assert_eq!(reexport("pub fn used() {}"), None);
 }
+
+// ─── Spec A §3 module rules ─────────────────────────────────────────────────
+
+/// Lines of the code in `files` (outside tests and comments) that name a
+/// `forbidden` item, as `file:line: needle`.
+fn forbidden_lines(root: &Path, files: &[PathBuf], forbidden: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    for path in files {
+        for (n, line) in code_lines(path) {
+            if let Some(needle) = forbidden.iter().find(|f| line.contains(*f)) {
+                found.push(format!("{}:{n}: {needle}", relative(path, root)));
+            }
+        }
+    }
+    found
+}
+
+/// Telemetry observes and does not route (Spec A §3): it reads quota and
+/// executions, and never makes or builds a routing decision.
+#[test]
+fn arc_23_telemetry_never_routes() {
+    let root = crate_src("horch-core");
+    let mut files = Vec::new();
+    rust_files(&root.join("telemetry"), &mut files);
+    assert!(files.len() >= 4, "scanned only {files:?}");
+    let found = forbidden_lines(
+        &root,
+        &files,
+        &[
+            "routing::balance",
+            "routing::decision",
+            "routing::eligible",
+            "RoutingDecision",
+            "decide(",
+        ],
+    );
+    assert!(found.is_empty(), "telemetry routes:\n{}", found.join("\n"));
+}
+
+/// Prompts hold no execution policy (Spec A §3): the prompt text never
+/// branches on a harness, a balance mode, an execution state or routing.
+#[test]
+fn arc_10_prompts_hold_no_execution_policy() {
+    let root = crate_src("horch-core");
+    let files = [root.join("prompts.rs")];
+    let found = forbidden_lines(
+        &root,
+        &files,
+        &["HarnessKind", "BalanceMode", "ExecutionStatus", "routing::"],
+    );
+    assert!(
+        found.is_empty(),
+        "execution policy in prompts:\n{}",
+        found.join("\n")
+    );
+}
+
+/// The evaluation domain has no adapters (Spec A §3, CMP-02): the winner
+/// rule and the judgment parser start no process and touch no workspace,
+/// git, environment or file.
+#[test]
+fn cmp_02_evaluation_domain_has_no_adapter_imports() {
+    let root = crate_src("horch-core");
+    let files = [
+        root.join("evaluation/winner.rs"),
+        root.join("evaluation/parser.rs"),
+    ];
+    let found = forbidden_lines(
+        &root,
+        &files,
+        &[
+            "std::process",
+            "Command",
+            "herdr",
+            "workspace::",
+            "launch::",
+            "vcs::",
+            "std::env",
+            "std::fs",
+        ],
+    );
+    assert!(
+        found.is_empty(),
+        "adapters in the evaluation domain:\n{}",
+        found.join("\n")
+    );
+}
