@@ -106,3 +106,16 @@ run, the doctool dump, or the 4.7 docs) in upstream GodotPrompter text is
 fixed in place. List it in provenance as `API fixes on 4.7.2: A -> B` or
 `Fact fixes on 4.7: <what> (<evidence>)`, and in your report. A claim you
 cannot prove stays as it is and goes in the report.
+
+## Commit with godot-commit.sh (replaces the manual lock steps)
+
+Never edit the index files by hand. Put your work in a unit directory and
+run `/Users/mascott/projects/multi-herdr/.worktrees/godot-commit.sh <role>
+"<message>" <unit dir> <skill>...`. The unit directory holds `skills/<skill>/`,
+and as needed `provenance.json` (a JSON list of your entries),
+`readme-rows.md` (your table rows), `repo-original.txt` (own-text names) and
+`extra-paths.txt` (your report path). The script takes the lock, refuses to
+start when an index file holds uncommitted edits, copies, merges sorted,
+runs `skills_catalog`, commits only those paths, and releases. On a failure
+it restores everything. The README section intro is written once, at the
+end, by the teammates unit: put intro text in `readme-intro.md` instead.
