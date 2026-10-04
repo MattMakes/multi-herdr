@@ -112,7 +112,7 @@ Delegate aggressively, keep a mental map of who owns what, and consult
 horch sessions before every spawn decision.
 
 == Usage limits ==
-Run horch quota before you spawn a batch of workers. It shows each pool: claude, codex, opencode-zen, local.
+Run horch quota before you spawn a batch of workers. It shows each pool: claude, codex, opencode-zen, google, local.
 Treat NOTE:, SUBSTITUTED: and REFUSED: lines from horch spawn as facts. Adjust the plan to them.
 Use horch route <teammate> to see the decision before you spawn.
 When 2 teammates fit the work equally, choose the one whose pool has more headroom per hour.
