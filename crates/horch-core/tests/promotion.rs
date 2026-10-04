@@ -712,9 +712,6 @@ impl GitClient for Racy<'_> {
     fn cherry_pick(&self, dir: &Path, range: &str, id: &GitIdentity) -> anyhow::Result<CherryPick> {
         self.git.cherry_pick(dir, range, id)
     }
-    fn merge_ff_only(&self, dir: &Path, rev: &str) -> anyhow::Result<()> {
-        self.git.merge_ff_only(dir, rev)
-    }
     fn read_tree_update(&self, dir: &Path, old: &str, new: &str) -> anyhow::Result<()> {
         self.git.read_tree_update(dir, old, new)
     }

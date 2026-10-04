@@ -313,9 +313,6 @@ impl GitClient for FakeGit {
     fn cherry_pick(&self, _: &Path, _: &str, _: &GitIdentity) -> anyhow::Result<CherryPick> {
         unimplemented!()
     }
-    fn merge_ff_only(&self, _: &Path, _: &str) -> anyhow::Result<()> {
-        unimplemented!()
-    }
     fn branch_checkout_location(&self, _: &Path, _: &str) -> anyhow::Result<CheckoutLocation> {
         unimplemented!()
     }
