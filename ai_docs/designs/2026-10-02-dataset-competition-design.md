@@ -58,16 +58,22 @@ phase 8 (training Laya).
 
 ### 1.4 Non-goals (Spec B §20) and what enforces them
 
-| Non-goal | Enforced by |
-|---|---|
-| No online RL, no self-training, no DB server, no distributed runs | NFR-09, plus this list |
-| No judge-driven code edits | SEC-04, SEC-07 |
-| No automatic conflict resolution | PRO-04 |
-| No transcript hoarding | SEC-03 |
-| No second worker registry | ARC-24 |
-| No opaque composite score | JDG-06 |
+This is the complete non-goal list of Spec B. The original Spec B text is not
+available; this list is the master plan's §20 table
+(`ai_docs/plans/arch-refactor-dataset/00-master-plan.md`, "Spec B §20
+non-goals"), and the tests below pin each line. A change that breaks a
+non-goal fails one of these tests.
 
-`SPEC-TODO(Spec B §20)`: the non-goal list verbatim.
+| Non-goal | Enforced by | Test that pins it |
+|---|---|---|
+| No online RL and no self-training: no recorded outcome changes a later plan or decision | OD4; `teacher::inert::Inert` is the only `DecisionModel`, and it returns `None` | `teacher::system_one::tests::exp_01_inert_returns_none` |
+| No DB server: the event log is JSONL files under `DatasetPaths` | NFR-09 (no database crate, no async runtime) | `tests/nfr.rs:nfr_09_no_async_runtime_deps` |
+| No distributed runs: one coordinator process on one host, no network | NFR-06, NFR-09 (no HTTP crate) | `tests/nfr.rs:nfr_06_dependency_allowlist`, `nfr_09_no_async_runtime_deps` |
+| No judge-driven code edits: the judge reads a read-only bundle, and its output is never executed | SEC-04, SEC-07 | `horch-e2e/tests/judge.rs:sec_04_judge_cwd_bundle_tools_readonly`, `tests/vcs.rs:sec_07_gates_only_from_config` |
+| No automatic conflict resolution: a promotion conflict stops at NEEDS_INTERVENTION with the worktrees kept | PRO-04 | `tests/promotion.rs:pro_04_conflict_needs_intervention_preserves_worktrees` |
+| No transcript hoarding: events carry transcript refs and digests; raw copies need `retain_transcripts: true` | SEC-03 | `horch-e2e/tests/dataset.rs:sec_03_no_transcript_copies_by_default` |
+| No second worker registry: a candidate is an ordinary `Execution` in the ledger | ARC-24 | `tests/coordinator.rs:arc_24_candidates_are_ordinary_executions` |
+| No opaque composite score: the winner policy is a fixed table, and the judgment keeps every component score | JDG-06 | `tests/evaluation.rs:jdg_06_policy_table` |
 
 ---
 
