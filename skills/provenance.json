@@ -1203,6 +1203,12 @@
       "vendored": true
     },
     {
+      "name": "godot-build-verify",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text, written in this repository; own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-builder (SKILL.md only; facts re-tested on 4.7.2, nothing copied). Shape and fleet rules follow skills/ue-build-verify. Every command was run on Godot 4.7.2 (macOS) in scratch projects, with GUT v9.7.1 (aeb5d4f3f7f0a6c9b5e178876d6c99b791fda605) and gdUnit4 v6.2.1 (08ffc7c65b61b1b2edd545616061a99973c13ce1) exit codes measured, and dotnet build run with Godot.NET.Sdk 4.7.2; evidence in ai_docs/reports/godot/gw2-own-skills.md. The parse checker is a gdscript block in references/parse-check.md (bundles are text only)."
+    },
+    {
       "name": "godot-csharp-godot",
       "sources": [
         {
@@ -1381,7 +1387,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "rename to godot-* prefix",
+      "adaptation": "rename to godot-* prefix; adds references/fleet-additions.md (own text): @export_file stores uid:// since 4.4 (GH-97912), @export_file_path keeps res:// since 4.5",
       "vendored": true
     },
     {
@@ -1672,6 +1678,12 @@
       "vendored": true
     },
     {
+      "name": "godot-project-context",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text, written in this repository. Shape follows skills/ue-project-context (scan, [unknown], one QUESTION:). Setting keys and defaults checked against the Godot 4.7.2 class reference (doc/classes/ProjectSettings.xml at 4.7.2-stable); the scan script in references/context-scan.md was run on 6 scratch projects; evidence in ai_docs/reports/godot/gw2-own-skills.md."
+    },
+    {
       "name": "godot-responsive-ui",
       "sources": [
         {
@@ -1719,6 +1731,12 @@
       ],
       "adaptation": "rename to godot-* prefix",
       "vendored": true
+    },
+    {
+      "name": "godot-scene-files",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text, written in this repository; own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-builder (SKILL.md only; facts re-tested on 4.7.2, nothing copied). Every rule and the worked example were run on Godot 4.7.2 (macOS); evidence in ai_docs/reports/godot/gw2-own-skills.md. references/fleet-additions.md carries GW10's verified fact on the 4.6 scene format (godotengine/godot GH-106837, GH-103352)."
     },
     {
       "name": "handoff",
