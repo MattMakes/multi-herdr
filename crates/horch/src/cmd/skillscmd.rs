@@ -117,6 +117,9 @@ fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
             ));
         }
         output::println(&format!("adaptation:   {}", printable(&p.adaptation)));
+        if p.vendored {
+            output::println("vendored:     true");
+        }
     }
     output::println(&format!(
         "install path: {}",

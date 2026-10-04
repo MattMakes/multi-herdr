@@ -1,0 +1,2 @@
+Test fixture for crates/horch-core/tests/skills_catalog.rs (skills_bundled_skip_dotfiles).
+build.rs must not bundle this file, because its name starts with a dot.

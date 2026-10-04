@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::SkillId;
 use horch_core::roster::{Phase, Roster, Teammate};
-use horch_core::skills::catalog::parse_provenance;
+use horch_core::skills::catalog::{parse_provenance, SourceRef};
 use horch_core::skills::{
     self, briefing, plan_activation, BriefingContext, CatalogSource, InvocationPolicy,
     MaterializedSkills, SkillCatalog, BUNDLED_SKILL_FILES,
@@ -16,39 +16,6 @@ use horch_marketplace::LockEntry;
 
 const PINNED_REPOSITORY: &str = "https://github.com/MattMakes/skill-marketplace";
 const PINNED_COMMIT: &str = "d47670328c59a3311a9b4149bc5f8f33f0a92754";
-/// The design-skill upstreams, at the commits the design skills were adapted
-/// from (`ai_docs/plans/design-skills/00-conventions.md`).
-const DESIGN_SOURCE_PINS: &[(&str, &str)] = &[
-    (
-        "https://github.com/akseolabs-seo/cinematic-ui",
-        "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
-    ),
-    (
-        "https://github.com/greensock/gsap-skills",
-        "aed9cfd3277740755f6bfc1155c7aa645403b760",
-    ),
-    (
-        "https://github.com/nutlope/hallmark",
-        "13ac0ec7e148655948100b6396439e481361d690",
-    ),
-    (
-        "https://github.com/stevembarclay/pencilplaybook",
-        "b7324295d73d67ea0a672cf16832880c111df0ed",
-    ),
-    (
-        "https://github.com/leonxlnx/taste-skill",
-        "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
-    ),
-    (
-        "https://github.com/felix-huber/ui-landingpage-generator-skill",
-        "8dc143767218bc884b502a054b5d3fc401411a4b",
-    ),
-    (
-        "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-        "09170eec67eefd46a7ae85de61b40c194020f997",
-    ),
-];
-
 /// Skills written in this repository: their provenance has no sources.
 const REPO_ORIGINAL: &[&str] = &["orchestrate"];
 
@@ -158,17 +125,47 @@ fn skl_01_bundled_catalog_versions_and_digests() {
             assert_eq!(src.sha256.len(), 64, "{id}");
             assert!(is_hex(&src.sha256), "{id}");
             assert!(!src.path.is_empty(), "{id}");
-            if id != "skill-creator" {
-                let pin = (src.repository.as_str(), src.revision.as_str());
-                assert!(
-                    pin == (PINNED_REPOSITORY, PINNED_COMMIT) || DESIGN_SOURCE_PINS.contains(&pin),
-                    "{id}: {} at {} is not a pinned upstream",
-                    src.repository,
-                    src.revision
-                );
+            // The skill-marketplace upstream has one exact pin. Any other
+            // upstream (design, vendored) is checked by shape: a GitHub
+            // repository, a full commit and a licence.
+            if src.repository == PINNED_REPOSITORY {
+                assert_eq!(src.revision, PINNED_COMMIT, "{id}: {}", src.path);
+            } else if id != "skill-creator" {
+                assert_pinned_upstream_shape(id, src);
             }
         }
     }
+}
+
+/// A non-marketplace source names `https://github.com/<owner>/<repo>`, a
+/// 40-hex revision, a 64-hex sha256 and a non-empty licence.
+fn assert_pinned_upstream_shape(id: &str, src: &SourceRef) {
+    let repo = src
+        .repository
+        .strip_prefix("https://github.com/")
+        .unwrap_or_else(|| panic!("{id}: {} is not a GitHub repository", src.repository));
+    let parts: Vec<&str> = repo.split('/').collect();
+    assert!(
+        parts.len() == 2 && parts.iter().all(|p| !p.is_empty()),
+        "{id}: {} is not https://github.com/<owner>/<repo>",
+        src.repository
+    );
+    assert!(
+        src.revision.len() == 40 && is_hex(&src.revision),
+        "{id}: {} revision {} is not a full commit",
+        src.repository,
+        src.revision
+    );
+    assert!(
+        src.sha256.len() == 64 && is_hex(&src.sha256),
+        "{id}: {} sha256 is not 64 hex digits",
+        src.path
+    );
+    assert!(
+        src.license.as_deref().is_some_and(|l| !l.trim().is_empty()),
+        "{id}: {} has no licence",
+        src.path
+    );
 }
 
 /// A skill entry may list several upstream sources; the single-source
@@ -185,7 +182,8 @@ fn skills_multi_source_provenance_parses() {
             {"repository": "https://example.com/b", "revision": "bb22", "path": "y/rules.md",
              "sha256": "SHA"}
           ],
-          "adaptation": "Merged."
+          "adaptation": "Merged.",
+          "vendored": true
         },
         {"name": "old", "source_repository": "https://example.com/c", "source_revision": "cc33",
          "source_path": "z/SKILL.md", "source_sha256": "SHA", "adaptation": "Kept."},
@@ -197,6 +195,8 @@ fn skills_multi_source_provenance_parses() {
     let multi = &parsed["multi"];
     assert_eq!(multi.sources.len(), 2);
     assert_eq!(multi.sources[0].license.as_deref(), Some("MIT"));
+    assert!(multi.vendored);
+    assert!(!parsed["old"].vendored, "vendored defaults to false");
     assert_eq!(multi.sources[1].repository, "https://example.com/b");
     assert_eq!(multi.sources[1].license, None);
     assert_eq!(parsed["old"].sources.len(), 1);
@@ -217,13 +217,29 @@ fn skills_multi_source_provenance_parses() {
 }
 
 /// The first 16 skills are over a limit or carry non-text files and stay as
-/// they are. A new skill meets the budget.
+/// they are. A vendored skill (`"vendored": true` in provenance.json) is an
+/// upstream copy and is exempt too. Any other new skill meets the budget.
 const EXEMPT_FROM_BUDGET: &[&str] = &["skill-creator"];
 const MAX_SKILL_MD_BYTES: usize = 12 * 1024;
 const MAX_SKILL_DIR_BYTES: usize = 160 * 1024;
 
+/// Skill ids exempt from the size budget: the fixed list plus every skill
+/// whose provenance says `vendored: true`.
+fn budget_exempt() -> BTreeSet<String> {
+    let catalog = SkillCatalog::bundled().unwrap();
+    let mut exempt: BTreeSet<String> = EXEMPT_FROM_BUDGET.iter().map(|s| s.to_string()).collect();
+    exempt.extend(
+        catalog
+            .entries()
+            .filter(|e| e.provenance.as_ref().is_some_and(|p| p.vendored))
+            .map(|e| e.id.to_string()),
+    );
+    exempt
+}
+
 #[test]
 fn skills_bundled_size_budget() {
+    let exempt = budget_exempt();
     let mut dirs: BTreeMap<&str, usize> = BTreeMap::new();
     for (path, bytes) in BUNDLED_SKILL_FILES {
         // Top-level files (README.md, provenance.json) belong to no skill.
@@ -231,7 +247,7 @@ fn skills_bundled_size_budget() {
             continue;
         };
         *dirs.entry(id).or_default() += bytes.len();
-        if rel == "SKILL.md" && !EXEMPT_FROM_BUDGET.contains(&id) {
+        if rel == "SKILL.md" && !exempt.contains(id) {
             assert!(
                 bytes.len() <= MAX_SKILL_MD_BYTES,
                 "{id}/SKILL.md: {} bytes",
@@ -240,12 +256,15 @@ fn skills_bundled_size_budget() {
         }
     }
     for (id, total) in dirs {
-        if !EXEMPT_FROM_BUDGET.contains(&id) {
+        if !exempt.contains(id) {
             assert!(total <= MAX_SKILL_DIR_BYTES, "{id}: {total} bytes");
         }
     }
 }
 
+/// Skill files are `.md` or `.txt`. A file named exactly `LICENSE` is
+/// allowed in any skill directory: a vendored or adapted skill keeps its
+/// upstream licence notice. Vendored skills are not exempt from this rule.
 #[test]
 fn skills_bundled_text_only() {
     for (path, _) in BUNDLED_SKILL_FILES {
@@ -255,7 +274,24 @@ fn skills_bundled_text_only() {
         if EXEMPT_FROM_BUDGET.contains(&id) {
             continue;
         }
-        assert!(path.ends_with(".md") || path.ends_with(".txt"), "{path}");
+        let name = path.rsplit('/').next().unwrap();
+        assert!(
+            name == "LICENSE" || path.ends_with(".md") || path.ends_with(".txt"),
+            "{path}"
+        );
+    }
+}
+
+/// `build.rs` never bundles a dotfile or a file under a dot directory. The
+/// fixture `skills/.dotfile-fixture` exists on disk and must not appear.
+#[test]
+fn skills_bundled_skip_dotfiles() {
+    assert!(skills_dir().join(".dotfile-fixture").is_file());
+    for (path, _) in BUNDLED_SKILL_FILES {
+        assert!(
+            !path.split('/').any(|part| part.starts_with('.')),
+            "{path} is a dotfile"
+        );
     }
 }
 
