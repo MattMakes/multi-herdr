@@ -1,105 +1,57 @@
 //! Portable phase catalogs. Only selected skill files are materialized per launch;
 //! native harness loaders expose metadata and read bodies on demand.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::teammates::{
-    expand_home, operator_enabled_plugins, operator_status_line, Agent, Phase, Teammate,
-};
+use crate::roster::{Phase, Teammate};
+
+pub(crate) mod activation;
+pub mod briefing;
+pub mod catalog;
+pub(crate) mod materialize;
+pub(crate) mod selection;
+
+pub use activation::{plan_activation, InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};
+pub use briefing::BriefingContext;
+pub use catalog::{CatalogSource, SkillCatalog};
+pub use materialize::MaterializedSkills;
+pub use selection::selected;
+pub(crate) use selection::{phase_skills, selected_in};
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct Metadata {
     name: String,
     description: String,
 }
 
-pub fn phase_skills(phase: Phase) -> &'static [&'static str] {
-    match phase {
-        Phase::Research => &["brainstorm", "research-codebase", "trace", "handoff"],
-        Phase::Plan => &["create-plan", "pre-flight", "handoff"],
-        Phase::Implementation => &["execute", "tdd", "debug", "check", "handoff"],
-        Phase::Validation => &[
-            "check",
-            "code-analysis",
-            "code-review",
-            "security-review",
-            "document",
-            "handoff",
-        ],
-    }
-}
-
+/// The bundled catalog in the shape the legacy callers read.
 fn catalog() -> Result<BTreeMap<String, (Metadata, usize)>> {
-    let mut out = BTreeMap::new();
-    for (path, bytes) in BUNDLED_SKILL_FILES {
-        let Some(name) = path.strip_suffix("/SKILL.md") else {
-            continue;
-        };
-        if name.contains('/') {
-            continue;
-        }
-        let text = std::str::from_utf8(bytes)
-            .context("skill is not UTF-8")?
-            .replace("\r\n", "\n");
-        let front = text
-            .strip_prefix("---\n")
-            .and_then(|s| s.split_once("\n---").map(|p| p.0))
-            .with_context(|| format!("{path}: missing YAML frontmatter"))?;
-        let meta: Metadata =
-            serde_yaml::from_str(front).with_context(|| format!("{path}: invalid metadata"))?;
-        if meta.name != name
-            || name.is_empty()
-            || name.starts_with('-')
-            || name.ends_with('-')
-            || name.contains("--")
-            || !name
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-            || meta.description.trim().is_empty()
-            || meta.description.len() > 1024
-        {
-            bail!("{path}: invalid skill name or description");
-        }
-        out.insert(name.to_owned(), (meta, bytes.len()));
-    }
-    Ok(out)
-}
-
-pub fn selected(teammate: &Teammate) -> Result<Vec<String>> {
-    let mut names: BTreeSet<String> = teammate.skills.iter().cloned().collect();
-    if let Some(phase) = teammate.phase {
-        names.extend(phase_skills(phase).iter().map(|s| (*s).to_owned()));
-    }
-    let known = catalog()?;
-    for name in &names {
-        if !known.contains_key(name) {
-            bail!(
-                "teammate '{}': unknown bundled skill '{name}'",
-                teammate.name
-            );
-        }
-    }
-    if !names.is_empty() && (teammate.disable_skills || teammate.agent == Agent::None) {
-        bail!(
-            "teammate '{}': selected skills cannot load with disabled skills or no agent",
-            teammate.name
-        );
-    }
-    Ok(names.into_iter().collect())
+    Ok(SkillCatalog::bundled()?
+        .entries()
+        .map(|e| {
+            let meta = Metadata {
+                name: e.id.to_string(),
+                description: e.description.clone(),
+            };
+            (e.id.to_string(), (meta, e.skill_file_bytes))
+        })
+        .collect())
 }
 
 /// Check platform support before allocating a pane or writing shared rules.
-pub fn ensure_supported(teammate: &Teammate) -> Result<()> {
-    let names = selected(teammate)?;
-    if cfg!(windows) && !names.is_empty() && teammate.agent == Agent::Codex {
-        bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows, or explicitly set phase: null and skills: [] for the legacy shared-rules launcher");
+/// Names are checked against `catalog`, which may include installed
+/// marketplace skills.
+pub fn ensure_supported_in(teammate: &Teammate, catalog: &SkillCatalog) -> Result<()> {
+    if !selected_in(teammate, catalog)?.is_empty() {
+        teammate.agent.adapter().ensure_skills_supported()?;
     }
     Ok(())
 }
@@ -130,242 +82,112 @@ pub fn describe(phase: Option<Phase>) -> Result<Value> {
 }
 
 /// An owned launch directory. Dropping it only deletes files we created.
+///
+/// It holds exactly the activated skills. How a CLI discovers them is the
+/// harness's business: the teammate's harness adapter exposes the bundle
+/// (`expose_skills`, `expose_skills_env`).
 #[derive(Debug)]
 pub struct Bundle {
     root: PathBuf,
-    names: Vec<String>,
+    catalog: SkillCatalog,
+    plan: SkillActivationPlan,
+    _files: MaterializedSkills,
 }
 
 impl Bundle {
+    /// The compiled-in catalog, under a fresh directory name.
     pub fn install(state_root: &Path, teammate: &Teammate) -> Result<Option<Self>> {
-        ensure_supported(teammate)?;
-        let names = selected(teammate)?;
-        if names.is_empty() {
-            return Ok(None);
-        }
-        let parent = state_root.join("skill-bundles");
-        std::fs::create_dir_all(&parent)?;
-        let root = parent.canonicalize()?.join(crate::mint_uuid());
-        std::fs::create_dir(&root)?;
-        let bundle = Self { root, names };
-        for (path, bytes) in BUNDLED_SKILL_FILES {
-            let name = path.split('/').next().unwrap_or_default();
-            if !bundle.names.iter().any(|s| s == name) {
-                continue;
-            }
-            let target = bundle.skills_dir().join(path);
-            std::fs::create_dir_all(target.parent().expect("skill path has parent"))?;
-            std::fs::write(target, bytes)?;
-        }
-        std::fs::create_dir_all(bundle.root.join(".claude-plugin"))?;
-        std::fs::write(
-            bundle.root.join(".claude-plugin/plugin.json"),
-            r#"{"name":"horch","description":"Phase-selected fleet skills","version":"0.1.0"}"#,
-        )?;
-        Ok(Some(bundle))
+        Self::install_from(
+            state_root,
+            teammate,
+            SkillCatalog::bundled()?,
+            &crate::mint_uuid(),
+            None,
+        )
     }
 
+    /// Plan `teammate`'s skills against `catalog` plus its
+    /// `operator_skills:` (`~/` expanded against `home`), and materialize
+    /// the activated ones under `<state_root>/skill-bundles/<execution_id>/`.
+    /// `None` when nothing is activated.
+    pub(crate) fn install_from(
+        state_root: &Path,
+        teammate: &Teammate,
+        catalog: SkillCatalog,
+        execution_id: &str,
+        home: Option<&Path>,
+    ) -> Result<Option<Self>> {
+        let catalog = catalog.with_operator_skills(teammate, home)?;
+        let plan = plan_activation(teammate, teammate.phase, &catalog)?;
+        if !plan.activated.is_empty() {
+            teammate.agent.adapter().ensure_skills_supported()?;
+        }
+        let Some(files) =
+            MaterializedSkills::materialize(&plan, &catalog, state_root, execution_id)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            root: files.root.clone(),
+            catalog,
+            plan,
+            _files: files,
+        }))
+    }
+
+    /// The activation plan this bundle materialized.
+    pub fn plan(&self) -> &SkillActivationPlan {
+        &self.plan
+    }
+
+    /// `<state_root>/skill-bundles/<execution_id>/`.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// One directory per activated skill, and nothing else.
     pub fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }
 
-    /// Add native discovery flags before the builder appends its positional prompt.
-    pub fn configure(&self, teammate: &Teammate) -> Result<Teammate> {
-        let mut adjusted = teammate.clone();
-        match teammate.agent {
-            Agent::Claude => {
-                // plugin_dirs precede scalar flags in the Claude builder, which
-                // fences variadic --plugin-dir parsing away from the briefing.
-                adjusted
-                    .plugin_dirs
-                    .push(self.root.to_string_lossy().into_owned());
-                let settings = self.claude_settings(teammate)?;
-                adjusted.settings = Some(settings.to_string());
-            }
-            Agent::Pi | Agent::Prime => adjusted
-                .args
-                .extend(native_args(teammate.agent, &self.root)),
-            Agent::Codex | Agent::Opencode => {}
-            Agent::None => bail!("skills need an agent harness"),
-        }
-        Ok(adjusted)
-    }
-
-    fn claude_settings(&self, teammate: &Teammate) -> Result<Value> {
-        let mut settings = match &teammate.settings {
-            Some(source) => {
-                let text = if source.trim_start().starts_with('{') {
-                    source.clone()
-                } else {
-                    std::fs::read_to_string(expand_home(source))
-                        .context("reading teammate settings")?
-                };
-                serde_json::from_str::<Value>(&text).context("invalid teammate settings JSON")?
-            }
-            None => json!({}),
-        };
-        let obj = settings
-            .as_object_mut()
-            .context("teammate settings must be a JSON object")?;
-        obj.entry("disableBundledSkills").or_insert(json!(true));
-        obj.entry("disableWorkflows").or_insert(json!(true));
-        if !teammate.inherit_plugins {
-            let plugins = obj
-                .entry("enabledPlugins")
-                .or_insert(json!({}))
-                .as_object_mut()
-                .context("enabledPlugins must be an object")?;
-            for name in operator_enabled_plugins() {
-                plugins.insert(name, json!(false));
-            }
-        }
-        // After the plugin switch-off: a plugin_skills plugin stays enabled.
-        crate::launch::overlay_skill_switches(teammate, obj)?;
-        if teammate.setting_sources.is_some() && !obj.contains_key("statusLine") {
-            if let Some(status) = operator_status_line() {
-                obj.insert("statusLine".into(), status);
-            }
-        }
-        Ok(settings)
-    }
-
-    pub fn apply_env(&self, cmd: &mut std::process::Command, teammate: &Teammate) -> Result<()> {
-        if teammate.agent == Agent::Opencode {
-            // The builder may already have set it (the effort variant); build
-            // on that rather than on the teammate's or the operator's value.
-            let inherited = cmd
-                .get_envs()
-                .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
-                .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
-                .or_else(|| teammate.env.get("OPENCODE_CONFIG_CONTENT").cloned())
-                .or_else(|| std::env::var("OPENCODE_CONFIG_CONTENT").ok());
-            cmd.env(
-                "OPENCODE_CONFIG_CONTENT",
-                opencode_config(inherited.as_deref(), &self.skills_dir())?,
-            );
-        }
-        Ok(())
-    }
-
-    /// The skill paragraph prepended to a worker's briefing.
-    ///
-    /// The teammate's own `skills:` and its `plugin_skills` are EXPECTED, and
-    /// each is named with its description, so the worker knows when its step
-    /// has come. A bare list of names read as optional, and workers skipped
-    /// them. The rest of the phase catalog stays available by name only,
-    /// which keeps the context cost of a broad phase small.
-    pub fn briefing(&self, teammate: &Teammate) -> String {
-        let agent = teammate.agent;
-        let qualified = |s: &str| {
-            if agent == Agent::Claude {
-                format!("horch:{s}")
-            } else {
-                s.to_string()
-            }
-        };
-        let catalog = catalog().unwrap_or_default();
-        let mut expected: Vec<String> = teammate
-            .skills
-            .iter()
-            .filter(|s| self.names.contains(*s))
-            .map(|s| {
-                let description = catalog
-                    .get(s)
-                    .map(|(meta, _)| meta.description.split_whitespace().collect::<Vec<_>>().join(" "))
-                    .unwrap_or_default();
-                format!("- {}: {description}", qualified(s))
-            })
-            .collect();
-        // A plugin that does not resolve is reported by `--check`; the
-        // briefing must not fail a launch over a description.
-        if agent == Agent::Claude {
-            if let Ok(plugins) = crate::plugins::resolve_all(teammate) {
+    /// The skill paragraph prepended to a worker's briefing, with plugin
+    /// skills resolved under `home`; see `briefing::render`.
+    pub fn briefing_in(&self, teammate: &Teammate, home: Option<&Path>) -> String {
+        let namespace = teammate.agent.adapter().skill_namespace();
+        let mut plugin_lines = Vec::new();
+        // Plugin skills exist only where skills load as plugins. A plugin
+        // that does not resolve is reported by `--check`; the briefing must
+        // not fail a launch over a description.
+        if namespace.is_some() {
+            if let Ok(plugins) = crate::harness::claude_plugins::resolve_all_in(teammate, home) {
                 for (plugin, wanted) in plugins {
                     for skill in wanted {
                         let description = plugin.description(&skill).unwrap_or_default();
-                        expected.push(format!("- {}:{skill}: {description}", plugin.name));
+                        plugin_lines.push(format!("- {}:{skill}: {description}", plugin.name));
                     }
                 }
             }
         }
-        let others: Vec<String> = self
-            .names
+        // Operator skills are expected too; they follow the bundled ones.
+        let declared: Vec<String> = teammate
+            .skills
             .iter()
-            .filter(|s| !teammate.skills.contains(*s))
-            .map(|s| qualified(s))
+            .map(String::as_str)
+            .chain(selection::operator_names(teammate))
+            .map(str::to_owned)
             .collect();
-
-        let phase = teammate
-            .phase
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "custom".into());
-        let mut out = format!("\n\nFleet skill phase: {phase}.");
-        if !expected.is_empty() {
-            out.push_str(
-                " Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n",
-            );
-            out.push_str(&expected.join("\n"));
-            out.push('\n');
-            if !others.is_empty() {
-                out.push_str(&format!(
-                    "Also available in this phase: {}. Load one only when your current step matches it.",
-                    others.join(", ")
-                ));
-            }
-        } else {
-            out.push_str(&format!(
-                " Available native skills: {}. Load only the skill matching your current step; do not read every skill at startup.",
-                others.join(", ")
-            ));
-        }
-        out.push_str(&format!(
-            " If a same-named ambient skill exists, use the fleet copy under {}. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n",
-            self.skills_dir().display()
-        ));
-        out
+        briefing::render(
+            &self.plan,
+            &self.catalog,
+            &BriefingContext {
+                phase: teammate.phase,
+                declared: &declared,
+                namespace,
+                plugin_lines: &plugin_lines,
+                skills_dir: &self.skills_dir(),
+            },
+        )
     }
-}
-
-impl Drop for Bundle {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn native_args(agent: Agent, root: &Path) -> Vec<String> {
-    match agent {
-        Agent::Claude => vec!["--plugin-dir".into(), root.to_string_lossy().into_owned()],
-        Agent::Pi | Agent::Prime => vec![
-            "--skill".into(),
-            root.join("skills").to_string_lossy().into_owned(),
-        ],
-        _ => Vec::new(),
-    }
-}
-
-fn opencode_config(inherited: Option<&str>, skills: &Path) -> Result<String> {
-    let mut value: Value = match inherited {
-        Some(s) => serde_json::from_str(s).context("invalid OPENCODE_CONFIG_CONTENT JSON")?,
-        None => json!({}),
-    };
-    let object = value
-        .as_object_mut()
-        .context("OPENCODE_CONFIG_CONTENT must be an object")?;
-    let config = object
-        .entry("skills")
-        .or_insert(json!({}))
-        .as_object_mut()
-        .context("skills config must be an object")?;
-    let paths = config
-        .entry("paths")
-        .or_insert(json!([]))
-        .as_array_mut()
-        .context("skills.paths must be an array")?;
-    let path = json!(skills);
-    if !paths.contains(&path) {
-        paths.push(path);
-    }
-    Ok(value.to_string())
 }
 
 #[cfg(test)]
@@ -373,49 +195,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skills_native_loaders_receive_explicit_paths() {
-        let root = Path::new("/tmp/a bundle");
-        assert_eq!(
-            native_args(Agent::Claude, root),
-            ["--plugin-dir", "/tmp/a bundle"]
-        );
-        for agent in [Agent::Pi, Agent::Prime] {
-            assert_eq!(
-                native_args(agent, root),
-                [
-                    "--skill".to_owned(),
-                    root.join("skills").to_string_lossy().into_owned()
-                ]
-            );
-        }
-        assert!(native_args(Agent::Codex, root).is_empty());
-        assert!(native_args(Agent::Opencode, root).is_empty());
-    }
-
-    #[test]
-    fn skills_opencode_overlay_preserves_provider_and_denials() {
-        let before = r#"{"provider":{"private":{"name":"keep"}},"permission":{"bash":"deny"},"skills":{"paths":["old"],"urls":["https://example.com"]}}"#;
-        let actual: Value =
-            serde_json::from_str(&opencode_config(Some(before), Path::new("/new skills")).unwrap())
-                .unwrap();
-        assert_eq!(actual["provider"]["private"]["name"], "keep");
-        assert_eq!(actual["permission"]["bash"], "deny");
-        assert_eq!(actual["skills"]["paths"], json!(["old", "/new skills"]));
-        assert_eq!(actual["skills"]["urls"], json!(["https://example.com"]));
-        for invalid in [
-            "oops",
-            "[]",
-            r#"{"skills":false}"#,
-            r#"{"skills":{"paths":false}}"#,
-        ] {
-            assert!(opencode_config(Some(invalid), Path::new("/x")).is_err());
-        }
-    }
-
-    #[test]
     fn skills_catalog_is_portable_and_every_phase_resolves() {
         let catalog = catalog().unwrap();
-        assert_eq!(catalog.len(), 16);
+        // The 16 original skills; design skills join by name, not by phase.
+        assert!(catalog.len() >= 16, "{}", catalog.len());
         // `orchestrate` and `skill-creator` are attached by name, to the
         // orchestrators only, and belong to no phase catalog. Adding either to
         // `Phase::Plan` would hand it to `staff-engineer` and every other
@@ -434,7 +217,10 @@ mod tests {
             .map(String::as_str)
             .filter(|n| !phased.contains(n))
             .collect();
-        assert_eq!(by_name_only, crate::teammates::ORCHESTRATOR_ONLY_SKILLS);
+        // Design skills are by name too, for the specialists that list them.
+        for name in &crate::roster::ORCHESTRATOR_ONLY_SKILLS {
+            assert!(by_name_only.contains(name), "{name}");
+        }
         for phase in [
             Phase::Research,
             Phase::Plan,
@@ -493,10 +279,13 @@ mod tests {
         assert_ne!(a.root, b.root);
         assert!(a.skills_dir().join("create-plan/SKILL.md").exists());
         assert!(!a.skills_dir().join("execute").exists());
-        let brief = a.briefing(&t);
+        let brief = a.briefing_in(&t, None);
         assert!(brief.contains("horch:create-plan"));
         assert!(!brief.contains("# Create"));
-        assert!(!brief.contains("expected to use"), "no skills: listed: {brief}");
+        assert!(
+            !brief.contains("expected to use"),
+            "no skills: listed: {brief}"
+        );
         drop(a);
         assert!(!gone.exists());
         assert!(b.skills_dir().join("create-plan/SKILL.md").exists());
@@ -507,13 +296,18 @@ mod tests {
     #[test]
     fn skills_briefing_names_expected_skills_with_descriptions() {
         let tmp = tempfile::tempdir().unwrap();
-        let roster = crate::teammates::Roster::builtin().unwrap();
+        let roster = crate::roster::Roster::builtin().unwrap();
         let t = roster.require("backend-developer").unwrap();
         let bundle = Bundle::install(tmp.path(), t).unwrap().unwrap();
-        let brief = bundle.briefing(t);
+        let brief = bundle.briefing_in(t, None);
         let all = catalog().unwrap();
         for skill in ["tdd", "security-review"] {
-            let description = all[skill].0.description.split_whitespace().collect::<Vec<_>>().join(" ");
+            let description = all[skill]
+                .0
+                .description
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             assert!(
                 brief.contains(&format!("- horch:{skill}: {description}")),
                 "{skill} missing from:\n{brief}"
@@ -524,14 +318,22 @@ mod tests {
             .find(|l| l.starts_with("Also available in this phase: "))
             .unwrap_or_else(|| panic!("{brief}"));
         assert!(also.contains("horch:execute"), "{also}");
-        assert!(!also.contains("horch:tdd"), "an expected skill is not repeated: {also}");
-        assert!(!brief.contains(&all["execute"].0.description), "only expected skills carry descriptions");
+        assert!(
+            !also.contains("horch:tdd"),
+            "an expected skill is not repeated: {also}"
+        );
+        assert!(
+            !brief.contains(&all["execute"].0.description),
+            "only expected skills carry descriptions"
+        );
 
         // Codex names skills bare.
         let codex = roster.require("codex-reviewer").unwrap();
         if !cfg!(windows) {
             let bundle = Bundle::install(tmp.path(), codex).unwrap().unwrap();
-            assert!(bundle.briefing(codex).contains("\n- code-review: "));
+            assert!(bundle
+                .briefing_in(codex, None)
+                .contains("\n- code-review: "));
         }
     }
 
@@ -540,7 +342,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let t = Teammate { phase: Some(Phase::Plan), settings: Some(r#"{"permissions":{"deny":["Bash(rm *)"]},"statusLine":{"type":"command","command":"keep"}}"#.into()), ..Teammate::default() };
         let bundle = Bundle::install(tmp.path(), &t).unwrap().unwrap();
-        let configured = bundle.configure(&t).unwrap();
+        let configured = t.agent.adapter().expose_skills(&t, &bundle, None).unwrap();
         let value: Value = serde_json::from_str(configured.settings.as_ref().unwrap()).unwrap();
         assert_eq!(value["permissions"]["deny"], json!(["Bash(rm *)"]));
         assert_eq!(value["statusLine"]["command"], "keep");
@@ -555,10 +357,16 @@ mod tests {
     /// `teammates/orchestrator.md`. skill-creator is the Claude flavor's only.
     #[test]
     fn skills_orchestrate_is_attached_by_name_to_the_orchestrator_only() {
-        let roster = crate::teammates::Roster::builtin().unwrap();
+        let roster = crate::roster::Roster::builtin().unwrap();
         assert_eq!(
             selected(roster.require("orchestrator").unwrap()).unwrap(),
-            ["create-plan", "handoff", "orchestrate", "pre-flight", "skill-creator"]
+            [
+                "create-plan",
+                "handoff",
+                "orchestrate",
+                "pre-flight",
+                "skill-creator"
+            ]
         );
         assert_eq!(
             selected(roster.require("orchestrator-codex").unwrap()).unwrap(),
@@ -584,8 +392,16 @@ mod tests {
         };
         assert!(t.inherit_plugins, "the switch must not depend on plugins");
         let bundle = Bundle::install(tmp.path(), &t).unwrap().unwrap();
-        let value: Value =
-            serde_json::from_str(bundle.configure(&t).unwrap().settings.as_ref().unwrap()).unwrap();
+        let value: Value = serde_json::from_str(
+            t.agent
+                .adapter()
+                .expose_skills(&t, &bundle, None)
+                .unwrap()
+                .settings
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(value["syncClaudeAiSkills"], false);
         assert_eq!(value["remoteControlAtStartup"], false);
         assert_eq!(
@@ -604,8 +420,10 @@ mod tests {
             ..t
         };
         let value: Value = serde_json::from_str(
-            bundle
-                .configure(&opted_in)
+            opted_in
+                .agent
+                .adapter()
+                .expose_skills(&opted_in, &bundle, None)
                 .unwrap()
                 .settings
                 .as_ref()

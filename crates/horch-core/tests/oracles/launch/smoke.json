@@ -1,0 +1,36 @@
+{
+  "_pinned_env": {
+    "ANTHROPIC_API_KEY": null,
+    "CLAUDE_CODE_EFFORT_LEVEL": null,
+    "CODEX_HOME": null,
+    "HOME": "<HOME>",
+    "HORCH_CLAUDE_BIN": null,
+    "HORCH_CODEX_BIN": null,
+    "HORCH_NOW": null,
+    "HORCH_OPENCODE_BIN": null,
+    "HORCH_PI_BIN": null,
+    "HORCH_PRIME_BIN": null,
+    "HORCH_TEAMMATES_DIR": null,
+    "OPENCODE_CONFIG_CONTENT": null,
+    "PATH": "<TMP>/bin"
+  },
+  "_prompt": "ORACLE PROMPT: do the task.",
+  "_session_ids": {
+    "fresh": "00000000-0000-4000-8000-000000000001",
+    "resume": "00000000-0000-4000-8000-000000000002"
+  },
+  "modes": {
+    "fresh": {
+      "error": "teammate 'smoke' has agent: none and cannot be launched"
+    },
+    "resume": {
+      "error": "teammate 'smoke' has agent: none and cannot be launched"
+    },
+    "unmanaged": {
+      "error": "teammate 'smoke' has agent: none and cannot be launched"
+    }
+  },
+  "skills_bundle": false,
+  "skills_bundle_error": null,
+  "teammate": "smoke"
+}

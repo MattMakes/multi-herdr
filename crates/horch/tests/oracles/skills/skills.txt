@@ -1,0 +1,18 @@
+Phase: all
+  brainstorm         Use when refining a feature, rewrite, or refactor into a design before implementation planning.
+  check              Use when verifying completed implementation against its plan, requirements, tests, and build.
+  code-analysis      Use when assessing changed code for complexity, maintainability, or configured static-analysis violations.
+  code-review        Use when reviewing a diff, branch, or completed feature for correctness, maintainability, and regression risk.
+  create-plan        Use when a design or requirements are settled and need executable implementation tasks with verification.
+  debug              Use when a test, build, runtime behavior, or integration fails unexpectedly and the cause is unknown.
+  document           Use when documenting actual architecture, developer workflows, or behavior changed by completed work.
+  execute            Use when implementing an existing plan or resuming its unfinished tasks.
+  handoff            Use when work must transfer to another worker or continue after context loss.
+  orchestrate        Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.
+  pre-flight         Use before executing a plan to verify wiring, contracts, preservation, configuration, and prerequisites against source.
+  research-codebase  Use when answering how an existing codebase works or locating its components and relationships.
+  security-review    Use for an authorized security audit or focused review of trust boundaries, credentials, parsing, and dependencies.
+  skill-creator      Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
+  tdd                Use when adding or changing behavior that needs a regression test, before implementing the change.
+  trace              Use when tracing an endpoint, function, event, job, or comparing behavior across old and new implementations.
+Metadata: 1998 bytes (~500 tokens, estimate only); workflows load on demand.

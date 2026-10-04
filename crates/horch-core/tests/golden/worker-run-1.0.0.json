@@ -1,0 +1,92 @@
+{
+  "config": {
+    "config_id": "sonnet|claude|sonnet|high",
+    "effort": "high",
+    "harness": "claude",
+    "model": "sonnet",
+    "propensity": 0.5,
+    "routing": {
+      "fallback_index": null,
+      "mode": "pinned",
+      "pool": "claude-max",
+      "pool_state": "ok",
+      "reason": null,
+      "requested": "sonnet",
+      "resolved": "sonnet"
+    },
+    "skills": [
+      {
+        "digest": "sha256:bd6bb12b7ca89d990d208038e40b08e2e1d86a188ee7fa3861467e8480cdc5d5",
+        "id": "tdd",
+        "policy": "explicit",
+        "source": "bundled",
+        "version": "bundled+0123456789ab"
+      }
+    ],
+    "slot": "baseline",
+    "teammate": "sonnet"
+  },
+  "experiment_id": "0199a5b0-0000-7000-8000-000000000001",
+  "facts": {
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "cost_microusd": 123456,
+    "cost_source": "price_table@2026-09-28",
+    "diff_digest": "sha256:559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd",
+    "environment_digest": "sha256:b77349bf1fa9b26d45d545d7d64dad96737e9cfbb3cbb5f5d10fb77b0fcc44ad",
+    "finished_at": "2026-10-02T12:07:31.250Z",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "latency_ms": 450250,
+    "numstat": [
+      {
+        "added": 3,
+        "deleted": 1,
+        "path": "src/lib.rs"
+      },
+      {
+        "added": null,
+        "deleted": null,
+        "path": "assets/logo.png"
+      }
+    ],
+    "session_id": "5d0c6c1e-0000-4000-8000-00000000000a",
+    "started_at": "2026-10-02T12:00:01.000Z",
+    "status": {
+      "state": "done"
+    },
+    "tokens": {
+      "cache_read": 45000,
+      "cache_write_1h": 0,
+      "cache_write_5m": 3000,
+      "input": 1200,
+      "output": 2100
+    },
+    "transcript_digest": "sha256:54e6289e14c7b0e7ad9acc2dfc4c1e3d027d0eef7f5c4c3fe7c292761d0e06a6",
+    "transcript_ref": "~/.claude/projects/-wt-A/5d0c6c1e.jsonl"
+  },
+  "label": "A",
+  "round_id": "0199a5b0-0000-7000-8000-000000000002",
+  "schema_version": "1.0.0",
+  "scores": {
+    "gates": [
+      {
+        "duration_ms": 1200,
+        "log_digest": "sha256:836ff184e7b41b1e13cb5fd89fa1de98dbbab99e9d2918913ff43b86a5c7c213",
+        "log_ref": "validation/A/test.log",
+        "log_truncated": false,
+        "name": "test",
+        "status": {
+          "kind": "passed"
+        }
+      }
+    ],
+    "judge_components": {
+      "correctness": 0.9,
+      "scope": 0.75,
+      "tests": 1.0
+    },
+    "mechanical_score": 1.0
+  },
+  "task_digest": "sha256:0ebb429fa86d481c2630fac53db1c91cffed5d4d41d1021c179444eb67e7ee0b",
+  "task_id": "task-1",
+  "worker_run_id": "0199a5b0-0000-7000-8000-000000000041"
+}

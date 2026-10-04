@@ -12,7 +12,12 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 fn main() {
-    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Read at run time, not with `env!`: cargo reuses a compiled build
+    // script across checkouts at different paths (path dependencies hash
+    // without their absolute path), and an `env!` value would point every
+    // later build at the checkout that first compiled this script.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let crate_dir = Path::new(&manifest_dir);
     let root = crate_dir.parent().unwrap().parent().unwrap();
     let teammates = root.join("teammates");
 
@@ -57,6 +62,16 @@ fn main() {
         writeln!(bundled, "    ({relative:?}, include_bytes!({absolute:?})),").unwrap();
     }
     bundled.push_str("];\n");
+    // Upstream provenance of the bundled skills: the pinned marketplace
+    // commit and each original SKILL.md's sha256.
+    let provenance = skills.join("provenance.json");
+    println!("cargo:rerun-if-changed={}", provenance.display());
+    writeln!(
+        bundled,
+        "pub static BUNDLED_PROVENANCE: &str = include_str!({:?});",
+        provenance.to_string_lossy()
+    )
+    .unwrap();
     std::fs::write(
         Path::new(&std::env::var("OUT_DIR").unwrap()).join("bundled_skills.rs"),
         bundled,
@@ -67,6 +82,10 @@ fn main() {
 fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let entry = entry.unwrap();
+        // Dotfiles (`.DS_Store`, `.git`) are never part of a skill.
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
         let kind = entry.file_type().unwrap();
         assert!(
             !kind.is_symlink(),
@@ -106,7 +125,7 @@ fn emit(out: &mut String, ident: &str, dir: &Path, keep: fn(&str) -> bool) {
     // Sorted so the generated file is stable across filesystems.
     entries.sort();
 
-    writeln!(out, "pub static {ident}: &[(&str, &str)] = &[").unwrap();
+    writeln!(out, "pub(crate) static {ident}: &[(&str, &str)] = &[").unwrap();
     for (stem, path) in entries {
         writeln!(out, "    (\"{stem}\", include_str!(r\"{path}\")),").unwrap();
     }

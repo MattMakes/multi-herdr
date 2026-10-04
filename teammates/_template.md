@@ -21,6 +21,20 @@ generic: false
 # nothing. Distinct from a leading `_`, which means "not parsed at all".
 hidden: false
 
+# Name globs (`*` and `?`, case-sensitive). When set, the orchestrator is
+# offered this teammate only when the fleet's project has a matching file or
+# directory at the top level or one level down; any one match is enough.
+# `horch spawn <name>` still works in any project. Leave it out (the default)
+# and the teammate is offered everywhere. For domain teammates, e.g.
+#   offer_when: ["*.uproject"]
+#   offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]
+offer_when: []
+
+# Host tools this teammate cannot work without. `horch doctor` checks each one
+# when the project is offered this teammate. Values: xcode (`xcodebuild` on
+# PATH, with `sudo xcodebuild -runFirstLaunch` done).
+requires: []
+
 # ─── inherited base prompt ───────────────────────────────────────────────────
 # Names a file in _base/. The base carries the orchestrator-facing protocol -
 # horch tell / horch note / horch done, the blocked-and-wait rule, the
@@ -30,7 +44,7 @@ hidden: false
 base: fleet-worker
 
 # ─── which CLI, which model ──────────────────────────────────────────────────
-# agent: claude | codex | opencode | pi | prime | none
+# agent: claude | codex | opencode | pi | prime | antigravity | none
 #   ("none" = the smoke fake, spends no tokens)
 # Session handling is DERIVED from agent and is not configurable here:
 #   claude   -> horch mints the session id, passes --session-id / --resume
@@ -39,6 +53,8 @@ base: fleet-worker
 #   opencode -> harvested from `opencode session list --format json`
 #   prime    -> no --session-id at all; horch gives it a --session-dir it owns
 #               and reads back the session that appears there
+#   antigravity -> agy mints its own id; horch reads it back from
+#               ~/.gemini/antigravity-cli/cache/last_conversations.json
 agent: claude
 
 # claude:   a family alias (sonnet | opus) so it tracks the latest.
@@ -51,6 +67,16 @@ agent: claude
 # either. A fleet has exactly one top-tier session. Reach for opus or
 # codex-sol instead.
 model: opus
+
+# ─── usage limits ────────────────────────────────────────────────────────────
+# Teammates whose LAUNCH settings (agent, model, args, env, ...) a spawn
+# borrows when this teammate's usage pool is exhausted, broken or cooling -
+# or tight while a fallback has twice the headroom. This teammate's persona,
+# base, phase and skills stay. First usable entry wins; a fallback's own
+# fallbacks are never followed. Each must run on a different pool, and never
+# on a trains-on-input (opencode) teammate. `horch route <name>` shows what a
+# spawn would do right now.
+fallbacks: []
 
 # claude   -> `--effort <level>`   (low | medium | high | xhigh | max)
 #             Not on haiku: Haiku 4.5 has no effort setting.
@@ -77,7 +103,8 @@ effort: xhigh
 subagent_model:
 
 # ─── skills ──────────────────────────────────────────────────────────────────
-# phase selects a portable repo-owned catalog on all five agent harnesses.
+# phase selects a portable repo-owned catalog on every harness that exposes
+# skills (not antigravity: agy has no skills-dir switch).
 # Values: research | plan | implementation | validation. null means no catalog.
 # `horch spawn --phase` overrides this; resume keeps its recorded phase.
 # skills adds named bundled skills to the phase catalog. Bodies load on demand.
@@ -85,6 +112,32 @@ subagent_model:
 phase: null
 plugin_dirs: []
 skills: []
+
+# available_skills offers further catalog skills by NAME ONLY: each one is
+# materialized with the launch and named under "Also available" in the
+# briefing, without its description. Use it for a related skill that is worth
+# one name in the briefing, not a full description. The harness still lists
+# every materialized skill's description in its own skill list, so keep the
+# list short. A name in both skills and available_skills fails --check.
+available_skills: []
+
+# operator_skills copies skills from a directory on the operator's machine
+# into the launch bundle, on every harness that exposes skills. They are
+# never compiled in and never copied into this repo. Example, for skills that
+# `xcrun agent skills export` wrote:
+#   operator_skills:
+#     dir: ~/.agents/skills
+#     names: [swiftui-whats-new-27, test-modernizer]
+# - `~/` expands against the launch's home.
+# - Each name must be <dir>/<name>/SKILL.md, with a matching `name:`.
+# - They are EXPECTED skills, named with their descriptions, like skills:.
+# - A name that is also a bundled or marketplace skill fails: one bundle
+#   directory cannot hold both.
+# - A subagent skill (device-interaction, or a body that says "SUBAGENT
+#   skill" or "Agent tool") fails: fleet panes start no subagents.
+# - Launch copies each directory and checks the copy's digest.
+# `horch teammates --check` fails on a missing dir or name.
+operator_skills: null
 
 # claude only. claude.ai-synced skills are off in every fleet pane; set
 # `inherit_claudeai_skills: true` to keep them. (horch puts

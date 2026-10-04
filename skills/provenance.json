@@ -95,11 +95,3427 @@
     },
     {
       "name": "skill-creator",
-      "source_repository": "https://github.com/anthropics/claude-plugins-official",
-      "source_revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
-      "source_path": "plugins/skill-creator/skills/skill-creator/SKILL.md",
-      "source_sha256": "dcd4803e61e913e6fc27294184cd3a71f09f5e924ff20c8a9a20173e7b3c2bcf",
-      "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase."
+      "sources": [
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/LICENSE.txt",
+          "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/SKILL.md",
+          "sha256": "dcd4803e61e913e6fc27294184cd3a71f09f5e924ff20c8a9a20173e7b3c2bcf",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/agents/analyzer.md",
+          "sha256": "bf68f4cac5a56c673a928c2e6d619586c5b93ea364026ab37547772cb45a663a",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/agents/comparator.md",
+          "sha256": "fe1fc9787c495d864c5d6eada47396478572325fde1b33a96d78bf4b849b7a3e",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/agents/grader.md",
+          "sha256": "57134da0c1a4eea33fbd74a1c9c44aa814f07d6bc64de303edb586f941e5d21a",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/assets/eval_review.html",
+          "sha256": "ce477dcc74dc1c0d1d3352646a79167b5a63634e936b1019160025065974e452",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/eval-viewer/generate_review.py",
+          "sha256": "fc9d1b9243fe5ab6012ebd579bd76d0035de1b79fd3b969de114defab26478fb",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/eval-viewer/viewer.html",
+          "sha256": "a53213426ee1100441d701a3a0d49cda7a842f992d2c36463f4d3cc0258575fa",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/references/schemas.md",
+          "sha256": "8e8876180a8989b406a4d3edddf875b04cdfd5805cc8616686d552b11ce4455f",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/__init__.py",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/aggregate_benchmark.py",
+          "sha256": "123ef128ea5ccc01a4b1ac212ef5567f21e9c13d3d240609780beeb3200c49aa",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/generate_report.py",
+          "sha256": "13df7118a3c50c83c4c3250a606d5f2b20b25a3d44cbc392b3d669ec75281453",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/improve_description.py",
+          "sha256": "87d864570220b699fac52da309d2d6efdb060647bfebc74f768128e646accf80",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/package_skill.py",
+          "sha256": "1a33059b0db1ef73375d46d513e5ea81369d2e8838c970597b0d52ddef8d1c0f",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/quick_validate.py",
+          "sha256": "67cf5703402013936c8fb75ad6a1afecd8841d45cc5e606b634eb05825fde365",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/run_eval.py",
+          "sha256": "43e3b8f80dbf69c343967ba77e268fae991d9fa3ed68b32a0ff02532cd48657f",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/run_loop.py",
+          "sha256": "7bd6f674203168520517eec94c55f493c0d154339b061b4d7c0f0dad187d0f21",
+          "license": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/anthropics/claude-plugins-official",
+          "revision": "fa59bc9037741ecfa131aa27938272605710d7b2",
+          "path": "plugins/skill-creator/skills/skill-creator/scripts/utils.py",
+          "sha256": "3af8ae62c40c73ab712207436a0d9a981e845f25c5a7040229eb189cc8e45bb1",
+          "license": "Apache-2.0"
+        }
+      ],
+      "adaptation": "None. Verbatim copy of the whole skill directory (Apache-2.0, LICENSE.txt kept). Attached to the Claude orchestrator by name; belongs to no phase.",
+      "vendored": true
+    },
+    {
+      "name": "app-store-changelog",
+      "sources": [
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "app-store-changelog/SKILL.md",
+          "sha256": "3c86eb572b2a67a3f79b4d2eb76ec20683d54bc7fecfac55a7259b0f6fe66723",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "app-store-changelog/references/release-notes-guidelines.md",
+          "sha256": "c8dcb505b66ab8dc2008e35be44f290d5e03468bed48bf0f07c3adbb5c985ed4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "app-store-changelog/scripts/collect_release_changes.sh",
+          "sha256": "d694f35dffbb1fafd3b5580a2211d07ffca90baf0eb8138bdf3fff8db5386d7b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "LICENSE",
+          "sha256": "df17aae89ce4705d0a6e5f7b46eeea3b9023967ecad948f8779b47039eb55a8b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted. SKILL.md: the read-only git log commands of scripts/collect_release_changes.sh are inlined (bundled files are text-only), the script reference is removed, and 'Ask for clarification' becomes a message to the orchestrator. release-notes-guidelines.md: 'ask for clarification' becomes 'ask the orchestrator'. agents/openai.yaml is not copied. MIT LICENSE kept.",
+      "vendored": false
+    },
+    {
+      "name": "appstore-review",
+      "sources": [
+        {
+          "repository": "https://github.com/3paws-ai/mobile-ai-skills",
+          "revision": "6d3570eab02b57d8f8269ef11a1ef8ffcb1c8553",
+          "path": "skills/appstore-review/SKILL.md",
+          "sha256": "2b42b4336f313a1c7f38970bf632040ac25907f8f928c26ac8aa46aa5f780c84",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/3paws-ai/mobile-ai-skills",
+          "revision": "6d3570eab02b57d8f8269ef11a1ef8ffcb1c8553",
+          "path": "skills/appstore-review/references/appstore-review-ref.md",
+          "sha256": "c218a12a0993482fb8967ca24efd5480874e1fa81fc5c557c7790e526000e3d4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/3paws-ai/mobile-ai-skills",
+          "revision": "6d3570eab02b57d8f8269ef11a1ef8ffcb1c8553",
+          "path": "LICENSE",
+          "sha256": "13eff4111443a3aff06bfa41eef91ab4c4385f465f7462fc61f95b3ce8eca6fd",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, light. The folded description is one line; trigger and agents are kept because horch's parser accepts them. Checks that need the running app, the network, Xcode Organizer or App Store Connect are marked (runtime) and report UNVERIFIED without evidence. print(), force-unwrap and TODO/FIXME checks are WARN at most. 'If the user mentions' becomes 'If the task mentions'. references/appstore-review-ref.md is verbatim; README.md and references/setup-guide.md (install steps with machine paths) are not copied. MIT LICENSE kept. Vendored because the references are verbatim and SKILL.md is over 12 KB.",
+      "vendored": true
+    },
+    {
+      "name": "art-direction",
+      "sources": [
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "SKILL.md",
+          "sha256": "d14490c0cad019522ac3b087b0f2d509517285238a0df3233227b063324dd709",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "directors-library.md",
+          "sha256": "662dda241f322a135c20c4713d2d47477fe161559a182738726f44f22b59c127",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/anti-convergence.md",
+          "sha256": "c66feb1dd8b8dc8665226db1a54e9e1e69c688a53439bc2facccfee3c24e7d25",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/anti-garbage.md",
+          "sha256": "55d547cddadb0095e4800f932c5aa06a4d4637a3363ba5086f5acca805245108",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/premium-calibration.md",
+          "sha256": "349c35e474fb0ace98ef7e9d067d3c4f93399b5a33107e68f87eb46dc6fb637a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/reference-protocol.md",
+          "sha256": "3cfdb0bff2b2d2cf8f37aed186df276bb1bd6e9bd2e5c357007b846175e771ab",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/implementation-guardrails.md",
+          "sha256": "fb4f6e0be13651b92db423de9dc20c77668ec6e8893b3cfc215f07e4dc67bf38",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/output-templates.md",
+          "sha256": "2323dac4cdd3207c202fb0ca9641179ca00f9f0d59ca41d909e32041fae15715",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/narrative-beats.md",
+          "sha256": "b478e06dd5dfc4bf21a3b8fea7a3a6f864d19c14277fddddfe6a6ec0045bbcbd",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/section-functions.md",
+          "sha256": "2ee98b84bfff4f5a381940c0aeee53d8faebe3128e320adcc78d643352e42f9c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/compositions.md",
+          "sha256": "415b15d7d85b2b5e22e3f1dcca49da0d18a8577b910b4cb8be82355af0cd681f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/camera-shots-50.md",
+          "sha256": "c36c56402570a7c36ae10b18609e15c033f751976e2cb0e53264144c3d0cba20",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/color-grades.md",
+          "sha256": "1a2177a5abdfb9fd5dd97257541104c6bccea344570bb7e2071d88857bd0b731",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/visual-styles.md",
+          "sha256": "c7bf4a438db84c90a2e4f0705874628b189e2c4ef775cc5b44e49f5756b6b016",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/image-direction.md",
+          "sha256": "97da36d5525268b382c408c0fc8c2f98b7a7905f1056f3ca65a2fa3f94989c61",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/minimalist-skill/SKILL.md",
+          "sha256": "36bc7328f085405f43b476938e62460fa573bf7e984e949e072bcf014831a44c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/brutalist-skill/SKILL.md",
+          "sha256": "fffbaac8597f07679e9d87145533567658aedba3b5eca6f16a7075a333048caa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/soft-skill/SKILL.md",
+          "sha256": "e1e32f5e2d420872c6c7332b53d5ff7721946766b78c4822b424c2d512c8fdbc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "SKILL.md",
+          "sha256": "880345da12e31cedfa19660395733e2ae7e7a49b2e359adde67bbf3bd22cfd34",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "references/tool-reference.md",
+          "sha256": "50070a7e790a4d5d0af3885d6a859ccaef64d825290c4cbed1af0f2ab6bd079c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/bloom.json",
+          "sha256": "0b7bc8161444e61b55edbfef113dec5890fa6aa2bb652aabf2c18dad78470303",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/ember.json",
+          "sha256": "a0ddcaa604d8ee2770921c59848868a77c2c43328737c71eb4618ead0b85b630",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/grove.json",
+          "sha256": "120873af8ff3574741615309653da2c4f86d8873fc24e20e29817330b7d52bbc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/midnight.json",
+          "sha256": "8dc7e9e23359d636d76711d82bc3ff489e137129643d93db8104ef8d80827552",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/minimal.json",
+          "sha256": "b3211612051dfe02f0d32488966b0d4d944143da16deec8aaeff76fc478c12d7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/stevembarclay/pencilplaybook",
+          "revision": "b7324295d73d67ea0a672cf16832880c111df0ed",
+          "path": "presets/volt.json",
+          "sha256": "648246a84da15fc5df26af77be9dcc58a5e51355d21a3f8a7bca0a99747f2b2b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Combined and rewritten: the cinematic-ui director workflow (decisions, storyboard, signature composition before shared system) without its questionnaire, sub-agents, compiled-spec phase or data dumps; 13 directions merged from taste-skill styles, pencilplaybook presets and 6 film-director temperaments; pencilplaybook perceptual defaults as floors; Pencil canvas rules in one optional reference; a DESIGN-DIRECTION.md contract replaces interactive approval."
+    },
+    {
+      "name": "asc-cli-usage",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-cli-usage/SKILL.md",
+          "sha256": "c9576c7aee6143b090e7932eae1f216af0a16c716c8c12bc6aa46f3e12446415",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, light. 'in this repo' is dropped from the description. The web-auth material (web auth capabilities, web api-keys create, the 'Reuse authentication before requesting another code' section, the web availability fallback) and the Apple Ads section are dropped. Fleet rule: App Store Connect writes are never run; the worker sends the dry-run to the orchestrator. MIT LICENSE kept.",
+      "vendored": false
+    },
+    {
+      "name": "asc-crash-triage",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-crash-triage/SKILL.md",
+          "sha256": "3afc42be148548f93aceb411b595914ab5e945ec5407c9d63b848b681901430c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Verbatim (every command is read-only). MIT LICENSE kept.",
+      "vendored": true
+    },
+    {
+      "name": "asc-id-resolver",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-id-resolver/SKILL.md",
+          "sha256": "0b988ee48f1fbfb94674c9fd1ec79d4637d5717782a0b6aacacc11478a830f75",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Verbatim (every command is read-only). MIT LICENSE kept.",
+      "vendored": true
+    },
+    {
+      "name": "asc-metadata-sync",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-metadata-sync/SKILL.md",
+          "sha256": "1a4b5b2dfc42a6fa95541f5ceff3b1a484c3b4f02eef2f0693237fbd927d9e1a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, dry-run only. A fleet rule states that asc metadata push without --confirm still writes live metadata, so the worker never runs push or any other live write without --dry-run; each apply, push, sync, upload, import, edit and set step becomes a dry-run sent to the orchestrator. 'the user' becomes 'the task' or 'the orchestrator'. MIT LICENSE kept.",
+      "vendored": false
+    },
+    {
+      "name": "asc-submission-health",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-submission-health/SKILL.md",
+          "sha256": "64ca677b6fafe7cd6b7ba1ed79e1679cf8444dbd37f21beaadfba7c7e3c1ae93",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-submission-health/references/readiness-repairs.md",
+          "sha256": "c094db5d4a337379c005bd4370284412b368ccc00db28b3f6fb6d57d32c74d5d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-submission-health/references/digital-goods.md",
+          "sha256": "5beacf88fcfdcc661700666074a838813ac378fb91531230768b055b5f0cc802",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-submission-health/references/app-privacy.md",
+          "sha256": "671a31e9c1c236e23ad6b8d52874a7a86c5f9d939ffb87eb4a5e7e8341abc425",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, diagnosis half only. SKILL.md keeps target resolution, readiness diagnosis, health criteria, review monitoring and failure routing; each repair, cancel, retry and submit step becomes a dry-run sent to the orchestrator; links to asc-release-flow are removed. digital-goods.md and app-privacy.md are not copied; their read-only inspection and the web-session gaps are summarized in SKILL.md. readiness-repairs.md keeps its inspection commands, marks every write as dry-run only, removes the web-session and screenshot-skill routes, and asks the orchestrator instead of the user. MIT LICENSE kept.",
+      "vendored": false
+    },
+    {
+      "name": "asc-xcode-build",
+      "sources": [
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "skills/asc-xcode-build/SKILL.md",
+          "sha256": "41e3504f7b4c054e12873989ac784fafb8129458ee2c35aa59e3cda552841224",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/rudrankriyam/app-store-connect-cli-skills",
+          "revision": "9a093fa52177d1b784fcbb06f9abfef4974e7701",
+          "path": "LICENSE",
+          "sha256": "56fde5f70d5af10b746863208dee6bf0b99e49066da1f76e1800c760e276139b",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted, light. A fleet rule: local build, archive and export steps run; a build upload runs only when the assignment names it; asc publish is never run and goes to the orchestrator as a dry-run. Links to the unbundled asc-ad-hoc-distribution and asc-signing-setup skills become reports to the orchestrator. MIT LICENSE kept.",
+      "vendored": false
+    },
+    {
+      "name": "brand-identity",
+      "sources": [
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/SKILL.md",
+          "sha256": "1c24139633e2ebf11da4f97eaeb1c0564f8658a40b3ad779387a5b8c6cb76dbc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/voice-framework.md",
+          "sha256": "08c15ac79f81cd964c5efbe593131b61a093c7e1b060d5dd28b17f3cc5b331fb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/messaging-framework.md",
+          "sha256": "24b2500a72867b55dd10f4bf359178b0eb347fddd852659ce47b69d9f597d4e6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/visual-identity.md",
+          "sha256": "63f0cfc5d95403d8e12aca4d839cc28471515574d9a431334bfbb96c15407c31",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/consistency-checklist.md",
+          "sha256": "56d8b2d4852cda11e600adec4b9dd68fc89a1b8265382359953bec5c5e5e2c36",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/brand-guideline-template.md",
+          "sha256": "392db8cf10fef492221c15a86e68590074bf5716de1f2982f41c01fbe30567cc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/logo-usage-rules.md",
+          "sha256": "044c5ddf30cfe0eea047451cfce6ea654939198ffdd8968a19161c97066a5a26",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/color-palette-management.md",
+          "sha256": "c429298ffe3955edb8b22c9f51426fef75e83d02848cd4300e89c0d3fc34b44a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/typography-specifications.md",
+          "sha256": "921c3d9e6ddfde2677b9a3e32eee94c7922f54f22c1f380c5ed2eb25a7d5bfa9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/approval-checklist.md",
+          "sha256": "1cbf5f0fb3aa780c1a1406f56afe16f6af8e2e59165b8efc40038c7c0847f5b6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/references/asset-organization.md",
+          "sha256": "de98123417e9c5a1cc71a78131bba979c4c8ed2e5289e6c7a7f166576e488101",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/brand/templates/brand-guidelines-starter.md",
+          "sha256": "d157a57b15f0b458c79636d11de42f3c89f03d8c0bbea1bdd3cf1c3542b2140d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-style-guide.md",
+          "sha256": "611baa841eedab101f45c113c6bfbd4d7e16e859c9d6ebd2cf941827a6e8dd15",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-color-psychology.md",
+          "sha256": "3fd0e93e24c3b2ea7f3be778e8f2d03b1c62c7c6eab3ade478c8fca332bff287",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/data/logo/industries.csv",
+          "sha256": "e58dda4b9d28851f70914f82c1d2a2cff626a991ca41076f64122f33cc8a6525",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/brandkit/SKILL.md",
+          "sha256": "b0c4837e1bd140ca816ae54948754ddd2ac1e2a4d3619363777a80caf00b2ede",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged the ui-ux-pro-max brand skill, the non-image logo and identity guidance from its design skill, and the strategy and logo-concept method of taste-skill brandkit into one strategy-first workflow with voice, visual identity and guidelines references; scripts, image generation, presets and approval sign-off rituals dropped."
+    },
+    {
+      "name": "design-imagery",
+      "sources": [
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/imagegen-frontend-web/SKILL.md",
+          "sha256": "6b5c2256522fdba1e3313eafa3d743b960a7b13ec029d3e6586e04b23327c1f8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/imagegen-frontend-mobile/SKILL.md",
+          "sha256": "8a33389979f3074fa0926678e266ad2eb9234624472254469fc1ad916b9caa24",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/image-to-code-skill/SKILL.md",
+          "sha256": "4c060a8064a8b13380bc2ef3d6e6a1d0b1e316aa093cd9807d0ce9e4eeb037fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/brandkit/SKILL.md",
+          "sha256": "b0c4837e1bd140ca816ae54948754ddd2ac1e2a4d3619363777a80caf00b2ede",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-style-guide.md",
+          "sha256": "611baa841eedab101f45c113c6bfbd4d7e16e859c9d6ebd2cf941827a6e8dd15",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-prompt-engineering.md",
+          "sha256": "e50f55bf323263eb27b4cd4c5172383a787fb894581d5d2befb3f6e0180b253e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/cip-prompt-engineering.md",
+          "sha256": "4bf3a0c858f38c230e43e872857b72d9eb692e066e8de5920da75aac733e753c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/scripts/logo/generate.py",
+          "sha256": "a72e25d49e48fac6a1059d681a39c3f334c085f54ab90a88d1c9726edd079940",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Combined web, mobile, image-to-code and brand-kit image skills into one harness-neutral generate, spec, build, and screenshot-compare workflow; provider scripts, API setup, dials and approval gates removed."
+    },
+    {
+      "name": "design-system",
+      "sources": [
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/SKILL.md",
+          "sha256": "ea087c341bfb5b23195c7302027268ede86da802554c18a5c4896a6017b439f9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/references/quick-reference.md",
+          "sha256": "0609bc7c89dacb40472465d8fc14257b56b2c43439660fc8d6fa3b8c022e1876",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/references/pro-rules.md",
+          "sha256": "d28442d61c310b49c054a4ea736f89fb3008beebdbbc38c4b3a540b8f7fadf23",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/styles.csv",
+          "sha256": "a93a4d9d7025856575d7b7583bda020be9043013432c5af7c58af9dbdfb206b7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/colors.csv",
+          "sha256": "8162429222bce22df62b564085946a30d07cc9722c58d0a3a494bd0d1d00841c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/typography.csv",
+          "sha256": "321fc446e89024488ebae96dda93efc4d2307bd8bddb240857ad51364f6782c8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/ux-guidelines.csv",
+          "sha256": "ff81ec613f70ba9fc3fcce52dbe4ae35d44b2079dbe6dc066d2d6e38c28facd5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/stacks/shadcn.csv",
+          "sha256": "e56cfde5b74907836ac3582a4779d5b7f3d206a702ab81b8669a1b668c3eeb51",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/SKILL.md",
+          "sha256": "8aa5ff93320559a6e5289d37b6b06b3307737dbfb4a6f3fc44135c705613c511",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/token-architecture.md",
+          "sha256": "925f4049c4c4313d9fd5df98cdfd52004112aca49fba1664ad85e76bc9dce4d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/primitive-tokens.md",
+          "sha256": "91e6caa12646c08c8aadf8e09399aed65760a25c8d80595936d81a9131118fc3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/semantic-tokens.md",
+          "sha256": "97e16d8061bbc22e82b51966a7015e3fc990932902e4647843506669a1cdebcc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/component-tokens.md",
+          "sha256": "e27f8f5999badee425c98235eabbd2cb3ebe2a1a364766d5c7a6b3134ceaaec8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/component-specs.md",
+          "sha256": "b265d979a741dd748d4e595e6898ae430faeef4f6d13d7a634fa6241b91d2da4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/states-and-variants.md",
+          "sha256": "8dacb95d57d4bb37d8a99cc55515ff26da272056f837d29abc74aedcaa3ba104",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/references/tailwind-integration.md",
+          "sha256": "6d01092db1479dbd2060567b4232bb2b4bc16e89730ab07e1f87a3e7f5c406b9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design-system/scripts/validate-tokens.cjs",
+          "sha256": "65f03a29290b9029d8cc27537701f226de7bcffc303b3bc361648fadfa09b77d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/SKILL.md",
+          "sha256": "625e302c60ee8f2e22d56cbe638c4a739e2657f566dae42689503ad517c30f1e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/shadcn-theming.md",
+          "sha256": "d17d641474221123ff0e0288043ca2f2dab3ac96908a19eed28d82f9e58865ed",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/shadcn-components.md",
+          "sha256": "79c4f91cbf68993a43fa3a95889c35db73de45bdd3dfd83a6830863c01aa598a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/shadcn-accessibility.md",
+          "sha256": "a22cd4ccf82b635b2b2c4f12416a0c4f7edcd825d219d6089450fa797a0d9511",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/tailwind-customization.md",
+          "sha256": "4c5adeed6263a274f74f6eb2c816ca420fd6ef4f35683582988bacd404799afe",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-styling/references/tailwind-responsive.md",
+          "sha256": "8d00ae620df26daea4623c7bf996d6e612e09d359305fcfa2b40cab757ed840c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/design/references/logo-color-psychology.md",
+          "sha256": "3fd0e93e24c3b2ea7f3be778e8f2d03b1c62c7c6eab3ade478c8fca332bff287",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/stitch-skill/SKILL.md",
+          "sha256": "46bdb08fee2dded38b6ba0a051230a502d6ac6e4044afd47592cb40c256028b5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/stitch-skill/DESIGN.md",
+          "sha256": "0ab6740c4ebb1966dbceddb823a66d4bf027e960efbd73faca56cbf8370ae2ad",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged the ui-ux-pro-max design-system, ui-styling and ui-ux-pro-max skills with the stitch-skill DESIGN.md format into a token-to-code workflow with checks; CSV data became curated, contrast-measured Markdown tables; search scripts, generators, slides, fonts and canvas art dropped."
+    },
+    {
+      "name": "landing-page",
+      "sources": [
+        {
+          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
+          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
+          "path": "SKILL.md",
+          "sha256": "f06be455f7e5ebd35f9fbf8e0ad23dfdca6a8eb14b540c93b8ea50a4886b0f13",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
+          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
+          "path": "design_prompt.txt",
+          "sha256": "45d37e38625cc57d2338d336fbba34d4889602520ff0fea68ec13192bb3f5c2d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/felix-huber/ui-landingpage-generator-skill",
+          "revision": "8dc143767218bc884b502a054b5d3fc401411a4b",
+          "path": "generate_landing.sh",
+          "sha256": "3c089063a9e2db5e519964f1d4afdc8814c96530a34955935356d0bb40f78ee4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/banner-design/SKILL.md",
+          "sha256": "ccb89ddc848f60bfe630cb19dfe3e062df94a029467a9b15259f2761019ac5c4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/banner-design/references/banner-sizes-and-styles.md",
+          "sha256": "c8906fb1073a576ee8c680d9bc8586249cbc4ed36690da960d65a1c9c37143b7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/landing.csv",
+          "sha256": "9a2edd3bb676c2a58f00ade7a062e285222d4297bfd847c8d5b056f0dbbf52d0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/data/products.csv",
+          "sha256": "42473f75e8dde5987bdf89ce55d8c168091b80a356cae691dd60247d80720b70",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+          "revision": "09170eec67eefd46a7ae85de61b40c194020f997",
+          "path": ".claude/skills/ui-ux-pro-max/references/quick-reference.md",
+          "sha256": "0609bc7c89dacb40472465d8fc14257b56b2c43439660fc8d6fa3b8c022e1876",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill/SKILL.md",
+          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged the felix-huber generate-and-review pipeline (run in one session, no nested CLI), banner-design, the landing patterns of ui-ux-pro-max and the landing rules of taste-skill; rewrote as a checkable workflow and dropped random styles, scripts and invented proof."
+    },
+    {
+      "name": "motion-gsap",
+      "sources": [
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-core/SKILL.md",
+          "sha256": "3887b47e050ab5afbe2a9a820f23d39fa02ab785e06a343be44c6f91d84d12b3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-timeline/SKILL.md",
+          "sha256": "1a8b0f39cc4be3ed3d834b89672e4ae2f151b901dc3450bebf10bbc45379fe02",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-scrolltrigger/SKILL.md",
+          "sha256": "9351b6666a4749c0740406ea363aaccb99a087ff45cc5e8b99a0f367facf3ef4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-plugins/SKILL.md",
+          "sha256": "5838b856c74c07fbc9fa99b6dfd1eee34ea554c3e530c30e0d58014b707d70a4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-utils/SKILL.md",
+          "sha256": "1927bcc4ea95b38203404ad5ea1d060b15c4a886c65ae53e885ff1793aabe0ba",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-performance/SKILL.md",
+          "sha256": "cb5408d6fba707aabcbfe3320317a14c1f8fca6070074e5261047930f50d441e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-react/SKILL.md",
+          "sha256": "88e2a5312b45e8cc7b3c496637ff5bc9af2ae9c925b555c8b235b34cbc989d74",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "skills/gsap-frameworks/SKILL.md",
+          "sha256": "842d9d3659ec3ddc8abbdc524708f8facf81f468ac25d0577f48c759c4fa31e6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/vanilla/main.js",
+          "sha256": "0c8c3d79a10dad596687b0013aa66b93c28581e42e1c0052e1bcbc265e40b98a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/react/App.jsx",
+          "sha256": "bdad45dafd00c7bb4f34ab2baa33ad9d624a15e9b29162a3c9b0eb2dce86db4b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/vue/app.vue",
+          "sha256": "fe82f03b53be9b6ec4294c9bd831e31d59ccb2fb1cc4c9d65a7301e91a4f2529",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/nuxt/app/composables/useGSAP.ts",
+          "sha256": "cbd3c12d6a8d889017e2d8ff48f914b5237cb9dc58ec52bd2002a48f2c7b09f0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/greensock/gsap-skills",
+          "revision": "aed9cfd3277740755f6bfc1155c7aa645403b760",
+          "path": "examples/nuxt/app/pages/index.vue",
+          "sha256": "1cd00f9919bf546b138670718acb884541f65c1226ab6fe283f2dd4e77c15fcf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "SKILL.md",
+          "sha256": "d14490c0cad019522ac3b087b0f2d509517285238a0df3233227b063324dd709",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/implementation-guardrails.md",
+          "sha256": "fb4f6e0be13651b92db423de9dc20c77668ec6e8893b3cfc215f07e4dc67bf38",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/camera-shots-50.md",
+          "sha256": "c36c56402570a7c36ae10b18609e15c033f751976e2cb0e53264144c3d0cba20",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/akseolabs-seo/cinematic-ui",
+          "revision": "24a66c1d6140c21ec0d0e4d9ef663a97264003de",
+          "path": "references/data/interaction-effects-50.md",
+          "sha256": "8b40fcb9b576130e5d885c53f037c330e4d51de5c687f16a869a9754020e1b9a",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged the 8 GSAP skills and their examples into one workflow skill with 8 topic references; rewrote in our voice, fixed source API errors, added checks and a verification step; carried the cinematic-ui entrance map, interaction budget and camera vocabulary as GSAP recipes; dropped persuasion, duplicate lists and the cinematic research workflow."
+    },
+    {
+      "name": "ue-build-verify",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text, written in this repository. Consulted as references, no text copied: quodsoler/unreal-engine-skills at f3742d7b688690810df369802b90430324e380b9 (MIT), skills ue-testing-debugging (SKILL.md, references/automation-test-patterns.md) and ue-module-build-system (SKILL.md, references/common-build-errors.md). Flags checked against Epic's UE 5.8 documentation; evidence in ai_docs/reports/domain-skills/ue-own.md."
+    },
+    {
+      "name": "ue-editor-scripting",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text, written in this repository. Consulted as references, no text copied: quodsoler/unreal-engine-skills at f3742d7b688690810df369802b90430324e380b9 (MIT), skill ue-testing-debugging (SKILL.md, references/automation-test-patterns.md) for the headless editor command line. Commands and Python API names checked against Epic's UE 5.8 documentation and Unreal Python 5.8 reference; evidence in ai_docs/reports/domain-skills/ue-own.md."
+    },
+    {
+      "name": "ui-redesign",
+      "sources": [
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/SKILL.md",
+          "sha256": "59469635bbbd21acddbc664d95e8d97147f454b2d8f4a0a89c7d2c5afbe67577",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/contract.md",
+          "sha256": "2923a056b95da63d04100ac56bc8cdff6bc0a717ac3e5da5cef69eb5feb4619c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/design-md.md",
+          "sha256": "a9368b64dd9b6e53e8c707830ce28fd8601d3195a81647ea46b6995aa3556b3c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/slop-test.md",
+          "sha256": "6eb49fc64ca54929d2c1600e2a6014268f1a7593787c0ed3f6ecb4ac8390ad86",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/study.md",
+          "sha256": "021fe4d001b38ee87414c1bb69321d2e44b67df8ede76ecec225c41a634aab20",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/verbs/audit.md",
+          "sha256": "0a5b484453f1697a8675a7020df9159d0b4ce22f059b873501bfd82c26d6a31a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/verbs/redesign.md",
+          "sha256": "c2830f3b7d68e9622f55d376048a5a454c5ef59d309a211e716d1142e86acbdf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill/SKILL.md",
+          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/redesign-skill/SKILL.md",
+          "sha256": "98ad3e5b051bfb71b2795f7e8a6aa0d32b51ee095606c098a4b2822ac07926c9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/output-skill/SKILL.md",
+          "sha256": "e5bf48b1ae561511439cf71672209a10a88cee0968cc925909ff861dfa0a96a7",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged hallmark's redesign, audit and study verbs with taste-skill's redesign skill and redesign protocol into a staged, non-destructive workflow with a standalone audit checklist, safe design extraction from a URL or screenshot, and a new before/after evidence protocol; dropped hallmark stamps, logs, theme catalog and interactive gates."
+    },
+    {
+      "name": "ui-taste",
+      "sources": [
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/SKILL.md",
+          "sha256": "59469635bbbd21acddbc664d95e8d97147f454b2d8f4a0a89c7d2c5afbe67577",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/anti-patterns.md",
+          "sha256": "a36eb346ad59cafaa26119ed1e7c0bbb8aca6637209ee110eb630dd1a9307070",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/assets.md",
+          "sha256": "60929b3dc2258b69caf3012d99d174e1ad73da9645263db81a9b271cd6fd7d61",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/color.md",
+          "sha256": "31c470d16ceb17ccce290cbdd00b9e9a88f2094df8eaaefb67c86ec1e1cdb876",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/component-cookbook.md",
+          "sha256": "4d9ff4eeb675b9d668516ce5d098031d3552453b3671e50da30fb38cb9ab58bb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/contract.md",
+          "sha256": "2923a056b95da63d04100ac56bc8cdff6bc0a717ac3e5da5cef69eb5feb4619c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/copy.md",
+          "sha256": "703cdbf81fbef6f71d90596a32041d2a33a46fb71ba07ccf5ede6b4b1471d347",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/custom-theme.md",
+          "sha256": "da0fb051689bf9d100e50e67209566623c1fbe72e09b943248c458985c39e780",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/hero-enrichment.md",
+          "sha256": "63c14cc2c256dd78a69a1c36f4bcb764940aa7f1ba2e6dd40ca36013f8884a83",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/interaction-and-states.md",
+          "sha256": "e816eb2d067ba9f6f288a3831549da95624a05f432ed2a50f54136f27dd2d67f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/layout-and-space.md",
+          "sha256": "987f3a45f5dbe81547117a77987bcedf5376608a6412067e04337047e0c7c839",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/microinteractions.md",
+          "sha256": "613ca56c2c16e40aeb594af21fabd651732d9de63c848aee51113602525f6e64",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/motion.md",
+          "sha256": "330d056810315f65819579f8207afe402703a9192bc76a2009558a59b7c84ccf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/responsive.md",
+          "sha256": "2bf18d72af704ca5dd3c220359a4c77c718efa19c40f62d9bff61ac4a90209b0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/slop-test.md",
+          "sha256": "6eb49fc64ca54929d2c1600e2a6014268f1a7593787c0ed3f6ecb4ac8390ad86",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/structure.md",
+          "sha256": "ca5c0296ae428f8c4c5214407d431bbda5c453f98f2e7abdec03d644271af32b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/themes/hum.md",
+          "sha256": "bbdd1e89a32d6b15e99493ba9497816a0915bd4e9bf150b95868db597c20e1d5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/nutlope/hallmark",
+          "revision": "13ac0ec7e148655948100b6396439e481361d690",
+          "path": "skills/hallmark/references/typography.md",
+          "sha256": "94d7b2d2b138bd8687e09dc3dd618eaafff500b0497a6d69cb4c29b764e94b9c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill/SKILL.md",
+          "sha256": "aa194351b246b8b4799099d4ed7b033d29eab6e6e3d58d8d2172978be7b3ec89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/taste-skill-v1/SKILL.md",
+          "sha256": "033d45af1ed23832730642f95f40ab49db7fb5222848489a6c5656144bfc6dae",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/gpt-tasteskill/SKILL.md",
+          "sha256": "2e64c269953f2656c21bf5a0fa6b4568e82fe0c72b36e8f84758e090349966a5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/output-skill/SKILL.md",
+          "sha256": "e5bf48b1ae561511439cf71672209a10a88cee0968cc925909ff861dfa0a96a7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/leonxlnx/taste-skill",
+          "revision": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+          "path": "skills/redesign-skill/SKILL.md",
+          "sha256": "98ad3e5b051bfb71b2795f7e8a6aa0d32b51ee095606c098a4b2822ac07926c9",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Merged hallmark and four taste-skill variants into one stack-neutral taste skill: rules per topic, ripgrep searches for named tells, measured hard gates and a six-axis rubric for review, and output-skill's complete-output rule; dropped theme and layout catalogs, dials, randomization rituals, stack-specific code and persuasion; conflicts resolved in ai_docs/reports/design-skills/skill-taste.md."
+    },
+    {
+      "name": "app-intents",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/SKILL.md",
+          "sha256": "fb712c0ec6d8d6d3ddb6b5cfee4287b9b9a4c4bd1c1c8b66b861d740ba5a2adc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/anti-patterns.md",
+          "sha256": "5df2315d6f132cd268610d3ff44d9e822c29cef98d47fe879653cb91a985233b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/assistant-schemas.md",
+          "sha256": "30f462ae86a5be48d50304a4e4fcb115dc905ba0478f11edb0cda4cce3e8458f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/dependencies.md",
+          "sha256": "c125da4c9d4fa60d99e5b1b42ddab18e5fb0138d0aa8a53fd6a7b9a0aa88c39f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/entities.md",
+          "sha256": "8c3132af45c29da15bd98287cfd2c8691364388f61840a4ac4f1ecbb5842bb15",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/fundamentals.md",
+          "sha256": "d98c7088c4cb944f6c2f2ac6e4ad96ee11402b9f697b278b78cf19a4e25a51b9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/long-running-and-execution.md",
+          "sha256": "52ec173396e5464097b5b54ee9f6b917e9920e4ca88b7ea66ac781bc1c877eee",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/onscreen-awareness.md",
+          "sha256": "15de75f6b2b673346d7ef967877052c351d85d1acffa206fbeb73ab08933399f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/open-and-snippet-intents.md",
+          "sha256": "b8589667561ceff6148eb8789e2f500069627acb2a0668006d559224e626b4cd",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/parameters.md",
+          "sha256": "d93a7872c5f198dbfb69425b92570eca44fe803c72e26908688d1a7149b0e531",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/shortcuts-and-siri.md",
+          "sha256": "c950209c1311b7adc0cf4e3a697c1e4e8b1149d05aafccf93cd3400294b19708",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/siri-intelligence.md",
+          "sha256": "8d48e3008fd8afc3408f279bc23957dfa3375194e618c11012fa9ee21fd4c666",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/spotlight.md",
+          "sha256": "c40bd01142755c99545a4d65559838722ea301c64ee1889faa977d0aff2ece9a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "app-intents/references/testing-intents.md",
+          "sha256": "615f169a1c263b0c0d6759eccb2136c44006e88011f572eb074bb6bb905f88a1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/App-Intents-Agent-Skill",
+          "revision": "f754f08c5ef45515cf51b026f87f8aa89d747f7d",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
+    },
+    {
+      "name": "background-execution",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/SKILL.md",
+          "sha256": "5b8afdb49dcaca10dc287f1e027429f6c3bb50da6f0ef5b6a86c17cbd0429841",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/anti-patterns.md",
+          "sha256": "460272c3989dee57be748a90726e958292fca5b90f32f54b1d7e51ab47921e84",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-audio.md",
+          "sha256": "e68cacf3a83bbe74ee3fd6f9b4f1995c1cf58ba69705f858218b3841b8c79cb8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-modes.md",
+          "sha256": "d3b384283c4374505b5fd42bca81fef1eb068e910f535a7f13c6f528e3ea547b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-push.md",
+          "sha256": "d366b5a281d37e1074c41e5a1db66dc5772899deb9e600351c7322278851c286",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/background-url-session.md",
+          "sha256": "f954cad1db20c5c2e178165c1ed4c69055e62e5c9dd0ea3d45cebd672f250fe5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/bg-task-scheduler.md",
+          "sha256": "b4a29976525d00fc5aa9d8b48002871b4075e4a1c149dd19d204c66c074266dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/fundamentals.md",
+          "sha256": "e140da761fa3231a99dd4ded5ff4946ba08a46fd4bd66adee626e4571032b74b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/macos-background.md",
+          "sha256": "24a0a2704b84aaef1aab2b0353973302626deec2cb000cf1d3460117530b98a4",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/swiftui-background-tasks.md",
+          "sha256": "e3e61064716e4f11042ce98aa5775f2831666a44795e927b247d53ae4bd31c65",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/task-assertions.md",
+          "sha256": "636bc4d054a6ead73bf9fd4137065080299550e72645220cd7d3ae57b6830322",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "background-execution/references/testing-and-debugging.md",
+          "sha256": "76fa50aecffc9c3fccb3607d76767417cf66602afed732aa3e0a4b1b083b6cab",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Background-Execution-Agent-Skill",
+          "revision": "a29ddf879308bc6cb0d5add020533701baa7fe67",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
+    },
+    {
+      "name": "swift-focusengine-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "SKILL.md",
+          "sha256": "d9b6629e3ef2cdada37fdda400efc22d3584c17cb69fd9b3b6cfd942eff9bf7b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/accessibility-focus.md",
+          "sha256": "c0ce9e55160efad81bbee9bf79bad68e300496af846376dfd8870ed93d14a8ec",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/anti-patterns.md",
+          "sha256": "618db9d4b52cc00d5ab8b361dbb1f237cf3fb9d56bd87b68ec87f5df24daea0d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/async-focus.md",
+          "sha256": "d3ec16054e4b9968daf18c920ee02e60b0d2c51e1412a404f193f218a30ea52a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/debugging.md",
+          "sha256": "7a388961a4238f2d0b8ad47761ca72d1c650b32d6ea933ce6d2094634891630e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/focus-restoration.md",
+          "sha256": "bcadedfdec2fcba4a4cd2302c58afe22a6790dfeeefee637c2ced1744f4cfd04",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/focus-styling.md",
+          "sha256": "472f3001f706531e2bc615c6d21cbc15888602bd5cda650b098516ec3d5f4668",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/ios-focus.md",
+          "sha256": "3cff9b4f6087aeedb9f2405547f65978b81fdec183d691f741051148d1492101",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/layout-patterns.md",
+          "sha256": "fb3e7d409ba8597b0aa86827b58cc41dba9ab62716dd5dba65615a9a4b9e6007",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/macos-focus.md",
+          "sha256": "6421cae0829875c5283517708756ce32ae3d83fdbcdd0a93f0e55623982d8b48",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/realitykit-focus.md",
+          "sha256": "f0765a02e2792740f6cccd9bac877418dafe99de80b4d4e9b238c0580d25af35",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/swiftui-focus.md",
+          "sha256": "79c5461e5141c73eabc671e2609dc575891082cf26f20fff4ab4025083cd6c99",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/uikit-focus.md",
+          "sha256": "13ed60f467e711a415ad4f4a67a128bcee991260126ff060827829775755c2d2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/visionos-focus.md",
+          "sha256": "a953b2c260039037e98fbc93b8f3ff1b2793986b9b7c870f30f2a49219ba094f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "references/watchos-focus.md",
+          "sha256": "9d7b8ea0ec84731a447df17418889f813d691f0df06abab5fa750d9102b6c29d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/mhaviv/Swift-FocusEngine-Agent-Skill",
+          "revision": "903d58d0ed03d4b85251d34dd96687eb822b3291",
+          "path": "LICENSE",
+          "sha256": "ee62630c3e0aa7e01288a2c97fa33641a4cabbb014c28e7c98007ad4243040a8",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Upstream repository root is the skill; the directory is named for the skill. horch accepts the upstream version/author/tags frontmatter unchanged, so nothing moved under metadata."
+    },
+    {
+      "name": "widgets",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/SKILL.md",
+          "sha256": "c070435ebe6ee8e2ca5aca7312a4ad3f9acf60095ed949737a8a2dfc46e844d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/animations-and-transitions.md",
+          "sha256": "6fdb98bad3a8a1d651bedbf81d0639b79fb1b4dbb65557366db01fa22a507011",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/anti-patterns.md",
+          "sha256": "fdd2985e8d15e64f56c973c257b1a233d6c0bce4424fcfe144f33cfae47166d3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/configuration-and-intents.md",
+          "sha256": "f5f3a1be352e98209d95447f407995b01cca860596a85fd8607b450c77b83c92",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/controls.md",
+          "sha256": "9a00e7e92494cf7b4df9800a35611c7aa0863583f96e29b94bf75169c0f1d772",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/data-and-networking.md",
+          "sha256": "049c5faa5eabb1d56588f5435c534533093e81ef97fca3ae216f3452667e7b8d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/deep-linking-and-navigation.md",
+          "sha256": "4acb36181ab6584097aa5700d174cace50a604cf176e82c9bb147a50d6c4e824",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/design-and-gallery.md",
+          "sha256": "286d914d0a906ba20ccabb07ca8c2f2651dc39522f482dc8dd04e84618e576b2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/families-and-layout.md",
+          "sha256": "4745e43a478898e6dbe312036840e5ac8c054d24b0ddd71b1760b8fe41057454",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/fundamentals.md",
+          "sha256": "034870ce188d5b6546468e1de8621fad908dd6a0dda6148a19edf24299104798",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/interactive-widgets.md",
+          "sha256": "95ad294c9effa7af798afe87ea64695689b6f42aa9ae2e0fef4703da033612fe",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/live-activities.md",
+          "sha256": "76e84edd928962c6e63d605e349bdcbdbbd9f27f1ac2c4ebce11b88f69e5c76f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/lock-screen-and-watch.md",
+          "sha256": "7398b9c98f1a33db0868a9e2dc4ab5471a579d4be00b4aa35e043b8d00dffade",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/migration-and-deprecations.md",
+          "sha256": "8d67aa66790d8836700333b38add3697678cdb5cc202a4aa5ac675931259361f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/platforms.md",
+          "sha256": "f0f44aa140c5c8854d35f1817d7351cd965f996d5622cf2577099e99c66faea2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/previews-and-testing.md",
+          "sha256": "b0781abfafc3412bdbf23eda4e362631b1139213ade406ab9cd224979d98ad3e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/relevance-and-smart-stacks.md",
+          "sha256": "c4237a3fdce8e2ac7edf70140f11d9f2315cd9022c2e6a3277ecfe153f6b4da1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/rendering-modes-and-tinting.md",
+          "sha256": "1790d28e5f27a2b53029cd6036e1c62adf34189dc448e857d5515419594f55ad",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/timeline-provider.md",
+          "sha256": "175c81c72b1eee4ec927d3595fc7cfc9682d1973c2b4a5fe6f415cdc9f2a610a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "widgets/references/worked-example.md",
+          "sha256": "94dbc4c22f5c0cee31e63fd311894034b5b9adef0f7baa956b8a0b5cca9197c2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Widgets-Agent-Skill",
+          "revision": "06567e152df00df1db50a2935bbe62fda9e27c19",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true,
+      "notes": "Apple documentation (developer.apple.com, checked 2026-10-03) confirms the iOS 27 claims in this skill. See ai_docs/reports/domain-skills/swift-platform.md."
+    },
+    {
+      "name": "observability",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/SKILL.md",
+          "sha256": "25003e912b696a33d0d7356b9e99f9da88cf2afadb601549a7d229b2220ff42f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/activity-tracing.md",
+          "sha256": "fd2a0c839c915e754b37e1cecfc70f3f994554429c3b0cee437aa764acf06f89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/anti-patterns.md",
+          "sha256": "183bdee5e0aead5c377ee4dabcfc1aa3bb63ba86bf90348eeb1f6e591b75dd4e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/crash-reporting.md",
+          "sha256": "0feb28dcefef6b6c54306e02c0ffa79cb91436d5f26d63189d5a62724828d712",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/fundamentals.md",
+          "sha256": "d02db8c623ba23571106ae771bafcd6c2184729712e1cab310e687084470c1e5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/log-cli-and-console.md",
+          "sha256": "6f22b70dd00b1063480499a94a1f7345f17305fd2a3e8070360ee622b24131d5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/logger-api.md",
+          "sha256": "b2f91eb387effd4a9ef7f663128036b2b54c4b1a1f9f776b71faca6e0536b1d7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/metrickit.md",
+          "sha256": "cb50fcd23588ba3505a7b9a952bfae934aa8557ed1db1261b8ff905a15d96fcc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/network-telemetry.md",
+          "sha256": "02c749e44b6fccbbeb983ea3a01aa5e33db3d00da0cd75ac6143624a3312336b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/oslogstore.md",
+          "sha256": "ab7de1c20c59f30b238e267d421614bfdb8684cf82efaa3268d1191a3c304a76",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/production-monitoring.md",
+          "sha256": "6890d9a0df22716edce56e10c22562e6c6641eb201eecacdb037be25389b4952",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/signposts.md",
+          "sha256": "a0b5444c705c3a8993bb0a18cd4848581c1eb6852236e07410d09ee7b8933c76",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/symbolication.md",
+          "sha256": "73f425a30f3092e64d54636f7923c4aca422feaaf7b8481a5a9b8b7dca26ec99",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Observability-Agent-Skill",
+          "revision": "4ab4f371b03b2015767fbe9da7d4321293bfc377",
+          "path": "observability/references/third-party-sdks.md",
+          "sha256": "667f61fe118560b987a00137e10d3b3d119cc97686c3c29319eced050fa58aa8",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "None. Verbatim copy of SKILL.md and references with the upstream MIT LICENSE. Vendored because SKILL.md is 20 KB, over the 12 KB budget. Attached to Swift teammates by name; belongs to no phase.",
+      "vendored": true
+    },
+    {
+      "name": "swift-concurrency-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "LICENSE",
+          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/SKILL.md",
+          "sha256": "95d3098b038a38f163259cb7404070f786fed846a5e8b864e6b34fa7600247f9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/actors.md",
+          "sha256": "7a77a0f06d0040a6813ec02cd4b1360df4bcfa501f93710bfb4296de9911d64f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/async-streams.md",
+          "sha256": "589ba0dad544b28b158702e239fe6a4077b6d1484c83b8fd51290192bf1ffc9a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/bridging.md",
+          "sha256": "c8eb60dcdd90f67cb3b8b1213fc55a56dd5c4a04f465d7aff7fdbd5c451e0498",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/bug-patterns.md",
+          "sha256": "2233f58e784a9b6cf13620133485fcf7e3150192a40e713369ebbddc820dec85",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/cancellation.md",
+          "sha256": "c83b4134b44ea5a0ee06e785bd0cb85616234469833f9677297b6fcddea1e1fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/diagnostics.md",
+          "sha256": "cc2debc6f430ed13fc3be3a7ce942e55bb1cf02a9804ebfb272f295b502c9569",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/hotspots.md",
+          "sha256": "199a9fa4beea4a550b3f63e07cddd441d72fd41d1e17e6f3255071a661ce1e6d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/interop.md",
+          "sha256": "b86cd716bd22b38d718e86b37b3d7dd1225b5ce93a53f88842ff6993e93ca566",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/new-features.md",
+          "sha256": "c721a187b57e9d94112972c9685c57f7129187df2d36add4df1a9c9e9aa9e541",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/structured.md",
+          "sha256": "1655b610fd1dafb7cf42b61457ff8229117c06879d0e9cc40460f437ba97895b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/testing.md",
+          "sha256": "4a1fc1aefb572bbdbd75a502a74df795af7e2212eec6836a4f353f9b725abffc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Concurrency-Agent-Skill",
+          "revision": "bee3f69ba17142da148d3c5406f148ed62592b69",
+          "path": "swift-concurrency-pro/references/unstructured.md",
+          "sha256": "d8063edf18bbe5abc9c628548b0100c4dd8defe3340c017d6fa4936eca17c456",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/AvdLee/Swift-Concurrency-Agent-Skill",
+          "revision": "d5770817d2622e1585b1f7eaebc791a9cb0959c8",
+          "path": "skills/swift-concurrency/SKILL.md",
+          "sha256": "8c667b2ff988251c7c291abe046b77d7b8fcfbe3b5ed36961e25e224b1ead491",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy. testing.md: .serialized on a suite serializes every test in it (was: parameterized tests only). new-features.md: caller-actor nonisolated async needs NonisolatedNonsendingByDefault / Approachable Concurrency. New references/build-settings.md from AvdLee SKILL.md:16-24 (settings table and Xcode 26 note; the ask-the-developer line becomes a message to the orchestrator). SKILL.md: third-party-framework ask gate becomes a message to the orchestrator; build-settings step and reference entry added. Links to other upstream skill repositories replaced by bundled skill names.",
+      "vendored": false
+    },
+    {
+      "name": "swift-format-style",
+      "sources": [
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "LICENSE",
+          "sha256": "d4c7fd09f7c88f632b3b0ade545988311bd19f12ecd4d532e4045250e0b8c596",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/SKILL.md",
+          "sha256": "8a4983d20be3fe0fce4df2f4b0058b4a68d0bdab42a137b5023ed8b4f7153e43",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/anti-patterns.md",
+          "sha256": "f672dabd3b20e38a081893662a0c200fdf9f2563127b2280a5afdcbf45af6495",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/date-styles.md",
+          "sha256": "6d680bac491d8565ac95c9df82f0edc0c931a1eda5c00d3d3a33e199c73a0c77",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/duration-styles.md",
+          "sha256": "fc902a6ec34c511e2e5843318b2a648b3851354bf77e1b258130aa35cc1b6d73",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/numeric-styles.md",
+          "sha256": "664a905ab951177d63afb79e3e000f60d420886b3d8c70229449a43908d92542",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/other-styles.md",
+          "sha256": "01b292e27a8c8bbd8d3d0fddcc27e792bdd8af51d01f90348bbdadb00b65dc22",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/n0an/Swift-FormatStyle-Agent-Skill",
+          "revision": "5cda783ac709f26893bbbfb61b31c930c1e6a300",
+          "path": "swift-format-style/references/swiftui.md",
+          "sha256": "7b239beb768bf0ef217b1fa8fef9eb86716445eb9fc80902f84c3a9c3c957f99",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy. anti-patterns.md: the fixed-format example uses .iso8601, or verbatim with en_US_POSIX and the Gregorian calendar (was calendar: .current). date-styles.md: one pitfall line on pinning the calendar for fixed formats. SKILL.md: 'Never use legacy Formatter' becomes 'for display'; description narrowed to values shown to the user.",
+      "vendored": false
+    },
+    {
+      "name": "swift-testing-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "LICENSE",
+          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/SKILL.md",
+          "sha256": "ad4f1bff44b5b7fce20b282481e651876efce024d13b16cb969bc433036ac059",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/async-tests.md",
+          "sha256": "bc6e0eabd10377b5796e9e554a4965a78b7d1aaba8f11021c2a63b6e8a9e669a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/core-rules.md",
+          "sha256": "2271efdca6c2b7b3365501172147884b6e786bcee7bef680fb4f4718929d6180",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/migrating-from-xctest.md",
+          "sha256": "35b64812402ad1d15b496993e1721daaf4e80672bf9cce47078f772fd271f93f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/new-features.md",
+          "sha256": "988df5cb556893c789f9aecdc4c8773fdbbda787ab1dad766bf1182a7b9a4819",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/Swift-Testing-Agent-Skill",
+          "revision": "2d6bba14a3c8bf3694f218b92fffe617c41ae43e",
+          "path": "swift-testing-pro/references/writing-better-tests.md",
+          "sha256": "25da3455f6cec4f10d3dff0bf3e8e1372568c75691916541b4d517f451cb8bf1",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Upstream copy with 2 added lines in SKILL.md (headless runs with swift test --filter and xcodebuild test -only-testing:, and exit tests are not available on iOS, tvOS, watchOS or visionOS). Links to other upstream skill repositories (async-tests.md, writing-better-tests.md) replaced by bundled skill names. Otherwise verbatim.",
+      "vendored": false
+    },
+    {
+      "name": "swiftdata-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "LICENSE",
+          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/SKILL.md",
+          "sha256": "79164f3bc4942b8ca384057cbe951ca7715aecee4970bea38781d91ddb1c442e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/class-inheritance.md",
+          "sha256": "05b22c87e9864a47517ba095c9a870dc320f0e6f4cd85ff9f0b54c5ca356a41d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/cloudkit.md",
+          "sha256": "52a549b1713d55be183b79af595d37729426af0abea36ed05f932b718d8ee11f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/core-rules.md",
+          "sha256": "8bf45a2af28bfb0648303bb520d3d317d2794b56fcfabe599c4785ccdf02f80a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/indexing.md",
+          "sha256": "909167e538461bf517f8fc6b00bfe70d1c8ea19b12a4749088823c275de52a82",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftData-Agent-Skill",
+          "revision": "922d989473a9914210b41529a1ac5636aff4b8c1",
+          "path": "swiftdata-pro/references/predicates.md",
+          "sha256": "623c3195fccdec0ec95c0291223ced7491025b04e59c0b4f4fe5ffd23eb1019b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/vanab/swiftdata-agent-skill",
+          "revision": "4819a5381fa5fdce894451822917b1135c19e050",
+          "path": "swiftdata-expert-skill/references/migrations-and-history.md",
+          "sha256": "dc69301a68343be1f63ae95cf9c77635412c3b67101837215fe6647a042bae85",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/vanab/swiftdata-agent-skill",
+          "revision": "4819a5381fa5fdce894451822917b1135c19e050",
+          "path": "swiftdata-expert-skill/references/core-data-adoption.md",
+          "sha256": "414150186489315622a609020bbd65021e7ad4338a6327b3c262d8717b58b2d6",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy. SKILL.md: third-party-framework ask gate becomes a message to the orchestrator; 2 review steps and reference entries for the vanab references. Added vanab references/migrations-and-history.md (with a CloudKit caveat on #Unique) and references/core-data-adoption.md (verbatim). Links to other upstream skill repositories replaced by bundled skill names.",
+      "vendored": false
+    },
+    {
+      "name": "swiftui-liquid-glass",
+      "sources": [
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "LICENSE",
+          "sha256": "df17aae89ce4705d0a6e5f7b46eeea3b9023967ecad948f8779b47039eb55a8b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-liquid-glass/SKILL.md",
+          "sha256": "53dfbe810cf2044b9c9fff5b2b9d9888053ac24b7d72e63258df8859571bc599",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/Dimillian/Skills",
+          "revision": "05ba982bfeb0d77d3c97d4542b0ee15034d05f84",
+          "path": "swiftui-liquid-glass/references/liquid-glass.md",
+          "sha256": "76b075006934bd4bdba7df53fa046502db3c2f6cc3d383d58e56bff308468608",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy. liquid-glass.md: background-extension snippet now calls .backgroundExtensionEffect(); the nonexistent scrollExtensionMode(.underSidebar) is replaced by Apple's automatic scroll-under-sidebar behavior; foregroundColor becomes foregroundStyle; the 'always seek guides' sentence is deleted. SKILL.md verbatim.",
+      "vendored": false
+    },
+    {
+      "name": "swiftui-pro",
+      "sources": [
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "LICENSE",
+          "sha256": "b9b479e6df9f27cbc8e7abe91f771b396f3f0fa114d070c7c0b02c820c6b74dc",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/SKILL.md",
+          "sha256": "8b58a171afc1dcf9c42d85414af2dc506c8c92bf2c77527adb4d52b884f4d715",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/accessibility.md",
+          "sha256": "708d09a35c950fd4c118bbb3cfcab13bb146e7d02084615307bbabc19e00a0e3",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/api.md",
+          "sha256": "12fa73d65a19c9d08224f925801db8eec914b1cedf5b2f86a38cdda04a66377a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/data.md",
+          "sha256": "5cc50484c525f748839e12174c065f7ea5fdd4380ce04b6885a906ecd6e6a318",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/design.md",
+          "sha256": "03e35d46865cc6807255f3c8481cdbac7b3b0f61924185af84c1913d6c983c69",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/hygiene.md",
+          "sha256": "91d96f45f3ffa02f5553c288415f3c3d5f317cab7d8d9c6c60240ea6c44a2b01",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/navigation.md",
+          "sha256": "a3adb302455993aff85bbb6b5845ed2fcffa137c8b2ded99c937f3e4b7fcd77b",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/performance.md",
+          "sha256": "1b503e3807e216d6b34b45f18bfba89214cea2fa1b88dd7ae8f482ebf0f03616",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/swift.md",
+          "sha256": "8c31c5f5f99b3fa9586f0260cd1a4b1688dc7bda5e8de2891eb3f9d6a791125a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/twostraws/SwiftUI-Agent-Skill",
+          "revision": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+          "path": "swiftui-pro/references/views.md",
+          "sha256": "79a166f6507e86744c0f73cfb583100f61a5da37e313ef4586b3b31136a73627",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Curated copy of the top-level skill (not the nested skills/swiftui-pro variant). SKILL.md: third-party-framework ask gate becomes a message to the orchestrator. hygiene.md: 'Offer to translate' becomes a message to the orchestrator. views.md: view-model rule made neutral (follow the codebase; MV in a new codebase; view models only for a test seam). data.md, swift.md, views.md: links to other upstream skill repositories replaced by bundled skill names.",
+      "vendored": false
+    },
+    {
+      "name": "ue-actor-component-architecture",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-actor-component-architecture/SKILL.md",
+          "sha256": "ba94a6cd2d456bc267ddf3d962b6f29c5a0ed0e76b1992931731da0ffaa635b5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-actor-component-architecture/references/actor-lifecycle.md",
+          "sha256": "b1e35ef1a61ca1a4483d4cf2ca779e63e20e45a267538acf1b6724ba8fe26d0a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-actor-component-architecture/references/component-types.md",
+          "sha256": "a069b8911a0125b5f0904f985c866fe2bf4a9b77440d28fcff94a31f564c1480",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-ai-navigation",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ai-navigation/SKILL.md",
+          "sha256": "6fbd18a43272d5b64724bd9572ad27166742c19a002f01fe0897d9849578aba1",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ai-navigation/references/behavior-tree-patterns.md",
+          "sha256": "cd020ce5a8064e4e21cff85a588783ab096b4ddab43406124e26688ba121f5f2",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ai-navigation/references/eqs-reference.md",
+          "sha256": "0bd1ad967ed48423a5d5c9154996e8903a9819bce16e738b27f5ede26fa849ea",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-animation-system",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-animation-system/SKILL.md",
+          "sha256": "908909e0d765382ae496741c9e1b9a8980c19ef089c0a2f879f5ecb87b57ac26",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-animation-system/references/anim-notify-reference.md",
+          "sha256": "b30556683e592477a8f1edb7bfbbdc11b3e3c4c41117e9b38612da5b7c00aa24",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-animation-system/references/locomotion-setup.md",
+          "sha256": "e881c4f0b862315846bb43e4f885cce9a7e86e42b4b6675fc44f86e2e057593f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-async-threading",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-async-threading/SKILL.md",
+          "sha256": "8e728f4f68bb6d4b6cee2775da4fac672cdcd989213cdb1140315403b83aee05",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-async-threading/references/thread-safety-guide.md",
+          "sha256": "3b2be7cfe4d593ae42ff774e1d9d27c1f315d53d6379ef19cd1b5b65997d5c7c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-async-threading/references/threading-patterns.md",
+          "sha256": "6a5a8d914685ab372e916934496f95893b7167d91cc7476298ad457a67a80306",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-audio-system",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-audio-system/SKILL.md",
+          "sha256": "cea23f6254c0b1672c585aa9136b1b2317a988eaa0deae167634fb243318cd78",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-audio-system/references/audio-component-reference.md",
+          "sha256": "7dcf9b8b8f81c5e371eb61f3ca20c7b19e1efcfca37fa591956536ed3b6638a8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-audio-system/references/audio-setup-patterns.md",
+          "sha256": "c6984b405c10b54ec5ee2d6168c64d81178fd43bea5968e5ad880ccdd4ebc8eb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-blueprint-cpp-interop",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-blueprint-cpp-interop/SKILL.md",
+          "sha256": "c9e28acdfd39ea5c91d2f41f2bbf96c65b90d1273fd3f40c620828713f1486d6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-blueprint-cpp-interop/references/blueprint-meta-specifiers.md",
+          "sha256": "60b70bbd0e65a5b3ee7b66dac927f7c759b12892b28eb121529e1f6282e950f7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-blueprint-cpp-interop/references/blueprint-node-patterns.md",
+          "sha256": "58133517119af6378f4f480d8ea6f2cf8a8ca9429743f86cac5a7a196aa8007a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-character-movement",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-character-movement/SKILL.md",
+          "sha256": "e4d91fb3739f4aeb7f0c86809caeb5dc64e47bacebe0fb39c49248f364bd775f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-character-movement/references/cmc-extension-patterns.md",
+          "sha256": "02ba149f7c0047cf3cf128654ba812c834f1b22db55d8eb756d7b485911c5dc0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-character-movement/references/movement-pipeline.md",
+          "sha256": "fc4dfe308e53fca49dc533db4743dc7a5a49bc596d143c3539146ac961a68ab7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-cpp-foundations",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-cpp-foundations/SKILL.md",
+          "sha256": "7d6c5cfd389172b23ff966a6b2025a0ec23529a59a2fbab6e56c0568e9c6b550",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-cpp-foundations/references/container-patterns.md",
+          "sha256": "6fc61761fc158888195efb8a8ee1f41542e8f3a4fc1d3a6cdc8ca549c9affa9a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-cpp-foundations/references/delegate-patterns.md",
+          "sha256": "385f95a187d4ec6bcd559a325895afbd7f12a25b4743c211f6f108f78454683e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-cpp-foundations/references/property-specifiers.md",
+          "sha256": "531d5f9723bf7d062ce98485af433eb6701fd1de47392dda358ded655bcc8c47",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-data-assets-tables",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-data-assets-tables/SKILL.md",
+          "sha256": "a5e88905b48e8e09a488488e2f45e3dbb25f9c476f6417e33be57b388fb0ab47",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-data-assets-tables/references/asset-loading-patterns.md",
+          "sha256": "1987def83d5c5352c10ec58a6a46c14d5364394319e1be184d7d4f1f5285096c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-data-assets-tables/references/data-driven-design.md",
+          "sha256": "f876f33d4ec92ebcce961b63cddaecd0079bb127df29359b3e63bf8abf86c8b8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-editor-tools",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-editor-tools/SKILL.md",
+          "sha256": "6e8b27bfc7081af3de8481e8a77877e27a39c411db8ac80fcfd712d6a7189d11",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-editor-tools/references/detail-customization-patterns.md",
+          "sha256": "6c42a871317fd5225519e03d7fd72021dba84b59f660388d7d3fd72ae183d1b6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-editor-tools/references/editor-module-setup.md",
+          "sha256": "d2ba24e9cda66e1e3d3ce259b0157fc12bb0c714dc353f5bd6572886a8f9ebbf",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-game-features",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-game-features/SKILL.md",
+          "sha256": "d588fefcb5c9a0efa0c86d2d79375727722d62e7563ac6a8c4048d2f66b6ff8e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-game-features/references/experience-system.md",
+          "sha256": "a6149a333d67a24382fc3b784bbc9940cadb1dd02ec82f5c525cf1e54b44413e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-game-features/references/game-feature-patterns.md",
+          "sha256": "4ffe2ca6ebc19f6f9939f9660d8d6a031cd841c9311771ee874067318efc9a51",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-gameplay-abilities",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-abilities/SKILL.md",
+          "sha256": "212a0ab0730570ef86fb115efba0925afd26ed4a8b652204a1c519dbf07dab0e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-abilities/references/ability-task-reference.md",
+          "sha256": "c744ec6daa3d35b6c89db2671a6ec9ebba713d3517f6d472f92e7db0a36896e0",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-abilities/references/gameplay-effect-reference.md",
+          "sha256": "f91a2dfb901e43eadaf3258f6687a726cf23ccefdb847e74c83b2dc2f964b158",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-abilities/references/gas-setup-patterns.md",
+          "sha256": "f1effda479fb0fc965ed0a238c2648a5891ef927e553fa4626402c24e747839a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-gameplay-cameras",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-cameras/SKILL.md",
+          "sha256": "a1a5add9dc1e1f9107fb300dde91c3d3067c1bdcaa855d6e3a0c70459c21b96a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-cameras/references/classic-camera-stack.md",
+          "sha256": "2d4376b3e80566ce21ed6b8617760747f2c31b11c1a7f4307754bbf0ca6c1f63",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-cameras/references/gameplay-camera-system.md",
+          "sha256": "3661102b64081d60c69638c6b55bc0af82c9a046f6611f01b2131091626eed16",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-gameplay-framework",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-framework/SKILL.md",
+          "sha256": "6c9b3d21c4a5692640599a59bf7d16e64792ee22f75b100eddec6f5283980413",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-framework/references/framework-class-map.md",
+          "sha256": "e8a9206ad6fdf4a744e8057a1b93cd5e07cb6595ecb583dfc313f25cfb260714",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-gameplay-tags-messaging",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-tags-messaging/SKILL.md",
+          "sha256": "236c774aa5ff5e9b85db9692e458c8295f9d75c517afc42a074e0457d2cc99f8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-tags-messaging/references/gameplay-messaging.md",
+          "sha256": "01e47c7696e42b421a5e6721d0733751e45de60ed78f8829754e0b1929ecd872",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-gameplay-tags-messaging/references/gameplay-tag-reference.md",
+          "sha256": "85248b0a1bfcebb8749af1d295d5ff042762d646db1fc8106268d11fdc4d4a2f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-input-system",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-input-system/SKILL.md",
+          "sha256": "548f4d898751a7dee7a09437c040f67f9bb3bfe6893ebe4d87e797875d4a34bb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-input-system/references/input-action-reference.md",
+          "sha256": "178eafafc566744252db22a74dbabb476abd482c3a3fe91d3b57704bead17f90",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-mass-entity",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mass-entity/SKILL.md",
+          "sha256": "c89c4f26840a349034a15b19e7089edb6b3cd32f4009dd0d5971502c074bc20f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mass-entity/references/mass-entity-patterns.md",
+          "sha256": "c39bf5e072665d4364351d98325adf4592a0108dd2e7a159b5736d911bf3b33e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mass-entity/references/mass-fragment-reference.md",
+          "sha256": "c859ef21b5c0b979b8fa7db3505df135b82fa610dc5f2636c538fc5f338723fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-materials-rendering",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-materials-rendering/SKILL.md",
+          "sha256": "ff708688124bffa3d92f4cd849255bc956f3da23ae96566f44c67b6491bbf0f6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-materials-rendering/references/global-shaders-rdg.md",
+          "sha256": "70687c70a274641ced3f892e8bfa9c13ce921d9b2ed99d7e6fb3d42f62a9ac9e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-materials-rendering/references/material-parameter-reference.md",
+          "sha256": "5d711f377adad1d5de2ea117532c829d5b4e853a5d40d0ecbd39d841cbcf59fa",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-materials-rendering/references/post-process-settings.md",
+          "sha256": "27c89c34e9555616bed60d28a9c4f22fdd4b72f834021947de4aee2b5ce78452",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-module-build-system",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-module-build-system/SKILL.md",
+          "sha256": "f73d2d5fdb0fae31012b7aa2633f4cee55e119b4ea19978df6c13f1395b8f1be",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-module-build-system/references/build-cs-reference.md",
+          "sha256": "bc5531f195c1ddf0d63c249462bf76d2845d959ca3365d752c7bd6520e3dbfb7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-module-build-system/references/common-build-errors.md",
+          "sha256": "bf1ff10a9054e6c1f6b70058aff10f3b9e802c753ccb3466340092e5b1942cf5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-mover",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mover/SKILL.md",
+          "sha256": "66514eea2001bd5012a0957143500632d324e08964d19d0992a7583cd0b5eb2a",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mover/references/mover-recipes.md",
+          "sha256": "adde9bb624945035f9fad21e0c1ff95a8383f366aed708b9537e46fd52aadad7",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-mover/references/mover-reference.md",
+          "sha256": "dc2a99bb9e23bafffd1e4173e4d376a6d67c38a09935160bd74c02a1eb64f212",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-networking-replication",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-networking-replication/SKILL.md",
+          "sha256": "fb9bb8192da0da19a56507a2a91fa97378a5350266145083374c9bca27e6cd55",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-networking-replication/references/replication-patterns.md",
+          "sha256": "0b0d543c657663439edc81ed4b85bf00e1ec4ea5f598ecc14021d4fd08f7526e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-networking-replication/references/rpc-decision-guide.md",
+          "sha256": "3310873d471ce039ca21e822d829778555e516014e194acbc03841cb5bb62948",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-niagara-effects",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-niagara-effects/SKILL.md",
+          "sha256": "e42ef34b9fd1a29be4b0326d9a4878143585cfbc2b902ad98deee70751888b2d",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-niagara-effects/references/niagara-data-interfaces.md",
+          "sha256": "22949681b5ed59ee606bd62882a3c5e05aa4b14731247c929fbbf7b0eddbb1e9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-niagara-effects/references/niagara-parameter-types.md",
+          "sha256": "eaed3449031a6dc34774480f5e841d66330f6fde202948fcdb44f81698743227",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-physics-collision",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-physics-collision/SKILL.md",
+          "sha256": "f1acd3813365d3e3d7e98ee0d280c7798b5873ba96d72d3d466c0a3506470f08",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-physics-collision/references/collision-channel-setup.md",
+          "sha256": "e949b9fb0162095d0dcbdde8256595c263bf211cabaf2a246bc921c354a953a8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-physics-collision/references/trace-patterns.md",
+          "sha256": "b3c139b0cb90854b4f75f87ea9b1baf3ce6bd36972f14a03a42935d5e1faf595",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-procedural-generation",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-procedural-generation/SKILL.md",
+          "sha256": "128b7a49d8288922aa2c636d9aa85553fd50f79d0a7446e01f8f356ca82f9d1e",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-procedural-generation/references/pcg-node-reference.md",
+          "sha256": "c4a37e886cf349ddf71e1167081f21508e106fc1a015cf8e82b170a5e7503ccb",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-procedural-generation/references/procedural-mesh-patterns.md",
+          "sha256": "8e26768f84a97ac6c1b1550f0a6a5bfd401db050fb6e694a41a02d7da5513be8",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-project-context",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-project-context/SKILL.md",
+          "sha256": "69766ff96f466fdeb86ce1708361afdb2de8ffd8113c83b672be599e875f6b7c",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "Adapted for a fleet pane with no human: the intro and the context section say the file is built from the codebase and one orchestrator reply; Step 1 ends by writing the draft (was: present it); Step 2 'Correct the draft' becomes 'Ask about the unknowns' (one QUESTION: to the orchestrator, unknowns in the skill's own order, [unknown] stays a valid final answer); Step 3 reports to the orchestrator; the fallback questionnaire becomes 'Fallback: no source tree' (mark fields [unknown], one QUESTION:); two Common Mistakes lines say orchestrator, and one new line forbids several questions. Step 1's scan, the 'What to scan' and plugin tables, the document template, the Deprecated table and the no-guessing rule are unchanged.",
+      "vendored": true
+    },
+    {
+      "name": "ue-sequencer-cinematics",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-sequencer-cinematics/SKILL.md",
+          "sha256": "2ecbf1d71d741725493f56576a1f1e9cb68b2cc2449b176b9002fd7a608a2661",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-sequencer-cinematics/references/sequencer-patterns.md",
+          "sha256": "a923274040110b8c62ff4bab3825f572552c1966784d9831567f6213e63e6592",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-serialization-savegames",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-serialization-savegames/SKILL.md",
+          "sha256": "2b17e7e40d6038c379c08f25247cd8cc18b04c87f36ddf240fca8bd7eb337718",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-serialization-savegames/references/save-system-architecture.md",
+          "sha256": "671876fa579ce878252e7a91afcf2c64cb25808180da3bc9e45381692b52bdda",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-state-trees",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-state-trees/SKILL.md",
+          "sha256": "715a9fac48da6610ca91f5dc0ef0e2462d0c23ea1f24ac8c454049e0e2f0148f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-state-trees/references/state-tree-mass-integration.md",
+          "sha256": "9e0df84985ffa1cbeb7a20fdd7de541fa2f14ce5acaa4ba823c1425c5beeac85",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-state-trees/references/state-tree-patterns.md",
+          "sha256": "3f32927617120364620d0233ade0f92031381a39fe665f36d28d09a1670b46b6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-testing-debugging",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-testing-debugging/SKILL.md",
+          "sha256": "a486848b5f88095f4b1e649ad1ffb73f17ab80b51f9a3afa4886629c0e7cfdd6",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-testing-debugging/references/automation-test-patterns.md",
+          "sha256": "9dc8d33090d60db1350ac7f756b948500a602126d46979ba56827994818dc7de",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-testing-debugging/references/profiling-commands.md",
+          "sha256": "ebd53693a9fabb0012f22ec62a220f0ff7a7d83af5b52504160875cf9d64d506",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-ui-umg-slate",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ui-umg-slate/SKILL.md",
+          "sha256": "db75a03feda52407bf099e37e4e5363e36e331f5faf3cf820071f15b44a16b06",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ui-umg-slate/references/common-ui-setup.md",
+          "sha256": "5c8674e430fb06ea7b31772d91ba5d294ad0493afcdd0aa8fb4b493750af0e89",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ui-umg-slate/references/slate-patterns.md",
+          "sha256": "073a1e7d61ffedfddd828002564eef689add5f283541ed373404165319ad7392",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-ui-umg-slate/references/widget-types.md",
+          "sha256": "44a27000bd36ab2c503e9c2382ed93b3121f51b11c0859c02ec51ba405ac17f5",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
+    },
+    {
+      "name": "ue-world-level-streaming",
+      "sources": [
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-world-level-streaming/SKILL.md",
+          "sha256": "a62f671000c79391d61c6f5b4d3d3c0049e9d71a7d1be8060f2b73b86bcc179f",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "skills/ue-world-level-streaming/references/streaming-patterns.md",
+          "sha256": "1c2c3439140c95860739fc62f61e125a49d7481bcad6ef7fb4b0a6209ebbdce9",
+          "license": "MIT"
+        },
+        {
+          "repository": "https://github.com/quodsoler/unreal-engine-skills",
+          "revision": "f3742d7b688690810df369802b90430324e380b9",
+          "path": "LICENSE",
+          "sha256": "5ab97d29a2c68d17b1a9400283b85836b5e3759dd893f377b6622dc732a3f357",
+          "license": "MIT"
+        }
+      ],
+      "adaptation": "verbatim",
+      "vendored": true
     }
   ]
 }

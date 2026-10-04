@@ -35,7 +35,8 @@ pub fn prepend_path_entry(current: &str, entry: &str) -> Option<String> {
         }
         kept.push(part);
     }
-    if already_first && kept.len() + 1 == current.split(';').filter(|p| !p.trim().is_empty()).count()
+    if already_first
+        && kept.len() + 1 == current.split(';').filter(|p| !p.trim().is_empty()).count()
     {
         return None;
     }

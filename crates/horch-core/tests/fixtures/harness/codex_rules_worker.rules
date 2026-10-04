@@ -1,0 +1,15 @@
+prefix_rule(
+    pattern = ["horch", "tell", "orchestrator"],
+    decision = "allow",
+    justification = "herdr-fleet: report results to the fleet orchestrator",
+)
+prefix_rule(
+    pattern = ["horch", "note"],
+    decision = "allow",
+    justification = "herdr-fleet: record progress in the session ledger",
+)
+prefix_rule(
+    pattern = ["horch", "done"],
+    decision = "allow",
+    justification = "herdr-fleet: mark session done and close own pane",
+)

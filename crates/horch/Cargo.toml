@@ -8,13 +8,22 @@ rust-version.workspace = true
 name = "horch"
 path = "src/main.rs"
 
+# The separate, expensive entrypoint for competitive dataset runs (OD2).
+[[bin]]
+name = "multi-herdr-dataset"
+path = "src/bin/multi-herdr-dataset.rs"
+
 [dependencies]
 horch-core.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tempfile = "3"
+# The telemetry screen's raw-mode terminal and key events (NFR-05: the only
+# new runtime crate). The frame itself is plain text, rendered by horch.
+crossterm = "0.28"
 
 [dev-dependencies]
 serde_yaml.workspace = true

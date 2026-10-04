@@ -29,8 +29,9 @@
 //! rather than pass. A new briefing line is added here as a named block with
 //! the reason for it, which is what makes the change reviewable.
 
+use horch_core::execution::SessionMode;
 use horch_core::prompts;
-use horch_core::teammates::Roster;
+use horch_core::roster::Roster;
 
 fn golden(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -93,8 +94,10 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
     // in these goldens has the role "r-1", so that is the tag the example shows.
     let lifecycle_end = "gotchas, current state.\n\n";
     // Third sanctioned change: the `horch done` bullet now names what a summary
-    // must carry that the old wording left out - the work that is NOT done.
-    let done_summary = "  Write files touched, decisions, gotchas, and what is not done.\n";
+    // must carry that the old wording left out - the work that is NOT done -
+    // and that the summary must not repeat the tag and keyword `horch done` adds.
+    let done_summary = "  Write files touched, decisions, gotchas, and what is not done.\n  \
+        Do not start the summary with \"[r-1] DONE:\". horch done adds it.\n";
     // Fourth: the `== Scope ==` block, inserted whole between the lifecycle list
     // and the STE section. A worker that reads one thing before starting reads
     // what it owns and what it must not touch.
@@ -131,7 +134,12 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
             ("idle", "", false),
             ("resume", "Continue where you left off", true),
         ] {
-            let got = prompts::worker_prompt(&r, t, "r-1", task, resume).unwrap();
+            let session = if resume {
+                SessionMode::Resume("s-1".parse().unwrap())
+            } else {
+                SessionMode::Fresh(None)
+            };
+            let got = prompts::worker_prompt(&r, t, "r-1", task, &session).unwrap();
             let was = golden(&format!("worker-{name}-{label}"));
             let old_agent = "orchestrator (a separate Claude session) runs in another pane";
             let new_agent = "orchestrator (a separate agent session) runs in another pane";
@@ -177,7 +185,7 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
     );
 }
 
-/// The orchestrator briefing differs in exactly ten places, and this pins them.
+/// The orchestrator briefing differs in exactly twelve places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -218,7 +226,7 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     // immediately before the lifecycle section. It names no model of its own:
     // one file backs both the Opus (default) and the Fable fleet flavors.
     let lifecycle = "== Worker lifecycle ==";
-    let only_fable = "== You are the fleet's only orchestrator ==\n\
+    let only_fable_head = "== You are the fleet's only orchestrator ==\n\
         You run on whichever model `horch fleet` was started with (fable, opus,\n\
         astra or sol). horch spawn never starts a worker on Fable or Astra, so every\n\
         worker reads your instructions on Opus or Codex Sol at best, often on something\n\
@@ -234,14 +242,39 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         When a piece of work needs orchestrator-level reasoning - a design with real\n\
         tradeoffs, a plan across many moving parts, a judgement call - that reasoning\n\
         is yours. Do it here, write the result to a file, and hand the execution to\n\
-        opus. Never delegate the thinking itself downward and hope.\n\n\
-        == horch:skill-creator ==\n\
+        opus. Never delegate the thinking itself downward and hope.\n\n";
+    let skill_creator = "== horch:skill-creator ==\n\
         The skill-creator skill is yours alone; no worker has it. It tells you to\n\
         spawn subagents and to run `claude -p` loops. The fleet rule wins: use its\n\
         no-subagent path. Run each test case yourself, one at a time, and grade\n\
         inline. Skip the baseline runs, the blind comparison and the description\n\
         optimization loop.\n\n";
     assert_eq!(was.matches(lifecycle).count(), 1);
+
+    // Twelfth sanctioned change: product ownership. The operator: "You should
+    // have deep product ownership ... fix them as you find them." The block
+    // sits in both personas, right after the "only orchestrator" section.
+    let own_product = "== Own the product ==\n\
+        You are a Senior Staff Engineer who owns this product, not a dispatcher who\n\
+        reports on it. Take pride in what the fleet ships.\n\
+        - When you notice a gap - a flaky test, a stale workaround, a missing check,\n\
+        \x20 a loose end in a worker's report - fix it in this run. Spawn a unit for it\n\
+        \x20 or fold it into the next plan. A \"known gaps\" list at the end of a run is a\n\
+        \x20 list of work you chose not to do.\n\
+        - Read every DONE report for its \"not done\", \"outside my scope\" and \"gotcha\"\n\
+        \x20 lines. Decide each one: fix it now, fix it in a follow-up unit you spawn\n\
+        \x20 now, or name it as a real blocker.\n\
+        - Only these go back to the operator unresolved: a decision that is theirs\n\
+        \x20 (product direction, a spec text, a terms or policy question), a credential\n\
+        \x20 or a paid real-world run, and anything outward-facing (push, PR, publish),\n\
+        \x20 which still needs their OK.\n\
+        - Fix causes, not symptoms. A flaky test gets a root cause, not a retry.\n\
+        - Leave work a junior engineer can pick up: plans that name files and\n\
+        \x20 checks, reports that say what changed and why, docs that explain where\n\
+        \x20 things live and how to verify them. If a junior could not continue from\n\
+        \x20 what you leave, you are not done.\n\
+        \n";
+    let only_fable = format!("{only_fable_head}{own_product}{skill_creator}");
 
     let old_spawning = "  horch spawn <tier> \"<task>\"                            new session\n  horch spawn --resume <session-or-record-id> \"<task>\"   resume old session\n";
     let new_spawning = "  horch spawn <tier> [--phase <phase>] \"<task>\"            new session\n\
@@ -325,10 +358,26 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         --direction right|down to control layout (pane ids come from herdr pane list,\n\
         and horch spawn prints the new pane's id on stdout). `horch layout` reports\n\
         the current worker grid and the next split that keeps it 2 rows by N columns.";
-    let new_placement = "`horch spawn` lays the grid out for you after each spawn, and again when a\n\
+    let new_placement =
+        "`horch spawn` lays the grid out for you after each spawn, and again when a\n\
         worker closes. You never pass --from-pane or --direction. Run `horch layout`\n\
         to see the grid, and `horch tile` only if it looks wrong.";
     assert_eq!(was.matches(old_placement).count(), 1);
+
+    // Eleventh: usage limits (design 2026-09-28-fleet-telemetry, BAL-07). The
+    // orchestrator now works against weekly pools that run out; `horch spawn`
+    // may print NOTE:, SUBSTITUTED: or REFUSED:, and this is where it is told
+    // to read them, how to see a decision first, and which pools are public-
+    // only. Inserted whole, directly before the context section.
+    let context = "== Protect your context ==";
+    let usage_limits = "== Usage limits ==\n\
+        Run horch quota before you spawn a batch of workers. It shows each pool: claude, codex, opencode-zen, google, local.\n\
+        Treat NOTE:, SUBSTITUTED: and REFUSED: lines from horch spawn as facts. Adjust the plan to them.\n\
+        Use horch route <teammate> to see the decision before you spawn.\n\
+        When 2 teammates fit the work equally, choose the one whose pool has more headroom per hour.\n\
+        Use opencode-* only for public or open-source work. Use pi for private, simple work when the local pool is ok.\n\
+        If your own pool becomes tight, write a handoff with horch:handoff and tell the operator.\n\n";
+    assert_eq!(was.matches(context).count(), 1);
 
     let expected = was
         .replace(old_block, &new_block)
@@ -339,10 +388,38 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         .replace(spawn_sentence, workers_only)
         .replace(old_placement, new_placement)
         .replace(spawning_header, &format!("{core_loop}{spawning_header}"))
-        .replace(close, &format!("{close}{guard}"));
+        .replace(close, &format!("{close}{guard}"))
+        .replace(context, &format!("{usage_limits}{context}"));
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the ten sanctioned blocks"
+        "the orchestrator briefing changed outside the twelve sanctioned blocks"
+    );
+}
+
+/// BAL-07: the usage-limits block is a named, sanctioned change (the
+/// eleventh in `the_orchestrator_briefing_differs_only_where_sanctioned`),
+/// it reaches both orchestrator flavors, and a codex orchestrator may run the
+/// two commands it names.
+#[test]
+fn bal_07_usage_limits_block_sanctioned() {
+    let r = roster();
+    for name in ["orchestrator", "orchestrator-codex"] {
+        let p = prompts::agent_prompt(&r, r.require(name).unwrap(), "orchestrator").unwrap();
+        let at = p.find("== Usage limits ==").expect("the block");
+        assert!(at < p.find("== Protect your context ==").unwrap(), "{name}");
+        assert!(p.contains("Use horch route <teammate> to see the decision before you spawn."));
+    }
+    let rules: Vec<String> = r
+        .orchestrator_exec_rules()
+        .iter()
+        .map(|x| x.pattern.clone())
+        .collect();
+    assert!(rules.iter().any(|p| p.contains("\"quota\"")), "{rules:?}");
+    assert!(rules.iter().any(|p| p.contains("\"route\"")), "{rules:?}");
+    let golden_was = golden("fleet-orchestrator");
+    assert!(
+        !golden_was.contains("== Usage limits =="),
+        "the golden is the OLD text"
     );
 }
 
@@ -377,7 +454,10 @@ fn the_codex_orchestrator_differs_from_the_claude_one_only_in_its_tier_block() {
     // The same heading, a different reader ladder and hand-off teammate.
     assert!(codex.contains("on Codex Sol or Opus at best"), "{codex}");
     assert!(claude.contains("on Opus or Codex Sol at best"), "{claude}");
-    assert!(codex.contains("hand the execution to\ncodex-sol."), "{codex}");
+    assert!(
+        codex.contains("hand the execution to\ncodex-sol."),
+        "{codex}"
+    );
     // No placeholder may survive into a live pane - not {roster}, not {persona}.
     assert!(
         !codex.contains('{'),

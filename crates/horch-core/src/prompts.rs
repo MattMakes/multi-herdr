@@ -15,7 +15,8 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
 
-use crate::teammates::{ExecRule, Roster, Teammate};
+use crate::execution::SessionMode;
+use crate::roster::{ExecRule, Roster, Teammate};
 
 /// Substitute `{name}` spans in `template`.
 ///
@@ -55,7 +56,7 @@ pub fn worker_prompt(
     teammate: &Teammate,
     role: &str,
     task: &str,
-    resume: bool,
+    session: &SessionMode,
 ) -> Result<String> {
     let base_name = match &teammate.base {
         Some(b) => b.as_str(),
@@ -63,7 +64,7 @@ pub fn worker_prompt(
     };
     let base = roster.require_base(base_name)?;
 
-    let closing = if resume {
+    let closing = if session.is_resume() {
         &base.task_resume
     } else if !task.is_empty() {
         &base.task_fresh
@@ -156,6 +157,39 @@ mod tests {
         Roster::builtin().expect("built-in roster parses")
     }
 
+    /// The fleet orchestrator's briefing lists a teammate with `offer_when`
+    /// only in a project that matches, and keeps every other teammate.
+    #[test]
+    fn orchestrator_briefing_offers_a_domain_teammate_only_where_it_matches() {
+        use crate::roster::ProjectFacts;
+        let mut base = roster();
+        base.insert_for_test(Teammate {
+            name: "unreal-gameplay-engineer".into(),
+            brief_description: "Unreal Engine gameplay code".into(),
+            base: Some("fleet-worker".into()),
+            offer_when: vec!["*.uproject".into()],
+            ..Teammate::default()
+        });
+        let briefing = |facts: ProjectFacts| {
+            let r = base.clone().with_project_facts(facts);
+            agent_prompt(&r, r.require("orchestrator").unwrap(), "orchestrator").unwrap()
+        };
+
+        let rust = briefing(ProjectFacts::from_names(["Cargo.toml", "src"]));
+        assert!(!rust.contains("unreal-gameplay-engineer"), "{rust}");
+        assert!(!rust.contains("Unreal Engine gameplay code"));
+        let game = briefing(ProjectFacts::from_names(["Game.uproject", "Source"]));
+        assert!(game.contains("unreal-gameplay-engineer"), "{game}");
+
+        // Everything without `offer_when` is offered in both projects.
+        for t in base.offered() {
+            if t.offer_when.is_empty() {
+                assert!(rust.contains(&t.name), "{} missing", t.name);
+                assert!(game.contains(&t.name), "{} missing", t.name);
+            }
+        }
+    }
+
     #[test]
     fn substitution_is_single_pass() {
         let vars = BTreeMap::from([("task", "look at {role}"), ("role", "sonnet-1")]);
@@ -178,10 +212,15 @@ mod tests {
         let r = roster();
         let mut all = Vec::new();
         for t in r.names() {
+            if crate::roster::teammate::HEADLESS_ONLY.contains(&t) {
+                continue;
+            }
             let t = r.require(t).unwrap();
             if t.base.is_some() {
-                for (task, resume) in [("do a thing", false), ("", false), ("more", true)] {
-                    all.push(worker_prompt(&r, t, "r-1", task, resume).unwrap());
+                let resume = SessionMode::Resume("s-1".parse().unwrap());
+                let fresh = SessionMode::Fresh(None);
+                for (task, session) in [("do a thing", &fresh), ("", &fresh), ("more", &resume)] {
+                    all.push(worker_prompt(&r, t, "r-1", task, session).unwrap());
                 }
             } else {
                 all.push(agent_prompt(&r, t, "r-1").unwrap());
@@ -220,7 +259,14 @@ mod tests {
     #[test]
     fn idle_worker_is_told_to_announce_readiness() {
         let r = roster();
-        let p = worker_prompt(&r, r.require("opus").unwrap(), "opus-1", "", false).unwrap();
+        let p = worker_prompt(
+            &r,
+            r.require("opus").unwrap(),
+            "opus-1",
+            "",
+            &SessionMode::Fresh(None),
+        )
+        .unwrap();
         assert!(
             p.contains(r#"horch tell orchestrator "[opus-1] ready""#),
             "{p}"
@@ -233,12 +279,19 @@ mod tests {
     #[test]
     fn declared_skills_reach_the_briefing() {
         let r = roster();
-        let plain = worker_prompt(&r, r.require("sonnet").unwrap(), "s-1", "t", false).unwrap();
+        let plain = worker_prompt(
+            &r,
+            r.require("sonnet").unwrap(),
+            "s-1",
+            "t",
+            &SessionMode::Fresh(None),
+        )
+        .unwrap();
         assert!(!plain.contains("load these skills"), "{plain}");
 
         let mut with_skills = r.require("sonnet").unwrap().clone();
         with_skills.skills = vec!["herdr-worker".into(), "code-review".into()];
-        let out = worker_prompt(&r, &with_skills, "s-1", "t", false).unwrap();
+        let out = worker_prompt(&r, &with_skills, "s-1", "t", &SessionMode::Fresh(None)).unwrap();
         assert!(out.contains("herdr-worker, code-review"), "{out}");
         assert!(out.len() > plain.len());
     }
@@ -252,7 +305,8 @@ mod tests {
         for name in ["opencode-ultra", "opencode-pickle", "opencode-lightning"] {
             let t = r.require(name).unwrap();
             assert!(t.trains_on_input, "{name} must declare it");
-            let out = worker_prompt(&r, t, "oc-1", "do a thing", false).unwrap();
+            let out =
+                worker_prompt(&r, t, "oc-1", "do a thing", &SessionMode::Fresh(None)).unwrap();
             assert!(out.contains("trains on what it is sent"), "{name}:\n{out}");
             // And it must know what to do about it, by name, not just be warned.
             assert!(
@@ -265,7 +319,7 @@ mod tests {
         for quiet in ["opus", "sonnet", "codex-sol", "pi", "prime"] {
             let t = r.require(quiet).unwrap();
             assert!(!t.trains_on_input, "{quiet} must not declare it");
-            let out = worker_prompt(&r, t, "w-1", "t", false).unwrap();
+            let out = worker_prompt(&r, t, "w-1", "t", &SessionMode::Fresh(None)).unwrap();
             assert!(
                 !out.contains("trains on what it is sent"),
                 "{quiet} was warned:\n{out}"
@@ -300,7 +354,7 @@ mod tests {
         let mut t = r.require("opus").unwrap().clone();
         t.skills = vec!["planning".into()];
         t.first_instruction = Some("Read {role}'s plan file first.".into());
-        let out = worker_prompt(&r, &t, "opus-1", "task", false).unwrap();
+        let out = worker_prompt(&r, &t, "opus-1", "task", &SessionMode::Fresh(None)).unwrap();
         assert!(
             out.trim_end().ends_with("Read opus-1's plan file first."),
             "{out}"

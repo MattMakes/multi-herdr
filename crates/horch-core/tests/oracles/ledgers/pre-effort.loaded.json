@@ -1,0 +1,68 @@
+[
+  {
+    "agent": "claude",
+    "created_at": "2026-09-18T12:00:00Z",
+    "effort": null,
+    "history": [
+      {
+        "at": "2026-09-18T12:00:00Z",
+        "event": "spawned",
+        "text": "Implement ai_docs/plans/skills-phase.md"
+      },
+      {
+        "at": "2026-09-18T13:00:00Z",
+        "event": "done",
+        "text": "phase skills land on all harnesses"
+      }
+    ],
+    "is_orchestrator": false,
+    "kind": "worker",
+    "model": "sonnet",
+    "phase": "implementation",
+    "plan": null,
+    "project": null,
+    "record_id": "rec-pre-0001",
+    "role": "sonnet-1",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "status": "done",
+    "substitution_reason": null,
+    "task": "Implement ai_docs/plans/skills-phase.md",
+    "tier": "sonnet",
+    "updated_at": "2026-09-18T13:00:00Z",
+    "via": null,
+    "workspace_id": null
+  },
+  {
+    "agent": "opencode",
+    "created_at": "2026-09-18T12:10:00Z",
+    "effort": null,
+    "history": [
+      {
+        "at": "2026-09-18T12:10:00Z",
+        "event": "spawned",
+        "text": "Survey the quota probes"
+      },
+      {
+        "at": "2026-09-18T12:40:00Z",
+        "event": "note",
+        "text": "two probes found"
+      }
+    ],
+    "is_orchestrator": false,
+    "kind": "worker",
+    "model": "opencode/big-pickle",
+    "phase": "research",
+    "plan": null,
+    "project": null,
+    "record_id": "rec-pre-0002",
+    "role": "opencode-pickle-1",
+    "session_id": "ses_oracle0002",
+    "status": "working",
+    "substitution_reason": null,
+    "task": "Survey the quota probes",
+    "tier": "opencode-pickle",
+    "updated_at": "2026-09-18T12:40:00Z",
+    "via": null,
+    "workspace_id": null
+  }
+]

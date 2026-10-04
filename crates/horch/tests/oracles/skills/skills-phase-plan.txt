@@ -1,0 +1,5 @@
+Phase: plan
+  create-plan        Use when a design or requirements are settled and need executable implementation tasks with verification.
+  pre-flight         Use before executing a plan to verify wiring, contracts, preservation, configuration, and prerequisites against source.
+  handoff            Use when work must transfer to another worker or continue after context loss.
+Metadata: 329 bytes (~83 tokens, estimate only); workflows load on demand.

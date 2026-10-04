@@ -1,0 +1,20 @@
+== orchestrators (restart with horch fleet, never resume) ==
+
+[working] orchestrator (orchestrator)  session=55555555-5555-4555-8555-555555555555  record=rec-orch-0001
+  agent=claude model=opus effort=high  updated=2026-09-30T07:00:00Z
+  phase=plan
+  task: (orchestrating)
+
+== workers ==
+
+[done] opus (opus-1)  session=66666666-6666-4666-8666-666666666666  record=rec-orch-0002
+  agent=claude model=opus effort=high  updated=2026-09-30T08:10:00Z
+  phase=implementation
+  task: Implement ai_docs/plans/telemetry.md
+  note @ 2026-09-30T07:40:00Z: collector ticks
+  done @ 2026-09-30T08:10:00Z: telemetry space renders
+
+[working] codex-terra (codex-terra-1)  session=not-yet-known  record=rec-orch-0003
+  agent=codex model=gpt-5.5  updated=2026-09-30T07:15:00Z
+  task: (idle - awaiting assignment)
+

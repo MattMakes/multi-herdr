@@ -1,0 +1,12 @@
+{
+  "os": "linux",
+  "arch": "x86_64",
+  "cpus": 64,
+  "mem_total_bytes": 270582939648,
+  "mem_available_bytes": 201326592000,
+  "disk_free_bytes": 1500000000000,
+  "disk_total_bytes": 3840755982336,
+  "gpu": { "nvidia": { "count": 2 } },
+  "max_open_files": 1048576,
+  "max_processes": null
+}

@@ -1,0 +1,40 @@
+prefix_rule(
+    pattern = ["horch", "spawn"],
+    decision = "allow",
+    justification = "herdr-fleet: create a worker pane, fresh or resumed",
+)
+prefix_rule(
+    pattern = ["horch", "assign"],
+    decision = "allow",
+    justification = "herdr-fleet: record a task on the ledger and deliver it to a worker",
+)
+prefix_rule(
+    pattern = ["horch", "tell"],
+    decision = "allow",
+    justification = "herdr-fleet: message any worker in the fleet",
+)
+prefix_rule(
+    pattern = ["horch", "inbox"],
+    decision = "allow",
+    justification = "herdr-fleet: list the live, reachable roles",
+)
+prefix_rule(
+    pattern = ["horch", "sessions"],
+    decision = "allow",
+    justification = "herdr-fleet: read the project session ledger before spawning",
+)
+prefix_rule(
+    pattern = ["horch", "layout"],
+    decision = "allow",
+    justification = "herdr-fleet: report the worker grid and the next split",
+)
+prefix_rule(
+    pattern = ["horch", "quota"],
+    decision = "allow",
+    justification = "herdr-fleet: read the usage pools before spawning a batch",
+)
+prefix_rule(
+    pattern = ["horch", "route"],
+    decision = "allow",
+    justification = "herdr-fleet: see what the usage-limit gate would do with a spawn",
+)

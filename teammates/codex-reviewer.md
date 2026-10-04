@@ -5,6 +5,8 @@ base: fleet-worker
 agent: codex
 phase: validation
 model: gpt-5.6-sol
+# When this model's usage pool cannot serve a spawn (horch route codex-reviewer).
+fallbacks: [opus]
 # high, like the claude reviewers: a missed finding costs a review round
 # (cezaar#40). Not xhigh or max: diminishing returns above high.
 effort: high

@@ -129,7 +129,11 @@ mod tests {
         assert!(md.contains("```bash"), "{md}");
         assert!(md.contains("brew install herdr"), "{md}");
         assert!(!md.contains("Terminal window"), "{md}");
-        assert_eq!(md.matches("```").count(), 2, "exactly one fenced block:\n{md}");
+        assert_eq!(
+            md.matches("```").count(),
+            2,
+            "exactly one fenced block:\n{md}"
+        );
     }
 
     #[test]

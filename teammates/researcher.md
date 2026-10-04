@@ -5,6 +5,8 @@ base: fleet-worker
 agent: claude
 phase: research
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route researcher).
+fallbacks: [codex-sol]
 # medium: exploration without maximum rigor; long reads multiply every
 # thinking token (cezaar#40 researchers). (ai_docs/reports/model-guide-2026-09.md)
 effort: medium

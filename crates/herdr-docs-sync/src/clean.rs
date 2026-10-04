@@ -29,7 +29,14 @@ const CONTENT_SELECTOR: &str = ".sl-markdown-content";
 
 /// Presentation-only elements: no content of ours lives inside them.
 const DROPPED_TAGS: &[&str] = &[
-    "script", "style", "link", "noscript", "button", "svg", "template", "figcaption",
+    "script",
+    "style",
+    "link",
+    "noscript",
+    "button",
+    "svg",
+    "template",
+    "figcaption",
 ];
 
 /// Classes marking screen-reader and navigation affordances rather than content.
@@ -96,9 +103,11 @@ fn is_dropped(element: &scraper::node::Element) -> bool {
     if DROPPED_TAGS.contains(&element.name()) {
         return true;
     }
-    element
-        .attr("class")
-        .is_some_and(|classes| classes.split_whitespace().any(|c| DROPPED_CLASSES.contains(&c)))
+    element.attr("class").is_some_and(|classes| {
+        classes
+            .split_whitespace()
+            .any(|c| DROPPED_CLASSES.contains(&c))
+    })
 }
 
 fn has_class(element: &scraper::node::Element, class: &str) -> bool {
@@ -397,9 +406,17 @@ mod tests {
         ))
         .unwrap();
         assert!(page.content_html.contains("Install"));
-        assert!(!page.content_html.contains("Section titled"), "{}", page.content_html);
+        assert!(
+            !page.content_html.contains("Section titled"),
+            "{}",
+            page.content_html
+        );
         assert!(!page.content_html.contains("svg"), "{}", page.content_html);
-        assert!(!page.content_html.contains("sl-anchor"), "{}", page.content_html);
+        assert!(
+            !page.content_html.contains("sl-anchor"),
+            "{}",
+            page.content_html
+        );
     }
 
     /// An Expressive Code block must come out as one fenced block with its
@@ -421,8 +438,14 @@ mod tests {
         .unwrap();
 
         let html = &page.content_html;
-        assert!(html.contains(r#"<pre><code class="language-bash">"#), "{html}");
-        assert!(html.contains("curl -fsSL https://herdr.dev/install.sh"), "{html}");
+        assert!(
+            html.contains(r#"<pre><code class="language-bash">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("curl -fsSL https://herdr.dev/install.sh"),
+            "{html}"
+        );
         assert!(html.contains("echo done"), "{html}");
         assert!(!html.contains("Terminal window"), "{html}");
         assert!(!html.contains("button"), "{html}");
@@ -449,15 +472,26 @@ mod tests {
     /// A plain `<pre>` with no Expressive Code wrapper still works.
     #[test]
     fn plain_pre_blocks_pass_through() {
-        let page = clean(&starlight_page("<pre><code>plain text\nsecond</code></pre>")).unwrap();
-        assert!(page.content_html.contains("plain text\nsecond"), "{}", page.content_html);
+        let page = clean(&starlight_page(
+            "<pre><code>plain text\nsecond</code></pre>",
+        ))
+        .unwrap();
+        assert!(
+            page.content_html.contains("plain text\nsecond"),
+            "{}",
+            page.content_html
+        );
     }
 
     #[test]
     fn drops_page_chrome_outside_the_content_element() {
         let page = clean(&starlight_page("<p>only this</p>")).unwrap();
         for noise in ["Docs nav", "Footer", "console.log", "color:red"] {
-            assert!(!page.content_html.contains(noise), "{noise} in {}", page.content_html);
+            assert!(
+                !page.content_html.contains(noise),
+                "{noise} in {}",
+                page.content_html
+            );
         }
     }
 
@@ -476,7 +510,11 @@ mod tests {
     #[test]
     fn escapes_text_that_would_otherwise_be_markup() {
         let page = clean(&starlight_page("<p>use &lt;pane-id&gt; &amp; go</p>")).unwrap();
-        assert!(page.content_html.contains("&lt;pane-id&gt; &amp; go"), "{}", page.content_html);
+        assert!(
+            page.content_html.contains("&lt;pane-id&gt; &amp; go"),
+            "{}",
+            page.content_html
+        );
     }
 
     #[test]
@@ -556,10 +594,7 @@ mod table_tests {
             "<table><tr><td>Key</td><td>Value</td></tr><tr><td>a</td><td>1</td></tr></table>",
         ))
         .unwrap();
-        assert_eq!(
-            page.tables[0],
-            "| Key | Value |\n| --- | --- |\n| a | 1 |"
-        );
+        assert_eq!(page.tables[0], "| Key | Value |\n| --- | --- |\n| a | 1 |");
     }
 
     /// A literal pipe in a cell would otherwise create a phantom column.
@@ -579,7 +614,11 @@ mod table_tests {
             "<table><tr><th>H</th></tr><tr><td>first\n   second\n\nthird</td></tr></table>",
         ))
         .unwrap();
-        assert!(page.tables[0].contains("| first second third |"), "{}", page.tables[0]);
+        assert!(
+            page.tables[0].contains("| first second third |"),
+            "{}",
+            page.tables[0]
+        );
     }
 
     #[test]
@@ -602,7 +641,11 @@ mod table_tests {
                </table>"#,
         ))
         .unwrap();
-        assert!(page.tables[0].contains("[See x](/docs/x/)"), "{}", page.tables[0]);
+        assert!(
+            page.tables[0].contains("[See x](/docs/x/)"),
+            "{}",
+            page.tables[0]
+        );
         assert!(page.tables[0].contains("**bold**"), "{}", page.tables[0]);
         assert!(page.tables[0].contains("*it*"), "{}", page.tables[0]);
     }

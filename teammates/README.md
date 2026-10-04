@@ -93,11 +93,105 @@ Resume preserves the recorded phase unless `--phase` overrides it; old records
 without a phase use the current teammate default. A phase selects guidance,
 not permission mode or tool access.
 
+## The design team
+
+Six more specialists cover visual design. Each carries bundled design skills
+by name, not by phase, so `--phase` never hands them to another teammate.
+
+| teammate | phase | agent, model, effort | MCP servers | use for |
+|---|---|---|---|---|
+| `design-director` | research | claude, opus, high | none | direction contract and storyboard; no production code |
+| `design-critic` | validation | claude, opus, high | playwright | scored review with screenshots; never edits code |
+| `landing-page-builder` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | landing and marketing pages |
+| `design-system-engineer` | implementation | claude, sonnet, medium | playwright, context7 | tokens, themes, components, brand kit |
+| `motion-engineer` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | GSAP scroll scenes and transitions |
+| `visual-prototyper` | implementation | codex, gpt-5.6-sol, medium | none | generated images and a static prototype |
+
+`design-critic` denies `Edit` and `NotebookEdit` but keeps `Write` for its one
+critique file. Every builder takes screenshots at 390, 768 and 1440 px before
+it reports done. `visual-prototyper` uses Codex image generation when the
+session has it, and writes prompts and placeholders when it does not.
+`design-system-engineer` runs on sonnet because the direction contract
+supplies the judgement; spawn `opus` for a system with no direction. The
+orchestrator's pipeline for these seats is in `skills/orchestrate/SKILL.md`
+under "Design work".
+
 Inspect catalogs and context estimates with `horch skills --phase validation`.
 The built-in roster requires no local plugin paths. Custom Claude teammates can
 still declare `plugin_dirs` (`~/` expands at launch); `horch teammates --check`
 verifies those paths exist. `disable_skills` conflicts with phase, skills, or
 plugin directories.
+
+## The Unreal Engine team
+
+Eleven `ue-*` specialists staff Unreal Engine work. Each sets
+`offer_when: ["*.uproject"]`, so the fleet orchestrator is offered them only
+when the project has a `.uproject` file at the top level or one level down.
+`horch spawn ue-<name>` still works in any project. The selection, the
+skill choices and the measured briefing sizes are in
+[`ai_docs/reports/unreal-engine-wave.md`](../ai_docs/reports/unreal-engine-wave.md)
+and [`ai_docs/reports/domain-skills/ue-teammates.md`](../ai_docs/reports/domain-skills/ue-teammates.md).
+
+| teammate | wave | phase | agent, model, effort | use for |
+|---|---|---|---|---|
+| `ue-tech-lead` | 1 | plan | claude, opus, high | runs first: writes `.agents/ue-project-context.md`; plans modules and plugins |
+| `ue-gameplay-engineer` | 1 | implementation | claude, opus, medium | actors, components, gameplay framework, GAS, tags, data assets |
+| `ue-network-engineer` | 1 | implementation | claude, opus, medium | replication, RPCs, prediction, net movement, dedicated servers |
+| `ue-technical-artist` | 1 | implementation | claude, opus, medium | materials, Niagara, audio, Sequencer, procedural content |
+| `ue-qa-engineer` | 1 | validation | claude, sonnet, high | headless builds, automation tests, crash repros, profiling |
+| `ue-code-reviewer` | 1 | validation | claude, opus, high | UE C++ review; never edits |
+| `ue-character-engineer` | 2 | implementation | claude, opus, medium | movement modes, animation, cameras, Enhanced Input |
+| `ue-ai-engineer` | 2 | implementation | claude, opus, medium | AI controllers, behavior trees, EQS, State Tree, Mass |
+| `ue-ui-engineer` | 2 | implementation | claude, opus, medium | UMG, Slate, Common UI, MVVM, gamepad focus |
+| `ue-tools-engineer` | 2 | implementation | claude, opus, medium | editor modules, customizations, validators, editor scripts |
+| `ue-world-engineer` | 2 | implementation | claude, opus, medium | World Partition, streaming, PCG, collision, save games |
+
+Every one runs on Claude: native Windows refuses a Codex teammate that has
+skills, and most Unreal work happens on Windows. Their `fallbacks:` follow
+their non-UE counterparts (`codex-sol`, and `codex-terra` for QA), so a
+fallback spawn on Windows fails the same check. Every implementation
+teammate and `ue-qa-engineer` carry `ue-build-verify`. `ue-technical-artist`
+and `ue-tools-engineer` also carry `ue-editor-scripting`, and so they may
+change an asset through editor Python or a commandlet. The others never
+touch `.uasset` or `.umap` files and list the asset change for a human.
+`available_skills:` names at most 3 related skills per teammate, picked from
+the "Related Skills" sections of its own skills.
+
+Each persona carries the same five standing rules: read
+`.agents/ue-project-context.md` first, never write asset bytes, check APIs in
+the engine headers, one build at a time per working copy, and a `DONE:` that
+names the target, the configuration and the automation filter with its
+result.
+
+## The effort-matrix personas
+
+Eight more Claude specialists split the work by model tier and effort level
+rather than by discipline. Sonnet does fast, cheap execution. Opus 5.5 brings
+more baseline reasoning and handles complex abstraction. The effort level sets
+how deep each one checks.
+
+| effort | Sonnet | Opus |
+|---|---|---|
+| low | `sonnet-sketch`: drafts, brainstorms, boilerplate, one-file edits, scoping | `opus-architect`: architecture critique, API and schema design, multi-service bug triage |
+| medium | `sonnet-feature`: endpoints, UI components, CRUD, test updates to a clear spec | `opus-domain`: intricate algorithms, domain rules, brownfield cross-cutting features |
+| high | `sonnet-bugfix`: localized bugs with repro steps, edge-case validation, module refactors | `opus-hardening`: races, leaks, concurrency, adversarial security review, fuzz harnesses |
+| max | `sonnet-sweep`: one refactor over many files, e2e boilerplate from a schema | `opus-verify`: Lean 4, hardware synthesis, compiler passes, sandboxed pentest |
+
+Each persona states its boundary ("stop and report when...") in its body, and
+the short form of that boundary in `brief_description`, so both the worker and
+the orchestrator see it. The two `max` seats, `sonnet-sweep` and `opus-verify`,
+have a `first_instruction` that makes the worker ask and wait on an
+underspecified task. At max effort a wrong premise costs the most tokens.
+Like the other Claude seats, each has a Codex `fallbacks:` entry for when the
+Claude pool cannot serve a spawn: `codex-sol` for the Opus four, `codex-terra`
+for the Sonnet four (`horch route <name>` shows the decision).
+
+Token efficiency: for deep reasoning, `opus-hardening` (Opus at high) often
+matches or beats Sonnet at max on fewer tokens. `sonnet-sweep` exists for
+repetitive volume, not for depth. `opus-architect` is the fast, low-effort
+counterpart of `staff-engineer` (deep plans, high) and `architect-reviewer`
+(reviews a change, high). Rationale per seat is in
+[`ai_docs/reports/model-guide-2026-09.md`](../ai_docs/reports/model-guide-2026-09.md).
 
 ## The generics
 
@@ -125,6 +219,7 @@ confidentiality as much as on capability:
 |---|---|---|
 | `sonnet` `opus` `codex-*` `prime` | money | anything the project already trusts these providers with |
 | `opencode-*` | **your prompts** | public and open-source work only |
+| `antigravity` | **your prompts**, until the operator confirms the opt-out | public and open-source work only |
 | `pi` | your own GPU | anything, including what must not leave the machine |
 
 ## Effort: set by role, stated in every file
@@ -140,6 +235,7 @@ evidence per teammate, with prices and sources, is in
 | reviewers and planners | `architect-reviewer`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
 | builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `codex-network`, `prime` | medium |
 | runners | `codex-terra`, `codex-luna`, `pi` | low |
+| effort-matrix personas | `sonnet-*`, `opus-*` (effort is the role; see above) | low to max |
 | no effort setting | `opencode-*` (their free models define no variants) | - |
 
 Rules `horch teammates --check` enforces:

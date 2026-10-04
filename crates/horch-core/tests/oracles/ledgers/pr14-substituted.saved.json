@@ -1,0 +1,55 @@
+[
+  {
+    "record_id": "rec-pr14-0001",
+    "session_id": "33333333-3333-4333-8333-333333333333",
+    "agent": "codex",
+    "tier": "opus",
+    "model": "gpt-5.5",
+    "effort": "high",
+    "phase": "implementation",
+    "role": "opus-1",
+    "status": "done",
+    "task": "Implement ai_docs/plans/balance.md",
+    "history": [
+      {
+        "at": "2026-09-29T08:00:00Z",
+        "event": "spawned",
+        "text": "Implement ai_docs/plans/balance.md"
+      },
+      {
+        "at": "2026-09-29T09:00:00Z",
+        "event": "done",
+        "text": "balance gate wired"
+      }
+    ],
+    "created_at": "2026-09-29T08:00:00Z",
+    "updated_at": "2026-09-29T09:00:00Z",
+    "project": "/oracle/project",
+    "plan": "balance",
+    "workspace_id": "w3",
+    "via": "codex-sol",
+    "substitution_reason": "claude pool exhausted (7d 98%, resets Fri 14:00Z)"
+  },
+  {
+    "record_id": "rec-pr14-0002",
+    "session_id": "44444444-4444-4444-8444-444444444444",
+    "agent": "claude",
+    "tier": "sonnet",
+    "model": "sonnet",
+    "effort": "medium",
+    "role": "sonnet-1",
+    "status": "working",
+    "task": "Review the gate",
+    "history": [
+      {
+        "at": "2026-09-29T08:05:00Z",
+        "event": "spawned",
+        "text": "Review the gate"
+      }
+    ],
+    "created_at": "2026-09-29T08:05:00Z",
+    "updated_at": "2026-09-29T08:05:00Z",
+    "project": "/oracle/project",
+    "workspace_id": "w3"
+  }
+]
