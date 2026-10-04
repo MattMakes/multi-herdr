@@ -28,6 +28,7 @@ use horch_core::routing::quota::{QuotaFile, QuotaView};
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use horch_core::skills::SkillCatalog;
 use horch_core::workspace::client::WorkspaceClient;
+use horch_core::workspace::model::{Direction, NewWorkspace, Pane};
 use horch_core::workspace::testing::FakeWorkspace;
 
 const NOW: &str = "2026-09-28T18:00:00Z";
@@ -772,6 +773,165 @@ fn arc_16_run_failure_closes_pane() {
     }
 }
 
+/// A workspace whose `pane_run` also acts out a fast worker: before the
+/// spawner gets the call's answer, the worker sets its record to `worker`.
+/// A loaded machine can schedule the spawner that late (cmp_05, D18).
+struct FastWorker<'a> {
+    inner: &'a FakeWorkspace,
+    store: &'a ExecutionStore,
+    worker: ExecutionStatus,
+}
+
+impl WorkspaceClient for FastWorker<'_> {
+    fn pane_get(&self, pane: &str) -> Result<Pane> {
+        self.inner.pane_get(pane)
+    }
+    fn pane_list(&self, workspace: &str) -> Result<Vec<Pane>> {
+        self.inner.pane_list(workspace)
+    }
+    fn pane_split(&self, from: &str, direction: Direction) -> Result<String> {
+        self.inner.pane_split(from, direction)
+    }
+    fn pane_run(&self, pane: &str, command: &str) -> Result<()> {
+        self.inner.pane_run(pane, command)?;
+        let id = self.store.read()?[0].record_id.clone();
+        self.store.set_state(&id, ExecutionStatus::Running)?;
+        self.store.set_state(&id, self.worker.clone())
+    }
+    fn pane_close(&self, pane: &str) -> Result<()> {
+        self.inner.pane_close(pane)
+    }
+    fn agent_prompt(&self, pane: &str, text: &str) -> Result<()> {
+        self.inner.agent_prompt(pane, text)
+    }
+    fn pane_send_text(&self, pane: &str, text: &str) -> Result<()> {
+        self.inner.pane_send_text(pane, text)
+    }
+    fn pane_send_keys(&self, pane: &str, keys: &str) -> Result<()> {
+        self.inner.pane_send_keys(pane, keys)
+    }
+    fn pane_read(&self, pane: &str, source: &str) -> Result<String> {
+        self.inner.pane_read(pane, source)
+    }
+    fn workspace_create(
+        &self,
+        label: &str,
+        cwd: Option<&str>,
+        focus: bool,
+    ) -> Result<NewWorkspace> {
+        self.inner.workspace_create(label, cwd, focus)
+    }
+    fn workspace_close(&self, workspace: &str) -> Result<()> {
+        self.inner.workspace_close(workspace)
+    }
+    fn server_reachable(&self) -> bool {
+        self.inner.server_reachable()
+    }
+}
+
+/// The worker runs once `pane_run` answers, and the spawner records the
+/// pane after that. What the worker recorded in between stays: `Starting`
+/// never takes a record back from `Running`, `Done` or `Failed`. Before
+/// D18 a `Done` became `Starting` again, and the dataset coordinator
+/// recorded the finished candidate as `pane_vanished`.
+#[test]
+fn arc_16_mark_starting_keeps_what_the_worker_recorded() {
+    for worker in [
+        ExecutionStatus::Running,
+        ExecutionStatus::Done,
+        ExecutionStatus::Failed {
+            failure: FailureKind::AgentExited { code: Some(3) },
+        },
+    ] {
+        let w = world(None);
+        let fast = FastWorker {
+            inner: &w.fake,
+            store: &w.store,
+            worker: worker.clone(),
+        };
+        let mut req = req("sonnet", "build");
+        req.from_pane = Some("p1".into());
+        let service = ExecutionService {
+            ctx: &w.ctx,
+            store: &w.store,
+            workspace: &fast,
+            mailbox: &w.mailbox,
+            tile: &|_, _| {},
+        };
+        let pane = service
+            .spawn(plan(&req, "all-ok", None).unwrap(), None)
+            .unwrap()
+            .pane;
+        let r = w.only_record();
+        assert_eq!(r.execution_status(), worker);
+        assert_eq!(r.pane_id.as_deref(), Some(pane.as_str()), "{worker:?}");
+        assert_eq!(r.finished_at.is_some(), worker.is_terminal(), "{worker:?}");
+    }
+}
+
+/// The other writers that could take a record back (D18):
+/// `mark_running` (the worker) keeps an end the coordinator wrote while the
+/// worker started, and `end_live` (a timeout, cancel or launch failure)
+/// keeps an end the worker wrote after the caller's look.
+#[test]
+fn arc_16_guarded_writers_keep_an_end() {
+    let failed = ExecutionStatus::Failed {
+        failure: FailureKind::TimedOut,
+    };
+    let launch_failed = ExecutionStatus::LaunchFailed {
+        stage: LaunchStage::Split,
+        reason: "abandoned".into(),
+    };
+    // (before, after mark_running)
+    for (before, after) in [
+        (ExecutionStatus::Planned, ExecutionStatus::Running),
+        (ExecutionStatus::Starting, ExecutionStatus::Running),
+        (ExecutionStatus::Running, ExecutionStatus::Running),
+        (launch_failed.clone(), ExecutionStatus::Running),
+        (ExecutionStatus::Done, ExecutionStatus::Done),
+        (failed.clone(), failed.clone()),
+    ] {
+        let mut r = record("sonnet", "claude", "sonnet");
+        r.set_state(before.clone());
+        let (_tmp, store) = store_with(r);
+        store.mark_running("rec-1").unwrap();
+        let r = store.get("rec-1").unwrap();
+        assert_eq!(r.execution_status(), after, "mark_running from {before:?}");
+        if !after.is_terminal() {
+            assert!(r.finished_at.is_none(), "{before:?}");
+        }
+    }
+    // (before, state end_live returns and leaves)
+    for (before, after) in [
+        (ExecutionStatus::Planned, failed.clone()),
+        (ExecutionStatus::Starting, failed.clone()),
+        (ExecutionStatus::Running, failed.clone()),
+        (ExecutionStatus::Done, ExecutionStatus::Done),
+        (
+            ExecutionStatus::Failed {
+                failure: FailureKind::AgentExited { code: Some(3) },
+            },
+            ExecutionStatus::Failed {
+                failure: FailureKind::AgentExited { code: Some(3) },
+            },
+        ),
+        (launch_failed.clone(), launch_failed.clone()),
+    ] {
+        let mut r = record("sonnet", "claude", "sonnet");
+        r.set_state(before.clone());
+        let (_tmp, store) = store_with(r);
+        let end = store.end_live("rec-1", failed.clone()).unwrap();
+        assert_eq!(end, after, "end_live from {before:?}");
+        let r = store.get("rec-1").unwrap();
+        assert_eq!(r.execution_status(), after);
+        if !before.is_terminal() {
+            assert!(r.finished_at.is_some(), "{before:?}");
+        }
+    }
+    let (_tmp, store) = store_with(record("sonnet", "claude", "sonnet"));
+    assert!(store.end_live("nope", failed).is_err());
+}
+
 /// The recovery rule: a `Planned` record with no pane is never live, and
 /// once [`ABANDONED_AFTER`] has passed, the next spawn closes it as
 /// `LaunchFailed` and frees its role. A younger one is left alone: its
@@ -956,7 +1116,9 @@ impl WorkerSteps for FailingSteps<'_> {
 /// A worker that fails at `fail_at` ends its `Starting` record at once and
 /// never launches the agent; the original error returns.
 fn startup_failure_records_failed(fail_at: &'static str) {
-    let live = record("sonnet", "claude", "sonnet");
+    // As a spawn leaves it: inserted `Planned`, then given its pane.
+    let mut live = record("sonnet", "claude", "sonnet");
+    live.set_state(ExecutionStatus::Planned);
     let (_tmp, store) = store_with(live);
     store.mark_starting("rec-1", "p1").unwrap();
     assert_eq!(

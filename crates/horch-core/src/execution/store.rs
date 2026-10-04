@@ -438,13 +438,65 @@ impl ExecutionStore {
     }
 
     /// The pane exists and runs the worker command: `Starting`, with its pane.
+    ///
+    /// The worker starts as soon as `pane run` answers, before this write.
+    /// On a loaded machine it can set `Running`, or even finish, first. Its
+    /// state stays then: only a record that no worker has touched yet
+    /// (`Planned`, or `LaunchFailed` by a spawn's recovery) becomes
+    /// `Starting`. The pane is recorded either way.
     pub fn mark_starting(&self, key: &str, pane: &str) -> Result<()> {
         let at = crate::clock::now_stamp();
         self.update_key(key, |r| {
             r.pane_id = Some(pane.to_string());
-            r.finished_at = None;
-            r.set_state(ExecutionStatus::Starting);
+            if matches!(
+                r.execution_status(),
+                ExecutionStatus::Planned | ExecutionStatus::LaunchFailed { .. }
+            ) {
+                r.finished_at = None;
+                r.set_state(ExecutionStatus::Starting);
+            }
             r.updated_at = at.clone();
+        })
+    }
+
+    /// The worker launches its agent: `Running`. A record that has ended
+    /// keeps its end: the coordinator can time out or cancel a candidate
+    /// while its worker is still starting, and the closed pane then kills
+    /// the worker. `LaunchFailed` (a spawn's recovery) still becomes
+    /// `Running`, because the worker does run.
+    pub fn mark_running(&self, key: &str) -> Result<()> {
+        let at = crate::clock::now_stamp();
+        self.update_key(key, |r| {
+            if matches!(
+                r.execution_status(),
+                ExecutionStatus::Done | ExecutionStatus::Failed { .. }
+            ) {
+                return;
+            }
+            r.finished_at = None;
+            r.set_state(ExecutionStatus::Running);
+            r.updated_at = at.clone();
+        })
+    }
+
+    /// End a record that has not ended yet with the terminal `state`. A
+    /// record that has ended keeps its end: the worker can run `horch done`
+    /// between a caller's read and this write. Returns the newest matching
+    /// record's state after the write, which the caller records.
+    pub fn end_live(&self, key: &str, state: ExecutionStatus) -> Result<ExecutionStatus> {
+        debug_assert!(state.is_terminal(), "end_live needs a terminal state");
+        let at = crate::clock::now_stamp();
+        self.update(|records| {
+            let mut last = None;
+            for r in records.iter_mut().filter(|r| r.matches(key)) {
+                if !r.execution_status().is_terminal() {
+                    r.finished_at.get_or_insert_with(|| at.clone());
+                    r.set_state(state.clone());
+                    r.updated_at = at.clone();
+                }
+                last = Some(r.execution_status());
+            }
+            last.with_context(|| format!("no record matches '{key}' in {}", self.path.display()))
         })
     }
 

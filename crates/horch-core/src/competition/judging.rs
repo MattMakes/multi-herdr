@@ -240,7 +240,7 @@ fn settled(round: &RoundView) -> Option<JudgingStatus> {
     }
     if let Some(reason) = &round.rejected {
         return Some(JudgingStatus::Decided(WinnerOutcome::Rejected {
-            reason: reason.clone(),
+            reason: *reason,
         }));
     }
     if round.needs_intervention.is_some() || round.state == RoundState::NeedsIntervention {
@@ -321,7 +321,7 @@ fn bundle(env: &JudgeEnv, round_id: &RoundId, round: &RoundView) -> Result<Judge
                     .unwrap_or_else(|| round.created.base_sha.clone()),
                 head_sha: frozen.head_sha.clone(),
                 numstat: frozen.numstat.clone(),
-                diff_digest: frozen.diff_digest.clone(),
+                diff_digest: frozen.diff_digest,
                 frozen_at: String::new(),
             },
             report.clone(),
@@ -452,7 +452,7 @@ fn schedule_attempt(
         format!("judge.scheduled:{round_id}:{attempt}"),
         EventKind::JudgeScheduled(JudgeScheduled {
             attempt,
-            input_digest: input.digest.clone(),
+            input_digest: input.digest,
             judge_policy_digest: policy_digest(env, round)?,
             job_dir: job_dir.clone(),
         }),
@@ -688,9 +688,7 @@ fn decide(
                 round,
                 Some(&execution),
                 format!("winner:{round_id}"),
-                EventKind::WinnerRejected(WinnerRejected {
-                    reason: reason.clone(),
-                }),
+                EventKind::WinnerRejected(WinnerRejected { reason }),
             )?;
             Ok(JudgingStatus::Decided(WinnerOutcome::Rejected { reason }))
         }

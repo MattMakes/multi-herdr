@@ -1,6 +1,6 @@
 //! `herdr-docs-sync` - mirror the Herdr documentation into a local directory.
 //!
-//! Discovers every English page under https://herdr.dev/docs/ from the sitemap,
+//! Discovers every English page under <https://herdr.dev/docs/> from the sitemap,
 //! converts each to markdown, and writes it to `herdr-docs/`. Safe to run as often
 //! as you like: it reports what changed, and removes local files for pages that no
 //! longer exist so the directory stays a faithful mirror rather than an accreting

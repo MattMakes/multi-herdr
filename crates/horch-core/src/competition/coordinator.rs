@@ -509,13 +509,17 @@ impl<G: GitClient> Coordinator<'_, G> {
                 }
                 _ if e.status == ExecutionStatus::Planned => {
                     // Its spawner died before the pane: it never ran.
-                    self.store.set_state(
+                    let end = self.store.end_live(
                         e.id.as_str(),
                         ExecutionStatus::LaunchFailed {
                             stage: LaunchStage::Split,
                             reason: "abandoned: the coordinator stopped before the pane ran".into(),
                         },
                     )?;
+                    if !matches!(end, ExecutionStatus::LaunchFailed { .. }) {
+                        // It did run after this look: the next look sees it.
+                        return Ok(());
+                    }
                     return self.ended(spec, label, e, Observed::Failed(FailureKind::Crashed));
                 }
                 _ => {}
@@ -602,16 +606,27 @@ impl<G: GitClient> Coordinator<'_, G> {
         e: &Execution,
         failure: FailureKind,
     ) -> Result<()> {
-        self.store.set_state(
-            e.id.as_str(),
-            ExecutionStatus::Failed {
-                failure: failure.clone(),
-            },
-        )?;
+        let ours = ExecutionStatus::Failed { failure };
+        let end = self.store.end_live(e.id.as_str(), ours.clone())?;
         if let Some(pane) = &e.pane {
             let _ = self.workspace.pane_close(pane.as_str());
         }
-        self.ended(spec, label, e, Observed::Failed(failure))
+        if end == ours {
+            let ExecutionStatus::Failed { failure } = end else {
+                unreachable!("ours is a failure")
+            };
+            return self.ended(spec, label, e, Observed::Failed(failure));
+        }
+        // The record ended before this write (the agent ran `horch done`
+        // after the look): record that end, not ours.
+        let ended = self
+            .records()?
+            .remove(&self.key(spec, label))
+            .unwrap_or_else(|| Execution {
+                status: end,
+                ..e.clone()
+            });
+        self.ended(spec, label, &ended, classify(&ended, None))
     }
 
     /// Record a candidate's end. One key for both kinds: a candidate ends
@@ -972,7 +987,7 @@ impl<G: GitClient> Coordinator<'_, G> {
                 base_sha: wt.base_sha.clone(),
                 head_sha: frozen.head_sha.clone(),
                 numstat: frozen.numstat.clone(),
-                diff_digest: frozen.diff_digest.clone(),
+                diff_digest: frozen.diff_digest,
                 frozen_at: crate::clock::stamp((self.clock)()),
             };
             let mut report = if ran {
@@ -1269,7 +1284,7 @@ pub(crate) fn frozen_winner(view: &RoundView, at: DateTime<Utc>) -> Result<Froze
         base_sha: wt.base_sha.clone(),
         head_sha: frozen.head_sha.clone(),
         numstat: frozen.numstat.clone(),
-        diff_digest: frozen.diff_digest.clone(),
+        diff_digest: frozen.diff_digest,
         frozen_at: crate::clock::stamp(at),
     })
 }

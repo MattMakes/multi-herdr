@@ -143,6 +143,8 @@ fn sync_dir(dir: &Path) -> Result<()> {
 }
 
 /// Replace `path` with `bytes` atomically and durably, with file mode `mode`.
+/// This is the "replace" discipline of
+/// `ai_docs/designs/2026-10-02-dataset-competition-design.md` §2.3 (MEA-09).
 pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let (parent, name) = parent_and_name(path)?;
     let nonce = uuid::Uuid::new_v4().simple().to_string();
@@ -165,13 +167,6 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     }
     written?;
     sync_dir(parent)
-}
-
-/// Replace `path` durably. The same as [`write_atomic`]. No caller uses it
-/// yet: it is the "replace" discipline that `ai_docs/designs/2026-10-02-dataset-competition-design.md` §2.3 (MEA-09)
-/// names, and `mea_09_replace_durable` tests it.
-pub fn replace_durable(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    write_atomic(path, bytes, mode)
 }
 
 /// What [`create_immutable`] did.
@@ -497,14 +492,12 @@ mod tests {
     }
 
     #[test]
-    fn mea_09_replace_durable() {
+    fn mea_09_write_atomic_replaces_durably() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("state.json");
-        replace_durable(&p, b"first", PRIVATE_FILE).unwrap();
-        replace_durable(&p, b"second", PRIVATE_FILE).unwrap();
+        write_atomic(&p, b"first", PRIVATE_FILE).unwrap();
+        write_atomic(&p, b"second", PRIVATE_FILE).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"second");
-        write_atomic(&p, b"third", PRIVATE_FILE).unwrap();
-        assert_eq!(std::fs::read(&p).unwrap(), b"third");
         let names: Vec<_> = std::fs::read_dir(tmp.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -522,7 +515,7 @@ mod tests {
         ensure_private_dir(&dir).unwrap();
         assert_eq!(mode(&dir), 0o700);
         let replaced = dir.join("r.json");
-        replace_durable(&replaced, b"x", PRIVATE_FILE).unwrap();
+        write_atomic(&replaced, b"x", PRIVATE_FILE).unwrap();
         assert_eq!(mode(&replaced), 0o600);
         let created = dir.join("c.json");
         create_immutable(&created, b"x", PRIVATE_FILE).unwrap();
