@@ -34,6 +34,11 @@ The docs and the teammate template say what the code does now, and
    `crates/horch/src/cmd/doctor.rs:47` uses `ctx.inherited.blender_path`
    instead of `std::env::var_os`. Tests: doctor tests pass; arch_scan passes.
 
+6. `horch teammates --matrix` does not show `operator_skills` (opus-56,
+   O1). Add them to the matrix the way the other skill columns appear (for
+   example `op:<name>`), with a test. You own the matrix code in
+   `crates/horch/src/cmd/teammatescmd.rs` for this step only.
+
 Source of 2, 4, 5: `ai_docs/reports/finish/usage-doctor.md` "Not done".
 
 ## FILES
@@ -44,7 +49,7 @@ own: `README.md`, `docs/recipes/add-teammate.md`, `docs/skills-and-teams.md`,
 `crates/horch/src/cmd/doctor.rs` (the BLENDER_PATH read only),
 `ai_docs/reports/finish/docs-template.md`.
 
-do not touch: any other `.rs` file, any other teammate file.
+do not touch: any other `.rs` file (except the matrix code, step 6), any other teammate file.
 
 ## CHECKS
 
