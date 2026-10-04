@@ -391,16 +391,35 @@ impl Herdr {
         Ok(())
     }
 
-    /// `herdr wait output <pane> --match <needle> --timeout <ms>`.
-    /// Returns false on timeout rather than erroring.
+    /// `herdr pane wait-output <pane> --match <needle> --source recent-unwrapped
+    /// --timeout <ms>`. Returns false on timeout rather than erroring.
+    ///
+    /// herdr 0.8.2 has no top-level `wait`: the old `herdr wait output` exits 2
+    /// with `unknown command: wait`, which read as a timeout and failed every
+    /// `horch smoke messaging`. Any failure other than herdr's `timeout` error
+    /// is now an error. The source is the one the smoke failure dump prints.
     pub fn wait_output(&self, pane: &str, needle: &str, timeout_ms: u64) -> Result<bool> {
         let timeout = timeout_ms.to_string();
-        let status = Command::new(&self.bin)
-            .args(["wait", "output", pane, "--match", needle, "--timeout"])
-            .arg(&timeout)
+        let args = [
+            "pane",
+            "wait-output",
+            pane,
+            "--match",
+            needle,
+            "--source",
+            "recent-unwrapped",
+            "--timeout",
+            &timeout,
+        ];
+        let out = Command::new(&self.bin)
+            .args(args)
             .output()
-            .context("running herdr wait output")?;
-        Ok(status.status.success())
+            .context("running herdr pane wait-output")?;
+        wait_outcome(
+            out.status.success(),
+            &String::from_utf8_lossy(&out.stderr),
+        )
+        .with_context(|| format!("herdr {} failed ({})", args.join(" "), out.status))
     }
 
     /// `herdr integration status`, or None when the subcommand is unavailable.
@@ -422,9 +441,38 @@ impl Herdr {
     }
 }
 
+/// Read a `herdr pane wait-output` result: success is a match; herdr's
+/// `{"error":{"code":"timeout",...}}` on stderr is no match; anything else
+/// (a missing pane, an unknown command) is an error.
+fn wait_outcome(success: bool, stderr: &str) -> Result<bool> {
+    if success {
+        return Ok(true);
+    }
+    let code = serde_json::from_str::<serde_json::Value>(stderr.trim())
+        .ok()
+        .and_then(|v| v["error"]["code"].as_str().map(str::to_owned));
+    if code.as_deref() == Some("timeout") {
+        return Ok(false);
+    }
+    bail!("{}", stderr.trim())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three answers herdr 0.8.2 gives, verbatim.
+    #[test]
+    fn wait_outcome_tells_a_timeout_from_an_error() {
+        assert!(wait_outcome(true, "").unwrap());
+        let timeout = r#"{"error":{"code":"timeout","message":"timed out waiting for output match"},"id":"cli:pane:wait-output"}"#;
+        assert!(!wait_outcome(false, timeout).unwrap());
+        let missing = r#"{"error":{"code":"pane_not_found","message":"pane w999:p9 not found"},"id":"cli:pane:wait-output"}"#;
+        assert!(wait_outcome(false, missing).is_err());
+        let unknown = "unknown command: wait\nrun 'herdr --help' for usage";
+        let err = wait_outcome(false, unknown).unwrap_err().to_string();
+        assert!(err.contains("unknown command: wait"), "{err}");
+    }
 
     #[test]
     fn parses_pane_get_envelope() {

@@ -174,6 +174,53 @@ fn fake_herdr_close_kills_the_exec_process() {
     assert!(!alive(&pid), "pane close kills the pane process");
 }
 
+/// herdr 0.8.2 has no top-level `wait`; `pane wait-output` matches pane
+/// text, and a timeout is exit 1 with the `timeout` error code.
+#[cfg(unix)]
+#[test]
+fn fake_herdr_answers_wait_output_like_herdr_0_8_2() {
+    let mut h = Harness::new("fakes-wait");
+    h.set("HORCH_FAKE_SCENARIO", "exec,shell");
+    let created = json(&fake(&h, "herdr", &["workspace", "create", "--label", "t"]));
+    let root = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let old = fake(&h, "herdr", &["wait", "output", &root, "--match", "x"]);
+    assert_eq!(old.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&old.stderr).contains("unknown command: wait"));
+
+    // Typed but not entered: the line shows, its output does not.
+    let typed = "echo SMOKE_TEST_$((40+2))";
+    assert!(fake(&h, "herdr", &["pane", "send-text", &root, typed])
+        .status
+        .success());
+    let read = fake(&h, "herdr", &["pane", "read", &root, "--source", "visible"]);
+    assert!(String::from_utf8_lossy(&read.stdout).contains(typed));
+    let wait = |needle: &str, ms: &str| {
+        fake(
+            &h,
+            "herdr",
+            &["pane", "wait-output", &root, "--match", needle, "--timeout", ms],
+        )
+    };
+    let missed = wait("SMOKE_TEST_42", "200");
+    assert_eq!(missed.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&missed.stderr).contains(r#""code":"timeout""#));
+
+    assert!(fake(&h, "herdr", &["pane", "send-keys", &root, "enter"])
+        .status
+        .success());
+    let found = wait("SMOKE_TEST_42", "5000");
+    assert!(found.status.success(), "{found:?}");
+    assert_eq!(json(&found)["result"]["matched_line"], "SMOKE_TEST_42");
+
+    let gone = fake(&h, "herdr", &["pane", "wait-output", "w99:p9", "--match", "x"]);
+    assert_eq!(gone.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&gone.stderr).contains("pane_not_found"));
+}
+
 #[test]
 fn fake_opencode_session_list_matches_cwd() {
     let mut h = Harness::new("fakes-opencode");
