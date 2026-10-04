@@ -1,6 +1,6 @@
 # Phase-scoped skills
 
-The sixteen skills in [skills/](../skills/README.md) are repo-owned: fourteen are adaptations of `public-skills`, with source revision and hashes recorded in [provenance.json](../skills/provenance.json); `orchestrate` is original to this repository with a null source; and `skill-creator` is a verbatim copy of Anthropic's, with its own source repository and revision in the same file. They are compiled into `horch`; an installed binary works without either source checkout. No skill download or global installation happens when a worker starts.
+The 24 skills in [skills/](../skills/README.md) are repo-owned: fourteen are adaptations of `public-skills`, and eight design skills combine and rewrite files from 7 MIT-licensed design repositories, with source revision and hashes recorded in [provenance.json](../skills/provenance.json); `orchestrate` is original to this repository and has no sources; and `skill-creator` is a verbatim copy of Anthropic's, with its own source repository and revision in the same file. The phase catalogs below use only process skills. The design skills, `orchestrate` and `skill-creator` belong to no phase: they attach to a teammate by name, in its `skills:` list. They are compiled into `horch`; an installed binary works without either source checkout. No skill download or global installation happens when a worker starts.
 
 | Phase | Fleet catalog |
 |---|---|

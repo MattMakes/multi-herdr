@@ -601,7 +601,7 @@ deterministically; an agent decides only where semantic judgment is needed.
 | `runtime` | the process boundary: `RuntimeContext`, paths, binary overrides |
 | `roster`, `prompts` | `teammates/` files, layering, `--check`, briefing rendering |
 | `skills` | skill catalogs, activation plans, launch bundles |
-| `harness` | one adapter per agent CLI (claude, codex, OpenCode, pi, Prime) and the launch flow |
+| `harness` | one adapter per agent CLI (claude, codex, OpenCode, pi, Prime, Antigravity) and the launch flow |
 | `routing` | quota-aware routing: policy, quota view, decisions |
 | `execution` | executions: model, the ledger record and store, spawn plan, lifecycle |
 | `messaging`, `workspace` | the brief, mailbox and delivery; the herdr client, tiling and balancing |
@@ -610,6 +610,8 @@ deterministically; an agent decides only where semantic judgment is needed.
 
 The designs are `ai_docs/designs/2026-10-02-architecture-refactor-design.md`
 and `ai_docs/designs/2026-10-02-dataset-competition-design.md`.
+
+New contributors: start with [the handbook in `docs/`](docs/README.md).
 
 ## Tests
 
