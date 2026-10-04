@@ -13,7 +13,7 @@
 //! | [`roster`]      | `teammates/` files: parsing, layering, `--check` rules      |
 //! | [`prompts`]     | rendering briefings from `teammates/`                       |
 //! | [`skills`]      | skill catalogs, activation plans and launch bundles         |
-//! | [`harness`]     | the agent CLIs (claude, codex, OpenCode, pi, Prime) and launch |
+//! | [`harness`]     | the agent CLIs (claude, codex, OpenCode, pi, Prime, Antigravity) and launch |
 //! | [`routing`]     | quota-aware routing: policy, quota view, decisions          |
 //! | [`execution`]   | executions: model, ledger record and store, spawn plan, lifecycle |
 //! | [`messaging`]   | the worker brief, the mailbox and message delivery          |
