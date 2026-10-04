@@ -20,3 +20,6 @@ Plans: this directory. Reports: `ai_docs/reports/domain-skills/`.
 Merge order: V0, then any skill unit (rebase on V0), V1, V2; personas last.
 Shared-file conflicts (`skills/provenance.json`, `skills/README.md`) are
 resolved by `/tmp/dsmerge.sh` (union by name).
+
+Remote: `origin/design-skills` is pushed after every merge that passes the
+gate (operator request, 2026-10-03). Never push a red merge.
