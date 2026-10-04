@@ -53,8 +53,16 @@ executor in the implementation phase.
   the integration branch:
 
   ```bash
-  git -C <main checkout> worktree add -b ds/<unit> <worktrees dir>/<unit> design-skills
+  git -C <main checkout> worktree add -b ds/<unit> <main checkout>/.worktrees/<unit> design-skills
+  cd <main checkout>/.worktrees/<unit>
   ```
+
+- Unit worktrees live under `.worktrees/` in the main checkout. The
+  directory is in `.gitignore`. Each worktree builds its own `target/`
+  (2 to 8 GB), so the orchestrator removes a worktree as soon as its unit
+  merges. `00-conventions.md` of the run gives the exact path (for the
+  design-skills run: section 8; units started before it finish in their old
+  directory).
 
 - Each worktree uses its own `CARGO_TARGET_DIR` (the default `target/` in
   the worktree). Sharing one corrupts builds and fakes.

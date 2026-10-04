@@ -67,8 +67,8 @@ lines, read-only, not moved). Each row: claim, source, verdict.
 | sequence: insert orchestrator record | `cmd/recipes.rs:294` | kept |
 | sequence: `horch route` spawn / substitute / refuse | `cmd/route.rs`; `main.rs` `Route` doc | kept; added exit 3 (`exit.rs` `REFUSED`) |
 | sequence: plan with no I/O, insert Planned, brief, split, run worker | `execution/service.rs:1-7` | kept; added "Starting, pane id recorded" |
-| sequence: worker sets Running, session id recorded | `execution/lifecycle.rs:272` | fixed: session id is minted or discovered |
-| sequence: `horch done` → Done, DONE message, close, re-tile | `execution/lifecycle.rs:61-64`; `workspace/arrange.rs:618-644` | fixed: a detached re-tile starts, then the pane closes |
+| sequence: worker sets Running, session id recorded | `execution/lifecycle.rs:291` | fixed: session id is minted or discovered |
+| sequence: `horch done` → Done, DONE message, close, re-tile | `execution/lifecycle.rs:61-68`; `workspace/arrange.rs:618-644` | fixed: a detached re-tile starts, then the pane closes |
 | side commands list | `main.rs` | kept; added `agent-list`, the 5 pools |
 | preflight list "git · disk · RAM · harness --version · budget · storage · herdr · --promote-to" | `competition/preflight.rs:200-214` (PRE-01..PRE-13) | fixed: added CPU/GPU, limits, provider pools, parallelism, judge |
 | preflight fail → exit 4, no worktree, no model call | `dataset/run.rs:203-208`; `dataset/mod.rs:39` | kept |
@@ -106,7 +106,7 @@ quotes and that every `subgraph` has an `end`.
 add-harness:
 - `crates/horch-core/src/harness/mod.rs:91` - `pub trait Harness`; `:262` `enum HarnessKind`; `:276` `ALL`; `:286,300,313,326,372` `as_str`, `binary`, `adapter`, `capabilities`, `FromStr`; `:409` `all_names_every_kind`; `:434` `legacy` table.
 - `crates/horch-core/src/harness/capabilities.rs:161` - `ANTIGRAVITY` const.
-- `crates/horch-core/src/harness/launch.rs:598` - test `unreachable!()` arm; `:104` `FORBIDDEN_ENV` (only `ANTHROPIC_API_KEY`).
+- `crates/horch-core/src/harness/launch.rs:624` - test `unreachable!()` arm; `:104` `FORBIDDEN_ENV` (only `ANTHROPIC_API_KEY`).
 - `crates/horch-core/src/harness/antigravity.rs:28` - per-adapter forbidden env.
 - `crates/horch-core/src/roster/permission.rs:62` - `antigravity_args`.
 - `crates/horch-core/src/roster/validation.rs:194` env rule; `:246` permission arm; `:610` phase-defaults test.
@@ -193,14 +193,24 @@ add-dataset-event:
 
 ## Rebase
 
-Rebased on `design-skills` at `41506d2` (D11 and D14 merged). D11 added
-`google` to `teammates/_base/fleet-orchestrator.md:115`, so that open item is
-gone. D14 changed only `skills/motion-gsap` text. `a6da895` moved
-`crates/horch-core/build.rs` lines by 5; the line numbers above are updated.
-D12 and D13 are not merged yet; no page states a line number in
-`execution/lifecycle.rs`, `fake-herdr.rs`, `competition/promotion.rs`,
-`budget.rs` or `coordinator.rs`. The report cites `coordinator.rs` and
-`budget.rs` lines in the claim table; re-check them if D13 merges first.
+Rebased twice. The last base is `design-skills` at `0c7b377` (D11, D12, D14,
+`a6da895` and the worktree convention). Rechecked:
+
+- D11: `teammates/_base/fleet-orchestrator.md:115` now names the `google`
+  pool, so that open item is gone. No page quotes the orchestrator persona.
+- D12: `horch done` now succeeds when the pane is gone at any step after the
+  summary is recorded, and Prime gets a final discovery. The step order is
+  unchanged (`execution/lifecycle.rs:61-68`), so `command-flow.md` diagram 2
+  still holds. Line refs moved: `lifecycle.rs` Running at `:291`,
+  `harness/launch.rs` test arm at `:624`. fake-herdr no longer reuses pane
+  ids; both D10 open items are closed.
+- D14: changed only `skills/motion-gsap` text. No page cites it.
+- `a6da895`: `crates/horch-core/build.rs` lines moved by 5 (updated above).
+- Worktree convention (`00-conventions.md` section 8): `docs/fleet-workflow.md`
+  now puts unit worktrees under `<main checkout>/.worktrees/<unit>` and says
+  the orchestrator removes each one after its merge.
+- D13 is not merged. The claim table cites `coordinator.rs` and `budget.rs`
+  lines; re-check them if D13 merges first.
 
 ## Not verified
 
@@ -221,5 +231,3 @@ D12 and D13 are not merged yet; no page states a line number in
   Antigravity exposes no skills.
 - `ai_docs/plans/design-skills/00-conventions.md` §5 still permits new
   oracle files for a new teammate, which `arc_01` forbids.
-- STATUS.md D10 items `horch done` pane race and fake-herdr pane id reuse
-  stand unless D12 merged.
