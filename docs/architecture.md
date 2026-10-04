@@ -132,9 +132,19 @@ environment), `crates/horch/src/exit.rs` (exit codes), `crates/horch/src/output.
 | dataset root | `<state root>/multi-herdr/<project slug>/` | `measure/paths.rs` (`DATASET_DIR`) |
 | dataset events | `<dataset root>/events/YYYY-MM-DD.jsonl`, 1 file per UTC day | `measure/paths.rs` `events_file` |
 | skill bundles per launch | `<state root>/skill-bundles/<execution id>/` | `skills.rs`, `harness/launch.rs` |
-| marketplace skills | `${XDG_DATA_HOME:-~/.local/share}/horch/` | `runtime/paths.rs` `data_root` |
+| marketplace skills (data root) | `$HORCH_DATA_DIR`, else `${XDG_DATA_HOME:-~/.local/share}/horch/` | `runtime/paths.rs` `data_root` |
 
 `horch ledger path` prints the ledger path for the current project.
+
+A herdr pane does not inherit the environment of the `horch` that split it.
+So every horch process in a fleet gets the spawner's data root this way:
+
+- The orchestrator pane command sets `HORCH_DATA_DIR` (`cmd/recipes.rs`
+  `pane_command_for`, through `PaneShell::command_line_with_env`).
+  `pane-launch` and its agent inherit it.
+- `horch spawn` writes the data root to the brief (`data_root`). `horch
+  worker` reads it, and gives it to its agent as `HORCH_DATA_DIR`
+  (`messaging/brief.rs` `transport_env`).
 
 ## How teammates and skills get into the binary
 
