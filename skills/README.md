@@ -192,6 +192,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-player-controller](godot-player-controller/SKILL.md) | `jame581/GodotPrompter`: `skills/player-controller/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-characterbody-2d/`) | combined |
 | [godot-popochiu](godot-popochiu/SKILL.md) | `jame581/GodotPrompter`: `skills/popochiu/` | renamed |
 | [godot-project-context](godot-project-context/SKILL.md) | *(none - repo-original; shape of `ue-project-context`; run on Godot 4.7.2)* | own text |
+| [godot-quest-system](godot-quest-system/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-quest-system/`; code run on Godot 4.7.2)* | own text |
 | [godot-responsive-ui](godot-responsive-ui/SKILL.md) | `jame581/GodotPrompter`: `skills/responsive-ui/` | renamed |
 | [godot-save-load](godot-save-load/SKILL.md) | `jame581/GodotPrompter`: `skills/save-load/`; own references consulted `thedivergentai/gd-agentic-skills`: `godot-save-load-systems` | combined |
 | [godot-scene-files](godot-scene-files/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |

@@ -2247,6 +2247,12 @@
       "adaptation": "Own text, written in this repository. Shape follows skills/ue-project-context (scan, [unknown], one QUESTION:). Setting keys and defaults checked against the Godot 4.7.2 class reference (doc/classes/ProjectSettings.xml at 4.7.2-stable); the scan script in references/context-scan.md was run on 6 scratch projects; evidence in ai_docs/reports/godot/gw2-own-skills.md."
     },
     {
+      "name": "godot-quest-system",
+      "sources": [],
+      "adaptation": "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: quest-system. Quest definitions, quest log, branching, timers, tracker HUD and quest givers. Typed GDScript, parse-checked and run headless on Godot 4.7.2.",
+      "vendored": false
+    },
+    {
       "name": "godot-responsive-ui",
       "sources": [
         {

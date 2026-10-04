@@ -25,6 +25,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-gameplay-loops",
     "godot-genre-blueprints",
     "godot-project-context",
+    "godot-quest-system",
     "godot-scene-files",
     "orchestrate",
     "ue-build-verify",
