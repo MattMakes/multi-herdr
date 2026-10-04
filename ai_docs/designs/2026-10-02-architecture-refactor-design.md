@@ -612,7 +612,28 @@ impl LedgerRecordV1 {
 `kind` on disk stays `"worker"` or `"orchestrator"`. A Candidate or Judge
 execution writes `kind: "worker"` (legacy) plus `experiment_id`, `round_id`,
 `label` and a `state`; the store reconstructs `ExecutionKind` from these.
-`SPEC-TODO(Spec B)`: whether the judge attempt needs its own key.
+
+**The judge attempt key (Spec B).** A judge attempt has no idempotency key
+field of its own. The pair `round_id` plus `label: "judge:<attempt>"` is
+its key, because the store already finds an attempt again by that pair.
+
+- A Judge record writes `kind: "worker"`, `round_id`, `label: "judge:<n>"`,
+  and no `experiment_id`. A `judge:` label without a number does not convert
+  (`LegacyError::Kind`).
+- `competition/judging.rs:find_judge` looks up `ExecutionKind::Judge { round,
+  attempt }` and returns the last match. `judge_execution` creates a record
+  only when none exists, so a repeated schedule reuses the record.
+- Each judge event carries its own per-attempt key:
+  `judge.scheduled|started|failed|completed:<round>:<attempt>`.
+- `Execution::idempotency_key` stays `spawn:<round>:<label>` for a Candidate
+  and `None` for every other kind. The coordinator maps candidates by that
+  key, so a judge key there would mix judges into the candidate map.
+- Code: `execution/store.rs:kind_of`, `from_execution`, `JUDGE_LABEL`;
+  `execution/model.rs:Execution::idempotency_key`. Tests:
+  `crates/horch-core/tests/judging.rs:jdg_09_judge_execution_in_ledger`,
+  `jdg_04_resume_after_completed_writes_once`;
+  `crates/horch-core/tests/execution_plan.rs:arc_17_execution_conversion_lossless`
+  (a Judge round-trips, and its `idempotency_key()` is `None`).
 
 **The `status` / `state` compatibility rule.**
 
@@ -1035,7 +1056,7 @@ pub fn parse_source(spec: &str) -> Result<SkillSource, MarketplaceError>;
 // "owner/repo[@rev]" → https://github.com/owner/repo; "https://…[@rev]"; "file://…"; absolute path.
 // @rev of 40 hex → Commit; else tag, then branch, at resolve time.
 
-// manifest.rs — SPEC-TODO(Spec A §10): the manifest key list.
+// manifest.rs — the manifest key list (Spec A §10) is the table below the store layout.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillManifest {
@@ -1118,6 +1139,30 @@ Install pipeline:
 Rejection rules: absolute paths, `..` components, symlinks, over 512 files,
 a file over 1 MiB, total over 8 MiB, unknown manifest keys (so no hooks), and
 credentials in a URL (userinfo, or a `token=` query).
+
+**The SKILL.md manifest keys (Spec A §10).** The frontmatter is the YAML
+between a leading `---` line and the next `---` line (CRLF reads as LF). It
+uses only these 5 keys:
+
+| Key | Required | Type | Rule |
+|---|---|---|---|
+| `name` | yes | string | `[a-z0-9-]`, not empty, no leading or trailing `-`, no `--`; equals the skill directory name when that is known |
+| `description` | yes | string | not empty after trim; at most 1024 bytes (`MAX_DESCRIPTION_BYTES`) |
+| `license` | no | string | free text, not checked |
+| `metadata` | no | map of string to string | free text, not checked |
+| `allowed-tools` | no | any YAML (a string or a list in practice) | kept as YAML, not checked |
+
+- Any other key is a `Manifest` error (`deny_unknown_fields`). `hooks` is the
+  key this rule exists for: a skill never brings hooks.
+- A missing frontmatter, bad YAML or an unknown key is `Manifest`. A name or
+  description rule is `SkillMd`.
+- `SKILL.md` must be a regular UTF-8 file; a symlinked `SKILL.md` is
+  `Manifest` before it is read.
+- Code: `crates/horch-marketplace/src/manifest.rs:SkillManifest::parse`,
+  `SkillManifest::read`, `model.rs:is_valid_skill_name`. Tests:
+  `manifest.rs:tests::accepts_known_keys`, `tests::rejects_bad_frontmatter`,
+  `tests/marketplace.rs:mkt_06_rejects_hooks`,
+  `mkt_06_rejects_invalid_skill_md`.
 
 ---
 
@@ -1301,7 +1346,21 @@ Five commits:
 | Decision JSON | `DecisionDto` renders today's `Decision` bytes. | `arc_12_decisions_match_baseline` |
 | CLI | `route`/`spawn` exit codes and flags; `horch skills` output. | `bal_04`, `mkt_09_legacy_skills_flags_output_unchanged` |
 
-`SPEC-TODO(Spec A §13)`: the compatibility list verbatim.
+This table is the compatibility list of Spec A §13. It names 6 artifacts,
+and the list is complete: each row gives the rule and the test that pins it.
+A rule in this table changes only together with its test. The test files are:
+
+- `arc_17_*`: `crates/horch-core/tests/execution_store.rs` and
+  `crates/horch-core/tests/execution_plan.rs`.
+- `arc_07_brief_v1_readable`: `crates/horch-core/src/messaging/brief.rs`.
+- `arc_08_legacy_frontmatter_corpus_parses`: `crates/horch-core/src/roster/tests.rs`.
+- `arc_03_harness_kind_serde_compat`: `crates/horch-core/src/harness/mod.rs`.
+- `skl_01_*`: `crates/horch-core/tests/skills_catalog.rs`.
+- `mkt_08_offline_reinstall_from_lock`: `crates/horch-marketplace/tests/marketplace.rs`.
+- `mkt_08_runtime_needs_no_network` and
+  `mkt_09_legacy_skills_flags_output_unchanged`: `crates/horch/tests/skills_cli.rs`.
+- `arc_12_decisions_match_baseline`: `crates/horch-core/tests/routing.rs`.
+- `bal_04`: `crates/horch-e2e/tests/e2e.rs`.
 
 ---
 
