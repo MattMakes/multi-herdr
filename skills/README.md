@@ -60,3 +60,41 @@ A skill may combine several upstream files, from several repositories. Its entry
 | [motion-gsap](motion-gsap/SKILL.md) | `greensock/gsap-skills`: `skills/gsap-*/SKILL.md` (8 skills) and `examples/`; `akseolabs-seo/cinematic-ui`: motion parts of `SKILL.md`, `references/implementation-guardrails.md`, `references/data/camera-shots-50.md`, `references/data/interaction-effects-50.md` |
 | [ui-redesign](ui-redesign/SKILL.md) | `nutlope/hallmark`: `skills/hallmark/SKILL.md` and its `verbs/redesign.md`, `verbs/audit.md`, `study.md` references; `leonxlnx/taste-skill`: `skills/redesign-skill/`, `skills/taste-skill/`, `skills/output-skill/` |
 | [ui-taste](ui-taste/SKILL.md) | `nutlope/hallmark`: `skills/hallmark/SKILL.md` and 17 rule references; `leonxlnx/taste-skill`: `skills/taste-skill/`, `skills/taste-skill-v1/`, `skills/gpt-tasteskill/`, `skills/output-skill/`, `skills/redesign-skill/` |
+
+## Unreal Engine skills
+
+31 bundles vendored from `quodsoler/unreal-engine-skills` (MIT, revision `f3742d7b688690810df369802b90430324e380b9`). 30 are verbatim copies of the upstream skill directory, minus dotfiles, plus the upstream `LICENSE` next to `SKILL.md`. `ue-project-context` is adapted: its interview becomes `[unknown]` markers and one `QUESTION:` to the orchestrator, and its `provenance.json` entry lists the edits. Each entry has `"vendored": true`. These skills belong to no phase; a Unreal Engine teammate attaches them by name.
+
+| Skill | Upstream source | Copy |
+| --- | --- | --- |
+| [ue-actor-component-architecture](ue-actor-component-architecture/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-actor-component-architecture/` | verbatim |
+| [ue-ai-navigation](ue-ai-navigation/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-ai-navigation/` | verbatim |
+| [ue-animation-system](ue-animation-system/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-animation-system/` | verbatim |
+| [ue-async-threading](ue-async-threading/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-async-threading/` | verbatim |
+| [ue-audio-system](ue-audio-system/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-audio-system/` | verbatim |
+| [ue-blueprint-cpp-interop](ue-blueprint-cpp-interop/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-blueprint-cpp-interop/` | verbatim |
+| [ue-character-movement](ue-character-movement/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-character-movement/` | verbatim |
+| [ue-cpp-foundations](ue-cpp-foundations/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-cpp-foundations/` | verbatim |
+| [ue-data-assets-tables](ue-data-assets-tables/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-data-assets-tables/` | verbatim |
+| [ue-editor-tools](ue-editor-tools/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-editor-tools/` | verbatim |
+| [ue-game-features](ue-game-features/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-game-features/` | verbatim |
+| [ue-gameplay-abilities](ue-gameplay-abilities/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-gameplay-abilities/` | verbatim |
+| [ue-gameplay-cameras](ue-gameplay-cameras/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-gameplay-cameras/` | verbatim |
+| [ue-gameplay-framework](ue-gameplay-framework/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-gameplay-framework/` | verbatim |
+| [ue-gameplay-tags-messaging](ue-gameplay-tags-messaging/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-gameplay-tags-messaging/` | verbatim |
+| [ue-input-system](ue-input-system/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-input-system/` | verbatim |
+| [ue-mass-entity](ue-mass-entity/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-mass-entity/` | verbatim |
+| [ue-materials-rendering](ue-materials-rendering/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-materials-rendering/` | verbatim |
+| [ue-module-build-system](ue-module-build-system/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-module-build-system/` | verbatim |
+| [ue-mover](ue-mover/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-mover/` | verbatim |
+| [ue-networking-replication](ue-networking-replication/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-networking-replication/` | verbatim |
+| [ue-niagara-effects](ue-niagara-effects/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-niagara-effects/` | verbatim |
+| [ue-physics-collision](ue-physics-collision/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-physics-collision/` | verbatim |
+| [ue-procedural-generation](ue-procedural-generation/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-procedural-generation/` | verbatim |
+| [ue-project-context](ue-project-context/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-project-context/` | adapted |
+| [ue-sequencer-cinematics](ue-sequencer-cinematics/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-sequencer-cinematics/` | verbatim |
+| [ue-serialization-savegames](ue-serialization-savegames/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-serialization-savegames/` | verbatim |
+| [ue-state-trees](ue-state-trees/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-state-trees/` | verbatim |
+| [ue-testing-debugging](ue-testing-debugging/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-testing-debugging/` | verbatim |
+| [ue-ui-umg-slate](ue-ui-umg-slate/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-ui-umg-slate/` | verbatim |
+| [ue-world-level-streaming](ue-world-level-streaming/SKILL.md) | `quodsoler/unreal-engine-skills`: `skills/ue-world-level-streaming/` | verbatim |
