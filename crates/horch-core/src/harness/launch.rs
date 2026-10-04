@@ -37,6 +37,8 @@ pub struct LaunchEnv {
     pub home: Option<PathBuf>,
     /// `$OPENCODE_CONFIG_CONTENT`.
     pub opencode_config_content: Option<String>,
+    /// `$PATH`, where a sandboxed launch looks for its helper programs.
+    pub path: Option<std::ffi::OsString>,
 }
 
 impl LaunchEnv {
@@ -45,6 +47,7 @@ impl LaunchEnv {
             bins: ctx.bins.harness.clone(),
             home: ctx.inherited.home_var.as_ref().map(PathBuf::from),
             opencode_config_content: ctx.inherited.opencode_config_content.clone(),
+            path: ctx.inherited.path.clone(),
         }
     }
 
@@ -56,6 +59,7 @@ impl LaunchEnv {
             bins: HarnessBins::resolve(&BinOverrides::default(), None, None),
             home: None,
             opencode_config_content: None,
+            path: None,
         }
     }
 

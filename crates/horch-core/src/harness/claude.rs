@@ -163,7 +163,7 @@ pub(super) fn claude_command(
     if teammate.sandbox.is_some() {
         if let Some(problem) = sandbox_host_problem(
             std::env::consts::OS,
-            std::env::var_os("PATH").as_deref(),
+            env.path.as_deref(),
             Path::new(SANDBOX_EXEC).exists(),
         ) {
             anyhow::bail!(
