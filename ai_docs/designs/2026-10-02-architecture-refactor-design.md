@@ -612,7 +612,28 @@ impl LedgerRecordV1 {
 `kind` on disk stays `"worker"` or `"orchestrator"`. A Candidate or Judge
 execution writes `kind: "worker"` (legacy) plus `experiment_id`, `round_id`,
 `label` and a `state`; the store reconstructs `ExecutionKind` from these.
-`SPEC-TODO(Spec B)`: whether the judge attempt needs its own key.
+
+**The judge attempt key (Spec B).** A judge attempt has no idempotency key
+field of its own. The pair `round_id` plus `label: "judge:<attempt>"` is
+its key, because the store already finds an attempt again by that pair.
+
+- A Judge record writes `kind: "worker"`, `round_id`, `label: "judge:<n>"`,
+  and no `experiment_id`. A `judge:` label without a number does not convert
+  (`LegacyError::Kind`).
+- `competition/judging.rs:find_judge` looks up `ExecutionKind::Judge { round,
+  attempt }` and returns the last match. `judge_execution` creates a record
+  only when none exists, so a repeated schedule reuses the record.
+- Each judge event carries its own per-attempt key:
+  `judge.scheduled|started|failed|completed:<round>:<attempt>`.
+- `Execution::idempotency_key` stays `spawn:<round>:<label>` for a Candidate
+  and `None` for every other kind. The coordinator maps candidates by that
+  key, so a judge key there would mix judges into the candidate map.
+- Code: `execution/store.rs:kind_of`, `from_execution`, `JUDGE_LABEL`;
+  `execution/model.rs:Execution::idempotency_key`. Tests:
+  `crates/horch-core/tests/judging.rs:jdg_09_judge_execution_in_ledger`,
+  `jdg_04_resume_after_completed_writes_once`;
+  `crates/horch-core/tests/execution_plan.rs:arc_17_execution_conversion_lossless`
+  (a Judge round-trips, and its `idempotency_key()` is `None`).
 
 **The `status` / `state` compatibility rule.**
 
