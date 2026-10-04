@@ -1454,6 +1454,12 @@
       "vendored": true
     },
     {
+      "name": "godot-gameplay-loops",
+      "sources": [],
+      "adaptation": "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: game-loop-collection, game-loop-harvest, game-loop-time-trial, game-loop-waves, mechanic-revival, mechanic-secrets. Router SKILL.md and 6 references (collection, harvest, time trial, waves, revival, secrets). Typed GDScript, parse-checked and run headless on Godot 4.7.2.",
+      "vendored": false
+    },
+    {
       "name": "godot-gdextension",
       "sources": [
         {

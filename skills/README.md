@@ -170,6 +170,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-dedicated-server](godot-dedicated-server/SKILL.md) | `jame581/GodotPrompter`: `skills/dedicated-server/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-server-architecture/`, `godot-multiplayer-networking/`) | combined |
 | [godot-dialogue-manager](godot-dialogue-manager/SKILL.md) | `jame581/GodotPrompter`: `skills/dialogue-manager/` | renamed |
 | [godot-export-pipeline](godot-export-pipeline/SKILL.md) | `jame581/GodotPrompter`: `skills/export-pipeline/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-export-builds/`, `godot-platform-desktop/`, `godot-platform-web/`, `godot-platform-console/`, `godot-adapt-mobile-to-desktop/`) | combined |
+| [godot-gameplay-loops](godot-gameplay-loops/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-game-loop-collection/`, `godot-game-loop-harvest/`, `godot-game-loop-time-trial/`, `godot-game-loop-waves/`, `godot-mechanic-revival/`, `godot-mechanic-secrets/`; code run on Godot 4.7.2)* | own text |
 | [godot-gdextension](godot-gdextension/SKILL.md) | `jame581/GodotPrompter`: `skills/gdextension/` | renamed |
 | [godot-gdscript-patterns](godot-gdscript-patterns/SKILL.md) | `jame581/GodotPrompter`: `skills/gdscript-patterns/` | renamed |
 | [godot-grill](godot-grill/SKILL.md) | `jame581/GodotPrompter`: `skills/grill/` | adapted |
