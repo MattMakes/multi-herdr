@@ -85,6 +85,11 @@ pub fn render(plan: &SkillActivationPlan, catalog: &SkillCatalog, ctx: &Briefing
             others.join(", ")
         ));
     }
+    // An operator skill this host lacks is skipped, not fatal; say so, so
+    // the worker reports it instead of looking for the skill.
+    for skipped in catalog.skipped_operator() {
+        out.push_str(&format!(" Skipped: {}.", skipped.note()));
+    }
     out.push_str(&format!(
         " If a same-named ambient skill exists, use the fleet copy under {}. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n",
         ctx.skills_dir.display()

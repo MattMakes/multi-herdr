@@ -561,6 +561,30 @@ pub fn fallback_warnings(roster: &Roster) -> Vec<String> {
     out
 }
 
+/// Warnings, not errors: operator skills this host does not have. The
+/// launch skips them and says so in the briefing, because each host exports
+/// its own copy with Xcode. A real problem with the field is an error in
+/// [`Roster::check`] instead.
+pub fn operator_skill_warnings(roster: &Roster) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in roster.names() {
+        let Some(t) = roster.get(name) else { continue };
+        if t.operator_skills.is_none() {
+            continue;
+        }
+        let Ok(catalog) = roster
+            .skill_catalog()
+            .and_then(|c| c.with_operator_skills(t, roster.home.as_deref()))
+        else {
+            continue;
+        };
+        for skipped in catalog.skipped_operator() {
+            out.push(format!("{name}: {}", skipped.note()));
+        }
+    }
+    out
+}
+
 /// Whether `text` names `tool` as a tool: the name in backticks, or followed
 /// by the word "tool". Plain English "Task" or "Agent" does not count.
 pub(crate) fn names_tool(text: &str, tool: &str) -> bool {

@@ -846,14 +846,26 @@ fn operator_skills_check_errors() {
         problems(operator("~/.agents/skills", &["test-modernizer"])),
         ""
     );
-    let p = problems(operator("~/no-such-dir", &["test-modernizer"]));
+    // A host without the export is not an error: the launch skips the
+    // skill, and `--check` warns (see the next test).
+    assert_eq!(
+        problems(operator("~/no-such-dir", &["test-modernizer"])),
+        ""
+    );
+    assert_eq!(problems(operator("~/.agents/skills", &["missing"])), "");
+    // The name rules hold on every host, even where the skill is missing.
+    let p = problems(operator("~/no-such-dir", &["tdd"]));
+    assert!(p.contains("'tdd' has the name of a catalog skill"), "{p}");
+    let p = problems(operator("~/no-such-dir", &["device-interaction"]));
     assert!(
-        p.contains("operator_skills dir '~/no-such-dir' does not exist"),
+        p.contains("'device-interaction' is a subagent skill"),
         "{p}"
     );
-    let p = problems(operator("~/.agents/skills", &["missing"]));
+    // A skill directory without a SKILL.md is broken, not missing.
+    std::fs::create_dir_all(dir.join("empty")).unwrap();
+    let p = problems(operator("~/.agents/skills", &["empty"]));
     assert!(
-        p.contains("operator skill 'missing' is not in '~/.agents/skills'"),
+        p.contains("operator skill 'empty' in '~/.agents/skills' has no readable"),
         "{p}"
     );
     let p = problems(operator("~/.agents/skills", &["device-interaction"]));
@@ -888,6 +900,126 @@ fn operator_skills_check_errors() {
         p.contains("cannot load with disabled skills or no agent"),
         "{p}"
     );
+}
+
+fn check_warnings(t: Teammate, home: Option<&Path>) -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
+    let mut roster = Roster::load_layered(home, None, Some(dir.to_str().unwrap())).unwrap();
+    let who = t.name.clone();
+    roster.insert_for_test(t);
+    horch_core::roster::validation::operator_skill_warnings(&roster)
+        .into_iter()
+        .filter(|w| w.starts_with(&format!("{who}: ")))
+        .collect()
+}
+
+/// A missing directory or a missing name is a warning: each skill that the
+/// host lacks gets one line that says how to export it. A present skill
+/// gets none.
+#[test]
+fn operator_skills_missing_on_this_host_warn() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".agents/skills");
+    operator_skill(&dir, "test-modernizer", "Modernize tests.");
+    let with = |o| Teammate {
+        operator_skills: o,
+        ..probe()
+    };
+    let warnings = |o| check_warnings(with(o), Some(home.path()));
+
+    assert_eq!(
+        warnings(operator("~/.agents/skills", &["test-modernizer"])),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        warnings(operator(
+            "~/.agents/skills",
+            &["test-modernizer", "swiftui-whats-new-27"]
+        )),
+        [
+            "probe: operator skill swiftui-whats-new-27 is not installed on this host \
+          (no ~/.agents/skills/swiftui-whats-new-27): ask the operator to run \
+          `xcrun agent skills export --output-dir <dir>` (Xcode 27 or later)"
+        ]
+    );
+    let w = warnings(operator("~/no-such-dir", &["a-skill", "b-skill"]));
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert!(
+        w[0].contains("operator skill a-skill is not installed"),
+        "{w:?}"
+    );
+    assert!(w[1].contains("(no ~/no-such-dir/b-skill)"), "{w:?}");
+}
+
+/// A directory that exists but cannot be read is an error, not a skip.
+#[cfg(unix)]
+#[test]
+fn operator_skills_unreadable_dir_is_an_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".agents/skills");
+    operator_skill(&dir, "test-modernizer", "Modernize tests.");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Root reads anything; then there is nothing to test.
+    let readable = std::fs::read_dir(&dir).is_ok();
+    let t = Teammate {
+        operator_skills: operator("~/.agents/skills", &["test-modernizer"]),
+        ..probe()
+    };
+    let p = check_problems(t, Some(home.path())).join("\n");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        return;
+    }
+    assert!(
+        p.contains("operator_skills dir '~/.agents/skills' cannot be read"),
+        "{p}"
+    );
+}
+
+/// The launch goes on without a missing operator skill. The bundle holds
+/// the rest, and the briefing names the skipped skill and the fix.
+#[test]
+fn operator_skills_missing_on_this_host_are_skipped_with_a_briefing_note() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("exported");
+    operator_skill(&dir, "test-modernizer", "Modernize tests.");
+    let dir_text = dir.to_str().unwrap();
+    let t = Teammate {
+        name: "swifty".into(),
+        skills: vec!["tdd".into()],
+        operator_skills: operator(dir_text, &["swiftui-whats-new-27", "test-modernizer"]),
+        ..Teammate::default()
+    };
+    let state = tmp.path().join("state");
+    let bundle = skills::Bundle::install(&state, &t).unwrap().unwrap();
+    assert_eq!(bundle.plan().activated_ids(), ["tdd", "test-modernizer"]);
+    assert!(!bundle.skills_dir().join("swiftui-whats-new-27").exists());
+    let brief = bundle.briefing_in(&t, None);
+    assert!(
+        brief.contains("- horch:test-modernizer: Operator probe skill test-modernizer."),
+        "{brief}"
+    );
+    assert!(!brief.contains("- horch:swiftui-whats-new-27"), "{brief}");
+    assert!(
+        brief.contains(&format!(
+            "Skipped: operator skill swiftui-whats-new-27 is not installed on this host \
+             (no {dir_text}/swiftui-whats-new-27): ask the operator to run \
+             `xcrun agent skills export --output-dir <dir>` (Xcode 27 or later)."
+        )),
+        "{brief}"
+    );
+
+    // A missing directory skips every name; the launch still succeeds.
+    let gone = Teammate {
+        operator_skills: operator(&format!("{dir_text}-gone"), &["test-modernizer"]),
+        ..t.clone()
+    };
+    let bundle = skills::Bundle::install(&state, &gone).unwrap().unwrap();
+    assert_eq!(bundle.plan().activated_ids(), ["tdd"]);
+    assert!(bundle
+        .briefing_in(&gone, None)
+        .contains("Skipped: operator skill test-modernizer is not installed"),);
 }
 
 /// An operator skill is copied into the bundle with its references, is
