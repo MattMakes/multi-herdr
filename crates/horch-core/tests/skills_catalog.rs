@@ -321,7 +321,7 @@ fn skills_readme_tables_sorted_one_row_per_skill() {
     let mut section = "";
     let mut table: Vec<&str> = Vec::new();
     let mut all: Vec<&str> = Vec::new();
-    let mut check = |section: &str, table: &mut Vec<&str>| {
+    let check = |section: &str, table: &mut Vec<&str>| {
         if section != "Source mapping" {
             let mut sorted = table.clone();
             sorted.sort_unstable();
