@@ -21,7 +21,7 @@ Epic's 5.8 page names them "Python Editor Script Plugin" and "Editor Scripting U
 
 - Fast; no editor UI. It does not load a level. Call `unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).load_level("/Game/Maps/MyMap")` first when the script works on actors.
 - `-script=` takes a file path, or Python statements with `\n` for line breaks. Use a file: it is reviewed and repeatable.
-- On macOS and Linux, use the editor binary in `<Engine>/Engine/Binaries/Mac/` or `Linux/` (exact name unverified on 5.8; list the directory).
+- On macOS and Linux, use the editor binary in `<Engine>/Engine/Binaries/Mac/` or `Linux/` (Epic's 5.8 Linux quickstart names `Engine/Binaries/Linux/UnrealEditor`; the `-Cmd` name is unverified on 5.8; list the directory).
 
 ## Form 2: full editor start
 
@@ -44,6 +44,8 @@ If the operator's editor is open on the project, the operator runs the same scri
 
 ## Evidence
 
+Rechecked on 2026-10-04. UE 5.8 (hotfix 5.8.3, 2026-09-22) is the latest release, so the 5.8 marks still apply.
+
 | Flag, command or API | Purpose | Source | Verified on 5.8 |
 |---|---|---|---|
 | `UnrealEditor-Cmd.exe <Proj> -run=pythonscript -script=<file>` | Headless Python commandlet | Epic 5.8, Scripting the Unreal Editor Using Python | yes |
@@ -56,3 +58,8 @@ If the operator's editor is open on the project, the operator runs the same scri
 | `-unattended`, `-nullrhi`, `-nosplash`, `-stdout`, `-abslog=` | Headless, logging | Epic 5.8, Command-Line Arguments Reference | yes |
 | `-run=` | Commandlet selector | Epic 5.8 Python page (as `-run=pythonscript`); not listed in the argument reference | yes, in that form |
 | Exit code on a Python error | Failure signal | none found | no (not used) |
+| `unreal.load_class` | Load a C++ class by path | Epic 5.8 Python API, module `unreal` | yes (rechecked 2026-10-04) |
+| `BlueprintEditorLibrary.add_event_override(blueprint, event_name, position: IntPoint)` | Event override node | Unreal Python 5.8, `BlueprintEditorLibrary` | yes (rechecked 2026-10-04); the recipe used `Vector2D` before |
+| `AssetRenameData(asset, new_package_path, new_name)` | Rename or move | Unreal Python 5.8, `AssetRenameData` | yes (rechecked 2026-10-04) |
+| `AssetTools.create_asset(..., factory)` with `factory=None` | Create without a factory | Unreal Python 5.8, `AssetTools` types `factory` as `Factory` | no |
+| `Actor.set_actor_label` | Name a placed actor | not on the Unreal Python 5.8 `Actor` page (only `get_actor_label`) | no |

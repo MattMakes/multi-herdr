@@ -37,7 +37,7 @@ unreal.log(f"EDITOR-SCRIPT-OK {TASK} {len(saved)} assets saved")
 Create from a C++ parent:
 
 ```python
-parent = unreal.load_class(None, "/Script/MyGame.MyPickup")   # unverified on 5.8: or unreal.MyPickup.static_class()
+parent = unreal.load_class(None, "/Script/MyGame.MyPickup")   # or unreal.MyPickup.static_class()
 bp = bel.create_blueprint_asset_with_parent("/Game/Pickups/BP_Coin", parent)
 ```
 
@@ -61,7 +61,7 @@ Variables and overrides:
 if "Score" not in [str(n) for n in bel.list_member_variable_names(bp)]:
     bel.add_member_variable(bp, "Score", bel.get_basic_type_by_name("int"))
     bel.set_blueprint_variable_instance_editable(bp, "Score", True)
-event = bel.add_event_override(bp, "ReceiveBeginPlay", unreal.Vector2D(0, 0))   # position type unverified on 5.8
+event = bel.add_event_override(bp, "ReceiveBeginPlay", unreal.IntPoint(0, 0))   # position is an IntPoint on 5.8
 graph = bel.add_function_override(bp, "CanPickUp")
 ```
 
@@ -101,7 +101,7 @@ if not levels.load_level("/Game/Maps/Arena"):
     fail("load level")
 cls = bel.generated_class(load("/Game/Pickups/BP_Coin"))
 a = actors.spawn_actor_from_class(cls, unreal.Vector(0, 0, 100))
-a.set_actor_label("Coin_01")                     # unverified on 5.8
+a.set_actor_label("Coin_01")                     # unverified on 5.8: not on the 5.8 Actor page; skip if missing
 if not levels.save_current_level():
     fail("save level")
 ```
@@ -112,9 +112,9 @@ A World Partition map stores actors in separate external files (one per actor). 
 
 ```python
 tools = unreal.AssetToolsHelpers.get_asset_tools()
-new = tools.create_asset("DA_Sword", "/Game/Data", unreal.MyItemData, None)   # factory None: unverified on 5.8; pass a DataAssetFactory if it fails
+new = tools.create_asset("DA_Sword", "/Game/Data", unreal.MyItemData, None)   # factory None: unverified on 5.8 (typed Factory); pass a DataAssetFactory if it fails
 tools.duplicate_asset("BP_Coin_Gold", "/Game/Pickups", load("/Game/Pickups/BP_Coin"))
-tools.rename_assets([unreal.AssetRenameData(obj, "/Game/NewFolder", "NewName")])  # AssetRenameData fields unverified on 5.8
+tools.rename_assets([unreal.AssetRenameData(obj, "/Game/NewFolder", "NewName")])  # (asset, new_package_path, new_name) on 5.8
 ```
 
 `rename_assets` fixes references and leaves redirectors. Fixing up redirectors afterwards is a separate project-wide change: ask first.

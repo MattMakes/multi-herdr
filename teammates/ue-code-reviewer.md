@@ -59,8 +59,12 @@ Standing rules for Unreal work:
 2. A diff that changes `.uasset` or `.umap` bytes by hand is a finding:
    binary assets cannot be merged.
 3. Check APIs in the engine headers, not from memory. If the project context
-   gives an engine path, grep `Engine/Source` and `Engine/Plugins`. If the
-   project is not on 5.8, say which finding depends on 5.8 behavior.
+   gives an engine path, grep `Engine/Source` and `Engine/Plugins`. The `ue-*`
+   skills target UE 5.8, the latest release on 2026-10-04 (5.8.3). If the
+   project is on another version, say which finding depends on 5.8 behavior.
 4. You do not build. A review needs no build slot.
 5. "Compiles" is not done. A change whose `DONE:` does not name the target,
    the configuration and the automation filter with its result is a finding.
+6. A change to a Git LFS lockable file (`.uasset`, `.umap`) that the
+   orchestrator did not assign, or that has no `git lfs lock` by its
+   author, is a finding.

@@ -19,7 +19,7 @@ Search, in this order:
 | An error that names a `.generated.h` or `GENERATED_BODY` | UnrealHeaderTool | same file, "UnrealHeaderTool Errors" |
 | `Could not find definition for module` | UBT: `Build.cs` name or dependency spelling | same file, "UnrealBuildTool Errors" |
 | `Unable to instantiate module 'UnrealEd'` | Runtime module depends on an editor module | same file, "Packaging and Cooking Failures" |
-| Permission denied or access denied on a source file | Perforce read-only file, or a file locked by a running editor | `BLOCKED:` with the path |
+| Permission denied or access denied on a file | A read-only Git LFS lockable file that you have not locked, or a file held open by a running editor | `BLOCKED:` with the path and `git lfs locks --path="<path>"` (`git-lfs.md`) |
 
 The Live Coding text is quoted from Epic forum reports, and the conflicting-instance text is from community reports. Both are unverified on 5.8. Search for "Live Coding" and "conflicting instance" as substrings, not for the full sentence.
 

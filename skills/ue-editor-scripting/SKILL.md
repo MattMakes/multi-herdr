@@ -7,7 +7,7 @@ description: Use when an Unreal Engine task must create or change assets or Blue
 
 Change Unreal assets the only safe way an agent can: through the editor's own Python API, run headless by a commandlet, then verify the change in a fresh process. `.uasset` and `.umap` files are binary and cannot be merged. Never edit their bytes, never write them with a text tool, never copy one over another. With this skill, an asset change is code you can review: a Python script in the repository, a log that proves it ran, and a check that proves the result.
 
-Command lines, flags and API facts with their 5.8 evidence are in `references/commands.md`. API recipes are in `references/python-recipes.md`.
+Command lines, flags and API facts with their 5.8 evidence are in `references/commands.md`. UE 5.8 is the latest release on 2026-10-04 (hotfix 5.8.3); on a newer engine, check each API again. API recipes are in `references/python-recipes.md`.
 
 ## When to use
 
@@ -28,6 +28,8 @@ Command lines, flags and API facts with their 5.8 evidence are in `references/co
 
 2. **Get the slot.** A commandlet loads the whole project. Run one only when the orchestrator assigned it, never at the same time as a build or another commandlet on the same working copy. If the operator's editor is open on this project, do not save assets from a second process: the editor holds them in memory and overwrites your change on its next save. Report `BLOCKED:` and offer the script for the operator to run with File > Execute Python Script. Check: the assignment names you, and no editor has this project open.
 
+   **Lock the assets.** The project keeps `.uasset` and `.umap` files in Git LFS as lockable files, so an asset you do not hold the lock for is read-only, and the save fails. For each existing asset the script will save, run `git lfs lock "<file>"`, but only for assets the orchestrator assigned to you. A World Partition map also needs a lock on each existing `__ExternalActors__` file the script changes; new files need no lock. If another user holds a lock, report `BLOCKED:` with the path and the owner from `git lfs locks --path="<file>"`. Never `git lfs unlock --force`. In a new worktree, run `git lfs pull` first, or the assets load as LFS pointers. `ue-build-verify` `references/git-lfs.md` has the full rules, if available. Check: `git lfs locks` lists every existing file you will save.
+
 3. **Read before you write.** Write a read-only script that loads each target asset and logs its current state: class, parent class, the properties you will change, the variables, graphs and pins you will touch. Run it (step 5 form). Check: the log shows every value you plan to change, with its current value.
 
 4. **Write the change script.** Put it in the repository, for example `Scripts/Editor/<task>.py`, so it is reviewed and can run again. Rules for the script:
@@ -42,18 +44,18 @@ Command lines, flags and API facts with their 5.8 evidence are in `references/co
 
 5. **Run it headless.** Use the commandlet form: `UnrealEditor-Cmd <Proj> -run=pythonscript -script="<abs script>"` with `-unattended -nullrhi -nosplash -stdout -abslog=<file>` (`references/commands.md`). The commandlet does not load a level. A script that works on actors must load the level first with `LevelEditorSubsystem.load_level`. Run it in the background with the output in a log file, the same as a build. Check: the process exited, the log has your marker, and the log has 0 `LogPython: Error` lines.
 
-6. **Check what changed on disk.** List the changed files with the version control tool (`git status --porcelain`, or `p4 opened` and `p4 diff -sa`). Check: exactly the `.uasset` and `.umap` files you meant to change, plus your script. Nothing else. An extra file means the script touched something you did not plan; find out why before you continue.
+6. **Check what changed on disk.** List the changed files with the version control tool (`git status --porcelain`). Check: exactly the `.uasset` and `.umap` files you meant to change, plus your script. Nothing else. An extra file means the script touched something you did not plan; find out why before you continue.
 
 7. **Verify in a fresh process.** Run a second, read-only script in a new commandlet. It loads each changed asset from disk and asserts the end state: property values, variable names and types, pin connections and values, row names, the Blueprint compiles. It logs one line per check and a final marker. If an automation test covers the behavior, run it too (`ue-build-verify`, step 8). Check: every assertion passed in the new process, and the marker is in the log.
 
-8. **Report.** The `DONE:` names the script, every asset changed, the verification script and its result, and the logs. Check: a reviewer can run both scripts again and get the same result.
+8. **Report.** The `DONE:` names the script, every asset changed, the Git LFS locks you hold, the verification script and its result, and the logs. Check: a reviewer can run both scripts again and get the same result.
 
 ## Rules
 
 - Never edit `.uasset` or `.umap` bytes. Assets change only through editor Python in a commandlet, or the editor with the operator's consent. If the API cannot make a change, the change goes in your `DONE:` as a step for a human.
 - One commandlet or build per working copy at a time, and only when assigned.
 - Never save assets from a commandlet while the operator's editor has the project open.
-- Perforce: a save fails on a read-only asset that is not checked out. Report `BLOCKED:` with the asset path. Never `chmod` it, never `attrib -r` it, never run `checkout_asset` or `p4 edit` unless the orchestrator says so.
+- Git LFS: a save fails on a read-only lockable asset that you have not locked. Lock only assets the orchestrator assigned to you. A lock held by someone else is `BLOCKED:` with the asset path. Never `chmod` it, never `attrib -r` it, never run `git lfs unlock --force` or `checkout_asset`. List the locks you hold in `DONE:`; unlock only when the orchestrator says so.
 - Prefer `EditorAssetSubsystem` over the older `EditorAssetLibrary`. Use `AssetTools.rename_assets` for renames and moves, so references are fixed and redirectors are written. Never move asset files with `mv` or `git mv`.
 - Never use `delete_asset` without a reference check first (`find_package_referencers_for_asset`); it deletes even when other assets still refer to it. `consolidate_assets` deletes its inputs too.
 - Change only what the task names. Do not run "fix up" or "resave all" passes over the project.
@@ -64,6 +66,7 @@ Command lines, flags and API facts with their 5.8 evidence are in `references/co
 
 - [ ] The project enables `PythonScriptPlugin`.
 - [ ] I had the slot, and no editor had the project open.
+- [ ] I held the Git LFS lock on every existing asset I saved, and each one was assigned to me.
 - [ ] A read-only script logged the state before the change.
 - [ ] The change script is in the repository, is idempotent, fails loudly, compiles Blueprints, saves only changed assets, and logs a marker.
 - [ ] The run log has the marker and 0 `LogPython: Error` lines.
