@@ -390,6 +390,9 @@ impl<G: GitClient> Coordinator<'_, G> {
     /// Launch, observe and end candidates until every one is terminal.
     fn run_candidates(&self, spec: &RoundSpec, ws: &DatasetWorkspace) -> Result<()> {
         let mut stop: Option<Stop> = None;
+        // What each started candidate has spent, by label, as of the last
+        // check.
+        let mut measured: BTreeMap<String, i64> = BTreeMap::new();
         // The meter reads whole transcripts and the probe starts processes:
         // both run on the first tick and then once per CHECK_EVERY.
         let every = (CHECK_EVERY.as_millis() / spec.tick.as_millis().max(1)).max(1);
@@ -414,17 +417,21 @@ impl<G: GitClient> Coordinator<'_, G> {
                 }
             }
 
-            // The live budget (CMP-10). The SPEC-TODO(Spec B §budget): no
-            // per-candidate spend estimate exists, so `committed` is 0 and
-            // StopLaunches only comes from the policy's own rule.
+            // The live budget (CMP-10). Measured spend is read on check
+            // ticks; the policy runs every tick, so a launch never misses
+            // what the running candidates are committed to. Committed spend
+            // is the orchestrator's policy pending the Spec B §budget text:
+            // each running candidate counts max(measured, projected), and
+            // the judge's reserve is held in the policy's limit until it
+            // completes (see `budget`).
             let records = self.records()?;
-            let spent = if check {
-                self.spent(spec, &view, &records)
-            } else {
-                MicroUsd(0)
-            };
-            match BudgetPolicy::check(spent, MicroUsd(0), &spec.config.budget) {
-                _ if !check => {}
+            let view = self.view(spec)?;
+            if check {
+                measured = self.measured(spec, &view, &records);
+            }
+            let spent = MicroUsd(measured.values().fold(0i64, |a, m| a.saturating_add(*m)));
+            let committed = self.committed(spec, &view, &records, &measured);
+            match BudgetPolicy::check(spent, committed, &spec.config.budget) {
                 BudgetAction::Continue => {}
                 BudgetAction::StopLaunches => {
                     stop.get_or_insert(Stop::Budget);
@@ -632,21 +639,43 @@ impl<G: GitClient> Coordinator<'_, G> {
         Ok(())
     }
 
-    /// What the round's candidates have spent so far.
-    fn spent(
+    /// What each started candidate of the round has spent so far, by label.
+    fn measured(
         &self,
         spec: &RoundSpec,
         view: &RoundView,
         records: &BTreeMap<String, Execution>,
-    ) -> MicroUsd {
-        let mut total = 0i64;
+    ) -> BTreeMap<String, i64> {
+        let mut spent = BTreeMap::new();
         for label in view.candidates.keys() {
             if let Some(e) = records.get(&self.key(spec, label)) {
                 let session = observe::session_of(e);
                 if let Some(u) = self.usage.usage(e.harness.as_str(), session.as_deref()) {
-                    total = total.saturating_add(self.meter.price(&u).0 .0);
+                    spent.insert(label.clone(), self.meter.price(&u).0 .0);
                 }
             }
+        }
+        spent
+    }
+
+    /// The further spend the running candidates are expected to make: for
+    /// each, its projected cost less what it has spent, never below 0.
+    fn committed(
+        &self,
+        spec: &RoundSpec,
+        view: &RoundView,
+        records: &BTreeMap<String, Execution>,
+        measured: &BTreeMap<String, i64>,
+    ) -> MicroUsd {
+        let mut total = 0i64;
+        for (label, c) in &view.candidates {
+            if c.is_terminal() || !records.contains_key(&self.key(spec, label)) {
+                continue;
+            }
+            let Some(planned) = &c.planned else { continue };
+            let projected = self.meter.projected(planned.model.as_str()).0;
+            let spent = measured.get(label).copied().unwrap_or(0);
+            total = total.saturating_add(projected.saturating_sub(spent).max(0));
         }
         MicroUsd(total)
     }
