@@ -157,6 +157,39 @@ mod tests {
         Roster::builtin().expect("built-in roster parses")
     }
 
+    /// The fleet orchestrator's briefing lists a teammate with `offer_when`
+    /// only in a project that matches, and keeps every other teammate.
+    #[test]
+    fn orchestrator_briefing_offers_a_domain_teammate_only_where_it_matches() {
+        use crate::roster::ProjectFacts;
+        let mut base = roster();
+        base.insert_for_test(Teammate {
+            name: "unreal-gameplay-engineer".into(),
+            brief_description: "Unreal Engine gameplay code".into(),
+            base: Some("fleet-worker".into()),
+            offer_when: vec!["*.uproject".into()],
+            ..Teammate::default()
+        });
+        let briefing = |facts: ProjectFacts| {
+            let r = base.clone().with_project_facts(facts);
+            agent_prompt(&r, r.require("orchestrator").unwrap(), "orchestrator").unwrap()
+        };
+
+        let rust = briefing(ProjectFacts::from_names(["Cargo.toml", "src"]));
+        assert!(!rust.contains("unreal-gameplay-engineer"), "{rust}");
+        assert!(!rust.contains("Unreal Engine gameplay code"));
+        let game = briefing(ProjectFacts::from_names(["Game.uproject", "Source"]));
+        assert!(game.contains("unreal-gameplay-engineer"), "{game}");
+
+        // Everything without `offer_when` is offered in both projects.
+        for t in base.offered() {
+            if t.offer_when.is_empty() {
+                assert!(rust.contains(&t.name), "{} missing", t.name);
+                assert!(game.contains(&t.name), "{} missing", t.name);
+            }
+        }
+    }
+
     #[test]
     fn substitution_is_single_pass() {
         let vars = BTreeMap::from([("task", "look at {role}"), ("role", "sonnet-1")]);

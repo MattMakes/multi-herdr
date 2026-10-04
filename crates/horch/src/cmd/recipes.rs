@@ -18,6 +18,7 @@ use horch_core::harness::HarnessKind;
 use horch_core::ids::SessionId;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::prompts;
+use horch_core::roster::ProjectFacts;
 use horch_core::routing::quota::{self, QuotaView, State};
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
@@ -576,7 +577,18 @@ pub fn pane_launch(
     // Which teammate file backs this pane. The model, effort level and
     // permission mode all come from that file - a pane kind selects a file, it
     // does not carry launch settings of its own.
-    let roster = super::load_roster(ctx, teammates_dir)?;
+    let mut roster = super::load_roster(ctx, teammates_dir)?;
+    // A fleet orchestrator is offered only the teammates this project needs
+    // (`offer_when`). The fixed recipe briefs no roster choice, so it keeps
+    // the full list.
+    if matches!(
+        kind,
+        PaneKind::FleetOrchestrator | PaneKind::FleetCodexOrchestrator
+    ) {
+        if let Ok(project) = ctx.paths.project() {
+            roster = roster.with_project_facts(project_facts(&project));
+        }
+    }
     let name = match kind {
         PaneKind::FleetOrchestrator => "orchestrator",
         PaneKind::FleetCodexOrchestrator => "orchestrator-codex",
@@ -642,6 +654,31 @@ pub fn pane_launch(
             ),
         },
     )
+}
+
+/// The entry names at the top of `dir` and one level down, for `offer_when`.
+///
+/// One level covers the usual layouts (`ios/App.xcodeproj`,
+/// `game/Game.uproject`) at the cost of one `read_dir` per subdirectory.
+/// Dot-directories (`.git`, `.worktrees`) are not entered: what they hold is
+/// never the project's own layout. An unreadable directory adds nothing.
+pub(crate) fn project_facts(dir: &Path) -> ProjectFacts {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let descend = !name.starts_with('.') && entry.file_type().is_ok_and(|t| t.is_dir());
+        if descend {
+            for inner in std::fs::read_dir(entry.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                names.push(inner.file_name().to_string_lossy().into_owned());
+            }
+        }
+        names.push(name);
+    }
+    ProjectFacts::from_names(names)
 }
 
 #[cfg(test)]
@@ -859,5 +896,32 @@ mod tests {
         assert_eq!(label(&project), "my-project");
         assert_eq!(label(&project.join(".")), "my-project");
         assert_eq!(label(&project.join("sub").join("..")), "my-project");
+    }
+    /// `offer_when` sees the top level and one level down, and nothing deeper
+    /// or inside a dot-directory.
+    #[test]
+    fn project_facts_reach_one_level_down() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("Game.uproject"), "").unwrap();
+        std::fs::create_dir_all(root.join("ios/App.xcodeproj")).unwrap();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/Deep.uplugin"), "").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/Hidden.uasset"), "").unwrap();
+
+        let facts = project_facts(root);
+        assert!(facts.has_match("*.uproject"), "top level");
+        assert!(
+            facts.has_match("*.xcodeproj"),
+            "one level down, a directory"
+        );
+        assert!(facts.has_match("b"), "a directory one level down is a name");
+        assert!(!facts.has_match("*.uplugin"), "two levels down");
+        assert!(!facts.has_match("*.uasset"), "inside a dot-directory");
+        assert_eq!(
+            project_facts(&root.join("missing")),
+            ProjectFacts::default()
+        );
     }
 }
