@@ -173,6 +173,9 @@ enum Agent {
     Crash,
     /// Stops at Claude's trust dialog and waits.
     TrustDialog,
+    /// Writes its work and waits at its prompt (herdr `idle`) without
+    /// `horch done`; the round's clock moves 60 s per tick.
+    Idle,
 }
 
 /// Claude's trust dialog, as a pane showed it in LA-7.
@@ -184,6 +187,18 @@ fn round_with(
     shape: impl FnOnce(&mut RoundPlan),
     agent: Agent,
 ) -> CrashRound {
+    round_cfg(w, roster, shape, agent, |_| {}).0
+}
+
+/// [`round_with`] with `tune` applied to the config, which also returns
+/// every workspace call.
+fn round_cfg(
+    w: &World,
+    roster: &Roster,
+    shape: impl FnOnce(&mut RoundPlan),
+    agent: Agent,
+    tune: impl FnOnce(&mut config::DatasetConfig),
+) -> (CrashRound, Vec<horch_core::workspace::testing::FakeCall>) {
     let paths = DatasetPaths::new(&w.ctx.paths.state_root, &w.repo);
     let recorder = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
     let store = ExecutionStore::open(&w.ctx.paths, &w.repo);
@@ -200,6 +215,7 @@ fn round_with(
     .unwrap();
     config.candidates = 2;
     config.worktree_root = Some(w.root.join("worktrees"));
+    tune(&mut config);
     let now = horch_core::clock::parse("2026-10-02T12:00:00Z").unwrap();
     let experiment = ExperimentId::mint(now);
     let round = fixed_round();
@@ -260,9 +276,13 @@ fn round_with(
 
     // The agents: every live candidate writes a file and its agent crashes.
     let ticks = Cell::new(0u32);
+    let offset = Cell::new(chrono::Duration::zero());
     let sleep = |_: Duration| {
         ticks.set(ticks.get() + 1);
         assert!(ticks.get() < 50, "the round never ended");
+        if agent == Agent::Idle {
+            offset.set(offset.get() + chrono::Duration::seconds(60));
+        }
         for r in store.read().unwrap() {
             if r.execution_status() == ExecutionStatus::Starting {
                 if let Some(dir) = &r.workdir {
@@ -276,6 +296,10 @@ fn round_with(
                     Agent::TrustDialog => {
                         fake.set_screen(r.pane_id.as_deref().unwrap(), CLAUDE_TRUST_SCREEN)
                     }
+                    Agent::Idle => fake.set_agent_states(
+                        r.pane_id.as_deref().unwrap(),
+                        &[(Some("claude"), Some("idle"))],
+                    ),
                 }
             }
         }
@@ -289,7 +313,7 @@ fn round_with(
         locations: Locations::under_home(&w.root.join("home"), &w.ctx.inherited),
     };
     let meter = UsageMeter::default();
-    let clock = monotonic(Utc::now);
+    let clock = monotonic(|| Utc::now() + offset.get());
     let disk = || None;
     let faults = Faults::default();
     let coordinator = Coordinator {
@@ -322,13 +346,17 @@ fn round_with(
         watch_command: "watch".into(),
     };
     let outcome = coordinator.start(&spec, &plan).unwrap();
-    CrashRound {
-        recorder,
-        store,
-        experiment,
-        round,
-        outcome,
-    }
+    let calls = fake.calls();
+    (
+        CrashRound {
+            recorder,
+            store,
+            experiment,
+            round,
+            outcome,
+        },
+        calls,
+    )
 }
 
 #[test]
@@ -460,6 +488,103 @@ fn pre_14_trust_dialog_pane_ends_the_candidate_at_once() {
     let projection = fold(&recorder.read_all().unwrap().events);
     for c in projection.rounds[&round].candidates.values() {
         assert!(!c.is_eligible());
+    }
+}
+
+/// A candidate that waits at its prompt without `horch done` gets exactly
+/// one nudge after `idle_nudge_after_s`, then ends as
+/// `Cancelled{idle_without_done}` after `idle_end_after_s`, long before the
+/// deadline; its work stays frozen in the round (F5, dataset design 4.11.5).
+#[test]
+fn idle_candidate_is_nudged_once_then_ends() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let (
+        CrashRound {
+            recorder,
+            store,
+            round,
+            outcome,
+            ..
+        },
+        calls,
+    ) = round_cfg(
+        &w,
+        &roster,
+        |_| {},
+        Agent::Idle,
+        |c| {
+            c.caps.idle_nudge_after_s = 120;
+            c.caps.idle_end_after_s = 180;
+            c.caps.candidate_deadline_s = 3600;
+        },
+    );
+    // Neither candidate ran `horch done`: nothing is eligible.
+    assert_eq!(outcome, RoundOutcome::Rejected { budget: false });
+    let records = store.read().unwrap();
+    assert_eq!(records.len(), 2);
+    let idle = FailureKind::Cancelled {
+        reason: "idle_without_done".into(),
+    };
+    for record in &records {
+        let e = to_execution(record).unwrap();
+        assert_eq!(
+            e.status,
+            ExecutionStatus::Failed {
+                failure: idle.clone()
+            }
+        );
+        let pane = e.pane.as_ref().unwrap().as_str().to_string();
+        let nudges: Vec<_> = calls
+            .iter()
+            .filter(|c| c.method == "agent_prompt" && c.args[0] == pane)
+            .collect();
+        assert_eq!(nudges.len(), 1, "one nudge per candidate: {calls:?}");
+        assert!(nudges[0].args[1].contains("horch done"));
+        assert!(nudges[0].args[1].contains("Do not commit"));
+    }
+    let projection = fold(&recorder.read_all().unwrap().events);
+    assert!(
+        projection.anomalies.is_empty(),
+        "{:?}",
+        projection.anomalies
+    );
+    for c in projection.rounds[&round].candidates.values() {
+        assert!(!c.is_eligible());
+        // The work is frozen all the same.
+        let frozen = c.frozen.as_ref().unwrap();
+        assert!(frozen.numstat.iter().any(|n| n.path == "work.txt"));
+    }
+}
+
+/// With `idle_nudge_after_s: 0` an idle candidate is never nudged and waits
+/// for the deadline, as before F5.
+#[test]
+fn idle_rule_off_waits_for_the_deadline() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let (CrashRound { store, .. }, calls) = round_cfg(
+        &w,
+        &roster,
+        |_| {},
+        Agent::Idle,
+        |c| {
+            c.caps.idle_nudge_after_s = 0;
+            c.caps.candidate_deadline_s = 600;
+        },
+    );
+    assert!(
+        !calls.iter().any(|c| c.method == "agent_prompt"),
+        "{calls:?}"
+    );
+    for record in store.read().unwrap() {
+        let e = to_execution(&record).unwrap();
+        assert_eq!(
+            e.status,
+            ExecutionStatus::Failed {
+                failure: FailureKind::TimedOut
+            }
+        );
     }
 }
 

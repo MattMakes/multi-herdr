@@ -9,6 +9,7 @@
 //! | the pane is gone while the record is live | Failed(PaneVanished) |
 //! | the agent exited (`Failed(AgentExited)`) | Failed(AgentExited) |
 //! | the pane shows a trust dialog (first 300 s) | close the pane → Failed(Cancelled{trust_dialog}) |
+//! | idle without `horch done` (herdr `agent_status`) | one nudge; still idle after the end period → close the pane → Failed(Cancelled{idle_without_done}) |
 //! | the deadline passed | close the pane → Failed(TimedOut) |
 //! | the budget ran out | close the pane → Failed(Cancelled{budget}) |
 //!
@@ -40,6 +41,64 @@ pub(crate) const CANCELLED_BUDGET: &str = "budget";
 pub(crate) const CANCELLED_DISK: &str = "disk";
 /// The reason a candidate stopped at its harness's trust dialog records.
 pub(crate) const CANCELLED_TRUST: &str = "trust_dialog";
+/// The reason a candidate that stayed idle after its nudge records.
+pub(crate) const CANCELLED_IDLE: &str = "idle_without_done";
+
+/// The one line the coordinator types into a candidate that waits at its
+/// prompt without `horch done` (dataset design 4.11.5).
+pub(crate) const IDLE_NUDGE: &str = "If you are finished, run: horch done \"<one-paragraph summary of what you changed>\". Do not commit: the coordinator commits your work. If you are not finished, continue the task.";
+
+/// What the coordinator knows about one candidate's idle time. Kept in
+/// memory only: a resumed coordinator starts the count again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct IdleWatch {
+    /// When the current idle stretch began; `None` while the agent works.
+    pub since: Option<DateTime<Utc>>,
+    /// The candidate got its one nudge.
+    pub nudged: bool,
+}
+
+/// What the idle rule says to do now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdleAction {
+    Wait,
+    Nudge,
+    End,
+}
+
+impl IdleWatch {
+    /// Take one look: `idle` is herdr's `agent_status == "idle"`. A
+    /// candidate idle for `nudge_after_s` gets the nudge; once nudged, an
+    /// idle stretch of `end_after_s` ends it. Work in between restarts the
+    /// stretch, but never earns a second nudge. `nudge_after_s == 0` turns
+    /// the rule off.
+    pub(crate) fn look(
+        &mut self,
+        idle: bool,
+        now: DateTime<Utc>,
+        nudge_after_s: u64,
+        end_after_s: u64,
+    ) -> IdleAction {
+        if nudge_after_s == 0 {
+            return IdleAction::Wait;
+        }
+        if !idle {
+            self.since = None;
+            return IdleAction::Wait;
+        }
+        let since = *self.since.get_or_insert(now);
+        if !self.nudged && deadline_passed(since, now, nudge_after_s) {
+            self.nudged = true;
+            // The end period counts from the nudge.
+            self.since = Some(now);
+            return IdleAction::Nudge;
+        }
+        if self.nudged && deadline_passed(since, now, end_after_s) {
+            return IdleAction::End;
+        }
+        IdleAction::Wait
+    }
+}
 
 /// How long after its spawn a candidate's pane is read for a trust dialog.
 /// The dialog is the first screen; later, the agent may print the same
@@ -379,5 +438,33 @@ mod tests {
         for (_, text) in TRUST_DIALOGS {
             assert_eq!(normalize_screen(text), *text);
         }
+    }
+
+    /// The idle rule: one nudge after the nudge period, an end after the
+    /// end period counted from the nudge, work restarts the stretch, and 0
+    /// turns it off.
+    #[test]
+    fn idle_watch_nudges_once_then_ends() {
+        let t0 = crate::clock::parse("2026-10-04T12:00:00Z").unwrap();
+        let at = |s: i64| t0 + chrono::Duration::seconds(s);
+        let mut w = IdleWatch::default();
+        assert_eq!(w.look(true, at(0), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(true, at(119), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(true, at(120), 120, 180), IdleAction::Nudge);
+        // It works for a while, then waits at the prompt again.
+        assert_eq!(w.look(false, at(150), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(true, at(200), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(true, at(379), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(true, at(380), 120, 180), IdleAction::End);
+
+        // A working agent is never nudged.
+        let mut busy = IdleWatch::default();
+        for s in (0..1000).step_by(60) {
+            assert_eq!(busy.look(false, at(s), 120, 180), IdleAction::Wait);
+        }
+        // Off.
+        let mut off = IdleWatch::default();
+        assert_eq!(off.look(true, at(0), 0, 180), IdleAction::Wait);
+        assert_eq!(off.look(true, at(10_000), 0, 180), IdleAction::Wait);
     }
 }

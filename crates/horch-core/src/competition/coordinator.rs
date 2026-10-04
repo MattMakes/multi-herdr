@@ -49,8 +49,9 @@ use crate::competition::config::DatasetConfig;
 use crate::competition::judging::{self, JobLauncher, JudgeEnv, JudgingStatus};
 use crate::competition::model::RoundState;
 use crate::competition::observe::{
-    self, classify, deadline_passed, trust_dialog, Observed, TelemetryUsage, CANCELLED_BUDGET,
-    CANCELLED_DISK, CANCELLED_TRUST, TRUST_DIALOG_WINDOW_S,
+    self, classify, deadline_passed, trust_dialog, IdleAction, IdleWatch, Observed, TelemetryUsage,
+    CANCELLED_BUDGET, CANCELLED_DISK, CANCELLED_IDLE, CANCELLED_TRUST, IDLE_NUDGE,
+    TRUST_DIALOG_WINDOW_S,
 };
 use crate::competition::planner::{candidate_planned_payload, round_created_payload, RoundPlan};
 use crate::competition::promotion::{
@@ -77,6 +78,7 @@ use crate::measure::event::{
 use crate::measure::paths::DatasetPaths;
 use crate::measure::projection::{fold, CandidateView, RoundView};
 use crate::measure::recorder::{Appended, JsonlRecorder, NewEvent, Recorder};
+use crate::messaging::delivery::send_line;
 use crate::messaging::mailbox::Mailbox;
 use crate::prompts::render;
 use crate::roster::Roster;
@@ -423,6 +425,8 @@ impl<G: GitClient> Coordinator<'_, G> {
         // both run on the first tick and then once per CHECK_EVERY.
         let every = (CHECK_EVERY.as_millis() / spec.tick.as_millis().max(1)).max(1);
         let mut tick: u128 = 0;
+        // How long each candidate has waited at its prompt (4.11.5).
+        let mut idle: BTreeMap<String, IdleWatch> = BTreeMap::new();
         loop {
             let check = tick % every == 0;
             tick += 1;
@@ -439,7 +443,8 @@ impl<G: GitClient> Coordinator<'_, G> {
                     continue;
                 }
                 if let Some(e) = records.get(&self.key(spec, label)) {
-                    self.observe(spec, label, c, e, now)?;
+                    let watch = idle.entry(label.clone()).or_default();
+                    self.observe(spec, label, c, e, now, watch)?;
                 }
             }
 
@@ -526,6 +531,7 @@ impl<G: GitClient> Coordinator<'_, G> {
         c: &CandidateView,
         e: &Execution,
         now: DateTime<Utc>,
+        idle: &mut IdleWatch,
     ) -> Result<()> {
         // A record that a killed coordinator started but did not announce.
         if c.spawned.is_none() {
@@ -562,6 +568,37 @@ impl<G: GitClient> Coordinator<'_, G> {
                         let screen = self.workspace.pane_read(pane.as_str(), "visible");
                         if screen.is_ok_and(|s| trust_dialog(&s).is_some()) {
                             let reason = CANCELLED_TRUST.to_string();
+                            let failure = FailureKind::Cancelled { reason };
+                            return self.end_candidate(spec, label, e, failure);
+                        }
+                    }
+                }
+                // An agent that waits at its prompt without `horch done`
+                // gets one nudge, then ends instead of waiting for the
+                // deadline (dataset design 4.11.5).
+                let caps = &spec.config.caps;
+                if let (Some(pane), true) = (&e.pane, caps.idle_nudge_after_s > 0) {
+                    let status = self
+                        .workspace
+                        .pane_get(pane.as_str())
+                        .ok()
+                        .and_then(|p| p.agent_status);
+                    let waiting = status.as_deref() == Some("idle");
+                    match idle.look(waiting, now, caps.idle_nudge_after_s, caps.idle_end_after_s) {
+                        IdleAction::Wait => {}
+                        IdleAction::Nudge => {
+                            eprintln!(
+                                "multi-herdr-dataset: candidate {label} waits at its prompt \
+                                 without horch done; nudging it once"
+                            );
+                            if let Err(err) = send_line(self.workspace, pane.as_str(), IDLE_NUDGE) {
+                                eprintln!(
+                                    "multi-herdr-dataset: nudging candidate {label}: {err:#}"
+                                );
+                            }
+                        }
+                        IdleAction::End => {
+                            let reason = CANCELLED_IDLE.to_string();
                             let failure = FailureKind::Cancelled { reason };
                             return self.end_candidate(spec, label, e, failure);
                         }
