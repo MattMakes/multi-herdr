@@ -10,9 +10,11 @@ Branch `ds/pid-identity`, worker opus-50. Plan:
 | Site 2. Prime daemon SIGTERM | `Harness: Stop a Prime daemon only when it is the one this launch started` | Done |
 | Site 3. `DirLock` and collector lock liveness | `Core: Treat a lock holder whose pid has another start time as dead` | Done |
 | Site 4. Other sites | `Evaluation: Kill a reaped gate's group only while no process has its pid` | Done |
+| Item 5. Git environment isolation (added) | `Git: Remove every repository variable from each git child, so GIT_DIR never aims git at another repository` | Done |
 
-The gate (`HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`) runs on
-every commit with `git rebase --exec`. See "Gate" at the end.
+The gate (`HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`) ran as
+its own command after a plain `git rebase design-skills`. It never runs
+under `git rebase -x` (see item 5).
 
 ## The helper: `crates/horch-core/src/procid.rs`
 
@@ -174,3 +176,69 @@ alone decides.
   original group can empty, and a later group can get the same id and
   lose its leader. So I did not add it. The orchestrator can decide on a
   follow-up.
+
+## Item 5: git environment isolation (added after an incident)
+
+### The incident
+
+To gate each commit, I ran `git rebase -x '... just gate' design-skills`
+in this worktree. `git rebase --exec` exports `GIT_DIR` to the command. Test
+fixtures that run `git init`, `symbolic-ref HEAD refs/heads/main` and
+commit in temp dirs did not remove it, so they wrote into the real
+repository: `core.bare=true`, HEAD=main in this worktree, and the commits
+"base" and "demo" on local `main`. `-C <dir>` does not help: `GIT_DIR` wins
+over it. The operator repaired the repository. The leaking helpers were
+`crates/horch/tests/skills_cli.rs` `World::git` ("demo") and
+`crates/horch-core/tests/coordinator.rs` `world` ("base"). The e2e harness
+`seal` already cleared the environment, and `vcs.rs` already used the
+product runner, which removed `GIT_DIR`.
+
+### The fix
+
+- Product: every horch git child goes through
+  `horch_marketplace::git::GitRunner` (`vcs::git::GitCli` and the skill
+  installer wrap it). I searched `crates/*/src` for other git spawns and
+  found none. `REPO_ENV` is now `pub` and has 9 names (added
+  `GIT_CEILING_DIRECTORIES` and `GIT_PREFIX`). `scrub_repo_env(&mut
+  Command)` removes them. The runner calls it and now also passes `-C
+  <absolute dir>`.
+- The shared list lives in `horch-marketplace`, not `horch-core` as the
+  plan says, because `horch-core` depends on `horch-marketplace`: the
+  runner there cannot see a list in `horch-core`, and ARC-25 forbids a
+  re-export. So `horch` and `horch-e2e` get `horch-marketplace` as a
+  dev-dependency and a dependency (workspace crates, not new crates;
+  `check-deps.sh` passes).
+- Tests: every test helper that runs git calls `scrub_repo_env`:
+  - `horch-marketplace/tests/marketplace.rs` `fixture::git`
+  - `horch-core/tests/coordinator.rs` `world` (also `-C`)
+  - `horch/tests/skills_cli.rs` `World::git`
+  - `horch-e2e/src/harness.rs` `git_cmd` (after `seal`)
+  - `horch-e2e/src/lib.rs`, the fake agent's `commit` (also `-C .`)
+- `scripts/phase-gate.sh` unsets the 9 variables at the top, with a
+  comment that names this incident.
+- `horch_marketplace::git::repo_state(git_dir)` reads config, HEAD,
+  `packed-refs` and every loose ref as one text, for the regression tests.
+
+### Regression tests
+
+Each test makes a decoy repository and aims `GIT_DIR` and `GIT_WORK_TREE`
+at it. It never sets them in its own process, because the other tests in
+the binary run in parallel. It then asserts that the decoy's state did
+not change.
+
+- `horch-marketplace` `git_env_cannot_reach_another_repository`: the
+  product runner with `with_env("GIT_DIR", decoy)` runs `init --bare`,
+  `symbolic-ref`, `init -b main` and a commit "demo".
+- `horch-core` `vcs.rs` and `coordinator.rs`
+  `git_env_cannot_reach_another_repository` run the ignored test
+  `git_env_decoy_child` (`Fixture::new()`, `world()`) in a child process of
+  the same test binary, with the variables set. They use
+  `tests/common/mod.rs` `assert_decoy_untouched`.
+- `horch` `skills_cli.rs`: the same, with the child running
+  `bare_skill_repo`.
+- `horch-e2e` `skills_exposure.rs`: the child runs the whole
+  `skl_06_e2e_marketplace_offline`.
+- I checked that the tests catch the bug. With the scrub removed from the
+  runner, the marketplace test fails. With it removed from the coordinator
+  helper, the coordinator test fails, and its child commits into the decoy.
+  I restored both files after the check.
