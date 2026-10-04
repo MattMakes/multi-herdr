@@ -153,9 +153,31 @@ pub(super) fn claude_command(
         cmd.arg("--plugin-dir").arg(env.expand_home(dir));
     }
 
+    // A sandboxed teammate never starts on a host that cannot sandbox it.
+    if teammate.sandbox.is_some() {
+        if let Some(problem) = sandbox_host_problem(
+            std::env::consts::OS,
+            std::env::var_os("PATH").as_deref(),
+            Path::new(SANDBOX_EXEC).exists(),
+        ) {
+            anyhow::bail!(
+                "{}: refusing to launch without a sandbox: {problem}",
+                teammate.name
+            );
+        }
+    }
+
     // `--settings` takes a path OR a JSON string, and is not repeatable, so
     // everything horch wants to overlay has to be assembled into one object.
     if let Some(settings) = &teammate.settings {
+        // A skills launch gives inline JSON with the sandbox merged in. A file
+        // the teammate named would replace the overlay and drop the sandbox.
+        if teammate.sandbox.is_some() && !settings.trim_start().starts_with('{') {
+            anyhow::bail!(
+                "{}: sandbox cannot be combined with a settings file",
+                teammate.name
+            );
+        }
         // The teammate named its own file; that file owns the overlay.
         cmd.arg("--settings").arg(env.expand_home(settings));
     } else {
@@ -184,6 +206,7 @@ pub(super) fn claude_command(
                 overlay.insert("statusLine".into(), status_line);
             }
         }
+        overlay_sandbox(teammate, &mut overlay)?;
         if !overlay.is_empty() {
             cmd.arg("--settings")
                 .arg(serde_json::Value::Object(overlay).to_string());
@@ -243,7 +266,131 @@ fn skills_settings(teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
             obj.insert("statusLine".into(), status);
         }
     }
+    overlay_sandbox(teammate, obj)?;
     Ok(settings)
+}
+
+/// Where macOS keeps the Seatbelt launcher Claude Code's sandbox runs under.
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+/// The `sandbox` keys horch sets on every sandboxed launch, whatever the
+/// teammate file says, as (path, value). `check` rejects a file that sets
+/// one to anything else. See ai_docs/reports/finish/release-sandbox.md.
+/// - `enabled`: the field means "sandbox this pane".
+/// - `failIfUnavailable`: Claude Code exits at startup rather than run
+///   commands unsandboxed.
+/// - `allowUnsandboxedCommands: false`: no retry outside the sandbox. Given
+///   through `--settings`, it also makes the sandbox admin-required, so a
+///   repository's `.claude/settings.json` cannot widen it.
+/// - `network.strictAllowlist`: a host outside `allowedDomains` is denied in
+///   every permission mode, auto mode's per-command domains included.
+pub(crate) const SANDBOX_FORCED: [(&[&str], bool); 4] = [
+    (&["enabled"], true),
+    (&["failIfUnavailable"], true),
+    (&["allowUnsandboxedCommands"], false),
+    (&["network", "strictAllowlist"], true),
+];
+
+/// Put the teammate's `sandbox:` block into a `--settings` object, with the
+/// [`SANDBOX_FORCED`] keys set. The sandbox wraps Bash only, so the Read,
+/// Grep and Glob tools get `permissions.blockReadsOutsideWorkingDirectories`:
+/// without it they read what the sandbox denies to a shell command. With the
+/// sandbox on, the same key also closes the home directory to sandboxed
+/// commands; the block's `allowRead` re-opens what the teammate needs.
+pub(crate) fn overlay_sandbox(
+    teammate: &Teammate,
+    overlay: &mut serde_json::Map<String, Value>,
+) -> Result<()> {
+    let Some(block) = &teammate.sandbox else {
+        return Ok(());
+    };
+    let mut sandbox = Value::Object(block.clone());
+    for (path, value) in SANDBOX_FORCED {
+        let (key, parents) = path.split_last().expect("a non-empty key path");
+        let mut node = &mut sandbox;
+        for parent in parents {
+            node = node
+                .as_object_mut()
+                .context("sandbox must be an object")?
+                .entry(*parent)
+                .or_insert_with(|| json!({}));
+        }
+        node.as_object_mut()
+            .with_context(|| format!("sandbox.{} must be an object", parents.join(".")))?
+            .insert((*key).to_string(), Value::Bool(value));
+    }
+    overlay.insert("sandbox".into(), sandbox);
+    overlay
+        .entry("permissions")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .context("permissions must be an object")?
+        .insert(
+            "blockReadsOutsideWorkingDirectories".into(),
+            Value::Bool(true),
+        );
+    Ok(())
+}
+
+/// What in a teammate's `sandbox:` block would open a way out, one line
+/// each: a value against a [`SANDBOX_FORCED`] key, `excludedCommands` (runs
+/// a command outside the sandbox) or `filesystem.disabled`.
+pub(crate) fn sandbox_problems(block: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (path, forced) in SANDBOX_FORCED {
+        let mut node = Some(block);
+        let (key, parents) = path.split_last().expect("a non-empty key path");
+        for parent in parents {
+            node = node.and_then(|n| n.get(*parent)).and_then(Value::as_object);
+        }
+        if let Some(value) = node.and_then(|n| n.get(*key)) {
+            if value != &Value::Bool(forced) {
+                problems.push(format!(
+                    "sandbox.{} must be {forced} or left out (horch sets it)",
+                    path.join(".")
+                ));
+            }
+        }
+    }
+    let excluded = block.get("excludedCommands");
+    if excluded.is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty())) {
+        problems.push(
+            "sandbox.excludedCommands runs commands outside the sandbox; leave it out".into(),
+        );
+    }
+    let disabled = block.get("filesystem").and_then(|f| f.get("disabled"));
+    if disabled.is_some_and(|v| v != &Value::Bool(false)) {
+        problems.push("sandbox.filesystem.disabled turns the filesystem layer off".into());
+    }
+    problems
+}
+
+/// Why this host cannot run Claude Code's sandbox, or `None` when it can.
+/// macOS needs Seatbelt's `sandbox-exec`; Linux needs `bwrap` and `socat`
+/// (code.claude.com/docs/en/sandboxing, "Set up Linux and WSL2"). The
+/// sandbox runs nowhere else.
+pub(crate) fn sandbox_host_problem(
+    os: &str,
+    path: Option<&std::ffi::OsStr>,
+    sandbox_exec: bool,
+) -> Option<String> {
+    match os {
+        "macos" if sandbox_exec => None,
+        "macos" => Some(format!("{SANDBOX_EXEC} is missing")),
+        "linux" => {
+            let missing: Vec<&str> = ["bwrap", "socat"]
+                .into_iter()
+                .filter(|bin| crate::runtime::process::which(path, None, bin).is_none())
+                .collect();
+            (!missing.is_empty()).then(|| {
+                format!(
+                    "{} not on PATH; install bubblewrap and socat",
+                    missing.join(" and ")
+                )
+            })
+        }
+        other => Some(format!("Claude Code has no sandbox on {other}")),
+    }
 }
 
 /// Add the skill switches every Claude launch overlays on the operator's
@@ -403,5 +550,160 @@ mod tests {
         }
         assert_eq!(overlay["enabledPlugins"], json!({"herdr@m": true}));
         assert!(plugin_keys("herdr", &["herdrx@m".into()], None).is_empty());
+    }
+
+    fn sandboxed(block: Value) -> Teammate {
+        Teammate {
+            name: "boxed".into(),
+            model: Some("sonnet".into()),
+            sandbox: Some(block.as_object().unwrap().clone()),
+            ..Teammate::default()
+        }
+    }
+
+    fn host_can_sandbox() -> bool {
+        sandbox_host_problem(
+            std::env::consts::OS,
+            std::env::var_os("PATH").as_deref(),
+            Path::new(SANDBOX_EXEC).exists(),
+        )
+        .is_none()
+    }
+
+    fn settings_arg(cmd: &Command) -> Value {
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let i = args.iter().position(|a| a == "--settings").unwrap();
+        serde_json::from_str(&args[i + 1]).unwrap()
+    }
+
+    /// The launch writes the teammate's block into `--settings`, with the
+    /// forced keys set over what the file said, and closes the Read tool.
+    /// On a host with no sandbox, the same launch is refused instead.
+    #[test]
+    fn a_sandboxed_launch_writes_the_sandbox_block_or_refuses() {
+        let t = sandboxed(json!({
+            "network": {"allowedDomains": ["api.appstoreconnect.apple.com"]},
+            "filesystem": {"allowRead": ["~/.config/horch/asc"]}
+        }));
+        let built = super::super::launch::command_in(
+            &LaunchEnv::for_test(),
+            &t,
+            Session::Fresh("id"),
+            "go",
+            None,
+        );
+        if !host_can_sandbox() {
+            let err = built.unwrap_err().to_string();
+            assert!(
+                err.contains("refusing to launch without a sandbox"),
+                "{err}"
+            );
+            return;
+        }
+        let settings = settings_arg(&built.unwrap());
+        assert_eq!(
+            settings["sandbox"],
+            json!({
+                "enabled": true,
+                "failIfUnavailable": true,
+                "allowUnsandboxedCommands": false,
+                "network": {
+                    "allowedDomains": ["api.appstoreconnect.apple.com"],
+                    "strictAllowlist": true
+                },
+                "filesystem": {"allowRead": ["~/.config/horch/asc"]}
+            })
+        );
+        assert_eq!(
+            settings["permissions"]["blockReadsOutsideWorkingDirectories"],
+            true
+        );
+    }
+
+    /// A fleet pane launches with skills: the sandbox rides in the merged
+    /// skills overlay too, and a teammate without the field gets no block.
+    #[test]
+    fn the_skills_overlay_carries_the_sandbox() {
+        let settings = skills_settings(&sandboxed(json!({"enabled": false})), None).unwrap();
+        assert_eq!(settings["sandbox"]["enabled"], true);
+        assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], false);
+        let plain = skills_settings(&Teammate::default(), None).unwrap();
+        assert!(plain.get("sandbox").is_none());
+        assert!(plain.get("permissions").is_none());
+    }
+
+    /// A settings file replaces the overlay, so it would drop the sandbox.
+    #[test]
+    fn a_sandbox_with_a_settings_file_is_refused() {
+        let mut t = sandboxed(json!({}));
+        t.settings = Some("~/my-settings.json".into());
+        let err = super::super::launch::command_in(
+            &LaunchEnv::for_test(),
+            &t,
+            Session::Unmanaged,
+            "go",
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        let expected = if host_can_sandbox() {
+            "sandbox cannot be combined with a settings file"
+        } else {
+            "refusing to launch without a sandbox"
+        };
+        assert!(err.contains(expected), "{err}");
+    }
+
+    #[test]
+    fn every_way_out_of_the_sandbox_is_named() {
+        let block = json!({
+            "enabled": false,
+            "failIfUnavailable": true,
+            "allowUnsandboxedCommands": true,
+            "excludedCommands": ["asc *"],
+            "filesystem": {"disabled": true},
+            "network": {"strictAllowlist": false}
+        });
+        let problems = sandbox_problems(block.as_object().unwrap());
+        assert_eq!(problems.len(), 5, "{problems:?}");
+        assert!(problems[0].starts_with("sandbox.enabled must be true"));
+        assert!(problems[1].starts_with("sandbox.allowUnsandboxedCommands must be false"));
+        assert!(problems[2].starts_with("sandbox.network.strictAllowlist must be true"));
+        assert!(problems[3].starts_with("sandbox.excludedCommands"));
+        assert!(problems[4].starts_with("sandbox.filesystem.disabled"));
+        let empty = json!({"excludedCommands": [], "filesystem": {"disabled": false}});
+        assert!(sandbox_problems(empty.as_object().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn the_host_check_names_what_is_missing() {
+        assert_eq!(sandbox_host_problem("macos", None, true), None);
+        assert!(sandbox_host_problem("macos", None, false)
+            .unwrap()
+            .contains("sandbox-exec"));
+        assert!(sandbox_host_problem("windows", None, true)
+            .unwrap()
+            .contains("no sandbox on windows"));
+        let dir = tempfile::tempdir().unwrap();
+        let bwrap = dir.path().join("bwrap");
+        std::fs::write(&bwrap, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let problem = sandbox_host_problem("linux", Some(dir.path().as_os_str()), false);
+            assert_eq!(
+                problem.as_deref(),
+                Some("socat not on PATH; install bubblewrap and socat")
+            );
+            std::fs::copy(&bwrap, dir.path().join("socat")).unwrap();
+            assert_eq!(
+                sandbox_host_problem("linux", Some(dir.path().as_os_str()), false),
+                None
+            );
+        }
     }
 }

@@ -271,6 +271,21 @@ setting_sources:
 # the skill bundle merges horch's switches into this file.
 settings:
 
+# sandbox -> the `sandbox` object of Claude's settings, put in the --settings
+#   overlay (code.claude.com/docs/en/settings-reference, "Sandbox settings").
+#   Claude only. The OS (Seatbelt on macOS, bubblewrap on Linux) holds every
+#   Bash command and its children to it, so `sh -c` or `unset` cannot step
+#   out. Omit = no sandbox. When set, horch always adds enabled: true,
+#   failIfUnavailable: true, allowUnsandboxedCommands: false,
+#   network.strictAllowlist: true and
+#   permissions.blockReadsOutsideWorkingDirectories: true (the Read tool is
+#   outside the sandbox, and this key closes the home directory to it and
+#   to Bash). Re-open paths with filesystem.allowRead. The launch refuses a
+#   host that cannot sandbox. `horch teammates --check` fails a non-claude
+#   agent, a settings file, a value against a forced key, excludedCommands
+#   and filesystem.disabled. See app-release-preparer.md.
+sandbox:
+
 # mcp_servers -> --mcp-config '{"mcpServers": {...}}' --strict-mcp-config
 #   Omit the key = leave the operator's MCP configuration alone.
 #   {} (empty)   = exactly zero MCP servers. `--strict-mcp-config` is what

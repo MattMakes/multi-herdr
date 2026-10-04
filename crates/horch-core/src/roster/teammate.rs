@@ -170,6 +170,12 @@ pub struct Teammate {
     pub remote_control: bool,
     #[serde(default)]
     pub settings: Option<String>,
+    /// Claude's Bash sandbox, as the `sandbox` object of the `--settings`
+    /// overlay. The launch forces the keys in `harness::claude::SANDBOX_FORCED`
+    /// on and refuses a host that cannot sandbox. Claude only; `check`
+    /// rejects it elsewhere and rejects every escape hatch inside it.
+    #[serde(default)]
+    pub sandbox: Option<serde_json::Map<String, serde_json::Value>>,
     /// Inline MCP server definitions. `None` leaves the operator's MCP
     /// configuration alone; `Some` renders `--mcp-config <json>
     /// --strict-mcp-config`, so `Some({})` means exactly zero MCP servers.
@@ -248,6 +254,7 @@ impl Default for Teammate {
             plugin_skills: BTreeMap::new(),
             remote_control: false,
             settings: None,
+            sandbox: None,
             mcp_servers: None,
             mcp_config_files: Vec::new(),
             args: Vec::new(),

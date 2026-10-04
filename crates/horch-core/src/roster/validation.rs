@@ -265,6 +265,25 @@ impl Roster {
                 ));
             }
         }
+        // Only Claude has an OS sandbox horch can switch on per launch. On any
+        // other agent the field would promise a boundary that never exists.
+        if let Some(block) = &t.sandbox {
+            if t.agent != HarnessKind::Claude {
+                problems.push(format!(
+                    "{who}: sandbox is Claude only; agent {} cannot honour it",
+                    t.agent
+                ));
+            }
+            if t.settings.is_some() {
+                problems.push(format!(
+                    "{who}: sandbox cannot be combined with settings (the file \
+                     replaces the overlay that carries the sandbox)"
+                ));
+            }
+            for problem in crate::harness::claude::sandbox_problems(block) {
+                problems.push(format!("{who}: {problem}"));
+            }
+        }
         if let Some(mode) = t.permission_mode {
             let ok = match t.agent {
                 HarnessKind::Codex => mode.codex_args().is_some(),
@@ -914,6 +933,37 @@ mod spawnable_tests {
             "{:?}",
             r.check()
         );
+    }
+
+    /// `sandbox:` is Claude only, cannot pair with a settings file, and
+    /// cannot carry a way out. A plain block on a claude teammate passes.
+    #[test]
+    fn roster_check_holds_the_sandbox_to_claude_and_no_way_out() {
+        let block = |v: serde_json::Value| Some(v.as_object().unwrap().clone());
+        let mut r = Roster::builtin().unwrap();
+        r.teammates.get_mut("sonnet").unwrap().sandbox =
+            block(serde_json::json!({"network": {"allowedDomains": ["x.example"]}}));
+        assert!(
+            !r.check().iter().any(|p| p.starts_with("sonnet:")),
+            "{:?}",
+            r.check()
+        );
+
+        r.teammates.get_mut("codex-sol").unwrap().sandbox = block(serde_json::json!({}));
+        let sonnet = r.teammates.get_mut("sonnet").unwrap();
+        sonnet.sandbox = block(serde_json::json!({"excludedCommands": ["asc *"]}));
+        sonnet.settings = Some("~/s.json".into());
+        let problems = r.check();
+        for expected in [
+            "codex-sol: sandbox is Claude only; agent codex cannot honour it",
+            "sonnet: sandbox cannot be combined with settings",
+            "sonnet: sandbox.excludedCommands runs commands outside the sandbox",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.starts_with(expected)),
+                "{expected}: {problems:?}"
+            );
+        }
     }
 
     /// An agy teammate that sets a Google key would leave the operator's
