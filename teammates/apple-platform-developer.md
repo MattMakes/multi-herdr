@@ -25,10 +25,18 @@ skills:
   - swift-focusengine-pro
   - swift-concurrency-pro
   - observability
-# No operator_skills, for the same reason as swift-developer.md: `--check`
-# fails when the directory is missing. To add Apple's Xcode 27 skills, run
-# `xcrun agent skills export` and add, in a local copy:
-#   operator_skills: {dir: ~/.agents/skills, names: [swiftui-whats-new-27]}
+# Apple's Xcode 27 skills belong to Apple and cannot ship here. Each host
+# exports its own copy (Xcode 27 or later):
+#   xcrun agent skills export --output-dir ~/.agents/skills
+# swiftui-whats-new-27 is the only source on the iOS 27 SwiftUI APIs, and
+# test-modernizer moves XCTest to Swift Testing
+# (ai_docs/reports/swift-fleet-skills-2026-10.md section 7.2).
+# device-interaction stays out: it is a subagent skill. On a host without
+# the export, `horch teammates --check` warns, and the launch skips the
+# skill and says so in the briefing.
+operator_skills:
+  dir: ~/.agents/skills
+  names: [swiftui-whats-new-27, test-modernizer]
 
 # Same build server and docs server as swift-developer.md.
 mcp_servers:

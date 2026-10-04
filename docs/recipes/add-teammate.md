@@ -113,7 +113,9 @@ the worker's briefing.
   materialized skill's description in its own skill list, so keep the list
   short. A name in both `skills` and `available_skills` fails `--check`.
 - Use `operator_skills` for a skill that cannot ship in this repo, for
-  example Apple's Xcode skills that `xcrun agent skills export` writes:
+  example Apple's Xcode skills. Xcode 27 or later exports them with
+  `xcrun agent skills export --output-dir ~/.agents/skills` (add
+  `--replace-existing` to refresh them after an Xcode update):
 
   ```yaml
   operator_skills:
@@ -127,17 +129,20 @@ the worker's briefing.
     copy's tree digest. The plan records the version as
     `operator+<digest12>`. Every harness that exposes skills sees them.
     On Claude they appear as `horch:<name>`, like bundled skills.
-  - `--check` fails on a missing `dir`, a missing name, a name that is
-    named twice, and a name that a bundled or marketplace skill already
-    has.
+  - A host that lacks the skill is normal: each host exports its own copy.
+    When `dir` or `<dir>/<name>/` does not exist, `--check` prints a
+    `warning:` line and passes. The launch skips the skill, and the
+    briefing says "Skipped: operator skill <name> is not installed on this
+    host ...", so the worker can tell the orchestrator.
+  - `--check` fails on a name that is named twice, a name that a bundled
+    or marketplace skill already has, a `dir` that exists but cannot be
+    read, and a `<dir>/<name>/` without a readable, valid SKILL.md. The
+    name rules apply on every host, also where the skill is missing.
   - `--check` refuses a subagent skill: `device-interaction`, or a SKILL.md
     that contains "SUBAGENT skill" or "Agent tool". Fleet panes start no
     subagents.
-  - The ledger record (`horch spawn`) does not list operator skills,
-    because `plan_launch` reads no files. The launch's bundle has them.
-  - A teammate with `operator_skills` passes `--check` only on a machine
-    that has the directory. Do not add it to a shipped teammate unless every
-    operator machine has the directory.
+  - The ledger record (`horch spawn`) lists the operator skills that the
+    launch copied, with their `operator+<digest12>` version.
 - A fallback launch keeps all 4 fields of the original teammate.
 
 ## Gotchas

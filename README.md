@@ -291,6 +291,95 @@ plugin_skills:
 
 `horch cost` then reports which expected skills each worker actually loaded.
 
+#### Apple's Xcode skills
+
+Xcode 27 ships 7 Apple skills. They belong to Apple, so they cannot ship
+in this repo. Each Mac exports its own copy:
+
+```sh
+xcrun agent skills export --output-dir ~/.agents/skills
+```
+
+- Apple's documentation does not describe this command. The syntax comes
+  from third-party Xcode 27 guides. Check it with
+  `xcrun agent skills export --help`.
+- The command needs Xcode 27 or later as the selected toolchain
+  (`xcode-select -p`).
+- Add `--replace-existing` to refresh the copy after an Xcode update.
+
+`swift-developer` and `apple-platform-developer` name 2 of the skills
+under `operator_skills:`: `swiftui-whats-new-27` and `test-modernizer`.
+
+- On a Mac with the export, the launch copies them into the skill
+  bundle, and the briefing lists them as expected skills.
+- On a host without the export, `horch teammates --check` prints a
+  `warning:` and passes. The launch skips the skill, and the briefing tells
+  the worker to ask you for the export.
+- `device-interaction` stays out: it is a subagent skill.
+- See [the operator_skills field](docs/recipes/add-teammate.md).
+
+#### App Store Connect key for app-release-preparer
+
+`app-release-preparer` archives, uploads to internal TestFlight and audits
+review readiness. It never submits. The API key enforces this rule. The
+deny list in the teammate file is only a second line of defence.
+
+1. Create a team API key in App Store Connect, under Users and Access >
+   Integrations > App Store Connect API. Give it a role that cannot submit
+   apps or edit pricing and availability.
+   - Apple offers these roles for an API key: Admin, App Manager,
+     Developer, Marketing, Sales, Finance and Customer Support.
+   - Admin and App Manager can submit apps. Admin, App Manager and
+     Marketing can edit pricing and availability.
+   - Use **Developer**. It can upload builds and manage TestFlight, and it
+     cannot submit apps or edit pricing
+     ([Apple: role permissions](https://developer.apple.com/support/roles/)).
+2. Download the `.p8` file. Apple lets you download it 1 time only. Keep
+   it outside every repository, with mode 600:
+
+   ```sh
+   mkdir -p ~/.config/horch/asc
+   mv ~/Downloads/AuthKey_<KEY_ID>.p8 ~/.config/horch/asc/
+   chmod 600 ~/.config/horch/asc/AuthKey_<KEY_ID>.p8
+   ```
+
+3. Write `~/.config/horch/asc/config.json` with 1 entry under `keys`.
+   `private_key_path` must be absolute. Replace each `<...>` with your
+   value:
+
+   ```json
+   {
+     "default_key_name": "horch-release",
+     "keys": [
+       {
+         "name": "horch-release",
+         "key_id": "<KEY_ID>",
+         "issuer_id": "<ISSUER_ID>",
+         "private_key_path": "/Users/<you>/.config/horch/asc/AuthKey_<KEY_ID>.p8"
+       }
+     ]
+   }
+   ```
+
+4. Check it the way the pane sees it:
+
+   ```sh
+   ASC_CONFIG_PATH=~/.config/horch/asc/config.json ASC_BYPASS_KEYCHAIN=1 asc auth status
+   ```
+
+   The output must show `horch-release` as the default key. Add
+   `--validate` to test the key against Apple.
+
+The teammate sets `ASC_CONFIG_PATH` to that file and `ASC_BYPASS_KEYCHAIN=1`.
+asc then reads only that file: no `./.asc/config.json` in the project and no
+`~/.asc/config.json`. It also ignores the credentials in your keychain. So the
+pane cannot use your own key, which may have the Admin role. asc's
+authentication docs give this pair as the way to isolate an agent. The file
+holds the path to the key, never the key.
+
+Until the config file and the `.p8` file exist, the teammate reports
+`BLOCKED:` with the missing path and does no release work.
+
 ### Six harnesses, one roster
 
 A teammate's `agent:` picks which CLI its pane runs. They differ in almost
