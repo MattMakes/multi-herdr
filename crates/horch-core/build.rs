@@ -12,7 +12,12 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 fn main() {
-    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Read at run time, not with `env!`: cargo reuses a compiled build
+    // script across checkouts at different paths (path dependencies hash
+    // without their absolute path), and an `env!` value would point every
+    // later build at the checkout that first compiled this script.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let crate_dir = Path::new(&manifest_dir);
     let root = crate_dir.parent().unwrap().parent().unwrap();
     let teammates = root.join("teammates");
 
