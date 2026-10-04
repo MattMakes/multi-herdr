@@ -40,3 +40,13 @@ the dataset design section for candidate lifecycle, tests,
 
 1. Brief + freeze test. 2. Idle nudge/end + config + tests. 3. Design text.
 4. Targeted checks; COMMITTED.
+
+## Added items (from F2, opus-55's report `ai_docs/reports/finish/trust-preflight.md`)
+
+4. PRE-14 reads `~/.claude.json` only; honour `CLAUDE_CONFIG_DIR` (Claude
+   keeps its config there when set; check the docs for the exact file) via
+   RuntimeContext. Test both. You also own `competition/preflight.rs` and
+   `crates/horch/src/dataset/preflight.rs` for this.
+5. `crates/horch/src/dataset/run.rs` exits 4 instead of 3 for a plan with 0
+   candidates: use the documented exit code (dataset design, exit table) and
+   test it.
