@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="Node" inherits="Object" api_type="core">
+	<methods>
+		<method name="add_child"><return type="void" /></method>
+		<method name="is_inside_tree" qualifiers="const"><return type="bool" /></method>
+	</methods>
+	<members>
+		<member name="process_mode" type="int" setter="set_process_mode" getter="get_process_mode" enum="Node.ProcessMode"></member>
+	</members>
+	<signals>
+		<signal name="ready"></signal>
+	</signals>
+	<constants>
+		<constant name="PROCESS_MODE_INHERIT" value="0" enum="ProcessMode"></constant>
+	</constants>
+</class>

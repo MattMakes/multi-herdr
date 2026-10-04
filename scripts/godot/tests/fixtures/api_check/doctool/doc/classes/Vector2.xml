@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="Vector2" api_type="core">
+	<methods>
+		<method name="normalized" qualifiers="const"><return type="Vector2" /></method>
+	</methods>
+	<constants>
+		<constant name="ZERO" value="Vector2(0, 0)"></constant>
+	</constants>
+</class>

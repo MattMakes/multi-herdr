@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="@GlobalScope" api_type="core">
+	<constants>
+		<constant name="KEY_SPACE" value="32" enum="Key"></constant>
+		<constant name="TYPE_INT" value="2" enum="Variant.Type"></constant>
+	</constants>
+</class>

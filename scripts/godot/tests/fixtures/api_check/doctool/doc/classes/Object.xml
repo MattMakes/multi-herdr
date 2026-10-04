@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="Object" api_type="core">
+	<methods>
+		<method name="connect"><return type="int" /></method>
+	</methods>
+	<signals>
+		<signal name="script_changed"></signal>
+	</signals>
+	<constants>
+		<constant name="NOTIFICATION_POSTINITIALIZE" value="0"></constant>
+		<constant name="CONNECT_DEFERRED" value="1" enum="ConnectFlags" is_bitfield="true"></constant>
+	</constants>
+</class>
