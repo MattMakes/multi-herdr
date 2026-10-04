@@ -13,7 +13,7 @@
 use std::process::Output;
 use std::time::{Duration, Instant};
 
-use horch_e2e::harness::{fixtures, Harness};
+use horch_e2e::harness::{fixtures, repo_root, Harness};
 use serde_json::Value;
 
 const NOW: &str = "2026-09-28T18:00:00Z";
@@ -277,6 +277,42 @@ fn pane_command_removes_a_forbidden_key_before_horch_starts() {
     assert!(
         !env.lines().any(|l| l.starts_with("ANTHROPIC_API_KEY=")),
         "{env}"
+    );
+}
+
+/// F7 (G3): the worker loads the roster in its pane, and an overlay file
+/// that does not load gives one `warning:` line there. The worker still
+/// launches its agent.
+#[test]
+fn worker_warns_once_about_a_teammate_file_that_does_not_load() {
+    let h = fleet("f7-worker", "default");
+    let dir = h.home.join(".config/horch/teammates");
+    std::fs::create_dir_all(&dir).unwrap();
+    let broken = std::fs::read_to_string(repo_root().join("teammates/opus.md"))
+        .unwrap()
+        .replace("name: opus", "name: newcomer")
+        .replacen("\n---\n", "\nrequires: [no-such-tool]\n---\n", 1);
+    std::fs::write(dir.join("newcomer.md"), broken).unwrap();
+    let pane = spawn(&h, &["sonnet", "build the thing"]);
+    let role = records(&h)[0]["role"].as_str().unwrap().to_string();
+    let mut worker = h.horch(&["worker", &role]);
+    worker.env("HERDR_PANE_ID", &pane);
+    let out = worker.output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warnings: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.starts_with("warning: teammate 'newcomer'"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{stderr}");
+    assert!(
+        warnings[0].contains("unknown variant `no-such-tool`"),
+        "{stderr}"
+    );
+    assert_eq!(
+        h.calls_of("claude").len(),
+        1,
+        "the worker launched its agent"
     );
 }
 

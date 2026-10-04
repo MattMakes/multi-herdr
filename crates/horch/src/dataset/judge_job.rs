@@ -127,6 +127,7 @@ fn run_judge(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<RunResult> {
         ctx.bins.roster_override.as_deref(),
         None,
     )?;
+    warn(&roster, &mut std::io::stderr());
     let mut judge = roster.require("judge")?.clone();
     // The coordinator digested these into judge_policy_digest; they win.
     judge.model = Some(args.model.clone());
@@ -220,6 +221,14 @@ fn run_judge(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<RunResult> {
 /// `--json-schema` produced one, else the `result` text. `None` for an error
 /// envelope. Stdout that is not an envelope is passed on as it is, so the
 /// coordinator's strict parser records it as malformed.
+/// Write each [`Roster::load_warnings`] line to `out` as `warning: <line>`,
+/// as `horch`'s `load_roster` does. A job loads the roster once.
+fn warn(roster: &Roster, out: &mut impl Write) {
+    for w in roster.load_warnings() {
+        let _ = writeln!(out, "warning: {w}");
+    }
+}
+
 fn answer_text(raw: &[u8]) -> Option<Vec<u8>> {
     let Ok(serde_json::Value::Object(env)) = serde_json::from_slice(raw) else {
         return Some(raw.to_vec());
@@ -239,6 +248,26 @@ fn answer_text(raw: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F7: a teammate file that does not parse gives one `warning:` line
+    /// in the judge job, and the judge still loads.
+    #[test]
+    fn roster_warnings_are_printed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let opus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates/opus.md");
+        let text = std::fs::read_to_string(opus)
+            .unwrap()
+            .replace("name: opus", "name: newcomer")
+            .replacen("\n---\n", "\nrequires: [no-such-tool]\n---\n", 1);
+        std::fs::write(tmp.path().join("newcomer.md"), text).unwrap();
+        let roster = Roster::load_layered(None, Some(tmp.path()), None).unwrap();
+        assert!(roster.require("judge").is_ok());
+        let mut out = Vec::new();
+        warn(&roster, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.starts_with("warning: teammate 'newcomer'"), "{text}");
+    }
 
     /// The first heartbeat exists when `heartbeat` returns, even when the
     /// job is already over and the thread never beats.

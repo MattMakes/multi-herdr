@@ -327,6 +327,10 @@ impl WorkerSteps for PaneWorker<'_> {
             ctx.bins.roster_override.as_deref(),
             brief.teammates_dir.as_deref(),
         )?;
+        // F7: an overlay file that does not load is named once, in the pane.
+        for w in roster.load_warnings() {
+            eprintln!("warning: {w}");
+        }
         let teammate = match &brief.resolved {
             Some(t) => t.clone(),
             None => roster.require(&brief.teammate)?.clone(),
