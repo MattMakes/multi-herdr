@@ -26,6 +26,15 @@ pub(crate) const DEFAULT_SOFT_PERCENT: i64 = 80;
 pub(crate) const DEFAULT_JUDGE_RESERVE_PERCENT: i64 = 10;
 pub(crate) const DEFAULT_JUDGE_TIMEOUT_S: u64 = 900;
 pub(crate) const DEFAULT_CANDIDATE_DEADLINE_S: u64 = 3600;
+/// Idle seconds without `horch done` before the one nudge. An agent shows
+/// `working` while it thinks or runs a tool; `idle` means it waits at its
+/// prompt. The LA candidates finished a small task in 20 to 45 s, so 2
+/// minutes at the prompt means it stopped, not that it is slow.
+pub(crate) const DEFAULT_IDLE_NUDGE_AFTER_S: u64 = 120;
+/// Seconds after the nudge before a still-idle candidate ends: enough for
+/// one more turn that runs `horch done`. Nudge plus end is 5 minutes, well
+/// under the deadline.
+pub(crate) const DEFAULT_IDLE_END_AFTER_S: u64 = 180;
 /// 10 GiB of disk left free after every worktree and build is counted.
 pub(crate) const DEFAULT_DISK_HEADROOM_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 pub(crate) const DEFAULT_LOG_CAP_BYTES: u64 = 262_144;
@@ -152,6 +161,13 @@ pub struct Caps {
     pub disk_headroom_bytes: u64,
     pub log_cap_bytes: u64,
     pub output_cap_bytes: u64,
+    /// Seconds a live candidate may wait at its prompt (herdr `agent_status`
+    /// idle) without `horch done` before the coordinator nudges it once.
+    /// 0 turns the idle rule off: the candidate waits for the deadline.
+    pub idle_nudge_after_s: u64,
+    /// Seconds after the nudge before a candidate that is still idle ends
+    /// as `Cancelled{idle_without_done}`.
+    pub idle_end_after_s: u64,
 }
 
 impl Default for Caps {
@@ -162,6 +178,8 @@ impl Default for Caps {
             disk_headroom_bytes: DEFAULT_DISK_HEADROOM_BYTES,
             log_cap_bytes: DEFAULT_LOG_CAP_BYTES,
             output_cap_bytes: DEFAULT_OUTPUT_CAP_BYTES,
+            idle_nudge_after_s: DEFAULT_IDLE_NUDGE_AFTER_S,
+            idle_end_after_s: DEFAULT_IDLE_END_AFTER_S,
         }
     }
 }
@@ -321,6 +339,9 @@ pub fn validate(config: &DatasetConfig) -> Result<()> {
     if config.caps.max_parallel == Some(0) {
         bail!("caps.max_parallel must be at least 1");
     }
+    if config.caps.idle_nudge_after_s > 0 && config.caps.idle_end_after_s == 0 {
+        bail!("caps.idle_end_after_s must be at least 1 while caps.idle_nudge_after_s is set");
+    }
     Ok(())
 }
 
@@ -378,5 +399,41 @@ mod tests {
         let file = parse_file("judge:\n  mode: auto\n").unwrap();
         assert_eq!(file.judge.unwrap().mode, JudgeMode::Auto);
         assert!(parse_file("judge:\n  mode: manual\n").is_err());
+    }
+
+    /// The idle periods default to 120 s and 180 s, the file sets them, 0
+    /// turns the rule off, and a nudge without an end period is refused.
+    #[test]
+    fn idle_periods_default_parse_and_validate() {
+        let flags = RunFlags {
+            budget_usd: Some("10".into()),
+            ..RunFlags::default()
+        };
+        let default = merge(parse_file("").unwrap(), &flags).unwrap();
+        assert_eq!(default.caps.idle_nudge_after_s, 120);
+        assert_eq!(default.caps.idle_end_after_s, 180);
+        validate(&default).unwrap();
+
+        let file = parse_file("caps:\n  idle_nudge_after_s: 30\n  idle_end_after_s: 60\n").unwrap();
+        let set = merge(file, &flags).unwrap();
+        assert_eq!(
+            (set.caps.idle_nudge_after_s, set.caps.idle_end_after_s),
+            (30, 60)
+        );
+        // Unset keys keep their defaults.
+        assert_eq!(set.caps.candidate_deadline_s, DEFAULT_CANDIDATE_DEADLINE_S);
+
+        let off = merge(
+            parse_file("caps:\n  idle_nudge_after_s: 0\n").unwrap(),
+            &flags,
+        )
+        .unwrap();
+        validate(&off).unwrap();
+        let bad = merge(
+            parse_file("caps:\n  idle_nudge_after_s: 30\n  idle_end_after_s: 0\n").unwrap(),
+            &flags,
+        )
+        .unwrap();
+        assert!(validate(&bad).is_err());
     }
 }
