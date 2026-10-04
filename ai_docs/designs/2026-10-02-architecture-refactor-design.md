@@ -12,8 +12,10 @@
 
 Requirement tables in section 3 are machine-read by
 `scripts/check-req-coverage.sh`. Do not change their header row. Do not
-define an ID in any other table. A `SPEC-TODO(Spec A §n)` marks a place where
-the verbatim spec text is needed and the master plan does not give it.
+define an ID in any other table. The original Spec A text is not
+available. The finish run (2026-10-04) closed every spec placeholder
+marker: each such place now states the implemented, tested behaviour as the
+spec and cites its code and test.
 
 ---
 
@@ -58,9 +60,36 @@ phase 8 (training Laya).
 - Golden prompts are never regenerated. Prose changes go in as named
   sanctioned blocks. A serialization format change bumps the schema version;
   a serialization golden is never re-blessed.
-- Every phase follows the junior checklist (Spec A §16), written to
-  `ai_docs/gates/architecture-refactor/CHECKLIST.md` and quoted in commit
-  messages. `SPEC-TODO(Spec A §16)`: the checklist items verbatim.
+- Every phase follows the junior checklist (Spec A §16). Its working copy is
+  `ai_docs/gates/architecture-refactor/CHECKLIST.md`; a commit body quotes
+  the lines it checked, unchanged, and a line that does not apply gets
+  `(n/a: <reason>)`. The Spec A §16 checklist items are:
+  1. `just gate` is green on this commit
+     (`HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate` prints
+     `GATE GREEN`, `scripts/phase-gate.sh`).
+  2. Every ID of this phase has a test
+     (`scripts/check-req-coverage.sh --phase <P>` exits 0).
+  3. Every new test name starts with its lowercase requirement ID
+     (`ARC-02` → `arc_02_...`).
+  4. No golden prompt changed; any prose change is a named sanctioned block.
+  5. No serialization golden re-blessed; a format change bumped its schema
+     version.
+  6. No oracle under `crates/*/tests/oracles/` regenerated.
+  7. No existing test changed to make it pass, unless the unit plan says so.
+  8. No new crate outside the allowlist (`scripts/check-deps.sh` and
+     `nfr_05`, `nfr_06`, `nfr_09`, `nfr_11` pass).
+  9. No new `std::env` read outside `runtime/` and the binary's bootstrap
+     (`arc_05_no_ambient_env_in_core`).
+  10. No `ANTHROPIC_API_KEY` reaches a child process (`FORBIDDEN_ENV`
+      strips it).
+  11. Tests are hermetic: no network, no real harness binary, no herdr
+      server, no file outside a temp dir; real `git` only on temp repos.
+  12. No re-export shim module (`arc_25_no_shim_modules`). Phases A1 to A11
+      kept a shim for every moved module; A12 removed them all.
+  13. Old ledgers, old briefs and old teammate frontmatter still load.
+  14. New `pub mod` lines in `crates/horch-core/src/lib.rs` are in
+      alphabetical order; no other line changed.
+  15. The diff was re-read adversarially; the unit report lists gotchas.
 
 ---
 
@@ -140,29 +169,35 @@ horch (both bins)  ──►  horch-core  ──►  horch-marketplace
 
 ### 2.4 Module rules (Spec A §3) and the scan test that enforces each
 
-Every rule is a source-scan test. A scan test reads `.rs` files under
-`crates/*/src` as text and fails with the file and line of each violation.
+Spec A §3 states these module rules. The list is the master plan's list of
+8 rules plus 6 rules that phases A4 to B1 added. Every rule is a
+source-scan test. A scan reads `.rs` files as text and fails with the file
+and line of each violation. Unless the row says otherwise, a scan skips
+comment lines and `#[cfg(test)]` modules (`tests/arch_scan.rs:code_lines`).
+Every scan in this table fails on a planted violation.
 
 | Rule | Enforced by (test) | Phase | What the scan checks |
 |---|---|---|---|
-| roster never calls Herdr | `arc_19_herdr_parsing_contract` and `arc_27_tile_balance_pure` cover workspace purity; the roster rule itself is `arc_08_unknown_field_rejected`'s module scan | A3/A7 | `roster/**` has no `workspace::`, `herdr::`, `Herdr`, `std::process` |
-| routing never launches | `arc_12_decisions_match_baseline` (pure function signatures) and `arc_13_candidates_equivalent` | A5 | `routing/**` except `quota_probe.rs` and `snapshot.rs` has no `std::process`, `Command`, `workspace::` |
-| planning is pure | `arc_15_plan_deterministic` | A6 | `execution/plan.rs` has no `std::fs`, `std::process`, `std::env`, `workspace::`, `clock::now` |
-| telemetry observes and does not route | `arc_23_telemetry_reads_executions` | A6 | `telemetry/**` has no `routing::decision`, no `RoutingDecision` construction |
-| the marketplace knows nothing about teammates | `mkt_01_no_core_dependency` | A8 | `horch-marketplace` has no `horch-core` dependency and no `horch_core`, `teammate` (case-insensitive) in `src/` |
-| the CLI holds no policy | `arc_22_no_error_string_matching` | A6 | `crates/horch/src/cmd/**` does not match on error strings (`.to_string().contains(`, `msg.starts_with(`) and does not call `routing::balance::decide` directly |
-| prompts hold no execution policy | `cmp_15_candidate_task_carries_rules` with `golden_prompts` | B3 | `prompts/**` has no `HarnessKind::`, `BalanceMode`, `ExecutionStatus` |
-| domain code never calls `std::env` | `arc_05_no_ambient_env_in_core` | A2 | `horch-core/src/**` outside `runtime/` has no `std::env::var`, `env::var_os`, `set_var`, `remove_var`, `current_dir` |
-| harness match only in harness | `arc_10_harness_match_only_in_harness` | A4 | `HarnessKind::` match arms appear only in `harness/**` and `roster/validation.rs` |
-| skills core has no harness flags | `skl_05_core_skill_model_has_no_harness_flags` | A10 | `skills/**` has no `HarnessKind` |
-| source dispatch localized | `mkt_10_source_dispatch_localized` | A8 | `SkillSource::` match arms appear only in `resolver.rs` and the fetch module |
-| tile/balance pure | `arc_27_tile_balance_pure` | A7 | `workspace/{layout,tile,balance}.rs` import no client and no `std::process` |
-| competition domain free of adapters | `cmp_02_domain_has_no_adapter_imports` | B1 | `competition/model.rs`, `evaluation/{winner,parser}.rs` have no `vcs::`, `workspace::`, `std::process` |
-| shims removed | `arc_25_no_shim_modules` | A12 | no `pub use crate::…::*;` re-export shim module remains |
+| roster never calls Herdr | `arc_08_roster_never_calls_herdr` (`horch-core/src/roster/tests.rs`) | A3 | `roster/*.rs` except `tests.rs` (at least 9 files, whole text) has no `herdr`, `Herdr`, `std::process`, `std::env::var` |
+| routing never launches | `arc_13_routing_never_launches` (`horch-core/tests/routing.rs`) | A5 | the 6 files of `routing/` except `quota_probe.rs` and `snapshot.rs`, before `#[cfg(test)]`, have no `std::process`, `Command::new`, `std::fs`, `herdr`, `launch::`, `std::env::var` |
+| planning is pure | `arc_15_plan_is_pure` (`horch-core/src/execution/plan.rs`) | A6 | `execution/plan.rs` before `#[cfg(test)]` has no `std::fs`, `std::process`, `Command::new`, `std::env`, `workspace::`, `herdr`, `Utc::now`, `clock::now`; the shell passes `now` in `PlanInputs` |
+| telemetry observes and does not route | `arc_23_telemetry_never_routes` (`horch-core/tests/arch_scan.rs`) | A6 | `telemetry/**` has no `routing::balance`, `routing::decision`, `routing::eligible`, `RoutingDecision`, `decide(`; it may read `routing::{quota, policy, quota_probe, snapshot}` |
+| the marketplace knows nothing about teammates | `mkt_01_no_core_dependency` (`horch-marketplace/tests/marketplace.rs`) | A8 | `horch-marketplace/Cargo.toml` has no `horch-core`; no file in `src/` contains `horch_core` or `teammate` (case-insensitive, whole text) |
+| the CLI holds no policy | `arc_22_no_error_string_matching` and `arc_10_harness_match_only_in_harness` (`horch-core/tests/arch_scan.rs`) | A6 / A12 | `horch` and `horch-core` do not match on error text (`.to_string().contains(`, `format!("{…}").contains(`, `.contains("error`; 1 allowed entry, `telemetry/readers.rs` `FreeUsageLimitError`), and `horch/src/**` has no `HarnessKind::`/`Agent::` match arm |
+| prompts hold no execution policy | `arc_10_prompts_hold_no_execution_policy` (`horch-core/tests/arch_scan.rs`) | A6 | `prompts.rs` has no `HarnessKind`, `BalanceMode`, `ExecutionStatus`, `routing::` |
+| domain code never calls `std::env` | `arc_05_no_ambient_env_in_core` (`horch-core/tests/arch_scan.rs`) | A2 | `horch-core/src/**` outside `runtime/` has no `std::env::var`, `env::var_os`, `set_var`, `remove_var`, `std::env::current_dir`, `std::env::temp_dir` (`std::env::consts` is allowed) |
+| harness match only in harness | `arc_10_harness_match_only_in_harness` (`horch-core/tests/arch_scan.rs`) | A4 | `HarnessKind::`/`Agent::` match arms and `matches!` appear only in `horch-core/src/harness/**` and `roster/validation.rs`; a `==`/`!=` comparison is not a match |
+| skills core has no harness flags | `skl_05_core_skill_model_has_no_harness_flags` (`horch-core/tests/arch_scan.rs`) | A10 | `skills.rs` and `skills/**` (whole text, tests and comments included) have no `HarnessKind`, `Agent::`, `--plugin-dir`, `--skill`, `OPENCODE_CONFIG_CONTENT`, `CODEX_HOME` |
+| source dispatch localized | `mkt_10_source_dispatch_localized` (`horch-marketplace/tests/marketplace.rs`) | A8 | `SkillSource::`/`ResolvedOrigin::` patterns (and `Self::{Bundled,Local,Git}` in `model.rs`) appear only in `resolver.rs` and `source.rs` |
+| tile/balance pure | `arc_27_tile_balance_pure` (`horch-core/src/workspace/mod.rs`) | A7 | `workspace/{layout,tile,balance}.rs` have no `std::process`, `Command::new`, `Herdr`, `WorkspaceClient`, `crate::workspace::herdr`, `std::env` |
+| competition domain free of adapters | `cmp_02_domain_has_no_adapter_imports` (`horch-core/tests/measure.rs`), `cmp_02_planner_files_have_no_adapter_imports` (`horch-core/tests/competition_planner.rs`), `cmp_02_evaluation_domain_has_no_adapter_imports` (`horch-core/tests/arch_scan.rs`) | B1 / B3 / B4 | `competition/{model,state,planner,diversity,budget}.rs`, `measure/{event,projection,worker_run}.rs` and `evaluation/{winner,parser}.rs` have no `std::process`, `herdr`, `workspace::`, `launch::`, `vcs::`, `std::env`, `std::fs` (and no `Command`, except in the planner files) |
+| shims removed | `arc_25_no_shim_modules` (`horch-core/tests/arch_scan.rs`) | A12 | none of the 18 removed shim files exists; in the 4 crates no file only re-exports, and every `pub use` names the file's own child module (1 allowed entry: `skills/catalog.rs` re-exports `horch_marketplace as marketplace`) |
 
-The roster, routing and planning rules have no dedicated ID in the master
-plan. Their scans live inside the named tests above. `SPEC-TODO(Spec A §3)`:
-confirm the full rule list against the verbatim text.
+The CLI rule does not forbid a command from calling a pure core function:
+`horch route` calls `routing::decision::decide` to print the decision that
+`horch spawn` would make (BAL-06), and the rule is in core. The rule
+forbids policy written in the CLI: error-text matching and harness
+dispatch.
 
 ---
 
@@ -184,14 +219,14 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | ARC-05 | RuntimeContext; no ambient env | A2 | arc_05_no_ambient_env_in_core, arc_05_context_from_map_env |
 | ARC-06 | Env is child transport only | A2 | arc_06_transport_env_applied_to_child, arc_06_env_mutation_sites_reduced |
 | ARC-07 | Brief carries only inherited context | A2 | arc_07_brief_v1_readable, arc_07_e2e_bin_overrides_reach_worker |
-| ARC-08 | Roster split, strict serde | A3 | arc_08_unknown_field_rejected, arc_08_overlay_precedence, arc_08_legacy_frontmatter_corpus_parses, nfr_03 |
+| ARC-08 | Roster split, strict serde | A3 | arc_08_unknown_field_rejected, arc_08_roster_never_calls_herdr, arc_08_overlay_precedence, arc_08_legacy_frontmatter_corpus_parses, nfr_03 |
 | ARC-09 | Harness owns command lines | A4 | arc_09_argv_matches_baseline |
-| ARC-10 | Capabilities; dispatch-only lifecycle | A4 | arc_10_capabilities_match_legacy_predicates, arc_10_harness_match_only_in_harness |
+| ARC-10 | Capabilities; dispatch-only lifecycle | A4 | arc_10_capabilities_match_legacy_predicates, arc_10_harness_match_only_in_harness, arc_10_prompts_hold_no_execution_policy |
 | ARC-11 | Workdir-scoped discovery | A4 | arc_11_codex_discovery_by_workdir, arc_11_opencode_discovery_by_workdir, arc_11_canonical_tmp_paths |
 | ARC-12 | Pure routing equals baseline | A5 | arc_12_decisions_match_baseline, bal_03, bal_04, bal_05, bal_06, quo_07 |
-| ARC-13 | Eligible set and reasons | A5 | arc_13_exclusion_reasons, arc_13_candidates_equivalent |
+| ARC-13 | Eligible set and reasons | A5 | arc_13_exclusion_reasons, arc_13_candidates_equivalent, arc_13_routing_never_launches |
 | ARC-14 | Provenance on every execution | A5 | arc_14_provenance_on_spawn_substitute_resume |
-| ARC-15 | Pure planning | A6 | arc_15_plan_deterministic, arc_15_plan_table |
+| ARC-15 | Pure planning | A6 | arc_15_plan_deterministic, arc_15_plan_table, arc_15_plan_is_pure |
 | ARC-16 | Apply order; LaunchFailed; no phantoms | A6 | arc_16_split_failure_launch_failed, arc_16_run_failure_closes_pane, arc_16_e2e_fail_split, arc_16_crash_after_insert_not_live |
 | ARC-17 | Legacy DTO and compat | A6 | arc_17_legacy_ledgers_load_and_resume, arc_17_roundtrip_byte_identical, arc_17_old_reader_sees_compat_status |
 | ARC-18 | Worker workflow; exit code | A6 | arc_18_worker_startup_order, arc_18_agent_exit_recorded |
@@ -199,7 +234,7 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | ARC-20 | Delivery identical | A7 | arc_20_send_line_prompt_first, arc_20_fallback_waits_tail |
 | ARC-21 | done lifecycle order | A7 | arc_21_done_order |
 | ARC-22 | Thin CLI; typed errors; exit codes | A6 / A12 | bal_04 (exit 3), arc_22_no_error_string_matching |
-| ARC-23 | Telemetry uses executions | A6 | arc_23_telemetry_reads_executions, tel_* |
+| ARC-23 | Telemetry uses executions | A6 | arc_23_telemetry_reads_executions, arc_23_telemetry_never_routes, tel_* |
 | ARC-24 | Competition uses the kernel | B3 | arc_24_candidates_are_ordinary_executions |
 | ARC-25 | Shims removed; pub(crate) | A12 | arc_25_no_shim_modules |
 | ARC-26 | E2E lifecycle matrix for all 5 harnesses | A6 | arc_26_e2e_lifecycle_matrix_claude, arc_26_e2e_lifecycle_matrix_codex, arc_26_e2e_lifecycle_matrix_opencode, arc_26_e2e_lifecycle_matrix_pi, arc_26_e2e_lifecycle_matrix_prime |
@@ -235,8 +270,10 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 
 ### 3.4 Spec A §17 acceptance criteria → IDs
 
-`SPEC-TODO(Spec A §17)`: the criterion texts below are the master plan's
-wording. Replace them with the verbatim text when Appendix A is filled.
+The criterion texts below are the Spec A §17 acceptance criteria. They
+are the master plan's table "Spec A §17 acceptance criteria (verbatim)"
+(`ai_docs/plans/arch-refactor-dataset/00-master-plan.md` §4). The tests of
+the IDs in each row pin the criterion.
 
 | # | Criterion | IDs |
 |---|---|---|
@@ -342,126 +379,181 @@ Validation rules:
 
 ### 4.2 `runtime` (A2)
 
+Spec A §4 groups the runtime context in 6 parts: paths, herdr, bins,
+settings, inherited and worker. The code below is the spec
+(`horch-core/src/runtime/{context,paths,bins,fault,process}.rs`).
+`arc_05_context_from_map_env` (`runtime/context.rs`) pins every field that
+an environment sets. `arc_05_no_ambient_env_in_core` pins that only
+`runtime/` reads the environment.
+
 ```rust
 // runtime/context.rs
 pub trait EnvSource {
-    fn var(&self, key: &str) -> Option<String>;          // empty string counts as None
-    fn var_os(&self, key: &str) -> Option<std::ffi::OsString>;
-    fn current_dir(&self) -> std::io::Result<std::path::PathBuf>;
-    fn current_exe(&self) -> std::io::Result<std::path::PathBuf>;
+    fn var(&self, key: &str) -> Option<String>;          // raw; the caller decides if "" is unset
+    fn var_os(&self, key: &str) -> Option<OsString>;
+    fn current_dir(&self) -> Option<PathBuf>;
+    fn current_exe(&self) -> Option<PathBuf>;
+    fn temp_dir(&self) -> PathBuf;
 }
-/// The real process environment. Constructed only in `horch::bootstrap`.
+/// The real process environment. The only type in horch-core that reads it.
+/// `horch::bootstrap` builds the context from it.
 pub struct ProcessEnv;
-impl EnvSource for ProcessEnv { /* … */ }
-/// A fixed map for tests.
+/// A fixed environment for tests.
 #[derive(Debug, Clone, Default)]
 pub struct MapEnv {
-    pub vars: std::collections::BTreeMap<String, String>,
-    pub cwd: std::path::PathBuf,
-    pub exe: std::path::PathBuf,
+    pub vars: BTreeMap<String, String>,
+    pub cwd: Option<PathBuf>,
+    pub exe: Option<PathBuf>,
+    pub temp: Option<PathBuf>,                    // else $TMPDIR in vars, else /tmp
 }
-impl MapEnv { pub fn new(cwd: impl Into<PathBuf>) -> Self; pub fn with(self, key: &str, value: &str) -> Self; }
-impl EnvSource for MapEnv { /* … */ }
+impl MapEnv {
+    pub fn new(cwd: impl Into<PathBuf>) -> Self;
+    pub fn with(self, key: &str, value: &str) -> Self;
+    pub fn with_exe(self, exe: impl Into<PathBuf>) -> Self;
+}
 
-#[derive(Debug, Clone)]
+/// Everything horch reads from its environment, read once.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeContext {
     pub paths: Paths,
-    pub herdr: HerdrContext,
+    pub herdr: HerdrEnv,
     pub bins: Bins,
     pub settings: Settings,
-    pub env: Inherited,
+    pub inherited: Inherited,
+    pub worker: Option<WorkerEnv>,                // None when no HORCH_* worker variable is set
 }
 impl RuntimeContext {
-    pub fn from_env(env: &dyn EnvSource) -> anyhow::Result<RuntimeContext>;
+    pub fn from_env(env: &dyn EnvSource) -> anyhow::Result<RuntimeContext>; // errors on a bad id
+    pub fn prepend_own_dir_to_path(&mut self) -> Option<OsString>;
 }
 
-// runtime/paths.rs   (moved from ledger.rs:177-205)
-#[derive(Debug, Clone)]
-pub struct Paths {
-    pub project_dir: PathBuf,     // $HORCH_PROJECT_DIR, else cwd
-    pub state_root: PathBuf,      // $HORCH_STATE_DIR, else ${XDG_STATE_HOME:-$HOME/.local/state}/horch
-    pub data_root: PathBuf,       // ${XDG_DATA_HOME:-$HOME/.local/share}/horch  (marketplace store, OD3)
-    pub temp_root: PathBuf,       // std::env::temp_dir() at bootstrap
-    pub home: PathBuf,            // $HOME (USERPROFILE on windows), else "."
-}
-pub fn state_root(env: &dyn EnvSource, home: &Path) -> PathBuf;
-pub fn project_dir(env: &dyn EnvSource) -> anyhow::Result<PathBuf>;
-pub fn home_dir(env: &dyn EnvSource) -> PathBuf;
-
-#[derive(Debug, Clone, Default)]
-pub struct HerdrContext {
-    pub workspace: Option<WorkspaceId>,   // HERDR_WORKSPACE_ID
-    pub pane: Option<PaneId>,             // HERDR_PANE_ID
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HerdrEnv {
+    pub workspace: Option<WorkspaceId>,   // HORCH_WORKSPACE_ID (the public id, set once a worker registered)
+    pub pane: Option<PaneId>,             // HERDR_PANE_ID (herdr's internal id, `p_2`)
 }
 
-// runtime/bins.rs   (absorbs agent.rs resolvers)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bins {
-    pub roster_override: Option<PathBuf>,   // HORCH_TEAMMATES_DIR
-    pub current_exe: PathBuf,
-    pub horch_exe: PathBuf,                 // sibling `horch` of current_exe, then PATH
+    pub roster_override: Option<PathBuf>, // HORCH_TEAMMATES_DIR
+    pub current_exe: Option<PathBuf>,
+    pub horch_exe: PathBuf,               // sibling `horch` of current_exe, else `horch` on PATH, else `horch`
     pub harness: HarnessBins,
     pub overrides: BinOverrides,
 }
-#[derive(Debug, Clone)]
-pub struct HarnessBins {                    // resolved values
-    pub claude: PathBuf,   // HORCH_CLAUDE_BIN, else `cpx` on PATH, else `claude`
-    pub codex: PathBuf, pub opencode: PathBuf, pub pi: PathBuf,
-    pub prime: PathBuf,    // default `prime-agent`
-    pub herdr: PathBuf, pub sqlite3: PathBuf, pub ollama: PathBuf,
-    pub git: PathBuf,      // HORCH_GIT_BIN, else `git`
-}
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BinOverrides {                   // explicit HORCH_*_BIN values only; travel in Brief v2
-    pub claude: Option<PathBuf>, pub codex: Option<PathBuf>, pub opencode: Option<PathBuf>,
-    pub pi: Option<PathBuf>, pub prime: Option<PathBuf>, pub herdr: Option<PathBuf>,
-    pub sqlite3: Option<PathBuf>, pub ollama: Option<PathBuf>, pub git: Option<PathBuf>,
-}
-impl Bins { pub fn resolve(env: &dyn EnvSource, path_var: Option<&OsStr>) -> Bins; }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
-    pub clock: Clock,                         // Clock::System or Clock::Fixed(DateTime<Utc>) (HORCH_NOW, if the e2e uses it)
-    pub tiling: TilingMode,                   // HORCH_NO_TILE → Disabled
-    pub balance_override: Option<BalanceMode>,// HORCH_BALANCE
-    pub quota_file: Option<PathBuf>,          // HORCH_QUOTA_FILE
-    pub machine_file: Option<PathBuf>,        // HORCH_MACHINE_FILE (B2)
-    pub probe_timeout: std::time::Duration,   // HORCH_PROBE_TIMEOUT_MS
-    pub faults: Faults,                       // HORCH_FAULT
+    pub now: Option<DateTime<Utc>>,       // HORCH_NOW, when it parses
+    pub now_unparsable: Option<String>,   // HORCH_NOW, when it is set and does not parse (the clock warns once)
+    pub tiling: TilingMode,               // HORCH_TILE: `0`, `false`, `no`, `off` → Disabled
+    pub balance_override: Option<String>, // HORCH_BALANCE, raw
+    pub quota_file: Option<PathBuf>,      // HORCH_QUOTA_FILE
+    pub machine_file: Option<PathBuf>,    // HORCH_MACHINE_FILE (B2)
+    pub probe_timeout: Option<Duration>,  // HORCH_PROBE_TIMEOUT_MS
+    pub faults: Faults,                   // HORCH_FAULT
 }
 
-#[derive(Debug, Clone, Default)]
+/// Variables horch does not own but reads, or passes on to the tools it runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inherited {
-    pub opencode_config_content: Option<String>,  // OPENCODE_CONFIG_CONTENT
-    pub codex_home: Option<PathBuf>,              // CODEX_HOME
-    pub path: Option<OsString>,                   // PATH, for `which`
-    pub worker: Option<WorkerEnv>,
+    pub home_var: Option<OsString>,                // HOME exactly as set
+    pub path: Option<OsString>,                    // PATH
+    pub pathext: Option<String>,                   // PATHEXT (windows)
+    pub opencode_config_content: Option<String>,   // OPENCODE_CONFIG_CONTENT
+    pub codex_home: Option<PathBuf>,               // CODEX_HOME
+    pub claude_code_effort_level: Option<String>,  // CLAUDE_CODE_EFFORT_LEVEL
+    pub pi_session_dir: Option<PathBuf>,           // PI_CODING_AGENT_SESSION_DIR
+    pub opencode_db: Option<PathBuf>,              // HORCH_OPENCODE_DB
+    pub xdg_data_home: Option<PathBuf>,            // XDG_DATA_HOME
+    pub local_app_data: Option<PathBuf>,           // LOCALAPPDATA (windows)
+    pub hostname: Option<String>,                  // HOSTNAME, else COMPUTERNAME
+    pub herdr_session: Option<String>,             // HERDR_SESSION
 }
-#[derive(Debug, Clone)]
-pub struct WorkerEnv {                            // set only inside a worker pane
-    pub role: RoleName,                           // HORCH_ROLE
-    pub brief: PathBuf,                           // HORCH_BRIEF
+
+/// What a worker pane's agent and its horch children learn from the
+/// transport environment (`messaging::brief::Brief::transport_env`).
+/// An empty value counts as unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkerEnv {
+    pub role: Option<String>,         // HORCH_ROLE
+    pub teammate: Option<String>,     // HORCH_TEAMMATE
+    pub agent: Option<String>,        // HORCH_AGENT
+    pub model: Option<String>,        // HORCH_MODEL
+    pub record_id: Option<String>,    // HORCH_RECORD_ID
+    pub session_id: Option<String>,   // HORCH_SESSION_ID
+    pub resume: Option<String>,       // HORCH_RESUME
+    pub task: Option<String>,         // HORCH_TASK
 }
+
+// runtime/paths.rs
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paths {
+    pub cwd: Option<PathBuf>,             // the current directory at bootstrap
+    pub project_dir: Option<PathBuf>,     // $HORCH_PROJECT_DIR, else cwd
+    pub state_root: PathBuf,              // $HORCH_STATE_DIR, else ${XDG_STATE_HOME:-$HOME/.local/state}/horch
+    pub state_override: Option<PathBuf>,  // the explicit $HORCH_STATE_DIR, passed on to panes
+    pub data_root: PathBuf,               // ${XDG_DATA_HOME:-$HOME/.local/share}/horch (marketplace store, OD3)
+    pub temp_root: PathBuf,               // EnvSource::temp_dir() at bootstrap; mailboxes live under it
+    pub home: PathBuf,                    // $HOME (%USERPROFILE% on windows), else "."
+}
+
+// runtime/bins.rs
+/// Explicit HORCH_*_BIN values only. They travel in the worker's brief.
+/// An empty value is unset. Serde: each key skipped when None.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinOverrides {
+    pub claude: Option<PathBuf>,      // HORCH_CLAUDE_BIN
+    pub codex: Option<PathBuf>,       // HORCH_CODEX_BIN
+    pub opencode: Option<PathBuf>,    // HORCH_OPENCODE_BIN
+    pub pi: Option<PathBuf>,          // HORCH_PI_BIN
+    pub prime: Option<PathBuf>,       // HORCH_PRIME_BIN
+    pub antigravity: Option<PathBuf>, // HORCH_ANTIGRAVITY_BIN
+    pub herdr: Option<PathBuf>,       // HORCH_HERDR_BIN
+    pub sqlite3: Option<PathBuf>,     // HORCH_SQLITE3_BIN
+    pub ollama: Option<PathBuf>,      // HORCH_OLLAMA_BIN
+    pub git: Option<PathBuf>,         // HORCH_GIT_BIN
+}
+/// The resolved program for each tool: the override, else the default name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessBins {
+    pub claude: PathBuf,       // override, else `cpx` when it is on PATH, else `claude`
+    pub codex: PathBuf,        // `codex`
+    pub opencode: PathBuf,     // `opencode`
+    pub pi: PathBuf,           // `pi`
+    pub prime: PathBuf,        // `prime-agent`
+    pub antigravity: PathBuf,  // `agy`
+    pub herdr: PathBuf,        // `herdr`
+    pub sqlite3: PathBuf,      // `sqlite3`
+    pub ollama: PathBuf,       // `ollama`
+    pub git: PathBuf,          // `git`
+}
+impl HarnessBins { pub fn resolve(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> HarnessBins; }
 
 // runtime/fault.rs
-#[derive(Debug, Clone, Default)]
-pub struct Faults { points: Vec<String> }         // HORCH_FAULT, comma-separated
+pub const ABORT_EXIT_CODE: i32 = 86;
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Faults(BTreeSet<String>);              // HORCH_FAULT, comma-separated; blank entries ignored
 impl Faults {
     pub fn parse(raw: Option<&str>) -> Faults;
-    pub fn is(&self, point: &str) -> bool;        // exact match, e.g. "abort-after-execution-insert"
-    pub fn indexed(&self, prefix: &str) -> Option<String>; // "abort-after-worktree:<n>" → Some(n)
-    /// Exits the process with code 86 and a stderr line when `point` is armed.
+    pub fn has(&self, point: &str) -> bool;       // exact match, e.g. "abort-after-execution-insert"
+    pub fn points(&self) -> &BTreeSet<String>;
+    pub fn indexed(&self, prefix: &str) -> Option<String>; // "abort-after-worktree:2" → Some("2")
+    /// Exits with ABORT_EXIT_CODE and a stderr line when `point` is armed.
     pub fn abort_if(&self, point: &str);
 }
 
-// runtime/process.rs   (absorbs agent.rs `which`, tilecmd.rs:628 spawn_detached)
-pub fn which(path_var: &OsStr, name: &str) -> Option<PathBuf>;
-pub fn spawn_detached(cmd: std::process::Command) -> std::io::Result<u32>; // setsid on unix
-pub fn strip_forbidden(cmd: &mut std::process::Command);                   // removes FORBIDDEN_ENV
+// runtime/process.rs
+pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<PathBuf>;
+pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child>;  // setsid on unix
+pub(crate) fn strip_forbidden(cmd: &mut Command);                     // removes FORBIDDEN_ENV
 ```
 
-`SPEC-TODO(Spec A §4)`: the exact `RuntimeContext` field grouping. The fault
-abort exit code (86) is a design choice; change it if Spec A names one.
+The fault abort exit code is 86 (`runtime/fault.rs:ABORT_EXIT_CODE`).
+Spec A names no code. 86 is distinct from every exit code that `horch`
+(0 to 3, `horch/src/exit.rs`) and `multi-herdr-dataset` (0, 1, 3 to 6,
+`horch/src/dataset/mod.rs:exit`) use. `arc_16_crash_after_insert_not_live`
+(`horch-e2e/tests/lifecycle.rs`) pins it.
 
 ### 4.3 `execution::model` (A1) and legacy compatibility (A6)
 
@@ -523,44 +615,65 @@ pub enum SessionState { Pending, Known(SessionId), Unavailable }
 pub enum TilingMode { Automatic, Disabled }
 impl TilingMode { pub fn from_no_tile(no_tile: bool) -> TilingMode; }
 
+/// The work an execution was given.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
-    pub id: TaskId,
-    pub text: String,
-    pub phase: Option<Phase>,
-    pub plan: Option<String>,          // plan-file slug
+    pub id: Option<TaskId>,            // ledger `task_id`; set by callers that track tasks (B3)
+    pub text: String,                  // ledger `task`; the idle placeholder for a worker with no task
+    pub plan: Option<String>,          // ledger `plan`: the plan-file slug (`ai_docs/plans/<slug>.md`)
 }
 
+/// One run of one worker, orchestrator, candidate or judge: the typed view
+/// of one ledger record. Each comment names the ledger key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Execution {
-    pub id: ExecutionId,
-    pub kind: ExecutionKind,
-    pub teammate: TeammateName,
-    pub harness: HarnessKind,
-    pub model: ModelId,
-    pub effort: Option<String>,
-    pub phase: Option<Phase>,
-    pub role: RoleName,
-    pub worker: WorkerId,
-    pub task: Task,
-    pub status: ExecutionStatus,
-    pub session: SessionState,
-    pub exit_code: Option<i32>,
-    pub plan: Option<String>,
-    pub project: PathBuf,
-    pub workdir: PathBuf,
-    pub workspace: Option<WorkspaceId>,
-    pub pane: Option<PaneId>,
-    pub skills: Vec<ResolvedSkillRef>,
-    pub routing: Option<RoutingProvenance>,
-    pub history: Vec<HistoryEntry>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub finished_at: Option<DateTime<Utc>>,
+    pub id: ExecutionId,                  // record_id
+    pub kind: ExecutionKind,              // kind + experiment_id, round_id, label ("judge:<n>" for a judge)
+    pub teammate: TeammateName,           // tier
+    pub harness: HarnessKind,             // agent
+    pub model: String,                    // model
+    pub effort: Option<String>,           // effort
+    pub phase: Option<Phase>,             // phase
+    pub role: RoleName,                   // role
+    pub task: Task,                       // task_id, task, plan
+    pub status: ExecutionStatus,          // state, else derived from status
+    pub typed_status: bool,               // whether the record carries `state` (false before A6)
+    pub session: SessionState,            // session_id: null → Pending, "" → Unavailable, id → Known
+    pub exit_code: Option<i32>,           // exit_code
+    pub project: Option<PathBuf>,         // project
+    pub workdir: Option<PathBuf>,         // workdir; None → the agent runs in the project
+    pub workspace: Option<WorkspaceId>,   // workspace_id
+    pub pane: Option<PaneId>,             // pane_id
+    pub skills: Vec<ResolvedSkillRef>,    // skills
+    pub routing: Option<RoutingProvenance>, // routing
+    pub via: Option<String>,              // via: the fallback teammate whose launch settings ran
+    pub substitution_reason: Option<String>, // substitution_reason
+    pub history: Vec<HistoryEntry>,       // history
+    pub created_at: String,               // created_at, the ledger's text
+    pub updated_at: String,               // updated_at, the ledger's text
+    pub finished_at: Option<String>,      // finished_at, the ledger's text
+}
+impl Execution {
+    /// `spawn:<round>:<label>` for a candidate; None for every other kind.
+    pub fn idempotency_key(&self) -> Option<String>;
 }
 ```
 
-`SPEC-TODO(Spec A §4)`: the Execution field list verbatim.
+Spec A §4 Execution has the 25 fields above
+(`horch-core/src/execution/model.rs:Execution`). Every ledger key has one
+place in it, so `execution/store.rs:to_execution` and `from_execution`
+lose nothing. `arc_17_execution_conversion_lossless`
+(`horch-core/tests/execution_plan.rs`) pins the round trip on every legacy
+ledger oracle and on the candidate and judge kinds. Three choices differ
+from the first sketch of this design, each for one reason:
+
+- The timestamps stay the ledger's text, not `DateTime<Utc>`, so a record
+  that any earlier version wrote keeps its bytes.
+- `model` stays a `String`: no earlier version validated the ledger's
+  `model`, and a `ModelId` rejects an empty value, which would make such a
+  record unreadable.
+- There is no `worker: WorkerId` field: the worker id is
+  `<workspace>:<role>`, which `workspace` and `role` already give.
 
 **`LedgerRecordV1`** (`execution/legacy.rs`, A6). It is today's `Record`
 serde, byte for byte, plus optional skip-if-empty fields. Today's `Record`
@@ -734,26 +847,33 @@ pub struct PoolLine { pub pool: String, pub state: String, pub detail: String } 
 ### 4.5 `execution` planning and service (A6)
 
 ```rust
+// execution/lifecycle.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportTarget { Orchestrator, None }
 
+// execution/model.rs. Spec A §8 SpawnRequest: these 14 fields.
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
-    // SPEC-TODO(Spec A §8): the field list verbatim.
-    pub teammate: Option<TeammateName>,     // None with resume
-    pub task: Option<String>,
+    pub teammate: Option<TeammateName>,     // None with `resume`: the record names it
+    pub resume: Option<String>,             // a record id or session id to resume
+    pub task: String,                       // empty for an idle worker
     pub phase: Option<Phase>,
-    pub effort: Option<String>,
-    pub session: SessionMode,               // Fresh(None) | Resume(id)
-    pub balance: BalanceMode,
-    pub flags: GateFlags,
-    pub routing_mode: RoutingMode,          // Pinned for candidates (B3)
+    pub effort: Option<String>,             // this spawn only, over the teammate's (or the record's)
+    pub role: Option<String>,               // None allocates `<teammate>-<n>`
+    pub from_pane: Option<String>,          // the pane to split; None splits the caller's pane
+    pub direction: Direction,               // Right by default
     pub tiling: TilingMode,
-    pub workdir: Option<PathBuf>,           // None → project_dir
+    pub flags: GateFlags,                   // exact: never substitute; force: never refuse
+    pub pinned: bool,                       // skip the usage-limit gate; provenance says `pinned` (B3)
+    pub workdir: Option<PathBuf>,           // None → the project dir
     pub kind: ExecutionKind,
     pub report_to: ReportTarget,
-    pub idempotency_key: Option<String>,    // "spawn:<round>:<label>" (B3)
+}
+impl SpawnRequest {
+    /// Every option at its default: no resume, Right, Automatic, not pinned,
+    /// Worker, report to the orchestrator.
+    pub fn worker(teammate: Option<TeammateName>, task: impl Into<String>) -> SpawnRequest;
 }
 
 #[derive(Debug, Clone)]
@@ -836,12 +956,41 @@ impl ExecutionStore {
 }
 
 // execution/lifecycle.rs
-pub fn run_worker(ctx: &RuntimeContext, store: &ExecutionStore, brief: &Brief) -> anyhow::Result<i32>;
-pub fn done<W: WorkspaceClient>(ctx: &RuntimeContext, store: &ExecutionStore, ws: &W, summary: &str) -> anyhow::Result<()>;
+pub trait WorkerSteps {
+    fn load_brief(&mut self) -> Result<Brief>;
+    fn enter_context(&mut self, brief: &Brief) -> Result<()>;
+    fn register(&mut self, brief: &Brief) -> Result<()>;
+    fn set_running(&mut self, brief: &Brief) -> Result<()>;
+    fn launch(&mut self, brief: &Brief) -> Result<Option<i32>>;   // None: a signal ended the agent
+    fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()>;
+}
+pub fn run_worker(steps: &mut dyn WorkerSteps) -> anyhow::Result<i32>;   // PaneWorker runs the steps for real
+pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> anyhow::Result<()>;
 ```
 
-`SPEC-TODO(Spec A §8)`: the worker startup order verbatim
-(`arc_18_worker_startup_order` asserts it).
+Spec A §8 worker startup order (`execution/lifecycle.rs:run_worker`):
+
+1. `load_brief`: find this pane's mailbox and read the brief that
+   `horch spawn` wrote. On failure, record nothing (the record is unknown)
+   and return the error.
+2. `enter_context`: take the brief's project, ledger and binary overrides
+   as the process's context.
+3. `register`: register the role in the mailbox, so `horch tell` reaches
+   the pane. When step 2 or 3 fails, record `Failed(AgentExited{code:
+   None})` at once (best effort), then return the original error.
+4. `set_running`: set the record to `Running`. On failure, log it and go
+   on: the agent must start even when its bookkeeping cannot be written.
+5. `launch`: run the agent through the harness flow and wait for it. On
+   failure, record `agent_exited(None)` (best effort) and return the error.
+6. `agent_exited(code)`: record how the agent ended. On failure, log it.
+7. Return the agent's exit code, or 1 when a signal ended it. `horch
+   worker` exits with it.
+
+The worker never calls `done`: the agent runs `horch done`, which closes
+the pane. Tests: `arc_18_worker_startup_order` (the order and a launch
+failure), `arc_18_register_failure_records_failed`,
+`arc_18_enter_context_failure_records_failed` and
+`arc_18_agent_exit_recorded` (`horch-core/tests/execution_plan.rs`).
 
 ### 4.6 `harness` (A1 enum, A4 trait)
 

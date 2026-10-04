@@ -176,7 +176,7 @@ pub trait WorkerSteps {
 /// record its exit. Returns the agent's exit code (1 when a signal ended
 /// it), which `horch worker` exits with.
 ///
-/// `SPEC-TODO(Spec A §8)`: the startup order verbatim. The worker never
+/// The order is Spec A §8 (architecture design §4.5). The worker never
 /// calls `done`: the agent runs `horch done`, which closes this pane.
 ///
 /// A ledger write that fails is logged and the worker goes on: the agent
