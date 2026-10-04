@@ -67,6 +67,11 @@ pub struct Brief {
     /// back to the compiled-in copies and silently ignores local edits.
     #[serde(default)]
     pub teammates_dir: Option<String>,
+    /// The skill store (`data_root`) the spawner checked the teammate's
+    /// skills against. A pane does not inherit `$XDG_DATA_HOME`, so without
+    /// it the worker resolves skills in the default store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_root: Option<String>,
     /// Schema 2: the directory the agent works in, when it is not the project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
@@ -223,6 +228,7 @@ mod tests {
             codex_bin: None,
             resolved: None,
             teammates_dir: Some("/roster".into()),
+            data_root: Some("/data/horch".into()),
             workdir: None,
             bin_overrides: BinOverrides::default(),
             report_to: crate::execution::ReportTarget::Orchestrator,
@@ -253,6 +259,7 @@ mod tests {
         assert_eq!(b.schema, 1);
         assert_eq!(b.session, SessionMode::Fresh(None));
         assert_eq!(b.workdir, None);
+        assert_eq!(b.data_root, None, "the worker keeps its own store");
         assert_eq!(b.workdir_or_project(), "/p");
         assert_eq!(
             b.bin_overrides,
@@ -290,11 +297,13 @@ mod tests {
         assert_eq!(v["codex_bin"], serde_json::Value::Null);
         assert_eq!(v["bin_overrides"]["opencode"], "/o");
         assert_eq!(v["workdir"], "/wt");
+        assert_eq!(v["data_root"], "/data/horch");
 
         let back = Brief::from_json(&v.to_string()).unwrap();
         assert_eq!(back.schema, 2);
         assert_eq!(back.bin_overrides.opencode, Some(PathBuf::from("/o")));
         assert_eq!(back.workdir_or_project(), "/wt");
+        assert_eq!(back.data_root.as_deref(), Some("/data/horch"));
     }
 
     #[test]

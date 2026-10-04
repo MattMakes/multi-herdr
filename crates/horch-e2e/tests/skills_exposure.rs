@@ -300,6 +300,82 @@ fn skl_06_e2e_marketplace_offline() {
     assert!(!r.to_string().contains(NOT_ACTIVATED), "{r}");
 }
 
+/// G3 (LA-5): a split pane does not inherit `$XDG_DATA_HOME`. The brief
+/// carries the spawner's store, so the worker, run without the variable,
+/// still finds a skill installed only in that store.
+#[test]
+fn worker_reads_the_skill_store_its_spawner_read() {
+    let mut h = world("g3store", "g3-market", "claude", "sonnet", &["tdd"]).with_git();
+    if h.git_bin().is_none() {
+        return;
+    }
+    let data = h.root.join("other-data");
+    h.set("XDG_DATA_HOME", data.to_string_lossy());
+    let bare = h.root.join("remote.git");
+    let work = h.root.join("upstream");
+    std::fs::create_dir_all(&bare).unwrap();
+    std::fs::create_dir_all(work.join("skills/demo")).unwrap();
+    git(&h, &bare, &["init", "--quiet", "--bare"]);
+    git(&h, &bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git(&h, &work, &["init", "--quiet"]);
+    git(&h, &work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    std::fs::write(
+        work.join("skills/demo/SKILL.md"),
+        "---\nname: demo\ndescription: A demo skill for the G3 store e2e.\n---\nbody\n",
+    )
+    .unwrap();
+    git(&h, &work, &["add", "-A"]);
+    git(
+        &h,
+        &work,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "demo"],
+    );
+    git(
+        &h,
+        &work,
+        &["push", "--quiet", bare.to_str().unwrap(), "main:main"],
+    );
+    let source = format!("file://{}@main", bare.display());
+    let out = h.run(&["skills", "install", &source, "--path", "skills/demo"]);
+    assert!(out.status.success(), "install: {}", text(&out));
+    assert!(data.join("horch/marketplace.lock").is_file());
+    assert!(!h.home.join(".local/share/horch/marketplace.lock").exists());
+    teammate(&h, "g3-market", "claude", "sonnet", &["demo", "tdd"]);
+
+    let out = h.run(&[
+        "spawn",
+        "g3-market",
+        "x",
+        "--from-pane",
+        "w1:p1",
+        "--no-tile",
+    ]);
+    assert!(out.status.success(), "spawn: {}", text(&out));
+    let pane = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .last()
+        .unwrap()
+        .trim()
+        .to_string();
+    let brief_path = h.tmp.join("herdr-orchestration-w1/g3-market-1.brief.json");
+    let brief: Value =
+        serde_json::from_str(&std::fs::read_to_string(&brief_path).unwrap()).unwrap();
+    assert_eq!(
+        brief["data_root"].as_str(),
+        Some(data.join("horch").to_string_lossy().as_ref()),
+        "{brief}"
+    );
+
+    // The pane's environment: no XDG_DATA_HOME.
+    let mut worker = h.horch(&["worker", "g3-market-1"]);
+    worker.env("HERDR_PANE_ID", &pane);
+    worker.env_remove("XDG_DATA_HOME");
+    let out = worker.output().unwrap();
+    assert!(out.status.success(), "worker: {}", text(&out));
+    let r = report(&h);
+    assert_eq!(strings(&r["skills"]), ["demo", "tdd"], "{r}");
+}
+
 /// Write an operator skill directory `<home>/.agents/skills/<name>/`, as
 /// `xcrun agent skills export` would, and overlay teammate `name` on `agent`
 /// that names `tdd` in `skills:` and the operator skill in
@@ -522,5 +598,110 @@ fn operator_skills_e2e_deleted_since_spawn_fails_the_launch() {
     let t = text(&out);
     assert!(t.contains("'test-modernizer' (operator+"), "{t}");
     assert!(t.contains("is missing now"), "{t}");
+    assert!(h.calls_of("claude").is_empty(), "the agent ran: {t}");
+}
+
+/// A Claude plugin `code` (version 1.2.0, skills `review` and `lint`) at
+/// `<home>/plugins/code`, and overlay teammate `name` that names `tdd` and,
+/// through `plugin_dirs` and `plugin_skills`, only `code:review`.
+fn plugin_world(test: &str, name: &str) -> Harness {
+    let h = world(test, name, "claude", "sonnet", &["tdd"]);
+    let root = h.home.join("plugins/code");
+    std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+    std::fs::write(
+        root.join(".claude-plugin/plugin.json"),
+        r#"{"name":"code","version":"1.2.0"}"#,
+    )
+    .unwrap();
+    for skill in ["review", "lint"] {
+        let dir = root.join("skills").join(skill);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {skill}\ndescription: Plugin {skill}.\n---\nbody\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        h.home.join(format!(".config/horch/teammates/{name}.md")),
+        format!(
+            "---\nname: {name}\nbrief_description: Plugin skills probe.\nbase: fleet-worker\n\
+             agent: claude\nmodel: sonnet\nskills: [tdd]\ndisallowed_tools: [Agent]\n\
+             plugin_dirs: [~/plugins/code]\nplugin_skills:\n  code: [review]\n---\nProbe.\n"
+        ),
+    )
+    .unwrap();
+    h
+}
+
+/// The record of the last spawn of teammate `tier` in the project ledger.
+fn ledger_record(h: &Harness, tier: &str) -> Value {
+    let slug: String = h
+        .project
+        .to_string_lossy()
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                b as char
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let ledger = std::fs::read_to_string(h.state.join(format!("{slug}.json"))).unwrap();
+    let records: Vec<Value> = serde_json::from_str(&ledger).unwrap();
+    records
+        .into_iter()
+        .rfind(|r| r["tier"] == tier)
+        .unwrap_or_else(|| panic!("no {tier} record in {ledger}"))
+}
+
+/// The spawn's ledger record lists the named plugin skill as
+/// `code:review`, with the plugin's id, its version and the digest of the
+/// skill directory; the unnamed `lint` is not in it. The launch accepts
+/// the record and loads only `review` from the plugin.
+#[test]
+fn plugin_skills_e2e_ledger_record_lists_them() {
+    let h = plugin_world("plgr", "plug-record");
+    let r = launch(&h, "plug-record", || {});
+    assert_eq!(strings(&r["skills"]), ["review", "tdd"], "{r}");
+    let record = ledger_record(&h, "plug-record");
+    let ids: Vec<&str> = record["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["code:review", "tdd"], "{record}");
+    let review = &record["skills"][0];
+    assert_eq!(review["source"], "plugin:code@inline", "{review}");
+    assert_eq!(review["policy"], "explicit", "{review}");
+    let digest =
+        horch_marketplace::integrity::tree_digest(&h.home.join("plugins/code/skills/review"))
+            .unwrap();
+    assert_eq!(review["digest"], digest.as_str(), "{review}");
+    assert!(
+        review["version"].as_str().unwrap().starts_with("1.2.0+"),
+        "{review}"
+    );
+}
+
+/// A plugin skill edited between the spawn and the worker's start fails
+/// the launch and names the skill; the agent never runs.
+#[test]
+fn plugin_skills_e2e_changed_since_spawn_fails_the_launch() {
+    let h = plugin_world("plgd", "plug-drift");
+    let skill_md = h.home.join("plugins/code/skills/review/SKILL.md");
+    let out = worker_after(&h, "plug-drift", || {
+        std::fs::write(
+            &skill_md,
+            "---\nname: review\ndescription: Edited after the spawn.\n---\nnew body\n",
+        )
+        .unwrap();
+    });
+    assert!(!out.status.success(), "{}", text(&out));
+    let t = text(&out);
+    assert!(t.contains("the skills changed since"), "{t}");
+    assert!(t.contains("'code:review' was 1.2.0+"), "{t}");
     assert!(h.calls_of("claude").is_empty(), "the agent ran: {t}");
 }

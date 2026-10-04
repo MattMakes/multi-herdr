@@ -222,6 +222,7 @@ impl ExecutionService<'_> {
             codex_bin: None,
             resolved: Some(launch.teammate.clone()),
             teammates_dir: text(ctx.bins.roster_override.as_deref()),
+            data_root: text(Some(&ctx.paths.data_root)),
             workdir: text(e.workdir.as_deref()),
             bin_overrides: Default::default(),
             report_to: plan.report_to,
