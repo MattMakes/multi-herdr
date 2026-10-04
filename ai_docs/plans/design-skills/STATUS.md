@@ -17,7 +17,7 @@ Gate: /tmp/igate-ds.sh
 | D07 | design-personas | opus-29 | MERGED |
 | D08 | antigravity-harness | opus-30 | MERGED |
 | D09 | agent-list | sonnet-7 | MERGED |
-| D11 | orchestrator-ownership | sonnet-8 | running |
+| D11 | orchestrator-ownership | sonnet-8 | MERGED |
 | D12 | lifecycle-gaps | opus-32 | running |
 | D13 | competition-gaps | opus-33 | running |
 | D14 | gsap-factcheck | opus-34 | running |
