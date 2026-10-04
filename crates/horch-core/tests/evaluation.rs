@@ -99,7 +99,7 @@ fn jdg_03_policy_digest_changes_with_inputs() {
     let a = judge_policy_digest("ab", "c", "s", "m", "e", &policy, "l");
     let b = judge_policy_digest("a", "bc", "s", "m", "e", &policy, "l");
     assert_ne!(a, b);
-    assert_eq!(RUBRIC_VERSION, "rubric-1");
+    assert_eq!(RUBRIC_VERSION, "rubric-2");
 }
 
 #[test]

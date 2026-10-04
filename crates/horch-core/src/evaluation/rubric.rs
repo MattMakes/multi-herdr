@@ -10,13 +10,13 @@ use sha2::{Digest as _, Sha256};
 use super::winner::WinnerPolicy;
 use crate::measure::digest::{canonical_json, Digest};
 
-pub const RUBRIC_VERSION: &str = "rubric-1";
+pub const RUBRIC_VERSION: &str = "rubric-2";
 
 /// The lowest and the highest score a rubric component can get.
 pub(crate) const SCORE_MIN: f64 = 0.0;
 pub(crate) const SCORE_MAX: f64 = 10.0;
 
-const RUBRIC: &str = include_str!("../../assets/judge/rubric-1.md");
+const RUBRIC: &str = include_str!("../../assets/judge/rubric-2.md");
 const SCHEMA: &str = include_str!("../../assets/judge/judgment-schema-1.0.1.json");
 
 /// The rubric text the judge reads.

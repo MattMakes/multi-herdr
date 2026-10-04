@@ -609,7 +609,7 @@ pub struct JudgeInput {                     // immutable bundle, files 0400
 pub struct JudgeInputManifest {
     pub schema_version: String,             // "1.0.0"
     pub round_id: RoundId,
-    pub rubric_version: String,             // "rubric-1"
+    pub rubric_version: String,             // "rubric-2" (RUBRIC_VERSION)
     pub schema_digest: Digest,
     pub files: BTreeMap<String, Digest>,    // relative path → digest
 }
@@ -1061,13 +1061,46 @@ Observation:
 
 | | |
 |---|---|
-| Created | `teammates/judge.md` (`hidden: true`, no `base`, `agent: claude`, `model: opus`, `effort: high`, `inherit_plugins: false`, `mcp_servers: {}`, `tools: [Read, Grep, Glob]`, `disallowed_tools: [Agent, Edit, Write, NotebookEdit, Bash]`; body = Spec B §10 evaluator prose verbatim + `{rubric}` + `{schema}`); roster rule `HEADLESS_ONLY`; `harness/headless.rs`; `evaluation/{judge_input,rubric,judgment,parser,winner,scheduler}.rs`; `rubric-1.md`, `judgment-schema-1.0.0.json`; `crates/horch/src/dataset/judge_job.rs` |
+| Created | `teammates/judge.md` (`hidden: true`, no `base`, `agent: claude`, `model: opus`, `effort: high`, `inherit_plugins: false`, `mcp_servers: {}`, `tools: [Read, Grep, Glob]`, `disallowed_tools: [Agent, Edit, Write, NotebookEdit, Bash]`; body = the Spec B §10 evaluator prose below + `{rubric}` + `{schema}`); roster rule `HEADLESS_ONLY`; `harness/headless.rs`; `evaluation/{judge_input,rubric,judgment,parser,winner,scheduler}.rs`; `rubric-2.md`, `judgment-schema-1.0.1.json`; `crates/horch/src/dataset/judge_job.rs` |
 | Rules | the job writes only its job dir; the coordinator is the single authority; the judge is a `kind: judge` execution; zero eligible → judge skipped → REJECTED |
 | Tests | JDG-01..10, CMP-12, CMP-16, SEC-04, SEC-06, SEC-07, SEC-08 (judge) |
 | Gate | `just gate` + jdg e2e |
 | Do not change | other teammates; golden prompts |
 
-`SPEC-TODO(Spec B §10)`: the evaluator prose for `teammates/judge.md`.
+**Spec B §10, the evaluator prose** (`teammates/judge.md`). The body of
+`judge.md` is the evaluator prose, then a `{rubric}` line, then a
+`{schema}` line. `harness/headless.rs:judge_prompt` replaces the two
+placeholders with `rubric_text()` and `schema_text()` and sends the result
+on stdin. The prose tells the judge:
+
+1. It is a blind evaluator. The candidates of one task are in the current
+   directory, each under an anonymous label.
+2. The bundle files: `task.md`, `rubric.md`, `schema.json`,
+   `candidates/<label>/diff.patch`, `candidates/<label>/validation.json`
+   and `manifest.json`. These are exactly the files `build_judge_input`
+   writes (JDG-02).
+3. Compare the candidates by the rubric, score each candidate on each
+   component, and use only the evidence in those files. A label says
+   nothing about the author; do not guess the author.
+4. Do not run code, do not change a file, do not read outside the current
+   directory. The frontmatter enforces the same: `tools: [Read, Grep,
+   Glob]` and `Bash`, `Edit`, `Write`, `NotebookEdit`, `Agent` disallowed.
+5. Answer with exactly one JSON object that matches the schema, with no
+   prose and no code fence (the parser never repairs, JDG-05).
+
+The rubric (`assets/judge/rubric-2.md`, `RUBRIC_VERSION = "rubric-2"`)
+defines the 5 components (`correctness`, `tests`, `scope`,
+`maintainability`, `risk`, each scored 0 to 10 and never summed by the
+judge), the 4 verdicts and the answer format. rubric-2 differs from
+rubric-1 in 2 places: the provisional first line is gone, and a `winner`
+must be marked `acceptable` (the §4.7 table). No code path loads rubric-1,
+and no real round recorded it, so the file is deleted.
+
+Tests: `jdg_01_judge_teammate_check` (`tests/judge_input.rs`) pins the
+frontmatter, the opening sentence, every bundle file name and the two
+placeholders; `the_rubric_names_five_components` (`evaluation/rubric.rs`);
+`headless.rs` tests pin the substitution. A change to `judge.md`, the
+rubric or the schema changes the judge policy digest (JDG-03).
 
 ### B5 Promotion (opt-in, OD5)
 

@@ -345,9 +345,23 @@ fn jdg_01_judge_teammate_check() {
     );
     assert_eq!(t.phase, None);
     assert!(t.skills.is_empty());
+    // The evaluator prose of design §6 B4 (Spec B §10): no placeholder, and
+    // it names every file of the bundle that `build_judge_input` writes.
     assert!(t
         .persona
-        .contains("<!-- SPEC-TODO(Spec B §10): replace with the verbatim evaluator prose. -->"));
+        .trim_start()
+        .starts_with("You are a blind evaluator."));
+    assert!(!t.persona.contains("SPEC-TODO"));
+    for file in [
+        "`task.md`",
+        "`rubric.md`",
+        "`schema.json`",
+        "`candidates/<label>/diff.patch`",
+        "`candidates/<label>/validation.json`",
+        "`manifest.json`",
+    ] {
+        assert!(t.persona.contains(file), "judge.md does not name {file}");
+    }
     let lines: Vec<&str> = t.persona.lines().map(str::trim).collect();
     assert!(lines.contains(&"{rubric}") && lines.contains(&"{schema}"));
     // `horch teammates --check` runs exactly this.
@@ -402,7 +416,7 @@ fn jdg_02_bundle_digest_and_readonly() {
     assert_eq!(manifest, input.manifest);
     assert_eq!(manifest.schema_version, "1.0.0");
     assert_eq!(manifest.round_id, round_id());
-    assert_eq!(manifest.rubric_version, "rubric-1");
+    assert_eq!(manifest.rubric_version, "rubric-2");
     assert_eq!(
         manifest.schema_digest,
         sha256_bytes(schema_text().as_bytes())
