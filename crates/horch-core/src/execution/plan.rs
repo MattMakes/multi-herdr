@@ -19,7 +19,7 @@ use crate::execution::model::{
     Execution, ExecutionPlan, ExecutionStatus, LaunchPlan, SessionMode, SessionState, SpawnRequest,
     Task, WorkspacePlan,
 };
-use crate::execution::store::to_execution;
+use crate::execution::store::{to_execution, PANE_CLOSED};
 use crate::harness::HarnessKind;
 use crate::ids::{ExecutionId, IdError, RoleName, SessionId, WorkerId, WorkspaceId};
 use crate::roster::{effort_problem, Phase, Roster, Teammate};
@@ -198,11 +198,20 @@ fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
         )));
     }
     // The legacy status: a `Planned` record is not live, but its spawner
-    // may still be on its way to a pane.
+    // may still be on its way to a pane. The shell has already ended a
+    // record whose pane is gone (`ExecutionStore::end_if_pane_closed`), so
+    // this pane is open, or its state is unknown, or the record names none.
     if record.status == STATUS_WORKING {
+        let pane = record
+            .pane_id
+            .as_deref()
+            .map(|p| format!(" in pane {p}"))
+            .unwrap_or_default();
         return Err(refuse(format!(
-            "session {session_id} is still marked working (a live worker may own it); \
-             refusing to resume"
+            "session {session_id} is still marked working{pane} (a live worker may own it); \
+             refusing to resume. If that pane is open, tell its worker instead. \
+             If you know the pane is gone, run: horch ledger done {} \"{PANE_CLOSED}\"",
+            record.record_id
         )));
     }
     let roster = inputs.roster;
@@ -492,6 +501,45 @@ mod tests {
             Some(Phase::Plan)
         );
         assert_eq!(resolve_phase(None, None, None), None);
+    }
+
+    /// G5: a resume of a record still marked working names its pane and the
+    /// exact command that ends the record when the pane is known to be gone.
+    #[test]
+    fn working_refusal_names_the_fix() {
+        let roster = Roster::builtin().unwrap();
+        let catalog = SkillCatalog::bundled().unwrap();
+        let ids = MintedIds {
+            execution: ExecutionId::new("e1").unwrap(),
+            session: SessionId::new("s9").unwrap(),
+        };
+        let record = LedgerRecordV1 {
+            record_id: "r1".into(),
+            session_id: Some("s1".into()),
+            tier: "sonnet".into(),
+            agent: "claude".into(),
+            model: "sonnet".into(),
+            status: STATUS_WORKING.into(),
+            pane_id: Some("w1:p5".into()),
+            ..LedgerRecordV1::default()
+        };
+        let inputs = PlanInputs {
+            roster: &roster,
+            catalog: &catalog,
+            gate: None,
+            existing: Some(&record),
+            now: crate::clock::parse("2026-10-04T00:00:00Z").unwrap(),
+            ids: &ids,
+            project: Path::new("/work/alpha"),
+        };
+        let mut req = SpawnRequest::worker(None, "");
+        req.resume = Some("r1".into());
+        let err = draft_resume("r1", &req, &inputs).err().unwrap().to_string();
+        assert!(err.contains("in pane w1:p5"), "{err}");
+        assert!(
+            err.contains("horch ledger done r1 \"pane closed without horch done\""),
+            "{err}"
+        );
     }
 
     /// Planning is pure (Spec A §3): outside this test module, `plan.rs`

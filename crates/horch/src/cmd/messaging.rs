@@ -41,9 +41,11 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
         } else {
             known.join(" ")
         };
+        let sender = ctx.worker.as_ref().and_then(|w| w.role.as_deref());
         bail!(
-            "role '{role}' is not registered in {}\n       known roles: {known}",
-            mailbox.dir().display()
+            "role '{role}' is not registered in {}\n       known roles: {known}{}",
+            mailbox.dir().display(),
+            no_orchestrator_hint(role, sender)
         );
     };
     let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
@@ -82,6 +84,17 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
         &delivery::Readiness::DEFAULT,
         &delivery::Timing::DEFAULT,
     )
+}
+
+/// The line a worker's failed `tell` to a missing orchestrator ends with.
+/// Without it, a worker reads the failure as a block and never runs `done`.
+fn no_orchestrator_hint(role: &str, sender: Option<&str>) -> &'static str {
+    if role == "orchestrator" && sender.is_some() {
+        "\n       no orchestrator runs in this workspace, so nobody reads reports here.\n       \
+         `horch done \"<summary>\"` still records your summary and closes your pane."
+    } else {
+        ""
+    }
 }
 
 /// List roles registered in this workspace, and mark each one whose pane
@@ -195,6 +208,10 @@ fn coordinator_owns_layout(ledger: &Ledger, record_id: &str) -> bool {
         })
 }
 
+/// What `done` prints when no orchestrator is registered.
+const NO_ORCHESTRATOR: &str = "horch done: no orchestrator is registered in this workspace, \
+     so nobody is told; the summary is recorded";
+
 /// The `done` steps against this process's ledger, mailbox and workspace.
 struct CliDone<'a> {
     ctx: &'a RuntimeContext,
@@ -208,7 +225,18 @@ impl DoneSteps for CliDone<'_> {
         Ledger::open_in(self.ctx)?.done(record_id, summary)
     }
 
+    /// Tell the orchestrator. A workspace with no registered orchestrator
+    /// (a scratch workspace, a worker spawned by hand) has nobody to tell:
+    /// that is not a failure, so `done` goes on and exits 0.
     fn report(&self, line: &str) -> Result<()> {
+        let herdr = Herdr::with_bin(&self.ctx.bins.harness.herdr);
+        let registered = Mailbox::resolve_in(&herdr, self.ctx)
+            .map(|m| m.pane_for("orchestrator").is_some())
+            .unwrap_or(true);
+        if !registered {
+            eprintln!("{NO_ORCHESTRATOR}");
+            return Ok(());
+        }
         tell(self.ctx, "orchestrator", line)
     }
 

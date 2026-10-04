@@ -351,3 +351,99 @@ fn send_line_when_ready_gives_a_fresh_role_time_to_show_its_agent() {
     assert!(calls.len() > 3, "it polled during the grace: {calls:?}");
     assert_eq!(calls.last().unwrap(), &format!("agent_prompt {pane} msg"));
 }
+
+/// G5: `horch inbox` reads which registered panes herdr still has. A role
+/// whose pane closed without `horch done` is `Closed`; a herdr that does not
+/// answer leaves every pane `Unknown`.
+#[test]
+fn role_states_mark_a_closed_pane() {
+    use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
+
+    let ws = FakeWorkspace::new();
+    let created = ws.workspace_create("fleet", None, false).unwrap();
+    let worker = ws
+        .pane_split(
+            &created.root_pane_id,
+            horch_core::workspace::model::Direction::Right,
+        )
+        .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mailbox = Mailbox::under(tmp.path(), &created.workspace_id);
+    std::fs::create_dir_all(mailbox.dir()).unwrap();
+    std::fs::write(mailbox.dir().join("orchestrator.id"), &created.root_pane_id).unwrap();
+    std::fs::write(mailbox.dir().join("sonnet-1.id"), &worker).unwrap();
+    ws.pane_close(&worker).unwrap();
+
+    let entry = |role: &str, pane: &str, state| RoleEntry {
+        role: role.into(),
+        pane: pane.into(),
+        state,
+    };
+    assert_eq!(
+        mailbox.role_states(&ws),
+        vec![
+            entry("orchestrator", &created.root_pane_id, PaneState::Open),
+            entry("sonnet-1", &worker, PaneState::Closed),
+        ]
+    );
+
+    ws.set_reachable(false);
+    assert!(mailbox
+        .role_states(&ws)
+        .iter()
+        .all(|r| r.state == PaneState::Unknown));
+}
+
+/// G5: `horch spawn --resume` of a `working` record whose pane is gone ends
+/// the record first, so it resumes. An open pane, or a herdr that does not
+/// answer, leaves the record `working`, and the resume refuses.
+#[test]
+fn end_if_pane_closed_ends_only_a_vanished_pane() {
+    use horch_core::execution::legacy::LedgerRecordV1;
+    use horch_core::execution::store::{ExecutionStore, PANE_CLOSED};
+
+    let working = |pane: &str| LedgerRecordV1 {
+        record_id: "r1".into(),
+        session_id: Some("s1".into()),
+        role: "sonnet-1".into(),
+        tier: "sonnet".into(),
+        agent: "claude".into(),
+        model: "sonnet".into(),
+        status: "working".into(),
+        pane_id: Some(pane.into()),
+        ..LedgerRecordV1::default()
+    };
+
+    // The pane is open: the record stays working.
+    let (ws, pane) = one_pane();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = ExecutionStore::for_project(tmp.path(), "/work/alpha");
+    store.insert(working(&pane)).unwrap();
+    assert!(!store.end_if_pane_closed("r1", &ws).unwrap());
+    assert_eq!(store.get("r1").unwrap().status, "working");
+
+    // herdr does not answer: the pane may be open, so nothing changes.
+    ws.pane_close(&pane).unwrap();
+    ws.set_reachable(false);
+    assert!(!store.end_if_pane_closed("s1", &ws).unwrap());
+    assert_eq!(store.get("r1").unwrap().status, "working");
+
+    // herdr answers without the pane: the record ends, with the reason.
+    ws.set_reachable(true);
+    assert!(store.end_if_pane_closed("s1", &ws).unwrap());
+    let r = store.get("r1").unwrap();
+    assert_eq!(r.status, "done");
+    assert!(r.finished_at.is_some());
+    let last = r.history.last().unwrap();
+    assert_eq!(
+        (last.event.as_str(), last.text.as_str()),
+        ("ended", PANE_CLOSED)
+    );
+    assert_eq!(
+        serde_json::to_value(r.execution_status()).unwrap()["failure"]["kind"],
+        "pane_vanished"
+    );
+
+    // A second call finds nothing to end.
+    assert!(!store.end_if_pane_closed("r1", &ws).unwrap());
+}
