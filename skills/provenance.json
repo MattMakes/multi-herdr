@@ -2751,7 +2751,7 @@
           "license": "MIT"
         }
       ],
-      "adaptation": "Curated copy. liquid-glass.md: background-extension snippet now calls .backgroundExtensionEffect(); the nonexistent scrollExtensionMode(.underSidebar) is replaced by Apple's automatic scroll-under-sidebar behavior; foregroundColor becomes foregroundStyle; the 'always seek guides' sentence is deleted. SKILL.md verbatim.",
+      "adaptation": "Curated copy. liquid-glass.md: background-extension snippet now calls .backgroundExtensionEffect(); the nonexistent scrollExtensionMode(.underSidebar) is replaced by Apple's automatic scroll-under-sidebar behavior; foregroundColor becomes foregroundStyle; the 'always seek guides' sentence is deleted. SF Symbol images in both files use text styles (.font(.title2), .title, .largeTitle) instead of .font(.system(size:)), so symbols follow Dynamic Type.",
       "vendored": false
     },
     {

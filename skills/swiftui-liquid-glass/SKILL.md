@@ -70,11 +70,11 @@ GlassEffectContainer(spacing: 24) {
     HStack(spacing: 24) {
         Image(systemName: "scribble.variable")
             .frame(width: 72, height: 72)
-            .font(.system(size: 32))
+            .font(.title2)
             .glassEffect()
         Image(systemName: "eraser.fill")
             .frame(width: 72, height: 72)
-            .font(.system(size: 32))
+            .font(.title2)
             .glassEffect()
     }
 }
