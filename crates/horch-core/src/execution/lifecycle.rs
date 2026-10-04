@@ -8,7 +8,6 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::execution::model::ExecutionStatus;
 use crate::execution::store::ExecutionStore;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use crate::harness::HarnessKind;
@@ -311,8 +310,7 @@ impl WorkerSteps for PaneWorker<'_> {
     }
 
     fn set_running(&mut self, brief: &Brief) -> Result<()> {
-        self.store()?
-            .set_state(&brief.record_id, ExecutionStatus::Running)
+        self.store()?.mark_running(&brief.record_id)
     }
 
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>> {

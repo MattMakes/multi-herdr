@@ -272,7 +272,7 @@ impl ExecutionService<'_> {
             stage,
             reason: format!("{source:#}"),
         };
-        if let Err(e) = self.store.set_state(id.as_str(), state) {
+        if let Err(e) = self.store.end_live(id.as_str(), state) {
             eprintln!("horch spawn: recording the failed launch of {id} failed: {e:#}");
         }
         if let Some(pane) = pane {
