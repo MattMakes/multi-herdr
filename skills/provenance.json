@@ -1425,6 +1425,12 @@
       "vendored": true
     },
     {
+      "name": "godot-dimension-port",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text and own code, written in this repository. Consulted as references, no text or code copied (LGPL-3.0 source): thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-adapt-2d-to-3d, skills/godot-adapt-3d-to-2d. Engine names checked against the Godot 4.7.2 --doctool dump; code blocks parse on 4.7.2; PlaneMap, Dir8, TilesToGrid, HeightBody2D and the isometric round trip passed runtime tests on 4.7.2; the headless renderer limit (no frame drawn) was measured. Research and the gd-agentic errors fixed or dropped: ai_docs/reports/godot/gw10-port-and-migrate.md."
+    },
+    {
       "name": "godot-economy-system",
       "sources": [],
       "adaptation": "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: economy-system. Wallet, transactions, shops, loot tables and balancing. Typed GDScript, parse-checked and run headless on Godot 4.7.2.",
@@ -2614,6 +2620,12 @@
       ],
       "adaptation": "rename to godot-* prefix; description extended; SKILL.md gains a \"Fleet additions\" list; references/container-layout-advanced.md, references/rich-text-advanced.md, references/theme-variations-and-runtime-styling.md are own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: godot-ui-theming, godot-ui-rich-text, godot-ui-containers",
       "vendored": true
+    },
+    {
+      "name": "godot-version-migration",
+      "sources": [],
+      "vendored": false,
+      "adaptation": "Own text and own code, written in this repository. Targets Godot 4.7 only (operator decision 3). Consulted as references, no text or code copied (LGPL-3.0 source): thedivergentai/gd-agentic-skills@4c4d0ff: skills/godot-version-migration (SKILL.md, era-index, hop-index, bridges/3-to-4, legacy/, the per-topic mirrors). Facts taken from the official upgrade guides and class reference, godotengine/godot-docs branch 4.7 at 9adca4c1c72917bfe1b7be3108abed5ce26696a6 (cited per change with GH pull numbers), and checked against the Godot 4.7.2 --doctool dump; where the guide and the dump disagree the dump wins (5 rows, listed in the report). The 3to4 converter run, the resave script and the TileMap to TileMapLayer script were tested headless on 4.7.2. Report: ai_docs/reports/godot/gw10-port-and-migrate.md."
     },
     {
       "name": "godot-xr-development",
