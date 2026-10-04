@@ -1279,6 +1279,12 @@
       "vendored": true
     },
     {
+      "name": "godot-combat-system",
+      "sources": [],
+      "adaptation": "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: combat-system, turn-system. Real-time (typed hit, resolver, hit-stop, knockback) and turn-based (round queue, timeline, ATB, action points, AStarGrid2D) references; hitbox, hurtbox and health stay in godot-component-system. Typed GDScript, parse-checked and run headless on Godot 4.7.2.",
+      "vendored": false
+    },
+    {
       "name": "godot-csharp-godot",
       "sources": [
         {

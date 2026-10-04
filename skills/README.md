@@ -165,6 +165,7 @@ Skills for Godot 4.7 teammates. They belong to no phase; a Godot teammate attach
 | [godot-build-verify](godot-build-verify/SKILL.md) | *(none - repo-original; consulted gd-agentic-skills `godot-builder` for facts; run on Godot 4.7.2)* | own text |
 | [godot-camera-system](godot-camera-system/SKILL.md) | `jame581/GodotPrompter`: `skills/camera-system/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-camera-systems/`) | combined |
 | [godot-code-review](godot-code-review/SKILL.md) | `jame581/GodotPrompter`: `skills/godot-code-review/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-auditor/`, `godot-analyst/`) | combined |
+| [godot-combat-system](godot-combat-system/SKILL.md) | *(none - repo-original; consulted `thedivergentai/gd-agentic-skills`: `godot-combat-system/`, `godot-turn-system/`; code run on Godot 4.7.2)* | own text |
 | [godot-csharp-godot](godot-csharp-godot/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-godot/` | renamed |
 | [godot-csharp-signals](godot-csharp-signals/SKILL.md) | `jame581/GodotPrompter`: `skills/csharp-signals/` | renamed |
 | [godot-dedicated-server](godot-dedicated-server/SKILL.md) | `jame581/GodotPrompter`: `skills/dedicated-server/` + own references (consulted `thedivergentai/gd-agentic-skills`: `godot-server-architecture/`, `godot-multiplayer-networking/`) | combined |

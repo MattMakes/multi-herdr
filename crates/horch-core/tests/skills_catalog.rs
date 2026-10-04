@@ -20,6 +20,7 @@ const PINNED_COMMIT: &str = "d47670328c59a3311a9b4149bc5f8f33f0a92754";
 const REPO_ORIGINAL: &[&str] = &[
     "blender-ue-pipeline",
     "godot-build-verify",
+    "godot-combat-system",
     "godot-gameplay-loops",
     "godot-genre-blueprints",
     "godot-project-context",
