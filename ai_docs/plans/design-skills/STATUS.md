@@ -17,6 +17,12 @@ Gate: /tmp/igate-ds.sh
 | D07 | design-personas | opus-29 | MERGED |
 | D08 | antigravity-harness | opus-30 | MERGED |
 | D09 | agent-list | sonnet-7 | MERGED |
+| D11 | orchestrator-ownership | sonnet-8 | running |
+| D12 | lifecycle-gaps | opus-32 | running |
+| D13 | competition-gaps | opus-33 | running |
+| D14 | gsap-factcheck | opus-34 | running |
+| D15 | junior-handbook | staff-engineer-2 | running |
+| D16 | dead-code | - | queued after D12+D13 |
 
 Merge order: D00 first; then D01-D06 (tell each to rebase and add provenance), D09, D08; D07 last.
 Notes:
