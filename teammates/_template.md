@@ -33,7 +33,9 @@ offer_when: []
 # Host tools this teammate cannot work without. `horch doctor` checks each one
 # when the project is offered this teammate. Values: xcode (`xcodebuild` on
 # PATH, with `sudo xcodebuild -runFirstLaunch` done), blender (`blender` on
-# PATH or `BLENDER_PATH`, and `blender --version` runs).
+# PATH or `BLENDER_PATH`, and `blender --version` runs), godot (`GODOT_PATH`,
+# `godot` on PATH, or /Applications/Godot.app on macOS, and `godot --version`
+# reports 4.3 or later).
 requires: []
 
 # ─── inherited base prompt ───────────────────────────────────────────────────

@@ -21,6 +21,9 @@ pub enum Requirement {
     Xcode,
     /// `blender` on PATH, or `BLENDER_PATH`, and `--version` runs.
     Blender,
+    /// `GODOT_PATH`, `godot` on PATH, or the macOS app bundle, and
+    /// `--version` reports 4.3 or later.
+    Godot,
 }
 
 impl Requirement {
@@ -28,6 +31,7 @@ impl Requirement {
         match self {
             Requirement::Xcode => "xcode",
             Requirement::Blender => "blender",
+            Requirement::Godot => "godot",
         }
     }
 }
@@ -182,6 +186,19 @@ mod tests {
             ..domain(&[])
         };
         assert!(!offered_in(&hidden, None));
+    }
+
+    #[test]
+    fn requires_parses_every_host_tool() {
+        let text = "---\nname: x\nbrief_description: X\nagent: claude\nmodel: opus\n\
+                    requires: [xcode, blender, godot]\n---\nbody";
+        let t = super::super::parser::parse_teammate("x", text).unwrap();
+        assert_eq!(
+            t.requires,
+            [Requirement::Xcode, Requirement::Blender, Requirement::Godot]
+        );
+        let names: Vec<_> = t.requires.iter().map(|r| r.as_str()).collect();
+        assert_eq!(names, ["xcode", "blender", "godot"]);
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! is offered.
 
 use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Result};
@@ -47,6 +48,7 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
         ctx.inherited.path.as_deref(),
         ctx.inherited.pathext.as_deref(),
         ctx.inherited.blender_path.as_deref(),
+        ctx.inherited.godot_path.as_deref(),
     );
     for p in &tool_problems {
         eprintln!("warning: {p}");
@@ -120,16 +122,18 @@ fn broken_harness_warnings(
 
 /// What is missing for the `requires:` of the teammates `roster` offers, one
 /// line per requirement. Nothing is checked that no offered teammate needs.
-/// `blender_path` is `BLENDER_PATH`, which wins over `blender` on PATH.
+/// `blender_path` is `BLENDER_PATH`, which wins over `blender` on PATH;
+/// `godot_path` is `GODOT_PATH`, which wins over `godot` on PATH.
 pub(crate) fn requirement_problems(
     roster: &Roster,
     path: Option<&OsStr>,
     pathext: Option<&str>,
     blender_path: Option<&OsStr>,
+    godot_path: Option<&OsStr>,
 ) -> Vec<String> {
     let offered = roster.offered();
     let mut problems = Vec::new();
-    for requirement in [Requirement::Xcode, Requirement::Blender] {
+    for requirement in [Requirement::Xcode, Requirement::Blender, Requirement::Godot] {
         let needed_by: Vec<&str> = offered
             .iter()
             .filter(|t| t.requires.contains(&requirement))
@@ -141,6 +145,9 @@ pub(crate) fn requirement_problems(
         let problem = match requirement {
             Requirement::Xcode => xcode_problem(path, pathext),
             Requirement::Blender => blender_problem(path, pathext, blender_path),
+            Requirement::Godot => {
+                godot_problem(path, pathext, godot_path, GODOT_APP.map(Path::new))
+            }
         };
         if let Some(problem) = problem {
             problems.push(format!(
@@ -262,6 +269,100 @@ fn blender_version(stdout: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+/// The oldest Godot the godot-* teammates and their skills support.
+const GODOT_MIN: (u32, u32) = (4, 3);
+
+/// Where the Godot app bundle keeps its executable: the last place doctor
+/// looks, after `GODOT_PATH` and `godot` on PATH.
+const GODOT_APP: Option<&str> = if cfg!(target_os = "macos") {
+    Some("/Applications/Godot.app/Contents/MacOS/Godot")
+} else {
+    None
+};
+
+/// Godot must run headless, or every godot-* teammate reports `BLOCKED:` at
+/// its first parse check. Looks at `GODOT_PATH`, then `godot` on PATH, then
+/// `app` (the macOS bundle) when it exists.
+fn godot_problem(
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    godot_path: Option<&OsStr>,
+    app: Option<&Path>,
+) -> Option<String> {
+    let bin = match godot_path {
+        Some(p) => PathBuf::from(p),
+        None => match process::which(path, pathext, "godot")
+            .or_else(|| app.filter(|a| a.is_file()).map(Path::to_path_buf))
+        {
+            Some(bin) => bin,
+            None => {
+                return Some(
+                    "godot not found on PATH and GODOT_PATH is not set. Install Godot 4.3 \
+                     or later, then put `godot` on PATH or set GODOT_PATH (macOS: \
+                     /Applications/Godot.app/Contents/MacOS/Godot)."
+                        .into(),
+                )
+            }
+        },
+    };
+    let out = match Command::new(&bin).arg("--version").output() {
+        Ok(out) => out,
+        Err(e) => {
+            return Some(format!(
+                "could not run {}: {e}. Set GODOT_PATH to the Godot executable \
+                 (macOS: /Applications/Godot.app/Contents/MacOS/Godot).",
+                bin.display()
+            ))
+        }
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let detail = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        return Some(format!(
+            "`{} --version` failed ({}). Reinstall Godot 4.3 or later, or point \
+             GODOT_PATH at a working one.{}",
+            bin.display(),
+            out.status,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" godot said: {}", detail.trim())
+            }
+        ));
+    }
+    match godot_version(&stdout) {
+        Some(v) if v < GODOT_MIN => Some(format!(
+            "{} is Godot {}.{}. The godot-* teammates need {}.{} or later. Install \
+             Godot {}.{} or later.",
+            bin.display(),
+            v.0,
+            v.1,
+            GODOT_MIN.0,
+            GODOT_MIN.1,
+            GODOT_MIN.0,
+            GODOT_MIN.1
+        )),
+        Some(_) => None,
+        None => Some(format!(
+            "`{} --version` printed no Godot version (want `4.3.stable...` or later). \
+             Point GODOT_PATH at the Godot executable.",
+            bin.display()
+        )),
+    }
+}
+
+/// `(major, minor)` from the first `X.Y[.Z].<status>...` line of
+/// `godot --version`, for example `4.7.2.stable.official.<hash>`.
+fn godot_version(stdout: &str) -> Option<(u32, u32)> {
+    stdout.lines().find_map(|l| {
+        let mut parts = l.trim().split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        Some((major, minor))
+    })
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -284,6 +385,7 @@ mod tests {
         requirement_problems(
             &roster_requiring_xcode(),
             Some(path.as_os_str()),
+            None,
             None,
             None,
         )
@@ -352,9 +454,9 @@ mod tests {
                 .unwrap()
                 .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
         };
-        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None, None).is_empty());
+        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None, None, None).is_empty());
 
-        let problems = requirement_problems(&facts(["Package.swift"]), path, None, None);
+        let problems = requirement_problems(&facts(["Package.swift"]), path, None, None, None);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(
             problems[0].contains("xcodebuild not found"),
@@ -398,6 +500,7 @@ mod tests {
             Some(path.as_os_str()),
             None,
             blender_path,
+            None,
         )
         .into_iter()
         .filter(|p| p.starts_with("blender "))
@@ -476,10 +579,145 @@ mod tests {
                 .unwrap()
                 .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
         };
-        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None, None).is_empty());
-        let problems = requirement_problems(&facts(["ship.blend"]), path, None, None);
+        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None, None, None).is_empty());
+        let problems = requirement_problems(&facts(["ship.blend"]), path, None, None, None);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("blender-artist"), "{}", problems[0]);
+    }
+
+    fn roster_requiring_godot() -> Roster {
+        let mut r = Roster::builtin().unwrap();
+        r.insert_for_test(Teammate {
+            name: "godot-test".into(),
+            brief_description: "Godot".into(),
+            requires: vec![Requirement::Godot],
+            ..Teammate::default()
+        });
+        r
+    }
+
+    /// A fake Godot named `name` in its own directory: `--version` prints
+    /// `version` and exits with `code`.
+    fn fake_godot(name: &str, version: &str, code: i32) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join(name);
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = --version ] || exit 99\n\
+                 echo '{version}'\necho 'no display' >&2\nexit {code}\n"
+            ),
+        )
+        .unwrap();
+        process::make_executable(&bin).unwrap();
+        dir
+    }
+
+    fn godot_at(path: &Path, godot_path: Option<&Path>, app: Option<&Path>) -> Option<String> {
+        godot_problem(
+            Some(path.as_os_str()),
+            None,
+            godot_path.map(Path::as_os_str),
+            app,
+        )
+    }
+
+    #[test]
+    fn godot_on_path_is_fine() {
+        let dir = fake_godot("godot", "4.7.2.stable.official.e4f5a6b7c", 0);
+        assert_eq!(godot_at(dir.path(), None, None), None);
+    }
+
+    /// `GODOT_PATH` wins over PATH: a broken one is reported even with a
+    /// good `godot` on PATH, and a good one works with nothing on PATH.
+    #[test]
+    fn godot_path_wins_over_path() {
+        let good = fake_godot("godot", "4.7.2.stable.official.e4f5a6b7c", 0);
+        let broken = fake_godot("Godot", "4.7.2.stable.official.e4f5a6b7c", 3);
+        let problem = godot_at(good.path(), Some(&broken.path().join("Godot")), None).unwrap();
+        assert!(problem.contains("--version` failed"), "{problem}");
+        assert!(problem.contains("no display"), "{problem}");
+
+        let empty = tempfile::tempdir().unwrap();
+        let fine = good.path().join("godot");
+        assert_eq!(godot_at(empty.path(), Some(&fine), None), None);
+
+        let gone = empty.path().join("Godot");
+        let problem = godot_at(good.path(), Some(&gone), None).unwrap();
+        assert!(problem.contains("could not run"), "{problem}");
+    }
+
+    /// The app bundle is the last place looked: used when PATH has no
+    /// `godot`, ignored when PATH has one, skipped when it does not exist.
+    #[test]
+    fn the_app_bundle_is_the_last_fallback() {
+        let empty = tempfile::tempdir().unwrap();
+        let app = fake_godot("Godot", "4.3.stable.official.77dcf97d8", 0);
+        let app_bin = app.path().join("Godot");
+        assert_eq!(godot_at(empty.path(), None, Some(&app_bin)), None);
+
+        let old_app = fake_godot("Godot", "4.2.2.stable.official.15073afe3", 0);
+        let old_bin = old_app.path().join("Godot");
+        let problem = godot_at(empty.path(), None, Some(&old_bin)).unwrap();
+        assert!(problem.contains("Godot 4.2"), "{problem}");
+
+        let on_path = fake_godot("godot", "4.7.2.stable.official.e4f5a6b7c", 0);
+        assert_eq!(godot_at(on_path.path(), None, Some(&old_bin)), None);
+
+        let missing = empty.path().join("Godot.app/Contents/MacOS/Godot");
+        let problem = godot_at(empty.path(), None, Some(&missing)).unwrap();
+        assert!(problem.contains("godot not found"), "{problem}");
+    }
+
+    #[test]
+    fn missing_godot_names_both_fixes() {
+        let empty = tempfile::tempdir().unwrap();
+        let problems = requirement_problems(
+            &roster_requiring_godot(),
+            Some(empty.path().as_os_str()),
+            None,
+            None,
+            Some(empty.path().join("nope").as_os_str()),
+        );
+        let problems: Vec<_> = problems
+            .into_iter()
+            .filter(|p| p.starts_with("godot "))
+            .collect();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("(needed by "), "{}", problems[0]);
+        assert!(problems[0].contains("godot-test"), "{}", problems[0]);
+
+        let problem = godot_at(empty.path(), None, None).unwrap();
+        assert!(problem.contains("godot not found"), "{problem}");
+        assert!(problem.contains("GODOT_PATH"), "{problem}");
+        assert!(problem.contains("4.3 or later"), "{problem}");
+    }
+
+    #[test]
+    fn godot_below_the_floor_or_without_a_version_is_reported() {
+        let old = fake_godot("godot", "4.2.2.stable.official.15073afe3", 0);
+        let problem = godot_at(old.path(), None, None).unwrap();
+        assert!(problem.contains("Godot 4.2"), "{problem}");
+        assert!(problem.contains("4.3 or later"), "{problem}");
+
+        let floor = fake_godot("godot", "4.3.stable.official.77dcf97d8", 0);
+        assert_eq!(godot_at(floor.path(), None, None), None);
+
+        let odd = fake_godot("godot", "hello", 0);
+        let problem = godot_at(odd.path(), None, None).unwrap();
+        assert!(problem.contains("printed no Godot version"), "{problem}");
+    }
+
+    #[test]
+    fn godot_version_reads_the_dotted_line() {
+        assert_eq!(
+            godot_version("4.7.2.stable.official.e4f5a6b7c\n"),
+            Some((4, 7))
+        );
+        assert_eq!(godot_version("4.3.stable.mono.official.x\n"), Some((4, 3)));
+        assert_eq!(godot_version("warning: x\n5.0.dev1.custom\n"), Some((5, 0)));
+        assert_eq!(godot_version("3.6.stable\n"), Some((3, 6)));
+        assert_eq!(godot_version("Godot Engine\n"), None);
     }
 
     #[test]

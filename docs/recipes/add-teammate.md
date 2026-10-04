@@ -39,8 +39,10 @@ In the steps, `<name>` is the teammate id, for example `design-critic`.
    or 1 level down. `horch spawn <name>` still works in any project. If it
    needs Xcode, also set `requires: [xcode]` so `horch doctor` checks
    `xcodebuild`. If it needs Blender, set `requires: [blender]` so
-   `horch doctor` checks `blender` on PATH or `BLENDER_PATH`. Leave both
-   out for a general teammate.
+   `horch doctor` checks `blender` on PATH or `BLENDER_PATH`. If it needs
+   Godot, set `requires: [godot]` so `horch doctor` checks `GODOT_PATH`,
+   then `godot` on PATH, then `/Applications/Godot.app` (macOS), and
+   requires Godot 4.3 or later. Leave `requires` out for a general teammate.
    Check: `horch teammates` prints an "offered when the project has" line
    under it.
 3. Write the body: the persona only. Do not restate the `horch tell` /
