@@ -1425,6 +1425,12 @@
       "vendored": true
     },
     {
+      "name": "godot-economy-system",
+      "sources": [],
+      "adaptation": "own text, consulted thedivergentai/gd-agentic-skills@4c4d0ff: economy-system. Wallet, transactions, shops, loot tables and balancing. Typed GDScript, parse-checked and run headless on Godot 4.7.2.",
+      "vendored": false
+    },
+    {
       "name": "godot-export-pipeline",
       "sources": [
         {

@@ -21,6 +21,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "blender-ue-pipeline",
     "godot-build-verify",
     "godot-combat-system",
+    "godot-economy-system",
     "godot-gameplay-loops",
     "godot-genre-blueprints",
     "godot-project-context",
