@@ -42,6 +42,7 @@ t.kill();
 | `duration` | Seconds. Default `0.5`. |
 | `delay` | Seconds before start. In a sequence, use a timeline instead. |
 | `ease` | Default `"power1.out"`. |
+| `easeReverse` | Ease while the playhead runs backward (3.15+). Default `false`: a reversed ease-out plays as an ease-in. `true` reuses `ease`; an ease name uses that ease. Replaces the deprecated `yoyoEase`. |
 | `stagger` | Seconds between targets (`0.1`), or an object (see below). |
 | `repeat` | Number of repeats; `-1` is infinite. |
 | `yoyo` | With `repeat`, alternate direction. |
@@ -97,6 +98,12 @@ gsap.to(".cell", { scale: 0, stagger: { amount: 0.6, grid: "auto", from: "edges"
 Every family has a base name (same as `.out`), `.in`, `.out` and `.inOut`:
 
 `none`, `power1` to `power4` (1 is gentle, 4 is steep), `back` (overshoot, `back.out(1.7)`), `elastic` (`elastic.out(1, 0.3)`), `bounce`, `circ`, `expo`, `sine`. `steps(n)` gives stepped motion.
+
+A hover or toggle that calls `reverse()` should feel the same both ways: set `easeReverse: true`. GSAP eases the remaining distance from wherever the playhead turned, also inside a reversed timeline.
+
+```javascript
+const open = gsap.to(".menu", { height: "auto", duration: 0.4, ease: "power2.out", easeReverse: true, paused: true });
+```
 
 Use only these names. For any other curve, register CustomEase (see `plugins.md`):
 
