@@ -4,7 +4,9 @@
 //! (`horch_core::competition::coordinator`).
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -444,11 +446,28 @@ fn latest_intervention(events: &[EventEnvelope], round: &RoundId) -> Option<Stri
 }
 
 fn load_roster(ctx: &RuntimeContext) -> Result<Roster> {
-    Roster::load_layered(
+    let roster = Roster::load_layered(
         ctx.inherited.home_var.as_deref().map(Path::new),
         ctx.bins.roster_override.as_deref(),
         None,
-    )
+    )?;
+    warn_once(&roster, &ROSTER_WARNED, &mut std::io::stderr());
+    Ok(roster)
+}
+
+/// Set once the roster warnings are printed: `run` loads the roster more
+/// than once.
+static ROSTER_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Write each [`Roster::load_warnings`] line to `out` as `warning: <line>`,
+/// as `horch`'s `load_roster` does, unless `warned` is already set.
+fn warn_once(roster: &Roster, warned: &AtomicBool, out: &mut impl Write) {
+    if warned.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    for w in roster.load_warnings() {
+        let _ = writeln!(out, "warning: {w}");
+    }
 }
 
 /// Plan round `round_id` from `base_sha`. No quota probe: planning makes no
@@ -665,6 +684,27 @@ fn render_plan(plan: &RoundPlan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F7 (roster-resilience): a teammate file that does not parse gives one
+    /// `warning:` line, and a second roster load prints nothing more.
+    #[test]
+    fn roster_warnings_print_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let opus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates/opus.md");
+        let text = std::fs::read_to_string(opus)
+            .unwrap()
+            .replace("name: opus", "name: newcomer")
+            .replacen("\n---\n", "\nrequires: [no-such-tool]\n---\n", 1);
+        std::fs::write(tmp.path().join("newcomer.md"), text).unwrap();
+        let roster = Roster::load_layered(None, Some(tmp.path()), None).unwrap();
+        let warned = AtomicBool::new(false);
+        let mut out = Vec::new();
+        warn_once(&roster, &warned, &mut out);
+        warn_once(&roster, &warned, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.starts_with("warning: teammate 'newcomer'"), "{text}");
+    }
 
     fn event(round: &RoundId, kind: &str, payload: serde_json::Value) -> EventEnvelope {
         serde_json::from_value(serde_json::json!({
