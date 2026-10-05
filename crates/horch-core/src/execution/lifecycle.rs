@@ -412,9 +412,13 @@ fn run_smoke(env: &[(String, String)]) -> Result<()> {
         ],
     )?;
     std::thread::sleep(Duration::from_secs(1));
+    // The smoke orchestrator is a plain shell: no agent ever shows in its
+    // pane, so `done`'s report must not wait for one (TELL_GRACE).
+    let mut env = env.to_vec();
+    env.push(("HORCH_TELL_GRACE_MS".into(), "0".into()));
     // `done` closes this pane, which kills this process tree; nothing after
     // it runs.
-    run_horch(env, &["done", "smoke: machinery verified end to end"])
+    run_horch(&env, &["done", "smoke: machinery verified end to end"])
 }
 
 /// Invoke `horch` the way an agent would: by name, off PATH, with the

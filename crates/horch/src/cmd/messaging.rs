@@ -68,22 +68,22 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     // An agent that is still starting drops typed text, so wait it out. A
     // role that registered just now may not show its agent yet.
     let grace = ctx.settings.tell_grace.unwrap_or(delivery::TELL_GRACE);
-    let fresh = mailbox
-        .registered_at(role)
-        .and_then(|at| at.elapsed().ok())
-        .is_some_and(|age| age < grace);
+    let age = mailbox.registered_at(role).and_then(|at| at.elapsed().ok());
     delivery::send_line_when_ready(
         &herdr,
         &target,
         &line,
-        if fresh {
-            grace
-        } else {
-            std::time::Duration::ZERO
-        },
+        grace_left(age, grace),
         &delivery::Readiness::DEFAULT,
         &delivery::Timing::DEFAULT,
     )
+}
+
+/// How long `tell` may still wait for an agent to show in a role's pane: the
+/// rest of `grace` after the role registered `age` ago. A role registered
+/// 29 s ago gets 1 s, not another full `grace`. Zero when the age is unknown.
+fn grace_left(age: Option<std::time::Duration>, grace: std::time::Duration) -> std::time::Duration {
+    age.map_or(std::time::Duration::ZERO, |age| grace.saturating_sub(age))
 }
 
 /// The line a worker's failed `tell` to a missing orchestrator ends with.
@@ -290,6 +290,18 @@ fn require_env(key: &str, value: Option<String>) -> Result<String> {
 mod tests {
     use super::*;
     use horch_core::execution::legacy::Record;
+    use std::time::Duration;
+
+    #[test]
+    fn tell_waits_only_the_rest_of_the_grace() {
+        let grace = Duration::from_secs(30);
+        let left = |s| grace_left(Some(Duration::from_secs(s)), grace);
+        assert_eq!(left(0), grace);
+        assert_eq!(left(29), Duration::from_secs(1));
+        assert_eq!(left(30), Duration::ZERO);
+        assert_eq!(left(3600), Duration::ZERO);
+        assert_eq!(grace_left(None, grace), Duration::ZERO);
+    }
 
     fn record(
         id: &str,
