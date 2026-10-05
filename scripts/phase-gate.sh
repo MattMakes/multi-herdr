@@ -72,7 +72,7 @@ step cargo build --workspace --bins
 step cargo clippy --workspace --all-targets -- -D warnings
 step cargo test --workspace --no-fail-fast
 step env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check
-# No arguments: the coverage check reads ai_docs/gates/architecture-refactor/CURRENT_PHASE.
+# No arguments: every requirement ID in docs/specs/*.md needs a test.
 step scripts/check-req-coverage.sh
 step scripts/check-deps.sh
 step scripts/verify-telemetry-e2e.sh

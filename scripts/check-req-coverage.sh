@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Every requirement ID defined in ai_docs/designs/*.md must have at least one
+# Every requirement ID defined in docs/specs/*.md must have at least one
 # (tracked files only: an operator's untracked draft must not change the result)
 # test whose name starts with the lowercase ID: TEL-05 -> tel_05_...
 #
@@ -9,15 +9,15 @@
 # (or `Ph`) column, the ID's phase is that cell's first token (A0..A12,
 # B1..B6); otherwise the ID is legacy and has no phase.
 #
-#   scripts/check-req-coverage.sh                  # legacy IDs + the phases in CURRENT_PHASE
+#   scripts/check-req-coverage.sh                  # every ID (all phases have landed)
 #   scripts/check-req-coverage.sh --through A3     # legacy IDs + phases A0..A3
 #   scripts/check-req-coverage.sh --phase A1,B2    # only IDs of these phases
 #   scripts/check-req-coverage.sh TEL-05 ...       # only these IDs
 #
-# Prints each ID with the tests found, and exits 1 if any ID has none.
+# Prints each ID with the tests found, and exits 1 if any ID has none, or if
+# nothing is left to check (a moved or deleted spec must not pass silently).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-current_phase=ai_docs/gates/architecture-refactor/CURRENT_PHASE
 order="A0 A1 A2 A3 A4 A5 A6 A7 A8 A9 A10 A11 A12 B1 B2 B3 B4 B5 B6"
 
 # The position of a phase in $order (1-based), or 0 when it is not a phase.
@@ -66,10 +66,16 @@ definitions() {
       next
     }
     { intable = 0 }
-  ' $(git ls-files 'ai_docs/designs/*.md')
+  ' "$@"
 }
 
-defs=$(definitions)
+specs=$(git ls-files 'docs/specs/*.md')
+if [ -z "$specs" ]; then
+  echo "no tracked spec in docs/specs/" >&2
+  exit 1
+fi
+# shellcheck disable=SC2086 # one word per path; spec names have no spaces
+defs=$(definitions $specs)
 
 # Reject an ID that is defined more than once.
 dups=$(echo "$defs" | awk -F'\t' 'NF { n[$1]++; at[$1] = at[$1] " " $3 } END { for (id in n) if (n[id] > 1) print "DUPLICATE " id ":" at[id] }' | sort)
@@ -94,11 +100,7 @@ select_ids() {
 
 case "${1:-}" in
   "")
-    phases=""
-    if [ -f "$current_phase" ]; then
-      phases=$(grep -vE '^[[:space:]]*(#|$)' "$current_phase" | tr -d ' \t' | tr '\n' ' ' || true)
-    fi
-    ids=$(select_ids 1 "$phases")
+    ids=$(select_ids 1 "$order")
     ;;
   --through)
     [ "$#" -eq 2 ] || { echo "usage: $0 --through <phase>" >&2; exit 2; }
@@ -125,8 +127,8 @@ case "${1:-}" in
 esac
 
 if [ -z "$ids" ]; then
-  echo "no requirement IDs to check"
-  exit 0
+  echo "no requirement IDs to check" >&2
+  exit 1
 fi
 
 list=$(cargo test --workspace --quiet -- --list 2>/dev/null | sed -n 's/: test$//p' | sed 's/.*:://' | sort -u)
