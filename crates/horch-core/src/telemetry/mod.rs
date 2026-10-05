@@ -216,10 +216,10 @@ pub fn dir(state_root: &std::path::Path) -> PathBuf {
 /// The plan slug in a task (section 6.1): the first
 /// `ai_docs/plans/<slug>.md` it names, without the extension.
 pub(crate) fn plan_slug(task: &str) -> Option<String> {
-    // The regex `<prefix>([A-Za-z0-9._-]+)\.md`, by hand: take the run
+    // The regex `ai_docs/plans/([A-Za-z0-9._-]+)\.md`, by hand: take the run
     // of name characters after the prefix, and cut it at its LAST `.md`,
     // which is where a greedy match backtracks to.
-    const NEEDLE: &str = concat!("ai_docs", "/plans/");
+    const NEEDLE: &str = "ai_docs/plans/";
     let mut rest = task;
     while let Some(at) = rest.find(NEEDLE) {
         rest = &rest[at + NEEDLE.len()..];
@@ -255,7 +255,7 @@ mod tests {
             ),
             ("ai_docs/plans/.md is not a plan", None),
             ("ai_docs/plans/notes.txt", None),
-            ("see ai_docs/plans/<slug>.md", None),
+            ("see ai_docs/plans/", None),
             ("no plan at all", None),
             ("(idle - awaiting assignment)", None),
             ("ai_docs/plans/x.md.", Some("x")),
