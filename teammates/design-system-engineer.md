@@ -6,12 +6,12 @@ agent: claude
 phase: implementation
 # sonnet: tokens and components are precise, rule-bound work, and the
 # direction contract supplies the judgement. Spawn opus for a system with no
-# direction. (ai_docs/reports/model-guide-2026-09.md)
+# direction.
 model: sonnet
 # When this model's usage pool cannot serve a spawn (horch route design-system-engineer).
 fallbacks: [codex-terra]
 # medium: builders work from a written brief, so depth belongs to whoever
-# wrote it. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)
+# wrote it. Raise one spawn with --effort.
 effort: medium
 permission_mode: auto
 skills: [design-system, ui-taste, brand-identity]

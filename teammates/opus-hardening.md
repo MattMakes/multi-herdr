@@ -10,7 +10,6 @@ fallbacks: [codex-sol]
 # high: the sweet spot. Root-cause analysis and hardening need depth, and Opus
 # at high often matches or beats a smaller model at max on fewer tokens.
 # Not for first drafts: reasoning tokens spent on preliminary ideas are waste.
-# (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")
 effort: high
 permission_mode: auto
 inherit_plugins: false

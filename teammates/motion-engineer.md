@@ -8,7 +8,7 @@ model: opus
 # When this model's usage pool cannot serve a spawn (horch route motion-engineer).
 fallbacks: [codex-sol]
 # medium: builders work from a written brief, so depth belongs to whoever
-# wrote it. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)
+# wrote it. Raise one spawn with --effort.
 effort: medium
 permission_mode: auto
 skills: [motion-gsap, ui-taste]

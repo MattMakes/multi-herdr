@@ -16,10 +16,8 @@ requires: [godot]
 # there (Godot import writes outside the project, to the user data directory,
 # and Codex runs with the network off and workspace-write). When the Claude
 # pool is out, `horch route` refuses and the orchestrator waits. Add a Codex
-# fallback only after a trial on a real project
-# (ai_docs/reports/godot-wave.md "Harness notes").
+# fallback only after a trial on a real project.
 # high: a missed finding costs a review round, the same as qa-engineer.
-# (ai_docs/reports/model-guide-2026-09.md)
 effort: high
 permission_mode: auto
 inherit_plugins: false
@@ -30,11 +28,10 @@ skills:
   - godot-testing
   - godot-debugging
   - godot-build-verify
-# Named by name only: related skills from the Teammates tables in
-# ai_docs/reports/godot-wave.md.
+# Named by name only: related skills.
 available_skills: [godot-dependency-injection, godot-gdscript-advanced, godot-optimization]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
-# DONE: needs (ai_docs/reports/godot-wave.md "Harness notes").
+# DONE: needs.
 mcp_servers: {}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]

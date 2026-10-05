@@ -16,7 +16,6 @@ requires: [xcode]
 # servers. When the Claude pool is out, `horch route` refuses and the
 # orchestrator waits.
 # high: a missed finding costs a review round, the same as qa-engineer.
-# (ai_docs/reports/model-guide-2026-09.md)
 effort: high
 permission_mode: auto
 inherit_plugins: false

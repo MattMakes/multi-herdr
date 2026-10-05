@@ -8,7 +8,7 @@ model: opus
 # When this model's usage pool cannot serve a spawn (horch route design-director).
 fallbacks: [codex-sol]
 # high, like the planners: every builder works from this contract, so a weak
-# direction costs a build round per builder. (ai_docs/reports/model-guide-2026-09.md)
+# direction costs a build round per builder.
 effort: high
 permission_mode: auto
 skills: [art-direction, ui-taste, brand-identity]

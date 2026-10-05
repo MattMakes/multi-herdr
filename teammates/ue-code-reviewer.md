@@ -11,7 +11,7 @@ offer_when: ["*.uproject"]
 # When this model's usage pool cannot serve a spawn (horch route ue-code-reviewer).
 fallbacks: [codex-sol]
 # high: a missed finding costs a review round, the same as
-# architect-reviewer. (ai_docs/reports/model-guide-2026-09.md)
+# architect-reviewer.
 effort: high
 
 # Review is read-only, enforced by denying the editing tools, the same as
@@ -26,8 +26,7 @@ skills:
   - ue-actor-component-architecture
   - ue-networking-replication
   - ue-async-threading
-# Named by name only: the skills this one's skills point to most under
-# "Related Skills" (ai_docs/reports/domain-skills/ue-teammates.md).
+# Named by name only: the skills this one's skills point to most.
 available_skills: [ue-gameplay-framework, ue-gameplay-abilities, ue-blueprint-cpp-interop]
 mcp_servers: {}
 # Stale external copies of the fleet briefing; the repo carries the real one.

@@ -16,7 +16,7 @@ requires: [blender]
 # MCP servers, so the Blender server would be gone. When the Claude pool is
 # out, `horch route` refuses and the orchestrator waits.
 # medium: builders work from a written brief, so depth belongs to whoever
-# wrote it. Same as backend-developer. (ai_docs/reports/model-guide-2026-09.md)
+# wrote it. Same as backend-developer.
 effort: medium
 permission_mode: auto
 inherit_plugins: false
@@ -34,7 +34,7 @@ available_skills: [ue-editor-scripting]
 # BLENDER_PATH in the operator's environment when `blender` is not on PATH
 # (macOS: /Applications/Blender.app/Contents/MacOS/Blender). The live tools
 # need Blender 5.1+ with the Blender Lab MCP add-on on localhost:9876
-# (BLENDER_MCP_HOST, BLENDER_MCP_PORT). Research: ai_docs/reports/finish/blender.md.
+# (BLENDER_MCP_HOST, BLENDER_MCP_PORT).
 mcp_servers:
   blender: {"type":"stdio","command":"uvx","args":["--from","git+https://projects.blender.org/lab/blender_mcp.git@2cea8d566dde07fbac28a61d698909d69724e853#subdirectory=mcp","blender-mcp"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.

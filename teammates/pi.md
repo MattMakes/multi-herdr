@@ -7,7 +7,7 @@ agent: pi
 phase: implementation
 model: ollama/qwen3.8
 # low, not high: on Qwen3.8 the long-context benchmark scores xhigh below
-# low (ai_docs/reports/env-research/compaction-benchmarks.md), and a local
+# low, and a local
 # model pays for every thinking token in wall-clock time.
 effort: low
 

@@ -96,8 +96,7 @@ fallbacks: []
 # Same field, different mechanism per agent, and `horch teammates --check`
 # validates it per agent. `horch spawn --effort` overrides it for one spawn.
 # Levels are not comparable across vendors: "high" on codex is not "high" on
-# claude. See ai_docs/reports/model-guide-2026-09.md for why each teammate
-# runs at the level it does.
+# claude.
 effort: xhigh
 
 # claude only. Sets CLAUDE_CODE_SUBAGENT_MODEL, i.e. the model this teammate's
@@ -242,8 +241,7 @@ permission_mode: acceptEdits
 #   asking for the deny, so a waived teammate really can spawn subagents.
 #
 # Other harnesses carry the same rule through their own switch. Codex uses
-# `args: ["-c", "features.multi_agent=false"]`. See
-# `ai_docs/reports/no-subagents.md` for the evidence per harness.
+# `args: ["-c", "features.multi_agent=false"]`.
 tools:
 allowed_tools: []
 disallowed_tools: [Agent]

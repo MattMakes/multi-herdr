@@ -13,7 +13,7 @@ requires: [xcode]
 # No fallback: a fallback launches with the fallback's env and tool lists,
 # so the sandbox, the credential isolation and the deny list would be gone.
 # medium: the skills carry the procedure, and every outward-facing step ends
-# at the orchestrator. (ai_docs/reports/model-guide-2026-09.md)
+# at the orchestrator.
 effort: medium
 permission_mode: auto
 inherit_plugins: false
@@ -76,7 +76,7 @@ disallowed_tools:
   - "Bash(*altool *)"
   - "Bash(*notarytool submit *)"
 
-# The OS boundary (ai_docs/reports/finish/release-sandbox.md). horch adds
+# The OS boundary. horch adds
 # enabled, failIfUnavailable, allowUnsandboxedCommands: false,
 # network.strictAllowlist and permissions.blockReadsOutsideWorkingDirectories,
 # and refuses to launch on a host that cannot sandbox. The block closes the
@@ -86,8 +86,7 @@ sandbox:
   filesystem:
     # Darwin per-user temp and cache dirs: xcodebuild stages atomic saves
     # there. Build output goes to build/ in the project (see the persona).
-    # Without this entry `xcodebuild archive` fails with exit 65
-    # (ai_docs/reports/finish/release-verify.md).
+    # Without this entry `xcodebuild archive` fails with exit 65.
     allowWrite: ["/private/var/folders"]
     # Named as well as closed by the block, so they stay closed if Claude
     # Code changes the block. ~/.asc is asc's own config; altool reads keys

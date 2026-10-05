@@ -12,10 +12,9 @@ offer_when: ["*.uproject"]
 # untested there (network off, workspace-write may block the shared Derived
 # Data Cache; native Windows refuses Codex with skills). When the Claude pool
 # is out, `horch route` refuses and the orchestrator waits. Add a Codex
-# fallback only after a trial on a real project
-# (ai_docs/reports/unreal-engine-wave.md "Harness notes").
+# fallback only after a trial on a real project.
 # medium: builders work from a written brief, so depth belongs to whoever
-# wrote it. Same as backend-developer. (ai_docs/reports/model-guide-2026-09.md)
+# wrote it. Same as backend-developer.
 effort: medium
 permission_mode: auto
 inherit_plugins: false
@@ -26,8 +25,7 @@ skills:
   - ue-character-movement
   - ue-mover
   - ue-build-verify
-# Named by name only: the skills this one's skills point to most under
-# "Related Skills" (ai_docs/reports/domain-skills/ue-teammates.md).
+# Named by name only: the skills this one's skills point to most.
 available_skills: [ue-actor-component-architecture, ue-cpp-foundations, ue-physics-collision]
 # No MCP servers: the engine headers, not a docs server, are the API source.
 mcp_servers: {}

@@ -15,7 +15,6 @@ requires: [godot]
 # When this model's usage pool cannot serve a spawn (horch route godot-code-reviewer).
 fallbacks: [codex-sol]
 # high: a missed finding costs a review round, the same as qa-engineer.
-# (ai_docs/reports/model-guide-2026-09.md)
 effort: high
 
 # Review is read-only, enforced by denying the editing tools, the same as
@@ -29,11 +28,10 @@ skills:
   - godot-gdscript-advanced
   - godot-scene-organization
   - godot-multithreading
-# Named by name only: related skills from the Teammates tables in
-# ai_docs/reports/godot-wave.md.
+# Named by name only: related skills.
 available_skills: [godot-csharp-godot, godot-multiplayer-sync, godot-optimization]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
-# DONE: needs (ai_docs/reports/godot-wave.md "Harness notes").
+# DONE: needs.
 mcp_servers: {}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent, Edit, Write, NotebookEdit]

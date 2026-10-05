@@ -9,7 +9,7 @@ model: sonnet
 fallbacks: [codex-terra]
 # low: instant feedback and sketching. The output is a first draft someone
 # else refines, so thinking tokens spent here are spent on ideas that will be
-# replaced. (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")
+# replaced.
 effort: low
 permission_mode: auto
 inherit_plugins: false

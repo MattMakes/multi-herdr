@@ -10,7 +10,6 @@ fallbacks: [codex-sol]
 # low: high-level steering. Opus's baseline reasoning carries the judgment;
 # the effort stays low so the answer comes back fast. Deep verification is a
 # different seat (opus-hardening, opus-verify).
-# (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")
 effort: low
 
 # Steering, not implementation. Edit is denied so the only file it can change

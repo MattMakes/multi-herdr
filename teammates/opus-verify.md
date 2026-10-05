@@ -10,7 +10,6 @@ fallbacks: [codex-sol]
 # max: fully autonomous, sandboxed, high-stakes verification. The most tokens
 # per task on the roster, so only for a precise spec: at max, a flawed premise
 # is pursued at full depth for a long time.
-# (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")
 effort: max
 permission_mode: auto
 inherit_plugins: false

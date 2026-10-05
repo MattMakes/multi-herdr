@@ -8,7 +8,7 @@ model: opus
 # When this model's usage pool cannot serve a spawn (horch route product-lead).
 fallbacks: [codex-sol]
 # high: plans and product calls are where a wrong turn is expensive, but
-# the orchestrator above already runs at xhigh. (ai_docs/reports/model-guide-2026-09.md)
+# the orchestrator above already runs at xhigh.
 effort: high
 permission_mode: auto
 inherit_plugins: false

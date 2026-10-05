@@ -15,7 +15,7 @@ requires: [xcode]
 # no compiler warnings; the persona says to report that.
 fallbacks: [codex-sol]
 # high: a missed finding costs a review round, the same as
-# architect-reviewer. (ai_docs/reports/model-guide-2026-09.md)
+# architect-reviewer.
 effort: high
 
 # Review is read-only, enforced by denying the editing tools, the same as

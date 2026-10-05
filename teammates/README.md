@@ -61,7 +61,6 @@ choose from** — there is no registry to update and nothing to recompile.
   one that does not. `allow_subagents: true` waives the check for one teammate
   and denies nothing by itself; nothing shipped sets it. The Codex teammates
   carry the same rule as `args: ["-c", "features.multi_agent=false"]`.
-  `ai_docs/reports/no-subagents.md` has the evidence per harness.
 - **The orchestrator delegates only to workers.** The Claude orchestrator
   also denies `RemoteTrigger`, which starts a cloud agent, and
   `allow_subagents` cannot waive either deny for it. Its briefing forbids a
@@ -127,10 +126,7 @@ plugin directories.
 Eleven `ue-*` specialists staff Unreal Engine work. Each sets
 `offer_when: ["*.uproject"]`, so the fleet orchestrator is offered them only
 when the project has a `.uproject` file at the top level or one level down.
-`horch spawn ue-<name>` still works in any project. The selection, the
-skill choices and the measured briefing sizes are in
-[`ai_docs/reports/unreal-engine-wave.md`](../ai_docs/reports/unreal-engine-wave.md)
-and [`ai_docs/reports/domain-skills/ue-teammates.md`](../ai_docs/reports/domain-skills/ue-teammates.md).
+`horch spawn ue-<name>` still works in any project.
 
 | teammate | wave | phase | agent, model, effort | use for |
 |---|---|---|---|---|
@@ -186,8 +182,7 @@ only when the project has a `project.godot` file at the top level or one
 level down. Each also sets `requires: [godot]`, and `horch doctor` then looks
 for the engine (`GODOT_PATH`, then `godot` on PATH, then the macOS app
 bundle) and checks that `--version` is 4.3 or later. `horch spawn godot-<name>`
-still works in any project. The selection and the skill choices are in
-[`ai_docs/reports/godot-wave.md`](../ai_docs/reports/godot-wave.md).
+still works in any project.
 
 | teammate | wave | phase | agent, model, effort | use for |
 |---|---|---|---|---|
@@ -253,7 +248,6 @@ or `BLENDER_PATH`); the live tools need Blender 5.1+ with the Blender Lab MCP
 add-on. It carries `blender-ue-pipeline` and names `ue-editor-scripting`. It
 exports to a source-art folder and never writes `.uasset`; `ue-technical-artist`
 or `ue-tools-engineer` imports. No fallback: Codex has no MCP parity here.
-Research and the server choice: [`ai_docs/reports/finish/blender.md`](../ai_docs/reports/finish/blender.md).
 
 ## The Swift and Apple team
 
@@ -261,10 +255,7 @@ Seven specialists staff Swift and Apple-platform work. Each sets
 `offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]`, so the fleet
 orchestrator is offered them only on an Apple project. All except
 `codex-swift-reviewer` set `requires: [xcode]`, so `horch doctor` checks
-`xcodebuild` and its first launch when the project is offered them. The
-selection and the skill choices are in
-[`ai_docs/reports/swift-fleet-skills-2026-10.md`](../ai_docs/reports/swift-fleet-skills-2026-10.md)
-and [`ai_docs/reports/domain-skills/swift-teammates.md`](../ai_docs/reports/domain-skills/swift-teammates.md).
+`xcodebuild` and its first launch when the project is offered them.
 
 | teammate | phase | agent, model, effort | fallback | use for |
 |---|---|---|---|---|
@@ -341,8 +332,7 @@ Token efficiency: for deep reasoning, `opus-hardening` (Opus at high) often
 matches or beats Sonnet at max on fewer tokens. `sonnet-sweep` exists for
 repetitive volume, not for depth. `opus-architect` is the fast, low-effort
 counterpart of `staff-engineer` (deep plans, high) and `architect-reviewer`
-(reviews a change, high). Rationale per seat is in
-[`ai_docs/reports/model-guide-2026-09.md`](../ai_docs/reports/model-guide-2026-09.md).
+(reviews a change, high).
 
 ## The generics
 
@@ -376,9 +366,7 @@ confidentiality as much as on capability:
 ## Effort: set by role, stated in every file
 
 Each teammate's `effort:` follows its role, not its model
-([ImCesar/cezaar#40](https://github.com/ImCesar/cezaar/issues/40)). The
-evidence per teammate, with prices and sources, is in
-[`ai_docs/reports/model-guide-2026-09.md`](../ai_docs/reports/model-guide-2026-09.md).
+([ImCesar/cezaar#40](https://github.com/ImCesar/cezaar/issues/40)).
 
 | role | teammates | effort |
 |---|---|---|
@@ -453,8 +441,6 @@ wall-clock time. Known Qwen3.8 issues (2026-09):
   1. Point the provider at Ollama's native API instead.
   2. Or switch the tag to `qwen3.6:27b` (SWE-bench Verified 77.2; fits
      24 GB). Update both `id` here and `pi.md`'s `model:`.
-
-See `ai_docs/reports/model-guide-2026-09.md`.
 
 ## The two orchestrators
 

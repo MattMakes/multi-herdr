@@ -11,7 +11,7 @@ offer_when: ["*.uproject"]
 # When this model's usage pool cannot serve a spawn (horch route ue-tech-lead).
 fallbacks: [codex-sol]
 # high: a planner, like staff-engineer. A wrong module split or a missed
-# plugin dependency costs every builder after it. (ai_docs/reports/model-guide-2026-09.md)
+# plugin dependency costs every builder after it.
 effort: high
 permission_mode: auto
 inherit_plugins: false
@@ -20,8 +20,7 @@ skills:
   - ue-module-build-system
   - ue-game-features
   - ue-cpp-foundations
-# Named by name only: the skills this one's skills point to most under
-# "Related Skills" (ai_docs/reports/domain-skills/ue-teammates.md).
+# Named by name only: the skills this one's skills point to most.
 available_skills: [ue-actor-component-architecture, ue-gameplay-framework, ue-testing-debugging]
 # No MCP servers: the engine headers, not a docs server, are the API source.
 mcp_servers: {}

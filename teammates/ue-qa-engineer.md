@@ -12,10 +12,8 @@ offer_when: ["*.uproject"]
 # untested there (network off, workspace-write may block the shared Derived
 # Data Cache; native Windows refuses Codex with skills). When the Claude pool
 # is out, `horch route` refuses and the orchestrator waits. Add a Codex
-# fallback only after a trial on a real project
-# (ai_docs/reports/unreal-engine-wave.md "Harness notes").
+# fallback only after a trial on a real project.
 # high: a missed finding costs a review round, the same as qa-engineer.
-# (ai_docs/reports/model-guide-2026-09.md)
 effort: high
 permission_mode: auto
 inherit_plugins: false
@@ -26,8 +24,7 @@ skills:
   - ue-testing-debugging
   - ue-module-build-system
   - ue-build-verify
-# Named by name only: the skills this one's skills point to most under
-# "Related Skills" (ai_docs/reports/domain-skills/ue-teammates.md).
+# Named by name only: the skills this one's skills point to most.
 available_skills: [ue-cpp-foundations]
 # No MCP servers: there is no page to look at, and the engine headers are the
 # API source.

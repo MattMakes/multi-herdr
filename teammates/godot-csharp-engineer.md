@@ -16,10 +16,9 @@ requires: [godot]
 # there (Godot import writes outside the project, to the user data directory,
 # and Codex runs with the network off and workspace-write). When the Claude
 # pool is out, `horch route` refuses and the orchestrator waits. Add a Codex
-# fallback only after a trial on a real project
-# (ai_docs/reports/godot-wave.md "Harness notes").
+# fallback only after a trial on a real project.
 # medium: builders work from a written brief, so depth belongs to whoever
-# wrote it. Same as backend-developer. (ai_docs/reports/model-guide-2026-09.md)
+# wrote it. Same as backend-developer.
 effort: medium
 permission_mode: auto
 inherit_plugins: false
@@ -30,11 +29,10 @@ skills:
   - godot-multithreading
   - godot-build-verify
   - godot-scene-files
-# Named by name only: related skills from the Teammates tables in
-# ai_docs/reports/godot-wave.md.
+# Named by name only: related skills.
 available_skills: [godot-gdextension, godot-event-bus, godot-save-load]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
-# DONE: needs (ai_docs/reports/godot-wave.md "Harness notes").
+# DONE: needs.
 mcp_servers: {}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]

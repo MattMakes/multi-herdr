@@ -16,7 +16,7 @@ requires: [xcode]
 # servers, so the build server would be gone. When the Claude pool is out,
 # `horch route` refuses and the orchestrator waits.
 # medium: builders work from a written brief, so depth belongs to whoever
-# wrote it. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)
+# wrote it. Raise one spawn with --effort.
 effort: medium
 permission_mode: auto
 inherit_plugins: false
@@ -34,8 +34,7 @@ skills:
 # exports its own copy (Xcode 27 or later):
 #   xcrun agent skills export --output-dir ~/.agents/skills
 # swiftui-whats-new-27 is the only source on the iOS 27 SwiftUI APIs, and
-# test-modernizer moves XCTest to Swift Testing
-# (ai_docs/reports/swift-fleet-skills-2026-10.md section 7.2).
+# test-modernizer moves XCTest to Swift Testing.
 # device-interaction stays out: it is a subagent skill. On a host without
 # the export, `horch teammates --check` warns, and the launch skips the
 # skill and says so in the briefing.

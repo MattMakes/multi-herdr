@@ -16,10 +16,9 @@ requires: [godot]
 # there (Godot import writes outside the project, to the user data directory,
 # and Codex runs with the network off and workspace-write). When the Claude
 # pool is out, `horch route` refuses and the orchestrator waits. Add a Codex
-# fallback only after a trial on a real project
-# (ai_docs/reports/godot-wave.md "Harness notes").
+# fallback only after a trial on a real project.
 # high: a profiler reads numbers and must not guess at causes; a wrong
-# hot-spot costs a second capture. Same as ue-qa-engineer. (ai_docs/reports/model-guide-2026-09.md)
+# hot-spot costs a second capture. Same as ue-qa-engineer.
 effort: high
 permission_mode: auto
 inherit_plugins: false
@@ -31,15 +30,14 @@ skills:
   - godot-physics-system
   - godot-assets-pipeline
   - godot-build-verify
-# Named by name only: related skills from the Teammates tables in
-# ai_docs/reports/godot-wave.md.
+# Named by name only: related skills.
 available_skills: [godot-gdextension, godot-shader-basics, godot-particles-vfx]
 # A C# project (a *.csproj next to project.godot) adds the C# skills to this
 # builder (GW11, roster/offer.rs project_skills). godot-csharp-engineer owns
 # interop, .NET builds and source-generator problems.
 skills_when: {"*.csproj": [godot-csharp-godot, godot-csharp-signals]}
 # No MCP servers: the shell and `godot --doctool` give a worker everything
-# DONE: needs (ai_docs/reports/godot-wave.md "Harness notes").
+# DONE: needs.
 mcp_servers: {}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]

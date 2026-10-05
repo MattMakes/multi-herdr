@@ -11,7 +11,6 @@ fallbacks: [codex-terra]
 # long run, not insight. Only for precisely specified work: at max, Sonnet
 # compounds a wrong assumption over every file it touches. For deep reasoning,
 # Opus at high costs fewer tokens than this seat.
-# (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")
 effort: max
 permission_mode: auto
 inherit_plugins: false

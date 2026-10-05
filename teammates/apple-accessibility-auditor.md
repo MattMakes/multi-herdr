@@ -15,7 +15,6 @@ requires: [xcode]
 # live accessibility tree; the persona says to report that.
 fallbacks: [codex-terra]
 # high: a missed finding costs a review round, the same as qa-engineer.
-# (ai_docs/reports/model-guide-2026-09.md)
 effort: high
 
 # An audit is read-only, enforced by denying the editing tools, the same as

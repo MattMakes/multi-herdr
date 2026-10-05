@@ -9,7 +9,6 @@ model: opus
 fallbacks: [codex-sol]
 # medium: complex feature engineering. The difficulty is in the domain, which
 # Opus's baseline reasoning handles; medium buys care, not exhaustive search.
-# (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")
 effort: medium
 permission_mode: auto
 inherit_plugins: false

@@ -9,7 +9,6 @@ model: sonnet
 fallbacks: [codex-terra]
 # medium: everyday feature delivery against a written spec, the same level as
 # the other builders. The spec carries the design; this seat carries it out.
-# (ai_docs/reports/model-guide-2026-09.md, "Effort-matrix personas")
 effort: medium
 permission_mode: auto
 inherit_plugins: false

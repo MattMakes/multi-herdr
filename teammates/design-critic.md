@@ -8,7 +8,6 @@ model: opus
 # When this model's usage pool cannot serve a spawn (horch route design-critic).
 fallbacks: [codex-sol]
 # high, like the other reviewers: a missed finding costs a fix round.
-# (ai_docs/reports/model-guide-2026-09.md)
 effort: high
 
 # Review is read-only, enforced by denying the editing tools, as on

@@ -15,7 +15,7 @@ requires: [godot]
 # When this model's usage pool cannot serve a spawn (horch route godot-tech-lead).
 fallbacks: [codex-sol]
 # high: a planner, like staff-engineer. A wrong scene split or a missed
-# autoload costs every builder after it. (ai_docs/reports/model-guide-2026-09.md)
+# autoload costs every builder after it.
 effort: high
 permission_mode: auto
 inherit_plugins: false
@@ -28,11 +28,10 @@ skills:
   - godot-genre-blueprints
   - godot-event-bus
   - godot-dependency-injection
-# Named by name only: related skills from the Teammates tables in
-# ai_docs/reports/godot-wave.md.
+# Named by name only: related skills.
 available_skills: [godot-component-system, godot-resource-pattern, godot-version-migration]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
-# DONE: needs (ai_docs/reports/godot-wave.md "Harness notes").
+# DONE: needs.
 mcp_servers: {}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
