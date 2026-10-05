@@ -312,7 +312,7 @@ pub fn render(report: &Report, ledger: &str) -> String {
     let rep = |x: Option<f64>| x.map(|v| format!(" | {}", money(v))).unwrap_or_default();
 
     let mut out = format!(
-        "# Fleet cost\n\nLedger: {ledger}\nPrices as of {} (USD per MTok; see ai_docs/reports/model-guide-2026-09.md).\n\n",
+        "# Fleet cost\n\nLedger: {ledger}\nPrices as of {} (USD per MTok).\n\n",
         report.prices_as_of
     );
     out.push_str("## Workers\n\n");

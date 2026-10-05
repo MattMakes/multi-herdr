@@ -144,7 +144,7 @@ fn sync_dir(dir: &Path) -> Result<()> {
 
 /// Replace `path` with `bytes` atomically and durably, with file mode `mode`.
 /// This is the "replace" discipline of
-/// `ai_docs/designs/2026-10-02-dataset-competition-design.md` §2.3 (MEA-09).
+/// `docs/specs/dataset-competition.md` §2.3 (MEA-09).
 pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let (parent, name) = parent_and_name(path)?;
     let nonce = uuid::Uuid::new_v4().simple().to_string();

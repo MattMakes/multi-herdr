@@ -2,7 +2,7 @@
 //!
 //! As a pane agent it records argv and exits 0. As `codex app-server` it
 //! speaks the JSON-RPC lines the quota probe uses, in the shape Codex 0.158.0
-//! ships (`ai_docs/reports/quota-signals.md` section 2).
+//! ships.
 //!
 //! Violation: any method other than `initialize`, `initialized` and
 //! `account/rateLimits/read`. A thread or a turn is never allowed.

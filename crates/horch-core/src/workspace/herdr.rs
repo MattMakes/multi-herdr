@@ -6,7 +6,7 @@
 //! current`, and no `--env` or `--ratio` on `pane split`.
 //!
 //! The tab and `pane move` calls that `horch tile` needs arrived later and are
-//! verified against 0.8.2 (`ai_docs/reports/horch-tile-herdr-surface.md`). They
+//! verified against 0.8.2. They
 //! are additions, so a caller that never tiles still only needs 0.6.1.
 
 use std::ffi::OsStr;
@@ -283,8 +283,8 @@ impl Herdr {
     /// `herdr pane move <pane> --tab <tab> --split <d> [--target-pane <target>]
     /// [--ratio <r>] --no-focus`.
     ///
-    /// Keeps the pane id and the running process (verified against herdr 0.8.2;
-    /// see `ai_docs/reports/horch-tile-herdr-surface.md`). `ratio` is the share
+    /// Keeps the pane id and the running process (verified against herdr 0.8.2).
+    /// `ratio` is the share
     /// the TARGET pane keeps, so the moved pane gets `1 - ratio`.
     ///
     /// A move into the tab the pane already occupies is refused with

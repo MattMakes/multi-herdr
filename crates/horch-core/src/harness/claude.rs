@@ -280,7 +280,7 @@ const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
 /// The `sandbox` keys horch sets on every sandboxed launch, whatever the
 /// teammate file says, as (path, value). `check` rejects a file that sets
-/// one to anything else. See ai_docs/reports/finish/release-sandbox.md.
+/// one to anything else.
 /// - `enabled`: the field means "sandbox this pane".
 /// - `failIfUnavailable`: Claude Code exits at startup rather than run
 ///   commands unsandboxed.
@@ -408,7 +408,7 @@ pub(crate) fn sandbox_host_problem(
 /// the same value in the operator's settings.json would trash the cache.
 /// Each `disabled_skills` entry goes off by name. Settings merge per key, so
 /// the operator's own `skillOverrides` still apply - verified against a live
-/// launch (Claude Code 2.1.276, ai_docs/reports/claudeai-synced-skills.md).
+/// launch (Claude Code 2.1.276).
 pub(crate) fn overlay_skill_switches(
     teammate: &Teammate,
     overlay: &mut serde_json::Map<String, serde_json::Value>,
@@ -460,7 +460,7 @@ pub(crate) fn overlay_skill_switches(
         plugins.entry(key).or_insert(serde_json::Value::Bool(false));
     }
     // For the same reason a disabled `<plugin>:<skill>` switches its whole
-    // plugin off (Claude Code 2.1.289, ai_docs/reports/finish/skill-overrides.md).
+    // plugin off (Claude Code 2.1.289).
     // `or_insert` keeps what plugin_skills set. Its filtered copy is
     // `<plugin>@inline`, a key this loop never names, so it stays on.
     let enabled = operator_enabled_plugins(home);

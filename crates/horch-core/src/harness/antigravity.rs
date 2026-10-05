@@ -6,8 +6,6 @@
 //! `~/.gemini/antigravity-cli/cache/last_conversations.json`, which maps each
 //! workspace directory to its newest conversation id. A resume passes
 //! `--conversation <id>`.
-//!
-//! Research and sources: ai_docs/reports/design-skills/antigravity-research.md.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

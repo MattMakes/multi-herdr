@@ -1,8 +1,7 @@
 # Telemetry fixture corpus
 
 Synthetic data only. No line comes from a real transcript. Field names and
-nesting follow the evidence reports, which read the shipped harness code:
-`ai_docs/reports/telemetry-sources.md` [S] and `ai_docs/reports/quota-signals.md` [Q].
+nesting follow the shipped harness code.
 
 `SENTINEL-CONTENT`, `sentinel@example.invalid` and `acct_SENTINEL` mark text
 that must never reach a telemetry or quota file (TEL-11).

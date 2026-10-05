@@ -28,8 +28,8 @@
 //!
 //! Parking uses the same 2-row grid as placement rather than one chain of right
 //! splits, because herdr enforces no minimum pane size: nine chained right
-//! splits measured 46, 23, 11, 5, 2, 1, 0, 0, 0 cells wide without one error
-//! (`ai_docs/reports/horch-tile-herdr-surface.md`). A chain would hand a live
+//! splits measured 46, 23, 11, 5, 2, 1, 0, 0, 0 cells wide without one error.
+//! A chain would hand a live
 //! agent a zero-column terminal on the way past.
 //!
 //! # Why a new column splits the row below it too
@@ -37,8 +37,8 @@
 //! A right split subdivides its own pane's rect and nothing else. Splitting
 //! column 1's half-height top pane to the right therefore opens the new column in
 //! the TOP ROW ONLY, and splitting that new pane DOWN produces two
-//! quarter-height panes - the shape `ai_docs/reports/layout-survey.md` section 6
-//! documents as unrecoverable. So column `c >= 2` is opened twice, once against
+//! quarter-height panes - the shape that cannot be
+//! recovered. So column `c >= 2` is opened twice, once against
 //! column `c-1`'s top pane and once against its bottom pane, which is the order
 //! `crates/horch/src/cmd/recipes.rs` has always used by hand.
 
@@ -612,7 +612,7 @@ pub(crate) struct FocusTarget {
 /// pane to the park phase, so herdr closes it and the tiler creates a fresh one
 /// with a NEW id. Matching the old tab id alone would therefore fail for every
 /// overflow tab, which is exactly what
-/// `ai_docs/reports/horch-tile-focus.md` case C measured.
+/// a live run measured.
 ///
 /// Pure: `after` is the snapshot the command already built, and nothing here
 /// calls herdr.
@@ -693,7 +693,7 @@ pub(crate) fn focus_target(
 /// full: the bottom pane spans two columns, so its centre sits LEFT of the
 /// top-right pane above it even though it is directly below. A rule that only
 /// compared centres sent the walk left, then right, then left again, and the
-/// focus never arrived (`ai_docs/reports/horch-tile-focus.md`, step 3).
+/// focus never arrived (measured in a live run).
 ///
 /// `None` for two rects that overlap on both axes, which means they are the same
 /// pane: no direction leads anywhere.
@@ -1057,7 +1057,7 @@ mod tests {
     /// The shape verified by hand against herdr 0.8.2: the fourth worker opens
     /// column 2 in the BOTTOM row, against column 1's bottom pane. A DOWN split
     /// from column 2's top pane instead would halve a half, which is the
-    /// quarter-height bug in ai_docs/reports/layout-survey.md section 6.
+    /// quarter-height bug.
     #[test]
     fn a_full_tab_1_opens_column_2_in_both_rows_and_never_splits_a_half_pane_down() {
         let plan = plan(&fleet(4));

@@ -42,7 +42,7 @@ pub(crate) fn valid_efforts(agent: HarnessKind) -> &'static [&'static str] {
 ///
 /// Claude's Haiku 4.5 has none, so claude rejects `--effort` for it. The
 /// OpenCode free-tier models report `variants: {}` (`opencode models
-/// --verbose`, ai_docs/reports/env-research/codex-opencode.md), so an effort
+/// --verbose`), so an effort
 /// there is silently a no-op - worse than an error, because the file then
 /// claims a setting that is not happening. Each harness module owns its rule.
 pub fn model_takes_effort(agent: HarnessKind, model: &str) -> bool {

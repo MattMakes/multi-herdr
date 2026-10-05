@@ -104,7 +104,7 @@ impl Readiness {
 
 /// herdr detects an agent in the pane but does not know its state yet: the
 /// agent is starting. `herdr agent prompt` still succeeds then, and the text
-/// is lost (opencode 1.18.34, LA-3 in `ai_docs/reports/finish/acceptance-fleet.md`).
+/// is lost (opencode 1.18.34, LA-3).
 fn starting(pane: &Pane) -> bool {
     pane.agent.as_deref().is_some_and(|a| !a.is_empty())
         && matches!(pane.agent_status.as_deref(), None | Some("unknown"))

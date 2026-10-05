@@ -243,8 +243,7 @@ impl Roster {
         // session's tool set on claude 2.1.278. The hidden orchestration-*
         // teammates run a fixed recipe, not fleet panes, so only a
         // spawnable teammate and the orchestrator itself are covered.
-        // Codex, OpenCode, pi and Prime are elsewhere; see
-        // `ai_docs/reports/no-subagents.md`.
+        // Codex, OpenCode, pi and Prime are elsewhere.
         if t.agent == HarnessKind::Claude
             && (!t.hidden || t.name == "orchestrator")
             && !t.allow_subagents

@@ -924,7 +924,7 @@ mod tests {
             a,
             vec![
                 // The fleet rule: opus, like every claude fleet pane, denies
-                // the subagent tool. See `ai_docs/reports/no-subagents.md`.
+                // the subagent tool.
                 "--disallowedTools",
                 "Agent",
                 "--model",

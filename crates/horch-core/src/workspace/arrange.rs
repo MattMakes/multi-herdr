@@ -334,8 +334,7 @@ fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
 /// move that follows also passes `--no-focus`. Restoring the tab alone is not
 /// enough, and restoring the tab BY ID is not enough either: an overflow tab
 /// loses its last pane to the park phase and is rebuilt under a new id, so the
-/// view has to follow the pane. `ai_docs/reports/horch-tile-focus.md` measures
-/// both.
+/// view has to follow the pane.
 ///
 /// Best effort throughout. A view that cannot be restored must never fail a
 /// tiling that has already moved the panes.

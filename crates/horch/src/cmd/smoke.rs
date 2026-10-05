@@ -426,7 +426,7 @@ fn grid_complaints(
 /// The pair `horch tile` has to leave alone. Before the focus restore landed,
 /// tiling handed the keyboard to the orchestrator pane every time, because the
 /// park phase moves the focused pane out with `--no-focus` and herdr then picks
-/// a pane that stayed (`ai_docs/reports/horch-tile-focus.md`).
+/// a pane that stayed.
 fn viewed(herdr: &Herdr, workspace_id: &str) -> Result<(String, String)> {
     let tab = herdr
         .workspace_list()?

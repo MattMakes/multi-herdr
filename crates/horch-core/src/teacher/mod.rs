@@ -3,7 +3,7 @@
 //!
 //! Nothing outside this module calls [`DecisionModel`] yet. The seam is kept
 //! on purpose: it is the inert Clef/Laya decision (OD4), see
-//! `ai_docs/designs/2026-10-02-dataset-competition-design.md` §1.3. A later teacher implements the trait.
+//! `docs/specs/dataset-competition.md` §1.3. A later teacher implements the trait.
 
 pub mod inert;
 pub(crate) mod system_one;
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use system_one::{DecisionRequest, DecisionResponse};
 
 /// A decision model that answers typed questions about a state. The designed
-/// seam for Clef/Laya (OD4, `ai_docs/designs/2026-10-02-dataset-competition-design.md` §1.3); [`inert::Inert`] is the only one.
+/// seam for Clef/Laya (OD4, `docs/specs/dataset-competition.md` §1.3); [`inert::Inert`] is the only one.
 pub trait DecisionModel {
     fn id(&self) -> &str;
     fn decide(&self, req: &DecisionRequest) -> Option<DecisionResponse>;

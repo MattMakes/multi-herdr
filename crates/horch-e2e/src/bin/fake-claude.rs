@@ -5,7 +5,7 @@
 //!   exit 0.
 //! - As the quota probe (`-p --input-format stream-json ...`): read control
 //!   requests from stdin and answer `get_usage` in the shape Claude Code
-//!   2.1.284 ships (`ai_docs/reports/quota-signals.md` section 1a).
+//!   2.1.284 ships.
 //!
 //! Violations: any stdin line of `"type":"user"` (the probe must never start
 //! a model turn), and `ANTHROPIC_API_KEY` in the environment.

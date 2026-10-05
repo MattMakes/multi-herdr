@@ -15,8 +15,7 @@
 //! The token readers themselves live in `telemetry::readers`, shared with the
 //! telemetry collector; this module keeps the prices and the skill scan.
 //!
-//! Prices are per million tokens and dated; see
-//! `ai_docs/reports/model-guide-2026-09.md`. `--pricing <file.json>`
+//! Prices are per million tokens and dated. `--pricing <file.json>`
 //! overrides any row without a rebuild.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -114,9 +113,8 @@ impl Price {
     }
 }
 
-/// The compiled-in price table, as of 2026-09-24. Sources and the unverified
-/// rows are in `ai_docs/reports/model-guide-2026-09.md`; the rows added on
-/// 2026-10-04 cite theirs in `ai_docs/reports/finish/acceptance-fleet.md`.
+/// The compiled-in price table, as of 2026-09-24. The rows added on
+/// 2026-10-04 cite their sources in a comment on each row.
 pub fn builtin_prices() -> BTreeMap<String, Price> {
     let mut m = BTreeMap::new();
     // Anthropic, from cezaar#49 (platform.claude.com pricing).

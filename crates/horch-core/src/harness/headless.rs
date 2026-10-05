@@ -305,8 +305,7 @@ mod tests {
         let cmd = headless_command(&ctx(), &judge(), &session, Some(schema_text())).unwrap();
         let passed = value_of(&argv(&cmd), "--json-schema").unwrap();
         assert_eq!(passed, cli_schema(schema_text()));
-        // claude 2.1.289 failed every judge run on these keys (LA-8,
-        // ai_docs/reports/finish/acceptance-dataset.md).
+        // claude 2.1.289 failed every judge run on these keys (LA-8).
         let top: serde_json::Value = serde_json::from_str(&passed).unwrap();
         for key in CLI_SCHEMA_DROPPED_KEYS {
             assert!(top.get(key).is_none(), "{key} reached --json-schema");

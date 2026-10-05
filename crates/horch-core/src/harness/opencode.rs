@@ -180,8 +180,7 @@ pub(super) fn opencode_command(
     cmd.arg("--model").arg(model_for(teammate, model_override)?);
 
     // OpenCode calls reasoning effort a model "variant". The TUI horch
-    // launches has no `--variant` flag - 1.18.2 swallows it silently
-    // (ai_docs/reports/env-research/codex-opencode.md) - so the level goes
+    // launches has no `--variant` flag - 1.18.2 swallows it silently - so the level goes
     // through the config overlay instead, as the default agent's `variant`.
     if let Some(effort) = &teammate.effort {
         let inherited = teammate

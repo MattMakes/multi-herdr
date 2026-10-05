@@ -1,4 +1,4 @@
--- OpenCode 1.18.33 schema subset (ai_docs/reports/telemetry-sources.md O1). Synthetic rows.
+-- OpenCode 1.18.33 schema subset. Synthetic rows.
 PRAGMA journal_mode=WAL;
 CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
 CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES session(id), time_created INTEGER, time_updated INTEGER, data TEXT NOT NULL);

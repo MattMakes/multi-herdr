@@ -1,6 +1,6 @@
 //! Serde types for the System One API (`POST /v1/systemone`). There is no HTTP
 //! client in this crate; these types only fix the wire shape. They belong to
-//! the OD4 seam (`ai_docs/designs/2026-10-02-dataset-competition-design.md` §1.3) and have no caller outside `teacher` yet.
+//! the OD4 seam (`docs/specs/dataset-competition.md` §1.3) and have no caller outside `teacher` yet.
 
 use std::collections::BTreeMap;
 
