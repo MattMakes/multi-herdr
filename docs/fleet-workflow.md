@@ -19,7 +19,7 @@ orchestrator, and the orchestrator spawns another pane.
 
 ## Plan files
 
-A run lives in `ai_docs/plans/<run>/` (example: `ai_docs/plans/design-skills/`):
+A run lives in `ai_docs/plans/<run>/`:
 
 | file | what it holds |
 |---|---|
@@ -117,12 +117,13 @@ rule lives in the 2 briefings in `teammates/_base/`.
 
 | directory | holds |
 |---|---|
-| `ai_docs/designs/` | designs with requirement tables (the IDs the coverage check reads) |
-| `ai_docs/plans/` | plans: 1 directory per run, plus older single-file plans |
-| `ai_docs/reports/` | reports: 1 directory per run, plus older single-file reports |
-| `ai_docs/gates/` | gate inputs, for example `architecture-refactor/CURRENT_PHASE` |
-| `ai_docs/checkpoints/` | execution-state snapshots for a resumed run |
-| `ai_docs/reflections/` | what went well and badly after a run |
+| `ai_docs/plans/<run>/` | plans: 1 directory per run |
+| `ai_docs/reports/<run>/` | reports: 1 directory per run |
+| `ai_docs/checkpoints/<run>/` | execution-state snapshots for a resumed run |
+| `ai_docs/reflections/<run>/` | what went well and badly after a run |
+
+The functional specs are not in `ai_docs/`. They are in `docs/specs/*.md`.
+Their requirement tables hold the IDs that the coverage check reads.
 
 ## Never use an API key
 

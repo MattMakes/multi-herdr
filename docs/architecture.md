@@ -172,5 +172,5 @@ your edits.
 - [command-flow.md](command-flow.md): the commands as diagrams.
 - [testing-and-gates.md](testing-and-gates.md): the gate, oracles and fakes.
 - The recipes in [README.md](README.md#recipes).
-- The designs: `ai_docs/designs/2026-10-02-architecture-refactor-design.md`
-  and `ai_docs/designs/2026-10-02-dataset-competition-design.md`.
+- The specs: [specs/architecture.md](specs/architecture.md) and
+  [specs/dataset-competition.md](specs/dataset-competition.md).

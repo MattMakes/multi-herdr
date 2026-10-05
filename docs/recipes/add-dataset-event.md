@@ -9,12 +9,10 @@ view of a round is a fold over those events.
 
 ## Before you start
 
-- `ai_docs/designs/2026-10-02-dataset-competition-design.md` section 4.1
+- [specs/dataset-competition.md](../specs/dataset-competition.md) section 4.1
   (the event log) and section 5 (round states).
 - [command-flow.md](../command-flow.md), diagram 3: where in a round each
   event happens.
-- `ai_docs/reports/arch-refactor-dataset/b5-promotion.md`: the last event
-  kind added (`operator.promote`).
 
 In the steps, `<Kind>` is the Rust name (`OperatorPromote`) and `<kind.name>`
 the dotted name (`operator.promote`).

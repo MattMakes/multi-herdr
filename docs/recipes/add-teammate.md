@@ -11,8 +11,6 @@ body.
 - `teammates/README.md`, sections "Rules" and "Adding a specialist".
 - `teammates/_template.md`: every field, with a comment that says what it
   does per harness.
-- `ai_docs/reports/design-skills/design-personas.md`: the last 6 teammates
-  added, with the test changes they needed.
 
 In the steps, `<name>` is the teammate id, for example `design-critic`.
 

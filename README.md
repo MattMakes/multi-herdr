@@ -71,8 +71,7 @@ The flavor picks who orchestrates and nothing else. All four read the same
 roster and spawn the same workers, so a Codex orchestrator still reaches for
 `opus` when a task wants Claude, and a Claude one still reaches for `codex-sol`.
 Opus is the default because it orchestrates well at well under half Fable's
-price (Opus 5.5 is $4/$20 per MTok against Fable 5.1's $10/$50; see
-[the model guide](ai_docs/reports/model-guide-2026-09.md)).
+price (Opus 5.5 is $4/$20 per MTok against Fable 5.1's $10/$50).
 
 ### At most one top-tier session per fleet
 
@@ -164,9 +163,8 @@ registry to update.
 | `pi`                   | pi     | local  | low    | Runs on your own hardware; nothing leaves the machine |
 | `prime`                | Prime Agent | Opus 5.5 | medium | One persistent Python kernel; long, exploratory runs |
 
-Why each runs at that level is in
-[ai_docs/reports/model-guide-2026-09.md](ai_docs/reports/model-guide-2026-09.md);
-see [Models and effort](#models-and-effort) below.
+Why each runs at that level is in [Models and effort](#models-and-effort)
+below.
 
 The two orchestrators are teammate files too, and hidden from the roster:
 `orchestrator` (Claude; Opus or Fable) and `orchestrator-codex` (Codex; Astra
@@ -228,8 +226,7 @@ prompting for it, and `Agent` is the only subagent tool name on that version -
 `Task` does not exist. `horch teammates --check` fails any `agent: claude`
 teammate that the orchestrator can spawn, or the orchestrator itself, if the
 deny is missing; `allow_subagents: true` waives that check for one teammate and
-nothing shipped sets it. `ai_docs/reports/no-subagents.md` records the command
-output behind every row.
+nothing shipped sets it.
 
 #### Booting without external plugins
 
@@ -259,9 +256,7 @@ name the `herdr` plugin's own copies, `herdr:herdr-orchestrator` and
 `herdr:herdr-worker`, because unlike the orchestrator and the eight Claude
 specialists they do not set `inherit_plugins: false`. The orchestrator briefing
 carries the same instruction in prose, for a pane whose settings horch does not
-control. Evidence and the full reconciliation are in
-[`ai_docs/reports/bake-in-orchestration-inventory.md`](ai_docs/reports/bake-in-orchestration-inventory.md).
-
+control. 
 ### Skills for each phase
 
 ```sh
@@ -433,8 +428,7 @@ What the sandbox does not cover:
 - **Tools outside the sandbox.** The Edit and Write tools, hooks and the
   status line run with your access. The teammate loads no MCP servers and
   has no WebFetch or WebSearch.
-- The sandbox needs Claude Code 2.1.285 or later. The design and the probes
-  are in `ai_docs/reports/finish/release-sandbox.md`.
+- The sandbox needs Claude Code 2.1.285 or later.
 
 Until the config file and the `.p8` file exist, the teammate reports
 `BLOCKED:` with the missing path and does no release work.
@@ -554,7 +548,7 @@ from `opencode.db` with the `sqlite3` CLI.
 One collector per machine reads every ledger under the state root, every
 harness's transcripts, and each harness's own usage limits, and writes
 files that everything else reads
-(`ai_docs/designs/2026-09-28-fleet-telemetry-design.md`):
+(`docs/specs/telemetry.md`):
 
 ```bash
 horch telemetry                 # the collector and its screen (g, w, p, q); a viewer if one runs
@@ -771,8 +765,8 @@ deterministically; an agent decides only where semantic judgment is needed.
 | `telemetry`, `usage` | live token telemetry; what a run cost |
 | `vcs`, `measure`, `competition`, `evaluation`, `dataset` | the dataset mode: git, the event store, rounds, judging, promotion, export |
 
-The designs are `ai_docs/designs/2026-10-02-architecture-refactor-design.md`
-and `ai_docs/designs/2026-10-02-dataset-competition-design.md`.
+The specs are `docs/specs/architecture.md` and
+`docs/specs/dataset-competition.md`.
 
 New contributors: start with [the handbook in `docs/`](docs/README.md).
 

@@ -131,8 +131,8 @@ skills-doctor:
 marketplace-refresh:
     {{horch}} marketplace refresh
 
-# Everything the telemetry design asks before a milestone is claimed
-# (ai_docs/designs/2026-09-28-fleet-telemetry-design.md, section 16.3).
+# Everything the telemetry spec asks before a milestone is claimed
+# (docs/specs/telemetry.md, section 16.3).
 verify:
     cargo build --workspace --bins
     cargo test --workspace
@@ -143,7 +143,6 @@ verify:
     HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check
 
 # The per-commit gate for the arch-refactor-dataset branch
-# (ai_docs/plans/arch-refactor-dataset/00-master-plan.md, section 5).
 gate:
     ./scripts/phase-gate.sh
 

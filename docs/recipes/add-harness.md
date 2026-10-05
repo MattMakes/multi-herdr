@@ -9,8 +9,6 @@ You want horch to launch a new agent CLI in a worker pane, next to `claude`,
 
 - [architecture.md](../architecture.md), the `harness` row and the arch-scan
   rules (`arc_10_harness_match_only_in_harness` matters most here).
-- `ai_docs/reports/design-skills/antigravity-harness.md`: the last harness
-  added, with every decision and gotcha.
 - Find out from the CLI's own docs: how it takes a prompt, model and effort;
   who mints the session id and where it is stored; how to resume; its
   permission modes; which env vars move it off the operator's login.

@@ -32,7 +32,7 @@ of defence. Do not depend on it.
 | 4 | `cargo clippy --workspace --all-targets -- -D warnings` | a clippy warning; every warning is an error | the first `warning:` in the output |
 | 5 | `cargo test --workspace --no-fail-fast` | a test failed; every test runs, so read the summary at the end | the failing test file |
 | 6 | `env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check` | a file in `teammates/` breaks a roster rule | the named teammate file; rules in `crates/horch-core/src/roster/validation.rs` |
-| 7 | `scripts/check-req-coverage.sh` | a requirement ID has no test | the ID's design table in `ai_docs/designs/` |
+| 7 | `scripts/check-req-coverage.sh` | a requirement ID has no test | the ID's requirement table in `docs/specs/` |
 | 8 | `scripts/check-deps.sh` | a crate has a dependency that is not allowed | the `Cargo.toml` you changed |
 | 9 | `scripts/verify-telemetry-e2e.sh` | the hermetic telemetry story changed | `crates/horch-e2e/tests/scenario.rs` |
 
@@ -71,16 +71,16 @@ test, coverage, telemetry e2e, deps, `rustfmt` on changed files, `teammates
 
 ## Requirement coverage
 
-`scripts/check-req-coverage.sh` reads every design in `ai_docs/designs/`. A
+`scripts/check-req-coverage.sh` reads every spec in `docs/specs/*.md`. A
 row `| TEL-05 | ...` in a table whose second header cell is `Requirement` or
 `Check` defines the ID `TEL-05`. Each defined ID needs at least 1 test whose
 name starts with the lowercase ID: `tel_05_...`.
 
-With no arguments the script checks the legacy IDs plus the phases listed in
-`ai_docs/gates/architecture-refactor/CURRENT_PHASE`. To check one ID, run
+With no arguments the script checks every ID in every spec. The script fails
+when `docs/specs/` has no spec or the specs define no ID. To check one ID, run
 `scripts/check-req-coverage.sh TEL-05`.
 
-When you add a requirement table to a design, add the tests in the same
+When you add a requirement table to a spec, add the tests in the same
 commit, or the gate fails.
 
 ## Dependencies

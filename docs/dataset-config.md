@@ -5,7 +5,7 @@ exists. Every key is optional. An unknown key is an error. A `run` flag
 overrides the key with the same name. The source is
 `crates/horch-core/src/competition/config.rs` (`load`, `merge`, `validate`);
 the design is §4.11 of
-`ai_docs/designs/2026-10-02-dataset-competition-design.md`.
+[`specs/dataset-competition.md`](specs/dataset-competition.md).
 
 `<repo>` is the repo the command targets: `--project <dir>`, else the git
 top level of the current directory (the full order is in

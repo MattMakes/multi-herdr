@@ -207,8 +207,6 @@ assets for Unreal. It runs on Claude (opus, medium) and carries the
   `ue-tools-engineer` import the files; they send Blender work to
   `blender-artist`.
 - The Git LFS lock rules from the Unreal section apply to the exports.
-- Choice of server, rules and evidence:
-  `ai_docs/reports/finish/blender.md`.
 
 ### Swift and Apple, MobileBuildMCP, App Store Connect
 
@@ -245,7 +243,6 @@ assets for Unreal. It runs on Claude (opus, medium) and carries the
 - `visual-prototyper` runs on Codex. It cannot take screenshots unless a
   browser tool works in the Codex sandbox, so a Claude teammate screenshots
   for it.
-- The reports are in `ai_docs/reports/design-skills/`.
 
 ## `horch agent-list`: which harnesses can this machine run
 
@@ -272,8 +269,7 @@ request.
 - It uses the `google` usage pool, which has no probe. Its prompts can train
   the provider's models until the operator confirms the opt-out, so send it
   public and open-source work only.
-- The shipped teammate is `antigravity`. The facts and sources are in
-  `ai_docs/reports/design-skills/antigravity-harness.md`.
+- The shipped teammate is `antigravity`.
 
 ## `multi-herdr-dataset`: competitive rounds
 
@@ -290,5 +286,5 @@ multi-herdr-dataset resume          # after a crash or a kill
 
 Preflight refuses a run before any worktree or model call. Use `--budget-usd`
 every time. The model is in
-`ai_docs/designs/2026-10-02-dataset-competition-design.md`, and the recipe for
+[specs/dataset-competition.md](specs/dataset-competition.md), and the recipe for
 a new event is [add-dataset-event.md](recipes/add-dataset-event.md).

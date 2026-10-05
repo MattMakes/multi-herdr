@@ -9,8 +9,6 @@ harness that exposes skills.
 
 - `skills/README.md`: what the bundles are and the "Deliberate adaptations"
   rules.
-- `ai_docs/plans/design-skills/01-skill-authoring.md`: shape, size budget,
-  section order, and how to make a copied skill our own.
 - [phase-skills.md](../phase-skills.md): how a phase selects skills and how
   each harness sees them.
 

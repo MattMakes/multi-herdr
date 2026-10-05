@@ -8,7 +8,6 @@ You want a new `horch <command>` (or a new `multi-herdr-dataset <command>`).
 
 - [architecture.md](../architecture.md): the CLI layer and the arch-scan
   rules.
-- `ai_docs/reports/design-skills/agent-list.md`: the last command added.
 
 In the steps, `<name>` is the command, for example `agent-list`, and
 `<file>` its module name, for example `agentlist`.

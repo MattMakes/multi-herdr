@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# NFR-08: the per-commit gate for the arch-refactor-dataset branch
-# (ai_docs/plans/arch-refactor-dataset/00-master-plan.md, section 5).
+# NFR-08: the per-commit gate for the arch-refactor-dataset branch.
 # Runs every check in order and stops at the first failure. HORCH_REQUIRE_GIT
 # and HORCH_REQUIRE_SQLITE pass through unchanged; set both to 1 on the Mac.
 set -euo pipefail
@@ -27,22 +26,19 @@ step() {
   "$@"
 }
 
-# No unresolved spec marker may remain. The plan and conventions files of the
-# finish run describe the token, so they are excluded by path. The token is
-# built from two parts so that this file does not match itself.
+# No unresolved spec marker may remain. The token is built from two parts so
+# that this file does not match itself.
 no_spec_todo() {
   local hits token="SPEC-""TODO"
-  hits=$(git grep -n "$token" -- . \
-    ':(exclude)ai_docs/plans/finish/t6-spec-history.md' \
-    ':(exclude)ai_docs/plans/finish/00-conventions.md' || true)
+  hits=$(git grep -n "$token" -- . || true)
   if [ -n "$hits" ]; then
-    echo "unresolved spec markers found (close them; see ai_docs/plans/finish/00-conventions.md):" >&2
+    echo "unresolved spec markers found (close them):" >&2
     echo "$hits" >&2
     return 1
   fi
 }
 
-# Godot skills (ai_docs/plans/godot/gw0-tooling.md): every engine API name in
+# Godot skills: every engine API name in
 # skills/godot-* must exist in Godot 4.7.2, and every gdscript block must
 # parse. A failing block in a copied file (a `copied_files` path in
 # skills/copied.json) is reported, not failed; so is a deprecated

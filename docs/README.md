@@ -47,13 +47,13 @@ Each recipe names every file to change and the check for each step.
 - [runtime-skill-checks.md](runtime-skill-checks.md): native skill discovery
   checked against the installed harnesses, with no model request.
 
-## Designs
+## Specs
 
-- `ai_docs/designs/2026-10-02-architecture-refactor-design.md`: the module
+- [`specs/architecture.md`](specs/architecture.md): the module
   boundaries and the `arc_*` rules.
-- `ai_docs/designs/2026-10-02-dataset-competition-design.md`: the dataset
+- [`specs/dataset-competition.md`](specs/dataset-competition.md): the dataset
   mode, events, round states, judging and promotion.
-- `ai_docs/designs/2026-09-28-fleet-telemetry-design.md`: telemetry, usage
+- [`specs/telemetry.md`](specs/telemetry.md): telemetry, usage
   limits and routing.
 
 ## One rule above all
