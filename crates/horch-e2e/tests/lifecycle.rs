@@ -353,7 +353,7 @@ fn antigravity_child_never_receives_a_forbidden_key() {
     // fake-antigravity flags each of them as a violation too.
     assert_eq!(agy["violations"], serde_json::json!([]), "{agy}");
     let argv: Vec<String> = serde_json::from_value(agy["argv"].clone()).unwrap();
-    assert_eq!(&argv[..2], ["--model", "gemini-3-1-pro"], "{argv:?}");
+    assert_eq!(&argv[..2], ["--model", "gemini-3.8-flash"], "{argv:?}");
     assert!(
         argv.windows(2).any(|w| w == ["--effort", "medium"]),
         "{argv:?}"

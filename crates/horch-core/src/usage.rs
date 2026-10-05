@@ -145,8 +145,29 @@ pub fn builtin_prices() -> BTreeMap<String, Price> {
         cache_write_1h: Some(2.0),
         ..Price::new(2.0, 12.0, 0.20)
     };
-    m.insert("gemini-3-1-pro".into(), gemini_pro);
-    m.insert("gemini-3.1-pro-preview".into(), gemini_pro);
+    // agy names a model once per thinking level (`agy models`, 2026-10-05).
+    for id in [
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-high",
+        "gemini-3.1-pro-low",
+    ] {
+        m.insert(id.into(), gemini_pro);
+    }
+    // 3.8 Flash: promotional until 2026-12-31, then $1.50 / $7.50, cached
+    // $0.15. One price at every prompt length; no cache write, as above.
+    let gemini_flash = Price {
+        cache_write_5m: Some(0.75),
+        cache_write_1h: Some(0.75),
+        ..Price::new(0.75, 3.75, 0.075)
+    };
+    for id in [
+        "gemini-3.8-flash",
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
+    ] {
+        m.insert(id.into(), gemini_flash);
+    }
     m
 }
 

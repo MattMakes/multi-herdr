@@ -198,15 +198,15 @@ mod tests {
     #[test]
     fn mea_07_every_builtin_price_is_exact() {
         for (model, p) in super::super::builtin_prices() {
-            let mut all = vec![
+            // A cache write is the listed price, or the derived multiple of
+            // input when none is listed (`Price::cost`, `budget.rs`).
+            let all = [
                 p.input,
                 p.output,
                 p.cache_read,
-                p.input * 1.25,
-                p.input * 2.0,
+                p.cache_write_5m.unwrap_or(p.input * 1.25),
+                p.cache_write_1h.unwrap_or(p.input * 2.0),
             ];
-            all.extend(p.cache_write_5m);
-            all.extend(p.cache_write_1h);
             for price in all {
                 nano_per_token(price).unwrap_or_else(|e| panic!("{model}: {e}"));
             }

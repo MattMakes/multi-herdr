@@ -1124,7 +1124,7 @@ mod tests {
         };
         // Without a configured or measured estimate, both use the default.
         let mut models: Vec<String> = prices.keys().cloned().collect();
-        models.push("gemini-3-1-pro".into());
+        models.push("no-such-model".into());
         for model in models {
             let c = PreflightCandidate {
                 label: "A".into(),

@@ -1,13 +1,16 @@
 ---
 name: antigravity
-brief_description: Gemini 3.1 Pro on agy, general work. TRAINS ON INPUT unless opt-out confirmed; treat like opencode-*.
+brief_description: Gemini 3.8 Flash on agy, general work. TRAINS ON INPUT unless opt-out confirmed; treat like opencode-*.
 generic: true
 base: fleet-worker
 agent: antigravity
-# The slug from the Antigravity models page. Check it with `agy --help` or
-# `/model` after install (ai_docs/reports/design-skills/antigravity-harness.md).
-model: gemini-3-1-pro
-# agy takes --effort low|medium|high. medium, as for the other builders.
+# `agy models` lists each model once per thinking level
+# (gemini-3.8-flash-low|medium|high). The bare id plus --effort selects the
+# same model; agy 1.2.17 refuses --effort for an id it does not know.
+# 3.8 Flash scores at or above 3.1 Pro on coding and agent benchmarks for
+# about a third of the price (checked 2026-10-05).
+model: gemini-3.8-flash
+# --effort low|medium|high. medium, Google's default for code and agents.
 effort: medium
 # auto = --sandbox --dangerously-skip-permissions: no approval prompt in a pane
 # nobody watches, and terminal commands stay in agy's OS sandbox.

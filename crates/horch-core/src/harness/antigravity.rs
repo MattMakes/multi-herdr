@@ -141,7 +141,7 @@ mod tests {
             .unwrap()
             .clone();
         t.agent = HarnessKind::Antigravity;
-        t.model = Some("gemini-3-1-pro".into());
+        t.model = Some("gemini-3.8-flash".into());
         t.effort = None;
         t.permission_mode = None;
         t.disallowed_tools.clear();
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn fresh_launch_argv() {
         let mut t = teammate();
-        t.model = Some("gemini-3-1-pro".into());
+        t.model = Some("gemini-3.8-flash".into());
         t.effort = Some("high".into());
         t.permission_mode = Some(PermissionMode::Auto);
         let cmd = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "-go", None).unwrap();
@@ -161,7 +161,7 @@ mod tests {
             [
                 "agy",
                 "--model",
-                "gemini-3-1-pro",
+                "gemini-3.8-flash",
                 "--effort",
                 "high",
                 "--sandbox",

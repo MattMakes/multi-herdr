@@ -1046,7 +1046,7 @@ mod spawnable_tests {
         assert!(!r.check().iter().any(|p| p.contains("GEMINI_API_KEY")));
         let t = r.teammates.get_mut("sonnet").unwrap();
         t.agent = HarnessKind::Antigravity;
-        t.model = Some("gemini-3-1-pro".into());
+        t.model = Some("gemini-3.8-flash".into());
         t.effort = None;
         for key in crate::harness::antigravity::ANTIGRAVITY_FORBIDDEN_ENV {
             r.teammates

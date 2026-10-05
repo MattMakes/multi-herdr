@@ -219,7 +219,7 @@ fn skl_06_e2e_exposure_antigravity() {
         "skl06ag",
         "skl-antigravity",
         "antigravity",
-        "gemini-3-1-pro",
+        "gemini-3.8-flash",
         &["tdd", "debug"],
     );
     let out = h.run(&[

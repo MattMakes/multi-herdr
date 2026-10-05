@@ -1123,7 +1123,7 @@ mod tests {
         assert_eq!(pool_for("claude", "opus"), POOL_CLAUDE);
         assert_eq!(pool_for("codex", "gpt-5.6-sol"), POOL_CODEX);
         assert_eq!(pool_for("opencode", "opencode/big-pickle"), POOL_ZEN);
-        assert_eq!(pool_for("antigravity", "gemini-3-1-pro"), POOL_GOOGLE);
+        assert_eq!(pool_for("antigravity", "gemini-3.8-flash"), POOL_GOOGLE);
         assert_eq!(
             pool_for("antigravity", "claude-opus-4-6-thinking"),
             POOL_GOOGLE
