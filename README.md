@@ -256,7 +256,8 @@ name the `herdr` plugin's own copies, `herdr:herdr-orchestrator` and
 `herdr:herdr-worker`, because unlike the orchestrator and the eight Claude
 specialists they do not set `inherit_plugins: false`. The orchestrator briefing
 carries the same instruction in prose, for a pane whose settings horch does not
-control. 
+control.
+
 ### Skills for each phase
 
 ```sh
