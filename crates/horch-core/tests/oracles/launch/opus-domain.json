@@ -23,7 +23,7 @@
     "fresh": {
       "args": [
         "--mcp-config",
-        "{\"mcpServers\":{\"context7\":{\"args\":[\"-y\",\"@upstash/context7-mcp\"],\"command\":\"npx\",\"type\":\"stdio\"}}}",
+        "{\"mcpServers\":{\"context7\":{\"args\":[\"-y\",\"@upstash/context7-mcp@4.1.1\"],\"command\":\"npx\",\"type\":\"stdio\"}}}",
         "--strict-mcp-config",
         "--disallowedTools",
         "Agent",
@@ -50,7 +50,7 @@
     "resume": {
       "args": [
         "--mcp-config",
-        "{\"mcpServers\":{\"context7\":{\"args\":[\"-y\",\"@upstash/context7-mcp\"],\"command\":\"npx\",\"type\":\"stdio\"}}}",
+        "{\"mcpServers\":{\"context7\":{\"args\":[\"-y\",\"@upstash/context7-mcp@4.1.1\"],\"command\":\"npx\",\"type\":\"stdio\"}}}",
         "--strict-mcp-config",
         "--disallowedTools",
         "Agent",
@@ -77,7 +77,7 @@
     "unmanaged": {
       "args": [
         "--mcp-config",
-        "{\"mcpServers\":{\"context7\":{\"args\":[\"-y\",\"@upstash/context7-mcp\"],\"command\":\"npx\",\"type\":\"stdio\"}}}",
+        "{\"mcpServers\":{\"context7\":{\"args\":[\"-y\",\"@upstash/context7-mcp@4.1.1\"],\"command\":\"npx\",\"type\":\"stdio\"}}}",
         "--strict-mcp-config",
         "--disallowedTools",
         "Agent",
