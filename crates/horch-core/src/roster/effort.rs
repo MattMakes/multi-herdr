@@ -1,32 +1,7 @@
 //! Effort levels: which ones each agent's CLI takes, and why one is refused.
 
-use serde::{Deserialize, Serialize};
-
 use super::reserved_tier;
 use crate::harness::HarnessKind;
-
-/// One effort level as a teammate file writes it, for example `medium`.
-///
-/// Additive: the checks below still take `&str`, so a caller may use either.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Effort(String);
-
-impl Effort {
-    pub fn new(level: impl Into<String>) -> Self {
-        Effort(level.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for Effort {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
 
 /// The effort levels each agent's CLI accepts, by name.
 ///

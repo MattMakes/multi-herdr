@@ -27,7 +27,7 @@
 //! |----------------|-------|
 //! | `teammate`   | the frontmatter types and the orchestrator-only constants |
 //! | `phase`      | [`Phase`] |
-//! | `effort`     | [`Effort`] and the per-agent effort checks |
+//! | `effort`     | the per-agent effort checks |
 //! | `permission` | [`PermissionMode`] |
 //! | `offer`      | `offer_when`: which teammates this project is offered |
 //! | `parser`     | frontmatter splitting and parsing |
@@ -49,7 +49,7 @@ pub(crate) mod teammate;
 pub mod validation;
 
 pub(crate) use effort::effort_problem;
-pub use effort::{model_takes_effort, Effort};
+pub use effort::model_takes_effort;
 pub use offer::{offered_in, project_skills, with_project_skills, ProjectFacts, Requirement};
 pub use operator::operator_effort_warnings;
 pub(crate) use operator::{expand_home, operator_enabled_plugins, operator_status_line};
