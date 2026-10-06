@@ -324,8 +324,10 @@ reconciled at merge in favor of the merged code, and this section is updated.
 ///                pub fn as_str(&self) -> &str; }
 ///   impl Display, AsRef<str>, FromStr<Err = IdError>, TryFrom<String, Error = IdError>,
 ///   From<$name> for String.
-/// `$validator: fn(&str) -> Result<(), IdError>` runs on every constructor path.
-macro_rules! string_id { ($name:ident, $validator:path) => { /* … */ } }
+/// `$validator: fn(kind: &'static str, value: &str) -> Result<(), IdError>` runs on
+/// every constructor path; `kind` is `stringify!($name)`. Doc attributes before
+/// `$name` are passed on to the struct.
+macro_rules! string_id { ($(#[$meta:meta])* $name:ident, $validator:path) => { /* … */ } }
 
 string_id!(ExecutionId, validate_execution_id);
 string_id!(TaskId, validate_plain);
@@ -354,14 +356,16 @@ impl std::error::Error for IdError {}
 
 /// UUIDv7 from v4 bytes (OD7). Bytes 0..6 = big-endian Unix ms of `at`;
 /// byte 6 high nibble = 0x7; RFC 4122 variant bits (10xx) kept.
-pub fn mint_v7(at: chrono::DateTime<chrono::Utc>) -> uuid::Uuid;
+pub(crate) fn mint_v7(at: chrono::DateTime<chrono::Utc>) -> uuid::Uuid;
 
 impl ExecutionId  { pub fn mint(at: chrono::DateTime<chrono::Utc>) -> Self; }
 impl EventId      { pub fn mint(at: chrono::DateTime<chrono::Utc>) -> Self; }
 impl ExperimentId { pub fn mint(at: chrono::DateTime<chrono::Utc>) -> Self; }
 impl RoundId      { pub fn mint(at: chrono::DateTime<chrono::Utc>) -> Self; }
 impl JudgmentId   { pub fn mint(at: chrono::DateTime<chrono::Utc>) -> Self; }
-impl WorkerId     { pub fn new_for(workspace: &WorkspaceId, role: &RoleName) -> Self; } // "<ws>:<role>"
+impl WorkerId     { pub(crate) fn new_for(workspace: &WorkspaceId, role: &RoleName) -> Self; } // "<ws>:<role>"
+/// The last 8 ASCII letters and digits of the id: the `<exp8>` in `mh/exp/<exp8>/...`.
+impl ExperimentId { pub fn short(&self) -> String; }
 ```
 
 Validation rules:
@@ -373,7 +377,23 @@ Validation rules:
 | `WorkerId` | exactly one `:`; both sides non-empty |
 | `ExecutionId` | any UUID (v4 or v7), and any legacy non-UUID id such as `rec-o1`, `perf-3` (OD7) |
 
-`Digest([u8; 32])` displays as `sha256:<64 hex>`. It lives in
+`PaneId` and `WorkspaceId` are typed only inside horch-core's records and
+plans. The workspace port (§4.7) takes and returns `&str` and `String` ids,
+so the code converts at the edge:
+
+- `RuntimeContext::from_env` validates `HORCH_WORKSPACE_ID` and
+  `HERDR_PANE_ID` into `HerdrEnv` (§4.2).
+- `Execution::workspace` and `Execution::pane` (§4.3) and
+  `WorkspacePlan::workspace` (§4.5) are typed. `finish_plan` takes a
+  `&WorkspaceId`, and `ExecutionService::spawn` makes it from the mailbox's
+  workspace id string.
+- `WorkspacePlan::from_pane`, `SpawnOutcome::pane` and every
+  `WorkspaceClient` argument are strings.
+- The competition coordinator (`competition/coordinator.rs`) and the
+  measurement events (`measure/event.rs`) use `PaneId` for a candidate's
+  pane.
+
+`Digest(pub [u8; 32])` displays as `sha256:<64 hex>`. It lives in
 `measure/digest.rs` (B1). See the dataset design §4.
 
 ### 4.2 `runtime` (A2)
@@ -381,6 +401,8 @@ Validation rules:
 Spec A §4 groups the runtime context in 6 parts: paths, herdr, bins,
 settings, inherited and worker. The code below is the spec
 (`horch-core/src/runtime/{context,paths,bins,fault,process}.rs`).
+`runtime/machine.rs` (the machine probe, B2) is also in `runtime/`; the
+dataset design describes it.
 `arc_05_context_from_map_env` (`runtime/context.rs`) pins every field that
 an environment sets. `arc_05_no_ambient_env_in_core` pins that only
 `runtime/` reads the environment.
@@ -440,6 +462,7 @@ pub struct Bins {
     pub harness: HarnessBins,
     pub overrides: BinOverrides,
 }
+impl Bins { pub fn exe(&self) -> anyhow::Result<PathBuf>; } // current_exe, else an error
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
@@ -450,6 +473,7 @@ pub struct Settings {
     pub quota_file: Option<PathBuf>,      // HORCH_QUOTA_FILE
     pub machine_file: Option<PathBuf>,    // HORCH_MACHINE_FILE (B2)
     pub probe_timeout: Option<Duration>,  // HORCH_PROBE_TIMEOUT_MS
+    pub tell_grace: Option<Duration>,     // HORCH_TELL_GRACE_MS
     pub faults: Faults,                   // HORCH_FAULT
 }
 
@@ -459,8 +483,11 @@ pub struct Inherited {
     pub home_var: Option<OsString>,                // HOME exactly as set
     pub path: Option<OsString>,                    // PATH
     pub pathext: Option<String>,                   // PATHEXT (windows)
+    pub blender_path: Option<OsString>,            // BLENDER_PATH
+    pub godot_path: Option<OsString>,              // GODOT_PATH
     pub opencode_config_content: Option<String>,   // OPENCODE_CONFIG_CONTENT
     pub codex_home: Option<PathBuf>,               // CODEX_HOME
+    pub claude_config_dir: Option<PathBuf>,        // CLAUDE_CONFIG_DIR
     pub claude_code_effort_level: Option<String>,  // CLAUDE_CODE_EFFORT_LEVEL
     pub pi_session_dir: Option<PathBuf>,           // PI_CODING_AGENT_SESSION_DIR
     pub opencode_db: Option<PathBuf>,              // HORCH_OPENCODE_DB
@@ -469,6 +496,7 @@ pub struct Inherited {
     pub hostname: Option<String>,                  // HOSTNAME, else COMPUTERNAME
     pub herdr_session: Option<String>,             // HERDR_SESSION
 }
+impl Inherited { pub fn from_env(env: &dyn EnvSource) -> Inherited; }
 
 /// What a worker pane's agent and its horch children learn from the
 /// transport environment (`messaging::brief::Brief::transport_env`).
@@ -484,6 +512,7 @@ pub struct WorkerEnv {
     pub resume: Option<String>,       // HORCH_RESUME
     pub task: Option<String>,         // HORCH_TASK
 }
+impl WorkerEnv { pub fn from_env(env: &dyn EnvSource) -> Option<WorkerEnv>; } // None when every value is unset
 
 // runtime/paths.rs
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -492,9 +521,15 @@ pub struct Paths {
     pub project_dir: Option<PathBuf>,     // $HORCH_PROJECT_DIR, else cwd
     pub state_root: PathBuf,              // $HORCH_STATE_DIR, else ${XDG_STATE_HOME:-$HOME/.local/state}/horch
     pub state_override: Option<PathBuf>,  // the explicit $HORCH_STATE_DIR, passed on to panes
-    pub data_root: PathBuf,               // ${XDG_DATA_HOME:-$HOME/.local/share}/horch (marketplace store, OD3)
+    pub data_root: PathBuf,               // $HORCH_DATA_DIR, else ${XDG_DATA_HOME:-$HOME/.local/share}/horch (marketplace store, OD3)
     pub temp_root: PathBuf,               // EnvSource::temp_dir() at bootstrap; mailboxes live under it
     pub home: PathBuf,                    // $HOME (%USERPROFILE% on windows), else "."
+}
+impl Paths {
+    pub fn from_env(env: &dyn EnvSource) -> Paths;
+    pub fn project(&self) -> anyhow::Result<PathBuf>;      // project_dir, else an error
+    pub fn current_dir(&self) -> anyhow::Result<PathBuf>;  // cwd, else an error
+    pub fn set_state_dir(&mut self, dir: impl Into<PathBuf>); // sets state_root and state_override
 }
 
 // runtime/bins.rs
@@ -513,6 +548,12 @@ pub struct BinOverrides {
     pub ollama: Option<PathBuf>,      // HORCH_OLLAMA_BIN
     pub git: Option<PathBuf>,         // HORCH_GIT_BIN
 }
+impl BinOverrides {
+    pub fn from_env(env: &dyn EnvSource) -> BinOverrides;
+    pub fn env_pairs(&self) -> Vec<(&'static str, PathBuf)>; // the set values as (HORCH_*_BIN, path)
+    pub fn merge(&mut self, other: &BinOverrides);           // a value set in `other` wins
+    pub fn is_empty(&self) -> bool;
+}
 /// The resolved program for each tool: the override, else the default name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessBins {
@@ -528,6 +569,9 @@ pub struct HarnessBins {
     pub git: PathBuf,          // `git`
 }
 impl HarnessBins { pub fn resolve(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> HarnessBins; }
+// One resolver for each tool; pub for claude, codex, herdr, sqlite3 and git, pub(crate) for the others.
+pub fn claude_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf;
+pub fn git_bin(o: &BinOverrides) -> PathBuf;                // and codex_bin, herdr_bin, sqlite3_bin
 
 // runtime/fault.rs
 pub const ABORT_EXIT_CODE: i32 = 86;
@@ -536,6 +580,7 @@ pub struct Faults(BTreeSet<String>);              // HORCH_FAULT, comma-separate
 impl Faults {
     pub fn parse(raw: Option<&str>) -> Faults;
     pub fn has(&self, point: &str) -> bool;       // exact match, e.g. "abort-after-execution-insert"
+    pub fn is_empty(&self) -> bool;
     pub fn points(&self) -> &BTreeSet<String>;
     pub fn indexed(&self, prefix: &str) -> Option<String>; // "abort-after-worktree:2" → Some("2")
     /// Exits with ABORT_EXIT_CODE and a stderr line when `point` is armed.
@@ -545,6 +590,9 @@ impl Faults {
 // runtime/process.rs
 pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<PathBuf>;
 pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child>;  // setsid on unix
+pub fn make_executable(path: &Path) -> std::io::Result<()>;
+pub fn on_path_in(paths: &OsStr, dir: &Path) -> bool;
+pub(crate) fn inherit_env<K, V>(cmd: &mut Command, vars: impl IntoIterator<Item = (K, V)>); // skips keys the command sets and FORBIDDEN_ENV
 pub(crate) fn scrub_child_env(cmd: &mut Command);                     // removes FORBIDDEN_ENV and the git repository variables (REPO_ENV, GIT_CONFIG_KEY_<n>, GIT_CONFIG_VALUE_<n>)
 ```
 
@@ -588,7 +636,7 @@ pub enum LaunchStage { Brief, Split, Run }
 impl ExecutionStatus {
     pub fn is_live(&self) -> bool;                    // Starting | Running
     pub fn is_terminal(&self) -> bool;                // Done | Failed | LaunchFailed
-    pub fn legacy_status(&self) -> &'static str;      // "working" | "done"
+    pub(crate) fn legacy_status(&self) -> &'static str; // "working" | "done"
     pub fn from_legacy(status: &str) -> ExecutionStatus; // "working" → Running; else → Done
     pub fn resolve(state: Option<&ExecutionStatus>, status: &str) -> ExecutionStatus; // prefers state
 }
@@ -601,10 +649,11 @@ pub enum ExecutionKind {
     Candidate { experiment: ExperimentId, round: RoundId, label: String },
     Judge { round: RoundId, attempt: u32 },
 }
-impl ExecutionKind { pub fn legacy_kind(&self) -> &'static str; } // Candidate, Judge → "worker"
+impl ExecutionKind { pub(crate) fn legacy_kind(&self) -> &'static str; } // Candidate, Judge → "worker"
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionMode { Fresh(Option<SessionId>), Resume(SessionId) }
+impl SessionMode { pub fn id(&self) -> Option<&SessionId>; } // the minted or resumed session id
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "session", content = "id", rename_all = "snake_case")]
@@ -675,7 +724,8 @@ from the first sketch of this design, each for one reason:
   `<workspace>:<role>`, which `workspace` and `role` already give.
 
 **`LedgerRecordV1`** (`execution/legacy.rs`, A6). It is today's `Record`
-serde, byte for byte, plus optional skip-if-empty fields. Today's `Record`
+serde, byte for byte, plus optional skip-if-empty fields.
+`pub type Record = LedgerRecordV1;` keeps the old name for callers. Today's `Record`
 has no `deny_unknown_fields`, so old binaries ignore the new keys. This is
 the compatibility path.
 
@@ -702,7 +752,9 @@ pub struct LedgerRecordV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub via: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub substitution_reason: Option<String>,
-    // ── new, optional, skip-if-empty ──
+    // A5 wrote `routing` here; it stays here so those ledgers keep their bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub routing: Option<RoutingProvenance>,
+    // ── new in A6, optional, skip-if-empty ──
     #[serde(default, skip_serializing_if = "Option::is_none")] pub pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub workdir: Option<String>,
@@ -713,11 +765,16 @@ pub struct LedgerRecordV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub finished_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]   pub skills: Vec<ResolvedSkillRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub routing: Option<RoutingProvenance>,
 }
-impl LedgerRecordV1 {
-    pub fn to_execution(&self) -> Result<Execution, LegacyError>;
-    pub fn from_execution(e: &Execution) -> LedgerRecordV1;
+
+// execution/store.rs
+pub fn to_execution(r: &LedgerRecordV1) -> Result<Execution, LegacyError>;
+pub fn from_execution(e: &Execution) -> LedgerRecordV1;
+#[derive(Debug)]
+pub enum LegacyError {
+    Id(IdError),
+    Agent(String),                              // `agent` names no HarnessKind
+    Kind { record: String, reason: String },    // kind, experiment_id, round_id, label name no kind
 }
 ```
 
@@ -861,7 +918,23 @@ A5 kept `Decision` as the return type and added `RoutingDecision` as a
 `SpawnError::Refused` and `PlanError::Refused` carry a `RoutingDecision` and
 the REFUSED `line`.
 
-`routing/snapshot.rs`: `pub fn obtain(ctx: &RuntimeContext, policy: &Policy) -> anyhow::Result<QuotaView>` is the only path that probes.
+`routing/snapshot.rs`:
+
+```rust
+/// `env.quota_file` wins and is never probed. Else, when `allow_probe` is set,
+/// no live collector holds the lock and the last probe is older than
+/// `probe_on_demand_age_min`, probe now and write the result (QUO-07).
+pub fn obtain(state_root: &Path, now: DateTime<Utc>, policy: &Policy,
+              allow_probe: bool, env: &QuotaEnv) -> anyhow::Result<QuotaView>;
+pub struct QuotaEnv { pub quota_file: Option<PathBuf>, pub probe_timeout: Option<Duration>,
+                      pub temp_root: PathBuf, pub bins: ProbeBins }
+impl QuotaEnv { pub fn from_context(ctx: &RuntimeContext) -> QuotaEnv; }
+```
+
+`obtain` is the only routing path that probes. The telemetry collector
+(`telemetry/collect.rs`) also calls `quota_probe::probe_all`.
+`arc_13_routing_never_launches` (`horch-core/tests/routing.rs`) exempts
+`quota_probe.rs` and `snapshot.rs` from its scan of `routing/`.
 
 ### 4.5 `execution` planning and service (A6)
 
@@ -879,7 +952,7 @@ pub struct SpawnRequest {
     pub task: String,                       // empty for an idle worker
     pub phase: Option<Phase>,
     pub effort: Option<String>,             // this spawn only, over the teammate's (or the record's)
-    pub role: Option<String>,               // None allocates `<teammate>-<n>`
+    pub role: Option<String>,               // no code reads it; the role is ExecutionService::spawn's `role` argument
     pub from_pane: Option<String>,          // the pane to split; None splits the caller's pane
     pub direction: Direction,               // Right by default
     pub tiling: TilingMode,
@@ -895,84 +968,130 @@ impl SpawnRequest {
     pub fn worker(teammate: Option<TeammateName>, task: impl Into<String>) -> SpawnRequest;
 }
 
-#[derive(Debug, Clone)]
-pub struct LaunchPlan {                     // what the harness will run
+/// What the worker will launch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaunchPlan {
     pub teammate: Teammate,                 // resolved (merged with fallback when substituted)
+    pub model: String,
     pub session: SessionMode,
-    pub prompt: String,
-    pub argv: Vec<String>,
-    pub env: BTreeMap<String, String>,      // child-only
-    pub env_remove: Vec<String>,            // FORBIDDEN_ENV
+    pub task: String,                       // as asked: empty for an idle worker or a resume without a task
 }
-#[derive(Debug, Clone)]
+/// Where the worker's pane goes.
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkspacePlan {
-    pub workspace: WorkspaceId,
-    pub split_from: PaneId,
+    pub workspace: Option<WorkspaceId>,     // set by finish_plan
+    pub from_pane: Option<String>,
     pub direction: Direction,
     pub tiling: TilingMode,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionPlan {
-    pub execution: Execution,               // status Planned
-    pub worker: WorkerId,
+    pub execution: Execution,               // status Planned; a resume holds the record as it will be written
+    pub worker: Option<WorkerId>,           // set by finish_plan, with the role
     pub launch: LaunchPlan,
     pub skills: SkillActivationPlan,
     pub workspace: WorkspacePlan,
     pub gate_line: Option<String>,          // NOTE/SUBSTITUTED line, printed before the pane id
+    pub resumed: bool,                      // the plan reopens an existing record
+    pub report_to: ReportTarget,
 }
 
+// execution/plan.rs
+pub const IDLE_TASK: &str = "(idle - awaiting assignment)";
+/// The usage-limit gate's inputs, read by the shell only for a gated spawn.
+#[derive(Debug, Clone, Copy)]
+pub struct GateInputs<'a> { pub view: &'a QuotaView, pub balance: BalanceMode }
+/// Ids the shell minted for this spawn. A resume uses neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintedIds { pub execution: ExecutionId, pub session: SessionId }
 /// Inputs gathered by the shell before planning. Pure data.
+#[derive(Debug, Clone, Copy)]
 pub struct PlanInputs<'a> {
     pub roster: &'a Roster,
-    pub quota: &'a QuotaView,
-    pub catalog: &'a SkillCatalog,
-    pub lock: &'a LockView,
-    pub existing: Option<&'a Execution>,    // for resume
+    pub catalog: &'a SkillCatalog,          // bundled skills, the marketplace lock and the teammate's operator_skills
+    pub gate: Option<GateInputs<'a>>,       // Some when needs_gate says so
+    pub existing: Option<&'a LedgerRecordV1>, // the newest record the resume key matches
     pub now: DateTime<Utc>,
-    pub ids: MintedIds,                     // ExecutionId, SessionId pre-minted by the shell
-    pub ctx: &'a RuntimeContext,
+    pub ids: &'a MintedIds,
+    pub project: &'a Path,
 }
-/// Pure: resume rules, routing, reserved-tier check, effort, skill support.
-/// Logic from cmd/spawn.rs:76-262.
+/// A fresh, unpinned spawn of a spawnable teammate whose agent is not `none`.
+pub fn needs_gate(req: &SpawnRequest, roster: &Roster) -> bool;
+/// Pure. Order: the resume rules or the roster lookup, the reserved-tier
+/// check on what will launch, the gate (fresh spawns only), effort, skill support.
 pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionPlan, PlanError>;
-/// Pure: completes the plan once the role is allocated (impure, under DirLock).
+/// Pure: completes the plan once the role is allocated. A fresh record takes
+/// `workspace`; a resumed one keeps its own. Sets `worker` and `workspace.workspace`.
 pub fn finish_plan(plan: ExecutionPlan, role: RoleName, workspace: &WorkspaceId) -> ExecutionPlan;
 
 #[derive(Debug)]
 pub enum PlanError {
-    NothingToSpawn, UnknownTeammate(String), ReservedTier { model: String, tier: String },
-    NotResumable { id: ExecutionId, reason: String }, BadEffort(String), SkillUnsupported(String),
+    NothingToSpawn,
+    Refused { decision: RoutingDecision, line: String },   // `line`: the REFUSED line for stdout
+    UnknownTeammate(String),
+    Unspawnable(String),                    // a reserved model tier, or a headless-only teammate
+    NotResumable { id: String, reason: String },
+    BadEffort(String),
+    SkillUnsupported(String),
+    MissingGate,                            // a gated spawn planned without GateInputs: a caller bug
+    BadId(IdError),
+    RoleTaken(String),                      // the role is registered, briefed or planned in this workspace
 }
+
+// execution/service.rs
 #[derive(Debug)]
 pub enum SpawnError {
-    Refused { decision: RoutingDecision },                        // CLI exit 3
-    Plan(PlanError),
-    LaunchFailed { id: ExecutionId, stage: LaunchStage, source: anyhow::Error },
+    Refused { decision: RoutingDecision, line: String },   // CLI prints `line`, exits 3
+    Plan(PlanError),                        // nothing was written
+    LaunchFailed { id: ExecutionId, stage: LaunchStage, source: anyhow::Error }, // record LaunchFailed, role free
+    Store(anyhow::Error),                   // the ledger or the mailbox could not be written before the launch
 }
 impl std::fmt::Display for SpawnError { /* … */ }
 impl std::error::Error for SpawnError {}
+impl From<PlanError> for SpawnError { /* PlanError::Refused → SpawnError::Refused; else Plan */ }
 
-// execution/service.rs
-pub struct ExecutionService<'a, W: WorkspaceClient> {
+pub struct ExecutionService<'a> {
     pub ctx: &'a RuntimeContext,
     pub store: &'a ExecutionStore,
-    pub workspace: &'a W,
+    pub workspace: &'a dyn WorkspaceClient,
+    pub mailbox: &'a Mailbox,               // the workspace's roles and briefs
+    pub tile: &'a dyn Fn(&str, TilingMode), // lays the grid out around a new pane; called last
 }
-impl<'a, W: WorkspaceClient> ExecutionService<'a, W> {
-    /// insert(Planned) → brief → split → run → mark_starting(pane) → tile (best effort).
-    pub fn spawn(&self, req: &SpawnRequest) -> Result<SpawnOutcome, SpawnError>;
+impl ExecutionService<'_> {
+    /// recover abandoned → allocate the role and insert(Planned) under the ledger lock
+    /// (finish_plan) → set_skills → brief → split → run → mark_starting(pane) → tile.
+    /// `role`: an explicit role; None allocates `<teammate>-<n>`.
+    pub fn spawn(&self, plan: ExecutionPlan, role: Option<&str>) -> Result<SpawnOutcome, SpawnError>;
 }
-pub struct SpawnOutcome { pub execution: ExecutionId, pub pane: PaneId, pub gate_line: Option<String> }
+#[derive(Debug, Clone)]
+pub struct SpawnOutcome { pub plan: ExecutionPlan, pub pane: String }   // the finished plan and its pane
 
 // execution/store.rs
-pub struct ExecutionStore { /* <state_root>/<slug>.json, DirLock */ }
+#[derive(Debug, Clone)]
+pub struct ExecutionStore { path: PathBuf }   // <state_root>/<slug>.json; writes take the ledger DirLock
 impl ExecutionStore {
-    pub fn open(paths: &Paths, project: &Path) -> ExecutionStore;
+    pub fn for_project(state_root: impl AsRef<Path>, project: &str) -> Self;
+    pub fn open(paths: &Paths, project: &Path) -> Self;
+    pub fn open_in(ctx: &RuntimeContext) -> anyhow::Result<Self>;
+    pub fn read(&self) -> anyhow::Result<Vec<LedgerRecordV1>>;
     pub fn load(&self) -> anyhow::Result<Vec<Execution>>;
-    pub fn insert(&self, e: &Execution) -> anyhow::Result<()>;
-    pub fn update(&self, id: &ExecutionId, f: impl FnOnce(&mut Execution)) -> anyhow::Result<()>;
-    pub fn find_by_idempotency(&self, key: &str) -> anyhow::Result<Option<Execution>>;
+    pub fn get(&self, key: &str) -> anyhow::Result<LedgerRecordV1>;
+    pub fn live(&self) -> anyhow::Result<Vec<LedgerRecordV1>>;
+    pub fn insert(&self, record: LedgerRecordV1) -> anyhow::Result<()>;
+    pub fn insert_execution(&self, e: &Execution) -> anyhow::Result<()>;
+    pub fn update<T>(&self, f: impl FnOnce(&mut Vec<LedgerRecordV1>) -> anyhow::Result<T>) -> anyhow::Result<T>;
+    pub fn set_state(&self, key: &str, state: ExecutionStatus) -> anyhow::Result<()>;
+    pub fn set_skills(&self, key: &str, skills: Vec<ResolvedSkillRef>) -> anyhow::Result<()>;
+    pub fn mark_starting(&self, key: &str, pane: &str) -> anyhow::Result<()>;
+    pub fn mark_running(&self, key: &str) -> anyhow::Result<()>;
+    pub fn end_live(&self, key: &str, state: ExecutionStatus) -> anyhow::Result<ExecutionStatus>;
+    pub fn record_exit(&self, key: &str, code: Option<i32>) -> anyhow::Result<()>;
+    pub fn recover_abandoned(&self, now: DateTime<Utc>) -> anyhow::Result<Vec<LedgerRecordV1>>;
+    pub fn end_if_pane_closed(&self, key: &str, ws: &dyn WorkspaceClient) -> anyhow::Result<bool>;
 }
+// `key` is a record id or a session id. There is no idempotency lookup: the
+// coordinator (`competition/coordinator.rs`) maps the records by
+// `Execution::idempotency_key` itself.
 
 // execution/lifecycle.rs
 pub trait WorkerSteps {
@@ -982,6 +1101,7 @@ pub trait WorkerSteps {
     fn set_running(&mut self, brief: &Brief) -> Result<()>;
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>>;   // None: a signal ended the agent
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()>;
+    fn close_pane(&mut self) -> Result<()> { Ok(()) }              // after a startup failure; PaneWorker closes its pane
 }
 pub fn run_worker(steps: &mut dyn WorkerSteps) -> anyhow::Result<i32>;   // PaneWorker runs the steps for real
 pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> anyhow::Result<()>;
@@ -996,7 +1116,8 @@ Spec A §8 worker startup order (`execution/lifecycle.rs:run_worker`):
    as the process's context.
 3. `register`: register the role in the mailbox, so `horch tell` reaches
    the pane. When step 2 or 3 fails, record `Failed(AgentExited{code:
-   None})` at once (best effort), then return the original error.
+   None})` at once (best effort), then close the pane (`close_pane`, best
+   effort), then return the original error.
 4. `set_running`: set the record to `Running`. On failure, log it and go
    on: the agent must start even when its bookkeeping cannot be written.
 5. `launch`: run the agent through the harness flow and wait for it. On
