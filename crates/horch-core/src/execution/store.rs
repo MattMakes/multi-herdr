@@ -652,7 +652,11 @@ fn render_records(records: &[LedgerRecordV1], out: &mut String) {
         let notable: Vec<&crate::execution::legacy::HistoryEntry> = r
             .history
             .iter()
-            .filter(|h| h.event == "done" || h.event == "note")
+            .filter(|h| {
+                h.event == "done"
+                    || h.event == "note"
+                    || h.event == crate::execution::lifecycle::EVENT_STARTUP_FAILED
+            })
             .collect();
         for h in notable.iter().rev().take(3).rev() {
             out.push_str(&format!("  {} @ {}: {}\n", h.event, h.at, h.text));

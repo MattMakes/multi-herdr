@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::execution::legacy::HistoryEntry;
 use crate::execution::store::ExecutionStore;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use crate::harness::HarnessKind;
@@ -169,6 +170,13 @@ pub trait WorkerSteps {
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>>;
     /// Record how the agent ended ([`ExecutionStore::record_exit`]).
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()>;
+    /// Record the startup error text in the record's history
+    /// ([`record_startup_failure`]). The pane closes next and takes its
+    /// stderr with it, so the ledger keeps the only copy. The default
+    /// records nothing.
+    fn startup_failed(&mut self, _brief: &Brief, _error: &str) -> Result<()> {
+        Ok(())
+    }
     /// Close this worker's pane after a startup failure, so a dead worker
     /// does not hold a pane. The default leaves the pane open.
     fn close_pane(&mut self) -> Result<()> {
@@ -191,7 +199,8 @@ pub trait WorkerSteps {
 /// A failure after the brief loads and before the agent launches
 /// (`enter_context`, `register`) ends the record at once as
 /// `Failed(AgentExited{None})`, the same state a launch failure gets, then
-/// returns the original error. Without it the record stays `Starting` with a
+/// returns the original error. The record's history gets the error text first
+/// (event [`EVENT_STARTUP_FAILED`]), which `horch sessions` shows. Without it the record stays `Starting` with a
 /// dead worker until a deadline. The recording is best effort: its own error
 /// is logged. Then the worker closes its own pane, as `done` does; a close
 /// that fails is logged and the startup error still returns. A failure of
@@ -202,7 +211,10 @@ pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
         .enter_context(&brief)
         .and_then(|()| steps.register(&brief))
     {
-        if let Err(rec) = steps.agent_exited(&brief, None) {
+        if let Err(rec) = steps
+            .startup_failed(&brief, &format!("{e:#}"))
+            .and_then(|()| steps.agent_exited(&brief, None))
+        {
             eprintln!(
                 "horch worker[{}]: recording the startup failure failed: {rec:#}",
                 brief.role
@@ -243,6 +255,24 @@ pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
         );
     }
     Ok(code.unwrap_or(1))
+}
+
+/// The history event of a worker that failed before its agent launched. Its
+/// text is the error.
+pub const EVENT_STARTUP_FAILED: &str = "startup-failed";
+
+/// Add an [`EVENT_STARTUP_FAILED`] history entry with `error` to the records
+/// addressed by `key`.
+pub fn record_startup_failure(store: &ExecutionStore, key: &str, error: &str) -> Result<()> {
+    let at = crate::clock::now_stamp();
+    store.update_key(key, |r| {
+        r.updated_at = at.clone();
+        r.history.push(HistoryEntry {
+            at: at.clone(),
+            event: EVENT_STARTUP_FAILED.to_string(),
+            text: error.to_string(),
+        });
+    })
 }
 
 /// The worker in a real herdr pane.
@@ -387,6 +417,10 @@ impl WorkerSteps for PaneWorker<'_> {
 
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()> {
         self.store()?.record_exit(&brief.record_id, code)
+    }
+
+    fn startup_failed(&mut self, brief: &Brief, error: &str) -> Result<()> {
+        record_startup_failure(&self.store()?, &brief.record_id, error)
     }
 
     fn close_pane(&mut self) -> Result<()> {
@@ -849,6 +883,7 @@ mod tests {
             pane: String,
             calls: Vec<&'static str>,
             fail_at: &'static str,
+            startup_error: Option<String>,
         }
 
         impl WorkerSteps for Steps<'_> {
@@ -896,6 +931,11 @@ mod tests {
                 self.calls.push("agent_exited");
                 Ok(())
             }
+            fn startup_failed(&mut self, _: &Brief, error: &str) -> Result<()> {
+                self.calls.push("startup_failed");
+                self.startup_error = Some(error.to_string());
+                Ok(())
+            }
             fn close_pane(&mut self) -> Result<()> {
                 self.calls.push("close_pane");
                 self.ws.pane_close(&self.pane)
@@ -909,6 +949,7 @@ mod tests {
                 pane,
                 calls: Vec::new(),
                 fail_at,
+                startup_error: None,
             }
         }
 
@@ -918,8 +959,49 @@ mod tests {
             let mut steps = steps(&ws, "enter_context");
             let e = run_worker(&mut steps).unwrap_err();
             assert_eq!(e.to_string(), "enter_context failed");
-            assert_eq!(steps.calls, ["enter_context", "agent_exited", "close_pane"]);
+            assert_eq!(
+                steps.calls,
+                [
+                    "enter_context",
+                    "startup_failed",
+                    "agent_exited",
+                    "close_pane"
+                ]
+            );
             assert!(ws.pane_ids().is_empty(), "the pane is closed");
+        }
+
+        #[test]
+        fn records_the_startup_error_text_before_the_pane_closes() {
+            let ws = FakeWorkspace::new();
+            let mut steps = steps(&ws, "enter_context");
+            let e = run_worker(&mut steps).unwrap_err();
+            assert_eq!(
+                steps.startup_error.as_deref(),
+                Some(format!("{e:#}").as_str())
+            );
+            assert_eq!(steps.startup_error.as_deref(), Some("enter_context failed"));
+        }
+
+        #[test]
+        fn horch_sessions_shows_the_startup_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ledger = crate::execution::records::Ledger::for_project(tmp.path(), "/p");
+            ledger
+                .add("r1", "claude", "sonnet", "sonnet", "sonnet-1", None, "t")
+                .unwrap();
+            let store = ExecutionStore::for_project(tmp.path(), "/p");
+            record_startup_failure(&store, "r1", "project dir '/p' is missing").unwrap();
+            let r = store.get("r1").unwrap();
+            let h = r.history.last().unwrap();
+            assert_eq!(h.event, EVENT_STARTUP_FAILED);
+            assert_eq!(h.text, "project dir '/p' is missing");
+            let out = ledger.render().unwrap();
+            assert!(
+                out.contains("  startup-failed @ ")
+                    && out.contains(": project dir '/p' is missing\n"),
+                "{out}"
+            );
         }
 
         #[test]
