@@ -115,6 +115,9 @@ impl Installer {
         let prepared = self.prepare(source, &mut observer)?;
         let version = prepared.resolved.version(&prepared.digest);
 
+        // One install at a time changes the store: the same version directory
+        // and the lock read-modify-write must not interleave.
+        let _guard = self.store.lock()?;
         record(&mut observer, Step::Materialize);
         self.store
             .materialize(&prepared.tree, &prepared.staging, &prepared.id, &version)?;

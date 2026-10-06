@@ -5,6 +5,7 @@
 //! <root>/staging/<random hex>/      one per install; removed when it ends
 //! <root>/skills/<id>/<version>/     materialized skills
 //! <root>/marketplace.lock           the lock (see `lockfile`)
+//! <root>/marketplace.lock.guard/    exists while an install changes the store
 //! ```
 //!
 //! A version directory without a lock entry is ignored by readers and
@@ -12,10 +13,20 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::error::{MarketplaceError, Result};
 use crate::fsx;
 use crate::model::{SkillId, SkillVersion};
+
+/// How long `Store::lock` waits for another install. It is longer than
+/// `STALE_AFTER`, so a holder that died is broken before the wait ends.
+const LOCK_WAIT: Duration = Duration::from_secs(60);
+/// A guard directory older than this has no live holder: the guarded span is
+/// a rename and one small file write.
+const STALE_AFTER: Duration = Duration::from_secs(30);
+const LOCK_POLL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -41,6 +52,52 @@ impl Store {
 
     pub fn lock_path(&self) -> PathBuf {
         self.root.join("marketplace.lock")
+    }
+
+    fn guard_path(&self) -> PathBuf {
+        self.root.join("marketplace.lock.guard")
+    }
+
+    /// Take the store lock: the span from the last read of `marketplace.lock`
+    /// to its write, so two installs cannot each write from the same old
+    /// lock. The lock is a directory made with an exclusive `create_dir`; it
+    /// is removed when the guard drops. The crate cannot reuse the `DirLock`
+    /// of the core crate, because that crate depends on this one, and it has
+    /// no `libc` for `flock`. Waits up to 60 s, then fails with a
+    /// `TimedOut` error that names the guard directory.
+    pub fn lock(&self) -> Result<StoreLock> {
+        self.lock_within(LOCK_WAIT, STALE_AFTER)
+    }
+
+    /// `lock` with explicit limits, for tests.
+    pub fn lock_within(&self, wait: Duration, stale_after: Duration) -> Result<StoreLock> {
+        fs::create_dir_all(&self.root)
+            .map_err(|e| MarketplaceError::io(self.root.display().to_string(), e))?;
+        let dir = self.guard_path();
+        let deadline = Instant::now() + wait;
+        loop {
+            match fs::create_dir(&dir) {
+                Ok(()) => return Ok(StoreLock { dir }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(MarketplaceError::io(dir.display().to_string(), e)),
+            }
+            if guard_age(&dir).is_some_and(|age| age > stale_after) {
+                // Rename first: of several waiters only one rename succeeds.
+                let aside = self.root.join(format!(".lock-stale-{}", fsx::random_hex()));
+                if fs::rename(&dir, &aside).is_ok() {
+                    let _ = fsx::remove_dir_if_exists(&aside);
+                }
+                continue;
+            }
+            if Instant::now() >= deadline {
+                let timed_out = std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "another install holds the store lock; remove the directory if no install runs",
+                );
+                return Err(MarketplaceError::io(dir.display().to_string(), timed_out));
+            }
+            thread::sleep(LOCK_POLL);
+        }
     }
 
     pub fn version_dir(&self, id: &SkillId, version: &SkillVersion) -> PathBuf {
@@ -82,6 +139,28 @@ impl Store {
             .map_err(|e| MarketplaceError::io(format!("materialize {}", target.display()), e))?;
         fsx::sync_dir(parent).map_err(|e| MarketplaceError::io(parent.display().to_string(), e))?;
         Ok(target)
+    }
+}
+
+/// How long ago the guard directory changed, or `None` when it is gone.
+fn guard_age(dir: &Path) -> Option<Duration> {
+    let modified = fs::metadata(dir).ok()?.modified().ok()?;
+    Some(
+        SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default(),
+    )
+}
+
+/// The store lock. It releases when it drops.
+#[derive(Debug)]
+pub struct StoreLock {
+    dir: PathBuf,
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.dir);
     }
 }
 

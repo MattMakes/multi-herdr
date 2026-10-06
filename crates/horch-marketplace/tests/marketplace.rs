@@ -833,3 +833,91 @@ fn nfr_07_git_only_on_temp_repos() {
     let r = GitRunner::new("/nonexistent/horch-test-git").run(Path::new(""), &["status"]);
     assert!(matches!(r, Err(GitError::NoDir)), "{r:?}");
 }
+
+/// U-10: installs that race on one store each keep their lock entry. Without
+/// the store lock, two installs read the same old lock and one entry is lost.
+#[test]
+fn mkt_11_concurrent_installs_keep_every_lock_entry() {
+    const SKILLS: usize = 8;
+    for round in 0..10 {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs: Vec<PathBuf> = (0..SKILLS)
+            .map(|i| local_skill(tmp.path(), &format!("race-{i}")))
+            .collect();
+        let barrier = std::sync::Barrier::new(SKILLS);
+        std::thread::scope(|scope| {
+            for dir in &dirs {
+                let (barrier, root) = (&barrier, tmp.path());
+                scope.spawn(move || {
+                    let installer = installer_at(root, no_git());
+                    barrier.wait();
+                    installer.install(&local(dir), &opts(), None).unwrap();
+                });
+            }
+        });
+        let ids: Vec<String> = lock(&Store::new(tmp.path().join("store")))
+            .skills
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        let want: Vec<String> = (0..SKILLS).map(|i| format!("race-{i}")).collect();
+        assert_eq!(ids, want, "round {round} lost a lock entry");
+    }
+}
+
+/// U-10: an install waits while another process holds the store lock, and
+/// writes its entry once the lock is free.
+#[test]
+fn mkt_11_install_waits_for_the_store_lock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = local_skill(tmp.path(), "demo");
+    let installer = installer_at(tmp.path(), no_git());
+    let held = installer.store().lock().unwrap();
+    std::thread::scope(|scope| {
+        let handle = scope.spawn(|| installer.install(&local(&dir), &opts(), None));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!handle.is_finished(), "install ignored the store lock");
+        assert!(lock(installer.store()).skills.is_empty());
+        drop(held);
+        handle.join().unwrap().unwrap();
+    });
+    assert_eq!(lock(installer.store()).skills.len(), 1);
+    assert!(
+        installer.store().lock().is_ok(),
+        "the install kept the lock"
+    );
+}
+
+/// U-10: a held lock times out with a clear error; a stale one is broken; a
+/// faulted install releases it.
+#[test]
+fn mkt_11_store_lock_timeout_stale_and_release() {
+    use std::time::Duration;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::new(tmp.path().join("store"));
+    let held = store.lock().unwrap();
+    let err = store
+        .lock_within(Duration::from_millis(100), Duration::from_secs(30))
+        .unwrap_err();
+    assert!(err.to_string().contains("marketplace.lock.guard"), "{err}");
+    assert!(
+        matches!(&err, MarketplaceError::Io(e) if e.kind() == std::io::ErrorKind::TimedOut),
+        "{err:?}"
+    );
+    // A lock whose holder died is older than the stale limit.
+    std::thread::sleep(Duration::from_millis(60));
+    let broken = store
+        .lock_within(Duration::from_secs(5), Duration::from_millis(20))
+        .unwrap();
+    drop(held);
+    drop(broken);
+    assert!(store.lock().is_ok());
+
+    let dir = local_skill(tmp.path(), "demo");
+    let installer = installer_at(tmp.path(), no_git());
+    let faulted = InstallOptions {
+        fault: FaultPoint::parse("abort-after-materialize-before-lock"),
+    };
+    installer.install(&local(&dir), &faulted, None).unwrap_err();
+    assert!(installer.store().lock().is_ok(), "a fault kept the lock");
+}
