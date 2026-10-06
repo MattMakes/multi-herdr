@@ -142,7 +142,7 @@ verify:
     rustfmt --edition 2021 --check $(git diff --name-only --diff-filter=AM main -- '*.rs')
     HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check
 
-# The per-commit gate for the arch-refactor-dataset branch
+# The per-commit gate
 gate:
     ./scripts/phase-gate.sh
 

@@ -1,4 +1,4 @@
 /target
 
-# Fleet worker checkouts (git worktrees), one per unit; see ai_docs/plans/*/00-conventions.md
+# Fleet worker checkouts (git worktrees), one per unit; see docs/fleet-workflow.md
 .worktrees/

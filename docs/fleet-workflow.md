@@ -19,11 +19,12 @@ orchestrator, and the orchestrator spawns another pane.
 
 ## Plan files
 
-A run lives in `ai_docs/plans/<run>/`:
+`ai_docs/` is local scratch. It is not in git (no commit holds it), so a
+fresh clone has no `ai_docs/`. A run keeps its plans there, in `ai_docs/plans/<run>/`:
 
 | file | what it holds |
 |---|---|
-| `00-conventions.md` | the rules every unit follows: sources, worktrees, shared files, the gate, hard rules, the merge protocol |
+| `00-conventions.md` (or `00-common.md`) | the rules every unit follows: sources, the branch mode, shared files, the gate, hard rules |
 | `<unit>.md` (for example `d09-agent-list.md`) | 1 unit: `GOAL`, `CONTEXT`, `FILES` (`own` and `do not touch`), `STEPS`, and often an `EXECUTION` section the orchestrator adds |
 | `<unit>-impl.md` | optional: a detailed implementation plan a planner wrote for an executor |
 | `STATUS.md` | the table of units, workers and states (`running`, `MERGED`, `queued`), the merge order and open notes |
@@ -44,11 +45,51 @@ A planner (for example `staff-engineer`) works in the plan phase and writes a
 plan, not the deliverable. The orchestrator then hands the plan to an
 executor in the implementation phase.
 
-## Worktrees
+## Branch modes
 
-- The orchestrator owns 1 integration worktree on the run's branch (for the
-  design-skills run: `design-skills`). Nobody else edits, commits or builds
-  there.
+### Single-branch mode (current)
+
+All workers share 1 checkout and 1 branch. For the design-skills run, the
+checkout is the main checkout and the branch is `design-skills`.
+
+- Nobody creates a worktree for a unit. Scratch repos for experiments go in
+  `.worktrees/_scratch/`, which is git-ignored and inside the trusted project
+  folder. Never use `/tmp`.
+- A worker edits only the files in the `FILES` section of its plan.
+- The tree must compile at every commit, because other workers build it.
+  Never leave a half-edited `.rs` file while you wait.
+- A worker commits only its own paths:
+
+  ```bash
+  git commit -m "<Area>: <what changed>" -- <path> <path>
+  ```
+
+  A pathspec commit does not pick up the staged or unstaged changes of another
+  worker. Never run `git add -A`, `git add .`, `git commit -a`, `git stash`,
+  `git reset` or `git rebase`. Never run `git checkout -- <path>` on a file
+  you do not own.
+- After each commit, the worker runs `git show --stat HEAD`. Every file in it
+  must be the worker's own.
+- If git reports that `index.lock` exists, wait 2 s and retry. Never delete it.
+- Nobody pushes. The orchestrator pushes after the gate passes.
+- While it works, a worker runs only the tests it touches. The orchestrator
+  runs the full gate once on the tip, in `.worktrees/_gate`, and sends a red
+  gate back to the worker whose commit broke it. See
+  [testing-and-gates.md](testing-and-gates.md).
+- Warning: never run tests or the gate under `git rebase -x` or a git hook.
+- A Codex worker's sandbox cannot write `.git`, so units that commit go to
+  Claude teammates.
+
+The worker reports with `[<role>] NOTE: COMMITTED <short-sha>. Targeted checks
+green.` and then runs `horch done`.
+
+### Worktree mode (older alternative)
+
+The first runs gave each unit its own branch and worktree. Use it only when
+the operator asks for it.
+
+- The orchestrator owns 1 integration worktree on the run's branch. Nobody
+  else edits, commits or builds there.
 - Each unit gets its own branch `ds/<unit>` in its own worktree, created from
   the integration branch:
 
@@ -57,21 +98,10 @@ executor in the implementation phase.
   cd <main checkout>/.worktrees/<unit>
   ```
 
-- Unit worktrees live under `.worktrees/` in the main checkout. The
-  directory is in `.gitignore`. Each worktree builds its own `target/`
-  (2 to 8 GB), so the orchestrator removes a worktree as soon as its unit
-  merges. `00-conventions.md` of the run gives the exact path (for the
-  design-skills run: section 8; units started before it finish in their old
-  directory).
-
-- Each worktree uses its own `CARGO_TARGET_DIR` (the default `target/` in
-  the worktree). Sharing one corrupts builds and fakes.
+- Unit worktrees live under `.worktrees/` in the main checkout. Each builds
+  its own `target/` (2 to 8 GB), so the orchestrator removes a worktree as soon
+  as its unit merges. Never share one `CARGO_TARGET_DIR` between worktrees.
 - Nobody runs `git checkout` or `git switch` in the shared main checkout.
-  Workers share it.
-- A Codex worker's sandbox cannot write `.git` of a worktree, so units that
-  commit go to Claude teammates.
-
-## The merge protocol
 
 When a unit is complete, the worker:
 
@@ -83,9 +113,8 @@ When a unit is complete, the worker:
    `horch done "<summary>"`.
 
 The orchestrator merges, runs the gate on the integration branch, and updates
-`STATUS.md`. Its merge and gate helpers live in `/tmp` (`STATUS.md` names
-`/tmp/igate-ds.sh` and `/tmp/dsmerge.sh`). They are not in the repository,
-and this page does not describe them.
+`STATUS.md`. Its merge helpers are operator-local scripts, not in the
+repository.
 
 Shared files (for example `skills/README.md`, `skills/copied.json`,
 `SKIP_NEW_TEAMMATES`) get lines from several units. Each unit adds its lines
@@ -93,7 +122,10 @@ in alphabetical order and keeps both sides at a rebase conflict.
 
 ## Reports
 
-Each unit writes `ai_docs/reports/<run>/<unit>.md` and commits it. A report
+Each unit writes a report to `ai_docs/reports/<run>/<unit>.md`. In
+single-branch mode the report is local scratch and the worker does not commit
+it; the `horch done` summary carries the result. In worktree mode the unit
+commits it. A report
 holds: what changed, decisions and why, what was dropped, every oracle or
 golden change with a diff summary, gotchas, what was verified only against a
 fake, and follow-ups outside the unit's scope. Reports are the best place to
@@ -114,6 +146,8 @@ The keywords are `ready`, `DONE:`, `BLOCKED:`, `NOTE:` and `QUESTION:`. The
 rule lives in the 2 briefings in `teammates/_base/`.
 
 ## The ai_docs map
+
+`ai_docs/` is local scratch and is not in git. Its directories:
 
 | directory | holds |
 |---|---|

@@ -1,6 +1,6 @@
 # Phase-scoped skills
 
-The 24 skills in [skills/](../skills/README.md) are repo-owned: fourteen are adapted process skills, eight design skills combine and rewrite files from several design skills, `orchestrate` is own text, and `skill-creator` is a verbatim copy. [copied.json](../skills/copied.json) lists the copied files of each skill. The phase catalogs below use only process skills. The design skills, `orchestrate` and `skill-creator` belong to no phase: they attach to a teammate by name, in its `skills:` list. They are compiled into `horch`; an installed binary works without a source checkout. No skill download or global installation happens when a worker starts.
+The skills in `skills/` are repo-owned. [skills/README.md](../skills/README.md) lists every skill with its kind. [copied.json](../skills/copied.json) lists the copied files of each skill. The phase catalogs below use only process skills. Every other skill (design skills, `orchestrate`, `skill-creator`) belongs to no phase: they attach to a teammate by name, in its `skills:` list. They are compiled into `horch`; an installed binary works without a source checkout. No skill download or global installation happens when a worker starts.
 
 | Phase | Fleet catalog |
 |---|---|
@@ -16,8 +16,8 @@ A teammate's `phase` selects its default catalog; `skills` adds specific bundled
 ```sh
 horch skills --phase implementation --json
 horch spawn codex-sol --phase research "Investigate the storage migration"
-horch spawn sonnet --phase plan "Write a plan from ai_docs/research/storage.md"
-horch spawn prime --phase implementation "Implement ai_docs/plans/storage.md"
+horch spawn sonnet --phase plan "Write a plan from docs/storage-research.md"
+horch spawn prime --phase implementation "Implement docs/storage-plan.md"
 horch spawn opencode-pickle --phase validation "Validate the completed storage change"
 horch spawn --resume RECORD_ID --phase validation "Check the final diff"
 ```

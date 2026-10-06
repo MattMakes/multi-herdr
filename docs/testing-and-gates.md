@@ -9,7 +9,7 @@ to read a failure, and the rules for oracles, goldens and fakes.
 HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate
 ```
 
-`just gate` runs `scripts/phase-gate.sh`. It stops at the first failure and
+`just gate` runs `scripts/phase-gate.sh` (11 steps). It stops at the first failure and
 prints `GATE GREEN` at the end. On a full machine it takes about 4 minutes.
 
 Warning: never run the gate or a test under `git rebase -x`, or from a git
@@ -26,15 +26,17 @@ of defence. Do not depend on it.
 
 | # | step | a failure means | open first |
 |---|---|---|---|
-| 1 | `cargo fmt --all --check` | the formatting differs | run `cargo fmt --all` |
-| 2 | `cargo build --workspace --all-targets` | code or a test does not compile | the first `error[...]` in the output |
-| 3 | `cargo build --workspace --bins` | a binary does not compile (the e2e tests need all of them) | the same |
-| 4 | `cargo clippy --workspace --all-targets -- -D warnings` | a clippy warning; every warning is an error | the first `warning:` in the output |
-| 5 | `cargo test --workspace --no-fail-fast` | a test failed; every test runs, so read the summary at the end | the failing test file |
-| 6 | `env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check` | a file in `teammates/` breaks a roster rule | the named teammate file; rules in `crates/horch-core/src/roster/validation.rs` |
-| 7 | `scripts/check-req-coverage.sh` | a requirement ID has no test | the ID's requirement table in `docs/specs/` |
-| 8 | `scripts/check-deps.sh` | a crate has a dependency that is not allowed | the `Cargo.toml` you changed |
-| 9 | `scripts/verify-telemetry-e2e.sh` | the hermetic telemetry story changed | `crates/horch-e2e/tests/scenario.rs` |
+| 1 | `no_spec_todo` (`git grep` for an unresolved spec marker) | a file holds an unresolved spec marker; the step prints each hit | the file and line in the output; close the marker |
+| 2 | `cargo fmt --all --check` | the formatting differs | run `cargo fmt --all` |
+| 3 | `cargo build --workspace --all-targets` | code or a test does not compile | the first `error[...]` in the output |
+| 4 | `cargo build --workspace --bins` | a binary does not compile (the e2e tests need all of them) | the same |
+| 5 | `cargo clippy --workspace --all-targets -- -D warnings` | a clippy warning; every warning is an error | the first `warning:` in the output |
+| 6 | `cargo test --workspace --no-fail-fast` | a test failed; every test runs, so read the summary at the end | the failing test file |
+| 7 | `env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check` | a file in `teammates/` breaks a roster rule | the named teammate file; rules in `crates/horch-core/src/roster/validation.rs` |
+| 8 | `scripts/check-req-coverage.sh` | a requirement ID has no test | the ID's requirement table in `docs/specs/` |
+| 9 | `scripts/check-deps.sh` | a crate has a dependency that is not allowed | the `Cargo.toml` you changed |
+| 10 | `scripts/verify-telemetry-e2e.sh` | the hermetic telemetry story changed | `crates/horch-e2e/tests/scenario.rs` |
+| 11 | `godot_skills` (the Python checks in `scripts/godot/`) | a Godot skill names an unknown engine API, a code block does not parse, or a cross-reference does not resolve; the Godot and dotnet checks skip when those tools are absent | the first failing script in the output, then the named file in `skills/godot-*/` |
 
 `HORCH_REQUIRE_GIT=1` and `HORCH_REQUIRE_SQLITE=1` turn a skip into a
 failure. Without them, a test that cannot find `git` (for example in
@@ -55,14 +57,20 @@ cargo clippy -p <crate>
 rustfmt --check <files>
 ```
 
-Run the full gate once, just before you report ready. Run it through the slot
-wrapper `.worktrees/gate-slot.sh` (a git-ignored operator script in the main checkout, not in a fresh clone), which lets 3 gates run at a time (set
+In single-branch mode (see [fleet-workflow.md](fleet-workflow.md)), a worker
+runs only the tests it touches and takes no gate slot. The orchestrator runs 1
+full gate on the tip, in `.worktrees/_gate`.
+
+The rest of this section applies to parallel worktree runs. Run the full gate
+once, just before you report ready. The slot wrapper `.worktrees/gate-slot.sh`
+is an optional, operator-local script. It is git-ignored and absent from a
+fresh clone. When it exists, it lets 3 gates run at a time (set
 `GATE_SLOTS` to change the number). A slot is a directory in
 `/tmp/horch-gate-slots` that holds the pid of its holder. A slot whose holder
 is dead is reclaimed.
 
 ```bash
-HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 .worktrees/gate-slot.sh just gate
+HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 .worktrees/gate-slot.sh just gate   # only if the script exists
 ```
 
 `just verify` is an older, shorter check from the telemetry design (build,

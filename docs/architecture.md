@@ -142,9 +142,10 @@ So every horch process in a fleet gets the spawner's data root this way:
 - The orchestrator pane command sets `HORCH_DATA_DIR` (`cmd/recipes.rs`
   `pane_command_for`, through `PaneShell::command_line_with_env`).
   `pane-launch` and its agent inherit it.
-- `horch spawn` writes the data root to the brief (`data_root`). `horch
-  worker` reads it, and gives it to its agent as `HORCH_DATA_DIR`
-  (`messaging/brief.rs` `transport_env`).
+- Every other pane command sets `HORCH_DATA_DIR` the same way (`execution/service.rs`
+  `run`, through `PaneShell::command_line_with_env`). The brief carries no
+  `data_root` field. `horch worker` and its agent inherit the variable. See
+  [command-flow.md](command-flow.md), section 2.
 
 ## How teammates and skills get into the binary
 

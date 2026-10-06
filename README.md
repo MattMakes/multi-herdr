@@ -215,8 +215,8 @@ now carries the rule as a switch.
 
 | harness | feature | switch | where it lives |
 |---|---|---|---|
-| Claude 2.1.278 | the `Agent` tool | `--disallowedTools Agent` | `disallowed_tools: [Agent]` on all 11 Claude fleet teammates |
-| Codex 0.155.1 | feature `multi_agent`, on by default | `-c features.multi_agent=false` | `args:` on the 3 Codex teammates |
+| Claude 2.1.278 | the `Agent` tool | `--disallowedTools Agent` | `disallowed_tools: [Agent]` on every Claude fleet teammate except the 2 `orchestration-*` recipe files |
+| Codex 0.155.1 | feature `multi_agent`, on by default | `-c features.multi_agent=false` | `args:` on every Codex teammate |
 | OpenCode 1.18.2 | subagents `explore` and `general`, via the `task` tool | config-file key only | not applied - `horch` forwards no OpenCode config file |
 | pi | none - its tools are `bash`, `edit`, `read`, `write` | n/a | n/a |
 | Prime | unverified, not installed on this machine | unknown | not applied |
