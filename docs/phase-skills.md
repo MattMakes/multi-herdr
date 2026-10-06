@@ -16,11 +16,13 @@ A teammate's `phase` selects its default catalog; `skills` adds specific bundled
 ```sh
 horch skills --phase implementation --json
 horch spawn codex-sol --phase research "Investigate the storage migration"
-horch spawn sonnet --phase plan "Write a plan from docs/storage-research.md"
-horch spawn prime --phase implementation "Implement docs/storage-plan.md"
+horch spawn sonnet --phase plan "Write a plan from ai_docs/research/storage.md"
+horch spawn prime --phase implementation "Implement ai_docs/plans/storage.md"
 horch spawn opencode-pickle --phase validation "Validate the completed storage change"
 horch spawn --resume RECORD_ID --phase validation "Check the final diff"
 ```
+
+The `ai_docs/` paths are examples of scratch plan files. `ai_docs/` is local scratch and is not in git.
 
 Resume retains its recorded phase unless explicitly overridden. Old ledger entries fall back to the teammate default. Skill selection changes on the next launch; assigning new work to an already running pane does not hot-reload its catalog. Prefer a fresh session for a new phase when the old conversation is unnecessary: a resumed conversation may still contain previously loaded skill bodies. Pass findings, plans and evidence as file paths.
 
