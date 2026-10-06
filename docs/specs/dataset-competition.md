@@ -644,11 +644,15 @@ pub trait GitClient {
     fn rev_list(&self, dir: &Path, range: &str) -> anyhow::Result<Vec<String>>;
     fn diff_numstat(&self, dir: &Path, base: &str, head: &str) -> anyhow::Result<Vec<NumstatLine>>;
     fn diff_patch(&self, dir: &Path, base: &str, head: &str, cap_bytes: usize) -> anyhow::Result<(String, bool)>; // (patch, truncated)
+    /// sha256 of the whole uncapped patch; freeze needs it.
+    fn diff_digest(&self, dir: &Path, base: &str, head: &str) -> anyhow::Result<Digest>;
     fn is_ancestor(&self, dir: &Path, a: &str, b: &str) -> anyhow::Result<bool>;
     /// `update-ref <ref> <new> <expected_old>`: compare and swap.
     fn update_ref_cas(&self, repo: &Path, refname: &str, new: &str, expected_old: &str) -> anyhow::Result<bool>;
     fn cherry_pick(&self, dir: &Path, range: &str, id: &GitIdentity) -> anyhow::Result<CherryPick>;
-    fn merge_ff_only(&self, dir: &Path, rev: &str) -> anyhow::Result<()>;
+    /// `read-tree -m -u <old> <new>` in the checkout `dir`; HEAD and refs do not move.
+    /// The default refuses, so a fake client does not need it.
+    fn read_tree_update(&self, dir: &Path, old: &str, new: &str) -> anyhow::Result<()>;
     fn branch_checkout_location(&self, repo: &Path, branch: &str) -> anyhow::Result<CheckoutLocation>;
 }
 /// Wraps horch_marketplace::git::GitRunner. GIT_TERMINAL_PROMPT=0, LC_ALL=C,
@@ -701,7 +705,9 @@ pub trait Validator {
 }
 /// `sh -c <gate>` per gate, per-gate timeout, worktree-local CARGO_TARGET_DIR,
 /// FORBIDDEN_ENV stripped, logs redacted and capped at 256 KiB.
-pub struct CommandValidator { pub gates: Vec<GateSpec>, pub artifacts: PathBuf, pub faults: Faults }
+pub struct CommandValidator { pub gates: Vec<GateSpec>, pub artifacts: PathBuf,
+                             pub faults: BTreeSet<String>,         // `fail-gate:<name>` points
+                             pub env: Vec<(String, String)> }      // tests only
 impl Validator for CommandValidator { /* … */ }
 ```
 
@@ -864,16 +870,21 @@ Scheduler:
 
 ```rust
 pub struct JudgeJobSpec { pub round: RoundId, pub attempt: u32, pub input_dir: PathBuf, pub job_dir: PathBuf,
+                          pub session: SessionId,             // minted by the coordinator
                           pub model: String, pub effort: String, pub timeout: Duration }
-pub enum JobState { OutputPresent(PathBuf), Running { pid: u32 }, Lost, Exited { code: i32 } }
+pub struct JobExit { pub reason: ExitReason, pub code: Option<i32> }  // exit.json
+pub enum ExitReason { Ok, Crash, Timeout, TooLarge }                    // serde snake_case
+pub enum JobState { NotStarted, Running { pid: u32 }, OutputPresent(PathBuf), Exited(JobExit), Lost }
 /// spawn_detached(multi-herdr-dataset judge-job …). Retry: 2 attempts, then NEEDS_INTERVENTION.
 pub fn schedule(ctx: &RuntimeContext, spec: &JudgeJobSpec) -> anyhow::Result<u32>;
-/// output present → parse; heartbeat fresh and pid alive → wait; else Lost.
+/// output present → parse; exit file → Exited; heartbeat fresh and pid alive → Running;
+/// no job.log → NotStarted; else Lost.
 pub fn discover(job_dir: &Path, now: DateTime<Utc>, stale_after: Duration) -> JobState;
 // harness/headless.rs
 /// claude -p --output-format json --session-id <minted>, prompt on stdin, FORBIDDEN_ENV stripped;
 /// --json-schema only if `claude --help` lists it.
-pub fn headless_command(ctx: &RuntimeContext, teammate: &Teammate, session: &SessionId, schema: Option<&Path>) -> std::process::Command;
+/// `schema` is the schema text, not a path.
+pub fn headless_command(ctx: &RuntimeContext, teammate: &Teammate, session: &SessionId, schema: Option<&str>) -> anyhow::Result<std::process::Command>;
 ```
 
 The job writes only `jobs/<round>/judge-<n>/{heartbeat, output.json ≤ 1 MiB,
@@ -886,12 +897,12 @@ exit.json}`. The coordinator emits every `judge.*` event, writes
 ```rust
 pub struct BranchRef { pub repo: PathBuf, pub name: String }        // "refs/heads/<name>"
 pub enum PromotionStrategy { FastForward, CherryPick }               // serde snake_case
-pub enum PublishMode { UpdateRefCas, MergeFfOnly { checkout: PathBuf } }
-pub struct PromotionPlan {
-    pub round: RoundId, pub judgment_id: JudgmentId,
-    pub gates: Vec<GateSpec>,                // revalidation gates
+pub enum PublishMode { UpdateRefCas, CasReadTree { checkout: PathBuf } } // ref swap, then read-tree -m -u in the checkout
+pub struct PromotionPlan {                   // the revalidation gates live in the engine's Validator
+    pub experiment: ExperimentId, pub round: RoundId, pub judgment_id: JudgmentId,
     pub identity: GitIdentity,
     pub integration_root: PathBuf,           // temp integration worktree parent
+    pub attempt: u32,                        // 1, then 1 more per operator.promote
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromotionReceipt {
@@ -903,7 +914,7 @@ pub struct PromotionReceipt {
     pub dest_before: String,
     pub dest_after: String,
     pub strategy: PromotionStrategy,
-    pub publish: String,                     // "update_ref_cas" | "merge_ff_only"
+    pub publish: String,                     // "update_ref_cas" | "update_ref_cas_read_tree" ("merge_ff_only" before D17)
     pub validation_ids: Vec<String>,
     pub judgment_id: JudgmentId,
     pub promoted_at: String,
