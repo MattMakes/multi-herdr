@@ -282,8 +282,6 @@ pub struct SpawnRequest {
     pub phase: Option<Phase>,
     /// Effort for this spawn only, over the teammate's (or the record's).
     pub effort: Option<String>,
-    /// An explicit role; `None` allocates `<teammate>-<n>`.
-    pub role: Option<String>,
     /// The pane to split; `None` splits the caller's own pane.
     pub from_pane: Option<String>,
     pub direction: Direction,
@@ -308,7 +306,6 @@ impl SpawnRequest {
             task: task.into(),
             phase: None,
             effort: None,
-            role: None,
             from_pane: None,
             direction: Direction::Right,
             tiling: TilingMode::Automatic,

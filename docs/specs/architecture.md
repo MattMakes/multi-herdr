@@ -106,7 +106,7 @@ phase 8 (training Laya).
 | Execution | **WorkerRun** | ledger `Record` (`record_id`) | `execution::Execution`. **`worker_run_id ≡ ExecutionId`**. WorkerRun is a projection of Execution plus measure events |
 | Session | — | `Record.session_id` | `SessionState{Pending, Known(SessionId), Unavailable}` |
 | Worker | — | role + mailbox `.id` | `WorkerId = "<workspace>:<role>"` |
-| Pane | — | herdr pane id | `PaneId`; new optional `pane_id` on records |
+| Pane | — | herdr pane id | `PaneId` in records and plans, `&str` at the workspace port (§4.7); new optional `pane_id` on records |
 | Skill | candidate features | `skills.rs` Bundle | `SkillId`, `SkillVersion`, `ResolvedSkillRef` |
 | Competition | **Round** | — | `competition::Round` (`RoundId`); an Experiment groups rounds |
 | Candidate | Candidate | — | a planned `SpawnRequest` plus an anonymous label |
@@ -944,7 +944,7 @@ impl QuotaEnv { pub fn from_context(ctx: &RuntimeContext) -> QuotaEnv; }
 #[serde(rename_all = "snake_case")]
 pub enum ReportTarget { Orchestrator, None }
 
-// execution/model.rs. Spec A §8 SpawnRequest: these 14 fields.
+// execution/model.rs. Spec A §8 SpawnRequest: these 13 fields. The role is not a field: it is `ExecutionService::spawn`'s `role` argument.
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
     pub teammate: Option<TeammateName>,     // None with `resume`: the record names it
@@ -952,7 +952,6 @@ pub struct SpawnRequest {
     pub task: String,                       // empty for an idle worker
     pub phase: Option<Phase>,
     pub effort: Option<String>,             // this spawn only, over the teammate's (or the record's)
-    pub role: Option<String>,               // no code reads it; the role is ExecutionService::spawn's `role` argument
     pub from_pane: Option<String>,          // the pane to split; None splits the caller's pane
     pub direction: Direction,               // Right by default
     pub tiling: TilingMode,
@@ -1612,7 +1611,7 @@ byte-identical.
 | | |
 |---|---|
 | Created | `routing/{mod,policy,quota,quota_probe,snapshot,balance,eligible,decision}.rs` |
-| Moved | `policy.rs` → `routing/policy.rs`; `quota.rs` pure part (QuotaView, Assessment, State, pools) → `routing/quota.rs`; `quota.rs` Child (`:618`), probes, `harness_version` → `routing/quota_probe.rs`; `current_view` → `routing/snapshot::obtain` (the only probing path); `balance_policy.rs` → `routing/{balance,decision,eligible}` (private `candidates()` becomes a filter over `eligible_fallbacks`, same order, same drop rules) |
+| Moved | `policy.rs` → `routing/policy.rs`; `quota.rs` pure part (QuotaView, Assessment, State, pools) → `routing/quota.rs`; `quota.rs` Child (`:618`), probes, `harness_version` → `routing/quota_probe.rs`; `current_view` → `routing/snapshot::obtain` (the probing path of routing; the telemetry collector, `telemetry/collect.rs`, also probes through `quota_probe::probe_all`); `balance_policy.rs` → `routing/{balance,decision,eligible}` (private `candidates()` becomes a filter over `eligible_fallbacks`, same order, same drop rules) |
 | Shims | `policy.rs`, `quota.rs`, `balance_policy.rs`: `pub use crate::routing::<x>::*;`. `Decision` stays the gate's return type and its JSON type; `RoutingDecision` is `From<&Decision>` |
 | Ledger | records gain `routing` (RoutingProvenance); `via` and `substitution_reason` are still written |
 | Tests | `arc_12_decisions_match_baseline`, `arc_13_exclusion_reasons` (one test per reason), `arc_13_candidates_equivalent`, `arc_14_provenance_on_spawn_substitute_resume` (e2e) |
