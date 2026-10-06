@@ -123,8 +123,9 @@ fn pad(s: &str, n: usize) -> String {
     format!("{s}{}", " ".repeat(n.saturating_sub(len)))
 }
 
+/// `x` as a whole percent. Adding `0.0` turns a rounded `-0` into `0`.
 fn pct(x: f64) -> String {
-    format!("{:.0}%", x * 100.0)
+    format!("{:.0}%", (x * 100.0).round() + 0.0)
 }
 
 /// The POOL block (section 12.4), shared by the screen and `horch quota`.
@@ -844,6 +845,16 @@ pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tiny negative share rounds to zero and prints `0%`, never `-0%`.
+    #[test]
+    fn pct_never_prints_a_negative_zero() {
+        assert_eq!(pct(-0.0004), "0%");
+        assert_eq!(pct(-0.0), "0%");
+        assert_eq!(pct(0.0), "0%");
+        assert_eq!(pct(0.256), "26%");
+        assert_eq!(pct(-0.25), "-25%");
+    }
 
     /// `horch quota` lists the Google pool always; the screen lists it only
     /// when it has a reading.
