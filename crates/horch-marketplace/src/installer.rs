@@ -244,6 +244,9 @@ impl Installer {
                 )));
             }
             check_digest(entry, &prepared.digest)?;
+            // Materialize under the store lock, as `install` does: an
+            // install of the same version must not interleave.
+            let _guard = self.store.lock()?;
             self.store.materialize(
                 &prepared.tree,
                 &prepared.staging,

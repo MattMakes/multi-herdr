@@ -921,3 +921,32 @@ fn mkt_11_store_lock_timeout_stale_and_release() {
     installer.install(&local(&dir), &faulted, None).unwrap_err();
     assert!(installer.store().lock().is_ok(), "a fault kept the lock");
 }
+
+/// U-10: a reinstall that rebuilds a missing version directory waits while
+/// another process holds the store lock, as an install does.
+#[test]
+fn mkt_11_reinstall_waits_for_the_store_lock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = local_skill(tmp.path(), "demo");
+    let installer = installer_at(tmp.path(), no_git());
+    let entry = installer.install(&local(&dir), &opts(), None).unwrap();
+    let version_dir = entry_dir(installer.store(), &entry);
+    std::fs::remove_dir_all(&version_dir).unwrap();
+    let held = installer.store().lock().unwrap();
+    std::thread::scope(|scope| {
+        let handle = scope.spawn(|| installer.reinstall_from_lock());
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!handle.is_finished(), "reinstall ignored the store lock");
+        assert!(
+            !version_dir.exists(),
+            "reinstall materialized under the lock"
+        );
+        drop(held);
+        assert_eq!(handle.join().unwrap().unwrap(), vec![entry]);
+    });
+    assert!(version_dir.is_dir());
+    assert!(
+        installer.store().lock().is_ok(),
+        "the reinstall kept the lock"
+    );
+}
