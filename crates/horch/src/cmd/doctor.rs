@@ -21,7 +21,7 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     let mut roster = super::load_roster_unwarned(ctx, None)?;
     // Count and check what a fleet started here would offer (`offer_when`).
     if let Ok(project) = ctx.paths.project() {
-        roster = roster.with_project_facts(super::recipes::project_facts(&project));
+        roster = roster.with_project_facts(horch::project::project_facts(&project));
     }
     let problems = roster.check();
     if problems.is_empty() {
