@@ -170,34 +170,49 @@ fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, 
         args.join(" ")
     );
     let mut cmd = Command::new(bin);
-    for key in crate::harness::launch::FORBIDDEN_ENV {
-        cmd.env_remove(key);
+    cmd.args(args);
+    match run_with_deadline(cmd, timeout) {
+        Err(e) => Err(format!("{name} could not start: {e}")),
+        Ok(None) => Err(format!("{name} timed out after {}s", timeout.as_secs())),
+        Ok(Some((status, out, _))) if status.success() => Ok(out),
+        Ok(Some((status, out, err))) => Err(failure(&name, status, &err, &out)),
     }
+}
+
+/// Run `cmd` with no stdin and a deadline: its exit status, stdout and
+/// stderr, or `None` when it did not exit in time (it is killed then).
+///
+/// Threads read both pipes while the child runs. A child that writes more
+/// than the pipe buffer (64 KiB on macOS) blocks until someone reads, so
+/// reading only after the exit would wait for the whole deadline (U-65).
+fn run_with_deadline(
+    mut cmd: Command,
+    timeout: StdDuration,
+) -> std::io::Result<Option<(std::process::ExitStatus, String, String)>> {
+    crate::runtime::process::scrub_child_env(&mut cmd);
     let mut child = cmd
-        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{name} could not start: {e}"))?;
+        .spawn()?;
+    let out = read_on_thread(child.stdout.take());
+    let err = read_on_thread(child.stderr.take());
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let (out, err) = drain(&mut child);
-                return if status.success() {
-                    Ok(out)
-                } else {
-                    Err(failure(&name, status, &err, &out))
-                };
+                let text = |r: std::thread::JoinHandle<String>| r.join().unwrap_or_default();
+                return Ok(Some((status, text(out), text(err))));
             }
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(StdDuration::from_millis(20))
             }
+            // The readers are not joined: a process the child started can
+            // still hold the pipes open.
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("{name} timed out after {}s", timeout.as_secs()));
+                return Ok(None);
             }
         }
     }
@@ -260,33 +275,10 @@ pub fn probe_version(bin: &Path) -> VersionProbe {
 /// [`VersionProbe::NoAnswer`].
 fn probe_version_within(bin: &Path, timeout: StdDuration) -> VersionProbe {
     let mut cmd = Command::new(bin);
-    for key in crate::harness::launch::FORBIDDEN_ENV {
-        cmd.env_remove(key);
-    }
-    let child = cmd
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let Ok(mut child) = child else {
+    cmd.arg("--version");
+    let Ok(Some((status, out, err))) = run_with_deadline(cmd, timeout) else {
         return VersionProbe::NoAnswer;
     };
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(StdDuration::from_millis(20))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return VersionProbe::NoAnswer;
-            }
-        }
-    };
-    let (out, err) = drain(&mut child);
     if !status.success() {
         let name = bin
             .file_name()
@@ -306,18 +298,17 @@ fn probe_version_within(bin: &Path, timeout: StdDuration) -> VersionProbe {
         .map_or(VersionProbe::NoAnswer, VersionProbe::Version)
 }
 
-/// Read what an exited child wrote to its stdout and stderr.
-fn drain(child: &mut std::process::Child) -> (String, String) {
-    let read = |pipe: Option<&mut dyn std::io::Read>| {
+/// Read `pipe` to its end on a new thread. No pipe reads as empty text.
+fn read_on_thread(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
         let mut text = String::new();
-        if let Some(p) = pipe {
+        if let Some(mut p) = pipe {
             let _ = p.read_to_string(&mut text);
         }
         text
-    };
-    let out = read(child.stdout.as_mut().map(|p| p as &mut dyn std::io::Read));
-    let err = read(child.stderr.as_mut().map(|p| p as &mut dyn std::io::Read));
-    (out, err)
+    })
 }
 
 /// `<name> exited <code>: <first error line>` for a failed command.
@@ -669,5 +660,35 @@ mod tests {
         assert_eq!(pi.error, None);
         assert_eq!(pi.version.as_deref(), Some("0.70.0"));
         assert_eq!(pi.probed_at.as_deref(), Some("2026-10-04T10:05:00Z"));
+    }
+
+    /// U-65: a harness that prints more than the pipe buffer (64 KiB on
+    /// macOS) before it exits. The probe reads its pipes while it runs, so
+    /// the harness exits and the probe returns its output, not a timeout.
+    #[cfg(unix)]
+    #[test]
+    fn a_harness_that_prints_200_kib_is_read_before_the_timeout() {
+        const SIZE: usize = 200 * 1024;
+        let timeout = StdDuration::from_secs(20);
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("chatty");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\necho 1.2.3\nhead -c {SIZE} /dev/zero | tr '\\0' x\n\
+                 head -c {SIZE} /dev/zero | tr '\\0' y >&2\nexit 0\n"
+            ),
+        )
+        .unwrap();
+        crate::runtime::process::make_executable(&bin).unwrap();
+
+        let started = Instant::now();
+        let out = run_short(&bin, &[], timeout).unwrap();
+        assert_eq!(out.len(), "1.2.3\n".len() + SIZE);
+        assert_eq!(
+            probe_version_within(&bin, timeout),
+            VersionProbe::Version("1.2.3".into())
+        );
+        assert!(started.elapsed() < timeout, "{:?}", started.elapsed());
     }
 }
