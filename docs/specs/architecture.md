@@ -71,7 +71,10 @@ phase 8 (training Laya).
   4. No golden prompt changed; any prose change is a named sanctioned block.
   5. No serialization golden re-blessed; a format change bumped its schema
      version.
-  6. No oracle under `crates/*/tests/oracles/` regenerated.
+  6. No oracle under `crates/*/tests/oracles/` regenerated. This item
+     applied during phases A0 to A12. After A12, a plan that changes a
+     teammate's launch or skills re-blesses the oracle files it names, in
+     their own commit, as `docs/testing-and-gates.md` ("HORCH_BLESS") says.
   7. No existing test changed to make it pass, unless the unit plan says so.
   8. No new crate outside the allowlist (`scripts/check-deps.sh` and
      `nfr_05`, `nfr_06`, `nfr_09`, `nfr_11` pass).
@@ -542,7 +545,7 @@ impl Faults {
 // runtime/process.rs
 pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<PathBuf>;
 pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child>;  // setsid on unix
-pub(crate) fn strip_forbidden(cmd: &mut Command);                     // removes FORBIDDEN_ENV
+pub(crate) fn scrub_child_env(cmd: &mut Command);                     // removes FORBIDDEN_ENV and the git repository variables (REPO_ENV, GIT_CONFIG_KEY_<n>, GIT_CONFIG_VALUE_<n>)
 ```
 
 The fault abort exit code is 86 (`runtime/fault.rs:ABORT_EXIT_CODE`).
@@ -616,7 +619,7 @@ impl TilingMode { pub fn from_no_tile(no_tile: bool) -> TilingMode; }
 pub struct Task {
     pub id: Option<TaskId>,            // ledger `task_id`; set by callers that track tasks (B3)
     pub text: String,                  // ledger `task`; the idle placeholder for a worker with no task
-    pub plan: Option<String>,          // ledger `plan`: the plan-file slug (`ai_docs/plans/<slug>.md`)
+    pub plan: Option<String>,          // ledger `plan`: the slug of the plan path the task text names (`ai_docs/plans/<slug>.md`, local operator scratch, not in git)
 }
 
 /// One run of one worker, orchestrator, candidate or judge: the typed view
@@ -763,13 +766,14 @@ its key, because the store already finds an attempt again by that pair.
 
 ```rust
 // routing/eligible.rs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExclusionReason {
     NotInRoster, Hidden, ReservedTier, TrainsOnInput, PoolBlocked, Unspawnable,
     EffortUnsupported, HarnessUnavailable, AgentNone, ExcludedByConfig, OverBudget,
+    Unpriced,                          // no price for the model (the planner applies it)
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verdict", content = "reason", rename_all = "snake_case")]
 pub enum Verdict { Eligible, Excluded(ExclusionReason) }
 
@@ -777,29 +781,55 @@ pub enum Verdict { Eligible, Excluded(ExclusionReason) }
 pub struct EligibleEntry {
     pub teammate: TeammateName,
     pub harness: HarnessKind,
-    pub model: ModelId,
+    pub model: Option<ModelId>,        // None: no model of its own, or not in the roster
     pub effort: Option<String>,
     pub fallback_index: Option<u32>,   // None = the requested teammate; Some(i) = fallbacks[i]
     pub pool: String,
     pub pool_state: quota::State,
+    #[serde(flatten)]
     pub verdict: Verdict,
 }
 #[derive(Debug, Clone, Default)]
 pub struct EligibilityFilter {          // B3 config exclusions and budget
     pub excluded: BTreeSet<TeammateName>,
     pub max_cost_microusd: Option<i64>,
-    pub available_harnesses: Option<BTreeSet<HarnessKind>>,
+    pub estimated_cost_microusd: BTreeMap<TeammateName, i64>,
+    pub available_harnesses: Option<Vec<HarnessKind>>,   // a Vec: HarnessKind has no Ord
 }
 /// The requested teammate, then its fallbacks, in `fallbacks:` order.
-/// Same order and same drop rules as today's private `candidates()`.
+/// Same order and same drop rules as the pre-A5 private `candidates()`.
 pub fn eligible_fallbacks(req: &Teammate, roster: &Roster, view: &QuotaView) -> Vec<EligibleEntry>;
 /// Every roster teammate, sorted by name, each with a verdict.
 pub fn roster_eligibility(roster: &Roster, view: &QuotaView, filter: &EligibilityFilter) -> Vec<EligibleEntry>;
 
 // routing/decision.rs
+pub struct GateFlags { pub exact: bool, pub force: bool }
+pub struct PoolLine { pub pool: String, pub state: String, pub detail: String }
+
+/// The gate's result. Its JSON is the pre-A5 JSON, byte for byte:
+/// {"decision":"spawn","teammate":…,"note":…} | {"decision":"substitute","original":…,"via":…,"reason":…}
+/// | {"decision":"refuse","teammate":…,"reason":…,"pools":[{pool,state,detail}]}
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "decision", rename_all = "lowercase")]
+pub enum Decision {
+    Spawn { teammate: String, note: Option<String> },
+    Substitute { original: String, via: String, reason: String },
+    Refuse { teammate: String, reason: String, pools: Vec<PoolLine> },
+}
+impl Decision { pub fn line(&self) -> Option<String>; }   // the NOTE / SUBSTITUTED / REFUSED line
+/// Pure: no I/O. The time arrives inside the `QuotaView` (`view.now`).
+pub fn decide(req: &Teammate, roster: &Roster, view: &QuotaView, mode: BalanceMode, flags: GateFlags) -> Decision;
+pub fn resolve(req: &Teammate, roster: &Roster, decision: &Decision) -> Option<Teammate>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RoutingMode { Auto, Advise, Off, Exact, Force, Pinned }   // Pinned: B3 candidates
+pub enum RoutingMode {
+    Auto, Advise, Off, Exact, Force,
+    Pinned,                            // a B3 competition candidate on a fixed teammate
+    Resume,                            // `horch spawn --resume`: the record's routing, kept
+    Ungated,                           // no gate ran: the `none` agent spends nothing
+}
+impl RoutingMode { pub fn for_gate(mode: BalanceMode, flags: GateFlags) -> RoutingMode; }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoutingProvenance {
@@ -811,32 +841,25 @@ pub struct RoutingProvenance {
     pub reason: Option<String>,
     pub mode: RoutingMode,
 }
+// Built by RoutingProvenance::{from_decision, ungated, legacy, resumed}.
+
+/// A `Decision` in typed form. The fields are `String`, so the conversion
+/// cannot fail. It has no JSON: the JSON stays `Decision`'s.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RoutingDecision {
-    Spawn { teammate: TeammateName, note: Option<String>, provenance: RoutingProvenance },
-    Substitute { requested: TeammateName, resolved: TeammateName, reason: String, provenance: RoutingProvenance },
-    Refuse { requested: TeammateName, reason: String, pools: Vec<PoolLine> },
+    Spawn { teammate: String },
+    Substitute { requested: String, resolved: String, reason: String },
+    Refuse { requested: String, reason: String, pools: Vec<PoolLine> },
 }
-/// Pure. Same logic as today's `balance_policy::decide`.
-pub fn decide(req: &Teammate, roster: &Roster, view: &QuotaView, mode: BalanceMode, flags: GateFlags) -> RoutingDecision;
-pub fn resolve(req: &Teammate, roster: &Roster, d: &RoutingDecision) -> Option<Teammate>;
-
-/// Renders today's `Decision` JSON byte for byte:
-/// {"decision":"spawn","teammate":…,"note":…} | {"decision":"substitute","original":…,"via":…,"reason":…}
-/// | {"decision":"refuse","teammate":…,"reason":…,"pools":[{pool,state,detail}]}
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "decision", rename_all = "lowercase")]
-pub enum DecisionDto {
-    Spawn { teammate: String, note: Option<String> },
-    Substitute { original: String, via: String, reason: String },
-    Refuse { teammate: String, reason: String, pools: Vec<PoolLine> },
-}
-impl From<&RoutingDecision> for DecisionDto { /* … */ }
-impl RoutingDecision { pub fn line(&self) -> Option<String>; } // today's Decision::line text
-
-pub struct GateFlags { pub exact: bool, pub force: bool }          // unchanged
-pub struct PoolLine { pub pool: String, pub state: String, pub detail: String } // unchanged
+impl From<&Decision> for RoutingDecision { /* … */ }
 ```
+
+`decide` returns `Decision`, and `Decision` is also the JSON type. The
+design had `decide` return `RoutingDecision` and added a separate JSON type.
+A5 kept `Decision` as the return type and added `RoutingDecision` as a
+`From<&Decision>` view.
+`SpawnError::Refused` and `PlanError::Refused` carry a `RoutingDecision` and
+the REFUSED `line`.
 
 `routing/snapshot.rs`: `pub fn obtain(ctx: &RuntimeContext, policy: &Policy) -> anyhow::Result<QuotaView>` is the only path that probes.
 
@@ -990,8 +1013,13 @@ failure), `arc_18_register_failure_records_failed`,
 
 ### 4.6 `harness` (A1 enum, A4 trait)
 
+The code is `crates/horch-core/src/harness/mod.rs` and
+`harness/capabilities.rs`. A new harness adds 1 module that implements
+`Harness`, 1 `HarnessKind` variant (in `ALL`, `as_str`, `binary`, `adapter`,
+`capabilities` and `FromStr`), and 1 `Capabilities` row.
+
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HarnessKind {
     Claude,
@@ -1000,99 +1028,149 @@ pub enum HarnessKind {
     OpenCode,
     Pi,
     Prime,
-    None,
+    Antigravity,
+    None,                                // the smoke teammate: no agent CLI
 }
 impl HarnessKind {
-    pub fn as_str(self) -> &'static str;                 // "claude" … "none"
-    pub fn adapter(self) -> &'static dyn Harness;        // A4
-    // until A4, every legacy predicate stays (mints_session_id, harvests_session_id,
-    // runs_a_daemon, uses_execpolicy, takes_tool_lists, takes_tool_denylist, unsupported_fields)
+    pub const ALL: &'static [HarnessKind];               // every kind, None included
+    pub fn as_str(self) -> &'static str;                 // "claude" … "antigravity", "none"
+    pub fn binary(self, bins: &HarnessBins) -> Option<PathBuf>;   // None for `none`
+    pub fn adapter(self) -> &'static dyn Harness;
+    pub fn capabilities(self) -> &'static Capabilities;
+    pub fn model_takes_effort(self, model: &str) -> bool;
 }
-// shim in teammates.rs (A1 to A12): pub use crate::harness::HarnessKind as Agent;
+// Also Display and FromStr (the `as_str` spelling).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillExposure { None, PluginDir, SkillFlag, ConfigPaths, CodexHome }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
-    pub caller_minted_session: bool,
-    pub resume: bool,
-    pub effort: bool,
+    pub caller_minted_session: bool,     // horch picks the session id (`--session-id`)
+    pub resumes: bool,
+    pub effort: &'static [&'static str], // accepted effort names; empty: no effort setting
     pub daemon: bool,
     pub exec_policy: bool,
     pub skill_exposure: SkillExposure,
     pub tool_lists: bool,
     pub tool_denylist: bool,
-    pub headless: bool,
+    pub headless: bool,                  // the B4 headless runner
+    pub footprint_bytes: u64,            // resident memory of 1 CLI, before a local model
+    pub local_model: bool,               // the model's weights count against memory
 }
 
-pub struct Prepared {                     // files written before launch; removed on drop
-    pub env: BTreeMap<String, String>,
-    pub extra_args: Vec<String>,
-    pub cleanup: Vec<PathBuf>,
+pub struct PrepareRequest<'a> {
+    pub role: &'a str,
+    pub exec_rules: &'a [ExecRule],
+    pub skills: Option<&'a Bundle>,
 }
+#[derive(Default)]
+pub struct Prepared {                    // hold until the CLI exits, then call finish()
+    pub extra_args: Vec<String>,
+    pub env: Vec<(String, OsString)>,
+    pub sessions_dir: Option<PathBuf>,
+    /* private: the cleanup steps */
+}
+#[derive(Debug, Clone, Copy)]
+pub struct CommandSpec<'a> {
+    pub teammate: &'a Teammate,
+    pub session: Session<'a>,
+    pub prompt: &'a str,
+    pub model_override: Option<&'a str>,
+}
+
 pub trait Harness: Sync {
     fn kind(&self) -> HarnessKind;
-    fn capabilities(&self) -> Capabilities;
-    /// Teammate fields this harness cannot express (today's unsupported_fields).
-    fn validate(&self, t: &Teammate) -> Vec<&'static str>;
-    /// codex rules + private CODEX_HOME, prime daemon socket, skill exposure.
-    fn prepare(&self, ctx: &RuntimeContext, plan: &LaunchPlan, skills: &MaterializedSkills) -> anyhow::Result<Prepared>;
-    /// Strips FORBIDDEN_ENV on the returned Command.
-    fn build_command(&self, ctx: &RuntimeContext, plan: &LaunchPlan, prepared: &Prepared) -> anyhow::Result<std::process::Command>;
-    /// Finds the session the agent minted, filtered by the canonical workdir.
-    fn discover_session(&self, ctx: &RuntimeContext, workdir: &Path, since: DateTime<Utc>) -> anyhow::Result<Option<SessionId>>;
+    /// The only method without a default besides `kind`.
+    fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command>;
+
+    // Every method below has a default.
+    fn capabilities(&self) -> &'static Capabilities;          // self.kind().capabilities()
+    fn validate(&self, t: &Teammate) -> Vec<&'static str>;     // generic_validate(self, t)
+    fn model_takes_effort(&self, model: &str) -> bool;         // !capabilities().effort.is_empty()
+    fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared>;
+    fn resume_prompt_typed(&self) -> bool;
+    fn ensure_skills_supported(&self) -> Result<()>;
+    fn skill_namespace(&self) -> Option<&'static str>;
+    fn expose_skills(&self, teammate: &Teammate, skills: &Bundle, home: Option<&Path>) -> Result<Teammate>;
+    fn expose_skills_env(&self, cmd: &mut Command, teammate: &Teammate, skills: &Bundle, inherited: Option<&str>) -> Result<()>;
+    /// `command`, then `scrub_child_env` removes FORBIDDEN_ENV and the git
+    /// repository variables. No harness overrides it.
+    fn build_command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command>;
+    /// Session ids recorded at or after `since` for `workdir`, newest first.
+    fn discover_sessions(&self, ctx: &RuntimeContext, workdir: &Path, since: SystemTime, sessions_dir: Option<&Path>) -> Vec<String>;
 }
 ```
 
-Capabilities per harness (from today's predicates in `teammates.rs:225-275`
-and `valid_efforts` at `teammates.rs:81`):
+`Result` is `anyhow::Result`, `Command` is `std::process::Command` and
+`SystemTime` is `std::time::SystemTime`. `LaunchEnv` and `Session` are in
+`harness/launch.rs`. `HarnessKind` has no `Ord` and no `Hash`.
 
-| Harness | caller_minted_session | resume | effort | daemon | exec_policy | skill_exposure | tool_lists | tool_denylist | headless |
-|---|---|---|---|---|---|---|---|---|---|
-| claude | yes | yes | yes | no | no | PluginDir (`--plugin-dir` + settings overlay) | yes | yes | yes (B4) |
-| codex | no | yes | yes | no | yes | CodexHome (`Rules::attach_skills`) | no | no | no |
-| opencode | no | yes | yes | no | no | ConfigPaths (`OPENCODE_CONFIG_CONTENT.skills.paths`) | no | no | no |
-| pi | yes | yes | yes | no | no | SkillFlag (`--skill <dir>`) | yes | yes | no |
-| prime | no | yes | yes | yes | no | SkillFlag (`--skill <dir>`) | yes | no | no |
-| none | no | no | no | no | no | None | no | no | no |
+Capabilities per harness (the constants in `harness/capabilities.rs`):
 
-`arc_10_capabilities_match_legacy_predicates` checks the first 9 columns
-against the A0 predicates.
+| Harness | caller_minted_session | resumes | effort | daemon | exec_policy | skill_exposure | tool_lists | tool_denylist | headless | local_model |
+|---|---|---|---|---|---|---|---|---|---|---|
+| claude | yes | yes | low, medium, high, xhigh, max | no | no | PluginDir (`--plugin-dir` + settings overlay) | yes | yes | yes (B4) | no |
+| codex | no | yes | none, low, medium, high, xhigh, max | no | yes | CodexHome (a `skills` link in the private `CODEX_HOME`) | no | no | no | no |
+| opencode | no | yes | none, minimal, low, medium, high, xhigh, max | no | no | ConfigPaths (`OPENCODE_CONFIG_CONTENT` `skills.paths`) | no | no | no | no |
+| pi | yes | yes | off, minimal, low, medium, high, xhigh, max | no | no | SkillFlag (`--skill <dir>`) | yes | yes | no | yes |
+| prime | no | yes | off, minimal, low, medium, high, xhigh, max | yes | no | SkillFlag (`--skill <dir>`) | yes | no | no | no |
+| antigravity | no | yes | low, medium, high | no | no | None (`agy` reads only shared skill directories) | no | no | no | no |
+| none | no | no | (none) | no | no | None | no | no | no | no |
+
+`footprint_bytes` is 600 MiB (`HARNESS_FOOTPRINT_BYTES`) for every harness
+except `none`, which is 64 MiB. `arc_10_capabilities_match_legacy_predicates`
+checks every column against the pre-A4 predicates and effort table.
 
 ### 4.7 `workspace::WorkspaceClient` (A7)
 
+The trait is `crates/horch-core/src/workspace/client.rs`. Pane and workspace
+ids are `&str`. The trait does not take the typed ids `PaneId` and
+`WorkspaceId` (`ids.rs`): A7a kept the string-based port, as the A7a report
+records, and no later phase changed it.
+
 ```rust
 pub trait WorkspaceClient {
-    fn pane_get(&self, pane: &PaneId) -> anyhow::Result<Pane>;
-    fn pane_list(&self, workspace: &WorkspaceId) -> anyhow::Result<Vec<Pane>>;
-    fn pane_split(&self, from: &PaneId, direction: Direction) -> anyhow::Result<PaneId>;
-    fn pane_run(&self, pane: &PaneId, command: &str) -> anyhow::Result<()>;
-    fn pane_close(&self, pane: &PaneId) -> anyhow::Result<()>;
-    fn agent_prompt(&self, pane: &PaneId, text: &str) -> anyhow::Result<()>;
-    fn send_text(&self, pane: &PaneId, text: &str) -> anyhow::Result<()>;
-    fn send_keys(&self, pane: &PaneId, keys: &str) -> anyhow::Result<()>;
-    fn pane_read(&self, pane: &PaneId, source: &str) -> anyhow::Result<String>;
-    fn workspace_create(&self, label: &str, cwd: Option<&Path>, focus: bool) -> anyhow::Result<NewWorkspace>;
-    fn workspace_close(&self, workspace: &WorkspaceId) -> anyhow::Result<()>;
+    fn pane_get(&self, pane: &str) -> Result<Pane>;
+    fn pane_list(&self, workspace: &str) -> Result<Vec<Pane>>;
+    fn pane_split(&self, from: &str, direction: Direction) -> Result<String>;   // the new pane id
+    fn pane_run(&self, pane: &str, command: &str) -> Result<()>;
+    fn pane_close(&self, pane: &str) -> Result<()>;
+    fn agent_prompt(&self, pane: &str, text: &str) -> Result<()>;
+    fn pane_send_text(&self, pane: &str, text: &str) -> Result<()>;
+    fn pane_send_keys(&self, pane: &str, keys: &str) -> Result<()>;
+    fn pane_read(&self, pane: &str, source: &str) -> Result<String>;
+    fn workspace_create(&self, label: &str, cwd: Option<&str>, focus: bool) -> Result<NewWorkspace>;
+    fn workspace_close(&self, workspace: &str) -> Result<()>;
+    /// True when the herdr server answers. A failed pane call on a reachable
+    /// server means the pane is gone.
+    fn server_reachable(&self) -> bool;
 }
-pub struct HerdrClient { bin: PathBuf }               // wire DTOs private to workspace/herdr.rs
-impl HerdrClient { pub fn new(bins: &HarnessBins) -> Self; }
-impl WorkspaceClient for HerdrClient { /* … */ }
 
-pub mod testing {
-    #[derive(Default)]
-    pub struct FakeWorkspace {
-        pub calls: RefCell<Vec<String>>,               // "split p1 right", "run p2 …", …
-        pub fail_split: Cell<bool>,
-        pub fail_run: Cell<bool>,
-        pub panes: RefCell<BTreeMap<PaneId, Pane>>,
-    }
-    impl WorkspaceClient for FakeWorkspace { /* … */ }
+// workspace/herdr.rs: the real client. Wire DTOs stay private to this file.
+pub struct Herdr { bin: PathBuf }
+impl Herdr { pub fn with_bin(bin: impl Into<PathBuf>) -> Self; }  // the CLI passes ctx.bins.harness.herdr
+impl WorkspaceClient for Herdr { /* each method calls the Herdr method of the same name */ }
+
+// workspace/testing.rs: the in-memory client for hermetic tests.
+pub struct FakeCall { pub method: &'static str, pub args: Vec<String> }
+#[derive(Debug, Default)]
+pub struct FakeWorkspace { /* private state */ }
+impl FakeWorkspace {
+    pub fn new() -> Self;
+    pub fn fail_next(&self, method: &'static str, message: &str);   // the next call of `method` fails once
+    pub fn set_reachable(&self, reachable: bool);
+    pub fn set_screen(&self, pane: &str, text: &str);
+    pub fn set_agent_states(&self, pane: &str, states: &[(Option<&str>, Option<&str>)]);
+    pub fn calls(&self) -> Vec<FakeCall>;
+    pub fn pane_ids(&self) -> Vec<String>;
 }
-// workspace/model.rs: public Pane, Rect, Layout, LayoutPane, Tab, Workspace, Direction,
-// FocusDir, NewTab, NewWorkspace (moved from herdr.rs:18-300, fields unchanged).
+impl WorkspaceClient for FakeWorkspace { /* … */ }
+// workspace/model.rs: public Rect, Pane, LayoutPane, Layout, Tab, Workspace, Move,
+// Focus, NewWorkspace, Direction.
 ```
+
+`Result` is `anyhow::Result`.
 
 ### 4.8 `messaging::brief` (A2 v2, A7 move)
 
@@ -1354,7 +1432,7 @@ byte-identical.
 | Changed | `scripts/check-req-coverage.sh` (scans all designs, Phase column, `--through`, `--phase`, duplicate check), `scripts/check-deps.sh` and `nfr.rs` (sha2 allowlist) |
 | Moved | none |
 | Shims | none |
-| Oracles | argv/env per teammate × {fresh, resume, unmanaged}; routing decisions: 7 quota fixtures × teammates × {∅, exact, force} × {auto, advise, off}; legacy ledgers (bash-era, pre-effort, pr14-substituted, orchestrator); skills briefings and `horch skills --json`; `sessions` render |
+| Oracles | argv/env per teammate × {fresh, resume, unmanaged}; routing decisions: 12 quota fixtures × teammates × {∅, exact, force} × {auto, advise, off}; legacy ledgers (bash-era, pre-effort, pr14-substituted, orchestrator); skills briefings and `horch skills --json`; `sessions` render |
 | Tests | `arc_01_baseline_oracles_present`, `nfr_08_phase_gate_runs_every_check`, `nfr_09_no_async_runtime_deps` |
 | Gate | the 7 commands of conventions §4; `just gate` prints `GATE GREEN` |
 | Do not change | `crates/*/src/**`; `crates/horch-core/tests/golden/**` (golden prompts) |
@@ -1414,7 +1492,7 @@ byte-identical.
 |---|---|
 | Created | `routing/{mod,policy,quota,quota_probe,snapshot,balance,eligible,decision}.rs` |
 | Moved | `policy.rs` → `routing/policy.rs`; `quota.rs` pure part (QuotaView, Assessment, State, pools) → `routing/quota.rs`; `quota.rs` Child (`:618`), probes, `harness_version` → `routing/quota_probe.rs`; `current_view` → `routing/snapshot::obtain` (the only probing path); `balance_policy.rs` → `routing/{balance,decision,eligible}` (private `candidates()` becomes a filter over `eligible_fallbacks`, same order, same drop rules) |
-| Shims | `policy.rs`, `quota.rs`, `balance_policy.rs`: `pub use crate::routing::<x>::*;`; `Decision` = alias of `DecisionDto` for JSON callers |
+| Shims | `policy.rs`, `quota.rs`, `balance_policy.rs`: `pub use crate::routing::<x>::*;`. `Decision` stays the gate's return type and its JSON type; `RoutingDecision` is `From<&Decision>` |
 | Ledger | records gain `routing` (RoutingProvenance); `via` and `substitution_reason` are still written |
 | Tests | `arc_12_decisions_match_baseline`, `arc_13_exclusion_reasons` (one test per reason), `arc_13_candidates_equivalent`, `arc_14_provenance_on_spawn_substitute_resume` (e2e) |
 | Gate | `just gate`; BAL-01..09 and QUO-07 unchanged |
@@ -1517,7 +1595,7 @@ Five commits:
 | Briefs | v1 (no `schema`) reads as `schema: 1`; `claude_bin`/`codex_bin` fold into `BinOverrides`. v2 writers keep the v1 keys. | `arc_07_brief_v1_readable` |
 | Frontmatter | `deny_unknown_fields` stays. Every PR #14 teammate and a pre-#12 file without `fallbacks` parse. `agent: opencode` stays the spelling. | `arc_08_legacy_frontmatter_corpus_parses`, `arc_03_harness_kind_serde_compat` |
 | Offline skills | bundled skills are compiled in and versioned `bundled+<digest12>`; a locked git skill runs with no network once materialized. | `skl_01_*`, `mkt_08_offline_reinstall_from_lock`, `mkt_08_runtime_needs_no_network` |
-| Decision JSON | `DecisionDto` renders today's `Decision` bytes. | `arc_12_decisions_match_baseline` |
+| Decision JSON | `Decision` keeps its pre-A5 JSON bytes; `RoutingDecision` is a `From<&Decision>` view with no JSON of its own. | `arc_12_decisions_match_baseline` |
 | CLI | `route`/`spawn` exit codes and flags; `horch skills` output. | `bal_04`, `mkt_09_legacy_skills_flags_output_unchanged` |
 
 This table is the compatibility list of Spec A §13. It names 6 artifacts,

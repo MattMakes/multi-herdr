@@ -193,7 +193,7 @@ All fields use `#[serde(default)]` so that every existing ledger still loads.
 | `via` | `Option<String>` | spawn gate | the fallback teammate whose launch settings were used |
 | `substitution_reason` | `Option<String>` | spawn gate | 1 line, for example `claude 7d 100%, resets 2026-10-02T14:00Z` |
 
-`plan` rule: the first match of `ai_docs/plans/([A-Za-z0-9._-]+)\.md` in the task text, without the extension. Otherwise empty. `horch assign` updates `plan` when it changes the task.
+`plan` rule: the first match of `ai_docs/plans/([A-Za-z0-9._-]+)\.md` in the task text, without the extension. Otherwise empty. The rule reads only the task text. `ai_docs/` is the operator's local scratch directory and is not in git, so the named file need not exist. `horch assign` updates `plan` when it changes the task.
 
 ### 6.2 The orchestrator record
 
@@ -522,15 +522,21 @@ For each teammate with `fallbacks`, an error for each violation:
 
 ### 13.4 The decision
 
+The code is `crates/horch-core/src/routing/decision.rs`.
+
 ```rust
 pub enum Decision {
-    Spawn   { teammate: String, note: Option<String> },
+    Spawn      { teammate: String, note: Option<String> },
     Substitute { original: String, via: String, reason: String },
-    Refuse  { reason: String, pools: Vec<PoolLine> },
+    Refuse     { teammate: String, reason: String, pools: Vec<PoolLine> },
 }
-pub fn decide(req: &Teammate, roster: &Roster, quota: &QuotaView, now: DateTime<Utc>,
+pub fn decide(req: &Teammate, roster: &Roster, view: &QuotaView,
               mode: BalanceMode, flags: GateFlags) -> Decision
 ```
+
+`decide` is pure. The time is not a parameter: it is `view.now`, inside the
+`QuotaView`. `RoutingDecision` is a typed view of `Decision`
+(`impl From<&Decision> for RoutingDecision`); the JSON stays `Decision`'s.
 
 | requested pool state | mode `off` | mode `advise` | mode `auto` |
 |---|---|---|---|
@@ -553,9 +559,10 @@ Output lines, printed to stdout before the pane id (the orchestrator reads them)
 
 ### 13.5 The spawn gate and `horch route`
 
-- The gate is placed in `spawn.rs` directly after the final `model_is_spawnable` call (line 136 today). It is placed before the ledger write (lines 164-178) [Q].
+- The gate is the private function `gate` in `crates/horch-core/src/execution/plan.rs`. `plan_launch` calls it after the final `Roster::model_is_spawnable` check and before any role, ledger or pane side effect [Q]. `needs_gate` decides whether the gate runs.
 - A resume (`--resume`) skips the gate. It launches the recorded `agent` and `model`, which for a substituted record are the fallback's (BAL-05).
-- `horch route` calls the same `decide()` and prints the same line, plus a table of the pools involved. With `--json` it prints `{decision, teammate, via, reason, pools}`.
+- A refusal returns `PlanError::Refused` with the `RoutingDecision` and the REFUSED line. The `horch spawn` command prints the line and exits 3.
+- `horch route` (`crates/horch/src/cmd/route.rs`) calls the same `decide()` and prints the same line, plus a table of the pools involved. With `--json` it prints `{decision, teammate, via, reason, line, mode, pools}`.
 
 ### 13.6 The orchestrator's part
 
@@ -563,7 +570,7 @@ New section in `teammates/_base/fleet-orchestrator.md`, placed before `== Protec
 
 ```
 == Usage limits ==
-Run horch quota before you spawn a batch of workers. It shows each pool: claude, codex, opencode-zen, local.
+Run horch quota before you spawn a batch of workers. It shows each pool: claude, codex, opencode-zen, google, local.
 Treat NOTE:, SUBSTITUTED: and REFUSED: lines from horch spawn as facts. Adjust the plan to them.
 Use horch route <teammate> to see the decision before you spawn.
 When 2 teammates fit the work equally, choose the one whose pool has more headroom per hour.
@@ -785,7 +792,7 @@ Network level: Trusted (crates.io, the Ubuntu archive, GitHub).
 
 ## 17. Local acceptance on the operator's Mac
 
-The cloud proves the logic against fixtures. These steps prove the fixtures match reality, and that the pieces work in herdr. `scripts/verify-telemetry-local.sh` guides each step and writes the results to `ai_docs/reports/telemetry-acceptance-<date>.md`.
+The cloud proves the logic against fixtures. These steps prove the fixtures match reality, and that the pieces work in herdr. `scripts/verify-telemetry-local.sh` guides each step and writes the results to `ai_docs/reports/telemetry-acceptance-<date>.md`. That report is a local operator artifact: `ai_docs/` is not in git, so a clone has no such report until the operator runs the script.
 
 | step | action | pass condition |
 |---|---|---|
