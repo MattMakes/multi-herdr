@@ -140,7 +140,7 @@ pub fn headless_command(
     }
     cmd.stdin(Stdio::piped());
     crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, env.home()));
-    crate::runtime::process::strip_forbidden(&mut cmd);
+    crate::runtime::process::scrub_child_env(&mut cmd);
     Ok(cmd)
 }
 
@@ -181,7 +181,7 @@ fn help_lists(bin: &Path, flag: &str) -> bool {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    crate::runtime::process::strip_forbidden(&mut cmd);
+    crate::runtime::process::scrub_child_env(&mut cmd);
     let Ok(mut child) = cmd.spawn() else {
         return false;
     };

@@ -169,11 +169,11 @@ pub trait Harness: Sync {
         Ok(())
     }
 
-    /// The command for `spec`, with every [`launch::FORBIDDEN_ENV`] key
-    /// removed. Not overridden by any harness.
+    /// The command for `spec`, with every [`launch::FORBIDDEN_ENV`] key and
+    /// every git repository variable removed. Not overridden by any harness.
     fn build_command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
         let mut cmd = self.command(env, spec)?;
-        crate::runtime::process::strip_forbidden(&mut cmd);
+        crate::runtime::process::scrub_child_env(&mut cmd);
         Ok(cmd)
     }
 

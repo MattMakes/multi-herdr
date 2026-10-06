@@ -263,7 +263,7 @@ pub fn schedule(ctx: &RuntimeContext, spec: &JudgeJobSpec) -> Result<u32> {
         .stderr(log)
         .env("HORCH_STATE_DIR", &ctx.paths.state_root)
         .env("HORCH_PROJECT_DIR", ctx.paths.project()?);
-    crate::runtime::process::strip_forbidden(&mut cmd);
+    crate::runtime::process::scrub_child_env(&mut cmd);
     let mut child = crate::runtime::process::spawn_detached(&mut cmd)
         .with_context(|| format!("starting {}", exe.display()))?;
     let pid = child.id();

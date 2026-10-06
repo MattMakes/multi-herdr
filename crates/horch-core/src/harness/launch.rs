@@ -268,7 +268,7 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     for (key, value) in &prepared.env {
         cmd.env(key, value);
     }
-    crate::runtime::process::strip_forbidden(&mut cmd);
+    crate::runtime::process::scrub_child_env(&mut cmd);
     let name = format!("{:?}", cmd.get_program());
 
     // A resume on a CLI that drops its command-line prompt gets the prompt
@@ -401,7 +401,7 @@ fn bundle_name(record_id: Option<&str>, bundles: &Path) -> String {
 
 /// The agent's command: the teammate's launch line, its own environment, then
 /// `child_env`. Nothing here touches this process's environment, and
-/// `FORBIDDEN_ENV` stays removed.
+/// `FORBIDDEN_ENV` and the git repository variables stay removed.
 pub(crate) fn agent_command(
     ctx: &RuntimeContext,
     teammate: &Teammate,
@@ -414,7 +414,7 @@ pub(crate) fn agent_command(
     let mut cmd = command_with_skills_in(&env, teammate, session, prompt, None, skills)?;
     crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, env.home()));
     crate::runtime::process::inherit_env(&mut cmd, child_env);
-    crate::runtime::process::strip_forbidden(&mut cmd);
+    crate::runtime::process::scrub_child_env(&mut cmd);
     Ok(cmd)
 }
 
@@ -1991,5 +1991,85 @@ mod tests {
         std::fs::write(&marker, marker_contents(None)).unwrap();
         assert_eq!(marker_sessions_dir(&marker), None);
         assert_eq!(marker_sessions_dir(&tmp.path().join("gone")), None);
+    }
+
+    /// U-14: a horch started under `git rebase -x` or a git hook has
+    /// `GIT_DIR` and its relatives set. An agent it launches must not see
+    /// them, or the agent's `git commit` writes into that other repository.
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_launch_drops_the_git_repository_variables() {
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "harness::launch::tests::git_env_agent_launch_child",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("GIT_DIR", "/nonexistent/decoy/.git")
+            .env("GIT_WORK_TREE", "/nonexistent/decoy")
+            .env("GIT_INDEX_FILE", "/nonexistent/decoy/.git/index")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "user.name")
+            .env("GIT_CONFIG_VALUE_0", "decoy")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "run by an_agent_launch_drops_the_git_repository_variables, with GIT_DIR set"]
+    fn git_env_agent_launch_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let seen = tmp.path().join("env.txt");
+        let fake = tmp.path().join("claude");
+        std::fs::write(&fake, format!("#!/bin/sh\nenv > '{}'\n", seen.display())).unwrap();
+        crate::runtime::process::make_executable(&fake).unwrap();
+        let env = LaunchEnv {
+            bins: HarnessBins::resolve(
+                &BinOverrides {
+                    claude: Some(fake),
+                    ..BinOverrides::default()
+                },
+                None,
+                None,
+            ),
+            home: None,
+            opencode_config_content: None,
+            path: None,
+        };
+        let r = Roster::builtin().unwrap();
+        let mut cmd = command_in(
+            &env,
+            r.require("opus").unwrap(),
+            Session::Unmanaged,
+            "p",
+            None,
+        )
+        .unwrap();
+        let status = cmd
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let seen = std::fs::read_to_string(&seen).unwrap();
+        // Only the names: the rest of the environment can hold secrets.
+        let leaked: Vec<&str> = [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_CONFIG_KEY_0",
+        ]
+        .into_iter()
+        .filter(|key| seen.lines().any(|l| l.starts_with(&format!("{key}="))))
+        .collect();
+        assert!(leaked.is_empty(), "the agent sees {leaked:?}");
     }
 }

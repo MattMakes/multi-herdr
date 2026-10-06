@@ -122,12 +122,19 @@ fn normalize(p: &Path) -> OsString {
     }
 }
 
-/// Remove every [`FORBIDDEN_ENV`](crate::harness::launch::FORBIDDEN_ENV) variable from
-/// a child's environment.
-pub(crate) fn strip_forbidden(cmd: &mut Command) {
+/// Remove every [`FORBIDDEN_ENV`](crate::harness::launch::FORBIDDEN_ENV) variable and
+/// every git repository variable
+/// ([`REPO_ENV`](horch_marketplace::git::REPO_ENV) and the numbered
+/// `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`) from a child's environment.
+///
+/// A horch started under `git rebase -x` or a git hook has `GIT_DIR` set; an
+/// agent or judge that inherited it would run its git in that repository.
+/// Call it after any `env` call.
+pub(crate) fn scrub_child_env(cmd: &mut Command) {
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
     }
+    horch_marketplace::git::scrub_repo_env(cmd);
 }
 
 /// Give a child `vars`, except a key the command already sets or removes.
