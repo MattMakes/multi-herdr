@@ -16,4 +16,4 @@ codex-sol                      1.8k     0.01     5%      80%         0.01
 pi                             4.0k     0.00     2%      52%         0.00
 prime                          2.5k     0.00     2%      89%         0.00
 UNREAD  sonnet-2: no session id yet; opencode-ultra-1: no transcript found; smoke-1: agent none is not read
-orchestrators 46% of spend · cache hit 97% · -0% of spend while idle · top plan golden-prompts-whitespace
+orchestrators 46% of spend · cache hit 97% · 0% of spend while idle · top plan golden-prompts-whitespace
