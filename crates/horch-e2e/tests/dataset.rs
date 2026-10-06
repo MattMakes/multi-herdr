@@ -1058,6 +1058,114 @@ fn cmp_10_configured_estimate_keeps_a_later_wave_running() {
     unlock(&h.state);
 }
 
+/// U-46, G9 goal 1: `resume` gives the live meter the per-label estimate
+/// PRE-09 recorded, not a new measurement and not the default. 3 earlier
+/// rounds of the task measure every model at 1 000 input and 1 000 output
+/// tokens. The round under test crashes after its first spawn, and the
+/// earlier usage records are deleted, so only the recorded estimate stays.
+/// As in [`cmp_10_configured_estimate_keeps_a_later_wave_running`], B
+/// hangs while C waits for a slot: at $1.50 the default projection of B
+/// ($1.60 or more) would stop C.
+#[test]
+fn cmp_10_resume_projects_with_the_recorded_estimate() {
+    let yaml = "caps:\n  max_parallel: 2\n  candidate_deadline_s: 20\n";
+    let seed = serde_json::json!({"exit": "crash",
+        "usage": {"model": "claude-sonnet-5-5", "input": 1000, "output": 1000}});
+    let Some(h) = round_harness(
+        "cmp10resume",
+        &["sonnet", "opus", "design-system-engineer"],
+        yaml,
+        serde_json::json!({"A": seed, "B": seed, "C": seed}),
+    ) else {
+        return;
+    };
+    for _ in 0..3 {
+        let out = run_round(&h, 3, &[]);
+        assert_eq!(out.status.code(), Some(6), "{}", text(&out));
+    }
+    let mut file = h.log.clone().into_os_string();
+    file.push(".candidates.json");
+    std::fs::write(
+        &file,
+        serde_json::json!({"A": done("a.txt"),
+                           "B": {"write": {"b.txt": "b\n"}, "exit": "hang"},
+                           "C": done("c.txt")})
+        .to_string(),
+    )
+    .unwrap();
+    let out = dataset(
+        &h,
+        &[
+            "run",
+            "add a greeting",
+            "--candidates",
+            "3",
+            "--budget-usd",
+            "1.5",
+        ],
+        &[("HORCH_FAULT", "abort-after-candidate-spawned:1")],
+    );
+    assert_eq!(out.status.code(), Some(86), "{}", text(&out));
+
+    // PRE-09 recorded the measured tokens for every label.
+    let events = events(&h);
+    let exp = of_kind(&events, "experiment.created")
+        .last()
+        .unwrap()
+        .get("experiment_id")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    let report = &of_kind(&events, "preflight.completed")
+        .into_iter()
+        .find(|e| e["experiment_id"] == exp.as_str())
+        .unwrap()["payload"]["report"];
+    let pre_09 = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "PRE-09")
+        .unwrap();
+    let estimates = pre_09["measured"]["estimates"].as_object().unwrap();
+    assert_eq!(estimates.len(), 3, "{pre_09}");
+    for (label, e) in estimates {
+        assert_eq!(e["tokens"]["input"], 1000, "{label}: {pre_09}");
+        assert_eq!(e["tokens"]["output"], 1000, "{label}: {pre_09}");
+    }
+
+    // Without the earlier usage records, a new measurement finds nothing.
+    unlock(&h.state);
+    let usage: Vec<PathBuf> = files_under(&h.state.join("multi-herdr"))
+        .into_iter()
+        .filter(|f| f.parent().is_some_and(|p| p.ends_with("usage")))
+        .collect();
+    assert_eq!(usage.len(), 9, "{usage:?}");
+    for f in usage {
+        std::fs::remove_file(f).unwrap();
+    }
+
+    let out = dataset(&h, &["resume", &exp], &[]);
+    let after = self::events(&h);
+    let ours: Vec<&Value> = after
+        .iter()
+        .filter(|e| e["experiment_id"] == exp.as_str())
+        .collect();
+    let spawned: Vec<&str> = ours
+        .iter()
+        .filter(|e| e["kind"] == "candidate.spawned")
+        .filter_map(|e| e["payload"]["label"].as_str())
+        .collect();
+    assert!(spawned.contains(&"C"), "{spawned:?}\n{}", text(&out));
+    let budget_cancels = ours
+        .iter()
+        .filter(|e| e["kind"] == "candidate.failed")
+        .filter(|e| e["payload"]["failure"]["reason"] == "budget")
+        .count();
+    assert_eq!(budget_cancels, 0, "{}", text(&out));
+    unlock(&h.state);
+}
+
 #[test]
 fn cmp_11_disk_pressure_stops_new_work() {
     // One candidate at a time. A fills the disk (its machine fixture now
