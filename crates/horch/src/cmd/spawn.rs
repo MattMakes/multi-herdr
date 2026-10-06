@@ -96,7 +96,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     // later reads (its brief carries the project) are the same file.
     let project = ctx.paths.project()?;
     // The project's facts add the teammate's `skills_when` skills at planning.
-    let roster = roster.with_project_facts(super::recipes::project_facts(&project));
+    let roster = roster.with_project_facts(horch::project::project_facts(&project));
     let store = ExecutionStore::open_in(ctx)?;
 
     // A record whose pane closed without `horch done` ends here, so it resumes.

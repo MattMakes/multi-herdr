@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
+use horch::project::project_facts;
 use horch_core::execution::legacy::{Record, KIND_ORCHESTRATOR};
 use horch_core::execution::records::{Ledger, ORCHESTRATING_TASK};
 use horch_core::execution::SessionMode;
@@ -671,9 +672,6 @@ pub fn pane_launch(
         },
     )
 }
-
-/// Moved to the library, so `multi-herdr-dataset` reads the same facts.
-pub(crate) use horch::project::project_facts;
 
 #[cfg(test)]
 mod tests {
