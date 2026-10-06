@@ -6,7 +6,7 @@
 //! teammate's `operator_skills:` merge in per launch, versioned
 //! `operator+<digest12>`, and its `plugin_skills:` as `<plugin>:<skill>`,
 //! versioned `<plugin version>+<digest12>`. Only [`SkillCatalog::installed`],
-//! [`check_store`] and [`SkillCatalog::with_operator_skills`] read the
+//! [`check_store`] and [`SkillCatalog::with_host_skills`] read the
 //! filesystem. Nothing here reads the environment.
 
 use std::borrow::Cow;
@@ -134,7 +134,7 @@ pub struct SkillCatalog {
     /// The marketplace store root (`<data_root>`) that marketplace entries'
     /// files live under. `None` for a catalog built from a lock in memory.
     store_root: Option<PathBuf>,
-    /// Operator skills that [`SkillCatalog::with_operator_skills`] skipped
+    /// Operator skills that [`SkillCatalog::with_host_skills`] skipped
     /// because this host does not have them.
     skipped_operator: Vec<SkippedOperatorSkill>,
 }
@@ -396,7 +396,7 @@ impl SkillCatalog {
     /// SKILL.md, or a tree the marketplace digest rules refuse (a symlink,
     /// say). The name rules apply on every host, so a clash fails even where
     /// the skill is missing. A teammate without the field changes nothing.
-    pub fn with_operator_skills(
+    pub fn with_host_skills(
         self,
         teammate: &Teammate,
         home: Option<&Path>,
@@ -559,7 +559,7 @@ impl SkillCatalog {
         Ok(self)
     }
 
-    /// The operator skills that [`SkillCatalog::with_operator_skills`]
+    /// The operator skills that [`SkillCatalog::with_host_skills`]
     /// skipped because this host does not have them, in `names:` order.
     pub fn skipped_operator(&self) -> &[SkippedOperatorSkill] {
         &self.skipped_operator

@@ -304,9 +304,7 @@ pub fn fleet(ctx: &RuntimeContext, cwd: Option<&str>, flavor: FleetFlavor) -> Re
     // The record lists the skills the launch will activate, as a worker's
     // does (SKL-04): the launch fails on a record whose skills differ.
     let home = ctx.inherited.home_var.as_deref().map(Path::new);
-    let catalog = roster
-        .skill_catalog()?
-        .with_operator_skills(teammate, home)?;
+    let catalog = roster.skill_catalog()?.with_host_skills(teammate, home)?;
     let skills = horch_core::skills::plan_activation(teammate, teammate.phase, &catalog)?;
     ledger.insert(Record {
         record_id: record_id.clone(),

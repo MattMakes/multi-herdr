@@ -155,7 +155,7 @@ impl Roster {
         if t.operator_skills.is_some() {
             let extended = self
                 .skill_catalog()
-                .and_then(|c| c.with_operator_skills(t, self.home.as_deref()));
+                .and_then(|c| c.with_host_skills(t, self.home.as_deref()));
             if let Err(error) = extended {
                 problems.push(format!("{error:#}"));
             }
@@ -659,7 +659,7 @@ pub fn operator_skill_warnings(roster: &Roster) -> Vec<String> {
         }
         let Ok(catalog) = roster
             .skill_catalog()
-            .and_then(|c| c.with_operator_skills(t, roster.home.as_deref()))
+            .and_then(|c| c.with_host_skills(t, roster.home.as_deref()))
         else {
             continue;
         };

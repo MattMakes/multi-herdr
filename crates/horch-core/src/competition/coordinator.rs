@@ -907,7 +907,7 @@ impl<G: GitClient> Coordinator<'_, G> {
         let mut catalog = self.roster.skill_catalog()?;
         if let Some(t) = self.roster.get(planned.teammate.as_str()) {
             let home = self.ctx.inherited.home_var.as_deref().map(Path::new);
-            catalog = catalog.with_operator_skills(t, home)?;
+            catalog = catalog.with_host_skills(t, home)?;
         }
         let now = (self.clock)();
         let ids = MintedIds {

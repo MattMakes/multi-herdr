@@ -684,7 +684,7 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
         ..Teammate::default()
     };
     let bundled = SkillCatalog::bundled().unwrap();
-    let catalog = bundled.clone().with_operator_skills(&t, None).unwrap();
+    let catalog = bundled.clone().with_host_skills(&t, None).unwrap();
     assert_eq!(catalog.len(), bundled.len() + 2);
     let entry = catalog.lookup("code:review").unwrap();
     assert!(entry.is_plugin());
@@ -737,7 +737,7 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
             ..t.clone()
         },
     ] {
-        let c = bundled.clone().with_operator_skills(&other, None).unwrap();
+        let c = bundled.clone().with_host_skills(&other, None).unwrap();
         assert_eq!(c.len(), bundled.len());
     }
     // A plugin that does not resolve fails the extension, as the launch would.
@@ -749,7 +749,7 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
         "{:#}",
         bundled
             .clone()
-            .with_operator_skills(&missing, None)
+            .with_host_skills(&missing, None)
             .unwrap_err()
     );
     assert!(err.contains("plugin 'code' is neither"), "{err}");
@@ -1259,7 +1259,7 @@ fn operator_skills_materialize_with_a_digest_and_an_expected_line() {
     // The plan pins the digest; a source edited after planning fails.
     let catalog = SkillCatalog::bundled()
         .unwrap()
-        .with_operator_skills(&t, None)
+        .with_host_skills(&t, None)
         .unwrap();
     let plan = plan_activation(&t, None, &catalog).unwrap();
     std::fs::write(dir.join("test-modernizer/references/notes.md"), "changed\n").unwrap();

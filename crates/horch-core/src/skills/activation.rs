@@ -82,7 +82,7 @@ impl SkillActivationPlan {
 /// skill, or on skills for a teammate that cannot load them.
 ///
 /// Operator skills are Explicit only when `catalog` holds them, that is,
-/// when the caller extended it with `SkillCatalog::with_operator_skills`.
+/// when the caller extended it with `SkillCatalog::with_host_skills`.
 /// The same holds for plugin skills (`<plugin>:<skill>` entries); a plugin
 /// entry the teammate does not name is neither activated nor available.
 pub fn plan_activation(

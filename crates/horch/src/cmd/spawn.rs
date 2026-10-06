@@ -143,7 +143,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         .or(existing.as_ref().map(|r| r.tier.as_str()));
     if let Some(t) = launching.and_then(|name| roster.get(name)) {
         let home = ctx.inherited.home_var.as_deref().map(std::path::Path::new);
-        catalog = catalog.with_operator_skills(t, home)?;
+        catalog = catalog.with_host_skills(t, home)?;
     }
     let inputs = PlanInputs {
         roster: &roster,

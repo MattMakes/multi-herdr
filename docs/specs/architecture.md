@@ -1385,7 +1385,7 @@ names skills of external Claude plugins. They are not catalog skills, and a
 plugin skill never activates a catalog skill of the same name (SKL-07). The
 ledger still records them, so the launch's skill check (SKL-04) covers them:
 
-- `SkillCatalog::with_operator_skills` also calls
+- `SkillCatalog::with_host_skills` also calls
   `SkillCatalog::with_plugin_skills`. Every caller that records or launches
   (spawn, `horch fleet`, the competition coordinator, the worker launch)
   extends the catalog through this one call, so all of them see the same

@@ -117,7 +117,7 @@ impl Bundle {
         execution_id: &str,
         home: Option<&Path>,
     ) -> Result<Option<Self>> {
-        let catalog = catalog.with_operator_skills(teammate, home)?;
+        let catalog = catalog.with_host_skills(teammate, home)?;
         let plan = plan_activation(teammate, teammate.phase, &catalog)?;
         if !plan.activated.is_empty() {
             teammate.agent.adapter().ensure_skills_supported()?;
