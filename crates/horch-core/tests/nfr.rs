@@ -189,15 +189,18 @@ fn nfr_08_phase_gate_runs_every_check() {
     let gate = std::fs::read_to_string(repo().join("scripts/phase-gate.sh")).unwrap();
     let mut from = 0;
     for check in [
+        "step no_spec_todo",
         "cargo fmt --all --check",
         "cargo build --workspace --all-targets",
         "cargo build --workspace --bins",
+        "cargo clippy --workspace --all-targets -- -D warnings",
         "cargo test --workspace",
         "HORCH_TEAMMATES_DIR=teammates",
         "teammates --check",
         "scripts/check-req-coverage.sh",
         "scripts/check-deps.sh",
         "scripts/verify-telemetry-e2e.sh",
+        "step godot_skills",
         "GATE GREEN",
     ] {
         let at = gate[from..]
