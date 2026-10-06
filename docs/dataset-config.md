@@ -43,8 +43,8 @@ All amounts are whole micro-dollars (1 000 000 = $1).
 
 | key | default | meaning |
 |---|---|---|
-| `hard_usd_micro` | `0` (no ceiling: PRE-09 refuses the run) | the hard ceiling; `--budget-usd` sets it in dollars |
-| `soft_usd_micro` | 80 % of the hard ceiling | PRE-09 refuses a run whose projection plus the judge reserve is not under it |
+| `hard_usd_micro` | `0` (no ceiling: PRE-09 refuses the run) | the hard ceiling; `--budget-usd` sets it in dollars. PRE-09 refuses a run whose projection plus the judge reserve is above it |
+| `soft_usd_micro` | 80 % of the hard ceiling | PRE-09 warns when the projection plus the judge reserve is above it, and the run goes on; only the hard ceiling refuses |
 | `judge_reserve_usd_micro` | 10 % of the hard ceiling | held back for the judge; the live limit is hard minus reserve |
 | `expected_tokens.all` | none | the expected tokens of 1 candidate on any model |
 | `expected_tokens.models.<model>` | none | the same for 1 roster model id, such as `sonnet` (exact match) |
