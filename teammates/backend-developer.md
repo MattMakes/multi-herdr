@@ -13,7 +13,7 @@ fallbacks: [codex-sol]
 effort: medium
 permission_mode: auto
 inherit_plugins: false
-skills: [tdd, security-review]
+skills: [tdd, security-review, api-contracts, data-migrations]
 
 # context7 for current library and framework documentation. No browser servers:
 # this teammate has no page to look at.

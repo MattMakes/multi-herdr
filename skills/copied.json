@@ -2,6 +2,11 @@
   "format": "One entry per bundled skill. copied_files lists the files, relative to the skill directory, that were copied into this repository from elsewhere; a check reports problems in them but does not fail on them. An empty list means the skill is own text. verbatim: true means the directory is an unchanged copy, exempt from the bundled size budget.",
   "skills": [
     {
+      "name": "api-contracts",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "app-intents",
       "copied_files": [
         "SKILL.md",
@@ -44,6 +49,11 @@
         "references/appstore-review-ref.md"
       ],
       "verbatim": true
+    },
+    {
+      "name": "architecture-review",
+      "copied_files": [],
+      "verbatim": false
     },
     {
       "name": "art-direction",
@@ -114,6 +124,21 @@
       "verbatim": true
     },
     {
+      "name": "blender-baking",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "blender-modeling",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "blender-rigging",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "blender-ue-pipeline",
       "copied_files": [],
       "verbatim": false
@@ -159,6 +184,11 @@
       "copied_files": [
         "SKILL.md"
       ],
+      "verbatim": false
+    },
+    {
+      "name": "data-migrations",
+      "copied_files": [],
       "verbatim": false
     },
     {
@@ -876,6 +906,11 @@
       "verbatim": false
     },
     {
+      "name": "product-requirements",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "research-codebase",
       "copied_files": [
         "SKILL.md"
@@ -1077,6 +1112,11 @@
         "references/swift.md",
         "references/views.md"
       ],
+      "verbatim": false
+    },
+    {
+      "name": "system-design",
+      "copied_files": [],
       "verbatim": false
     },
     {

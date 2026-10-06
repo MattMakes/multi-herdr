@@ -82,6 +82,10 @@ choose from** — there is no registry to update and nothing to recompile.
 `qa-engineer` are the specialists. Their `phase` selects a small portable
 skill catalog embedded in horch; `skills` adds named bundled skills for that
 role. Skills are discovered by each harness and read only when relevant.
+`product-lead` adds `product-requirements`, `staff-engineer` adds
+`system-design` (and names `api-contracts` and `data-migrations`),
+`architect-reviewer` adds `architecture-review`, and `backend-developer` adds
+`api-contracts` and `data-migrations`.
 Claude specialists set `inherit_plugins: false` to switch off globally enabled
 plugins while preserving other operator settings and their declared MCP tools.
 
@@ -245,7 +249,8 @@ latest stable release on 2026-10-04 (4.7.2).
 official Blender Lab MCP server, pinned by commit, with no telemetry and no
 asset downloads. Its headless tools need only a `blender` binary (on PATH,
 or `BLENDER_PATH`); the live tools need Blender 5.1+ with the Blender Lab MCP
-add-on. It carries `blender-ue-pipeline` and names `ue-editor-scripting`. It
+add-on. It carries `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`
+and `blender-baking`, and names `ue-editor-scripting`. It
 exports to a source-art folder and never writes `.uasset`; `ue-technical-artist`
 or `ue-tools-engineer` imports. No fallback: Codex has no MCP parity here.
 

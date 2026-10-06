@@ -101,12 +101,27 @@ These skills attach by name to the Swift teammates and belong to no phase. The A
 | [widgets](widgets/SKILL.md) | verbatim |
 | [writing-for-interfaces](writing-for-interfaces/SKILL.md) | adapted SKILL.md, verbatim references |
 
-## Unreal Engine skills
+## Engineering and product skills
 
-These skills belong to no phase; an Unreal Engine teammate attaches them by name. `ue-project-context` is adapted: its interview becomes `[unknown]` markers and one `QUESTION:` to the orchestrator. The 3 own-text skills are written in this repository. `blender-ue-pipeline` is for the Blender teammate that hands assets to the Unreal teammates; it is checked against the Blender 5.2 API and the Unreal Engine 5.8 FBX pipeline docs.
+These skills are own text. They belong to no phase; each attaches by name to the specialist whose work it covers. `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, and `api-contracts` and `data-migrations` for `backend-developer` (`staff-engineer` names both under `available_skills`). They are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
 
 | Skill | Kind |
 | --- | --- |
+| [api-contracts](api-contracts/SKILL.md) | own text |
+| [architecture-review](architecture-review/SKILL.md) | own text |
+| [data-migrations](data-migrations/SKILL.md) | own text |
+| [product-requirements](product-requirements/SKILL.md) | own text |
+| [system-design](system-design/SKILL.md) | own text |
+
+## Unreal Engine skills
+
+These skills belong to no phase; an Unreal Engine teammate attaches them by name. `ue-project-context` is adapted: its interview becomes `[unknown]` markers and one `QUESTION:` to the orchestrator. The 3 own-text skills are written in this repository. `blender-ue-pipeline` is for the Blender teammate that hands assets to the Unreal teammates; it is checked against the Blender 5.2 API and the Unreal Engine 5.8 FBX pipeline docs. `blender-modeling`, `blender-rigging` and `blender-baking` are own text for the same teammate: they cover building the asset that `blender-ue-pipeline` exports, and every helper function in their references was run against the `bpy` 5.0.1 module.
+
+| Skill | Kind |
+| --- | --- |
+| [blender-baking](blender-baking/SKILL.md) | own text |
+| [blender-modeling](blender-modeling/SKILL.md) | own text |
+| [blender-rigging](blender-rigging/SKILL.md) | own text |
 | [blender-ue-pipeline](blender-ue-pipeline/SKILL.md) | own text |
 | [ue-actor-component-architecture](ue-actor-component-architecture/SKILL.md) | verbatim |
 | [ue-ai-navigation](ue-ai-navigation/SKILL.md) | verbatim |

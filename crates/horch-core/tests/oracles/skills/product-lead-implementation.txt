@@ -2,4 +2,5 @@
 
 Fleet skill phase: implementation. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:
 - horch:brainstorm: Use when refining a feature, rewrite, or refactor into a design before implementation planning.
+- horch:product-requirements: Use when a goal, feature request or idea must become a scoped requirement set before anyone designs or builds it - problem statement, users and their current workaround, must/should/not-this-time scope, acceptance criteria as observable behaviour, the first useful slice, success signals and open decisions.
 Also available in this phase: horch:check, horch:debug, horch:execute, horch:handoff, horch:tdd. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.

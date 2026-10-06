@@ -16,7 +16,8 @@ subagent_model: haiku
 # Plans, not code: it reads widely and writes one file. The operator's global
 # plugins are switched off; the portable plan skills are supplied by horch.
 inherit_plugins: false
-skills: [create-plan, pre-flight]
+skills: [create-plan, pre-flight, system-design]
+available_skills: [api-contracts, data-migrations]
 mcp_servers: {}
 first_instruction: |-
   Write the plan to a file under ai_docs/ and reply with the file path. Do not

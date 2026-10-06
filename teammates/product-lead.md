@@ -12,7 +12,7 @@ fallbacks: [codex-sol]
 effort: high
 permission_mode: auto
 inherit_plugins: false
-skills: [brainstorm]
+skills: [brainstorm, product-requirements]
 mcp_servers: {}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]

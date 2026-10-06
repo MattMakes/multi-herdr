@@ -17,7 +17,13 @@ use horch_marketplace::LockEntry;
 /// Skills written in this repository: their `copied.json` entry lists no
 /// copied files.
 const REPO_ORIGINAL: &[&str] = &[
+    "api-contracts",
+    "architecture-review",
+    "blender-baking",
+    "blender-modeling",
+    "blender-rigging",
     "blender-ue-pipeline",
+    "data-migrations",
     "godot-build-verify",
     "godot-combat-system",
     "godot-dimension-port",
@@ -29,6 +35,8 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-scene-files",
     "godot-version-migration",
     "orchestrate",
+    "product-requirements",
+    "system-design",
     "ue-build-verify",
     "ue-editor-scripting",
 ];

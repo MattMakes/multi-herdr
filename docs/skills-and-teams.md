@@ -162,7 +162,7 @@ each team.
 | Godot (19 `godot-*`) | `project.godot` | 64 `godot-*` skills: renamed copied skills, combined skills with own-text references, and own skills such as `godot-build-verify` and `godot-scene-files`; a `*.csproj` adds the 2 C# skills to each builder | read `.agents/godot-project-context.md` first; never touch `.godot/` or `.import`, commit `.uid` sidecars; check APIs with `godot --doctool`; headless only, 1 import at a time; a `DONE:` that names the Godot version, the parse check and the tests; addon skills only at the pinned addon version |
 | Swift and Apple (7) | `*.xcodeproj`, `*.xcworkspace` or `Package.swift` | 28 Swift and Apple skills | check the toolchain first; the builders carry `mobilebuildmcp` |
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
-| Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline` | Blender Lab MCP server; hands FBX exports to the Unreal team |
+| Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`, `blender-baking` | Blender Lab MCP server; hands FBX exports to the Unreal team |
 
 ### Unreal Engine and Git LFS
 
@@ -185,11 +185,27 @@ each team.
 - Check the whole team: `horch teammates --check`. Watch the briefing size
   with `horch teammates --matrix`.
 
+### Core specialists
+
+The core specialists carry own-text skills for the part of their work that the
+phase catalog does not cover. Each attaches by name and belongs to no phase.
+
+| teammate | skills it adds |
+|---|---|
+| `product-lead` | `product-requirements`: problem, scope lists, acceptance criteria, first slice |
+| `staff-engineer` | `system-design`: forces, options, failure modes, rollout order; names `api-contracts` and `data-migrations` |
+| `architect-reviewer` | `architecture-review`: boundaries, contracts, coupling, reversibility, ranked by consequence |
+| `backend-developer` | `api-contracts` (validation, error model, idempotency, evolution) and `data-migrations` (expand/contract, online DDL, backfills) |
+
 ### Blender and the Unreal team
 
 `blender-artist` models, retopologizes, UV-unwraps, bakes, rigs and exports
-assets for Unreal. It runs on Claude (opus, medium) and carries the
-`blender-ue-pipeline` skill.
+assets for Unreal. It runs on Claude (opus, medium) and carries 4 skills:
+`blender-ue-pipeline` (names, axes, export, hand-off), `blender-modeling`
+(topology, UVs, texel density, LODs, collision), `blender-rigging` (skeleton,
+weights, shape keys, actions) and `blender-baking` (normal, AO, base color and
+ORM maps). The helper functions in the last 3 were run against the `bpy`
+5.0.1 module.
 
 - It drives Blender through the Blender Lab MCP server (v1.0.3), pinned by
   commit in `teammates/blender-artist.md`. The server has no telemetry, no

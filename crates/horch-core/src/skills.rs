@@ -374,7 +374,14 @@ mod tests {
         );
         assert_eq!(
             selected(roster.require("staff-engineer").unwrap()).unwrap(),
-            ["create-plan", "handoff", "pre-flight"]
+            [
+                "api-contracts",
+                "create-plan",
+                "data-migrations",
+                "handoff",
+                "pre-flight",
+                "system-design"
+            ]
         );
     }
 
