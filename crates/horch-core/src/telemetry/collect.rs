@@ -8,7 +8,7 @@
 //! 5. Fold limit signals into the quota readings; probe when due.
 //! 6. Write `snapshot.json` (temp file + rename).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -16,7 +16,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::readers::{poll_record, Cursors};
-use super::store::{self, Rollup, Store};
+use super::store::{self, GroupSums, Rollup, Store};
 use super::{Event, Observation, QuotaSignal, TokenClasses, Unread};
 use crate::clock;
 use crate::execution::legacy::{Record, KIND_ORCHESTRATOR};
@@ -162,6 +162,8 @@ pub struct Collector {
     pub quota_env: QuotaEnv,
     pub info: CollectorInfo,
     last_good: BTreeMap<PathBuf, Vec<Record>>,
+    /// `store.events`, interned for the snapshot fold.
+    index: EventIndex,
     /// Test hook: fail after the append, before the cursor save.
     pub fail_after_append: bool,
     /// Test hook: die there instead, leaving a stale lock (a `kill -9`).
@@ -250,6 +252,7 @@ impl Collector {
                 started_at: clock::stamp(now),
             },
             last_good: BTreeMap::new(),
+            index: EventIndex::default(),
             fail_after_append: false,
             abort_after_append: false,
         })
@@ -327,13 +330,14 @@ impl Collector {
         store::save_cursors(self.store.dir(), &self.cursors)?;
 
         let quota = self.update_quota(now, &signals)?;
-        let snapshot = build_snapshot(
+        self.index.extend(&self.store.events);
+        let snapshot = build_indexed(
             &records,
             &self.store.events,
+            &self.index,
             quota,
             unread,
             now,
-            &self.policy,
             self.info.clone(),
         );
         let json = serde_json::to_vec_pretty(&snapshot)?;
@@ -407,6 +411,59 @@ fn share(part: f64, whole: f64) -> Option<f64> {
     (whole > 0.0).then(|| part / whole)
 }
 
+/// The stored events, interned for the snapshot fold (NFR-02). An event
+/// becomes a [`Row`]: its record and its 6 group keys. A tick then folds
+/// every event with no allocation and no string-keyed map.
+#[derive(Debug, Default)]
+pub struct EventIndex {
+    /// The row of each indexed event, in store order.
+    row_of: Vec<u32>,
+    rows: Vec<Row>,
+    row_ids: HashMap<Row, u32>,
+    /// The record ids and group keys.
+    names: Vec<String>,
+    name_ids: HashMap<String, u32>,
+}
+
+/// A record and its keys in [`store::GROUPS`] order, as name ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Row {
+    record: u32,
+    groups: [u32; 6],
+}
+
+impl EventIndex {
+    /// Index the events after the ones indexed before. The store only
+    /// appends; a shorter slice is a new store, indexed from the start.
+    pub fn extend(&mut self, events: &[Event]) {
+        if self.row_of.len() > events.len() {
+            *self = EventIndex::default();
+        }
+        for e in &events[self.row_of.len()..] {
+            let row = Row {
+                record: self.name(&e.record_id),
+                groups: store::GROUPS.map(|g| self.name(store::group_key(e, g))),
+            };
+            let next = self.rows.len() as u32;
+            let id = *self.row_ids.entry(row).or_insert(next);
+            if id == next {
+                self.rows.push(row);
+            }
+            self.row_of.push(id);
+        }
+    }
+
+    fn name(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.name_ids.get(name) {
+            return id;
+        }
+        let id = self.names.len() as u32;
+        self.names.push(name.to_string());
+        self.name_ids.insert(name.to_string(), id);
+        id
+    }
+}
+
 /// Build the snapshot from the ledgers and the stored events. Pure.
 pub fn build_snapshot(
     records: &[Record],
@@ -418,44 +475,152 @@ pub fn build_snapshot(
     collector: CollectorInfo,
 ) -> Snapshot {
     let _ = policy;
+    let mut index = EventIndex::default();
+    index.extend(events);
+    build_indexed(records, events, &index, quota, unread, now, collector)
+}
+
+/// [`build_snapshot`] with `events` already in `index`. Each sum adds its
+/// events in store order, as [`store::rollup`] does, so the costs are the
+/// same to the last bit.
+fn build_indexed(
+    records: &[Record],
+    events: &[Event],
+    index: &EventIndex,
+    quota: QuotaView,
+    unread: Vec<Unread>,
+    now: DateTime<Utc>,
+    collector: CollectorInfo,
+) -> Snapshot {
+    debug_assert_eq!(index.row_of.len(), events.len());
     let done = done_record_ids(records);
-    let mut rollups = BTreeMap::new();
-    for w in WINDOWS {
-        let since = window_start(w, now);
-        rollups.insert(
-            w.to_string(),
-            store::rollup(events, since.as_deref(), &done),
-        );
-    }
+    let names = index.names.len();
+    let rows = index.rows.len();
+    let is_done: Vec<bool> = index.names.iter().map(|n| done.contains(n)).collect();
+    let since = WINDOWS.map(|w| window_start(w, now).unwrap_or_default());
+    let recent = clock::stamp(now - Duration::minutes(5));
 
     // Per record: totals, last event, and the last 5 minutes for the rate.
     #[derive(Default)]
-    struct Acc {
+    struct Acc<'e> {
+        events: u64,
         tokens: TokenClasses,
         cost: f64,
-        last: Option<String>,
+        last: Option<&'e str>,
         recent_tokens: u64,
         recent_cost: f64,
     }
-    let recent = clock::stamp(now - Duration::minutes(5));
-    let mut per: BTreeMap<&str, Acc> = BTreeMap::new();
-    for e in events {
-        let a = per.entry(e.record_id.as_str()).or_default();
+    let mut per: Vec<Acc> = (0..names).map(|_| Acc::default()).collect();
+    // Per window and row: tokens, and whether it has an event. Per window,
+    // group and key: cost and done cost.
+    let mut row_tokens = vec![TokenClasses::default(); WINDOWS.len() * rows];
+    let mut row_seen = vec![false; WINDOWS.len() * rows];
+    let mut costs = vec![(0.0f64, 0.0f64); WINDOWS.len() * store::GROUPS.len() * names];
+    // Insights over the 7-day window.
+    let (mut total, mut orch, mut idle) = (0.0f64, 0.0f64, 0.0f64);
+    let mut week_tokens = TokenClasses::default();
+    let is_orch: Vec<bool> = index
+        .rows
+        .iter()
+        .map(|r| index.names[r.groups[5] as usize] == KIND_ORCHESTRATOR)
+        .collect();
+
+    for (e, &row) in events.iter().zip(&index.row_of) {
+        let row = row as usize;
+        let r = index.rows[row];
+        let record = r.record as usize;
+        let ts = e.ts.as_str();
+        let cost = e.cost_usd.unwrap_or(0.0);
+        let a = &mut per[record];
+        a.events += 1;
         a.tokens.add(&e.tokens);
-        a.cost += e.cost_usd.unwrap_or(0.0);
-        if a.last.as_deref().is_none_or(|l| e.ts.as_str() > l) {
-            a.last = Some(e.ts.clone());
+        a.cost += cost;
+        if a.last.is_none_or(|l| ts > l) {
+            a.last = Some(ts);
         }
-        if e.ts.as_str() >= recent.as_str() {
+        if ts >= recent.as_str() {
             a.recent_tokens += e.tokens.total();
-            a.recent_cost += e.cost_usd.unwrap_or(0.0);
+            a.recent_cost += cost;
+        }
+        for (w, start) in since.iter().enumerate() {
+            if ts < start.as_str() {
+                continue;
+            }
+            row_tokens[w * rows + row].add(&e.tokens);
+            row_seen[w * rows + row] = true;
+            for (g, key) in r.groups.iter().enumerate() {
+                let c = &mut costs[(w * store::GROUPS.len() + g) * names + *key as usize];
+                c.0 += cost;
+                if is_done[record] {
+                    c.1 += cost;
+                }
+            }
+        }
+        if ts >= since[2].as_str() {
+            total += cost;
+            if is_orch[row] {
+                orch += cost;
+            }
+            if e.idle {
+                idle += cost;
+            }
+            week_tokens.add(&e.tokens);
         }
     }
+
+    let mut rollups = BTreeMap::new();
+    for (w, window) in WINDOWS.iter().enumerate() {
+        // Per group: key -> (tokens, records), from the rows in the window.
+        let mut groups: [BTreeMap<u32, (TokenClasses, BTreeSet<u32>)>; 6] = Default::default();
+        for (row, r) in index.rows.iter().enumerate() {
+            if !row_seen[w * rows + row] {
+                continue;
+            }
+            for (g, key) in r.groups.iter().enumerate() {
+                let (tokens, recs) = groups[g].entry(*key).or_default();
+                tokens.add(&row_tokens[w * rows + row]);
+                recs.insert(r.record);
+            }
+        }
+        let [by_teammate, by_phase, by_agent, by_project, by_plan, by_kind] =
+            std::array::from_fn(|g| {
+                store::rows_from(std::mem::take(&mut groups[g]).into_iter().map(
+                    |(key, (tokens, recs))| {
+                        let (cost, done_cost) =
+                            costs[(w * store::GROUPS.len() + g) * names + key as usize];
+                        let sums = GroupSums {
+                            tokens,
+                            cost,
+                            records: recs.len() as u64,
+                            done: recs.iter().filter(|r| is_done[**r as usize]).count() as u64,
+                            done_cost,
+                        };
+                        (index.names[key as usize].clone(), sums)
+                    },
+                ))
+            });
+        rollups.insert(
+            window.to_string(),
+            Rollup {
+                by_teammate,
+                by_phase,
+                by_agent,
+                by_project,
+                by_plan,
+                by_kind,
+            },
+        );
+    }
+
     let ten_min_ago = clock::stamp(now - Duration::minutes(10));
     let mut live = Vec::new();
     for r in records {
-        let a = per.get(r.record_id.as_str());
-        let last = a.and_then(|a| a.last.clone());
+        let a = index
+            .name_ids
+            .get(&r.record_id)
+            .map(|id| &per[*id as usize])
+            .filter(|a| a.events > 0);
+        let last = a.and_then(|a| a.last.map(str::to_string));
         let recent_event = last.as_deref().is_some_and(|l| l >= ten_min_ago.as_str());
         // A live execution always shows; a finished one while its last
         // event is recent. A failed one never does: no agent runs for it.
@@ -502,27 +667,6 @@ pub fn build_snapshot(
         ))
     });
 
-    // Insights over the 7-day window.
-    let since = window_start("7d", now).unwrap_or_default();
-    let week: Vec<&Event> = events
-        .iter()
-        .filter(|e| e.ts.as_str() >= since.as_str())
-        .collect();
-    let total: f64 = week.iter().map(|e| e.cost_usd.unwrap_or(0.0)).sum();
-    let orch: f64 = week
-        .iter()
-        .filter(|e| e.kind == KIND_ORCHESTRATOR)
-        .map(|e| e.cost_usd.unwrap_or(0.0))
-        .sum();
-    let idle: f64 = week
-        .iter()
-        .filter(|e| e.idle)
-        .map(|e| e.cost_usd.unwrap_or(0.0))
-        .sum();
-    let mut tokens = TokenClasses::default();
-    for e in &week {
-        tokens.add(&e.tokens);
-    }
     let top_plan = rollups
         .get("7d")
         .and_then(|r| r.by_plan.iter().find(|row| row.key != "-"))
@@ -548,11 +692,137 @@ pub fn build_snapshot(
         rollups,
         insights: Insights {
             orchestrator_share: share(orch, total),
-            cache_hit: tokens.cache_hit(),
+            cache_hit: week_tokens.cache_hit(),
             idle_spend_share: share(idle, total),
             top_plan,
         },
         unread,
         projects,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::measure::testkit::{property, SplitMix64};
+
+    fn now() -> DateTime<Utc> {
+        clock::parse("2026-09-28T18:00:00Z").unwrap()
+    }
+
+    fn pick<'a>(rng: &mut SplitMix64, from: &[&'a str]) -> &'a str {
+        from[rng.below(from.len() as u64) as usize]
+    }
+
+    /// Events over 8 days around every window start, some keys missing.
+    fn events(rng: &mut SplitMix64) -> Vec<Event> {
+        let records = ["r0", "r1", "r2", "r3"];
+        let maybe = |rng: &mut SplitMix64, from: &[&str]| {
+            let v = pick(rng, from);
+            (rng.below(3) > 0).then(|| v.to_string())
+        };
+        (0..rng.below(80))
+            .map(|i| {
+                let ts = now() - Duration::seconds(rng.below(8 * 86_400) as i64);
+                let frac = if rng.below(4) == 0 { ".5Z" } else { "Z" };
+                Event {
+                    ts: format!("{}{frac}", &clock::stamp(ts)[..19]),
+                    project: maybe(rng, &["/a", "/b"]),
+                    record_id: pick(rng, &records).into(),
+                    session_id: "s".into(),
+                    event_id: format!("e{i}"),
+                    role: "r".into(),
+                    teammate: pick(rng, &["sonnet", "opus"]).into(),
+                    via: None,
+                    kind: pick(rng, &["worker", KIND_ORCHESTRATOR]).into(),
+                    agent: pick(rng, &["claude", "codex"]).into(),
+                    model: "m".into(),
+                    effort: None,
+                    phase: maybe(rng, &["implementation"]),
+                    plan: maybe(rng, &["p1", "p2"]),
+                    subagent: false,
+                    delta: false,
+                    tool_nested: false,
+                    idle: rng.below(5) == 0,
+                    tokens: TokenClasses {
+                        input: rng.below(1000),
+                        cache_read: rng.below(1000),
+                        output: rng.below(100),
+                        ..TokenClasses::default()
+                    },
+                    cost_usd: (rng.below(6) > 0).then(|| rng.below(1_000_000) as f64 / 7e6),
+                    harness_cost: None,
+                }
+            })
+            .collect()
+    }
+
+    fn records() -> Vec<Record> {
+        let ledger = ["r0", "r1", "r2", "r3"].map(|id| {
+            serde_json::json!({
+                "record_id": id, "session_id": "s", "agent": "claude", "tier": "sonnet",
+                "model": "m", "role": id, "status": if id == "r1" { "done" } else { "working" },
+                "task": "t", "history": [], "created_at": "2026-09-20T00:00:00Z",
+                "updated_at": "2026-09-28T17:00:00Z"
+            })
+        });
+        serde_json::from_value(serde_json::Value::from(ledger.to_vec())).unwrap()
+    }
+
+    fn snapshot(records: &[Record], events: &[Event], index: &EventIndex) -> Snapshot {
+        let policy = Policy::default();
+        let quota = QuotaView::new(QuotaFile::default(), now(), policy, false);
+        let info = CollectorInfo::default();
+        build_indexed(records, events, index, quota, Vec::new(), now(), info)
+    }
+
+    /// NFR-02: the indexed fold gives what the per-event sums gave, and an
+    /// index extended tick by tick gives what a fresh one gives.
+    #[test]
+    fn nfr_02_indexed_fold_matches_the_event_sums() {
+        let records = records();
+        property(0x4e46_5230_3220_0001, 200, |rng| {
+            let events = events(rng);
+            let mut fresh = EventIndex::default();
+            fresh.extend(&events);
+            let snap = snapshot(&records, &events, &fresh);
+
+            let done = done_record_ids(&records);
+            for w in WINDOWS {
+                let since = window_start(w, now());
+                let want = store::rollup(&events, since.as_deref(), &done);
+                assert_eq!(snap.rollups[w], want, "{w}");
+            }
+            let week: Vec<&Event> = (events.iter())
+                .filter(|e| e.ts >= window_start("7d", now()).unwrap())
+                .collect();
+            let cost = |f: &dyn Fn(&Event) -> bool| -> f64 {
+                week.iter()
+                    .filter(|e| f(e))
+                    .map(|e| e.cost_usd.unwrap_or(0.0))
+                    .sum()
+            };
+            let total = cost(&|_| true);
+            assert_eq!(
+                snap.insights.orchestrator_share,
+                share(cost(&|e| e.kind == KIND_ORCHESTRATOR), total)
+            );
+            assert_eq!(
+                snap.insights.idle_spend_share,
+                share(cost(&|e| e.idle), total)
+            );
+            for row in &snap.live {
+                let mine = events.iter().filter(|e| e.record_id == row.record_id);
+                let cost: f64 = mine.clone().map(|e| e.cost_usd.unwrap_or(0.0)).sum();
+                assert_eq!(row.cost_usd, cost, "{}", row.record_id);
+                assert_eq!(row.last_event_at, mine.map(|e| e.ts.clone()).max());
+            }
+
+            let mut grown = EventIndex::default();
+            let cut = events.len() / 2;
+            grown.extend(&events[..cut]);
+            grown.extend(&events);
+            assert_eq!(snapshot(&records, &events, &grown), snap);
+        });
     }
 }

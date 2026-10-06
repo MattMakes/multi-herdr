@@ -248,17 +248,52 @@ impl Rollup {
 pub const GROUPS: [&str; 6] = ["teammate", "phase", "agent", "project", "plan", "kind"];
 
 /// The group key of an event.
-pub(crate) fn group_key(e: &Event, group: &str) -> String {
-    let dash = || "-".to_string();
+pub(crate) fn group_key<'a>(e: &'a Event, group: &str) -> &'a str {
     match group {
-        "teammate" => e.teammate.clone(),
-        "phase" => e.phase.clone().unwrap_or_else(dash),
-        "agent" => e.agent.clone(),
-        "project" => e.project.clone().unwrap_or_else(dash),
-        "plan" => e.plan.clone().unwrap_or_else(dash),
-        "kind" => e.kind.clone(),
-        _ => dash(),
+        "teammate" => &e.teammate,
+        "phase" => e.phase.as_deref().unwrap_or("-"),
+        "agent" => &e.agent,
+        "project" => e.project.as_deref().unwrap_or("-"),
+        "plan" => e.plan.as_deref().unwrap_or("-"),
+        "kind" => &e.kind,
+        _ => "-",
     }
+}
+
+/// One group's sums, before it becomes a row.
+#[derive(Debug, Default)]
+pub(crate) struct GroupSums {
+    pub tokens: TokenClasses,
+    pub cost: f64,
+    /// Distinct records with events in the window.
+    pub records: u64,
+    /// Of those, how many are done now.
+    pub done: u64,
+    /// The cost of the done records' events.
+    pub done_cost: f64,
+}
+
+/// The rows of one grouping, sorted by cost, highest first.
+pub(crate) fn rows_from(groups: impl IntoIterator<Item = (String, GroupSums)>) -> Vec<RollupRow> {
+    let mut rows: Vec<RollupRow> = groups
+        .into_iter()
+        .map(|(key, g)| RollupRow {
+            key,
+            cache_hit: g.tokens.cache_hit(),
+            tokens: g.tokens,
+            cost_usd: g.cost,
+            records: g.records,
+            done: g.done,
+            cost_per_done: (g.done > 0).then(|| g.done_cost / g.done as f64),
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.cost_usd
+            .partial_cmp(&a.cost_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    rows
 }
 
 /// Group `events` by `group`, rows sorted by cost, highest first.
@@ -269,45 +304,33 @@ pub fn rollup_rows<'a>(
     done: &BTreeSet<String>,
 ) -> Vec<RollupRow> {
     #[derive(Default)]
-    struct Acc {
+    struct Acc<'e> {
         tokens: TokenClasses,
         cost: f64,
-        records: BTreeSet<String>,
+        records: BTreeSet<&'e str>,
         done_cost: f64,
     }
-    let mut acc: BTreeMap<String, Acc> = BTreeMap::new();
+    let mut acc: BTreeMap<&str, Acc> = BTreeMap::new();
     for e in events {
         let a = acc.entry(group_key(e, group)).or_default();
         a.tokens.add(&e.tokens);
         let cost = e.cost_usd.unwrap_or(0.0);
         a.cost += cost;
-        a.records.insert(e.record_id.clone());
+        a.records.insert(&e.record_id);
         if done.contains(&e.record_id) {
             a.done_cost += cost;
         }
     }
-    let mut rows: Vec<RollupRow> = acc
-        .into_iter()
-        .map(|(key, a)| {
-            let done_n = a.records.iter().filter(|r| done.contains(*r)).count() as u64;
-            RollupRow {
-                key,
-                cache_hit: a.tokens.cache_hit(),
-                tokens: a.tokens,
-                cost_usd: a.cost,
-                records: a.records.len() as u64,
-                done: done_n,
-                cost_per_done: (done_n > 0).then(|| a.done_cost / done_n as f64),
-            }
-        })
-        .collect();
-    rows.sort_by(|a, b| {
-        b.cost_usd
-            .partial_cmp(&a.cost_usd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.key.cmp(&b.key))
-    });
-    rows
+    rows_from(acc.into_iter().map(|(key, a)| {
+        let sums = GroupSums {
+            records: a.records.len() as u64,
+            done: a.records.iter().filter(|r| done.contains(**r)).count() as u64,
+            tokens: a.tokens,
+            cost: a.cost,
+            done_cost: a.done_cost,
+        };
+        (key.to_string(), sums)
+    }))
 }
 
 /// All six groupings of the events at or after `since`.

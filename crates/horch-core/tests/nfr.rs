@@ -2,11 +2,35 @@
 
 mod common;
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::path::Path;
 use std::time::Instant;
 
 use common::*;
 use horch_core::telemetry::collect::{Collector, Probing};
+
+thread_local! {
+    /// The allocations this thread has made, for the NFR-02 guard.
+    static ALLOCS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The system allocator, counting each thread's allocations.
+struct Counting;
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static COUNTING: Counting = Counting;
 
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -211,18 +235,9 @@ fn nfr_08_phase_gate_runs_every_check() {
     assert!(gate.contains("set -euo pipefail"));
 }
 
-/// NFR-02: a steady-state tick over 50 live sessions under 200 ms, and a cold
-/// start under 30 s. Generates a corpus of `HORCH_PERF_MB` (default 1024) MB.
-/// Run with `just verify-perf`.
-#[test]
-#[ignore]
-fn nfr_02_tick_budget() {
-    let w = world(Part::Whole);
-    let mb: u64 = std::env::var("HORCH_PERF_MB")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1024);
-    let per_file = mb * 1024 * 1024 / 50;
+/// The NFR-02 corpus: `sessions` live Claude sessions of about
+/// `bytes_per_file` bytes each, and one ledger that names them all.
+fn perf_corpus(w: &World, sessions: usize, bytes_per_file: u64) {
     let template =
         std::fs::read_to_string(fixtures().join(format!("claude/-work-alpha/{A2}.jsonl"))).unwrap();
     let assistant: Vec<&str> = template
@@ -230,14 +245,14 @@ fn nfr_02_tick_budget() {
         .filter(|l| l.contains("\"assistant\""))
         .collect();
     let mut ledger = Vec::new();
-    for n in 0..50 {
+    for n in 0..sessions {
         let sid = format!("{n:08}-0000-4000-8000-000000000000");
         let path = w.home.join(format!(".claude/projects/-perf/{sid}.jsonl"));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
         let mut written = 0u64;
         let mut i = 0u64;
-        while written < per_file {
+        while written < bytes_per_file {
             let line = assistant[(i % assistant.len() as u64) as usize]
                 .replace("msg_d", &format!("msg_{i}_d"))
                 .replace("msg_e", &format!("msg_{i}_e"));
@@ -257,6 +272,20 @@ fn nfr_02_tick_budget() {
         serde_json::to_string(&ledger).unwrap(),
     )
     .unwrap();
+}
+
+/// NFR-02: a steady-state tick over 50 live sessions under 200 ms, and a cold
+/// start under 30 s. Generates a corpus of `HORCH_PERF_MB` (default 1024) MB.
+/// Run with `just verify-perf`.
+#[test]
+#[ignore]
+fn nfr_02_tick_budget() {
+    let w = world(Part::Whole);
+    let mb: u64 = std::env::var("HORCH_PERF_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1024);
+    perf_corpus(&w, 50, mb * 1024 * 1024 / 50);
     let now = horch_core::clock::parse("2026-09-28T18:00:00Z").unwrap();
     let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now).unwrap();
     let cold = Instant::now();
@@ -268,4 +297,36 @@ fn nfr_02_tick_budget() {
     eprintln!("cold {cold:?}, steady {warm:?}");
     assert!(cold.as_secs() < 30, "cold start {cold:?}");
     assert!(warm.as_millis() < 200, "steady tick {warm:?}");
+}
+
+/// NFR-02 guard for the debug gate, without a clock: a steady tick makes no
+/// allocation per stored event. `nfr_02_tick_budget` runs in release only.
+/// The snapshot once built its 18 rollups (3 windows by 6 groups) with 2
+/// `String`s per event each, and the 1 GB steady tick took 1.6 s.
+#[test]
+fn nfr_02_steady_tick_allocates_nothing_per_event() {
+    let now = horch_core::clock::parse("2026-09-28T18:00:00Z").unwrap();
+    // (stored events, allocations in the second tick)
+    let steady = |bytes_per_file: u64| {
+        let w = world(Part::Whole);
+        perf_corpus(&w, 5, bytes_per_file);
+        let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now).unwrap();
+        c.tick(now).unwrap();
+        let before = ALLOCS.with(Cell::get);
+        c.tick(now).unwrap();
+        let allocs = ALLOCS.with(Cell::get) - before;
+        (c.store.events.len() as u64, allocs)
+    };
+    let (small_events, small) = steady(50_000);
+    let (big_events, big) = steady(500_000);
+    assert!(
+        big_events >= 5 * small_events,
+        "{small_events} vs {big_events} events"
+    );
+    let extra = big.saturating_sub(small);
+    assert!(
+        extra * 100 < big_events - small_events,
+        "a steady tick allocates per stored event: {small} allocations at {small_events} \
+         events, {big} at {big_events}"
+    );
 }
