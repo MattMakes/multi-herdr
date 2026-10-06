@@ -20,7 +20,7 @@ inherit_plugins: false
 mcp_servers:
   playwright: {"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}
   chrome-devtools: {"type":"stdio","command":"npx","args":["-y","chrome-devtools-mcp@latest"]}
-  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp"]}
+  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp@4.1.1"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.

@@ -23,7 +23,7 @@ skills: [tdd, security-review, api-contracts, data-migrations]
 # set here yet. When a flag or settings key appears, it goes in `args` or
 # `settings` rather than becoming a new field.
 mcp_servers:
-  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp"]}
+  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp@4.1.1"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.

@@ -50,9 +50,13 @@ operator_skills:
 # tap, screenshot) and swift-package are off by default, so the env turns
 # them on.
 # context7 pulls current Apple API docs instead of training-set memory.
+# Both servers are pinned. To update a pin: `npm view <package> version`,
+# read the release notes, change the version here and in every teammate
+# that pins the same package, run `horch teammates --check`, and bless the
+# launch oracles that change.
 mcp_servers:
   mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_SENTRY_DISABLED":"true","MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,ui-automation,swift-package"}}
-  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp"]}
+  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp@4.1.1"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
