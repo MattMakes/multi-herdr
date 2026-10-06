@@ -582,10 +582,13 @@ fn collect_once(ctx: &RuntimeContext) -> Result<ExitCode> {
 }
 
 /// Where a snapshot comes from on each refresh. The collector variant holds
-/// the lock for as long as it lives.
-#[allow(dead_code)]
+/// the lock for as long as it lives. `_lock` is never read; its `Drop`
+/// releases the lock.
 enum Source {
-    Collector(Box<Collector>, lock::CollectorLock),
+    Collector {
+        collector: Box<Collector>,
+        _lock: lock::CollectorLock,
+    },
     Viewer,
 }
 
@@ -601,11 +604,14 @@ impl Source {
                     Probing::Scheduled,
                     clock::now(),
                 )?;
-                *self = Source::Collector(Box::new(c), held);
+                *self = Source::Collector {
+                    collector: Box::new(c),
+                    _lock: held,
+                };
             }
         }
         match self {
-            Source::Collector(c, _) => c.tick(clock::now()),
+            Source::Collector { collector, .. } => collector.tick(clock::now()),
             Source::Viewer => Snapshot::read(&collect::snapshot_path(root)),
         }
     }
@@ -624,7 +630,10 @@ fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
                 Probing::Scheduled,
                 clock::now(),
             )?;
-            Source::Collector(Box::new(c), held)
+            Source::Collector {
+                collector: Box::new(c),
+                _lock: held,
+            }
         }
         Err(other) => {
             eprintln!(
