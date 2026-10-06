@@ -1,9 +1,10 @@
 //! Recording events (dataset design §4.2).
 //!
-//! Normal `horch` mode records nothing: it holds a [`NoopRecorder`]. The
-//! dataset entrypoint holds a [`JsonlRecorder`], which appends to the event
-//! log and is idempotent: an event whose key is already in the log writes
-//! nothing and returns the earlier envelope (MEA-04).
+//! Normal `horch` mode records nothing: it holds no recorder and writes no
+//! dataset event. The dataset entrypoint holds a [`JsonlRecorder`], which
+//! appends to the event log and is idempotent: an event whose key is already
+//! in the log writes nothing and returns the earlier envelope (MEA-04).
+//! [`NoopRecorder`] is for tests.
 
 use std::sync::Mutex;
 
@@ -71,7 +72,8 @@ pub trait Recorder {
     fn append(&self, event: NewEvent) -> Result<Appended>;
 }
 
-/// Records nothing. Normal `horch` mode uses it.
+/// Records nothing: `append` returns the envelope and writes no file.
+/// Only tests construct it; normal `horch` mode holds no recorder.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoopRecorder;
 
