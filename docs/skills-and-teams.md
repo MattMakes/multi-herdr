@@ -7,20 +7,27 @@ it before you add a skill or a teammate.
 For the files to change, use the recipes: [add-skill.md](recipes/add-skill.md)
 and [add-teammate.md](recipes/add-teammate.md).
 
-## Four ways a worker gets a skill
+## Six ways a worker gets a skill
 
-A teammate file has 4 fields that attach skills. Each has a different cost in
+A teammate file has 6 fields that attach skills. Each has a different cost in
 the worker's briefing.
 
 | field | what the worker gets | briefing cost |
 |---|---|---|
 | `phase` | the bundled skills of that phase | names only |
 | `skills` | named skills, expected | name and description |
+| `skills_when` | named skills per file pattern (`{"*.csproj": [godot-csharp-godot]}`); in a project with a matching file they join `skills` | name and description, only in a matching project |
 | `available_skills` | named skills, offered | name only, under "Also available" |
 | `operator_skills` | skills from a directory on the operator's machine, expected | name and description |
+| `plugin_skills` | named skills of a Claude plugin, expected (claude only); the pane loads a filtered copy of the plugin with only those skills | name and description |
 
-Precedence when a name is in more than 1 place: `skills` and `operator_skills`
-first, then `phase`, then `available_skills`.
+Precedence when a name is in more than 1 place: `skills` (with the
+`skills_when` skills that the project matched) and `operator_skills` first,
+then `phase`, then `available_skills`. A `skills_when` skill that joins
+`skills` leaves `available_skills` (`with_project_skills` in
+`crates/horch-core/src/roster/offer.rs`). The patterns match file names the
+same way as `offer_when`. With no project facts (`horch teammates`, the
+goldens) `skills_when` adds nothing.
 
 `available_skills` saves briefing text. It does not save the harness's own
 skill-list cost: the harness lists the description of every skill that the
@@ -35,16 +42,25 @@ horch skills                      # the bundled catalog and its context cost
 horch skills show ue-build-verify # 1 skill: digest, copied files, verbatim flag
 ```
 
-## Bundled skills: adapted, verbatim, own text
+## Bundled skills: the 6 kinds
 
-`skills/` holds 3 kinds of bundle. `skills/copied.json` has 1 entry for
-each: `{"name", "copied_files", "verbatim"}`.
+`skills/` holds 6 kinds of bundle, the same kinds as
+[skills/README.md](../skills/README.md). `skills/copied.json` has 1 entry for
+each skill: `{"name", "copied_files", "verbatim"}` and, when needed,
+`"budget_exempt": "<reason>"`.
+
+The size budget is `SKILL.md` at most 12 KB and the directory at most 160 KB.
+Only a verbatim skill is exempt by its kind. A skill of any other kind that is
+over the budget states why in `budget_exempt`.
 
 | kind | what it is | `verbatim` | size budget |
 |---|---|---|---|
-| adapted | a curated copy with a set of edits and the fleet rules (no subagents, no approval gate, no machine paths) | no | `SKILL.md` at most 12 KB, directory at most 160 KB |
-| verbatim | an unchanged copy of a skill directory, without dotfiles | `true` | exempt |
-| own text | written here; `copied_files` is empty | no | as adapted |
+| verbatim | an unchanged copy of a skill directory, without dotfiles; `copied_files` lists every file | `true` | exempt |
+| renamed | a copy with the `godot-` prefix on the name and on every cross-reference | no | applies; over it needs `budget_exempt` |
+| adapted | a curated copy with a set of edits and the fleet rules (no subagents, no approval gate, no machine paths) | no | applies; over it needs `budget_exempt` |
+| combined | a copied base skill plus references written here | no | applies; over it needs `budget_exempt` |
+| combined and rewritten | files from several skills merged and rewritten into 1 skill | no | applies |
+| own text | written here; `copied_files` is empty | no | applies |
 
 Rules that the tests enforce (`crates/horch-core/tests/skills_catalog.rs`):
 
@@ -52,6 +68,10 @@ Rules that the tests enforce (`crates/horch-core/tests/skills_catalog.rs`):
   exists in the skill directory.
 - A skill in `REPO_ORIGINAL` has no copied files; every other skill has at
   least 1.
+- A `verbatim: true` skill has no file outside `copied_files`.
+- A skill over the size budget is verbatim or has a `budget_exempt` reason.
+  A `budget_exempt` reason on a skill within the budget fails, and so does
+  an empty reason or a reason on a verbatim skill.
 - A skill directory holds only `.md` and `.txt` files. `skill-creator` is the
   one exception. No skill holds a licence or notice file.
 - The build skips every file and directory whose name starts with `.`.
@@ -97,9 +117,12 @@ offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]
   `horch spawn <name>`, `horch teammates` and the worker briefings do not.
   So `horch spawn ue-qa-engineer` works in any project.
 
-`requires: [xcode]` names a tool on the operator's machine. `horch doctor`
-checks it only when the project is offered a teammate that names it. It is an
-enum: a typo fails when the roster loads.
+`requires:` names tools on the operator's machine: `xcode`, `blender`,
+`godot` or `git-lfs`. `horch doctor` checks a tool only when the project is
+offered a teammate that names it (see the doctor table below). It is an enum:
+a typo fails when the roster loads. Every `ue-*` teammate except
+`ue-code-reviewer` and the `blender-artist` name `git-lfs`, because their rules
+tell them to run `git lfs lock` or `git lfs pull`.
 
 ## Operator skills (skills that cannot ship here)
 
@@ -143,7 +166,10 @@ for each of the others and still exits 0.
 |---|---|
 | herdr installed and reachable | `herdr` is not on `PATH`, or `herdr workspace list` fails (exit 1) |
 | roster | `horch teammates --check` has problems; doctor counts the teammates and the ones offered in this project |
-| `requires:` | an offered teammate needs `xcode`, and `xcodebuild -checkFirstLaunchStatus` fails or `xcodebuild` is missing |
+| `requires: [xcode]` | an offered teammate needs `xcode`, and `xcodebuild -checkFirstLaunchStatus` fails or `xcodebuild` is missing |
+| `requires: [blender]` | an offered teammate needs `blender`, and no Blender runs: doctor runs `BLENDER_PATH` when it is set, else `blender` on `PATH`, with `--version`. It also warns below Blender 5.1, the oldest that the live MCP tools run on |
+| `requires: [godot]` | an offered teammate needs `godot`, and no Godot 4.3 or later runs: doctor runs `GODOT_PATH` when it is set, else `godot` on `PATH`, else (macOS) `/Applications/Godot.app/Contents/MacOS/Godot`, with `--version` |
+| `requires: [git-lfs]` | an offered teammate needs `git-lfs`, and `git lfs version` fails with the fleet's git (`HORCH_GIT_BIN` as given, else `git` on `PATH`). In a project with a top-level `*.uproject`, doctor also warns when `.gitattributes` has no `filter=lfs` rule for `*.uasset` |
 | harness | a harness binary is found but `--version` fails; the quota probe marks it broken and routing skips its teammates |
 | effort overrides | `CLAUDE_CODE_EFFORT_LEVEL`, `maxEffortLevel` in `~/.claude/settings.json`, or `model_reasoning_effort` in `~/.codex/config.toml` overrides every teammate's effort |
 
