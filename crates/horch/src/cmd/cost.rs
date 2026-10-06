@@ -559,17 +559,25 @@ mod tests {
         assert!((report.total.cost - sum).abs() < 1e-12);
         assert!(report.total.reprice_cost.is_some());
 
-        // backend-developer is expected to use tdd and security-review; the
-        // transcript loaded tdd only.
+        // The expected skills come from the roster that `build` read, so a
+        // roster edit does not break this test. The transcript loaded tdd
+        // only, so every other expected skill is reported unused.
         let backend = &report.rows[0];
         assert_eq!(backend.skills_used.get("tdd"), Some(&1));
-        assert_eq!(backend.expected_unused, vec!["security-review".to_string()]);
-        // codex-reviewer loaded code-review and never security-review.
+        let backend_unused: Vec<String> = expected_skills(Some(&roster), "backend-developer")
+            .into_iter()
+            .filter(|s| s != "tdd")
+            .collect();
+        assert!(backend_unused.contains(&"security-review".to_string()));
+        assert_eq!(backend.expected_unused, backend_unused);
+        // The codex transcript loaded code-review and never security-review.
         let reviewer = &report.rows[1];
-        assert_eq!(
-            reviewer.expected_unused,
-            vec!["security-review".to_string()]
-        );
+        let reviewer_unused: Vec<String> = expected_skills(Some(&roster), "codex-reviewer")
+            .into_iter()
+            .filter(|s| s != "code-review")
+            .collect();
+        assert!(reviewer_unused.contains(&"security-review".to_string()));
+        assert_eq!(reviewer.expected_unused, reviewer_unused);
 
         let md = render(&report, "ledger.json");
         assert!(
