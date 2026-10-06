@@ -4,8 +4,8 @@ These bundles are maintained copies in this repository. Each folder contains a s
 
 A bundle is one of these kinds:
 
-- **verbatim**: an unchanged copy of a skill directory, minus dotfiles.
-- **renamed**: a verbatim copy with the `godot-` prefix on the name and on every cross-reference.
+- **verbatim**: an unchanged copy of a skill directory, minus dotfiles. Its `copied.json` entry has `"verbatim": true`. No other kind has it.
+- **renamed**: a copy with the `godot-` prefix on the name and on every cross-reference. It is not verbatim.
 - **adapted**: a curated copy with a set of edits, plus the fleet rules: no subagents, no human approval gate (a message to the orchestrator instead), no machine paths and no `${CLAUDE_*}` variables.
 - **combined**: a copied base skill plus references written in this repository.
 - **combined and rewritten**: files from several skills merged and rewritten into one skill.
@@ -24,12 +24,12 @@ A bundle is one of these kinds:
 
 ## Copied files
 
-[copied.json](copied.json) has one entry per bundled skill: `{"name", "copied_files", "verbatim"}`, sorted by name. `copied_files` lists the files, relative to the skill directory, that were copied into this repository; an own-text skill has `"copied_files": []`. The Godot checks (`scripts/godot/*_check.py --strict-own skills/copied.json`) report a problem in a copied file but do not fail on it; a problem in any other file fails. `"verbatim": true` exempts a skill from the bundled size budget. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; `skill-creator` and every verbatim skill are exempt from the size budget, and only `skill-creator` is exempt from the text-only rule. No skill directory holds a licence or notice file. `horch skills show <id>` prints the copied files. The build never bundles a file or directory whose name starts with `.`.
+[copied.json](copied.json) has one entry per bundled skill: `{"name", "copied_files", "verbatim"}` and, when needed, `"budget_exempt"`, sorted by name. `copied_files` lists the files, relative to the skill directory, that were copied into this repository; an own-text skill has `"copied_files": []`. The Godot checks (`scripts/godot/*_check.py --strict-own skills/copied.json`) report a problem in a copied file but do not fail on it; a problem in any other file fails. `"verbatim": true` marks an unchanged copy: `copied_files` lists every file in the directory, and nobody edited them. A test fails a verbatim skill that holds a file outside `copied_files`. A verbatim skill is exempt from the bundled size budget. A renamed, adapted or combined skill over the budget is not verbatim: its entry gives the reason in `"budget_exempt": "<reason>"` instead. Set `budget_exempt` only on a skill over the budget; a test fails a stale one. Every bundled skill needs an entry. A new skill keeps `SKILL.md` at or under 12 KB and its whole directory at or under 160 KB, in `.md` and `.txt` files only; every verbatim skill and every skill with a `budget_exempt` reason is exempt from the size budget, and only `skill-creator` is exempt from the text-only rule. No skill directory holds a licence or notice file. `horch skills show <id>` prints the copied files. The build never bundles a file or directory whose name starts with `.`.
 
 To refresh a copied skill:
 
 1. Replace the copied files with the new copy, minus dotfiles, and re-apply the edits for an adapted skill.
-2. Update the skill's `copied_files` in `copied.json` when the file list changes.
+2. Update the skill's `copied_files` in `copied.json` when the file list changes. Add or drop its `budget_exempt` reason when the copy crosses the size budget.
 3. Re-run the gate: `HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`.
 
 ## Process skills

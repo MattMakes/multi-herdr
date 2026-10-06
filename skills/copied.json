@@ -1,5 +1,5 @@
 {
-  "format": "One entry per bundled skill. copied_files lists the files, relative to the skill directory, that were copied into this repository from elsewhere; a check reports problems in them but does not fail on them. An empty list means the skill is own text. verbatim: true means the directory is an unchanged copy, exempt from the bundled size budget.",
+  "format": "One entry per bundled skill. copied_files lists the files, relative to the skill directory, that were copied into this repository from elsewhere; a check reports problems in them but does not fail on them. An empty list means the skill is own text. verbatim: true means the directory is an unchanged copy: copied_files lists every file and none was edited. A verbatim skill is exempt from the bundled size budget. budget_exempt: \"<reason>\" exempts a skill that is not verbatim (renamed, adapted or combined) from the size budget; set it only on a skill over the budget.",
   "skills": [
     {
       "name": "api-contracts",
@@ -48,7 +48,8 @@
         "SKILL.md",
         "references/appstore-review-ref.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "adapted copy; the copied SKILL.md keeps its upstream length so a refresh re-applies only the fleet edits"
     },
     {
       "name": "architecture-review",
@@ -236,7 +237,7 @@
         "references/parallax.md",
         "references/tilemap.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-3d-essentials",
@@ -252,7 +253,8 @@
         "references/materials-and-lighting-recipes.md",
         "references/renderer-comparison.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-ability-system",
@@ -262,7 +264,8 @@
         "references/tags-and-conditions.md",
         "references/ui-binding.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-addon-development",
@@ -273,7 +276,8 @@
         "references/inspector-plugins.md",
         "references/testing-plugins.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-ai-navigation",
@@ -285,7 +289,8 @@
         "references/patrol-patterns.md",
         "references/steering-behaviors.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-animation-system",
@@ -301,7 +306,8 @@
         "references/sprite-animation.md",
         "references/state-machine-examples.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-assets-pipeline",
@@ -309,7 +315,8 @@
         "SKILL.md",
         "references/runtime-resource-loading.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-audio-system",
@@ -320,7 +327,8 @@
         "references/music-manager.md",
         "references/sfx-pooling.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-beehave",
@@ -328,7 +336,7 @@
         "SKILL.md",
         "references/custom-nodes.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-brainstorming",
@@ -337,7 +345,7 @@
         "references/example-chest.md",
         "references/node-selection.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-build-verify",
@@ -353,14 +361,15 @@
         "references/split-screen.md",
         "references/transitions.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-code-review",
       "copied_files": [
         "SKILL.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-combat-system",
@@ -372,14 +381,16 @@
       "copied_files": [
         "SKILL.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-csharp-godot",
       "copied_files": [
         "SKILL.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-csharp-signals",
@@ -390,7 +401,7 @@
         "references/custom-signal-patterns.md",
         "references/disconnecting.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-debugging",
@@ -401,7 +412,8 @@
         "references/signal-tracing.md",
         "references/systematic-method.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-dedicated-server",
@@ -412,7 +424,8 @@
         "references/match-flow.md",
         "references/server-config.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-dependency-injection",
@@ -424,14 +437,15 @@
         "references/service-locator.md",
         "references/testing-with-di.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-dialogue-manager",
       "copied_files": [
         "SKILL.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-dialogue-system",
@@ -443,7 +457,7 @@
         "references/ui-presentation.md",
         "references/variable-interpolation.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-dimension-port",
@@ -463,7 +477,8 @@
         "references/testing.md",
         "references/typed-signals.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-export-pipeline",
@@ -472,7 +487,8 @@
         "references/ci-cd-github-actions.md",
         "references/distribution-itch-steam.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-gameplay-loops",
@@ -486,7 +502,7 @@
         "references/debugging-native.md",
         "references/rust-gdext.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-gdscript-advanced",
@@ -496,7 +512,8 @@
         "references/profiler-recipes.md",
         "references/tool-script-recipes.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-gdscript-patterns",
@@ -508,7 +525,8 @@
         "references/super-in-virtual-methods.md",
         "references/variadic-functions.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-genre-blueprints",
@@ -520,7 +538,7 @@
       "copied_files": [
         "SKILL.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-hud-system",
@@ -531,7 +549,7 @@
         "references/minimap.md",
         "references/notifications.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-input-handling",
@@ -544,7 +562,8 @@
         "references/mouse.md",
         "references/touch.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-inventory-system",
@@ -555,7 +574,7 @@
         "references/serialization.md",
         "references/ui-binding.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-limboai",
@@ -563,7 +582,8 @@
         "SKILL.md",
         "references/hsm.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-localization",
@@ -574,7 +594,8 @@
         "references/locale-formatting.md",
         "references/rtl-support.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-math-essentials",
@@ -584,7 +605,8 @@
         "references/game-math-recipes.md",
         "references/random-numbers.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-mobile-development",
@@ -594,7 +616,8 @@
         "references/iap-and-ads.md",
         "references/plugins.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-multiplayer-basics",
@@ -605,7 +628,8 @@
         "references/player-join-flow.md",
         "references/spawning-networked-objects.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-multiplayer-sync",
@@ -616,7 +640,7 @@
         "references/interpolation.md",
         "references/lag-compensation.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-multithreading",
@@ -624,7 +648,7 @@
         "SKILL.md",
         "references/pitfalls.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-optimization",
@@ -635,7 +659,8 @@
         "references/memory-management.md",
         "references/physics-tuning.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-particles-vfx",
@@ -649,14 +674,16 @@
         "references/trails.md",
         "references/vfx-recipes.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-phantom-camera",
       "copied_files": [
         "SKILL.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-physics-system",
@@ -675,7 +702,8 @@
         "references/staticbody-recipes.md",
         "references/troubleshooting.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-player-controller",
@@ -683,7 +711,8 @@
         "SKILL.md",
         "references/common-movement-recipes.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-popochiu",
@@ -694,7 +723,7 @@
         "references/inventory.md",
         "references/pipeline.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-procedural-generation",
@@ -705,7 +734,7 @@
         "references/noise-generation.md",
         "references/wave-function-collapse.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-project-context",
@@ -717,7 +746,8 @@
       "copied_files": [
         "SKILL.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-quest-system",
@@ -734,7 +764,8 @@
         "references/saving-resources.md",
         "references/sharing-vs-unique.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-responsive-ui",
@@ -745,7 +776,7 @@
         "references/mobile.md",
         "references/pixel-art-setup.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-save-load",
@@ -756,7 +787,7 @@
         "references/save-architecture.md",
         "references/version-migration.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-scene-files",
@@ -768,7 +799,7 @@
       "copied_files": [
         "SKILL.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-shader-basics",
@@ -781,7 +812,8 @@
         "references/shader-baker.md",
         "references/stencil-buffer.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-state-machine",
@@ -789,7 +821,8 @@
         "SKILL.md",
         "references/hierarchical-and-parallel.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-testing",
@@ -801,7 +834,7 @@
         "references/tdd-workflow.md",
         "references/testing-patterns.md"
       ],
-      "verbatim": true
+      "verbatim": false
     },
     {
       "name": "godot-tween-animation",
@@ -812,7 +845,8 @@
         "references/looping-and-signals.md",
         "references/property-tweener-modifiers.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-ui",
@@ -825,7 +859,8 @@
         "references/theme-system.md",
         "references/ui-patterns.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "godot-version-migration",
@@ -843,7 +878,8 @@
         "references/passthrough.md",
         "references/xr-ui.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
       "name": "handoff",
@@ -1027,7 +1063,8 @@
         "references/secure-enclave.md",
         "references/testing-security-code.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "adapted SKILL.md and verbatim references; the copied files keep their upstream length so a refresh re-applies only the fleet edits"
     },
     {
       "name": "swift-testing-pro",
@@ -1365,7 +1402,8 @@
       "copied_files": [
         "SKILL.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "adapted copy; the copied SKILL.md keeps its upstream length so a refresh re-applies only the fleet edits"
     },
     {
       "name": "ue-sequencer-cinematics",
@@ -1479,7 +1517,8 @@
         "references/patterns.md",
         "references/sources.md"
       ],
-      "verbatim": true
+      "verbatim": false,
+      "budget_exempt": "adapted SKILL.md and verbatim references; the copied files keep their upstream length so a refresh re-applies only the fleet edits"
     }
   ]
 }

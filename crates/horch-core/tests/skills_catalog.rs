@@ -209,27 +209,110 @@ fn skills_copied_parses() {
     assert!(parse_copied(&unknown).is_err());
     let dup = text.replace(r#""name": "own""#, r#""name": "part""#);
     assert!(parse_copied(&dup).is_err());
+
+    // U-49: budget_exempt carries a reason, and only on a skill that is not
+    // verbatim (a verbatim skill is already exempt).
+    assert_eq!(parsed["part"].budget_exempt, None);
+    let part = r#"{"name": "part", "copied_files": ["SKILL.md"]}"#;
+    let exempt = |field: &str| text.replace(part, &part.replace('}', &format!(", {field}}}")));
+    let ok = parse_copied(&exempt(r#""budget_exempt": "combined upstream base""#)).unwrap();
+    assert_eq!(
+        ok["part"].budget_exempt.as_deref(),
+        Some("combined upstream base")
+    );
+    assert!(parse_copied(&exempt(r#""budget_exempt": " ""#)).is_err());
+    let both = text.replace(
+        r#""verbatim": true"#,
+        r#""verbatim": true, "budget_exempt": "x""#,
+    );
+    assert!(parse_copied(&both).is_err());
+}
+
+/// U-49: `verbatim: true` means an unchanged copy of the whole directory, so
+/// `copied_files` lists every file of a verbatim skill.
+#[test]
+fn skills_verbatim_lists_every_file() {
+    let catalog = SkillCatalog::bundled().unwrap();
+    let mut verbatim = 0;
+    for entry in catalog.entries() {
+        let Some(c) = entry.copied.as_ref().filter(|c| c.verbatim) else {
+            continue;
+        };
+        verbatim += 1;
+        let prefix = format!("{}/", entry.id);
+        for (path, _) in BUNDLED_SKILL_FILES {
+            if let Some(rel) = path.strip_prefix(&prefix) {
+                assert!(
+                    c.copied_files.iter().any(|f| f == rel),
+                    "{path}: verbatim skill holds a file that is not in copied_files"
+                );
+            }
+        }
+    }
+    assert!(verbatim > 0);
 }
 
 /// A verbatim skill (`"verbatim": true` in copied.json) is an unchanged
-/// copy and is exempt from the size budget. Any other skill meets it.
+/// copy and is exempt from the size budget. So is a skill whose entry gives a
+/// `budget_exempt` reason. Any other skill meets it.
 const MAX_SKILL_MD_BYTES: usize = 12 * 1024;
 const MAX_SKILL_DIR_BYTES: usize = 160 * 1024;
 
 /// Skill ids exempt from the size budget: every skill whose copied.json
-/// entry says `verbatim: true`.
+/// entry says `verbatim: true` or gives a `budget_exempt` reason.
 ///
-/// A combined Godot skill (`godot-*`, Godot wave GW3-GW7) is a renamed
-/// copied `SKILL.md` plus own references, and its entry also sets
-/// `verbatim: true`. This rule already exempts it, both the `SKILL.md` limit
-/// and the directory limit, so it needs no case of its own.
+/// A renamed or combined Godot skill (`godot-*`, Godot wave GW3-GW7) keeps
+/// its copied `SKILL.md` at upstream length, so its entry gives a
+/// `budget_exempt` reason (U-49). It is not verbatim.
 fn budget_exempt() -> BTreeSet<String> {
     let catalog = SkillCatalog::bundled().unwrap();
     catalog
         .entries()
-        .filter(|e| e.copied.as_ref().is_some_and(|c| c.verbatim))
+        .filter(|e| {
+            e.copied
+                .as_ref()
+                .is_some_and(|c| c.verbatim || c.budget_exempt.is_some())
+        })
         .map(|e| e.id.to_string())
         .collect()
+}
+
+/// `(SKILL.md bytes, directory bytes)` of every bundled skill.
+fn skill_sizes() -> BTreeMap<&'static str, (usize, usize)> {
+    let mut sizes: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for (path, bytes) in BUNDLED_SKILL_FILES {
+        let Some((id, rel)) = path.split_once('/') else {
+            continue;
+        };
+        let size = sizes.entry(id).or_default();
+        size.1 += bytes.len();
+        if rel == "SKILL.md" {
+            size.0 = bytes.len();
+        }
+    }
+    sizes
+}
+
+/// U-49: a `budget_exempt` reason is for a skill over the budget. When a
+/// refresh brings the skill under it, the stale reason fails here.
+#[test]
+fn skills_budget_exempt_only_over_budget() {
+    let catalog = SkillCatalog::bundled().unwrap();
+    let sizes = skill_sizes();
+    for entry in catalog.entries() {
+        if entry
+            .copied
+            .as_ref()
+            .is_some_and(|c| c.budget_exempt.is_some())
+        {
+            let (md, dir) = sizes[entry.id.as_str()];
+            assert!(
+                md > MAX_SKILL_MD_BYTES || dir > MAX_SKILL_DIR_BYTES,
+                "{}: within the budget ({md} / {dir} bytes); drop budget_exempt",
+                entry.id
+            );
+        }
+    }
 }
 
 #[test]

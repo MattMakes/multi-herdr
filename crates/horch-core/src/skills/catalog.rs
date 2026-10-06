@@ -63,10 +63,15 @@ pub struct Copied {
     /// Paths relative to the skill directory. A check reports a problem in a
     /// copied file but does not fail on it.
     pub copied_files: Vec<String>,
-    /// The skill directory is an unchanged copy. A verbatim skill is exempt
-    /// from the bundled size budget.
+    /// The skill directory is an unchanged copy: `copied_files` lists every
+    /// file and none was edited. A verbatim skill is exempt from the bundled
+    /// size budget.
     #[serde(default)]
     pub verbatim: bool,
+    /// Why a skill that is not verbatim (renamed, adapted, combined) may
+    /// exceed the bundled size budget. `None` means it meets the budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_exempt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +178,8 @@ struct CopiedSkill {
     copied_files: Vec<String>,
     #[serde(default)]
     verbatim: bool,
+    #[serde(default)]
+    budget_exempt: Option<String>,
 }
 
 /// Parse the text of `skills/copied.json` into one entry per skill name.
@@ -186,9 +193,18 @@ pub fn parse_copied(text: &str) -> Result<BTreeMap<String, Copied>> {
                 bail!("copied '{name}': '{path}' is not a path inside the skill directory");
             }
         }
+        if let Some(reason) = &s.budget_exempt {
+            if reason.trim().is_empty() {
+                bail!("copied '{name}': budget_exempt needs a reason");
+            }
+            if s.verbatim {
+                bail!("copied '{name}': a verbatim skill is already exempt; drop budget_exempt");
+            }
+        }
         let entry = Copied {
             copied_files: s.copied_files,
             verbatim: s.verbatim,
+            budget_exempt: s.budget_exempt,
         };
         if out.insert(name.clone(), entry).is_some() {
             bail!("copied '{name}': duplicate entry");
