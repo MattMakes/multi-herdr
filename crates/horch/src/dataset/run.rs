@@ -52,6 +52,7 @@ use serde::{Deserialize, Serialize};
 use super::cli::RunArgs;
 use super::preflight::{self, ExperimentFacts, GatherInput};
 use super::{dataset_paths, exit};
+use crate::project::project_facts;
 
 pub(crate) fn run(
     ctx: &mut RuntimeContext,
@@ -533,6 +534,9 @@ fn latest_intervention(events: &[EventEnvelope], round: &RoundId) -> Option<Stri
     reason
 }
 
+/// The roster with the project's facts attached, as `horch spawn` and the
+/// fleet load it: a candidate's `skills_when` skills come from the
+/// repository the round runs in (U-26).
 fn load_roster(ctx: &RuntimeContext) -> Result<Roster> {
     let roster = Roster::load_layered(
         ctx.inherited.home_var.as_deref().map(Path::new),
@@ -540,7 +544,7 @@ fn load_roster(ctx: &RuntimeContext) -> Result<Roster> {
         None,
     )?;
     warn_once(&roster, &ROSTER_WARNED, &mut std::io::stderr());
-    Ok(roster)
+    Ok(roster.with_project_facts(project_facts(&ctx.paths.project()?)))
 }
 
 /// Set once the roster warnings are printed: `run` loads the roster more
@@ -980,5 +984,43 @@ mod tests {
             PathBuf::from("/proj/wt/01a1073d-cb8c-759c-8334-e02289432c6b")
         );
         assert_eq!(root(&one, None), paths.default_worktree_root(&one).unwrap());
+    }
+
+    /// U-26: a candidate launches with the `skills_when` skills of the
+    /// project the dataset run targets, as a `horch spawn` worker does. A
+    /// Godot C# project (`*.csproj`) adds the C# skills.
+    #[test]
+    fn dataset_roster_carries_the_project_facts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("game");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("project.godot"), "").unwrap();
+        std::fs::write(project.join("Game.csproj"), "").unwrap();
+        let teammates = tmp.path().join("teammates");
+        std::fs::create_dir_all(&teammates).unwrap();
+        std::fs::write(
+            teammates.join("csharp-candidate.md"),
+            "---\nname: csharp-candidate\nbrief_description: X\nagent: claude\n\
+             model: opus\nskills: [tdd]\n\
+             skills_when: {\"*.csproj\": [godot-csharp-godot]}\n---\nbody",
+        )
+        .unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new(&project)
+                .with("HOME", home.to_str().unwrap())
+                .with("HORCH_TEAMMATES_DIR", teammates.to_str().unwrap())
+                .with_exe("/opt/horch/bin/horch"),
+        )
+        .unwrap();
+        let roster = load_roster(&ctx).unwrap();
+        let t = roster.require("csharp-candidate").unwrap().clone();
+        let launched = roster.for_launch(t);
+        assert!(
+            launched.skills.iter().any(|s| s == "godot-csharp-godot"),
+            "{:?}",
+            launched.skills
+        );
     }
 }
