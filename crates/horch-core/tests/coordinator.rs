@@ -21,7 +21,7 @@ use horch_core::competition::judging::JobLauncher;
 use horch_core::competition::observe::TelemetryUsage;
 use horch_core::competition::planner::{config_id, plan_round, PlanInput, RoundPlan};
 use horch_core::evaluation::scheduler::JudgeJobSpec;
-use horch_core::evaluation::validator::CommandValidator;
+use horch_core::evaluation::validator::{CommandValidator, GateSpec};
 use horch_core::execution::store::{to_execution, ExecutionStore};
 use horch_core::execution::{ExecutionKind, ExecutionStatus, FailureKind, ReportTarget};
 use horch_core::harness::HarnessKind;
@@ -42,6 +42,8 @@ use horch_core::runtime::fault::Faults;
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use horch_core::usage::Locations;
 use horch_core::vcs::git::GitCli;
+use horch_core::workspace::client::WorkspaceClient;
+use horch_core::workspace::model::{Direction, NewWorkspace, Pane};
 use horch_core::workspace::testing::FakeWorkspace;
 use serde_json::json;
 
@@ -157,6 +159,8 @@ struct CrashRound {
     experiment: ExperimentId,
     round: RoundId,
     outcome: RoundOutcome,
+    /// How many records [`Agent::DoneAtTheLook`] ended inside a look.
+    raced: u32,
 }
 
 /// One 2-candidate round run in process, in which every candidate's agent
@@ -176,6 +180,75 @@ enum Agent {
     /// Writes its work and waits at its prompt (herdr `idle`) without
     /// `horch done`; the round's clock moves 60 s per tick.
     Idle,
+    /// Runs, and runs `horch done` while the coordinator looks at its pane:
+    /// after the coordinator read the record, before it writes its own end
+    /// (see [`Racing`]). The round's clock moves 60 s per tick.
+    DoneAtTheLook,
+}
+
+/// [`FakeWorkspace`], and with `race` set, every running candidate record
+/// ends `Done` inside `pane_get`. `observe` calls `pane_get` after the tick
+/// read the records and before it ends a candidate, so this is the D18 race.
+struct Racing<'a> {
+    inner: &'a FakeWorkspace,
+    store: &'a ExecutionStore,
+    race: bool,
+    /// How many records the race ended.
+    raced: Cell<u32>,
+}
+
+impl WorkspaceClient for Racing<'_> {
+    fn pane_get(&self, pane: &str) -> anyhow::Result<Pane> {
+        if self.race {
+            for r in self.store.read().unwrap() {
+                if r.execution_status() == ExecutionStatus::Running {
+                    self.store
+                        .set_state(&r.record_id, ExecutionStatus::Done)
+                        .unwrap();
+                    self.raced.set(self.raced.get() + 1);
+                }
+            }
+        }
+        self.inner.pane_get(pane)
+    }
+    fn pane_list(&self, workspace: &str) -> anyhow::Result<Vec<Pane>> {
+        self.inner.pane_list(workspace)
+    }
+    fn pane_split(&self, from: &str, direction: Direction) -> anyhow::Result<String> {
+        self.inner.pane_split(from, direction)
+    }
+    fn pane_run(&self, pane: &str, command: &str) -> anyhow::Result<()> {
+        self.inner.pane_run(pane, command)
+    }
+    fn pane_close(&self, pane: &str) -> anyhow::Result<()> {
+        self.inner.pane_close(pane)
+    }
+    fn agent_prompt(&self, pane: &str, text: &str) -> anyhow::Result<()> {
+        self.inner.agent_prompt(pane, text)
+    }
+    fn pane_send_text(&self, pane: &str, text: &str) -> anyhow::Result<()> {
+        self.inner.pane_send_text(pane, text)
+    }
+    fn pane_send_keys(&self, pane: &str, keys: &str) -> anyhow::Result<()> {
+        self.inner.pane_send_keys(pane, keys)
+    }
+    fn pane_read(&self, pane: &str, source: &str) -> anyhow::Result<String> {
+        self.inner.pane_read(pane, source)
+    }
+    fn workspace_create(
+        &self,
+        label: &str,
+        cwd: Option<&str>,
+        focus: bool,
+    ) -> anyhow::Result<NewWorkspace> {
+        self.inner.workspace_create(label, cwd, focus)
+    }
+    fn workspace_close(&self, workspace: &str) -> anyhow::Result<()> {
+        self.inner.workspace_close(workspace)
+    }
+    fn server_reachable(&self) -> bool {
+        self.inner.server_reachable()
+    }
 }
 
 /// Claude's trust dialog, as a pane showed it in LA-7.
@@ -280,7 +353,7 @@ fn round_cfg(
     let sleep = |_: Duration| {
         ticks.set(ticks.get() + 1);
         assert!(ticks.get() < 50, "the round never ended");
-        if agent == Agent::Idle {
+        if matches!(agent, Agent::Idle | Agent::DoneAtTheLook) {
             offset.set(offset.get() + chrono::Duration::seconds(60));
         }
         for r in store.read().unwrap() {
@@ -300,15 +373,30 @@ fn round_cfg(
                         r.pane_id.as_deref().unwrap(),
                         &[(Some("claude"), Some("idle"))],
                     ),
+                    Agent::DoneAtTheLook => {}
                 }
             }
         }
     };
-    let validator = CommandValidator::new(
-        Vec::new(),
-        paths.root().join("validation"),
-        Default::default(),
-    );
+    // A `Done` candidate is eligible without gates, and `NoJudge` refuses
+    // a judge: a required gate that fails keeps the race round unjudged.
+    let gates = match agent {
+        Agent::DoneAtTheLook => vec![GateSpec {
+            name: "fails".into(),
+            command: "false".into(),
+            timeout: Duration::from_secs(30),
+            required: true,
+        }],
+        _ => Vec::new(),
+    };
+    let validator =
+        CommandValidator::new(gates, paths.root().join("validation"), Default::default());
+    let racing = Racing {
+        inner: &fake,
+        store: &store,
+        race: agent == Agent::DoneAtTheLook,
+        raced: Cell::new(0),
+    };
     let usage = TelemetryUsage {
         locations: Locations::under_home(&w.root.join("home"), &w.ctx.inherited),
     };
@@ -321,7 +409,7 @@ fn round_cfg(
         recorder: &recorder,
         paths: &paths,
         git: &w.git,
-        workspace: &fake,
+        workspace: &racing,
         store: &store,
         roster,
         validator: &validator,
@@ -347,6 +435,7 @@ fn round_cfg(
     };
     let outcome = coordinator.start(&spec, &plan).unwrap();
     let calls = fake.calls();
+    let raced = racing.raced.get();
     (
         CrashRound {
             recorder,
@@ -354,6 +443,7 @@ fn round_cfg(
             experiment,
             round,
             outcome,
+            raced,
         },
         calls,
     )
@@ -369,6 +459,7 @@ fn arc_24_candidates_are_ordinary_executions() {
         experiment,
         round,
         outcome,
+        ..
     } = crash_round(&w, &roster, |_| {});
     // Every agent crashed: no eligible candidate, the round is rejected.
     assert_eq!(outcome, RoundOutcome::Rejected { budget: false });
@@ -586,6 +677,64 @@ fn idle_rule_off_waits_for_the_deadline() {
             }
         );
     }
+}
+
+/// D18 on the timeout path: a candidate whose record ends `Done` after the
+/// coordinator looked at it, and before the deadline end writes, keeps
+/// `Done`. `end_candidate` records the agent's end, not `TimedOut`.
+#[test]
+fn end_candidate_keeps_an_end_written_after_the_look() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let (
+        CrashRound {
+            recorder,
+            store,
+            round,
+            outcome,
+            raced,
+            ..
+        },
+        _,
+    ) = round_cfg(
+        &w,
+        &roster,
+        |_| {},
+        Agent::DoneAtTheLook,
+        |c| {
+            c.caps.idle_nudge_after_s = 0;
+            c.caps.candidate_deadline_s = 30;
+        },
+    );
+    assert_eq!(raced, 2, "the race must end both records inside a look");
+    // The required gate fails, so nothing is eligible.
+    assert_eq!(outcome, RoundOutcome::Rejected { budget: false });
+    let records = store.read().unwrap();
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        assert_eq!(record.execution_status(), ExecutionStatus::Done);
+    }
+    let events = recorder.read_all().unwrap().events;
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter(|e| e.round_id.as_ref() == Some(&round))
+        .map(|e| e.kind.as_str())
+        .collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == "candidate.completed")
+            .count(),
+        2,
+        "{kinds:?}"
+    );
+    assert!(!kinds.contains(&"candidate.failed"), "{kinds:?}");
+    let projection = fold(&events);
+    assert!(
+        projection.anomalies.is_empty(),
+        "{:?}",
+        projection.anomalies
+    );
 }
 
 /// A worktree that cannot be made (here: B's path is taken) stops the round
