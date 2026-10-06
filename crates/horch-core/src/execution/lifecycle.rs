@@ -169,6 +169,11 @@ pub trait WorkerSteps {
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>>;
     /// Record how the agent ended ([`ExecutionStore::record_exit`]).
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()>;
+    /// Close this worker's pane after a startup failure, so a dead worker
+    /// does not hold a pane. The default leaves the pane open.
+    fn close_pane(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Run a worker: load the brief, build the context, register the mailbox,
@@ -188,8 +193,9 @@ pub trait WorkerSteps {
 /// `Failed(AgentExited{None})`, the same state a launch failure gets, then
 /// returns the original error. Without it the record stays `Starting` with a
 /// dead worker until a deadline. The recording is best effort: its own error
-/// is logged. A failure of `load_brief` records nothing: the record is
-/// unknown.
+/// is logged. Then the worker closes its own pane, as `done` does; a close
+/// that fails is logged and the startup error still returns. A failure of
+/// `load_brief` records nothing: the record is unknown, and the pane stays.
 pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
     let brief = steps.load_brief()?;
     if let Err(e) = steps
@@ -199,6 +205,14 @@ pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
         if let Err(rec) = steps.agent_exited(&brief, None) {
             eprintln!(
                 "horch worker[{}]: recording the startup failure failed: {rec:#}",
+                brief.role
+            );
+        }
+        // The close ends this process, so the error is printed first.
+        eprintln!("horch worker[{}]: startup failed: {e:#}", brief.role);
+        if let Err(close) = steps.close_pane() {
+            eprintln!(
+                "horch worker[{}]: could not close the pane: {close:#}",
                 brief.role
             );
         }
@@ -373,6 +387,16 @@ impl WorkerSteps for PaneWorker<'_> {
 
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()> {
         self.store()?.record_exit(&brief.record_id, code)
+    }
+
+    fn close_pane(&mut self) -> Result<()> {
+        let pane = self
+            .ctx
+            .herdr
+            .pane
+            .as_ref()
+            .context("HERDR_PANE_ID is not set")?;
+        self.herdr().pane_close(pane.as_ref())
     }
 }
 
@@ -809,6 +833,117 @@ mod tests {
                 let expected = if known { 4 } else { 1 };
                 assert_eq!(ran.len(), expected, "{vanish:?}, {workspace:?}: {ran:?}");
             }
+        }
+    }
+
+    /// U-40: a worker that fails at startup closes its own pane, after it
+    /// records the failure. A pane that does not close does not hide the
+    /// startup error.
+    mod startup_failure {
+        use super::*;
+
+        /// Steps that fail at `enter_context` and close the pane through the
+        /// fake workspace, the way `PaneWorker` does through herdr.
+        struct Steps<'a> {
+            ws: &'a FakeWorkspace,
+            pane: String,
+            calls: Vec<&'static str>,
+            fail_at: &'static str,
+        }
+
+        impl WorkerSteps for Steps<'_> {
+            fn load_brief(&mut self) -> Result<Brief> {
+                Ok(Brief {
+                    schema: SCHEMA,
+                    role: "sonnet-1".into(),
+                    teammate: "sonnet".into(),
+                    agent: "claude".into(),
+                    model: "sonnet".into(),
+                    record_id: "r1".into(),
+                    session: SessionMode::Fresh(Some("s1".parse().unwrap())),
+                    task: "t".into(),
+                    project_dir: "/p".into(),
+                    state_dir: None,
+                    claude_bin: None,
+                    codex_bin: None,
+                    resolved: None,
+                    teammates_dir: None,
+                    workdir: None,
+                    bin_overrides: BinOverrides::default(),
+                    report_to: ReportTarget::Orchestrator,
+                })
+            }
+            fn enter_context(&mut self, _: &Brief) -> Result<()> {
+                self.calls.push("enter_context");
+                if self.fail_at == "enter_context" {
+                    bail!("enter_context failed");
+                }
+                Ok(())
+            }
+            fn register(&mut self, _: &Brief) -> Result<()> {
+                self.calls.push("register");
+                Ok(())
+            }
+            fn set_running(&mut self, _: &Brief) -> Result<()> {
+                self.calls.push("set_running");
+                Ok(())
+            }
+            fn launch(&mut self, _: &Brief) -> Result<Option<i32>> {
+                self.calls.push("launch");
+                Ok(Some(0))
+            }
+            fn agent_exited(&mut self, _: &Brief, _: Option<i32>) -> Result<()> {
+                self.calls.push("agent_exited");
+                Ok(())
+            }
+            fn close_pane(&mut self) -> Result<()> {
+                self.calls.push("close_pane");
+                self.ws.pane_close(&self.pane)
+            }
+        }
+
+        fn steps<'a>(ws: &'a FakeWorkspace, fail_at: &'static str) -> Steps<'a> {
+            let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+            Steps {
+                ws,
+                pane,
+                calls: Vec::new(),
+                fail_at,
+            }
+        }
+
+        #[test]
+        fn closes_the_pane_after_it_records_the_failure() {
+            let ws = FakeWorkspace::new();
+            let mut steps = steps(&ws, "enter_context");
+            let e = run_worker(&mut steps).unwrap_err();
+            assert_eq!(e.to_string(), "enter_context failed");
+            assert_eq!(steps.calls, ["enter_context", "agent_exited", "close_pane"]);
+            assert!(ws.pane_ids().is_empty(), "the pane is closed");
+        }
+
+        #[test]
+        fn a_close_failure_does_not_hide_the_startup_error() {
+            let ws = FakeWorkspace::new();
+            let mut steps = steps(&ws, "enter_context");
+            ws.fail_next("pane_close", "herdr is down");
+            let e = run_worker(&mut steps).unwrap_err();
+            assert_eq!(e.to_string(), "enter_context failed");
+            assert_eq!(steps.calls.last(), Some(&"close_pane"));
+            assert_eq!(
+                ws.pane_ids().len(),
+                1,
+                "the pane stays when the close fails"
+            );
+        }
+
+        #[test]
+        fn a_worker_that_starts_keeps_its_pane() {
+            let ws = FakeWorkspace::new();
+            let mut steps = steps(&ws, "none");
+            assert_eq!(run_worker(&mut steps).unwrap(), 0);
+            assert!(!steps.calls.contains(&"close_pane"));
+            assert_eq!(ws.pane_ids().len(), 1);
         }
     }
 }
