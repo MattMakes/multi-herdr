@@ -35,6 +35,10 @@ In the steps, `<id>` is the skill id, for example `ui-taste`.
    copied files is not in `REPO_ORIGINAL`. A new own-text skill therefore
    also needs its id in `REPO_ORIGINAL` in
    `crates/horch-core/tests/skills_catalog.rs`; ask before you edit it.
+   A skill over the size budget in step 1 that is not verbatim (renamed,
+   adapted or combined) states why in `"budget_exempt": "<reason>"`; see the
+   `format` string at the top of `skills/copied.json`. Set it only on a skill
+   over the budget, because a test fails a stale reason.
    To copy a skill verbatim instead, see
    [Copy a skill verbatim](#copy-a-skill-verbatim).
 4. Add a row to `skills/README.md`, in alphabetical order: "Process skills"

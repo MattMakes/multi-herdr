@@ -178,6 +178,12 @@ shares the LFS objects in the common `.git/lfs`. The recommended
 `.gitattributes` and the full rules are in
 [`skills/ue-build-verify/references/git-lfs.md`](../skills/ue-build-verify/references/git-lfs.md).
 
+Every `ue-*` teammate except `ue-code-reviewer` sets `requires: [git-lfs]`,
+and `blender-artist` sets `requires: [blender, git-lfs]`. Their rules tell
+them to run `git lfs lock` or `git lfs pull`. `ue-code-reviewer` does not,
+because it never builds, edits or commits. When the project is offered one of
+them, `horch doctor` checks that `git lfs version` works.
+
 ## The Godot team
 
 Nineteen `godot-*` specialists staff Godot 4 work. Each sets
