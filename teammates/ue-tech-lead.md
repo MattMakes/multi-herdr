@@ -8,6 +8,7 @@ model: opus
 # Offered only on an Unreal project (roster/offer.rs). `horch spawn` still
 # works anywhere.
 offer_when: ["*.uproject"]
+requires: [git-lfs]
 # When this model's usage pool cannot serve a spawn (horch route ue-tech-lead).
 fallbacks: [codex-sol]
 # high: a planner, like staff-engineer. A wrong module split or a missed

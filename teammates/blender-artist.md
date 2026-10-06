@@ -10,7 +10,7 @@ model: opus
 offer_when: ["*.blend", "*.uproject"]
 # `horch doctor` checks `blender --version` (or BLENDER_PATH) when this
 # teammate is offered.
-requires: [blender]
+requires: [blender, git-lfs]
 # No fallback: this teammate drives Blender through an MCP server, and the
 # Codex panes have no MCP parity here. A fallback also takes the fallback's
 # MCP servers, so the Blender server would be gone. When the Claude pool is

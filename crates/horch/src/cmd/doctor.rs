@@ -49,6 +49,8 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
         ctx.inherited.pathext.as_deref(),
         ctx.inherited.blender_path.as_deref(),
         ctx.inherited.godot_path.as_deref(),
+        &ctx.bins.harness.git,
+        ctx.paths.project().ok().as_deref(),
     );
     for p in &tool_problems {
         eprintln!("warning: {p}");
@@ -124,16 +126,25 @@ fn broken_harness_warnings(
 /// line per requirement. Nothing is checked that no offered teammate needs.
 /// `blender_path` is `BLENDER_PATH`, which wins over `blender` on PATH;
 /// `godot_path` is `GODOT_PATH`, which wins over `godot` on PATH.
+/// `git` is the fleet's git (`HORCH_GIT_BIN`, else `git`); `project` is the
+/// project directory, whose `.gitattributes` the git-lfs check reads.
 pub(crate) fn requirement_problems(
     roster: &Roster,
     path: Option<&OsStr>,
     pathext: Option<&str>,
     blender_path: Option<&OsStr>,
     godot_path: Option<&OsStr>,
+    git: &Path,
+    project: Option<&Path>,
 ) -> Vec<String> {
     let offered = roster.offered();
     let mut problems = Vec::new();
-    for requirement in [Requirement::Xcode, Requirement::Blender, Requirement::Godot] {
+    for requirement in [
+        Requirement::Xcode,
+        Requirement::Blender,
+        Requirement::Godot,
+        Requirement::GitLfs,
+    ] {
         let needed_by: Vec<&str> = offered
             .iter()
             .filter(|t| t.requires.contains(&requirement))
@@ -148,6 +159,9 @@ pub(crate) fn requirement_problems(
             Requirement::Godot => {
                 godot_problem(path, pathext, godot_path, GODOT_APP.map(Path::new))
             }
+            Requirement::GitLfs => {
+                git_lfs_problem(path, pathext, git).or_else(|| project.and_then(lfs_rule_problem))
+            }
         };
         if let Some(problem) = problem {
             problems.push(format!(
@@ -158,6 +172,73 @@ pub(crate) fn requirement_problems(
         }
     }
     problems
+}
+
+/// `git lfs version` must run with the fleet's git, or a new worktree of an
+/// Unreal project holds LFS pointer files instead of assets and `git lfs
+/// lock` fails. A bare `git` is looked up on PATH; a path is used as given.
+fn git_lfs_problem(path: Option<&OsStr>, pathext: Option<&str>, git: &Path) -> Option<String> {
+    let bin = if git.components().count() > 1 {
+        git.to_path_buf()
+    } else {
+        match process::which(path, pathext, &git.to_string_lossy()) {
+            Some(bin) => bin,
+            None => {
+                return Some(format!(
+                    "{} not found on PATH. Install git, or set HORCH_GIT_BIN.",
+                    git.display()
+                ))
+            }
+        }
+    };
+    match Command::new(&bin).args(["lfs", "version"]).output() {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let detail = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            Some(format!(
+                "`{} lfs version` failed ({}). Install Git LFS (macOS: `brew install \
+                 git-lfs`), then run `git lfs install` once.{}",
+                bin.display(),
+                out.status,
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" git said: {}", detail.trim())
+                }
+            ))
+        }
+        Err(e) => Some(format!("could not run {}: {e}", bin.display())),
+    }
+}
+
+/// In an Unreal project (a `*.uproject` at the top), `.gitattributes` must
+/// send `*.uasset` to LFS, or the first asset commit puts binary bytes in
+/// git history. `None` outside an Unreal project.
+fn lfs_rule_problem(project: &Path) -> Option<String> {
+    let unreal = std::fs::read_dir(project)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.path().extension().is_some_and(|x| x == "uproject"));
+    if !unreal {
+        return None;
+    }
+    let attributes = project.join(".gitattributes");
+    let text = std::fs::read_to_string(&attributes).unwrap_or_default();
+    let has_rule = text.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next().is_some_and(|p| p.ends_with("*.uasset")) && fields.any(|f| f == "filter=lfs")
+    });
+    if has_rule {
+        return None;
+    }
+    Some(format!(
+        "{} has no Git LFS rule for *.uasset. Run `git lfs track \"*.uasset\" \
+         \"*.umap\" --lockable` and commit .gitattributes; see \
+         skills/ue-build-verify/references/git-lfs.md.",
+        attributes.display()
+    ))
 }
 
 /// `xcodebuild` must be on PATH and past its first launch, or the first build
@@ -388,6 +469,8 @@ mod tests {
             None,
             None,
             None,
+            Path::new("git"),
+            None,
         )
         .into_iter()
         .filter(|p| p.starts_with("xcode "))
@@ -454,9 +537,26 @@ mod tests {
                 .unwrap()
                 .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
         };
-        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None, None, None).is_empty());
+        assert!(requirement_problems(
+            &facts(["Cargo.toml"]),
+            path,
+            None,
+            None,
+            None,
+            Path::new("git"),
+            None
+        )
+        .is_empty());
 
-        let problems = requirement_problems(&facts(["Package.swift"]), path, None, None, None);
+        let problems = requirement_problems(
+            &facts(["Package.swift"]),
+            path,
+            None,
+            None,
+            None,
+            Path::new("git"),
+            None,
+        );
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(
             problems[0].contains("xcodebuild not found"),
@@ -500,6 +600,8 @@ mod tests {
             Some(path.as_os_str()),
             None,
             blender_path,
+            None,
+            Path::new("git"),
             None,
         )
         .into_iter()
@@ -579,8 +681,28 @@ mod tests {
                 .unwrap()
                 .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
         };
-        assert!(requirement_problems(&facts(["Cargo.toml"]), path, None, None, None).is_empty());
-        let problems = requirement_problems(&facts(["ship.blend"]), path, None, None, None);
+        assert!(requirement_problems(
+            &facts(["Cargo.toml"]),
+            path,
+            None,
+            None,
+            None,
+            Path::new("git"),
+            None
+        )
+        .is_empty());
+        let problems: Vec<_> = requirement_problems(
+            &facts(["ship.blend"]),
+            path,
+            None,
+            None,
+            None,
+            Path::new("git"),
+            None,
+        )
+        .into_iter()
+        .filter(|p| p.starts_with("blender "))
+        .collect();
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("blender-artist"), "{}", problems[0]);
     }
@@ -678,6 +800,8 @@ mod tests {
             None,
             None,
             Some(empty.path().join("nope").as_os_str()),
+            Path::new("git"),
+            None,
         );
         let problems: Vec<_> = problems
             .into_iter()
@@ -718,6 +842,154 @@ mod tests {
         assert_eq!(godot_version("warning: x\n5.0.dev1.custom\n"), Some((5, 0)));
         assert_eq!(godot_version("3.6.stable\n"), Some((3, 6)));
         assert_eq!(godot_version("Godot Engine\n"), None);
+    }
+
+    fn roster_requiring_git_lfs() -> Roster {
+        let mut r = Roster::builtin().unwrap();
+        r.insert_for_test(Teammate {
+            name: "lfs-test".into(),
+            brief_description: "LFS".into(),
+            requires: vec![Requirement::GitLfs],
+            ..Teammate::default()
+        });
+        r
+    }
+
+    /// A fake `git` in its own directory: `lfs version` exits with `code`.
+    fn fake_git(code: i32) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("git");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\n[ \"$1 $2\" = 'lfs version' ] || exit 99\n\
+                 echo 'git-lfs/3.7.0'\necho \"git: 'lfs' is not a git command.\" >&2\nexit {code}\n"
+            ),
+        )
+        .unwrap();
+        process::make_executable(&bin).unwrap();
+        dir
+    }
+
+    /// The git-lfs lines for `git` (looked up on `path` when bare) in
+    /// `project`.
+    fn lfs_problems(path: &Path, git: &Path, project: Option<&Path>) -> Vec<String> {
+        requirement_problems(
+            &roster_requiring_git_lfs(),
+            Some(path.as_os_str()),
+            None,
+            None,
+            None,
+            git,
+            project,
+        )
+        .into_iter()
+        .filter(|p| p.starts_with("git-lfs "))
+        .collect()
+    }
+
+    /// U-17: `git lfs version` fails when Git LFS is not installed.
+    #[test]
+    fn missing_git_lfs_is_reported() {
+        let dir = fake_git(1);
+        let problems = lfs_problems(dir.path(), Path::new("git"), None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("lfs-test"), "{}", problems[0]);
+        assert!(
+            problems[0].contains("lfs version` failed"),
+            "{}",
+            problems[0]
+        );
+        assert!(problems[0].contains("not a git command"), "{}", problems[0]);
+        assert!(problems[0].contains("git lfs install"), "{}", problems[0]);
+
+        let fine = fake_git(0);
+        assert!(lfs_problems(fine.path(), Path::new("git"), None).is_empty());
+
+        let empty = tempfile::tempdir().unwrap();
+        let problems = lfs_problems(empty.path(), Path::new("git"), None);
+        assert!(problems[0].contains("git not found"), "{problems:?}");
+    }
+
+    /// U-17: a git path (`HORCH_GIT_BIN`) is run as given, not looked up.
+    #[test]
+    fn git_lfs_uses_the_fleet_git() {
+        let good = fake_git(0);
+        let broken = fake_git(1);
+        let bin = broken.path().join("git");
+        let problems = lfs_problems(good.path(), &bin, None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("lfs version` failed"),
+            "{}",
+            problems[0]
+        );
+
+        let empty = tempfile::tempdir().unwrap();
+        assert!(lfs_problems(empty.path(), &good.path().join("git"), None).is_empty());
+    }
+
+    /// U-17: an Unreal project needs an LFS rule for `*.uasset` in
+    /// `.gitattributes`; any other project does not.
+    #[test]
+    fn an_unreal_project_needs_an_lfs_rule_for_uasset() {
+        let git = fake_git(0);
+        let project = tempfile::tempdir().unwrap();
+        let dir = project.path();
+        let check = || lfs_problems(git.path(), Path::new("git"), Some(dir));
+        assert!(check().is_empty(), "not an Unreal project");
+
+        std::fs::write(dir.join("Game.uproject"), "{}").unwrap();
+        let problems = check();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains(".gitattributes has no Git LFS rule"),
+            "{}",
+            problems[0]
+        );
+        assert!(problems[0].contains("git lfs track"), "{}", problems[0]);
+
+        std::fs::write(
+            dir.join(".gitattributes"),
+            "*.uasset binary\n# *.uasset filter=lfs\n",
+        )
+        .unwrap();
+        assert_eq!(check().len(), 1, "a rule without filter=lfs, or a comment");
+
+        std::fs::write(
+            dir.join(".gitattributes"),
+            "*.umap filter=lfs diff=lfs merge=lfs -text lockable\n\
+             *.uasset filter=lfs diff=lfs merge=lfs -text lockable\n",
+        )
+        .unwrap();
+        assert!(check().is_empty(), "{:?}", check());
+    }
+
+    /// U-17: every builder of the Unreal team needs Git LFS; the reviewer,
+    /// which neither builds nor commits, does not.
+    #[test]
+    fn the_unreal_builders_need_git_lfs() {
+        let empty = tempfile::tempdir().unwrap();
+        let roster = Roster::builtin().unwrap().with_project_facts(
+            horch_core::roster::ProjectFacts::from_names(["Game.uproject"]),
+        );
+        let problems: Vec<_> = requirement_problems(
+            &roster,
+            Some(empty.path().as_os_str()),
+            None,
+            None,
+            None,
+            Path::new("git"),
+            None,
+        )
+        .into_iter()
+        .filter(|p| p.starts_with("git-lfs "))
+        .collect();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        for seat in ["ue-gameplay-engineer", "ue-tech-lead", "blender-artist"] {
+            assert!(problems[0].contains(seat), "{seat}: {}", problems[0]);
+        }
+        assert!(!problems[0].contains("ue-code-reviewer"), "{}", problems[0]);
     }
 
     #[test]

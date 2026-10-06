@@ -8,6 +8,7 @@ model: sonnet
 # Offered only on an Unreal project (roster/offer.rs). `horch spawn` still
 # works anywhere.
 offer_when: ["*.uproject"]
+requires: [git-lfs]
 # No fallback: this teammate builds or runs the editor, and a Codex pane is
 # untested there (network off, workspace-write may block the shared Derived
 # Data Cache; native Windows refuses Codex with skills). When the Claude pool

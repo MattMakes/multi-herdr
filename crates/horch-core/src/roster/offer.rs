@@ -24,6 +24,11 @@ pub enum Requirement {
     /// `GODOT_PATH`, `godot` on PATH, or the macOS app bundle, and
     /// `--version` reports 4.3 or later.
     Godot,
+    /// `git lfs version` runs with the fleet's git (`HORCH_GIT_BIN`, else
+    /// `git` on PATH). In an Unreal project, `.gitattributes` also needs an
+    /// LFS rule for `*.uasset`.
+    #[serde(rename = "git-lfs")]
+    GitLfs,
 }
 
 impl Requirement {
@@ -32,6 +37,7 @@ impl Requirement {
             Requirement::Xcode => "xcode",
             Requirement::Blender => "blender",
             Requirement::Godot => "godot",
+            Requirement::GitLfs => "git-lfs",
         }
     }
 }
@@ -275,14 +281,35 @@ mod tests {
     #[test]
     fn requires_parses_every_host_tool() {
         let text = "---\nname: x\nbrief_description: X\nagent: claude\nmodel: opus\n\
-                    requires: [xcode, blender, godot]\n---\nbody";
+                    requires: [xcode, blender, godot, git-lfs]\n---\nbody";
         let t = super::super::parser::parse_teammate("x", text).unwrap();
         assert_eq!(
             t.requires,
-            [Requirement::Xcode, Requirement::Blender, Requirement::Godot]
+            [
+                Requirement::Xcode,
+                Requirement::Blender,
+                Requirement::Godot,
+                Requirement::GitLfs
+            ]
         );
         let names: Vec<_> = t.requires.iter().map(|r| r.as_str()).collect();
-        assert_eq!(names, ["xcode", "blender", "godot"]);
+        assert_eq!(names, ["xcode", "blender", "godot", "git-lfs"]);
+    }
+
+    /// U-17: the value is `git-lfs`, as `as_str` prints it. The spellings
+    /// serde would derive (`gitlfs`) or a writer might guess are rejected.
+    #[test]
+    fn requires_git_lfs_has_one_spelling() {
+        for wrong in ["gitlfs", "git_lfs", "lfs"] {
+            let text = format!(
+                "---\nname: x\nbrief_description: X\nagent: claude\nmodel: opus\n\
+                 requires: [{wrong}]\n---\nbody"
+            );
+            assert!(
+                super::super::parser::parse_teammate("x", &text).is_err(),
+                "{wrong} parsed"
+            );
+        }
     }
 
     #[test]

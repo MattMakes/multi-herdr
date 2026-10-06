@@ -35,7 +35,9 @@ offer_when: []
 # PATH, with `sudo xcodebuild -runFirstLaunch` done), blender (`blender` on
 # PATH or `BLENDER_PATH`, and `blender --version` runs), godot (`GODOT_PATH`,
 # `godot` on PATH, or /Applications/Godot.app on macOS, and `godot --version`
-# reports 4.3 or later).
+# reports 4.3 or later), git-lfs (`git lfs version` runs with `HORCH_GIT_BIN`
+# or `git` on PATH; in a project with a `*.uproject`, `.gitattributes` also
+# needs a `filter=lfs` rule for `*.uasset`).
 requires: []
 
 # ─── inherited base prompt ───────────────────────────────────────────────────
