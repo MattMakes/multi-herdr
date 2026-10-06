@@ -1,9 +1,8 @@
 //! The agent CLIs a worker can run, and what each one can do.
 //!
-//! [`HarnessKind`] is the enum `teammates::Agent` used to be;
-//! `teammates::Agent` stays as an alias so existing callers compile. What
-//! each harness can do is [`Capabilities`] data, read through
-//! [`HarnessKind::capabilities`].
+//! [`HarnessKind`] names the harness; it replaced `teammates::Agent`, and
+//! no alias remains (`arc_25_no_shim_modules`). What each harness can do is
+//! [`Capabilities`] data, read through [`HarnessKind::capabilities`].
 
 pub mod antigravity;
 pub mod capabilities;
