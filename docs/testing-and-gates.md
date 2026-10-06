@@ -196,8 +196,17 @@ the e2e tests use it to test crash and resume.
 - macOS kills a copied system binary (exit 137). Symlink it instead.
 - `sqlite3` reads an argument that starts with `-` as an option. Feed SQL on
   stdin.
-- Use your own `CARGO_TARGET_DIR` per worktree (the default `target/` inside
-  the worktree is fine). Never share a target dir between worktrees.
+- Use your own `CARGO_TARGET_DIR` per worktree or checkout (the default
+  `target/` inside it is fine). Never share a target dir between checkouts.
+  Warning: a shared target dir can embed the other checkout's `teammates/`
+  and `skills/` without an error. Cargo gives `horch-core` the same build
+  directory in every checkout, and it reruns `crates/horch-core/build.rs`
+  only when a path that the last run named changes. Those paths are in the
+  checkout that ran it last. `rerun-if-env-changed=CARGO_MANIFEST_DIR` does
+  not help: cargo reads that variable from its own environment, where it is
+  not set (reproduced with cargo 1.96 on 2026-10-06). After a build that used
+  another checkout's target dir, run `touch crates/horch-core/build.rs` and
+  build again.
 
 ## Live checks (not in the gate)
 
