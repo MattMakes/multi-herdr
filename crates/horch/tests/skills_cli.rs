@@ -244,6 +244,26 @@ fn mkt_09_legacy_skills_flags_output_unchanged() {
     }
 }
 
+/// U-49: `horch skills show` prints the size-budget reason of a skill that
+/// has one, and no reason line for a skill without one.
+#[test]
+fn skills_show_prints_the_budget_exempt_reason() {
+    let w = World::new();
+    let shown = w.horch(&["skills", "show", "appstore-review"]);
+    let want = "budget:       exempt (adapted copy; the copied SKILL.md keeps its upstream length";
+    assert!(shown.contains(want), "{shown}");
+    let json: Value =
+        serde_json::from_str(&w.horch(&["skills", "show", "appstore-review", "--json"])).unwrap();
+    assert!(
+        json["copied"]["budget_exempt"]
+            .as_str()
+            .unwrap()
+            .starts_with("adapted copy"),
+        "{json}"
+    );
+    assert!(!w.horch(&["skills", "show", "tdd"]).contains("budget:"));
+}
+
 #[test]
 fn mkt_09_cli_list_show_json() {
     let w = World::new();

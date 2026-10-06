@@ -109,6 +109,9 @@ fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
         if c.verbatim {
             output::println("verbatim:     true");
         }
+        if let Some(reason) = &c.budget_exempt {
+            output::println(&format!("budget:       exempt ({})", printable(reason)));
+        }
     }
     output::println(&format!(
         "install path: {}",
