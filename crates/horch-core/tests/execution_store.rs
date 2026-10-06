@@ -1,4 +1,4 @@
-//! The execution store and the ledger facade over it (A6: ARC-17, SKL-04).
+//! The execution store and the `execution::records` ledger over it (A6: ARC-17, SKL-04).
 //!
 //! Old ledgers load, resume and save byte for byte; an old binary reads a
 //! typed state as the right legacy `status`; concurrent writers do not lose
@@ -301,9 +301,9 @@ fn store_dirlock_excludes_concurrent_writers() {
     assert!(!root.join("-p.json.lock").exists(), "the lock is released");
 }
 
-// ─── ledger facade tests that touch the file directly ───────────────────────
+// ─── `execution::records` tests that touch the file directly ────────────────
 //
-// Moved from `ledger.rs` unchanged when it became a facade with no file I/O.
+// Moved from `ledger.rs` unchanged; `execution/records.rs` now holds that code.
 
 #[test]
 fn effort_is_recorded_rendered_and_optional_on_disk() {

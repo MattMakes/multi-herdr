@@ -29,7 +29,7 @@ use crate::routing::quota::QuotaView;
 use crate::skills::{plan_activation, SkillCatalog};
 
 /// The task a worker spawned without one records. The same text as the
-/// ledger facade's placeholder.
+/// placeholder in `execution::records`.
 pub const IDLE_TASK: &str = "(idle - awaiting assignment)";
 
 /// The usage-limit gate's inputs: read by the shell, only for a gated spawn
