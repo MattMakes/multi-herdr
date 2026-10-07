@@ -312,3 +312,4 @@ Input propagates in **reverse scene tree order** (deepest child first, root last
 
 - [references/buffers-combos-and-accessibility.md](references/buffers-combos-and-accessibility.md) — multi-action buffer, timed combos, echo rules, hold-or-toggle setting.
 - [references/injection-replay-conflicts-multitouch.md](references/injection-replay-conflicts-multitouch.md) — injected input, per-tick record and replay, rebind conflict checks, pinch and pan.
+- [references/input-map-text.md](references/input-map-text.md) — the `[input]` section of `project.godot` as text for a headless worker (keys and physical keys), and a headless check with `InputMap.action_get_events()`.
