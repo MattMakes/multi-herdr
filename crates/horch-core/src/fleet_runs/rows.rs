@@ -67,13 +67,23 @@ pub enum WrittenBy {
     Sync,
 }
 
-/// `mh.fleet-run/1.0.0`: the facts of one finished ledger record.
+/// The segment of a run row without one.
+fn first_segment() -> u32 {
+    1
+}
+
+/// `mh.fleet-run/1.0.0`: the facts of one finished segment of a ledger
+/// record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunRow {
     pub schema: String,
     pub record_id: String,
     pub session_id: Option<String>,
     pub role: String,
+    /// 1 for the first run of the record, 1 more for each resume. A row
+    /// written before segments existed reads as 1.
+    #[serde(default = "first_segment")]
+    pub segment: u32,
     /// `worker` or `orchestrator`.
     pub kind: String,
     pub project: String,

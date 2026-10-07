@@ -344,6 +344,7 @@ fn fds_03_run_row_fields() {
         "record_id": "r-1",
         "session_id": SESSION,
         "role": "backend-developer-1",
+        "segment": 2,
         "kind": "worker",
         "project": "/work/proj",
         "project_slug": "-work-proj",
@@ -364,9 +365,9 @@ fn fds_03_run_row_fields() {
         "plan_path": "ai_docs/plans/x.md",
         "plan_digest": "sha256:00",
         "base_sha": "b".repeat(40),
-        "started_at": "2026-10-07T10:00:00Z",
+        "started_at": "2026-10-07T10:40:00Z",
         "finished_at": "2026-10-07T11:00:00Z",
-        "duration_ms": 3_600_000,
+        "duration_ms": 1_200_000,
         "end": {"status": "done", "state": {"state": "done"}, "exit_code": 0},
         "done_summary": "last summary",
         "notes": 2,
@@ -389,6 +390,7 @@ fn fds_03_run_row_fields() {
         "\"record_id\"",
         "\"session_id\"",
         "\"role\"",
+        "\"segment\"",
         "\"kind\"",
         "\"project\"",
         "\"project_slug\"",
@@ -452,6 +454,8 @@ fn fds_03_run_row_fields() {
         now(),
         WrittenBy::Sync,
     );
+    assert_eq!(row.segment, 1);
+    assert_eq!(row.started_at, "2026-10-07T10:00:00Z");
     assert_eq!(row.finished_at, "2026-10-07T11:00:05Z");
     assert_eq!(row.duration_ms, 3_605_000);
     assert_eq!(
@@ -597,6 +601,110 @@ fn fds_05_run_row_idempotent() {
     )
     .unwrap();
     assert_eq!(w.runs()[1].plan_path.as_deref(), Some("ai_docs/plans/x.md"));
+}
+
+/// FDS-05: a record that finishes, is resumed and finishes again gets a
+/// second row: segment 2, started at the resume. A row written before
+/// segments existed counts as segment 1.
+#[test]
+fn fds_05_resumed_record_new_segment() {
+    let w = World::new();
+    let mut v = finished("r-1", "a-1");
+    let o = v.as_object_mut().unwrap();
+    o.insert(
+        "history".into(),
+        json!([
+            {"at": "2026-10-07T10:00:00Z", "event": "spawned", "text": "t"},
+            {"at": "2026-10-07T10:30:00Z", "event": "done", "text": "first summary"}
+        ]),
+    );
+    o.insert("finished_at".into(), json!("2026-10-07T10:30:00Z"));
+    let first = rec(v.clone());
+    let write = |r: &LedgerRecordV1, by| {
+        record_run(&w.paths, &w.project, r, &w.sources(), now(), by).unwrap()
+    };
+    assert!(matches!(
+        write(&first, WrittenBy::Done),
+        RunWrite::Written(_)
+    ));
+
+    let o = v.as_object_mut().unwrap();
+    let history = o["history"].as_array_mut().unwrap();
+    history.push(json!({"at": "2026-10-07T10:40:00Z", "event": "resumed", "text": "more"}));
+    history.push(json!({"at": "2026-10-07T11:00:00Z", "event": "done", "text": "last summary"}));
+    o.insert("role".into(), json!("a-2"));
+    o.insert("finished_at".into(), json!("2026-10-07T11:00:00Z"));
+    let second = rec(v);
+    assert!(matches!(
+        write(&second, WrittenBy::Done),
+        RunWrite::Written(_)
+    ));
+    assert_eq!(write(&second, WrittenBy::Sync), RunWrite::AlreadyRecorded);
+    let report = sync_project(
+        &w.paths,
+        &w.project,
+        &[second],
+        &w.sources(),
+        now(),
+        usize::MAX,
+    )
+    .unwrap();
+    assert_eq!((report.written, report.already), (0, 1));
+
+    let runs = w.runs();
+    let got: Vec<_> = runs
+        .iter()
+        .map(|r| {
+            (
+                r.segment,
+                r.role.as_str(),
+                r.started_at.as_str(),
+                r.duration_ms,
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (1, "a-1", "2026-10-07T10:00:00Z", 1_800_000),
+            (2, "a-2", "2026-10-07T10:40:00Z", 1_200_000),
+        ]
+    );
+
+    // A row without `segment` reads as segment 1.
+    let mut old = serde_json::to_value(&runs[0]).unwrap();
+    old.as_object_mut().unwrap().remove("segment");
+    old["record_id"] = json!("r-old");
+    store::append(&w.paths, FleetFile::Runs, &old).unwrap();
+    assert_eq!(w.runs()[2].segment, 1);
+    let mut legacy = finished("r-old", "o");
+    legacy["history"] = json!([]);
+    assert_eq!(
+        write(&rec(legacy), WrittenBy::Sync),
+        RunWrite::AlreadyRecorded
+    );
+}
+
+/// FDS-23: `horch done` stamps `finished_at` with the done time, also over
+/// a stale one that a resume left.
+#[test]
+fn fds_23_done_stamps_finished_at() {
+    let w = World::new();
+    let ledger = w.ledger();
+    let mut v = finished("r-1", "a-1");
+    let o = v.as_object_mut().unwrap();
+    o.insert("status".into(), json!("working"));
+    o.insert("state".into(), json!({"state": "running"}));
+    o.insert("finished_at".into(), json!("2026-10-07T10:30:00Z"));
+    raw_insert(&ledger, rec(v)).unwrap();
+    ledger.done("r-1", "all done").unwrap();
+    let r = ledger.store().get("r-1").unwrap();
+    let done_at = &r.history.last().unwrap().at;
+    assert_eq!(r.history.last().unwrap().event, "done");
+    assert_eq!(r.finished_at.as_deref(), Some(done_at.as_str()));
+    assert_eq!(&r.updated_at, done_at);
+    assert_ne!(done_at, "2026-10-07T10:30:00Z");
+    assert_eq!(r.status, "done");
 }
 
 /// FDS-07: no transcript gives `tokens: null` and `cost_source: unpriced`.

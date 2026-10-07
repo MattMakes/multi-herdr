@@ -295,11 +295,13 @@ impl Ledger {
         self.append_event(key, "note", text)
     }
 
-    /// Mark a session finished and record its handoff summary.
+    /// Mark a session finished and record its handoff summary. The done
+    /// time is the record's `finished_at` (FDS-23).
     pub fn done(&self, key: &str, summary: &str) -> Result<()> {
         let at = now();
         self.store.update_key(key, |r| {
             r.set_legacy_status(STATUS_DONE);
+            r.finished_at = Some(at.clone());
             r.updated_at = at.clone();
             r.history.push(HistoryEntry {
                 at: at.clone(),

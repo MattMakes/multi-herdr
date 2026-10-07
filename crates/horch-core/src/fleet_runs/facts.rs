@@ -149,6 +149,25 @@ pub fn skip_reason(record: &LedgerRecordV1) -> Option<&'static str> {
     }
 }
 
+/// The history event of a resume (`execution::plan`, `Ledger::resume`).
+const RESUMED: &str = "resumed";
+
+/// The segment of a record (§3.2): 1 for its first run, 1 more for each
+/// resume history event.
+pub fn segment(record: &LedgerRecordV1) -> u32 {
+    1 + record.history.iter().filter(|h| h.event == RESUMED).count() as u32
+}
+
+/// When the record's current segment started: `created_at` for segment 1,
+/// else the time of the last resume history event.
+fn segment_start(record: &LedgerRecordV1) -> &str {
+    record
+        .history
+        .iter()
+        .rfind(|h| h.event == RESUMED)
+        .map_or(record.created_at.as_str(), |h| h.at.as_str())
+}
+
 /// Milliseconds from `start` to `end`; 0 when either does not parse.
 fn duration_ms(start: &str, end: &str) -> i64 {
     match (crate::clock::parse(start), crate::clock::parse(end)) {
@@ -207,12 +226,14 @@ pub fn build_run_row(
         .finished_at
         .clone()
         .unwrap_or_else(|| record.updated_at.clone());
+    let started_at = segment_start(record).to_string();
     let text_or_none = |s: &str| (!s.is_empty()).then(|| s.to_string());
     RunRow {
         schema: RUN_SCHEMA.to_string(),
         record_id: record.record_id.clone(),
         session_id: record.session_id.clone(),
         role: record.role.clone(),
+        segment: segment(record),
         kind: record.kind.clone(),
         project: project_text.clone(),
         project_slug: slug(&project_text),
@@ -240,8 +261,8 @@ pub fn build_run_row(
         plan_path: start.and_then(|s| s.plan_path.clone()),
         plan_digest: start.and_then(|s| s.plan_digest.clone()),
         base_sha: start.and_then(|s| s.base_sha.clone()),
-        started_at: record.created_at.clone(),
-        duration_ms: duration_ms(&record.created_at, &finished_at),
+        duration_ms: duration_ms(&started_at, &finished_at),
+        started_at,
         finished_at,
         end: RunEnd {
             status: record.status.clone(),
@@ -257,7 +278,7 @@ pub fn build_run_row(
             .rfind(|h| h.event == "done")
             .map(|h| h.text.clone()),
         notes: record.history.iter().filter(|h| h.event == "note").count() as u32,
-        resumed: record.history.iter().any(|h| h.event == "resumed"),
+        resumed: record.history.iter().any(|h| h.event == RESUMED),
         tokens,
         cost_microusd,
         cost_source,
@@ -280,29 +301,43 @@ pub fn latest_starts(paths: &DatasetPaths) -> Result<std::collections::BTreeMap<
         .collect())
 }
 
-/// The record ids that have a run row.
-pub fn run_ids(paths: &DatasetPaths) -> Result<BTreeSet<String>> {
+/// The key of a run row: its record and segment.
+pub type RunKey = (String, u32);
+
+/// The `(record_id, segment)` pairs that have a run row. A row without a
+/// `segment` is segment 1.
+pub fn run_ids(paths: &DatasetPaths) -> Result<BTreeSet<RunKey>> {
     Ok(
         store::read_rows::<serde_json::Value>(paths, FleetFile::Runs)?
             .rows
             .into_iter()
-            .filter_map(|v| v.get("record_id")?.as_str().map(str::to_owned))
+            .filter_map(|v| {
+                let id = v.get("record_id")?.as_str()?.to_owned();
+                let segment = v.get("segment").and_then(|s| s.as_u64()).unwrap_or(1);
+                Some((id, u32::try_from(segment).ok()?))
+            })
             .collect(),
     )
+}
+
+/// The run key of a record's current segment.
+pub fn run_key(record: &LedgerRecordV1) -> RunKey {
+    (record.record_id.clone(), segment(record))
 }
 
 /// What [`record_run`] did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunWrite {
     Written(Box<RunRow>),
-    /// `runs.jsonl` already has a row for the record. Nothing was written.
+    /// `runs.jsonl` already has a row for the record's segment. Nothing
+    /// was written.
     AlreadyRecorded,
     /// The record gets no row; the reason says why.
     Skipped(&'static str),
 }
 
-/// Write the run row of `record`, once per `record_id`: the check runs
-/// under the fleet lock.
+/// Write the run row of `record`, once per `(record_id, segment)`: the
+/// check runs under the fleet lock.
 pub fn record_run(
     paths: &DatasetPaths,
     project: &Path,
@@ -314,14 +349,15 @@ pub fn record_run(
     if let Some(reason) = skip_reason(record) {
         return Ok(RunWrite::Skipped(reason));
     }
+    let key = run_key(record);
     // Cheap check first: the transcript is read only for a new row.
-    if run_ids(paths)?.contains(&record.record_id) {
+    if run_ids(paths)?.contains(&key) {
         return Ok(RunWrite::AlreadyRecorded);
     }
     let start = latest_starts(paths)?.remove(&record.record_id);
     let row = build_run_row(record, start.as_ref(), sources, project, now, written_by);
     let _guard = store::lock(paths)?;
-    if run_ids(paths)?.contains(&record.record_id) {
+    if run_ids(paths)?.contains(&key) {
         return Ok(RunWrite::AlreadyRecorded);
     }
     store::append_locked(paths, FleetFile::Runs, &row)?;

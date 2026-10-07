@@ -16,7 +16,9 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 
 use crate::execution::legacy::LedgerRecordV1;
-use crate::fleet_runs::facts::{build_run_row, latest_starts, run_ids, skip_reason, RunSources};
+use crate::fleet_runs::facts::{
+    build_run_row, latest_starts, run_ids, run_key, skip_reason, RunSources,
+};
 use crate::fleet_runs::rows::WrittenBy;
 use crate::fleet_runs::store::{self, FleetFile};
 use crate::measure::paths::DatasetPaths;
@@ -45,8 +47,8 @@ impl SyncReport {
     }
 }
 
-/// Write a `sync` run row for every finished record of `records` that has
-/// none, at most `max_new` of them, oldest first. Candidate, judge and
+/// Write a `sync` run row for every finished record of `records` whose
+/// current segment has none, at most `max_new` of them, oldest first. Candidate, judge and
 /// unfinished records are skipped and counted.
 pub fn sync_project(
     paths: &DatasetPaths,
@@ -62,7 +64,7 @@ pub fn sync_project(
     for record in records {
         if let Some(reason) = skip_reason(record) {
             *report.skipped.entry(reason).or_default() += 1;
-        } else if have.contains(&record.record_id) {
+        } else if have.contains(&run_key(record)) {
             report.already += 1;
         } else {
             pending.push(record);
@@ -86,7 +88,7 @@ pub fn sync_project(
     let _guard = store::lock(paths)?;
     let mut have = run_ids(paths)?;
     for row in rows {
-        if !have.insert(row.record_id.clone()) {
+        if !have.insert((row.record_id.clone(), row.segment)) {
             report.already += 1;
             continue;
         }
