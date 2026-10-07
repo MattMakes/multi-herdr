@@ -22,10 +22,15 @@ CLASSES = FIXTURE / "classes"
 
 
 def run(*args):
+    code, out, _ = run_err(*args)
+    return code, out
+
+
+def run_err(*args):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = api_check.main([str(a) for a in args])
-    return code, out.getvalue()
+    return code, out.getvalue(), err.getvalue()
 
 
 class ApiCheckTest(unittest.TestCase):
@@ -124,6 +129,50 @@ class ApiCheckTest(unittest.TestCase):
             self.assertEqual(api.deprecation("Node", "add_child"), "Gone.")
             self.assertEqual(api.deprecation("Node", "old_make_things"), "Use [method add_child] instead.")
             self.assertIsNone(api.deprecation("Node", "is_inside_tree"))
+
+    def test_auto_mode_uses_the_pinned_deprecations_of_the_version(self):
+        # U-59: the marks come from deprecated-<version>.json, not from a host cache.
+        with tempfile.TemporaryDirectory() as tmp:
+            dump = Path(tmp) / "dump"
+            shutil.copytree(DOCTOOL, dump)
+            (dump / "deprecated.json").write_text(json.dumps({"Node": {"is_inside_tree": "Stale."}}))
+            pinned = Path(tmp) / "deprecated-9.9.9.json"
+            pinned.write_text(json.dumps({"Node": {"add_child": "Gone."}}))
+            md = Path(tmp) / "use.md"
+            md.write_text("```gdscript\nNode.add_child(x)\nNode.is_inside_tree()\n```\n")
+            with mock.patch.object(api_check, "find_godot", return_value="godot"), \
+                    mock.patch.object(api_check, "godot_version", return_value="9.9.9"), \
+                    mock.patch.object(api_check, "ensure_doctool", return_value=dump), \
+                    mock.patch.object(api_check, "pinned_deprecations", return_value=pinned):
+                code, out = run(md)
+            self.assertEqual(code, 1)
+            # The scratch dump's sidecar is ignored: only the pinned file counts.
+            self.assertEqual(out, f"{md}:2: deprecated Node.add_child (Gone.)\n")
+
+    def test_auto_mode_without_pinned_deprecations_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(api_check, "find_godot", return_value="godot"), \
+                    mock.patch.object(api_check, "godot_version", return_value="9.9.9"), \
+                    mock.patch.object(api_check, "pinned_deprecations", return_value=Path(tmp) / "none.json"):
+                code, _, err = run_err(CONTENT)
+        self.assertEqual(code, 2)
+        self.assertIn("no deprecation data for Godot 9.9.9", err)
+
+    def test_a_dump_with_no_marks_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            classes = Path(tmp) / "doc" / "classes"
+            classes.mkdir(parents=True)
+            (classes / "Object.xml").write_text('<class name="Object"><methods/></class>')
+            code, _, err = run_err("--doctool", tmp, CONTENT / "good.md")
+        self.assertEqual(code, 2)
+        self.assertIn("no deprecation marks", err)
+
+    def test_pinned_deprecations_for_4_7_2_are_committed(self):
+        path = api_check.pinned_deprecations("4.7.2")
+        self.assertEqual(path.name, "deprecated-4.7.2.json")
+        marks = json.loads(path.read_text())
+        self.assertGreater(sum(len(v) for v in marks.values()), 400)
+        self.assertIn("NOTIFICATION_MOVED_IN_PARENT", marks["Node"])
 
     def test_snake(self):
         self.assertEqual(api_check.snake("IsActionPressed"), "is_action_pressed")

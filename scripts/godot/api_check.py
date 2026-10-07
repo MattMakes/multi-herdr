@@ -2,7 +2,8 @@
 """Check that every `Class.member` an engine class is used with exists in Godot.
 
 Usage:
-    scripts/godot/api_check.py [--doctool DIR] <paths...>
+    scripts/godot/api_check.py [--doctool DIR] [--strict-own COPIED] <paths...>
+    scripts/godot/api_check.py --pin-deprecations
 
 Scans `.gd` files and the ```gdscript / ```gd / ```csharp / ```cs code blocks
 of `.md` files (a directory is searched for both). For each `Class.name` where
@@ -29,13 +30,18 @@ each allowed in the skills it names.
 Deprecated engine names are reported as `file:line: deprecated Name (message)`:
 a `Class.member` use, a bare deprecated class, and a call `.some_method(` on
 any value when every class with that method marks it deprecated (only names
-with an underscore: `.resolve(` on a project object is not an engine call). The marks come from
-`deprecated="..."` in the dump XML and from `deprecated.json` next to it
-(`{"Class": {"": class message, "member": message}}`). The script writes
-`deprecated.json` from the editor's doc cache (`editor_doc_cache-<x.y>.res`,
-which the editor writes to the user cache directory) because the
-`--doctool` dump from a release binary has no deprecation marks. With no
-marks it prints "deprecated: no data" on stderr and checks the rest.
+with an underscore: `.resolve(` on a project object is not an engine call).
+The `--doctool` dump from a release binary has no deprecation marks, so the
+marks for each Godot version are committed next to this script as
+`deprecated-<version>.json` (`{"Class": {"": class message, "member":
+message}}`), and every host gets the same answer. Without `--doctool` the
+script uses the file for the version of the Godot it finds. A version with no
+file fails the run (exit 2); `--pin-deprecations` writes the file: a headless
+editor run, with its home in `.worktrees/_scratch`, writes the editor doc
+cache (`editor_doc_cache-<x.y>.res`, from the class reference built into the
+editor), and a script reads the marks out of it. With `--doctool` the marks
+come from `deprecated="..."` in the dump XML and from `deprecated.json` next
+to it; a dump with no marks fails the run (exit 2).
 
 With `--strict-own skills/copied.json`, a deprecated name in a file that
 copied.json lists as copied does not print and does not fail the run by
@@ -131,7 +137,7 @@ class Api:
         self.deprecated = deprecated or {}
 
     @classmethod
-    def load(cls, doctool: Path) -> "Api":
+    def load(cls, doctool: Path, sidecar: bool = True) -> "Api":
         classes: dict[str, EngineClass] = {}
 
         def get(name: str) -> EngineClass:
@@ -174,11 +180,16 @@ class Api:
                             c.names.add(enum_name)
         if not classes:
             raise SystemExit(f"api_check.py: no class XML under {doctool}")
-        sidecar = doctool / "deprecated.json"
-        if sidecar.is_file():
-            for cname, members in json.loads(sidecar.read_text()).items():
-                deprecated.setdefault(cname, {}).update(members)
-        return cls(classes, deprecated)
+        api = cls(classes, deprecated)
+        if sidecar:
+            api.add_deprecations(doctool / "deprecated.json")
+        return api
+
+    def add_deprecations(self, path: Path) -> None:
+        """Merge a `{"Class": {"member": message}}` file, when there is one."""
+        if path.is_file():
+            for cname, members in json.loads(path.read_text()).items():
+                self.deprecated.setdefault(cname, {}).update(members)
 
     def deprecation(self, cls_name: str, member: str) -> str | None:
         """The message when `member` is deprecated where `cls_name` gets it."""
@@ -462,41 +473,50 @@ func _init():
 """
 
 
-def doc_cache_paths(version: str) -> list[Path]:
-    """Where the editor keeps its doc cache (the user cache directory, real home on macOS)."""
+def pinned_deprecations(version: str) -> Path:
+    return Path(__file__).resolve().parent / f"deprecated-{version}.json"
+
+
+def pin_deprecations(godot: str, version: str, out: Path) -> int:
+    """Write the deprecation marks of `godot` to `out`; return the count of marks.
+
+    A headless editor run writes the doc cache to the user cache directory.
+    HOME and the XDG and Windows directories point into a scratch directory,
+    so the run does not touch the real ones.
+    """
     minor = ".".join(version.split(".")[:2])
-    name = f"editor_doc_cache-{minor}.res"
-    home = Path.home()
-    out = [home / "Library" / "Caches" / "Godot" / name]
-    if os.environ.get("XDG_CACHE_HOME"):
-        out.append(Path(os.environ["XDG_CACHE_HOME"]) / "godot" / name)
-    out.append(home / ".cache" / "godot" / name)
-    if os.environ.get("LOCALAPPDATA"):
-        out.append(Path(os.environ["LOCALAPPDATA"]) / "Godot" / name)
-    return out
-
-
-def write_deprecations(godot: str, version: str, dump: Path) -> None:
-    """Write dump/deprecated.json from the editor doc cache, when there is one."""
-    cache = next((p for p in doc_cache_paths(version) if p.is_file()), None)
-    if cache is None:
-        return
-    with tempfile.TemporaryDirectory(prefix="doc-cache-", dir=dump.parent) as tmp:
-        project = Path(tmp)
+    scratch = REPO / ".worktrees" / "_scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="godot-doccache-", dir=scratch) as tmp:
+        root = Path(tmp)
+        home, project = root / "home", root / "project"
+        home.mkdir()
+        project.mkdir()
         (project / "project.godot").write_text('[application]\nconfig/name="doc-cache"\n')
+        env = dict(os.environ, HOME=str(home), XDG_CACHE_HOME=str(home / "cache"),
+                   XDG_DATA_HOME=str(home / "data"), XDG_CONFIG_HOME=str(home / "config"),
+                   LOCALAPPDATA=str(home / "local"), APPDATA=str(home / "roaming"))
+        subprocess.run(
+            [godot, "--headless", "--editor", "--path", str(project), "--quit-after", "1200"],
+            env=env, capture_output=True, timeout=600, check=False,
+        )
+        cache = next(home.rglob(f"editor_doc_cache-{minor}.res"), None)
+        if cache is None:
+            raise SystemExit(f"api_check.py: the editor wrote no editor_doc_cache-{minor}.res under {home}")
         shutil.copyfile(cache, project / "doc_cache.res")
         (project / "dump.gd").write_text(DOC_CACHE_SCRIPT)
-        try:
-            subprocess.run(
-                [godot, "--headless", "--path", str(project), "-s", "dump.gd"],
-                capture_output=True, timeout=300, check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return
-        out = project / "deprecated.json"
-        if out.is_file():
-            json.loads(out.read_text())
-            shutil.copyfile(out, dump / "deprecated.json")
+        subprocess.run(
+            [godot, "--headless", "--path", str(project), "-s", "dump.gd"],
+            env=env, capture_output=True, timeout=300, check=False,
+        )
+        marks = json.loads((project / "deprecated.json").read_text())
+    # One class per line, so a new Godot version diffs by class.
+    lines = [
+        f"{json.dumps(c)}:{json.dumps(marks[c], sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
+        for c in sorted(marks)
+    ]
+    out.write_text("{\n" + ",\n".join(lines) + "\n}\n", encoding="utf-8")
+    return sum(len(v) for v in marks.values())
 
 
 def ensure_doctool(godot: str) -> Path:
@@ -506,8 +526,6 @@ def ensure_doctool(godot: str) -> Path:
     if not any(dump.glob("doc/classes/*.xml")):
         dump.mkdir(parents=True, exist_ok=True)
         subprocess.run([godot, "--headless", "--doctool", "."], cwd=dump, capture_output=True, check=True)
-    if not (dump / "deprecated.json").is_file():
-        write_deprecations(godot, version, dump)
     return dump
 
 
@@ -521,22 +539,45 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--baseline", type=Path, default=copied_ratchet.BASELINE, help="the copied-failure baseline")
     ap.add_argument("--update-baseline", action="store_true", help="write the copied counts to --baseline")
-    ap.add_argument("paths", nargs="+", type=Path)
+    ap.add_argument(
+        "--pin-deprecations", action="store_true",
+        help="write deprecated-<version>.json for the Godot found, then exit",
+    )
+    ap.add_argument("paths", nargs="*", type=Path)
     args = ap.parse_args(argv)
+    if not args.paths and not args.pin_deprecations:
+        ap.error("the following arguments are required: paths")
 
     doctool = args.doctool
+    pinned = None
     if doctool is None:
         godot = find_godot()
         if godot is None:
             print("skipped: no Godot")
             return 0
+        version = godot_version(godot)
+        pinned = pinned_deprecations(version)
+        if args.pin_deprecations:
+            n = pin_deprecations(godot, version, pinned)
+            print(f"api_check: wrote {n} deprecation marks to {pinned}")
+            return 0
+        if not pinned.is_file():
+            print(
+                f"api_check.py: no deprecation data for Godot {version}: run "
+                f"scripts/godot/api_check.py --pin-deprecations and commit {pinned.name}",
+                file=sys.stderr,
+            )
+            return 2
         doctool = ensure_doctool(godot)
     if not doctool.is_dir():
         print(f"api_check.py: no doctool dump at {doctool}", file=sys.stderr)
         return 2
-    api = Api.load(doctool)
+    api = Api.load(doctool, sidecar=pinned is None)
+    if pinned is not None:
+        api.add_deprecations(pinned)
     if not api.deprecated:
-        print("deprecated: no data", file=sys.stderr)
+        print(f"api_check.py: no deprecation marks in {doctool}", file=sys.stderr)
+        return 2
     copied = copied_ratchet.copied_skills(args.strict_own) if args.strict_own else {}
 
     files = files_under(args.paths)
