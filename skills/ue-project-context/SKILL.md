@@ -49,6 +49,7 @@ A partial scan is still worth writing. Engine version, module list and plugin li
 | `Config/DefaultInput.ini` | `[/Script/Engine.InputSettings]` — `DefaultPlayerInputClass` / `DefaultInputComponentClass` (`/Script/EnhancedInput.EnhancedPlayerInput` / `EnhancedInputComponent` means Enhanced Input is live; `InputSettings.h:219,223`), leftover legacy `ActionMappings`/`AxisMappings`; `[/Script/EnhancedInput.EnhancedInputDeveloperSettings]` for Enhanced Input project settings |
 | `Config/DefaultGameplayTags.ini` | `[/Script/GameplayTags.GameplayTagsSettings]` — `GameplayTagList`, `GameplayTagTableList`, `ImportTagsFromConfig` |
 | `Plugins/*/*.uplugin` | In-house plugin names, their `Modules[]` and their `Plugins[]` dependencies |
+| `.gitattributes`, `.lfsconfig`, `.p4config`/`.p4ignore`, `.plastic/` | Source control: `.git/` means Git, `.p4config` or `.p4ignore` means Perforce, `.plastic/` means Plastic SCM. For Git, the `.gitattributes` lines with `filter=lfs` give the LFS patterns; `lockable` on a pattern means Git LFS locks are in use. `git check-attr filter lockable -- <one .uasset>` proves it for a real asset; `git lfs env` shows whether Git LFS is installed; `git config lfs.setlockablereadonly` (`false` means lockable files stay writable). A Git project with no `filter=lfs` line for `*.uasset` and `*.umap` has no LFS: record that, do not add it |
 | `Source/*/Public/**` (spot-check 3–5 headers) | Naming prefixes in practice, `TObjectPtr` versus raw pointers, API macro style (`MYGAME_API` on each declaration, or a per-header `#define UE_API MYGAME_API`), `DEFINE_LOG_CATEGORY` names, `check`/`ensure` usage |
 
 Also grep `Config/Default*.ini` for every other `[/Script/...]` section the project has customised — those sections name the systems the team actually configures.
@@ -81,7 +82,7 @@ Send **one** `QUESTION:` to the orchestrator (`horch tell orchestrator "[<role>]
 2. **Gameplay framework class names** — GameMode, GameState, PlayerController, PlayerState, Pawn/Character, GameInstance. Request the class name, not whether one exists.
 3. **Networking model** — listen or dedicated server, classic replication or `Iris`, push model on or off, `ReplicationGraph` in use.
 4. **Save system, streaming model, AI stack** — only the parts the files did not already prove.
-5. **Team and source control** — skip entirely for a solo developer.
+5. **Team and source control** — the asset-lock policy, and, for a Git project with no LFS rules, whether the team wants the recommended `.gitattributes`. Skip team size and roles for a solo developer; still record the Git LFS state from the files.
 
 If the orchestrator answers, fill those fields and keep the rest. If it does not answer, `[unknown]` and "not yet established" are valid final answers. A field the team has not decided is more useful written down as undecided than filled with a plausible invention. Never guess.
 
@@ -124,7 +125,9 @@ Use this only when there is no `Source/` tree to scan (Blueprint-only project, o
 
 **Build.** Which target types ship. Custom preprocessor defines. Third-party libraries and how they are integrated. Platform-specific code paths. Engine fork or modifications.
 
-**Team.** Size and roles. Source control (Perforce, Git, Plastic). Branching and asset-lock policy. Review bar. Documentation home.
+**Team.** Size and roles. Source control (Perforce, Git, Plastic). For Git: Git LFS or no LFS, the LFS patterns, and whether `.uasset`/`.umap` are `lockable`. Asset-lock policy: who may lock an asset and when (for a fleet, the orchestrator assigns each asset), and who may unlock. Branching. Review bar. Documentation home.
+
+Record what the files prove and nothing more. A Git project without LFS rules gets `**Git LFS:** none` and an entry in the Step 2 question that recommends the `.gitattributes` in `ue-build-verify` `references/git-lfs.md`. Do not edit `.gitattributes` from this skill. A Perforce or Plastic project gets `**Git LFS:** n/a` and its own lock policy (for example exclusive checkout).
 
 ## Document template
 
@@ -221,6 +224,8 @@ Write `.agents/ue-project-context.md` in this shape. Drop any section the projec
 ## Team
 **Size & roles:** [N engineers, N designers, N artists]
 **Source control:** [Perforce / Git / Plastic] · **Branching:** [strategy]
+**Git LFS:** [none / n/a (not Git) / installed: patterns [*.uasset, *.umap, ...], lockable: [yes / no], lfs.setlockablereadonly: [true / false]]
+**Asset-lock policy:** [who locks which assets and when / orchestrator assigns each asset / exclusive checkout (Perforce) / none]
 **Review bar:** [description] · **Docs:** [where]
 ```
 
