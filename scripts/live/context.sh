@@ -44,6 +44,7 @@ ROWS=$S/results/$STAMP-rows.md
 : > "$OUT"; : > "$ROWS"
 fails=0
 NO_RECORD=0
+PRIME_LOCAL=0 # part C: the Prime model runs on this machine (ollama), no cost
 P= # the fleet project of part B or C
 claude_() { env -u ANTHROPIC_API_KEY claude "$@" </dev/null; }
 CV=$(claude_ --version 2>/dev/null || echo none)
@@ -64,14 +65,25 @@ claim_of() {
     B3|B4) echo 'CTX-18: orchestrator self-compaction' ;;
     B5) echo 'CTX-26: `horch note` under 0.5 s in a pane' ;;
     B6) echo 'CTX-16.1: the fresh route for a pi worker' ;;
+    C1) echo 'the versions and models part C ran on' ;;
+    C2) echo 'CTX-02, CTX-17: the slice-2 readers give the harness own number (`telemetry/context.rs`)' ;;
+    C3) echo 'CTX-20: the compact-instructions block survives a pi or Prime compaction (`teammates/_base/fleet-worker.md`)' ;;
+    C4) echo 'CTX-05: the Prime pane agent dir turns autoRefine off and sets the fleet window (`harness/prime.rs`)' ;;
+    C5) echo 'CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip' ;;
     *) echo '-' ;;
   esac
 }
 # 1 row of the dated result table: <result> <step> <evidence>.
 row() {
   local ver ev=${3:-}
-  case $2 in *codex*|A4*) ver=$XV ;; A7*|B*) ver="horch $("$HORCH_BIN" --version 2>/dev/null | awk '{print $2}')" ;; *) ver="claude $CV" ;; esac
+  case $2 in
+    C*opencode*) ver="opencode $(opencode --version 2>/dev/null || echo none)" ;;
+    C*prime*) ver="prime-agent $(prime-agent --version 2>&1 || echo none)" ;;
+    C*pi*) ver="pi $(pi --version 2>/dev/null || echo none)" ;;
+    C*) ver="horch $("$HORCH_BIN" --version 2>/dev/null | awk '{print $2}')" ;;
+    *codex*|A4*) ver=$XV ;; A7*|B*) ver="horch $("$HORCH_BIN" --version 2>/dev/null | awk '{print $2}')" ;; *) ver="claude $CV" ;; esac
   case $2 in A3*|A5*|A6*|A8*) [ "$1" = SKIP ] || ev="$ev (paid: 1 short session)" ;; esac
+  case $2 in "C2 prime"*|"C3 prime"*) [ "$1" = SKIP ] || [ "$PRIME_LOCAL" = 1 ] || ev="$ev (paid: 1 short session)" ;; esac
   printf '| %s | %s | %s | %s | %s |\n' "$2" "$(claim_of "$2")" "$ver" "$1" "${ev//|//}" >> "$ROWS"
 }
 # Each result line goes to stdout and to the log, and is 1 table row.
@@ -104,9 +116,10 @@ section() { # <part letter>: append the dated result table of the part to $DOC
 
 # The newest record of <role> in the ledger of <project>: the newest
 # updated_at among the records of the role, not the last one in JSON order
-# (an old record of the same role stays in the ledger).
+# (an old record of the same role stays in the ledger). HORCH_PROJECT_DIR is
+# set too: in a fleet pane it names the pane's project, not <project>.
 record_of() { # <project> <role> -> 1 JSON line, or nothing
-  (cd "$1" && horch sessions --json) | jq -c --arg r "$2" \
+  (cd "$1" && HORCH_PROJECT_DIR=$1 horch sessions --json) | jq -c --arg r "$2" \
     '[.[] | select(.role == $r)] | max_by(.updated_at // .created_at // "") // empty'
 }
 events_of() { # <project> <role> <event> -> the texts, newest last
@@ -377,15 +390,19 @@ SH
 # the step is SKIP (record the result by hand in docs/live-checks/context.md).
 # round_trip <step> <role> checks 1 compaction round trip in the ledger of $P.
 round_trip() {
-  local req ready done_
+  local req start=compact-requested ready done_
   has_record "$1" "$P" "$2" || return 0
-  req=$(events_of "$P" "$2" compact-requested | tail -1); ready=$(events_of "$P" "$2" note | grep -c '^handoff: ' || true)
+  # A round trip starts with a request, or with the horch note warning: a
+  # warned worker writes its handoff without --request.
+  req=$(events_of "$P" "$2" compact-requested | tail -1)
+  [ -n "$req" ] || { start=context-warned; req=$(events_of "$P" "$2" context-warned | tail -1); }
+  ready=$(events_of "$P" "$2" note | grep -c '^handoff: ' || true)
   done_=$(events_of "$P" "$2" compacted | tail -1)
   local pre post; pre=$(sed -nE 's/^([0-9]+) -> .*/\1/p' <<<"$done_"); post=$(sed -nE 's/^[0-9]+ -> ([0-9]+) .*/\1/p' <<<"$done_")
-  if [ -z "$req" ]; then fail "$1" "$2 has no compact-requested event"
+  if [ -z "$req" ]; then fail "$1" "$2 has no compact-requested or context-warned event"
   elif [ "$ready" -lt 1 ]; then fail "$1" "$2 has no 'handoff: <path>' note"
   elif [ -z "$pre" ] || [ -z "$post" ] || [ "$post" -ge "$pre" ]; then fail "$1" "$2 compacted event '${done_}': want <pre> -> <post> with post < pre"
-  else pass "$1" "$2: compact-requested ($req), handoff note, compacted '$done_'"; fi
+  else pass "$1" "$2: $start ($req), handoff note, compacted '$done_'"; fi
 }
 part_b() {
   need horch B0 || return
@@ -468,18 +485,19 @@ part_c() {
   local PIM PRM OCM
   PIM=${LIVE_CONTEXT_PI_MODEL:-$(model_of pi)}; PRM=${LIVE_CONTEXT_PRIME_MODEL:-$(model_of prime)}
   OCM=${LIVE_CONTEXT_OPENCODE_MODEL:-$(model_of opencode-pickle)}
+  case $PRM in ollama/*) PRIME_LOCAL=1 ;; esac
 
   # ---- C1 versions --------------------------------------------------------------------
   local v have_pi=0 have_prime=0 have_oc=0
-  v="pi $(pi --version 2>/dev/null || echo none), prime-agent $(prime-agent --version 2>/dev/null || echo none), opencode $(opencode --version 2>/dev/null || echo none), herdr $(herdr --version 2>/dev/null | awk '{print $2}' || echo none), sqlite3 $(sqlite3 --version 2>/dev/null | awk '{print $1}' || echo none)"
+  v="pi $(pi --version 2>/dev/null || echo none), prime-agent $(prime-agent --version 2>&1 || echo none), opencode $(opencode --version 2>/dev/null || echo none), herdr $(herdr --version 2>/dev/null | awk '{print $2}' || echo none), sqlite3 $(sqlite3 --version 2>/dev/null | awk '{print $1}' || echo none)"
   command -v pi >/dev/null 2>&1 && have_pi=1
   command -v opencode >/dev/null 2>&1 && command -v sqlite3 >/dev/null 2>&1 && have_oc=1
   # Prime lists only the models it can serve; a provider it is not signed in to has none.
   if command -v prime-agent >/dev/null 2>&1; then
-    prime-agent model list "${PRM#*/}" 2>/dev/null | awk -v p="${PRM%%/*}" -v m="${PRM#*/}" '$1 == p && $2 == m' | grep -q . && have_prime=1
+    prime-agent model list "${PRM#*/}" 2>&1 | awk -v p="${PRM%%/*}" -v m="${PRM#*/}" '$1 == p && $2 == m' | grep -q . && have_prime=1
   fi
   pass "C1 versions" "$v; models pi $PIM, prime $PRM, opencode $OCM"
-  [ "$have_prime" = 1 ] || info "prime-agent model list has no $PRM: sign Prime in to ${PRM%%/*}, or set LIVE_CONTEXT_PRIME_MODEL (e.g. ollama/qwen3.8)"
+  [ "$have_prime" = 1 ] || info "prime-agent model list has no $PRM: Prime with a ${PRM%%/*} login is an operator step; set LIVE_CONTEXT_PRIME_MODEL to a listed model (e.g. ollama/qwen3.8)"
 
   # A scratch agent dir: links to the operator's entries, and a settings.json
   # that compacts all but the last token (keepRecentTokens 1) so 2 short turns
@@ -546,7 +564,7 @@ JSON
   if [ "$have_pi" = 1 ]; then reader "C2 pi reader" c2-pi "$( [ -n "$pif" ] && own_pi "$pif")" "the session's newest totalTokens"
   else skip "C2 pi reader" "pi is not installed"; fi
   if [ "$have_prime" = 1 ]; then reader "C2 prime reader" c2-prime "$( [ -n "$prf" ] && own_pi "$prf")" "the session's newest totalTokens"
-  else skip "C2 prime reader" "prime-agent has no $PRM (or is not installed)"; fi
+  else skip "C2 prime reader" "prime-agent model list has no $PRM: Prime with a ${PRM%%/*} login is an operator step"; fi
   if [ "$have_oc" = 1 ]; then
     reader "C2 opencode reader" c2-opencode "$(jq -r 'select(.type == "step_finish") | .part.tokens.total' "$c/opencode.jsonl" 2>/dev/null | tail -1)" \
       "opencode run's newest step_finish total"
@@ -608,6 +626,7 @@ PY
 # after step 2 of a C5 procedure, so the busy status is still there.
 part_c5() {
   local PRM=${LIVE_CONTEXT_PRIME_MODEL:-$(model_of prime)}
+  P=${LIVE_CONTEXT_PROJECT:-$S/fleet}
   # ---- C4 prime agent dir (design 6.9) ---------------------------------------------------
   # A pane's own agent dir: <state>/prime/<role>-<uuid>/agent, in the pane's
   # PRIME_AGENT_CODING_AGENT_DIR. It must turn autoRefine off and give the
@@ -622,20 +641,38 @@ part_c5() {
   else
     local ar win
     ar=$(jq -c '.autoRefine // "unset"' "$pdir/settings.json" 2>/dev/null || echo missing)
-    win=$(PRIME_AGENT_CODING_AGENT_DIR=$pdir prime-agent model list "${PRM#*/}" 2>/dev/null \
+    win=$(PRIME_AGENT_CODING_AGENT_DIR=$pdir prime-agent model list "${PRM#*/}" 2>&1 \
       | awk -v p="${PRM%%/*}" -v m="${PRM#*/}" '$1 == p && $2 == m { print $3 }' | head -1 || true)
     [ "$ar" = '{"enabled":false}' ] && pass "C4 prime autoRefine off" "$pdir/settings.json has autoRefine $ar" \
       || fail "C4 prime autoRefine off" "$pdir/settings.json has autoRefine $ar"
-    [ "$(kilo "${win:-x}" 2>/dev/null || echo x)" = 200000 ] && pass "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context $win" \
-      || fail "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context '${win:-no row}', want 200K"
+    # The window horch decided for the pane: 200,000 fleet (prime.md
+    # compact_window) unless the operator's Prime files set one. Prime
+    # prints 1 decimal of thousands (262.1K), so the check allows 100.
+    local want wsrc got
+    if [ -n "${LIVE_CONTEXT_C5_PRIME_ROLE:-}" ] && [ -n "$P" ]; then
+      want=$(record_of "$P" "$LIVE_CONTEXT_C5_PRIME_ROLE" | jq -r '.compact_window.tokens // empty')
+      wsrc=$(record_of "$P" "$LIVE_CONTEXT_C5_PRIME_ROLE" | jq -r '.compact_window.source // empty')
+    fi
+    want=${want:-200000}; wsrc=${wsrc:-fleet}
+    got=$(kilo "${win:-x}" 2>/dev/null || echo 0)
+    [ $(( got > want ? got - want : want - got )) -le 100 ] && pass "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context $win; horch decided $want $wsrc" \
+      || fail "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context '${win:-no row}'; horch decided $want $wsrc"
   fi
 
   # ---- C5 panes (installed horch, a herdr server, the scratch fleet) --------------------
   need horch C5 || return 0
   need herdr C5 || return 0
-  P=${LIVE_CONTEXT_PROJECT:-$S/fleet}
   mkdir -p "$P"; [ -d "$P/.git" ] || git -C "$P" init -q
-  info "part C project: $P (the scratch fleet; LIVE_CONTEXT_PROJECT overrides it). Start it once: cd $P && horch fleet"
+  local fleet_env=
+  if [ "$PRM" != "$(model_of prime)" ]; then
+    # Prime on a model it can run without a new login: a scratch roster copy
+    # whose prime.md names $PRM. The operator's roster is not written.
+    rm -rf "$S/roster"; cp -R "$ROOT/teammates" "$S/roster"
+    sed -i.bak -E "s|^model: .*|model: $PRM|" "$S/roster/prime.md"; rm -f "$S/roster/prime.md.bak"
+    fleet_env="HORCH_TEAMMATES_DIR=$S/roster "
+    info "prime runs $PRM (LIVE_CONTEXT_PRIME_MODEL) from the roster copy $S/roster"
+  fi
+  info "part C project: $P (the scratch fleet; LIVE_CONTEXT_PROJECT overrides it). Start it once: cd $P && ${fleet_env}horch fleet"
   # Samples herdr agent_status of the role's pane for 60 s, 1 per second.
   statuses() { # <role> -> the distinct values seen, in order
     local rec ws pane i seen=

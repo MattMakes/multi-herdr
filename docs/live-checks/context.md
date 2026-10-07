@@ -7,7 +7,9 @@ a real fleet: the native windows the panes really use (CTX-05, CTX-06), the
 readers against the harness's own numbers (CTX-02.4, CTX-17), the
 compaction-instructions canary (CTX-20), the speed of `horch context`
 (CTX-26), the survival of a detached job (CTX-15), and the round trips of
-the protocol (CTX-11, CTX-13, CTX-16, CTX-18, CTX-22, CTX-23).
+the protocol (CTX-11, CTX-13, CTX-16, CTX-18, CTX-22, CTX-23). Part C does
+the same for the slice-2 harnesses OpenCode, pi and Prime (CTX-02, CTX-17,
+CTX-20).
 
 ## How to run
 
@@ -17,12 +19,24 @@ LIVE_CONTEXT_PANES=1 scripts/live/context.sh                   # part A, then pa
 LIVE_CONTEXT_PART=b LIVE_CONTEXT_B1_ROLE=sonnet-1 \
   LIVE_CONTEXT_B2_ROLE=codex-sol-1 scripts/live/context.sh     # part B checks after the pane steps
 HORCH_BIN=~/.local/bin/horch scripts/live/context.sh           # another horch binary
+LIVE_CONTEXT_PART=c LIVE_CONTEXT_PRIME_MODEL=ollama/qwen3.8 \
+  scripts/live/context.sh                                      # part C (headless steps, then the pane steps)
+LIVE_CONTEXT_PART=c5 LIVE_CONTEXT_C5_PI_ROLE=pi-1 \
+  scripts/live/context.sh                                      # part C pane steps only
 ```
+
+Part B reads the ledger of the current project: the git top level of the
+directory the script runs from (the operator's fleet). Part C uses the
+scratch fleet `.worktrees/_scratch/live-context/fleet`. `LIVE_CONTEXT_PROJECT`
+overrides both. The script prints the project of each part. A step whose role
+has no record in that project prints its `FAIL` line, and the run appends no
+table: a wrong project proves nothing.
 
 Part A needs `jq`, `perl`, `python3`, `claude` and `codex` signed in to the
 operator's subscriptions, and a built `target/debug/horch` (`HORCH_BIN`).
-Part B needs a herdr server, the installed `horch` and a fleet. A missing tool
-is `SKIP`. Every `claude` call is `env -u ANTHROPIC_API_KEY claude ...`, and
+Part B needs a herdr server, the installed `horch` and a fleet. Part C needs
+`pi`, `prime-agent`, `opencode` and `sqlite3`, and for its pane steps a herdr
+server, the installed `horch` and the scratch fleet. A missing tool is `SKIP`. Every `claude` call is `env -u ANTHROPIC_API_KEY claude ...`, and
 the script unsets the key at the top (CTX-27).
 
 Scratch files go under `.worktrees/_scratch/live-context/`. Each run writes
@@ -95,6 +109,60 @@ The script prints the exact procedure of each step and then, with the role in
 - **B5** `time horch note x` in a worker pane: under 0.5 s (CTX-26).
 - **B6** a `pi` worker over its threshold takes the fresh route (CTX-16.1).
 
+A round trip starts with a `compact-requested` event (`horch compact <role>
+--request`), or with a `context-warned` event: a worker that gets the
+`horch note` warning writes its handoff without a request. The PASS text
+names the start event. Every lookup by role takes the role's record with the
+newest `updated_at`, because an old record of the same role stays in the
+ledger.
+
+## Part C steps (slice 2: OpenCode, pi, Prime)
+
+C1 to C3 run headless in `.worktrees/_scratch/live-context/c`. The models
+come from `teammates/pi.md`, `teammates/prime.md` and
+`teammates/opencode-pickle.md`; `LIVE_CONTEXT_PI_MODEL`,
+`LIVE_CONTEXT_PRIME_MODEL` and `LIVE_CONTEXT_OPENCODE_MODEL` override them.
+Prime lists only the models it can serve (`prime-agent model list`). Prime
+on `anthropic/claude-opus-5-5` needs an Anthropic login in Prime: that is an
+operator step, and the check never signs Prime in and never uses an API key.
+Without that login, set `LIVE_CONTEXT_PRIME_MODEL` to a listed model, such as
+`ollama/qwen3.8`. pi and Prime get a scratch agent dir: links to the
+operator's entries, and a `settings.json` with
+`compaction.keepRecentTokens: 1`, so that 2 short turns can be compacted.
+The operator's dirs are not written.
+
+- **C1 versions.** `pi`, `prime-agent`, `opencode`, `herdr`, `sqlite3`, and
+  the 3 models.
+- **C2 readers (CTX-02, CTX-17).** 2 pi turns, 2 Prime turns, 1
+  `opencode run --format json` turn, 1 ledger record for each, then
+  `horch context`. pi and Prime: compared with the session's newest
+  assistant `totalTokens`; OpenCode: with the newest `step_finish` total of
+  `opencode run`. PASS when they are equal.
+- **C3 canary (CTX-20, CTX-03).** The first pi and Prime turn is the
+  worker's `== Compact instructions ==` block with a `KEEP-CANARY-<random>`
+  line. Then 1 compaction with no argument through the RPC mode
+  (`{"type":"compact"}`; `-p` reads `/compact` as a prompt). The `compaction`
+  line's summary is searched for the canary: `honoured`, `ignored` or
+  `not verifiable`. After it, `horch context` must show the row `pending`.
+  OpenCode has no headless compact command (`opencode run --command compact`
+  answers `Command not found`), so its compaction is a pane step only.
+- **C4 Prime agent dir.** The pane's own `PRIME_AGENT_CODING_AGENT_DIR`
+  (`<state>/prime/<role>-<uuid>/agent`) has `autoRefine` `{"enabled":false}`,
+  and `prime-agent model list` with that dir reports the window that horch
+  decided for the pane: 200,000 fleet for `anthropic/claude-opus-5-5`, or
+  the operator's value.
+- **C5 panes.** For `opencode-pickle`, `pi` and `prime` in the scratch fleet:
+  `horch note "x"` is recorded (review finding 2), the warning over the
+  threshold, herdr `agent_status` reads `working` and then `idle` or `done`
+  during a 20 s task, and the compaction round trip with
+  `horch compact <role> --force` (these harnesses are not in `in_place`). With
+  `LIVE_CONTEXT_PRIME_MODEL` set, the script writes a roster copy with that
+  model in `.worktrees/_scratch/live-context/roster` and prints the
+  `HORCH_TEAMMATES_DIR=... horch fleet` line.
+
+When a harness passes its C5 compaction round trip, add it to `in_place:` in
+`teammates/_base/context-windows.md` (S2).
+
 If B1 or B2 FAILs at the compaction step, take that harness out of
 `in_place:` in `teammates/_base/context-windows.md` (1 line), and commit it
 with this file.
@@ -126,3 +194,22 @@ final gate and `just install`.
 | A7 speed | CTX-26: `horch context` under 1 s (`cmd/context.rs`) | horch 0.1.0 | PASS | horch context on the real ledger: 121 ms, 3 lines |
 | A8 survival after a claude Bash tool call | CTX-15: a detached job outlives the call that started it (`runtime/process.rs` `spawn_detached`) | claude 2.1.292 (Claude Code) | PASS | beat.log grows after the call ended (6 -> 9 lines in 6 s) (paid: 1 short session) |
 | A8 survival after a codex exec call | CTX-15: a detached job outlives the call that started it (`runtime/process.rs` `spawn_detached`) | codex-cli 0.160.0 | PASS | beat.log grows after the call ended (7 -> 10 lines in 6 s) (paid: 1 short session) |
+
+## 2026-10-07, part B
+
+Recorded by hand from the pane runs and the script's ledger checks; horch at
+`4a29c43` or later, installed. The FAIL table of the first part B run came
+from a lookup in the wrong project, and is removed. The script now reads the
+current project, and sets `HORCH_PROJECT_DIR` to it (a fleet pane exports
+its own).
+
+| step | claim it proves | tool version | result | evidence |
+|---|---|---|---|---|
+| B1 claude worker round trip | CTX-11.1, CTX-13.2, CTX-22.1, CTX-23.1: a Claude worker round trip | horch 0.1.0 | PASS | sonnet-11: compact-requested, handoff note, compacted 44,856 -> 19,897 tokens; 1 `[horch] NOTE: sonnet-11 compacted.` line (paid: 1 worker session) |
+| B2 codex horch note records | CTX-10, CTX-13.1, CTX-13.3: a Codex worker round trip, `horch note` in a Codex pane | codex-cli 0.160.0, horch 0.1.0 at `0d9f992` (`--add-dir <state root>`) | PASS | codex-sol-8: a compound `horch note` in the Codex pane exits 0 and records the note `x` |
+| B2 codex horch note warns | CTX-10, CTX-13.1, CTX-13.3: a Codex worker round trip, `horch note` in a Codex pane | codex-cli 0.160.0 | PASS | codex-sol-9 on a scratch roster copy, `codex/gpt-5.6-sol` 100,000 (threshold 80,000): `horch note` printed the warning at 85,668 tokens and recorded context-warned. Codex writes its token count after each model turn, so the warning comes at the first `horch note` after the turn that crosses the threshold |
+| B2 codex worker round trip | CTX-10, CTX-13.1, CTX-13.3: a Codex worker round trip, `horch note` in a Codex pane | codex-cli 0.160.0 | PASS | request path: codex-sol-8, 23,880 -> 7,717 tokens. Warning path: codex-sol-9, context-warned, handoff note, 89,581 -> 7,264 tokens. Force path: `horch compact --force` waited 32 s for idle, then 1 bare `/compact`, 30,189 -> 6,885 tokens. Result files `.worktrees/_scratch/live-context/results/2026-10-07T05-28-30Z.md`, `2026-10-07T05-31-59Z.md`, `2026-10-07T05-33-07Z.md` (paid: 2 worker sessions) |
+| B3 orchestrator self-compaction | CTX-18: orchestrator self-compaction | horch 0.1.0 | PASS | orchestrator: 304,556 -> 29,902 tokens; handoff `ai_docs/handoffs/orchestrator-whats-next.md`; result file `.worktrees/_scratch/live-context/results/2026-10-07T05-13-30Z.md` |
+| B4 codex orchestrator self-compaction | CTX-18: orchestrator self-compaction | codex-cli 0.160.0 | SKIP | operator step: the Codex orchestrator (`horch fleet` on the Codex flavor) |
+| B5 horch note timing | CTX-26: `horch note` under 0.5 s in a pane | horch 0.1.0 | PASS | `time horch note timing` in a worker pane: real 0.060 s |
+| B6 pi fresh route | CTX-16.1: the fresh route for a pi worker | horch 0.1.0 | PASS | pi-1: `horch compact` refused in place; pi-1 ran `horch done` with its handoff; pi-2 started with `PRIOR WORK` and resumed |
