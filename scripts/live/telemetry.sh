@@ -260,6 +260,7 @@ l7() {
     elif [ "$before_tokens" != "$after_tokens" ]; then fail "L7 crash recovery" "totals of $rec changed: $before_tokens -> $after_tokens"
     elif [ "$after_dups" != "$before_dups" ]; then fail "L7 crash recovery" "duplicate event keys $before_dups -> $after_dups"
     elif [ "$after_events" -lt "$before_events" ]; then fail "L7 crash recovery" "events fell from $before_events to $after_events"
+    elif [ "$wsn" != 1 ]; then fail "L7 crash recovery" "herdr holds $wsn workspaces labelled 'horch telemetry' after the restart; expected 1 (W17)"
     else pass "L7 crash recovery" "new collector pid $npid; totals of $rec unchanged ($after_tokens); duplicate keys $before_dups -> $after_dups; events $before_events -> $after_events; horch telemetry workspaces: $wsn"; fi
   fi
 }
