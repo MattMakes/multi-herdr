@@ -577,6 +577,11 @@
       "verbatim": false
     },
     {
+      "name": "godot-language-choice",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "godot-limboai",
       "copied_files": [
         "SKILL.md",

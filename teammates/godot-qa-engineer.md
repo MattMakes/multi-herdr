@@ -31,7 +31,7 @@ skills:
   - godot-debugging
   - godot-build-verify
 # Named by name only: related skills.
-available_skills: [godot-dependency-injection, godot-gdscript-advanced, godot-optimization]
+available_skills: [godot-dependency-injection, godot-gdscript-advanced, godot-optimization, godot-language-choice]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
 # DONE: needs.
 mcp_servers: {}

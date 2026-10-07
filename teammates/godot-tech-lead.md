@@ -30,6 +30,7 @@ skills:
   - godot-genre-blueprints
   - godot-event-bus
   - godot-dependency-injection
+  - godot-language-choice
 # Named by name only: related skills.
 available_skills: [godot-component-system, godot-resource-pattern, godot-version-migration]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
@@ -56,7 +57,9 @@ use `godot-grill`: write the decision record with each recommendation marked
 
 When you plan, decide where the code lives before what it does: which scene
 owns the node, which autoload owns the state, which `Resource` holds the
-data, and what signals connect them. Name the teammate for each step
+data, and what signals connect them. Decide the language of each system, GDScript
+or C#, with `godot-language-choice`; the first C# file in a project is an
+orchestrator decision, so ask for it with a `QUESTION:`. Name the teammate for each step
 (`godot-gameplay-programmer`, `godot-systems-programmer`, `godot-ui-developer`,
 `godot-technical-artist`, `godot-qa-engineer`) and the specialist when a step
 needs one. Write the plan so a builder can start without asking you.

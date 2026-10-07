@@ -217,11 +217,11 @@ still works in any project.
 | `godot-xr-developer` | 3 | implementation | claude, opus, medium | OpenXR, controllers, hand tracking, VR comfort, frame budget |
 | `godot-porting-engineer` | 3 | implementation | claude, opus, medium | upgrade to 4.7, 2D/3D ports, single to multiplayer, desktop to mobile |
 
-Every one runs on Claude. Only `godot-tech-lead` and `godot-code-reviewer`,
-which read and plan but never build, fall back to `codex-sol`. The builders
-and `godot-qa-engineer` have no fallback: a Godot import writes outside the
-project, to the user data directory, and a Codex pane runs with the network
-off and `workspace-write`. Nobody has tried that yet. Every implementation
+Every one runs on Claude, and every one falls back to `codex-sol`. A builder
+or `godot-qa-engineer` in a Codex pane runs every Godot command through
+`godot-build-verify/scripts/godot-run.sh`: it keeps the user data directory
+inside the project and sets the TLS overrides of
+`docs/live-checks/godot-codex.md`. Every implementation
 teammate and `godot-qa-engineer` carry `godot-build-verify`, and every seat
 that edits scenes carries `godot-scene-files`. `godot-code-reviewer` denies
 `Edit`, `Write` and `NotebookEdit`, the same as `ue-code-reviewer`.

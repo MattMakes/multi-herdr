@@ -1,5 +1,5 @@
-//! The Godot wave (GDW-01 to GDW-10, `docs/specs/godot.md`): the Godot
-//! requirement, the 19 `godot-*` seats, the 64 `godot-*` skills and the
+//! The Godot wave (GDW-01 to GDW-11, `docs/specs/godot.md`): the Godot
+//! requirement, the 19 `godot-*` seats, the 65 `godot-*` skills and the
 //! gate's Godot checks.
 //!
 //! The seat tests read the teammates through the public roster API and
@@ -381,9 +381,9 @@ fn gdw_06_copied_failures_fail_only_above_the_baseline() {
 }
 
 #[test]
-fn gdw_07_the_catalog_has_64_godot_skills_and_no_excluded_one() {
+fn gdw_07_the_catalog_has_65_godot_skills_and_no_excluded_one() {
     let skills = godot_skills();
-    assert_eq!(skills.len(), 64, "{skills:?}");
+    assert_eq!(skills.len(), 65, "{skills:?}");
     for name in EXCLUDED {
         assert!(!skills.contains(name), "{name} is excluded");
     }
@@ -499,11 +499,46 @@ fn gdw_10_godot_build_verify_ships_an_executable_godot_run_script() {
         .unwrap_or_else(|e| panic!("{}: {e}", script.display()))
         .permissions()
         .mode();
-    assert_eq!(mode & 0o111, 0o111, "{} is not executable", script.display());
+    assert_eq!(
+        mode & 0o111,
+        0o111,
+        "{} is not executable",
+        script.display()
+    );
     assert!(
         BUNDLED_SKILL_FILES
             .iter()
             .any(|(path, _)| *path == "godot-build-verify/scripts/godot-run.sh"),
         "godot-run.sh is not bundled"
     );
+}
+
+#[test]
+fn gdw_11_the_language_skill_is_on_every_godot_seat() {
+    const SKILL: &str = "godot-language-choice";
+    let roster = roster();
+    let seats = seats(&roster);
+    assert_eq!(seats.len(), 19);
+    for t in seats {
+        let expects = t.skills.iter().any(|s| s == SKILL);
+        let offers = t.available_skills.iter().any(|s| s == SKILL);
+        if t.name == "godot-tech-lead" || t.name == CSHARP_SEAT {
+            assert!(expects && !offers, "{}: {SKILL} not in skills:", t.name);
+        } else {
+            assert!(
+                offers && !expects,
+                "{}: {SKILL} not in available_skills:",
+                t.name
+            );
+        }
+    }
+
+    // Own text: the gate's strict block checks fail on any problem in it.
+    let catalog = SkillCatalog::bundled().unwrap();
+    let entry = catalog.lookup(SKILL).expect("the skill is bundled");
+    let copied = entry.copied.as_ref().expect("a copied.json entry");
+    assert!(copied.copied_files.is_empty(), "{:?}", copied.copied_files);
+    assert!(BUNDLED_SKILL_FILES
+        .iter()
+        .any(|(path, _)| *path == "godot-language-choice/references/evidence.md"));
 }

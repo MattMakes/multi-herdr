@@ -31,7 +31,7 @@ skills:
   - godot-scene-organization
   - godot-multithreading
 # Named by name only: related skills.
-available_skills: [godot-csharp-godot, godot-multiplayer-sync, godot-optimization]
+available_skills: [godot-csharp-godot, godot-multiplayer-sync, godot-optimization, godot-language-choice]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
 # DONE: needs.
 mcp_servers: {}

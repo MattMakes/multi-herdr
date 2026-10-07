@@ -31,6 +31,7 @@ skills:
   - godot-multithreading
   - godot-build-verify
   - godot-scene-files
+  - godot-language-choice
 # Named by name only: related skills.
 available_skills: [godot-gdextension, godot-event-bus, godot-save-load]
 # No MCP servers: the shell and `godot --doctool` give a worker everything

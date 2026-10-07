@@ -35,8 +35,8 @@ Write the script below to `.godot/horch-home/parse_check.gd` (outside the
 scanned tree, git-ignored), import first, then:
 
 ```bash
-HOME="$PWD/.godot/horch-home" "$GODOT" --headless --path "$PWD" -s "$PWD/.godot/horch-home/parse_check.gd"
-HOME="$PWD/.godot/horch-home" "$GODOT" --headless --path "$PWD" -s "$PWD/.godot/horch-home/parse_check.gd" -- --skip=addons
+bash "<skill dir>/scripts/godot-run.sh" --path "$PWD" -s "$PWD/.godot/horch-home/parse_check.gd"
+bash "<skill dir>/scripts/godot-run.sh" --path "$PWD" -s "$PWD/.godot/horch-home/parse_check.gd" -- --skip=addons
 ```
 
 Output: one `PARSE_CHECK FAIL <path>` line per bad file, then

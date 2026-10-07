@@ -33,7 +33,7 @@ skills:
   - godot-assets-pipeline
   - godot-build-verify
 # Named by name only: related skills.
-available_skills: [godot-gdextension, godot-shader-basics, godot-particles-vfx]
+available_skills: [godot-gdextension, godot-shader-basics, godot-particles-vfx, godot-language-choice]
 # A C# project (a *.csproj next to project.godot) adds the C# skills to this
 # builder (GW11, roster/offer.rs project_skills). godot-csharp-engineer owns
 # interop, .NET builds and source-generator problems.

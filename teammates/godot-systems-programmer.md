@@ -36,7 +36,7 @@ skills:
   - godot-build-verify
   - godot-scene-files
 # Named by name only: related skills.
-available_skills: [godot-component-system, godot-hud-system, godot-dialogue-system]
+available_skills: [godot-component-system, godot-hud-system, godot-dialogue-system, godot-language-choice]
 # A C# project (a *.csproj next to project.godot) adds the C# skills to this
 # builder (GW11, roster/offer.rs project_skills). godot-csharp-engineer owns
 # interop, .NET builds and source-generator problems.

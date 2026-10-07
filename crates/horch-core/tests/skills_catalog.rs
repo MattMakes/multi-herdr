@@ -30,6 +30,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-economy-system",
     "godot-gameplay-loops",
     "godot-genre-blueprints",
+    "godot-language-choice",
     "godot-project-context",
     "godot-quest-system",
     "godot-scene-files",
@@ -348,18 +349,24 @@ fn skills_bundled_size_budget() {
 }
 
 /// `skill-creator` is a verbatim copy that ships Python scripts and HTML
-/// assets. It is the only text-only exemption.
+/// assets. It is the only skill exempt from the text-only rule.
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &["skill-creator"];
 
-/// Skill files are `.md` or `.txt`, and no skill ships a licence or notice
-/// file. Verbatim skills are not exempt from this rule.
+/// Single files exempt from the text-only rule; the rest of their skill is
+/// still checked. `godot-run.sh` is the fleet wrapper for every Godot call,
+/// and SKL-11 keeps its execute bit in a bundle.
+const EXEMPT_FILES: &[&str] = &["godot-build-verify/scripts/godot-run.sh"];
+
+/// Skill files are `.md` or `.txt`, except the skills in
+/// `EXEMPT_FROM_TEXT_ONLY` and the single files in `EXEMPT_FILES`. Verbatim
+/// skills are not exempt from this rule.
 #[test]
 fn skills_bundled_text_only() {
     for (path, _) in BUNDLED_SKILL_FILES {
         let Some((id, _)) = path.split_once('/') else {
             continue;
         };
-        if EXEMPT_FROM_TEXT_ONLY.contains(&id) {
+        if EXEMPT_FROM_TEXT_ONLY.contains(&id) || EXEMPT_FILES.contains(path) {
             continue;
         }
         assert!(path.ends_with(".md") || path.ends_with(".txt"), "{path}");
