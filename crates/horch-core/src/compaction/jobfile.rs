@@ -168,7 +168,7 @@ pub fn clear_on_exit(dir: &Path) {
     remove(dir, &[JOB_FILE, HEARTBEAT_FILE, SPAWNED_FILE]);
 }
 
-/// Under a [`fsx::DirLock`] in `<state_root>/compact/`: check liveness again;
+/// Under a `fsx::DirLock` in `<state_root>/compact/`: check liveness again;
 /// when Lost or None, remove `job.json`, `heartbeat`, `spawned` and `lost`
 /// (keep `job.log`), run `spawn`, write `spawned`. Live: return
 /// [`Started::AlreadyRunning`] and spawn nothing. So 2 callers cannot

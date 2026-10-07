@@ -20,7 +20,7 @@ use crate::usage::{self, Price};
 pub type Key = (String, String, String);
 
 /// The events on disk, with what the snapshot folds of each one in memory
-/// ([`Table`]) and the index of keys already stored.
+/// (`Table`) and the index of keys already stored.
 ///
 /// The collector keeps every event of the retention window for as long as it
 /// runs (NFR-02 RSS), so it keeps no [`Event`]: a few interned ids, the time,

@@ -224,10 +224,10 @@ pub(crate) const DEFAULT_ENV_YIELD: [&str; 2] =
     ["OPENCODE_DISABLE_EXTERNAL_SKILLS", "RLM_MAX_DEPTH"];
 
 impl Inherited {
-    /// [`DEFAULT_ENV_YIELD`], reachable through the public `Inherited`.
+    /// `DEFAULT_ENV_YIELD`, reachable through the public `Inherited`.
     pub const DEFAULT_ENV_YIELD: [&'static str; 2] = DEFAULT_ENV_YIELD;
 
-    /// The inherited value of `key` when `key` is in [`DEFAULT_ENV_YIELD`];
+    /// The inherited value of `key` when `key` is in [`Inherited::DEFAULT_ENV_YIELD`];
     /// else `None`. An operator value here wins over a harness default.
     pub fn operator_env(&self, key: &str) -> Option<&str> {
         match key {

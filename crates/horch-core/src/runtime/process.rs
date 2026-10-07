@@ -168,7 +168,7 @@ where
 /// left the process group is killed along with it, while one that called
 /// `setsid` survives.
 ///
-/// The child's environment is scrubbed here ([`scrub_child_env`]), right
+/// The child's environment is scrubbed here (`scrub_child_env`), right
 /// before the spawn: no detached child (the judge job, the compaction job,
 /// the grid tidy) can carry a forbidden key, whatever its caller set.
 pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child> {

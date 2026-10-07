@@ -53,7 +53,7 @@ pub struct LaunchEnv {
     /// `{path_of:blender}` lookup tries. A test leaves it `None`, so it never
     /// finds the machine's real Blender.
     pub blender_app: Option<PathBuf>,
-    /// The operator's values for the [`DEFAULT_ENV_YIELD`] names
+    /// The operator's values for the `DEFAULT_ENV_YIELD` names
     /// (`Inherited::operator_env`): a non-Claude harness default `env` key
     /// yields to them. An allow-list, so no other variable is carried.
     pub operator_env: BTreeMap<String, String>,
@@ -158,7 +158,7 @@ pub enum Session<'a> {
 /// Environment a teammate's CLI starts with: its `subagent_model` and its
 /// `env` block, the latter winning, then the `env` of its harness defaults
 /// for the keys it does not set. The caller gives it to the child command
-/// with [`crate::runtime::process::inherit_env`], so a value the builder set
+/// with `runtime::process::inherit_env`, so a value the builder set
 /// on the command still wins, as it did when this was exported into the
 /// parent's environment.
 ///
@@ -167,7 +167,7 @@ pub enum Session<'a> {
 /// expands it, and a committed file cannot carry an absolute home path.
 ///
 /// An `env` value that is exactly `{path_of:<tool>}` becomes that host tool's
-/// executable ([`LaunchEnv::host_tool`]). When the tool is not found, the
+/// executable (`LaunchEnv::host_tool`). When the tool is not found, the
 /// variable is left out, so the launch still works and the CLI keeps what
 /// it inherits.
 pub fn teammate_env(teammate: &Teammate, env: &LaunchEnv) -> Vec<(String, String)> {

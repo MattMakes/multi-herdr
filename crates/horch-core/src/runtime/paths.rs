@@ -31,7 +31,7 @@ pub struct Paths {
     /// `$HOME` (`%USERPROFILE%` on Windows), else `.`.
     pub home: PathBuf,
     /// Claude Code's managed settings file: `$HORCH_CLAUDE_MANAGED_SETTINGS`,
-    /// else the platform path ([`CLAUDE_MANAGED_SETTINGS`]). A test points
+    /// else the platform path (`CLAUDE_MANAGED_SETTINGS`). A test points
     /// it into a temp dir, so no result depends on the machine's file.
     pub claude_managed_settings: PathBuf,
 }
