@@ -100,6 +100,9 @@ impl Harness for Antigravity {
         cmd.args(&teammate.args);
         // `agy` has no positional prompt. `--prompt-interactive` runs the
         // opening prompt and stays in the TUI; `-p` would exit after it.
+        // Beside `--conversation` it runs as a new turn of that conversation
+        // (agy 1.3.0, `agy-resume-prompt` in scripts/live/harnesses.sh), so
+        // a resume keeps it. OpenCode ignores the same pair (`opencode.rs`).
         cmd.arg("--prompt-interactive").arg(spec.prompt);
         // Removed, not just unset: a removed key counts as taken, so the
         // teammate env and the child env layers cannot add it back.

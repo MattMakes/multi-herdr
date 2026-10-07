@@ -7,7 +7,9 @@
 # Usage: scripts/live/harnesses.sh
 #        AGY_READ_CACHE=1 scripts/live/harnesses.sh  (also read agy's
 #        last_conversations.json; it lists your own workspaces)
-# Cost: 3 small agy turns on the operator's Google login (a 4th is refused
+#        AGY_TRUST_SCRATCH=1 scripts/live/harnesses.sh  (answer agy's trust
+#        question for the scratch repo once, so the TUI resume step runs)
+# Cost: 4 small agy turns on the operator's Google login (a 5th is refused
 # before it starts) and 2 small opencode turns on a free tier. Both train on
 # input: every prompt is dummy text in a scratch repo that holds 1 dummy file.
 set -euo pipefail
@@ -17,6 +19,7 @@ SCR="$ROOT/.worktrees/_scratch/live-harnesses"
 AGY_HOME_DIR="$HOME/.gemini/antigravity-cli"
 OC_MODEL="${OC_MODEL:-opencode/nemotron-3.5-lightning-free}"
 AGY_MODEL="${AGY_MODEL:-gemini-3.8-flash}"
+AGY_TRUST_SCRATCH="${AGY_TRUST_SCRATCH:-0}"
 FAILS=0
 
 pass() { echo "PASS $1${2:+: $2}"; }
@@ -41,6 +44,45 @@ scratch_repo() {
   mkdir -p "$1"
   (cd "$1" && git init -q && echo "hello dummy" >dummy.txt && git add dummy.txt &&
     git -c user.name=live -c user.email=live@example.invalid commit -qm init)
+}
+
+# tui_screen <seconds> <out> <cmd...>: run cmd in a 160x50 pseudo-terminal,
+# then kill it; <out> gets the screen text without escape codes. With
+# AGY_TRUST_SCRATCH=1 it presses Enter once at agy's trust question.
+tui_screen() {
+  local s="$1" out="$2"; shift 2
+  env -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY -u GOOGLE_GEMINI_BASE_URL \
+    python3 -I -c '
+import fcntl, os, pty, re, select, signal, struct, sys, termios, time
+secs, out, cmd = float(sys.argv[1]), sys.argv[2], sys.argv[3:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(cmd[0], cmd)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 160, 0, 0))
+trust = os.environ.get("AGY_TRUST_SCRATCH") == "1"
+buf, end = b"", time.time() + secs
+while time.time() < end:
+    if select.select([fd], [], [], 0.5)[0]:
+        try:
+            d = os.read(fd, 65536)
+        except OSError:
+            break
+        if not d:
+            break
+        buf += d
+        if trust and b"trust the contents" in buf:
+            time.sleep(0.5)
+            os.write(fd, b"\r")
+            trust = False
+os.kill(pid, signal.SIGTERM)
+time.sleep(1)
+try:
+    os.kill(pid, signal.SIGKILL)
+except OSError:
+    pass
+t = buf.decode("utf8", "replace")
+open(out, "w").write(re.sub(r"\x1b\[[0-9;?<>=]*[a-zA-Z~]|\x1b\][^\x07]*\x07", "", t))
+' "$s" "$out" "$@" </dev/null >/dev/null 2>&1 || true
 }
 
 # json_get <key>: one top-level field of the JSON object on stdin.
@@ -87,6 +129,9 @@ else
 
   REPO="$SCR/agy"
   scratch_repo "$REPO"
+  trusted() { [ -f "$SETTINGS" ] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sys.argv[2] in d.get("trustedWorkspaces",[]) else 1)' "$SETTINGS" "$REPO" 2>/dev/null; }
+  PRE_TRUSTED=0
+  if trusted; then PRE_TRUSTED=1; fi
   # Print mode: the TUI would stop at the trust question in a new directory.
   # No permission flags: the turn needs no tool.
   first="$(cd "$REPO" && clean 180 agy --model "$AGY_MODEL" --effort medium \
@@ -108,10 +153,37 @@ else
     else
       fail agy-mode-plan "--mode plan failed"
     fi
-    if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sys.argv[2] in d.get("trustedWorkspaces",[]) else 1)' "$SETTINGS" "$REPO" 2>/dev/null; then
+    # The repo is re-created at the same path, and trust is per path: after
+    # one AGY_TRUST_SCRATCH=1 run, this step cannot tell print mode's trust
+    # from the earlier answer.
+    if [ "$PRE_TRUSTED" = "1" ]; then
+      skip agy-print-no-trust "the scratch repo was trusted before this run (AGY_TRUST_SCRATCH=1)"
+    elif trusted; then
       fail agy-print-no-trust "print mode added the scratch repo to trustedWorkspaces"
     else
       pass agy-print-no-trust "print mode runs in an untrusted directory and records no trust"
+    fi
+
+    # The resume argv is --conversation <id> --prompt-interactive <p>
+    # (harness/antigravity.rs). The TUI must run <p> as a new turn of <id>.
+    # OpenCode ignored the same pair (opencode-resume-prompt).
+    if [ "$AGY_TRUST_SCRATCH" = "1" ] || trusted; then
+      tui_screen 45 "$SCR/agy-resume.txt" sh -c 'cd "$1" && shift && exec "$@"' _ "$REPO" \
+        agy --model "$AGY_MODEL" --effort low --conversation "$CID" \
+        --prompt-interactive "What is 17 times 23? Reply with the number only."
+      # Control: the same resume without a prompt shows the history and runs
+      # no turn. The 17 x 23 turn in that history proves it is in <id>.
+      tui_screen 30 "$SCR/agy-control.txt" sh -c 'cd "$1" && shift && exec "$@"' _ "$REPO" \
+        agy --model "$AGY_MODEL" --effort low --conversation "$CID"
+      if ! grep -q ZEBRA "$SCR/agy-control.txt"; then
+        skip agy-resume-prompt "control failed: the resumed TUI did not show the first turn"
+      elif grep -q 391 "$SCR/agy-resume.txt" && grep -q "17 times 23" "$SCR/agy-control.txt"; then
+        pass agy-resume-prompt "--prompt-interactive beside --conversation runs as a new turn of that conversation"
+      else
+        fail agy-resume-prompt "--prompt-interactive beside --conversation is ignored; drop it from the resume argv (as for opencode)"
+      fi
+    else
+      skip agy-resume-prompt "the TUI asks to trust the scratch repo; run with AGY_TRUST_SCRATCH=1"
     fi
   else
     skip agy-turn "agy print mode did not succeed (log in: run agy once)"
@@ -123,6 +195,15 @@ else
     pass agy-effort-refusal "agy refuses --effort for an id it does not list (gemini-3-1-pro)"
   else
     skip agy-effort-refusal "agy accepted or did not answer"
+  fi
+
+  # A bare model id with no --effort: refused before a turn starts (1.3.0).
+  # The roster check fails such a teammate (roster/validation.rs).
+  bare="$(cd "$REPO" && clean 60 agy --model "$AGY_MODEL" -p "x" --output-format json 2>/dev/null || true)"
+  if grep -q "requires --effort" <<<"$(json_get error <<<"$bare" 2>/dev/null || true)"; then
+    pass agy-bare-needs-effort "agy refuses --model $AGY_MODEL without --effort"
+  else
+    fail agy-bare-needs-effort "agy accepted a bare model id without --effort; the roster check is stricter than agy"
   fi
 
   # Usage: file names only. A token count would need a file with "usage" or

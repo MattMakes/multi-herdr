@@ -10,14 +10,15 @@ U-60, U-61, U-62, U-63, U-64, U-67 and U-30 Q1.
 ```bash
 scripts/live/harnesses.sh
 AGY_READ_CACHE=1 scripts/live/harnesses.sh   # also read agy's last_conversations.json
+AGY_TRUST_SCRATCH=1 scripts/live/harnesses.sh  # trust the scratch repo once, for agy-resume-prompt
 ```
 
 It needs `agy` signed in to the operator's Google account, `opencode` with
 network access to its free tier, `prime-agent` and `pi`. A missing tool is
 `SKIP`. The whole run takes about 3 minutes.
 
-Cost: 3 small `agy` turns on the operator's Google login (a 4th is refused
-before it starts) and 2 small `opencode` turns on the free model
+Cost: 4 small `agy` turns on the operator's Google login (a 5th and a 6th
+are refused before they start) and 2 small `opencode` turns on the free model
 `opencode/nemotron-3.5-lightning-free`. Both train on input, so every prompt is dummy text ("Reply with the single
 word PONG.") in a scratch repo that holds 1 dummy file. The script starts no
 `claude` and no Codex session.
@@ -29,6 +30,13 @@ scratch repos `agy/` and `opencode/` (re-created on each run) and
 `last_conversations.json` lists the operator's own workspaces, so the script
 reads it only with `AGY_READ_CACHE=1`, and then prints only the value type of
 the scratch repo's entry.
+
+The `agy` TUI asks "Do you trust the contents of this project?" in a new
+directory. With `AGY_TRUST_SCRATCH=1` the script presses Enter once at that
+question. Then `trustedWorkspaces` holds the scratch repo path
+`.worktrees/_scratch/live-harnesses/agy`. Trust is per path, so later runs
+need no flag. To remove the trust, delete that path from `trustedWorkspaces`
+in `~/.gemini/antigravity-cli/settings.json`.
 
 Warning: running `agy` with another `HOME` (to isolate its state) starts its
 self-updater. On 2026-10-06 that run replaced `~/.local/bin/agy` 1.2.17 with
@@ -49,10 +57,18 @@ Steps:
   mints the `conversation_id`.
 - `agy-resume`: `--conversation <id>` keeps the id and recalls the first turn.
 - `agy-mode-plan`: `--mode plan` is accepted.
+- `agy-resume-prompt`: the TUI with `--conversation <id> --prompt-interactive
+  "What is 17 times 23? ..."` in a pseudo-terminal for 45 s shows `391`.
+  Control: the same resume without a prompt, for 30 s, shows the first turn
+  and the 17 x 23 turn in the history, so the turn is in `<id>`. It needs a
+  trusted scratch repo (`AGY_TRUST_SCRATCH=1`), else `SKIP`.
 - `agy-print-no-trust`: print mode runs in an untrusted directory and does not
   add it to `trustedWorkspaces`.
 - `agy-effort-refusal`: `--effort` on a model id that `agy models` does not
   list is refused.
+- `agy-bare-needs-effort`: `--model gemini-3.8-flash` without `--effort` is
+  refused ("requires --effort"). `horch teammates --check` fails an agy
+  teammate with a bare model id and no `effort:` (`roster/validation.rs`).
 - `agy-no-usage-file`: no file with `usage` or `quota` in its name under
   `~/.gemini/antigravity-cli` (U-60, U-61).
 - `agy-cache-format`: with `AGY_READ_CACHE=1`, `last_conversations.json` maps
@@ -100,7 +116,9 @@ Host: macOS 26 (Darwin 25.5.0), arm64. Runner: opus-10 (W3d).
 | agy-turn | U-28: the teammate argv runs; `agy` mints the id | 1.2.17, 1.3.0 | PASS | `status: SUCCESS`, a UUID `conversation_id`; 1-line dummy turn |
 | agy-resume | U-28 step 11: `--conversation <id>` resumes | 1.2.17, 1.3.0 | PASS | same id; the answer is the remembered word |
 | agy-mode-plan | U-28: `permission_mode: plan` maps to `--mode plan` | 1.2.17, 1.3.0 | PASS | `status: SUCCESS`. 1.3.0 needs `--effort` with a bare id |
+| agy-resume-prompt | W13 C6: the resume argv `--conversation <id> --prompt-interactive <p>` delivers `<p>` (`harness/antigravity.rs`) | 1.3.0 | PASS | run by opus-17 (W13): see below |
 | agy-print-no-trust | U-62: print mode needs no trust and records none | 1.2.17, 1.3.0 | PASS | the scratch repo is not in `trustedWorkspaces` |
+| agy-bare-needs-effort | W13 C6: a bare id needs `--effort` (`roster/validation.rs`) | 1.3.0 | PASS | run by opus-17 (W13): see below |
 | agy-effort-refusal | `teammates/antigravity.md` comment: `agy` refuses `--effort` for an id it does not list | 1.2.17, 1.3.0 | PASS | "--effort is not supported for model gemini-3-1-pro" |
 | agy-no-usage-file | U-60, U-61: no local usage or quota signal (`telemetry/readers.rs`, `routing/quota_probe.rs` comments) | 1.2.17, 1.3.0 | PASS | no such file; state files are `*.pb` and `conversation_summaries.db` (no token column); only `-p --output-format json` prints `usage` |
 | agy-cache-format | U-28 step 10: `last_conversations.json` format | 1.3.0 | SKIP | the agent's safety check blocked reading the operator's own agy state; operator runs it with `AGY_READ_CACHE=1` |
@@ -110,5 +128,27 @@ Host: macOS 26 (Darwin 25.5.0), arm64. Runner: opus-10 (W3d).
 | pi-version | U-30 Q1: pi runs on the installed Node, so no `HORCH_PI_BIN` wrapper is needed | pi 0.99.1, node v24.21.0 | PASS | `pi --version` prints `0.99.1` |
 
 Not covered: `--sandbox` and `--dangerously-skip-permissions` (blocked by the
-agent's safety check), and the TUI path of `agy` (the scratch repo is not
-trusted).
+agent's safety check).
+
+### W13 C6 run (opus-17)
+
+`AGY_TRUST_SCRATCH=1 scripts/live/harnesses.sh`, agy 1.3.0: 17 PASS, 2 SKIP
+(`agy-cache-format`, `agy-fleet-spawn`), 0 FAIL.
+
+- `agy-bare-needs-effort`: agy printed "--model gemini-3.8-flash requires
+  --effort (available: low, medium, high)" and ran no turn. An id with the
+  level in it, `--model gemini-3.8-flash-low` without `--effort`, ran 1 turn
+  with `status: SUCCESS`.
+- `agy-resume-prompt`: before the script step, a manual run in
+  `.worktrees/_scratch/c6-agy` gave the same result. A print turn minted the
+  id. The resumed TUI showed the first turn (`ZEBRA`, `PONG`), then the new
+  prompt, then `391`. The control resume showed both turns and ran no new
+  turn. A print-mode resume of the same id returned the same
+  `conversation_id`, `num_turns: 3`, and listed "What is 17 times 23?".
+- Decision: `agy` delivers `--prompt-interactive` beside `--conversation`.
+  The resume argv keeps it, and horch types no second copy. This is the
+  opposite of OpenCode (`opencode-resume-prompt`).
+- A 2nd run without the flag: `agy-resume-prompt` PASS, and
+  `agy-print-no-trust` SKIP, because the path was trusted before the run.
+- The TUI path of `agy` now runs in the trusted scratch repo. The fleet
+  steps in "For the operator" are still not run.
