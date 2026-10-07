@@ -33,9 +33,9 @@ available_skills: [ue-editor-scripting]
 # reproducible. Do not use `uvx blender-mcp`: that PyPI name is a different
 # project (ahujasid/mcp-for-blender), which sends telemetry and has asset
 # download tools. This server has no telemetry, no download tools and no API
-# keys. Its `*_for_cli` tools run `blender --background` with no add-on; set
-# BLENDER_PATH in the operator's environment when `blender` is not on PATH
-# (macOS: /Applications/Blender.app/Contents/MacOS/Blender). The live tools
+# keys. Its `*_for_cli` tools run `blender --background` with no add-on, from
+# BLENDER_PATH, else `blender` on PATH. The launch sets BLENDER_PATH (see
+# `env:` below), so a macOS app with no `blender` on PATH works. The live tools
 # need Blender 5.1+ with the Blender Lab MCP add-on on localhost:9876
 # (BLENDER_MCP_HOST, BLENDER_MCP_PORT).
 # Its Python dependencies are pinned too: Python 3.12, the 3 direct
@@ -53,6 +53,10 @@ disabled_skills: [herdr-orchestrator, herdr-worker]
 env:
   CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
   DISABLE_AUTOUPDATER: "1"
+  # The Blender that `horch doctor` checks: the operator's BLENDER_PATH, else
+  # `blender` on PATH, else /Applications/Blender.app on macOS. The pane and
+  # the Blender MCP server inherit it. Not found: the launch leaves it unset.
+  BLENDER_PATH: "{path_of:blender}"
 ---
 You are the fleet's BLENDER ARTIST. You make 3D assets in Blender for the
 Unreal Engine team: you model, retopologize, UV-unwrap, build collision hulls

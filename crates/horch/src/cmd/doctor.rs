@@ -6,12 +6,13 @@
 //! is offered.
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Result};
 use horch_core::harness::inventory::BinaryFacts;
 use horch_core::roster::{operator_effort_warnings, Requirement, Roster};
+use horch_core::runtime::bins::{host_tool_bin, BLENDER_APP, GODOT_APP};
 use horch_core::runtime::{process, RuntimeContext};
 use horch_core::workspace::herdr::Herdr;
 
@@ -47,8 +48,11 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
         &roster,
         ctx.inherited.path.as_deref(),
         ctx.inherited.pathext.as_deref(),
-        ctx.inherited.blender_path.as_deref(),
-        ctx.inherited.godot_path.as_deref(),
+        HostTools {
+            blender_path: ctx.inherited.blender_path.as_deref(),
+            blender_app: BLENDER_APP.map(Path::new),
+            godot_path: ctx.inherited.godot_path.as_deref(),
+        },
         &ctx.bins.harness.git,
         ctx.paths.project().ok().as_deref(),
     );
@@ -131,18 +135,27 @@ fn broken_harness_warnings(
         .collect()
 }
 
+/// Where doctor looks for the host tools, after PATH: the operator's
+/// variables, which win over PATH, and the app bundle, tried last.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct HostTools<'a> {
+    /// `BLENDER_PATH`.
+    pub blender_path: Option<&'a OsStr>,
+    /// Blender's app bundle executable ([`BLENDER_APP`]); `None` in tests.
+    pub blender_app: Option<&'a Path>,
+    /// `GODOT_PATH`.
+    pub godot_path: Option<&'a OsStr>,
+}
+
 /// What is missing for the `requires:` of the teammates `roster` offers, one
 /// line per requirement. Nothing is checked that no offered teammate needs.
-/// `blender_path` is `BLENDER_PATH`, which wins over `blender` on PATH;
-/// `godot_path` is `GODOT_PATH`, which wins over `godot` on PATH.
 /// `git` is the fleet's git (`HORCH_GIT_BIN`, else `git`); `project` is the
 /// project directory, whose `.gitattributes` the git-lfs check reads.
 pub(crate) fn requirement_problems(
     roster: &Roster,
     path: Option<&OsStr>,
     pathext: Option<&str>,
-    blender_path: Option<&OsStr>,
-    godot_path: Option<&OsStr>,
+    tools: HostTools<'_>,
     git: &Path,
     project: Option<&Path>,
 ) -> Vec<String> {
@@ -164,9 +177,11 @@ pub(crate) fn requirement_problems(
         }
         let problem = match requirement {
             Requirement::Xcode => xcode_problem(path, pathext),
-            Requirement::Blender => blender_problem(path, pathext, blender_path),
+            Requirement::Blender => {
+                blender_problem(path, pathext, tools.blender_path, tools.blender_app)
+            }
             Requirement::Godot => {
-                godot_problem(path, pathext, godot_path, GODOT_APP.map(Path::new))
+                godot_problem(path, pathext, tools.godot_path, GODOT_APP.map(Path::new))
             }
             Requirement::GitLfs => {
                 git_lfs_problem(path, pathext, git).or_else(|| project.and_then(lfs_rule_problem))
@@ -386,26 +401,22 @@ const BLENDER_LIVE_MIN: (u32, u32) = (5, 1);
 
 /// Blender must run, or the blender-artist reports `BLOCKED:` at its first
 /// step. The Blender Lab MCP server runs `BLENDER_PATH` when it is set, else
-/// `blender` on PATH; this looks in the same order. Its `*_for_cli` tools
-/// run any Blender; the live tools need [`BLENDER_LIVE_MIN`] and the add-on.
+/// `blender` on PATH; a launch sets `BLENDER_PATH` from the same lookup
+/// ([`host_tool_bin`]), which tries `app` last. Its `*_for_cli` tools run any
+/// Blender; the live tools need [`BLENDER_LIVE_MIN`] and the add-on.
 fn blender_problem(
     path: Option<&OsStr>,
     pathext: Option<&str>,
     blender_path: Option<&OsStr>,
+    app: Option<&Path>,
 ) -> Option<String> {
-    let bin = match blender_path {
-        Some(p) => std::path::PathBuf::from(p),
-        None => match process::which(path, pathext, "blender") {
-            Some(bin) => bin,
-            None => {
-                return Some(
-                    "blender not found on PATH and BLENDER_PATH is not set. Install Blender \
-                     5.1 or later, then put `blender` on PATH or set BLENDER_PATH (macOS: \
-                     /Applications/Blender.app/Contents/MacOS/Blender)."
-                        .into(),
-                )
-            }
-        },
+    let Some(bin) = host_tool_bin(blender_path, path, pathext, "blender", app) else {
+        return Some(
+            "blender not found on PATH and BLENDER_PATH is not set. Install Blender \
+             5.1 or later, then put `blender` on PATH or set BLENDER_PATH (macOS: \
+             /Applications/Blender.app/Contents/MacOS/Blender)."
+                .into(),
+        );
     };
     let out = match Command::new(&bin).arg("--version").output() {
         Ok(out) => out,
@@ -463,14 +474,6 @@ fn blender_version(stdout: &str) -> Option<(u32, u32)> {
 /// The oldest Godot the godot-* teammates and their skills support.
 const GODOT_MIN: (u32, u32) = (4, 3);
 
-/// Where the Godot app bundle keeps its executable: the last place doctor
-/// looks, after `GODOT_PATH` and `godot` on PATH.
-const GODOT_APP: Option<&str> = if cfg!(target_os = "macos") {
-    Some("/Applications/Godot.app/Contents/MacOS/Godot")
-} else {
-    None
-};
-
 /// Godot must run headless, or every godot-* teammate reports `BLOCKED:` at
 /// its first parse check. Looks at `GODOT_PATH`, then `godot` on PATH, then
 /// `app` (the macOS bundle) when it exists.
@@ -480,21 +483,13 @@ fn godot_problem(
     godot_path: Option<&OsStr>,
     app: Option<&Path>,
 ) -> Option<String> {
-    let bin = match godot_path {
-        Some(p) => PathBuf::from(p),
-        None => match process::which(path, pathext, "godot")
-            .or_else(|| app.filter(|a| a.is_file()).map(Path::to_path_buf))
-        {
-            Some(bin) => bin,
-            None => {
-                return Some(
-                    "godot not found on PATH and GODOT_PATH is not set. Install Godot 4.3 \
-                     or later, then put `godot` on PATH or set GODOT_PATH (macOS: \
-                     /Applications/Godot.app/Contents/MacOS/Godot)."
-                        .into(),
-                )
-            }
-        },
+    let Some(bin) = host_tool_bin(godot_path, path, pathext, "godot", app) else {
+        return Some(
+            "godot not found on PATH and GODOT_PATH is not set. Install Godot 4.3 \
+             or later, then put `godot` on PATH or set GODOT_PATH (macOS: \
+             /Applications/Godot.app/Contents/MacOS/Godot)."
+                .into(),
+        );
     };
     let out = match Command::new(&bin).arg("--version").output() {
         Ok(out) => out,
@@ -577,8 +572,7 @@ mod tests {
             &roster_requiring_xcode(),
             Some(path.as_os_str()),
             None,
-            None,
-            None,
+            HostTools::default(),
             Path::new("git"),
             None,
         )
@@ -651,8 +645,7 @@ mod tests {
             &facts(["Cargo.toml"]),
             path,
             None,
-            None,
-            None,
+            HostTools::default(),
             Path::new("git"),
             None
         )
@@ -662,8 +655,7 @@ mod tests {
             &facts(["Package.swift"]),
             path,
             None,
-            None,
-            None,
+            HostTools::default(),
             Path::new("git"),
             None,
         );
@@ -796,8 +788,10 @@ mod tests {
             &roster_requiring_blender(),
             Some(path.as_os_str()),
             None,
-            blender_path,
-            None,
+            HostTools {
+                blender_path,
+                ..HostTools::default()
+            },
             Path::new("git"),
             None,
         )
@@ -847,6 +841,19 @@ mod tests {
         assert!(problems[0].contains("could not run"), "{problems:?}");
     }
 
+    /// The app bundle is the last fallback, after `BLENDER_PATH` and PATH:
+    /// the same lookup that sets `BLENDER_PATH` for a launch.
+    #[test]
+    fn the_blender_app_is_the_last_fallback() {
+        let empty = tempfile::tempdir().unwrap();
+        let app = fake_blender("5.1.0", 0);
+        let path = Some(empty.path().as_os_str());
+        assert!(blender_problem(path, None, None, Some(&app.path().join("blender"))).is_none());
+        let gone = empty.path().join("Blender");
+        let problem = blender_problem(path, None, None, Some(&gone)).unwrap();
+        assert!(problem.contains("blender not found"), "{problem}");
+    }
+
     #[test]
     fn an_old_blender_is_reported() {
         let dir = fake_blender("4.2.3 LTS", 0);
@@ -882,8 +889,7 @@ mod tests {
             &facts(["Cargo.toml"]),
             path,
             None,
-            None,
-            None,
+            HostTools::default(),
             Path::new("git"),
             None
         )
@@ -892,8 +898,7 @@ mod tests {
             &facts(["ship.blend"]),
             path,
             None,
-            None,
-            None,
+            HostTools::default(),
             Path::new("git"),
             None,
         )
@@ -995,8 +1000,10 @@ mod tests {
             &roster_requiring_godot(),
             Some(empty.path().as_os_str()),
             None,
-            None,
-            Some(empty.path().join("nope").as_os_str()),
+            HostTools {
+                godot_path: Some(empty.path().join("nope").as_os_str()),
+                ..HostTools::default()
+            },
             Path::new("git"),
             None,
         );
@@ -1075,8 +1082,7 @@ mod tests {
             &roster_requiring_git_lfs(),
             Some(path.as_os_str()),
             None,
-            None,
-            None,
+            HostTools::default(),
             git,
             project,
         )
@@ -1174,8 +1180,7 @@ mod tests {
             &roster,
             Some(empty.path().as_os_str()),
             None,
-            None,
-            None,
+            HostTools::default(),
             Path::new("git"),
             None,
         )

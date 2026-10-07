@@ -6,7 +6,7 @@
 //! process environment.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -211,6 +211,42 @@ pub fn git_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.git, "git")
 }
 
+/// Where the Blender app bundle keeps its executable: the last place a
+/// Blender lookup tries. Only macOS has one.
+pub const BLENDER_APP: Option<&str> = if cfg!(target_os = "macos") {
+    Some("/Applications/Blender.app/Contents/MacOS/Blender")
+} else {
+    None
+};
+
+/// Where the Godot app bundle keeps its executable: the last place a Godot
+/// lookup tries. Only macOS has one.
+pub const GODOT_APP: Option<&str> = if cfg!(target_os = "macos") {
+    Some("/Applications/Godot.app/Contents/MacOS/Godot")
+} else {
+    None
+};
+
+/// A host tool's executable, as `horch doctor` checks it and a launch passes
+/// it on: `var` (the operator's `BLENDER_PATH` or `GODOT_PATH`) when it is
+/// set, else `name` on `path`, else `app` when it is a file. `var` wins
+/// unchecked: a broken one is for doctor to report, not to skip. The caller
+/// gives `app` ([`BLENDER_APP`], [`GODOT_APP`]), so a test never finds the
+/// real app.
+pub fn host_tool_bin(
+    var: Option<&OsStr>,
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    name: &str,
+    app: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(var) = var.filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(var));
+    }
+    process::which(path, pathext, name)
+        .or_else(|| app.filter(|a| a.is_file()).map(Path::to_path_buf))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +315,38 @@ mod tests {
         });
         assert_eq!(base.claude, Some("/new/claude".into()));
         assert_eq!(base.pi, Some("/old/pi".into()));
+    }
+
+    /// `BLENDER_PATH` wins over PATH and the app, PATH wins over the app,
+    /// and the app counts only when it is a file. Nothing found is `None`.
+    #[cfg(unix)]
+    #[test]
+    fn host_tool_bin_tries_the_variable_then_path_then_the_app() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let on_path = bin_dir.join("blender");
+        std::fs::write(&on_path, "#!/bin/sh\n").unwrap();
+        process::make_executable(&on_path).unwrap();
+        let app = tmp.path().join("Blender");
+        std::fs::write(&app, "#!/bin/sh\n").unwrap();
+        let path = std::env::join_paths([&bin_dir]).unwrap();
+        let empty = std::env::join_paths([tmp.path().join("none")]).unwrap();
+        let var = OsStr::new("/operator/Blender");
+
+        let found = |var, path: &OsStr, app: Option<&Path>| {
+            host_tool_bin(var, Some(path), None, "blender", app)
+        };
+        assert_eq!(
+            found(Some(var), &path, Some(&app)),
+            Some(PathBuf::from("/operator/Blender"))
+        );
+        assert_eq!(found(None, &path, Some(&app)), Some(on_path));
+        assert_eq!(
+            found(Some(OsStr::new("")), &empty, Some(&app)),
+            Some(app.clone())
+        );
+        assert_eq!(found(None, &empty, Some(&tmp.path().join("gone"))), None);
+        assert_eq!(found(None, &empty, None), None);
     }
 }

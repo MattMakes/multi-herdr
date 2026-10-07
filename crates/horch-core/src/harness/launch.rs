@@ -21,6 +21,7 @@ use crate::execution::SessionMode;
 use crate::messaging::delivery::{self, Readiness, Timing};
 use crate::messaging::mailbox::Mailbox;
 use crate::roster::{ExecRule, Teammate};
+use crate::runtime::bins::{host_tool_bin, BLENDER_APP};
 #[cfg(test)]
 use crate::runtime::BinOverrides;
 use crate::runtime::{HarnessBins, RuntimeContext};
@@ -30,8 +31,8 @@ use crate::workspace::herdr::Herdr;
 use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest};
 
 /// What a launch reads from its environment: the programs to run, the home
-/// the operator's Claude settings live under, and the inherited OpenCode
-/// config. Built from a [`RuntimeContext`].
+/// the operator's Claude settings live under, the inherited OpenCode config,
+/// and where the host tools are. Built from a [`RuntimeContext`].
 #[derive(Debug, Clone)]
 pub struct LaunchEnv {
     pub bins: HarnessBins,
@@ -41,6 +42,14 @@ pub struct LaunchEnv {
     pub opencode_config_content: Option<String>,
     /// `$PATH`, where a sandboxed launch looks for its helper programs.
     pub path: Option<std::ffi::OsString>,
+    /// `$PATHEXT` (Windows).
+    pub pathext: Option<String>,
+    /// The operator's `$BLENDER_PATH`.
+    pub blender_path: Option<std::ffi::OsString>,
+    /// Blender's app bundle executable ([`BLENDER_APP`]), the last place a
+    /// `{path_of:blender}` lookup tries. A test leaves it `None`, so it never
+    /// finds the machine's real Blender.
+    pub blender_app: Option<PathBuf>,
 }
 
 impl LaunchEnv {
@@ -50,6 +59,9 @@ impl LaunchEnv {
             home: ctx.inherited.home_var.as_ref().map(PathBuf::from),
             opencode_config_content: ctx.inherited.opencode_config_content.clone(),
             path: ctx.inherited.path.clone(),
+            pathext: ctx.inherited.pathext.clone(),
+            blender_path: ctx.inherited.blender_path.clone(),
+            blender_app: BLENDER_APP.map(PathBuf::from),
         }
     }
 
@@ -62,6 +74,9 @@ impl LaunchEnv {
             home: None,
             opencode_config_content: None,
             path: None,
+            pathext: None,
+            blender_path: None,
+            blender_app: None,
         }
     }
 
@@ -72,6 +87,22 @@ impl LaunchEnv {
     /// `~/` in a teammate path, expanded against [`LaunchEnv::home`].
     pub(crate) fn expand_home(&self, path: &str) -> PathBuf {
         crate::roster::expand_home(path, self.home())
+    }
+
+    /// The executable of the host tool `name` names, by the lookup `horch
+    /// doctor` checks ([`host_tool_bin`]). `None` when it is not found, or
+    /// when `name` is not a tool horch can look up: only `blender`.
+    pub(crate) fn host_tool(&self, name: &str) -> Option<PathBuf> {
+        match name {
+            "blender" => host_tool_bin(
+                self.blender_path.as_deref(),
+                self.path.as_deref(),
+                self.pathext.as_deref(),
+                "blender",
+                self.blender_app.as_deref(),
+            ),
+            _ => None,
+        }
     }
 }
 
@@ -93,25 +124,38 @@ pub enum Session<'a> {
 /// on the command still wins, as it did when this was exported into the
 /// parent's environment.
 ///
-/// An `env` value that starts with `~/` expands against `home`, like a
-/// teammate path. The CLI starts without a shell, so nothing else expands
-/// it, and a committed file cannot carry an absolute home path.
-pub(crate) fn teammate_env(teammate: &Teammate, home: Option<&Path>) -> Vec<(String, String)> {
+/// An `env` value that starts with `~/` expands against the launch's home,
+/// like a teammate path. The CLI starts without a shell, so nothing else
+/// expands it, and a committed file cannot carry an absolute home path.
+///
+/// An `env` value that is exactly `{path_of:<tool>}` becomes that host tool's
+/// executable ([`LaunchEnv::host_tool`]). When the tool is not found, the
+/// variable is left out, so the launch still works and the CLI keeps what
+/// it inherits.
+pub(crate) fn teammate_env(teammate: &Teammate, env: &LaunchEnv) -> Vec<(String, String)> {
     let mut out = BTreeMap::new();
     if let Some(sub) = &teammate.subagent_model {
         out.insert("CLAUDE_CODE_SUBAGENT_MODEL".to_string(), sub.clone());
     }
     for (key, value) in &teammate.env {
-        let value = if value.starts_with("~/") {
-            crate::roster::expand_home(value, home)
-                .to_string_lossy()
-                .into_owned()
+        let value = if let Some(tool) = path_of(value) {
+            match env.host_tool(tool) {
+                Some(bin) => bin.to_string_lossy().into_owned(),
+                None => continue,
+            }
+        } else if value.starts_with("~/") {
+            env.expand_home(value).to_string_lossy().into_owned()
         } else {
             value.clone()
         };
         out.insert(key.clone(), value);
     }
     out.into_iter().collect()
+}
+
+/// The tool a `{path_of:<tool>}` env value names.
+fn path_of(value: &str) -> Option<&str> {
+    value.strip_prefix("{path_of:")?.strip_suffix('}')
 }
 
 /// Environment variables no agent CLI ever receives. The operator's rule
@@ -418,7 +462,7 @@ pub(crate) fn agent_command(
 ) -> Result<Command> {
     let env = LaunchEnv::from_context(ctx);
     let mut cmd = command_with_skills_in(&env, teammate, session, prompt, None, skills)?;
-    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, env.home()));
+    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, &env));
     crate::runtime::process::inherit_env(&mut cmd, child_env);
     crate::runtime::process::scrub_child_env(&mut cmd);
     Ok(cmd)
@@ -790,21 +834,94 @@ mod tests {
         t.env.insert("A".into(), "~/.config/x.json".into());
         t.env.insert("B".into(), "a~/b".into());
         t.env.insert("C".into(), "~".into());
-        let home = Path::new("/home/op");
+        let home = LaunchEnv {
+            home: Some(PathBuf::from("/home/op")),
+            ..LaunchEnv::for_test()
+        };
         assert_eq!(
-            teammate_env(&t, Some(home)),
+            teammate_env(&t, &home),
             vec![
                 ("A".to_string(), "/home/op/.config/x.json".to_string()),
                 ("B".to_string(), "a~/b".to_string()),
                 ("C".to_string(), "~".to_string()),
             ]
         );
-        assert_eq!(teammate_env(&t, None)[0].1, "~/.config/x.json");
+        assert_eq!(
+            teammate_env(&t, &LaunchEnv::for_test())[0].1,
+            "~/.config/x.json"
+        );
 
         let r = Roster::builtin().unwrap();
-        let env = teammate_env(r.require("app-release-preparer").unwrap(), Some(home));
+        let env = teammate_env(r.require("app-release-preparer").unwrap(), &home);
         let config = env.iter().find(|(k, _)| k == "ASC_CONFIG_PATH").unwrap();
         assert_eq!(config.1, "/home/op/.config/horch/asc/config.json");
+    }
+
+    /// The blender-artist's `BLENDER_PATH: "{path_of:blender}"` becomes the
+    /// Blender the doctor's lookup finds: the operator's `BLENDER_PATH`, else
+    /// `blender` on PATH, else the app. The Blender MCP server inherits it.
+    /// Not found, the variable is left out and the launch still builds. The
+    /// app is a temp file, so no test sees the machine's real Blender.
+    #[cfg(unix)]
+    #[test]
+    fn path_of_blender_fills_blender_path_or_leaves_it_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let on_path = bin_dir.join("blender");
+        std::fs::write(&on_path, "#!/bin/sh\n").unwrap();
+        crate::runtime::process::make_executable(&on_path).unwrap();
+        let app = tmp.path().join("Blender");
+        std::fs::write(&app, "#!/bin/sh\n").unwrap();
+        let none = std::env::join_paths([tmp.path().join("none")]).unwrap();
+
+        let r = Roster::builtin().unwrap();
+        let artist = r.require("blender-artist").unwrap();
+        let blender_path = |env: &LaunchEnv| {
+            teammate_env(artist, env)
+                .into_iter()
+                .find(|(k, _)| k == "BLENDER_PATH")
+                .map(|(_, v)| v)
+        };
+        let lookup = |var: Option<&str>, path, app: Option<&Path>| LaunchEnv {
+            blender_path: var.map(Into::into),
+            path: Some(path),
+            blender_app: app.map(Path::to_path_buf),
+            ..LaunchEnv::for_test()
+        };
+        let path = std::env::join_paths([&bin_dir]).unwrap();
+
+        // The operator's BLENDER_PATH wins.
+        let env = lookup(Some("/operator/Blender"), path.clone(), Some(&app));
+        assert_eq!(blender_path(&env).as_deref(), Some("/operator/Blender"));
+        // Then `blender` on PATH.
+        let env = lookup(None, path, Some(&app));
+        assert_eq!(blender_path(&env), Some(on_path.to_string_lossy().into()));
+        // Then the app.
+        let env = lookup(None, none.clone(), Some(&app));
+        assert_eq!(blender_path(&env), Some(app.to_string_lossy().into()));
+        // Not found: no BLENDER_PATH, and the launch command still builds.
+        let env = lookup(None, none, None);
+        assert_eq!(blender_path(&env), None);
+        command_in(&env, artist, Session::Fresh("s"), "p", None).unwrap();
+    }
+
+    /// Every `{path_of:<tool>}` in a built-in teammate's `env` names a tool
+    /// `LaunchEnv::host_tool` can look up: a typo would leave the variable
+    /// out of every launch with no error.
+    #[test]
+    fn every_path_of_names_a_known_tool() {
+        let r = Roster::builtin().unwrap();
+        let mut seen = 0;
+        for name in r.names() {
+            for value in r.require(name).unwrap().env.values() {
+                if let Some(tool) = path_of(value) {
+                    assert!(["blender"].contains(&tool), "{name}: {value}");
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 0, "no teammate uses {{path_of:...}}");
     }
 
     #[test]
@@ -2052,9 +2169,7 @@ mod tests {
                 None,
                 None,
             ),
-            home: None,
-            opencode_config_content: None,
-            path: None,
+            ..LaunchEnv::for_test()
         };
         let r = Roster::builtin().unwrap();
         let mut cmd = command_in(
