@@ -4,13 +4,18 @@
 //! RESUMING a previous session id from the project ledger. Prints the new pane id
 //! on stdout (human detail goes to stderr) so callers can chain splits when
 //! building layouts. The rules live in `execution::plan` and the steps in
-//! `execution::service`; this reads the inputs and prints.
+//! `execution::service`; this reads the inputs and prints. Then it waits up to
+//! [`SPAWN_WAIT`] for the worker to register, and fails with the worker's
+//! startup error when the worker dies first.
+
+use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
+use horch_core::execution::lifecycle::{await_worker, WorkerStart};
 use horch_core::execution::plan::{self, GateInputs, MintedIds, PlanInputs};
 use horch_core::execution::service::{ExecutionService, SpawnError};
 use horch_core::execution::store::ExecutionStore;
-use horch_core::execution::{SessionMode, SpawnRequest, TilingMode};
+use horch_core::execution::{ExecutionStatus, LaunchStage, SessionMode, SpawnRequest, TilingMode};
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::Phase;
@@ -19,6 +24,14 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
+
+/// How long `horch spawn` waits for its worker to register or to leave a
+/// startup error (`HORCH_SPAWN_WAIT_MS` overrides it). After it, the spawn
+/// succeeds with a warning, and a worker that registers later still works.
+pub const SPAWN_WAIT: Duration = Duration::from_secs(15);
+
+/// How often the wait looks for the registration and the error file.
+const SPAWN_POLL: Duration = Duration::from_millis(100);
 
 pub struct SpawnArgs {
     pub teammate: Option<String>,
@@ -190,8 +203,47 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         mailbox: &mailbox,
         tile: &tile,
     };
+    let started = SystemTime::now();
     let out = service.spawn(plan, args.role.as_deref())?;
     let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
+    // A pane line starts with `exec`, so a worker that fails at startup
+    // closes its pane and takes its stderr with it. It leaves the error in a
+    // file instead, and this wait reads it.
+    let wait = ctx.settings.spawn_wait.unwrap_or(SPAWN_WAIT);
+    if !wait.is_zero() {
+        let data_root = &ctx.paths.data_root;
+        let mut registered = || mailbox.pane_for(role.as_str()).as_deref() == Some(pane.as_str());
+        match await_worker(
+            data_root,
+            role.as_str(),
+            started,
+            wait,
+            SPAWN_POLL,
+            &mut registered,
+        ) {
+            WorkerStart::Registered => {}
+            WorkerStart::Failed(error) => {
+                let id = out.plan.execution.id.as_str();
+                let state = ExecutionStatus::LaunchFailed {
+                    stage: LaunchStage::Run,
+                    reason: error.clone(),
+                };
+                if let Err(e) = store.end_live(id, state) {
+                    eprintln!("horch spawn: recording the failed start of {id} failed: {e:#}");
+                }
+                // The pane closed with the worker, or the worker closed it;
+                // this close is for a pane that did neither.
+                let _ = herdr.pane_close(pane);
+                mailbox.unregister(role.as_str());
+                bail!("worker {role} (pane {pane}) failed to start: {error}");
+            }
+            WorkerStart::Waiting => eprintln!(
+                "horch spawn: worker {role} (pane {pane}) has not registered after {} ms; \
+                 it can still start",
+                wait.as_millis()
+            ),
+        }
+    }
     let what = format!("{} {}", launch.teammate.agent, launch.model);
     match &launch.session {
         SessionMode::Resume(id) => {

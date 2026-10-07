@@ -285,6 +285,9 @@ impl Harness {
         // Fake panes never show an agent, so `horch tell` gives a fresh role
         // no grace here (the grace has its own tests in horch-core).
         env.insert("HORCH_TELL_GRACE_MS".into(), "0".into());
+        // Most scenarios run no worker in a pane, so `horch spawn` does not
+        // wait for one to register (tests/startup_error.rs sets the wait).
+        env.insert("HORCH_SPAWN_WAIT_MS".into(), "0".into());
         env.insert(
             "CODEX_HOME".into(),
             self.home.join(".codex").to_string_lossy().into_owned(),

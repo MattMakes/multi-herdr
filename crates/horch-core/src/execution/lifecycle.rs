@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,7 @@ use crate::execution::legacy::HistoryEntry;
 use crate::execution::store::ExecutionStore;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use crate::harness::HarnessKind;
+use crate::ids::RoleName;
 use crate::messaging::brief::Brief;
 use crate::messaging::mailbox::Mailbox;
 use crate::messaging::message::strip_done_prefix;
@@ -182,6 +183,12 @@ pub trait WorkerSteps {
     fn close_pane(&mut self) -> Result<()> {
         Ok(())
     }
+    /// Leave the startup error text for `horch spawn`
+    /// ([`write_startup_error`]). The pane closes when this process ends and
+    /// takes its stderr with it. The default leaves nothing.
+    fn leave_startup_error(&mut self, _error: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Run a worker: load the brief, build the context, register the mailbox,
@@ -204,9 +211,23 @@ pub trait WorkerSteps {
 /// dead worker until a deadline. The recording is best effort: its own error
 /// is logged. Then the worker closes its own pane, as `done` does; a close
 /// that fails is logged and the startup error still returns. A failure of
-/// `load_brief` records nothing: the record is unknown, and the pane stays.
+/// `load_brief` records nothing in the ledger: the record is unknown.
+///
+/// Every startup failure also leaves its error text for `horch spawn`
+/// ([`WorkerSteps::leave_startup_error`]) before the pane closes. A pane
+/// line starts with `exec`, so the pane closes when this process ends, also
+/// after a `load_brief` failure, and the spawner's error is the only one the
+/// operator sees.
 pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
-    let brief = steps.load_brief()?;
+    let brief = match steps.load_brief() {
+        Ok(brief) => brief,
+        Err(e) => {
+            if let Err(leave) = steps.leave_startup_error(&format!("{e:#}")) {
+                eprintln!("horch worker: could not leave the startup error: {leave:#}");
+            }
+            return Err(e);
+        }
+    };
     if let Err(e) = steps
         .enter_context(&brief)
         .and_then(|()| steps.register(&brief))
@@ -220,8 +241,15 @@ pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
                 brief.role
             );
         }
-        // The close ends this process, so the error is printed first.
+        // The close ends this process, so the error is printed and left
+        // for the spawner first.
         eprintln!("horch worker[{}]: startup failed: {e:#}", brief.role);
+        if let Err(leave) = steps.leave_startup_error(&format!("{e:#}")) {
+            eprintln!(
+                "horch worker[{}]: could not leave the startup error: {leave:#}",
+                brief.role
+            );
+        }
         if let Err(close) = steps.close_pane() {
             eprintln!(
                 "horch worker[{}]: could not close the pane: {close:#}",
@@ -273,6 +301,78 @@ pub fn record_startup_failure(store: &ExecutionStore, key: &str, error: &str) ->
             text: error.to_string(),
         });
     })
+}
+
+/// Where a worker's startup error waits for `horch spawn`: under the data
+/// root, which the pane command sets (`HORCH_DATA_DIR`), so the worker and
+/// its spawner agree on it before the brief is read. The file is named by
+/// role, because herdr gives the worker an internal pane id and the spawner
+/// the public one. `None` when `role` is not a role name.
+pub fn startup_error_path(data_root: &Path, role: &str) -> Option<PathBuf> {
+    RoleName::new(role).ok()?;
+    Some(data_root.join("startup-errors").join(format!("{role}.txt")))
+}
+
+/// Write `error` to [`startup_error_path`], so `horch spawn` can show it.
+pub fn write_startup_error(data_root: &Path, role: &str, error: &str) -> Result<()> {
+    let path = startup_error_path(data_root, role)
+        .with_context(|| format!("'{role}' is not a role name"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    crate::fsx::write_atomic(&path, error.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+/// Read and delete the startup error of the worker in `role`. A file
+/// written before `since` belongs to an earlier worker in that role: it is
+/// deleted and not returned.
+pub fn take_startup_error(data_root: &Path, role: &str, since: SystemTime) -> Option<String> {
+    let path = startup_error_path(data_root, role)?;
+    let written = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+    let text = (written >= since)
+        .then(|| std::fs::read_to_string(&path).ok())
+        .flatten();
+    let _ = std::fs::remove_file(&path);
+    text.map(|t| t.trim_end().to_string())
+}
+
+/// How a spawned worker's start went, as [`await_worker`] saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerStart {
+    /// The worker registered its role.
+    Registered,
+    /// The worker failed before it registered. The text is its error.
+    Failed(String),
+    /// Neither happened within the wait. The worker can still register.
+    Waiting,
+}
+
+/// Wait up to `limit` for the worker in `role`, started at `since`, to
+/// register (`registered`) or to leave its startup error, whichever comes
+/// first. Polls every `poll`; an error found is deleted.
+pub fn await_worker(
+    data_root: &Path,
+    role: &str,
+    since: SystemTime,
+    limit: Duration,
+    poll: Duration,
+    registered: &mut dyn FnMut() -> bool,
+) -> WorkerStart {
+    let until = Instant::now() + limit;
+    loop {
+        if let Some(error) = take_startup_error(data_root, role, since) {
+            return WorkerStart::Failed(error);
+        }
+        if registered() {
+            return WorkerStart::Registered;
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return WorkerStart::Waiting;
+        }
+        std::thread::sleep(poll.min(left));
+    }
 }
 
 /// The worker in a real herdr pane.
@@ -424,6 +524,10 @@ impl WorkerSteps for PaneWorker<'_> {
 
     fn startup_failed(&mut self, brief: &Brief, error: &str) -> Result<()> {
         record_startup_failure(&self.store()?, &brief.record_id, error)
+    }
+
+    fn leave_startup_error(&mut self, error: &str) -> Result<()> {
+        write_startup_error(&self.ctx.paths.data_root, self.role, error)
     }
 
     fn close_pane(&mut self) -> Result<()> {
@@ -887,6 +991,7 @@ mod tests {
             calls: Vec<&'static str>,
             fail_at: &'static str,
             startup_error: Option<String>,
+            left_error: Option<String>,
         }
 
         impl Steps<'_> {
@@ -915,6 +1020,9 @@ mod tests {
 
         impl WorkerSteps for Steps<'_> {
             fn load_brief(&mut self) -> Result<Brief> {
+                if self.fail_at == "load_brief" {
+                    bail!("no brief at /tmp/m/sonnet-1.brief.json");
+                }
                 Ok(Self::brief())
             }
             fn enter_context(&mut self, _: &Brief) -> Result<()> {
@@ -949,6 +1057,11 @@ mod tests {
                 self.calls.push("close_pane");
                 self.ws.pane_close(&self.pane)
             }
+            fn leave_startup_error(&mut self, error: &str) -> Result<()> {
+                self.calls.push("leave_startup_error");
+                self.left_error = Some(error.to_string());
+                Ok(())
+            }
         }
 
         fn steps<'a>(ws: &'a FakeWorkspace, fail_at: &'static str) -> Steps<'a> {
@@ -959,6 +1072,7 @@ mod tests {
                 calls: Vec::new(),
                 fail_at,
                 startup_error: None,
+                left_error: None,
             }
         }
 
@@ -974,10 +1088,92 @@ mod tests {
                     "enter_context",
                     "startup_failed",
                     "agent_exited",
+                    "leave_startup_error",
                     "close_pane"
                 ]
             );
             assert!(ws.pane_ids().is_empty(), "the pane is closed");
+            assert_eq!(steps.left_error.as_deref(), Some("enter_context failed"));
+        }
+
+        /// W13 C4: the pane closes when `horch worker` exits, so a worker
+        /// with no brief leaves its error for `horch spawn`.
+        #[test]
+        fn a_missing_brief_leaves_its_error_for_the_spawner() {
+            let ws = FakeWorkspace::new();
+            let mut steps = steps(&ws, "load_brief");
+            let e = run_worker(&mut steps).unwrap_err();
+            assert_eq!(steps.calls, ["leave_startup_error"]);
+            assert_eq!(steps.left_error, Some(format!("{e:#}")));
+            assert!(steps.left_error.unwrap().starts_with("no brief at "));
+        }
+
+        #[test]
+        fn a_startup_error_is_read_once_then_deleted() {
+            let tmp = tempfile::tempdir().unwrap();
+            let since = std::time::SystemTime::now() - Duration::from_secs(1);
+            write_startup_error(tmp.path(), "sonnet-1", "no brief\n").unwrap();
+            let path = startup_error_path(tmp.path(), "sonnet-1").unwrap();
+            assert!(path.is_file());
+            assert_eq!(
+                take_startup_error(tmp.path(), "sonnet-1", since).as_deref(),
+                Some("no brief")
+            );
+            assert!(!path.exists(), "the file is deleted after it is read");
+            assert_eq!(take_startup_error(tmp.path(), "sonnet-1", since), None);
+        }
+
+        /// A file an earlier worker in the same role left is not this
+        /// worker's error: it is deleted, and nothing is returned.
+        #[test]
+        fn a_stale_startup_error_is_deleted_and_ignored() {
+            let tmp = tempfile::tempdir().unwrap();
+            write_startup_error(tmp.path(), "sonnet-1", "old").unwrap();
+            let later = std::time::SystemTime::now() + Duration::from_secs(60);
+            assert_eq!(take_startup_error(tmp.path(), "sonnet-1", later), None);
+            assert!(!startup_error_path(tmp.path(), "sonnet-1").unwrap().exists());
+        }
+
+        #[test]
+        fn a_role_that_is_a_path_writes_no_startup_error() {
+            let tmp = tempfile::tempdir().unwrap();
+            assert!(startup_error_path(tmp.path(), "../x").is_none());
+            assert!(write_startup_error(tmp.path(), "../x", "e").is_err());
+            assert!(!tmp.path().join("x.txt").exists());
+        }
+
+        #[test]
+        fn await_worker_returns_the_first_of_error_registration_and_timeout() {
+            let tmp = tempfile::tempdir().unwrap();
+            let since = std::time::SystemTime::now() - Duration::from_secs(1);
+            let poll = Duration::from_millis(5);
+            let long = Duration::from_secs(30);
+            assert_eq!(
+                await_worker(tmp.path(), "sonnet-1", since, long, poll, &mut || true),
+                WorkerStart::Registered
+            );
+            assert_eq!(
+                await_worker(
+                    tmp.path(),
+                    "sonnet-1",
+                    since,
+                    Duration::from_millis(30),
+                    poll,
+                    &mut || false
+                ),
+                WorkerStart::Waiting
+            );
+            // The error appears while the spawner waits.
+            let mut polls = 0;
+            let start = await_worker(tmp.path(), "sonnet-1", since, long, poll, &mut || {
+                polls += 1;
+                if polls == 3 {
+                    write_startup_error(tmp.path(), "sonnet-1", "boom").unwrap();
+                }
+                false
+            });
+            assert_eq!(start, WorkerStart::Failed("boom".into()));
+            assert!(!startup_error_path(tmp.path(), "sonnet-1").unwrap().exists());
         }
 
         #[test]
