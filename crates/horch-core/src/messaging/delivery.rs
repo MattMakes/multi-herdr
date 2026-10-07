@@ -162,7 +162,7 @@ pub const TELL_GRACE: Duration = Duration::from_secs(30);
 /// [`send_line_with`], but first wait out an agent that is still starting
 /// in `pane`: what `horch tell` and `horch assign` do.
 ///
-/// - herdr sees an agent that is starting ([`starting`]): wait until it is
+/// - herdr sees an agent that is starting (`starting`): wait until it is
 ///   not, up to `wait.timeout`, else an error and nothing typed.
 /// - herdr sees no agent and `grace` is not zero (the role registered less
 ///   than [`TELL_GRACE`] ago): wait up to `grace` for an agent to show, then

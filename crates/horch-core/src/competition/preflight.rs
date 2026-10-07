@@ -154,7 +154,7 @@ pub struct PreflightPlan {
     /// of PRE-09's estimate; the CLI leaves it empty.
     pub expected_tokens: BTreeMap<String, TokenEstimate>,
     /// What earlier candidates of the same task used, per model
-    /// ([`crate::competition::budget::measured_estimates`]).
+    /// ([`crate::competition::budget::measured_from_runs`]).
     pub measured_tokens: BTreeMap<String, MeasuredTokens>,
     /// The main repository root: the harnesses key their trust on it, also
     /// for a linked worktree.

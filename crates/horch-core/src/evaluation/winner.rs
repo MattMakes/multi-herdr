@@ -57,7 +57,7 @@ impl Default for WinnerPolicy {
     }
 }
 
-/// The only utility rule: see [`utility_winner`].
+/// The only utility rule: see `utility_winner`.
 pub const UTILITY_RULE_V1: &str = "u1";
 
 /// How a `tie` verdict is resolved (JDG-07). Serialized as

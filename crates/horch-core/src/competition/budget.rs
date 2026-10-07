@@ -76,7 +76,7 @@ pub struct UsageMeter {
     pub prices: BTreeMap<String, Price>,
     /// The expected tokens of one candidate, by model: the estimates PRE-09
     /// resolved for the round. A model missing here projects
-    /// [`DEFAULT_TOKEN_ESTIMATE`].
+    /// `DEFAULT_TOKEN_ESTIMATE`.
     pub estimates: BTreeMap<String, TokenEstimate>,
 }
 
@@ -164,7 +164,7 @@ pub enum EstimateSource {
     ConfigAll,
     /// The earlier candidates of the same task on the same model.
     Measured { runs: u32 },
-    /// [`DEFAULT_TOKEN_ESTIMATE`].
+    /// `DEFAULT_TOKEN_ESTIMATE`.
     Default,
 }
 
@@ -191,7 +191,7 @@ pub struct MeasuredTokens {
 /// The tokens PRE-09 expects of one candidate on `model`, and their source.
 /// The order: the plan's per-label estimate, `budget.expected_tokens` (the
 /// model entry, then `all`), the measured usage when it has at least
-/// [`MEASURED_MIN_RUNS`] runs, then [`DEFAULT_TOKEN_ESTIMATE`].
+/// [`MEASURED_MIN_RUNS`] runs, then `DEFAULT_TOKEN_ESTIMATE`.
 pub fn resolve_estimate(
     model: &str,
     per_label: Option<TokenEstimate>,

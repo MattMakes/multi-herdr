@@ -57,7 +57,7 @@ pub fn judge_prompt(teammate: &Teammate) -> String {
 /// `schema` is the JSON schema text for `--json-schema`. Pass it only when
 /// [`supports_json_schema`] says the CLI has the flag. The flag takes the
 /// schema itself, not a path (`claude --help`, 2026-10). The command gets
-/// [`cli_schema`] of it.
+/// `cli_schema` of it.
 pub fn headless_command(
     ctx: &RuntimeContext,
     teammate: &Teammate,

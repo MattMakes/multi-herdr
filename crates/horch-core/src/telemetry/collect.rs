@@ -412,7 +412,7 @@ fn share(part: f64, whole: f64) -> Option<f64> {
 }
 
 /// The stored events, interned for the snapshot fold (NFR-02). An event
-/// becomes a [`Row`]: its record and its 6 group keys. A tick then folds
+/// becomes a `Row`: its record and its 6 group keys. A tick then folds
 /// every event with no allocation and no string-keyed map.
 #[derive(Debug, Default)]
 pub struct EventIndex {
