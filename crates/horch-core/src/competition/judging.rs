@@ -92,7 +92,7 @@ pub struct JudgeEnv<'a> {
     /// What `winner.selected` says about promotion.
     pub promotion: PromotionIntent,
     pub timeout: Duration,
-    /// See `evaluation::scheduler::DEFAULT_STALE_AFTER`.
+    /// See `heartbeat::STALE_AFTER`.
     pub stale_after: Duration,
     pub launcher: &'a dyn JobLauncher,
     /// A monotonic clock for `occurred_at`.

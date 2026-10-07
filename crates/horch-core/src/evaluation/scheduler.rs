@@ -7,12 +7,15 @@
 //! | File | Written by | Content |
 //! |---|---|---|
 //! | `job.log` | the coordinator, before the spawn | the job's stdout and stderr |
-//! | `heartbeat` | the job, every [`HEARTBEAT_EVERY`] | [`Heartbeat`] |
+//! | `heartbeat` | the job, every [`HEARTBEAT_EVERY`] | [`Heartbeat`] (the shared [`crate::heartbeat`]) |
 //! | `output.json` | the job, once, ≤ [`OUTPUT_CAP_BYTES`] | the judge's answer text |
 //! | `exit.json` | the job, once, last | [`JobExit`] |
 //!
 //! [`discover`] reads those files and says what the job is doing. The
 //! decision itself is the pure [`decide`], so a table test covers it.
+//!
+//! [`HEARTBEAT_EVERY`]: crate::heartbeat::HEARTBEAT_EVERY
+//! [`Heartbeat`]: crate::heartbeat::Heartbeat
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,24 +26,17 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::fsx;
+use crate::heartbeat::{self, Heartbeat, Liveness, HEARTBEAT_FILE};
 use crate::ids::{RoundId, SessionId};
 use crate::procid;
 use crate::runtime::RuntimeContext;
 
-pub const HEARTBEAT_FILE: &str = "heartbeat";
 pub const OUTPUT_FILE: &str = "output.json";
 pub const EXIT_FILE: &str = "exit.json";
 pub const LOG_FILE: &str = "job.log";
 
 /// The most a judge answer may hold (design §4.7, SEC-06).
 pub const OUTPUT_CAP_BYTES: usize = 1024 * 1024;
-
-/// How often the job rewrites its heartbeat.
-pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(2);
-
-/// A heartbeat older than this, or a job that never wrote one this long
-/// after its spawn, is lost.
-pub(crate) const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(30);
 
 /// The dataset binary, a sibling of `horch`.
 pub const DATASET_BIN: &str = "multi-herdr-dataset";
@@ -58,18 +54,6 @@ pub struct JudgeJobSpec {
     pub model: String,
     pub effort: String,
     pub timeout: Duration,
-}
-
-/// `heartbeat`: the job is alive at `at`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Heartbeat {
-    pub pid: u32,
-    pub at: String,
-    /// The job's [`procid::start_time`]. With it, a pid that ended and was
-    /// given to another program is not the job: not alive, not killed.
-    /// `None` in a heartbeat written before it existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started: Option<u64>,
 }
 
 /// `exit.json`: how the job ended.
@@ -128,12 +112,11 @@ pub struct JobFacts {
     pub pid_alive: bool,
 }
 
-/// Pure: output present → parse; exit file → exited; heartbeat fresh and
-/// pid alive → running; spawned less than `stale_after` ago with no
-/// heartbeat yet → running; not spawned → not started; else lost.
+/// Pure: output present → parse; exit file → exited; else the shared
+/// [`heartbeat::liveness`]: heartbeat fresh and pid alive → running;
+/// spawned less than `stale_after` ago with no heartbeat yet → running; not
+/// spawned → not started; else lost.
 pub fn decide(facts: &JobFacts, now: DateTime<Utc>, stale_after: Duration) -> JobState {
-    let stale = chrono::Duration::from_std(stale_after).unwrap_or(chrono::Duration::MAX);
-    let fresh = |at: DateTime<Utc>| now - at <= stale;
     if facts.output {
         return JobState::OutputPresent(PathBuf::from(OUTPUT_FILE));
     }
@@ -143,18 +126,17 @@ pub fn decide(facts: &JobFacts, now: DateTime<Utc>, stale_after: Duration) -> Jo
             code: None,
         }));
     }
-    if let Some(hb) = &facts.heartbeat {
-        let at = crate::clock::parse(&hb.at);
-        return if facts.pid_alive && at.is_some_and(fresh) {
-            JobState::Running { pid: hb.pid }
-        } else {
-            JobState::Lost
-        };
-    }
-    match facts.spawned_at {
-        None => JobState::NotStarted,
-        Some(at) if fresh(at) => JobState::Running { pid: 0 },
-        Some(_) => JobState::Lost,
+    let live = heartbeat::liveness(
+        facts.heartbeat.as_ref(),
+        facts.pid_alive,
+        facts.spawned_at,
+        now,
+        stale_after,
+    );
+    match live {
+        Liveness::NotStarted => JobState::NotStarted,
+        Liveness::Running { pid } => JobState::Running { pid },
+        Liveness::Lost => JobState::Lost,
     }
 }
 
@@ -173,12 +155,7 @@ pub(crate) fn job_facts(job_dir: &Path) -> JobFacts {
 /// right after, and its dead pid would read as Lost: a valid answer thrown
 /// away and the judge run again.
 fn job_facts_with(job_dir: &Path, between: impl FnOnce()) -> JobFacts {
-    let heartbeat: Option<Heartbeat> = std::fs::read(job_dir.join(HEARTBEAT_FILE))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok());
-    let pid_alive = heartbeat
-        .as_ref()
-        .is_some_and(|h| procid::alive(h.pid, h.started));
+    let (heartbeat, pid_alive) = heartbeat::read(job_dir);
     between();
     let exit = std::fs::read(job_dir.join(EXIT_FILE))
         .ok()
@@ -396,6 +373,7 @@ fn kill_member(pid: u32, pgid: u32, started: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::heartbeat::STALE_AFTER;
 
     fn at(s: &str) -> DateTime<Utc> {
         crate::clock::parse(s).unwrap()
@@ -417,21 +395,6 @@ mod tests {
             job_args(&spec).join(" "),
             "judge-job --round r1 --attempt 2 --input-dir /b --session-id s1 \
              --model opus --effort high --timeout-s 1"
-        );
-    }
-
-    #[test]
-    fn heartbeat_shape() {
-        let old: Heartbeat = serde_json::from_str(r#"{"pid":7,"at":"x"}"#).unwrap();
-        assert_eq!(old.started, None, "a heartbeat from before start times");
-        let hb = Heartbeat {
-            pid: 7,
-            at: "x".into(),
-            started: Some(42),
-        };
-        assert_eq!(
-            serde_json::to_string(&hb).unwrap(),
-            r#"{"pid":7,"at":"x","started":42}"#
         );
     }
 
@@ -502,12 +465,12 @@ mod tests {
         });
         assert!(facts.output, "{facts:?}");
         assert!(matches!(
-            decide(&facts, Utc::now(), DEFAULT_STALE_AFTER),
+            decide(&facts, Utc::now(), STALE_AFTER),
             JobState::OutputPresent(_)
         ));
         // The same job seen after it ended: still the answer, never Lost.
         assert!(matches!(
-            discover(dir.path(), Utc::now(), DEFAULT_STALE_AFTER),
+            discover(dir.path(), Utc::now(), STALE_AFTER),
             JobState::OutputPresent(_)
         ));
     }
@@ -527,9 +490,6 @@ mod tests {
             exit: Some(Some(e.clone())),
             ..JobFacts::default()
         };
-        assert_eq!(
-            decide(&facts, now, DEFAULT_STALE_AFTER),
-            JobState::Exited(e)
-        );
+        assert_eq!(decide(&facts, now, STALE_AFTER), JobState::Exited(e));
     }
 }

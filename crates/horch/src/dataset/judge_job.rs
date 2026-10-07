@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use horch_core::evaluation::rubric::schema_text;
 use horch_core::evaluation::scheduler::{
-    ExitReason, Heartbeat, JobExit, EXIT_FILE, HEARTBEAT_EVERY, HEARTBEAT_FILE, OUTPUT_CAP_BYTES,
-    OUTPUT_FILE,
+    ExitReason, JobExit, EXIT_FILE, OUTPUT_CAP_BYTES, OUTPUT_FILE,
 };
 use horch_core::fsx;
 use horch_core::harness::headless::{headless_command, judge_prompt, supports_json_schema};
+use horch_core::heartbeat;
 use horch_core::ids::{RoundId, SessionId};
 use horch_core::roster::Roster;
 use horch_core::runtime::RuntimeContext;
@@ -53,8 +53,7 @@ pub(crate) fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8>
         bail!("attempt {} of round {round} has run already", args.attempt);
     }
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let beat = heartbeat(job_dir.clone(), stop.clone());
+    let beat = heartbeat::start(&job_dir);
     let result = run_judge(ctx, args).unwrap_or_else(|e| {
         eprintln!("judge-job: {e:#}");
         RunResult::Failed(JobExit {
@@ -76,49 +75,12 @@ pub(crate) fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8>
     };
     let bytes = serde_json::to_vec(&done)?;
     fsx::create_immutable(&job_dir.join(EXIT_FILE), &bytes, fsx::PRIVATE_FILE)?;
-    stop.store(true, Ordering::SeqCst);
-    let _ = beat.join();
+    beat.stop();
     Ok(if done.reason == ExitReason::Ok {
         exit::SUCCESS
     } else {
         exit::FAILURE
     })
-}
-
-/// Write `heartbeat` once now, then rewrite it every [`HEARTBEAT_EVERY`]
-/// until `stop`. The first beat is written before this returns: a judge
-/// that answers before the thread first runs still leaves a heartbeat, and
-/// the coordinator emits `judge.started` from it.
-fn heartbeat(dir: std::path::PathBuf, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
-    let pid = std::process::id();
-    beat(&dir, pid);
-    std::thread::spawn(move || {
-        let tick = Duration::from_millis(100);
-        let mut next = Instant::now() + HEARTBEAT_EVERY;
-        while !stop.load(Ordering::SeqCst) {
-            if Instant::now() >= next {
-                beat(&dir, pid);
-                next = Instant::now() + HEARTBEAT_EVERY;
-            }
-            std::thread::sleep(tick);
-        }
-    })
-}
-
-/// Write one heartbeat for `pid` in `dir`.
-fn beat(dir: &Path, pid: u32) {
-    let hb = Heartbeat {
-        pid,
-        // The coordinator kills this job only while its pid has this start
-        // time: never a later program that was given the pid.
-        started: horch_core::procid::start_time(pid),
-        // Wall-clock, never a pinned HORCH_NOW: the coordinator compares it
-        // with real file times.
-        at: horch_core::clock::stamp(chrono::Utc::now()),
-    };
-    if let Ok(bytes) = serde_json::to_vec(&hb) {
-        let _ = fsx::write_atomic(&dir.join(HEARTBEAT_FILE), &bytes, fsx::PRIVATE_FILE);
-    }
 }
 
 fn run_judge(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<RunResult> {
@@ -267,21 +229,6 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text.lines().count(), 1, "{text}");
         assert!(text.starts_with("warning: teammate 'newcomer'"), "{text}");
-    }
-
-    /// The first heartbeat exists when `heartbeat` returns, even when the
-    /// job is already over and the thread never beats.
-    #[test]
-    fn heartbeat_is_written_before_the_judge_runs() {
-        let tmp = tempfile::tempdir().unwrap();
-        let stop = Arc::new(AtomicBool::new(true));
-        let thread = heartbeat(tmp.path().to_path_buf(), stop);
-        let written = tmp.path().join(HEARTBEAT_FILE);
-        assert!(written.is_file(), "no heartbeat before the judge runs");
-        thread.join().unwrap();
-        let hb: Heartbeat = serde_json::from_slice(&std::fs::read(written).unwrap()).unwrap();
-        assert_eq!(hb.pid, std::process::id());
-        assert_eq!(hb.started, horch_core::procid::start_time(hb.pid));
     }
 
     #[test]

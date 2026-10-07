@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use horch_core::evaluation::scheduler::{
-    decide, discover, ExitReason, Heartbeat, JobExit, JobFacts, JobState, EXIT_FILE,
-    HEARTBEAT_FILE, LOG_FILE, OUTPUT_FILE,
+    decide, discover, ExitReason, JobExit, JobFacts, JobState, EXIT_FILE, LOG_FILE, OUTPUT_FILE,
 };
+use horch_core::heartbeat::{Heartbeat, HEARTBEAT_FILE};
 
 fn at(s: &str) -> DateTime<Utc> {
     horch_core::clock::parse(s).unwrap()

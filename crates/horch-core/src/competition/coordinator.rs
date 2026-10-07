@@ -57,7 +57,6 @@ use crate::competition::planner::{candidate_planned_payload, round_created_paylo
 use crate::competition::promotion::{
     BranchRef, FaultFired, GitPromotionEngine, PromotionEngine, PromotionPlan, PromotionResult,
 };
-use crate::evaluation::scheduler::DEFAULT_STALE_AFTER;
 use crate::evaluation::validator::{ValidationReport, Validator};
 use crate::evaluation::winner::RejectReason;
 use crate::execution::plan::{plan_launch, MintedIds, PlanInputs};
@@ -68,6 +67,7 @@ use crate::execution::{
     SpawnRequest, TilingMode,
 };
 use crate::fsx::{self, FsxError};
+use crate::heartbeat;
 use crate::ids::{ExecutionId, ExperimentId, PaneId, RoundId, SessionId};
 use crate::measure::digest::sha256_bytes;
 use crate::measure::event::{
@@ -1239,7 +1239,7 @@ impl<G: GitClient> Coordinator<'_, G> {
                 None => PromotionIntent::NotRequested,
             },
             timeout: Duration::from_secs(config.judge.timeout_s),
-            stale_after: DEFAULT_STALE_AFTER,
+            stale_after: heartbeat::STALE_AFTER,
             launcher: self.launcher,
             clock: self.clock,
         };

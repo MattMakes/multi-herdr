@@ -10,6 +10,7 @@
 //! | [`clock`]       | the one clock horch reads (`HORCH_NOW` pins it)             |
 //! | [`fsx`]         | durable file writes and the cross-process directory lock    |
 //! | [`procid`]      | process identity: a pid with its start time                 |
+//! | [`heartbeat`]   | the liveness of background jobs (judge, compaction)         |
 //! | [`runtime`]     | the process boundary: `RuntimeContext`, paths, binaries     |
 //! | [`roster`]      | `teammates/` files: parsing, layering, `--check` rules      |
 //! | [`prompts`]     | rendering briefings from `teammates/`                       |
@@ -41,6 +42,7 @@ pub mod evaluation;
 pub mod execution;
 pub mod fsx;
 pub mod harness;
+pub mod heartbeat;
 pub mod ids;
 pub mod measure;
 pub mod messaging;
