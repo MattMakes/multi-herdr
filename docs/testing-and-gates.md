@@ -211,6 +211,14 @@ the e2e tests use it to test crash and resume.
 
 ## Live checks (not in the gate)
 
+A live check proves a claim against a real tool on the operator's Mac
+(Unreal, Blender, Xcode, the harness CLIs, real telemetry, a real dataset
+round, Linux). Each family has a script `scripts/live/<family>.sh` and a
+tracked result file. [live-checks/README.md](live-checks/README.md) is the
+index: how to run a check, the families, and the result-file format.
+
+The checks below also run outside the gate:
+
 | command | needs | checks |
 |---|---|---|
 | `horch smoke messaging` | a herdr server | the messaging primitives, 2 panes, no agents |
