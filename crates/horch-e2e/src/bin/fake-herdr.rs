@@ -612,13 +612,20 @@ fn wait_output(args: &[&str]) -> i32 {
     }
 }
 
-/// Start one entered line in `pane`, its output appended to the pane.
-fn shell_line(pane: &str, line: &str) {
-    let (shell, flag) = if cfg!(windows) {
-        ("cmd", "/C")
+/// The shell a pane runs its lines in. horch builds PowerShell lines on
+/// Windows (`PaneShell::PowerShell`), so the fake runs them with PowerShell,
+/// as a real herdr pane does; `cmd /C` would misread the `&` call operator.
+fn pane_shell() -> (&'static str, &'static str) {
+    if cfg!(windows) {
+        ("powershell", "-Command")
     } else {
         ("/bin/sh", "-c")
-    };
+    }
+}
+
+/// Start one entered line in `pane`, its output appended to the pane.
+fn shell_line(pane: &str, line: &str) {
+    let (shell, flag) = pane_shell();
     let mut cmd = std::process::Command::new(shell);
     cmd.arg(flag).arg(line).env("HERDR_PANE_ID", pane);
     cmd.stdin(std::process::Stdio::null());
@@ -643,11 +650,7 @@ fn shell_line(pane: &str, line: &str) {
 /// process group id on unix.
 fn exec_detached(pane: &str, command: &str) -> Option<u32> {
     let out = pane_out(pane);
-    let (shell, flag) = if cfg!(windows) {
-        ("cmd", "/C")
-    } else {
-        ("/bin/sh", "-c")
-    };
+    let (shell, flag) = pane_shell();
     let mut cmd = std::process::Command::new(shell);
     cmd.arg(flag).arg(command).env("HERDR_PANE_ID", pane);
     cmd.stdin(std::process::Stdio::null());
