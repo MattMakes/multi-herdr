@@ -40,7 +40,15 @@ horch teammates --matrix          # skills, available skills, offer gate, price
 horch teammates --matrix --json   # the same, with offer_when and requires
 horch skills                      # the bundled catalog and its context cost
 horch skills show ue-build-verify # 1 skill: digest, copied files, verbatim flag
+horch skills read godot-save-load # 1 skill's SKILL.md; add a file, or --files
 ```
+
+A worker's bundle holds only its teammate's skills, but the skill texts name
+other skills. The launch briefing counts those names and gives the 3 most
+named. `horch skills read <id> [<file>]` prints a file of any bundled or
+installed skill to stdout, so a worker reads a named skill only when its step
+needs it. The command writes nothing. Codex workers may run it without an
+approval prompt.
 
 ## Bundled skills: the 6 kinds
 

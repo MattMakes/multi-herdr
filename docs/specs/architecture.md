@@ -276,6 +276,8 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | SKL-06 | Only activated skills exposed | A10 | skl_06_e2e_exposure_claude, skl_06_e2e_exposure_codex, skl_06_e2e_exposure_opencode, skl_06_e2e_exposure_pi, skl_06_e2e_exposure_prime |
 | SKL-07 | Plugin skills separate | A9 | skl_07_plugin_skills_separate |
 | SKL-08 | Briefing unchanged | A9 | skl_08_briefing_matches_baseline_modulo_path |
+| SKL-09 | `horch skills read` prints a catalog skill's file, read-only; refuses an unknown id or file and an absolute or `..` path | A9 | skl_09_read_prints_skill_md, skl_09_read_prints_a_named_file, skl_09_read_lists_files, skl_09_read_rejects_unknown_and_dotdot |
+| SKL-10 | The briefing names the catalog skills that the bundle's texts name but do not hold: count, 3 most-named, deterministic; a hyphenless id counts only in backticks, a link path or qualified | A9 | skl_10_briefing_names_skills_outside_the_bundle, skl_10_briefing_has_no_sentence_without_outside_names, skl_10_whole_word_match_only, skl_10_plain_id_counts_in_backticks, skl_10_plain_id_counts_in_a_link_path, skl_10_plain_id_counts_qualified, skl_10_plain_id_in_prose_does_not_count |
 
 ### 3.4 Spec A §17 acceptance criteria → IDs
 
