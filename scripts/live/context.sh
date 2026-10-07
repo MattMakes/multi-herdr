@@ -11,15 +11,25 @@
 # Part A runs before the install, on $HORCH_BIN (default target/debug/horch).
 # Part B (LIVE_CONTEXT_PANES=1) needs a herdr server, the installed horch and
 # a fleet; it prints the procedure of each pane step and checks the ledger.
-# LIVE_CONTEXT_PART=b runs part B only.
+# LIVE_CONTEXT_PART=b runs part B only; c runs part C, c5 its pane steps only.
+# Part B reads the ledger of the current
+# project (the git top level of the directory the script runs from: the
+# operator's fleet); LIVE_CONTEXT_PROJECT overrides it.
+# Part C (LIVE_CONTEXT_PART=c) covers the slice-2 harnesses opencode, pi and
+# prime: headless readers and canaries, the Prime agent dir, then pane steps
+# in the scratch fleet $S/fleet (LIVE_CONTEXT_PROJECT overrides it).
 #
 # Paid steps, each 1 short session: A3 (1 haiku turn), A5 (1 haiku turn, 1
 # codex turn), A6 (1 haiku turn and its /compact, 1 codex turn), A8 (1 haiku
 # turn, 1 codex turn). A2 and A7 spend no model tokens (/autocompact is local).
+# Part C: C2 and C3 run 1 short session per harness on the teammate's model
+# (pi: local ollama; opencode-pickle: a free tier; prime: its own model, paid
+# when it is a hosted one).
 #
 # The operator's subscription logins only: every claude call is
 # `env -u ANTHROPIC_API_KEY claude ...`, and the key is unset below.
 set -euo pipefail
+CALLER=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$(dirname "$0")/../.."
 unset ANTHROPIC_API_KEY
 ROOT=$PWD
@@ -33,6 +43,8 @@ OUT=$S/results/$STAMP.md
 ROWS=$S/results/$STAMP-rows.md
 : > "$OUT"; : > "$ROWS"
 fails=0
+NO_RECORD=0
+P= # the fleet project of part B or C
 claude_() { env -u ANTHROPIC_API_KEY claude "$@" </dev/null; }
 CV=$(claude_ --version 2>/dev/null || echo none)
 XV=$(codex --version 2>/dev/null || echo none)
@@ -81,10 +93,31 @@ claude_transcript() { ls "$HOME"/.claude/projects/*/"$1".jsonl 2>/dev/null | hea
 codex_rollout() { ls -t "${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*"$1".jsonl 2>/dev/null | head -1 || true; }
 section() { # <part letter>: append the dated result table of the part to $DOC
   [ -s "$ROWS" ] || return 0
+  if [ "$NO_RECORD" = 1 ]; then # a wrong project: its table proves nothing
+    echo "     no table appended to $DOC: a step found no record of its role"; : > "$ROWS"; return 0
+  fi
   { echo; echo "## $(date -u +%Y-%m-%d), part $1"; echo
     echo '| step | claim it proves | tool version | result | evidence |'
     echo '|---|---|---|---|---|'; cat "$ROWS"; } >> "$DOC"
   : > "$ROWS"
+}
+
+# The newest record of <role> in the ledger of <project>: the newest
+# updated_at among the records of the role, not the last one in JSON order
+# (an old record of the same role stays in the ledger).
+record_of() { # <project> <role> -> 1 JSON line, or nothing
+  (cd "$1" && horch sessions --json) | jq -c --arg r "$2" \
+    '[.[] | select(.role == $r)] | max_by(.updated_at // .created_at // "") // empty'
+}
+events_of() { # <project> <role> <event> -> the texts, newest last
+  record_of "$1" "$2" | jq -r --arg e "$3" '.history[]? | select(.event == $e) | .text'
+}
+# A step whose role has no record in the project: the FAIL line only, no row,
+# and the part appends no table (the project or the role is wrong).
+has_record() { # <step> <project> <role>
+  [ -n "$(record_of "$2" "$3")" ] && return 0
+  line "FAIL $1: $2 has no record of role $3; check LIVE_CONTEXT_PROJECT and the role"
+  fails=$((fails + 1)); NO_RECORD=1; return 1
 }
 
 PART=${LIVE_CONTEXT_PART:-a}
@@ -339,29 +372,28 @@ SH
 
 # ---- Part B: panes (installed horch, a herdr server, a fleet) -------------------------
 # Each step prints its procedure. With the role in LIVE_CONTEXT_<STEP>_ROLE it
-# checks the ledger of the fleet project (LIVE_CONTEXT_PROJECT, default
-# $S/fleet) and prints PASS or FAIL; without it the step is SKIP (record the
-# result by hand in docs/live-checks/context.md).
+# checks the ledger of the fleet project (LIVE_CONTEXT_PROJECT, default the
+# current project: the operator's fleet) and prints PASS or FAIL; without it
+# the step is SKIP (record the result by hand in docs/live-checks/context.md).
+# round_trip <step> <role> checks 1 compaction round trip in the ledger of $P.
+round_trip() {
+  local req ready done_
+  has_record "$1" "$P" "$2" || return 0
+  req=$(events_of "$P" "$2" compact-requested | tail -1); ready=$(events_of "$P" "$2" note | grep -c '^handoff: ' || true)
+  done_=$(events_of "$P" "$2" compacted | tail -1)
+  local pre post; pre=$(sed -nE 's/^([0-9]+) -> .*/\1/p' <<<"$done_"); post=$(sed -nE 's/^[0-9]+ -> ([0-9]+) .*/\1/p' <<<"$done_")
+  if [ -z "$req" ]; then fail "$1" "$2 has no compact-requested event"
+  elif [ "$ready" -lt 1 ]; then fail "$1" "$2 has no 'handoff: <path>' note"
+  elif [ -z "$pre" ] || [ -z "$post" ] || [ "$post" -ge "$pre" ]; then fail "$1" "$2 compacted event '${done_}': want <pre> -> <post> with post < pre"
+  else pass "$1" "$2: compact-requested ($req), handoff note, compacted '$done_'"; fi
+}
 part_b() {
   need horch B0 || return
   need herdr B0 || return
-  local P=${LIVE_CONTEXT_PROJECT:-$S/fleet}
-  mkdir -p "$P"; [ -d "$P/.git" ] || git -C "$P" init -q
-  info "fleet project: $P. Start it once: cd $P && horch fleet"
-  sessions() { (cd "$P" && horch sessions --json); }
-  events() { # <role> <event> -> the texts, newest last
-    sessions | jq -r --arg r "$1" --arg e "$2" '[.[] | select(.role == $r)] | last | .history[]? | select(.event == $e) | .text'
-  }
-  round_trip() { # <step> <role>
-    local req ready done_
-    req=$(events "$2" compact-requested | tail -1); ready=$(events "$2" note | grep -c '^handoff: ' || true)
-    done_=$(events "$2" compacted | tail -1)
-    local pre post; pre=$(sed -nE 's/^([0-9]+) -> .*/\1/p' <<<"$done_"); post=$(sed -nE 's/^[0-9]+ -> ([0-9]+) .*/\1/p' <<<"$done_")
-    if [ -z "$req" ]; then fail "$1" "$2 has no compact-requested event"
-    elif [ "$ready" -lt 1 ]; then fail "$1" "$2 has no 'handoff: <path>' note"
-    elif [ -z "$pre" ] || [ -z "$post" ] || [ "$post" -ge "$pre" ]; then fail "$1" "$2 compacted event '${done_}': want <pre> -> <post> with post < pre"
-    else pass "$1" "$2: compact-requested ($req), handoff note, compacted '$done_'"; fi
-  }
+  P=${LIVE_CONTEXT_PROJECT:-$CALLER}
+  events() { events_of "$P" "$@"; }
+  info "part B project: $P (the current project, the operator's fleet; LIVE_CONTEXT_PROJECT overrides it)."
+  info "Run the pane steps below in the fleet of this project."
   echo "
   B1 Claude worker round trip (CTX-11.1, CTX-13.2, CTX-22.1, CTX-23.1). In the orchestrator pane:
      1. horch spawn sonnet 'Read README.md. Run horch note \"step 1 done\". Then wait for instructions.'
@@ -385,7 +417,7 @@ part_b() {
      4. Repeat B1 steps 2 to 5 for codex-sol-1 (the pane gets a bare /compact).
      Until B2 passes, the orchestrator checkpoint is the only watch for Codex workers.
      Then: LIVE_CONTEXT_PANES=1 LIVE_CONTEXT_PART=b LIVE_CONTEXT_B2_ROLE=codex-sol-1 scripts/live/context.sh"
-  if [ -n "${LIVE_CONTEXT_B2_ROLE:-}" ]; then
+  if [ -n "${LIVE_CONTEXT_B2_ROLE:-}" ] && has_record "B2 codex horch note records" "$P" "$LIVE_CONTEXT_B2_ROLE"; then
     local n; n=$(events "$LIVE_CONTEXT_B2_ROLE" note | grep -cx 'x' || true)
     [ "$n" -ge 1 ] && pass "B2 codex horch note records" "$LIVE_CONTEXT_B2_ROLE has $n note 'x'" \
       || fail "B2 codex horch note records" "$LIVE_CONTEXT_B2_ROLE has no note 'x': horch note fails in the codex sandbox"
@@ -403,7 +435,8 @@ part_b() {
      3. B4: the job log shows no '/compact' is disabled rejection that was not sent again.
      Then: LIVE_CONTEXT_PANES=1 LIVE_CONTEXT_PART=b LIVE_CONTEXT_B3_PROJECT=<project> scripts/live/context.sh"
   if [ -n "${LIVE_CONTEXT_B3_PROJECT:-}" ]; then
-    local c; c=$(cd "$LIVE_CONTEXT_B3_PROJECT" && horch sessions --json | jq -r '[.[] | select(.role == "orchestrator")] | last | .history[]? | select(.event == "compacted") | .text' | tail -1 || true)
+    has_record "B3 orchestrator self-compaction" "$LIVE_CONTEXT_B3_PROJECT" orchestrator || return 0
+    local c; c=$(events_of "$LIVE_CONTEXT_B3_PROJECT" orchestrator compacted | tail -1 || true)
     [ -n "$c" ] && pass "B3 orchestrator self-compaction" "compacted '$c'" || fail "B3 orchestrator self-compaction" "no compacted event on the orchestrator record"
   else
     skip "B3 orchestrator self-compaction" "operator step"; skip "B4 codex orchestrator self-compaction" "operator step"
@@ -421,8 +454,233 @@ part_b() {
   skip "B6 pi fresh route" "operator step"
 }
 
+# ---- Part C: the slice-2 harnesses (opencode, pi, prime) ------------------------------
+# C1 to C4 run headless in $S/c; C5 prints the pane procedure and, with the
+# roles in LIVE_CONTEXT_C5_<HARNESS>_ROLE, checks the ledger of the scratch
+# fleet (LIVE_CONTEXT_PROJECT, default $S/fleet) and the herdr pane.
+# The model of a teammate file (its `model:` line).
+model_of() { sed -nE 's/^model: *([^ #]+).*/\1/p' "$ROOT/teammates/$1.md" | head -1; }
+part_c() {
+  need jq C1 || exit 1
+  need python3 C1 || exit 1
+  [ -x "$HORCH_BIN" ] || { fail C1 "$HORCH_BIN is not built; run cargo build --workspace --bins"; return; }
+  local c=$S/c; rm -rf "$c"; mkdir -p "$c/state" "$c/pi-agent" "$c/prime-agent" "$c/pi" "$c/prime" "$c/opencode"
+  local PIM PRM OCM
+  PIM=${LIVE_CONTEXT_PI_MODEL:-$(model_of pi)}; PRM=${LIVE_CONTEXT_PRIME_MODEL:-$(model_of prime)}
+  OCM=${LIVE_CONTEXT_OPENCODE_MODEL:-$(model_of opencode-pickle)}
+
+  # ---- C1 versions --------------------------------------------------------------------
+  local v have_pi=0 have_prime=0 have_oc=0
+  v="pi $(pi --version 2>/dev/null || echo none), prime-agent $(prime-agent --version 2>/dev/null || echo none), opencode $(opencode --version 2>/dev/null || echo none), herdr $(herdr --version 2>/dev/null | awk '{print $2}' || echo none), sqlite3 $(sqlite3 --version 2>/dev/null | awk '{print $1}' || echo none)"
+  command -v pi >/dev/null 2>&1 && have_pi=1
+  command -v opencode >/dev/null 2>&1 && command -v sqlite3 >/dev/null 2>&1 && have_oc=1
+  # Prime lists only the models it can serve; a provider it is not signed in to has none.
+  if command -v prime-agent >/dev/null 2>&1; then
+    prime-agent model list "${PRM#*/}" 2>/dev/null | awk -v p="${PRM%%/*}" -v m="${PRM#*/}" '$1 == p && $2 == m' | grep -q . && have_prime=1
+  fi
+  pass "C1 versions" "$v; models pi $PIM, prime $PRM, opencode $OCM"
+  [ "$have_prime" = 1 ] || info "prime-agent model list has no $PRM: sign Prime in to ${PRM%%/*}, or set LIVE_CONTEXT_PRIME_MODEL (e.g. ollama/qwen3.8)"
+
+  # A scratch agent dir: links to the operator's entries, and a settings.json
+  # that compacts all but the last token (keepRecentTokens 1) so 2 short turns
+  # can be compacted. The operator's dir is never written.
+  agent_dir() { # <operator dir> <scratch dir>
+    local e n
+    for e in "$1"/*; do
+      n=$(basename "$e")
+      case $n in settings.json|sessions|logs|daemon-workers|session-artifacts|session-leases) ;; *) ln -s "$e" "$2/$n" ;; esac
+    done
+    jq '. + {compaction: {enabled: true, keepRecentTokens: 1}, autoRefine: {enabled: false}}' "$1/settings.json" > "$2/settings.json" 2>/dev/null \
+      || echo '{"compaction":{"enabled":true,"keepRecentTokens":1},"autoRefine":{"enabled":false}}' > "$2/settings.json"
+  }
+  [ "$have_pi" = 1 ] && agent_dir "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" "$c/pi-agent"
+  [ "$have_prime" = 1 ] && agent_dir "${PRIME_AGENT_CODING_AGENT_DIR:-$HOME/.prime/agent}" "$c/prime-agent"
+  local q=(--thinking low --no-tools --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files)
+  local pisid; pisid=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  pi_() { (cd "$c" && PI_CODING_AGENT_DIR=$c/pi-agent pi --model "$PIM" "${q[@]}" --session-dir "$c/pi" --session-id "$pisid" "$@" </dev/null); }
+  prime_() { (cd "$c" && PRIME_AGENT_CODING_AGENT_DIR=$c/prime-agent prime-agent --model "$PRM" "${q[@]}" \
+    --session-dir "$c/prime" --daemon-socket "$c/d.sock" "$@" </dev/null); }
+  stop_prime() { # this run's Prime daemon only: the one on $c/d.sock
+    local pid; pid=$(prime-agent status --json 2>/dev/null | jq -r --arg s "$S/c/d.sock" '.[] | select(.socketPath == $s) | .pid' 2>/dev/null | head -1 || true)
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  }
+  trap stop_prime EXIT
+  # The canary is the first turn: the worker's compact-instructions block
+  # with 1 more line. A second turn follows, so there is a turn to compact.
+  local canary="KEEP-CANARY-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')" block
+  block=$(awk '/^== Compact instructions ==/{p=1} p&&/^== /&&!/Compact instructions/{exit} p' \
+    "$ROOT/teammates/_base/fleet-worker.md" | sed 's/{role}/live-check-1/g')
+  block="$block
+- this canary line, word for word: $canary.
+
+Reply with the single word OK."
+  if [ "$have_pi" = 1 ]; then pi_ -p "$block" > "$c/pi-1.out" 2>&1 || true; pi_ -p "Reply with the single word OK." > "$c/pi-2.out" 2>&1 || true; fi
+  if [ "$have_prime" = 1 ]; then prime_ -p "$block" > "$c/prime-1.out" 2>&1 || true; prime_ -p -c "Reply with the single word OK." > "$c/prime-2.out" 2>&1 || true; fi
+  local ocsid=
+  if [ "$have_oc" = 1 ]; then
+    (cd "$c/opencode" && opencode run --model "$OCM" --format json "Reply with the single word OK." </dev/null > "$c/opencode.jsonl" 2> "$c/opencode.err") || true
+    ocsid=$(jq -r 'select(.type == "step_finish") | .sessionID // .part.sessionID // empty' "$c/opencode.jsonl" 2>/dev/null | tail -1 || true)
+  fi
+  local pif prf
+  pif=$(ls "$c"/pi/*.jsonl 2>/dev/null | head -1 || true); prf=$(ls "$c"/prime/*.jsonl 2>/dev/null | head -1 || true)
+
+  # ---- C2 readers (CTX-17 slice 2, CTX-02) ----------------------------------------------
+  # 1 ledger record per session; pi and Prime records name the session file.
+  cat > "$(ledger_of "$c/state" "$c")" <<JSON
+[
+ {"record_id":"c2-pi","session_id":"${pif:-}","agent":"pi","tier":"live-c2","model":"$PIM","role":"c2-pi","status":"working","task":"live C2","history":[],"created_at":"2026-10-07T00:00:00Z","updated_at":"2026-10-07T00:00:00Z","project":"$c","workdir":"$c"},
+ {"record_id":"c2-prime","session_id":"${prf:-}","agent":"prime","tier":"live-c2","model":"$PRM","role":"c2-prime","status":"working","task":"live C2","history":[],"created_at":"2026-10-07T00:00:00Z","updated_at":"2026-10-07T00:00:00Z","project":"$c","workdir":"$c"},
+ {"record_id":"c2-opencode","session_id":"${ocsid:-}","agent":"opencode","tier":"live-c2","model":"$OCM","role":"c2-opencode","status":"working","task":"live C2","history":[],"created_at":"2026-10-07T00:00:00Z","updated_at":"2026-10-07T00:00:00Z","project":"$c","workdir":"$c"}
+]
+JSON
+  ctx_c() { HORCH_STATE_DIR=$c/state HORCH_PROJECT_DIR=$c "$HORCH_BIN" context > "$c/$1" 2>&1 || true; }
+  ctx_c context.txt; sed 's/^/     /' "$c/context.txt"
+  # The pi and Prime own number: the newest assistant response's totalTokens.
+  own_pi() { jq -r 'select(.type == "message" and .message.role == "assistant" and .message.usage) | .message.usage.totalTokens' "$1" 2>/dev/null | tail -1; }
+  reader() { # <step> <role> <want> <what the want is>
+    local h; h=$(digits "$(awk -v r="$2" '$1 == r { print $4 }' "$c/context.txt")")
+    if [ -z "$3" ]; then fail "$1" "the harness gave no own number: $4"
+    elif [ "$h" = "$3" ]; then pass "$1" "horch $h, $4 $3"
+    else fail "$1" "horch '${h}', $4 $3"; fi
+  }
+  if [ "$have_pi" = 1 ]; then reader "C2 pi reader" c2-pi "$( [ -n "$pif" ] && own_pi "$pif")" "the session's newest totalTokens"
+  else skip "C2 pi reader" "pi is not installed"; fi
+  if [ "$have_prime" = 1 ]; then reader "C2 prime reader" c2-prime "$( [ -n "$prf" ] && own_pi "$prf")" "the session's newest totalTokens"
+  else skip "C2 prime reader" "prime-agent has no $PRM (or is not installed)"; fi
+  if [ "$have_oc" = 1 ]; then
+    reader "C2 opencode reader" c2-opencode "$(jq -r 'select(.type == "step_finish") | .part.tokens.total' "$c/opencode.jsonl" 2>/dev/null | tail -1)" \
+      "opencode run's newest step_finish total"
+  else skip "C2 opencode reader" "opencode or sqlite3 is not installed"; fi
+
+  # ---- C3 canary (CTX-20, CTX-03) --------------------------------------------------------
+  # A compaction with no argument through the RPC mode ({"type":"compact"}),
+  # then the marker's summary is searched for the canary; after it horch
+  # shows the row pending, never the pre value. -p reads /compact as a prompt.
+  cat > "$c/rpc-compact.py" <<'PY'
+# rpc-compact.py <argv...>: send 1 compact command to an RPC-mode pi or Prime
+# and print its response line.
+import json, subprocess, sys
+p = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                     stderr=subprocess.DEVNULL, text=True)
+p.stdin.write(json.dumps({"type": "compact"}) + "\n"); p.stdin.flush()
+for line in p.stdout:
+    try:
+        m = json.loads(line)
+    except ValueError:
+        continue
+    if m.get("type") == "response" and m.get("command") == "compact":
+        print(json.dumps({"success": m.get("success"), "error": m.get("error")}))
+        break
+p.stdin.close(); p.terminate(); p.wait(timeout=10)
+PY
+  canary_of() { # <step> <session file> <rpc response>
+    local summary; summary=$(jq -r 'select(.type == "compaction") | .summary // empty' "$2" 2>/dev/null | tail -1 || true)
+    if ! grep -q '"type":"compaction"' "$2" 2>/dev/null; then
+      skip "$1" "not verifiable: no compaction line after the RPC compact (${3:-no response}); part C5 compacts a pane"
+    elif grep -qF "$canary" <<<"$summary"; then
+      pass "$1" "honoured: the compaction summary has: $(around "$canary" <<<"$summary")"
+    else
+      pass "$1" "ignored (a result: the keep-list argument of horch compact covers pi and Prime): the summary has no $canary: $(tr '\n' ' ' <<<"$summary" | cut -c1-120)"
+    fi
+  }
+  local rsp
+  if [ "$have_pi" = 1 ] && [ -n "$pif" ]; then
+    rsp=$(cd "$c" && PI_CODING_AGENT_DIR=$c/pi-agent python3 -I "$c/rpc-compact.py" pi --mode rpc --model "$PIM" "${q[@]}" \
+      --session-dir "$c/pi" --session-id "$pisid" </dev/null 2>/dev/null || true)
+    canary_of "C3 pi canary" "$pif" "$rsp"
+  else skip "C3 pi canary" "no pi session"; fi
+  if [ "$have_prime" = 1 ] && [ -n "$prf" ]; then
+    rsp=$(cd "$c" && PRIME_AGENT_CODING_AGENT_DIR=$c/prime-agent python3 -I "$c/rpc-compact.py" prime-agent --mode rpc -c \
+      --model "$PRM" "${q[@]}" --session-dir "$c/prime" --daemon-socket "$c/d.sock" </dev/null 2>/dev/null || true)
+    canary_of "C3 prime canary" "$prf" "$rsp"
+  else skip "C3 prime canary" "no Prime session"; fi
+  ctx_c context-after.txt
+  local r st
+  for r in c2-pi c2-prime; do
+    st=$(awk -v r="$r" '$1 == r' "$c/context-after.txt")
+    case $st in *pending*) info "after the compaction horch shows $r pending: $st" ;; '') ;; *) info "after the compaction $r: $st" ;; esac
+  done
+  stop_prime; trap - EXIT
+  part_c5
+}
+
+# The pane steps of part C alone (LIVE_CONTEXT_PART=c5): run it at once
+# after step 2 of a C5 procedure, so the busy status is still there.
+part_c5() {
+  local PRM=${LIVE_CONTEXT_PRIME_MODEL:-$(model_of prime)}
+  # ---- C4 prime agent dir (design 6.9) ---------------------------------------------------
+  # A pane's own agent dir: <state>/prime/<role>-<uuid>/agent, in the pane's
+  # PRIME_AGENT_CODING_AGENT_DIR. It must turn autoRefine off and give the
+  # 200,000 window, and prime-agent model list must report that window.
+  local pdir=${LIVE_CONTEXT_C4_AGENT_DIR:-}
+  if [ -z "$pdir" ] && [ -n "${LIVE_CONTEXT_C5_PRIME_ROLE:-}" ]; then
+    local st_root; st_root=${HORCH_STATE_DIR:-$HOME/.local/state/horch}
+    pdir=$(ls -dt "$st_root"/prime/"$LIVE_CONTEXT_C5_PRIME_ROLE"-*/agent 2>/dev/null | head -1 || true)
+  fi
+  if [ -z "$pdir" ]; then
+    skip "C4 prime agent dir" "no pane agent dir; spawn prime (C5), then set LIVE_CONTEXT_C5_PRIME_ROLE or LIVE_CONTEXT_C4_AGENT_DIR"
+  else
+    local ar win
+    ar=$(jq -c '.autoRefine // "unset"' "$pdir/settings.json" 2>/dev/null || echo missing)
+    win=$(PRIME_AGENT_CODING_AGENT_DIR=$pdir prime-agent model list "${PRM#*/}" 2>/dev/null \
+      | awk -v p="${PRM%%/*}" -v m="${PRM#*/}" '$1 == p && $2 == m { print $3 }' | head -1 || true)
+    [ "$ar" = '{"enabled":false}' ] && pass "C4 prime autoRefine off" "$pdir/settings.json has autoRefine $ar" \
+      || fail "C4 prime autoRefine off" "$pdir/settings.json has autoRefine $ar"
+    [ "$(kilo "${win:-x}" 2>/dev/null || echo x)" = 200000 ] && pass "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context $win" \
+      || fail "C4 prime window" "prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=$pdir: $PRM context '${win:-no row}', want 200K"
+  fi
+
+  # ---- C5 panes (installed horch, a herdr server, the scratch fleet) --------------------
+  need horch C5 || return 0
+  need herdr C5 || return 0
+  P=${LIVE_CONTEXT_PROJECT:-$S/fleet}
+  mkdir -p "$P"; [ -d "$P/.git" ] || git -C "$P" init -q
+  info "part C project: $P (the scratch fleet; LIVE_CONTEXT_PROJECT overrides it). Start it once: cd $P && horch fleet"
+  # Samples herdr agent_status of the role's pane for 60 s, 1 per second.
+  statuses() { # <role> -> the distinct values seen, in order
+    local rec ws pane i seen=
+    rec=$(record_of "$P" "$1"); ws=$(jq -r '.workspace_id // empty' <<<"$rec"); pane=$(jq -r '.pane_id // empty' <<<"$rec")
+    [ -n "$pane" ] || return 0
+    for i in $(seq 60); do
+      local s; s=$(herdr pane list --workspace "$ws" 2>/dev/null | jq -r --arg p "$pane" '.result.panes[]? | select(.pane_id == $p) | .agent_status // "none"' || true)
+      case " $seen " in *" ${s:-gone} "*) ;; *) seen="$seen ${s:-gone}" ;; esac
+      case $seen in *working*idle*|*working*done*) break ;; esac
+      sleep 1
+    done
+    echo "${seen# }"
+  }
+  local h role var
+  for h in opencode-pickle pi prime; do
+    var=LIVE_CONTEXT_C5_$(tr 'a-z-' 'A-Z_' <<<"${h%%-*}")_ROLE; role=${!var:-}
+    echo "
+  C5 $h pane (CTX-10, CTX-13, CTX-17; review finding 2). In the orchestrator pane of $P:
+     1. horch spawn $h 'Read README.md. Run horch note \"x\". Then wait for instructions.'
+        The pane must record the note: horch sessions shows the note 'x' on the new role.
+     2. horch tell <role> 'Run sleep 20 with your shell tool, then reply DONE.' and at once run
+        $var=<role> LIVE_CONTEXT_PART=c5 scripts/live/context.sh: herdr agent_status must read working, then idle or done.
+     3. Over the threshold (a teammate copy with a small compact_window), the next 'horch note x' prints 'NOTE: Context warning.'.
+     4. horch compact <role> --request; wait for '[<role>] NOTE: COMPACT-READY ...';
+        horch compact <role> --force ($h is not in in_place yet; --force skips the route check);
+        the pane gets its compact command and the resume line, this pane 1 '[horch] NOTE: <role> compacted.' line.
+     Then: $var=<role> LIVE_CONTEXT_PART=c5 scripts/live/context.sh"
+    if [ -z "$role" ]; then skip "C5 $h pane" "operator step; set $var to check the ledger and the pane"; continue; fi
+    has_record "C5 $h horch note records" "$P" "$role" || continue
+    local n; n=$(events_of "$P" "$role" note | grep -cx 'x' || true)
+    [ "$n" -ge 1 ] && pass "C5 $h horch note records" "$role has $n note 'x'" \
+      || fail "C5 $h horch note records" "$role has no note 'x': horch note fails in the $h pane"
+    [ -n "$(events_of "$P" "$role" context-warned | tail -1)" ] && pass "C5 $h horch note warns" "context-warned recorded" \
+      || skip "C5 $h horch note warns" "no context-warned event on $role (step 3 not run)"
+    local seen; seen=$(statuses "$role")
+    case $seen in *working*idle*|*working*done*) pass "C5 $h agent_status" "herdr read: $seen" ;;
+      *) fail "C5 $h agent_status" "herdr read '${seen:-no pane}' in 60 s; want working, then idle or done" ;; esac
+    round_trip "C5 $h compaction round trip" "$role"
+  done
+}
+
 case $PART in
   b) part_b; section B ;;
+  c) part_c; section C ;;
+  c5) part_c5; section C ;;
   *) part_a; section A
      if [ "${LIVE_CONTEXT_PANES:-0}" = 1 ]; then
        OUT=$S/results/$STAMP-b.md; : > "$OUT"; : > "$ROWS"

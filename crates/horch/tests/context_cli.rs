@@ -308,6 +308,63 @@ fn ctx_17_live_check_covers_claude_and_codex() {
     assert!(s.contains("B1 Claude worker round trip") && s.contains("B2 Codex worker round trip"));
 }
 
+/// CTX-17 slice 2, CTX-20: part C of the live check has a reader step for
+/// `opencode`, `pi` and `prime` against the harness's own number, a canary
+/// for pi and Prime by their compaction marker, the Prime agent dir check,
+/// and the pane steps for `opencode-pickle`, `pi` and `prime`: herdr
+/// `agent_status` busy and idle, `horch note`, and the compaction round trip.
+#[test]
+fn ctx_17_live_check_covers_slice_two_harnesses() {
+    let s = script();
+    let c2 = step(&s, "C2");
+    for reader in ["C2 pi reader", "C2 prime reader", "C2 opencode reader"] {
+        assert!(c2.contains(reader), "part C has {reader}");
+    }
+    assert!(c2.contains("totalTokens"), "the pi and Prime own number");
+    assert!(c2.contains("step_finish"), "the OpenCode own number");
+    let c3 = step(&s, "C3");
+    for canary in ["C3 pi canary", "C3 prime canary"] {
+        assert!(c3.contains(canary), "part C has {canary}");
+    }
+    let part_c = &s[s
+        .find("# ---- Part C")
+        .expect("scripts/live/context.sh has no part C")..];
+    assert!(
+        part_c.contains("KEEP-CANARY-"),
+        "the first pi and Prime turn plants a canary"
+    );
+    assert!(
+        c3.contains(r#"{"type":"compact"}"#),
+        "compacts with no argument"
+    );
+    assert!(
+        c3.contains(r#""type":"compaction""#),
+        "the pi and Prime marker"
+    );
+    for result in ["honoured", "ignored", "not verifiable"] {
+        assert!(c3.contains(result), "C3 prints {result}");
+    }
+    let c4 = step(&s, "C4");
+    assert!(
+        c4.contains("PRIME_AGENT_CODING_AGENT_DIR"),
+        "the pane's agent dir"
+    );
+    assert!(c4.contains("autoRefine"), "auto-refine off");
+    assert!(c4.contains("prime-agent model list"), "Prime's own window");
+    let c5 = step(&s, "C5");
+    assert!(
+        c5.contains("for h in opencode-pickle pi prime") && c5.contains("horch spawn $h "),
+        "C5 spawns opencode-pickle, pi and prime"
+    );
+    assert!(c5.contains("agent_status"), "herdr agent_status");
+    assert!(
+        c5.contains("working") && c5.contains("idle"),
+        "busy and idle"
+    );
+    assert!(c5.contains("horch note"), "horch note in the pane");
+    assert!(c5.contains("round_trip"), "the compaction round trip");
+}
+
 /// CTX-20: the live check plants a canary in the compact-instructions block
 /// and reports `honoured`, `ignored` or `not verifiable`.
 #[test]
