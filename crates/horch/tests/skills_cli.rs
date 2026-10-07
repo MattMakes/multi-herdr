@@ -17,8 +17,8 @@ const PHASES: [&str; 4] = ["research", "plan", "implementation", "validation"];
 
 /// The skills of the A0 oracle. Skills added later appear in the full
 /// listing (`horch skills` without `--phase`) but belong to no phase, so the
-/// frozen full-listing oracle is compared on these 16 skills only, and its
-/// metadata totals are checked for shape, not value.
+/// frozen full-listing oracle holds these 16 skills only, with its metadata
+/// totals blanked. The listing is reduced the same way before it is compared.
 const A0_SKILLS: [&str; 16] = [
     "brainstorm",
     "check",
@@ -221,12 +221,12 @@ fn mkt_09_legacy_skills_flags_output_unchanged() {
         };
         assert_eq!(
             a0_skills_view(&run(&[])),
-            a0_skills_view(&oracle("skills.txt")),
+            oracle("skills.txt"),
             "{prefix:?}"
         );
         assert_eq!(
             a0_skills_view(&run(&["--json"])),
-            a0_skills_view(&oracle("skills-json.txt")),
+            oracle("skills-json.txt"),
             "{prefix:?}"
         );
         for phase in PHASES {

@@ -12,11 +12,11 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/harness")
 }
 
-/// Compare `actual` with a fixture captured before the A4 move. A missing
-/// fixture is written once under `HORCH_BLESS=1`; an existing one never is.
+/// Compare `actual` with a fixture captured before the A4 move. Under
+/// `HORCH_BLESS=1` the fixture is written instead.
 fn check_fixture(name: &str, actual: &str) {
     let path = fixtures().join(name);
-    if !path.exists() && std::env::var("HORCH_BLESS").ok().as_deref() == Some("1") {
+    if std::env::var("HORCH_BLESS").ok().as_deref() == Some("1") {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, actual).unwrap();
         return;

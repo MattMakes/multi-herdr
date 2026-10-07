@@ -46,8 +46,8 @@ const PHASES: [&str; 4] = ["research", "plan", "implementation", "validation"];
 
 /// The skills of the A0 oracle. Skills added later appear in the full
 /// listing (`horch skills` without `--phase`) but belong to no phase, so the
-/// frozen full-listing oracle is compared on these 16 skills only, and its
-/// metadata totals are checked for shape, not value.
+/// frozen full-listing oracle holds these 16 skills only, with its metadata
+/// totals blanked. A bless writes that same view, never the host listing.
 const A0_SKILLS: [&str; 16] = [
     "brainstorm",
     "check",
@@ -152,13 +152,7 @@ fn oracle_cli_skills_match() {
         ("skills/skills.txt", &["skills"][..]),
         ("skills/skills-json.txt", &["skills", "--json"][..]),
     ] {
-        let actual = w.horch(args);
-        if std::env::var("HORCH_BLESS").ok().as_deref() == Some("1") {
-            check_oracle(rel, &actual);
-            continue;
-        }
-        let want = std::fs::read_to_string(oracles().join(rel)).unwrap();
-        assert_eq!(a0_skills_view(&actual), a0_skills_view(&want), "{rel}");
+        check_oracle(rel, &a0_skills_view(&w.horch(args)));
     }
     for phase in PHASES {
         check_oracle(

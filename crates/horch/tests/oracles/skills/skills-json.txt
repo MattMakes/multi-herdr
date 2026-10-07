@@ -1,7 +1,7 @@
 {
   "estimate_note": "Names and descriptions only; bytes/4 estimate excludes harness wrappers, paths, ambient skills and tools. Full bodies load on demand.",
-  "metadata_bytes": 1998,
-  "metadata_tokens_estimate": 500,
+  "metadata_bytes": null,
+  "metadata_tokens_estimate": null,
   "phase": null,
   "skills": [
     {
