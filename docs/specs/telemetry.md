@@ -284,7 +284,7 @@ Every `tick_ms` (default 2000):
 
 1. Read every `state_root/*.json` ledger whose length or modification time changed. On a parse error, keep the last good copy of that ledger and retry next tick (a ledger write may be in flight).
 2. Select records whose `updated_at` is inside the retention window.
-3. Resolve each record to its reader and files. A found transcript stays found while it is a file. A record with no transcript is searched for on every tick while its `updated_at` is under 10 minutes old (a new spawn), else every 30 s: a search walks the transcript trees. Claude subagent files are listed again when a directory of the last listing changed. Poll a record only when one of its files changed its length, inode or modification time (OpenCode: the database or its `-wal` file).
+3. Resolve each record to its reader and files. A found transcript stays found while it is a file. A record with no transcript is searched for on every tick while its `updated_at` is under 10 minutes old (a new spawn), else every 30 s: a search walks the transcript trees. Claude subagent files are listed again when a directory of the last listing changed. Poll a record only when one of its files changed its length, inode or modification time (OpenCode: the database or its `-wal` file; an empty `-wal` counts as none, because on Linux the first `sqlite3 -readonly` read of a WAL database creates an empty one).
 4. Append events, then save cursors (8.2 order). A tick that polled nothing saves no cursor.
 5. Hand `QuotaSignal`s to the quota module. Run a probe if one is due (section 11.2).
 6. Recompute the snapshot and write it with temp file + rename.

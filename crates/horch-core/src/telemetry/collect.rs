@@ -394,11 +394,7 @@ impl Collector {
         let stamps: Vec<Option<Stamp>> = match &located {
             Located::Files(files) => files.iter().map(|f| stamp(f)).collect(),
             // SQLite writes to the database or to its write-ahead log.
-            Located::OpenCode(db) => {
-                let mut wal = db.as_os_str().to_owned();
-                wal.push("-wal");
-                vec![stamp(db), stamp(Path::new(&wal))]
-            }
+            Located::OpenCode(db) => vec![stamp(db), wal_stamp(db)],
         };
         let key = (r.agent.clone(), sid.to_string());
         if self.polled.get(&key) == Some(&stamps) {
@@ -519,6 +515,17 @@ enum Place {
 
 /// A file or directory as it was: `(length, inode, modification time)`.
 type Stamp = (u64, u64, Option<std::time::SystemTime>);
+
+/// The stamp of `db`'s write-ahead log, an empty one stamped as none. The
+/// first `sqlite3 -readonly` read of a WAL database creates an empty
+/// `-wal` on Linux (sqlite 3.40), so the stamp a tick takes before that
+/// read differs from the next tick's although nothing was written. A write
+/// fills the log; a checkpoint that empties it writes the database.
+fn wal_stamp(db: &Path) -> Option<Stamp> {
+    let mut wal = db.as_os_str().to_owned();
+    wal.push("-wal");
+    stamp(Path::new(&wal)).filter(|s| s.0 > 0)
+}
 
 fn stamp(path: &Path) -> Option<Stamp> {
     let m = std::fs::metadata(path).ok()?;
@@ -949,6 +956,23 @@ mod tests {
         let quota = QuotaView::new(QuotaFile::default(), now(), policy, false);
         let info = CollectorInfo::default();
         build_indexed(&records, index, quota, Vec::new(), now(), info)
+    }
+
+    /// NFR-02: an empty write-ahead log stamps as no log. On Linux the
+    /// first `sqlite3 -readonly` read creates an empty `-wal`, and a quiet
+    /// tick then saw a change and saved the cursors again.
+    #[test]
+    fn nfr_02_an_empty_wal_stamps_as_no_wal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("opencode.db");
+        std::fs::write(&db, "db").unwrap();
+        assert_eq!(wal_stamp(&db), None);
+        let wal = tmp.path().join("opencode.db-wal");
+        std::fs::write(&wal, "").unwrap();
+        assert_eq!(wal_stamp(&db), None, "an empty log is no log");
+        std::fs::write(&wal, "frame").unwrap();
+        assert_eq!(wal_stamp(&db), stamp(&wal));
+        assert!(wal_stamp(&db).is_some());
     }
 
     /// NFR-02: the fold over the store's table gives what the per-event sums
