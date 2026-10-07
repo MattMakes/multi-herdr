@@ -18,6 +18,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 import gdscript_blocks_check as gbc  # noqa: E402
+from check_once import once  # noqa: E402
 
 SAMPLE = HERE / "fixtures" / "blocks" / "sample.md"
 
@@ -62,6 +63,13 @@ class ExtractTest(unittest.TestCase):
 
 @unittest.skipIf(gbc.find_godot() is None, "no Godot")
 class ParseTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # C5: SKILL.md and own.md are copies of the sample, so 2 parses serve the 4 runs.
+        patch = mock.patch.object(gbc, "check", once(gbc.check))
+        patch.start()
+        cls.addClassCleanup(patch.stop)
+
     def setUp(self):
         # A clean checkout (the gate's) has no .worktrees/_scratch yet.
         parent = gbc.REPO / ".worktrees" / "_scratch"

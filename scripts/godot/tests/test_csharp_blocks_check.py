@@ -7,11 +7,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 import csharp_blocks_check as cbc  # noqa: E402
+from check_once import once  # noqa: E402
 
 FIXTURE = HERE / "fixtures" / "csharp"
 SAMPLE = FIXTURE / "sample.md"
@@ -45,6 +47,13 @@ class ExtractTest(unittest.TestCase):
 
 @unittest.skipIf(shutil.which("dotnet") is None, "no dotnet")
 class BuildTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # C5: sample.md and up/copied.md hold the same blocks, so 1 build serves the 3 runs.
+        patch = mock.patch.object(cbc, "check", once(cbc.check))
+        patch.start()
+        cls.addClassCleanup(patch.stop)
+
     def test_own_blocks_fail_with_markdown_lines(self):
         code, out, _ = run(SAMPLE)
         self.assertEqual(code, 1)
