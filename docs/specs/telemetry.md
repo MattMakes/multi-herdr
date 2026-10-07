@@ -189,7 +189,7 @@ All fields use `#[serde(default)]` so that every existing ledger still loads.
 | `kind` | `"worker"` \| `"orchestrator"` | spawn / fleet | default `worker` |
 | `project` | `Option<String>` | spawn / fleet, from `HORCH_PROJECT_DIR` or the cwd | absolute project path. It fixes the lossy slug [H]. |
 | `plan` | `Option<String>` | spawn and `horch assign` | slug parsed from the task (rule below) |
-| `workspace_id` | `Option<String>` | spawn / fleet, from `HORCH_WORKSPACE_ID` | only for the phase-2 sidebar |
+| `workspace_id` | `Option<String>` | spawn / fleet, from `HORCH_WORKSPACE_ID` | recorded for the sidebar, which is not planned (§18, M7) |
 | `via` | `Option<String>` | spawn gate | the fallback teammate whose launch settings were used |
 | `substitution_reason` | `Option<String>` | spawn gate | 1 line, for example `claude 7d 100%, resets 2026-10-02T14:00Z` |
 
@@ -464,7 +464,7 @@ A reading whose `resets_at` has passed is treated as `used = 0` for that window 
 - `ensure` uses only `herdr workspace create --no-focus`, `herdr pane run`, and read-only list calls. It never calls `focus`, `tile`, `split`, `move` or `close` (SPC-03). The fake herdr in section 16.3 records every argv, and a test asserts this list.
 - The space's workspace never contains a fleet worker, so `horch tile` and `horch balance` never touch it. `horch tile` skips any workspace labelled `horch telemetry` as a second guard.
 - A viewer can run in any herdr session, because the data comes from files. That is the answer to the 8-session limit [H].
-- Phase 2 (not v1): the collector pushes `$spend` and `$pool` tokens with `workspace.report_metadata` onto fleet workspaces in its own herdr session (limits: 16 keys, 80-char values) [H].
+- Not planned (§18, M7): a sidebar where the collector pushes `$spend` and `$pool` tokens with `workspace.report_metadata` onto fleet workspaces in its own herdr session (limits: 16 keys, 80-char values) [H]. The screen and `horch usage` cover it.
 
 ### 12.4 Screen
 
@@ -818,7 +818,9 @@ The cloud proves the logic against fixtures. These steps prove the fixtures matc
 | M4 store and CLI | store, dedupe index, tick, snapshot, `collect --once`, `horch usage` | TEL-01, TEL-07, TEL-09, SPC-05 | M1, M2 | `telemetry/store.rs`, `collect.rs`, `mod.rs`, `cmd/usagecmd.rs`, `main.rs` |
 | M5 balancing | `fallbacks`, merge, roster rules, `decide()`, the gate, `route`, flags, briefing section and golden block, `fleet auto` | BAL-01..09 | M2, M3 | `teammates.rs`, `balance_policy.rs`, `spawn.rs` (gate), `cmd/route.rs`, `teammates/*.md`, `_base/fleet-orchestrator.md`, `golden_prompts.rs`, `recipes.rs` (auto flavor), `main.rs` |
 | M6 the space | lock, collector loop, TUI, `render`, `ensure`, the fleet hook, `tile` guard | SPC-01..04, SPC-06, NFR-02 | M3, M4 | `cmd/telemetry.rs`, `recipes.rs` (ensure call), `tilecmd.rs` (guard), `crates/horch/Cargo.toml` |
-| M7 (phase 2) | sidebar values | - | M6 | `telemetry/sidebar.rs` |
+| M7 (not planned) | sidebar values | - | M6 | none |
+
+M7 is not planned (decision 2026-10-06, wave 2, item U-35). The telemetry space's screen and `horch usage` already show spend and pool state. herdr sidebar metadata is limited (16 keys, 80-character values, and only in the collector's own herdr session), so it cannot carry more than those 2 views. No `telemetry/sidebar.rs` exists.
 
 M1, M2 and M3 can run in parallel after M0: they own disjoint files. `main.rs` and `recipes.rs` are edited by several milestones in small regions. The stacked branches keep those edits serial, and each PR is rebased on its parent before merge.
 
