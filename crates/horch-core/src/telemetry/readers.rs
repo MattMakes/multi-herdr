@@ -64,6 +64,56 @@ pub(crate) fn input_key(agent: &str, session_id: &str, path: &Path) -> String {
     format!("{agent}|{session_id}|{}", path.display())
 }
 
+/// The input files of one session, found by its harness's finder.
+pub(crate) enum Located {
+    /// Transcript files; for Claude the main transcript first, then the
+    /// subagent files.
+    Files(Vec<PathBuf>),
+    /// OpenCode's database, read through `sqlite3`.
+    OpenCode(PathBuf),
+}
+
+/// Find the inputs of session `sid` for `agent`.
+pub(crate) fn locate(loc: &Locations, agent: &str, sid: &str) -> Result<Located, Unreadable> {
+    match agent {
+        "claude" => {
+            let main = crate::usage::find_claude_transcript(&loc.claude_projects, sid).ok_or_else(
+                || {
+                    Unreadable::NoTranscript(format!(
+                        "{sid}.jsonl under {}",
+                        loc.claude_projects.display()
+                    ))
+                },
+            )?;
+            let mut files = vec![main.clone()];
+            files.extend(claude_subagent_files(&main));
+            Ok(Located::Files(files))
+        }
+        "codex" => {
+            let path = find_codex_rollout(&loc.codex_sessions, sid).ok_or_else(|| {
+                Unreadable::NoTranscript(format!(
+                    "rollout-*-{sid}.jsonl under {}",
+                    loc.codex_sessions.display()
+                ))
+            })?;
+            Ok(Located::Files(vec![path]))
+        }
+        "pi" | "prime" => {
+            let path = find_pi_session(&loc.pi_sessions, sid)
+                .ok_or_else(|| Unreadable::NoTranscript(format!("a session file for {sid}")))?;
+            Ok(Located::Files(vec![path]))
+        }
+        "opencode" => Ok(Located::OpenCode(loc.opencode_db.clone())),
+        "none" => Err(Unreadable::NotRead("agent none is not read".into())),
+        // "antigravity" lands here: agy 1.2.17 keeps no local usage that
+        // horch can read (U-60). Its state files are binary protobuf, and the
+        // conversation_summaries.db table has no token columns. Only `-p
+        // --output-format json` prints per-run tokens, and horch runs the TUI.
+        // Seen live: docs/live-checks/harnesses.md.
+        other => Err(Unreadable::NotRead(format!("unknown agent '{other}'"))),
+    }
+}
+
 /// Read everything new for one record. `record_model` names the model when a
 /// line does not (pi tool results, Codex before its first turn context).
 pub fn poll_record(
@@ -76,69 +126,32 @@ pub fn poll_record(
         return Err(Unreadable::NoSessionId);
     };
     let mut polled = Polled::default();
-    match agent {
-        "claude" => {
-            let main = crate::usage::find_claude_transcript(&loc.claude_projects, sid).ok_or_else(
-                || {
-                    Unreadable::NoTranscript(format!(
-                        "{sid}.jsonl under {}",
-                        loc.claude_projects.display()
-                    ))
-                },
-            )?;
-            let subs = claude_subagent_files(&main);
-            poll_file(
-                agent,
-                sid,
-                &main,
-                cursors,
-                &mut polled,
-                |c, at, line, out| claude_line(c, at, line, false, out),
-            )?;
-            for sub in subs {
-                poll_file(
-                    agent,
-                    sid,
-                    &sub,
-                    cursors,
-                    &mut polled,
-                    |c, at, line, out| claude_line(c, at, line, true, out),
-                )?;
+    match locate(loc, agent, sid)? {
+        Located::OpenCode(db) => {
+            let key = input_key(agent, sid, &db);
+            let cursor = cursors.entry(key).or_default();
+            opencode_poll(&db, &loc.sqlite3, sid, cursor, &mut polled.observations)?;
+            polled.files.push(db);
+        }
+        Located::Files(files) => {
+            for (i, path) in files.iter().enumerate() {
+                match agent {
+                    "claude" => {
+                        let subagent = i > 0;
+                        poll_file(
+                            agent,
+                            sid,
+                            path,
+                            cursors,
+                            &mut polled,
+                            |c, at, line, out| claude_line(c, at, line, subagent, out),
+                        )?;
+                    }
+                    "codex" => poll_file(agent, sid, path, cursors, &mut polled, codex_line)?,
+                    _ => poll_file(agent, sid, path, cursors, &mut polled, pi_line)?,
+                }
             }
         }
-        "codex" => {
-            let path = find_codex_rollout(&loc.codex_sessions, sid).ok_or_else(|| {
-                Unreadable::NoTranscript(format!(
-                    "rollout-*-{sid}.jsonl under {}",
-                    loc.codex_sessions.display()
-                ))
-            })?;
-            poll_file(agent, sid, &path, cursors, &mut polled, codex_line)?;
-        }
-        "pi" | "prime" => {
-            let path = find_pi_session(&loc.pi_sessions, sid)
-                .ok_or_else(|| Unreadable::NoTranscript(format!("a session file for {sid}")))?;
-            poll_file(agent, sid, &path, cursors, &mut polled, pi_line)?;
-        }
-        "opencode" => {
-            let key = input_key(agent, sid, &loc.opencode_db);
-            let cursor = cursors.entry(key).or_default();
-            opencode_poll(
-                &loc.opencode_db,
-                &loc.sqlite3,
-                sid,
-                cursor,
-                &mut polled.observations,
-            )?;
-            polled.files.push(loc.opencode_db.clone());
-        }
-        "none" => return Err(Unreadable::NotRead("agent none is not read".into())),
-        // "antigravity" lands here: agy 1.2.17 keeps no local usage that
-        // horch can read (U-60). Its state files are binary protobuf, and the
-        // conversation_summaries.db table has no token columns. Only `-p
-        // --output-format json` prints per-run tokens, and horch runs the TUI.
-        // Seen live: docs/live-checks/harnesses.md.
-        other => return Err(Unreadable::NotRead(format!("unknown agent '{other}'"))),
     }
     Ok(polled)
 }
@@ -185,11 +198,11 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-fn n(v: &Value, pointer: &str) -> u64 {
+pub(crate) fn n(v: &Value, pointer: &str) -> u64 {
     v.pointer(pointer).and_then(Value::as_u64).unwrap_or(0)
 }
 
-fn first_n(v: &Value, keys: &[&str]) -> u64 {
+pub(crate) fn first_n(v: &Value, keys: &[&str]) -> u64 {
     keys.iter()
         .find_map(|k| v.get(*k).and_then(Value::as_u64))
         .unwrap_or(0)
@@ -197,7 +210,7 @@ fn first_n(v: &Value, keys: &[&str]) -> u64 {
 
 /// An RFC 3339 transcript time as a ledger stamp; the raw string if it does
 /// not parse (a reader never drops an event over its timestamp).
-fn ts(raw: Option<&str>) -> String {
+pub(crate) fn ts(raw: Option<&str>) -> String {
     raw.and_then(clock::parse)
         .map(clock::stamp)
         .unwrap_or_else(|| raw.unwrap_or_default().to_string())
@@ -720,7 +733,7 @@ pub(crate) fn opencode_message(c: &mut Cursor, id: &str, data: &Value, out: &mut
 }
 
 /// Run a query through `sqlite3 -readonly -json`. No rows prints nothing.
-fn sqlite_json(bin: &Path, db: &Path, query: &str) -> Result<Vec<Value>, Unreadable> {
+pub(crate) fn sqlite_json(bin: &Path, db: &Path, query: &str) -> Result<Vec<Value>, Unreadable> {
     let output = std::process::Command::new(bin)
         .arg("-readonly")
         .arg("-json")

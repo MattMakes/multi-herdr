@@ -8,12 +8,14 @@
 //! | module | job |
 //! |---|---|
 //! | [`readers`] | one incremental reader per harness |
+//! | [`context`] | the current context of 1 session, from the transcript tail |
 //! | `cursor` | where each reader stopped, and file identity |
 //! | [`store`] | the event files, the dedupe index, rollups |
 //! | [`collect`] | one tick: ledgers -> readers -> store -> snapshot |
 //! | [`lock`] | one collector per state root |
 
 pub mod collect;
+pub mod context;
 pub(crate) mod cursor;
 pub mod lock;
 pub mod readers;
