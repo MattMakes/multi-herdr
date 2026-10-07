@@ -19,12 +19,13 @@ pub mod lock;
 pub mod readers;
 pub mod store;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::routing::quota::Window;
-use crate::usage::Tokens;
+use crate::usage::{self, Price, Tokens};
 
 /// Token counts, one field per class (TEL-03).
 ///
@@ -167,6 +168,16 @@ impl Event {
             self.session_id.clone(),
             self.event_id.clone(),
         )
+    }
+
+    /// Price an event stored without a cost, from `prices` (read-time
+    /// pricing, section 8.2). A stored cost is the price at collection time
+    /// and is kept. A model `prices` does not know stays `None`: unpriced,
+    /// never $0.
+    pub fn price_if_unset(&mut self, prices: &BTreeMap<String, Price>) {
+        if self.cost_usd.is_none() {
+            self.cost_usd = usage::cost_of(prices, &self.model, &self.tokens.priced());
+        }
     }
 }
 

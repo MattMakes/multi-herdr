@@ -166,6 +166,12 @@ pub fn builtin_prices() -> BTreeMap<String, Price> {
     ] {
         m.insert(id.into(), gemini_flash);
     }
+    // No row for `codex-auto-review`, on purpose. It is Codex's approval
+    // reviewer (`approvals_reviewer = "auto_review"`; a rollout with
+    // `thread_source: guardian_review` names it). Codex's models cache lists
+    // it hidden, and OpenAI publishes no per-token price for it
+    // (learn.chatgpt.com/docs/pricing, read 2026-10-06). Its events are
+    // listed as unpriced, never counted as $0.
     m
 }
 
@@ -230,6 +236,13 @@ pub fn price_for(prices: &BTreeMap<String, Price>, model: &str) -> Option<Price>
         .get(model)
         .or_else(|| prices.get(&canonical_model(model)))
         .copied()
+}
+
+/// Dollars for `tokens` on `model`, or `None` when the table does not know
+/// the model. The one pricing function: `horch cost`, the collector and the
+/// telemetry readers that price a stored event later all call it.
+pub fn cost_of(prices: &BTreeMap<String, Price>, model: &str, tokens: &Tokens) -> Option<f64> {
+    price_for(prices, model).map(|p| p.cost(tokens))
 }
 
 // ─── transcript discovery ───────────────────────────────────────────────────

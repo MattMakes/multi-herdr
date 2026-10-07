@@ -87,7 +87,11 @@ pub struct LiveRow {
     pub status: String,
     pub task_head: String,
     pub tokens: TokenClasses,
+    /// The priced events' cost; `unpriced_events` are not in it.
     pub cost_usd: f64,
+    /// Events with no price (an unknown model), never counted as $0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unpriced_events: u64,
     pub rate_tokens_per_min: f64,
     pub rate_usd_per_hour: f64,
     pub last_event_at: Option<String>,
@@ -380,7 +384,7 @@ pub(crate) fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String
     } else {
         u.model.clone()
     };
-    let cost_usd = usage::price_for(prices, &model).map(|p| p.cost(&u.tokens.priced()));
+    let cost_usd = usage::cost_of(prices, &model, &u.tokens.priced());
     Event {
         ts: u.ts,
         project: r.project.clone(),
@@ -405,6 +409,10 @@ pub(crate) fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String
         cost_usd,
         harness_cost: u.harness_cost,
     }
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 fn share(part: f64, whole: f64) -> Option<f64> {
@@ -506,6 +514,7 @@ fn build_indexed(
         events: u64,
         tokens: TokenClasses,
         cost: f64,
+        unpriced: u64,
         last: Option<&'e str>,
         recent_tokens: u64,
         recent_cost: f64,
@@ -516,6 +525,10 @@ fn build_indexed(
     let mut row_tokens = vec![TokenClasses::default(); WINDOWS.len() * rows];
     let mut row_seen = vec![false; WINDOWS.len() * rows];
     let mut costs = vec![(0.0f64, 0.0f64); WINDOWS.len() * store::GROUPS.len() * names];
+    // Per window, group and key: the unpriced events. Per window: per model.
+    let mut unpriced = vec![0u64; WINDOWS.len() * store::GROUPS.len() * names];
+    let mut unpriced_models: [BTreeMap<&str, store::UnpricedRow>; WINDOWS.len()] =
+        Default::default();
     // Insights over the 7-day window.
     let (mut total, mut orch, mut idle) = (0.0f64, 0.0f64, 0.0f64);
     let mut week_tokens = TokenClasses::default();
@@ -531,10 +544,12 @@ fn build_indexed(
         let record = r.record as usize;
         let ts = e.ts.as_str();
         let cost = e.cost_usd.unwrap_or(0.0);
+        let no_price = e.cost_usd.is_none();
         let a = &mut per[record];
         a.events += 1;
         a.tokens.add(&e.tokens);
         a.cost += cost;
+        a.unpriced += u64::from(no_price);
         if a.last.is_none_or(|l| ts > l) {
             a.last = Some(ts);
         }
@@ -549,11 +564,16 @@ fn build_indexed(
             row_tokens[w * rows + row].add(&e.tokens);
             row_seen[w * rows + row] = true;
             for (g, key) in r.groups.iter().enumerate() {
-                let c = &mut costs[(w * store::GROUPS.len() + g) * names + *key as usize];
+                let at = (w * store::GROUPS.len() + g) * names + *key as usize;
+                let c = &mut costs[at];
                 c.0 += cost;
                 if is_done[record] {
                     c.1 += cost;
                 }
+                unpriced[at] += u64::from(no_price);
+            }
+            if no_price {
+                store::add_unpriced(&mut unpriced_models[w], e);
             }
         }
         if ts >= since[2].as_str() {
@@ -586,14 +606,15 @@ fn build_indexed(
             std::array::from_fn(|g| {
                 store::rows_from(std::mem::take(&mut groups[g]).into_iter().map(
                     |(key, (tokens, recs))| {
-                        let (cost, done_cost) =
-                            costs[(w * store::GROUPS.len() + g) * names + key as usize];
+                        let at = (w * store::GROUPS.len() + g) * names + key as usize;
+                        let (cost, done_cost) = costs[at];
                         let sums = GroupSums {
                             tokens,
                             cost,
                             records: recs.len() as u64,
                             done: recs.iter().filter(|r| is_done[**r as usize]).count() as u64,
                             done_cost,
+                            unpriced_events: unpriced[at],
                         };
                         (index.names[key as usize].clone(), sums)
                     },
@@ -608,6 +629,9 @@ fn build_indexed(
                 by_project,
                 by_plan,
                 by_kind,
+                unpriced: std::mem::take(&mut unpriced_models[w])
+                    .into_values()
+                    .collect(),
             },
         );
     }
@@ -650,6 +674,7 @@ fn build_indexed(
             task_head: r.task.chars().take(60).collect(),
             tokens: a.map(|a| a.tokens).unwrap_or_default(),
             cost_usd: a.map(|a| a.cost).unwrap_or(0.0),
+            unpriced_events: a.map(|a| a.unpriced).unwrap_or(0),
             rate_tokens_per_min: a.map(|a| a.recent_tokens as f64 / 5.0).unwrap_or(0.0),
             rate_usd_per_hour: a.map(|a| a.recent_cost * 12.0).unwrap_or(0.0),
             last_event_at: last,
@@ -815,6 +840,8 @@ mod tests {
                 let mine = events.iter().filter(|e| e.record_id == row.record_id);
                 let cost: f64 = mine.clone().map(|e| e.cost_usd.unwrap_or(0.0)).sum();
                 assert_eq!(row.cost_usd, cost, "{}", row.record_id);
+                let unpriced = mine.clone().filter(|e| e.cost_usd.is_none()).count();
+                assert_eq!(row.unpriced_events, unpriced as u64, "{}", row.record_id);
                 assert_eq!(row.last_event_at, mine.map(|e| e.ts.clone()).max());
             }
 

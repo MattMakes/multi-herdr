@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::readers::Cursors;
 use super::{Event, TokenClasses};
+use crate::usage::{self, Price};
 
 pub type Key = (String, String, String);
 
@@ -97,12 +98,13 @@ impl Store {
             dir: dir.to_path_buf(),
             ..Store::default()
         };
+        let prices = usage::builtin_prices();
         for (date, path) in event_files(dir) {
             if date.as_str() < oldest.as_str() && date != "undated" {
                 let _ = std::fs::remove_file(&path);
                 continue;
             }
-            for event in read_file(&path) {
+            for event in read_file(&path, &prices) {
                 if store.keys.insert(event.key()) {
                     store.events.push(event);
                 }
@@ -159,22 +161,30 @@ impl Store {
     }
 }
 
-/// Every event in one file. A torn last line (a crash mid-append) is skipped.
-pub(crate) fn read_file(path: &Path) -> Vec<Event> {
+/// Every event in one file, an event stored without a cost priced from
+/// `prices` now ([`Event::price_if_unset`]). A torn last line (a crash
+/// mid-append) is skipped.
+pub(crate) fn read_file(path: &Path, prices: &BTreeMap<String, Price>) -> Vec<Event> {
     std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
+        .filter_map(|l| serde_json::from_str::<Event>(l).ok())
+        .map(|mut e| {
+            e.price_if_unset(prices);
+            e
+        })
         .collect()
 }
 
 /// Every event in `dir`, deduplicated, without opening a [`Store`] (the
-/// readers of the files: `horch usage` with a live collector).
+/// readers of the files: `horch usage` with a live collector). Priced at
+/// read time from the built-in table, as [`Store::open`] does.
 pub fn read_all(dir: &Path) -> Vec<Event> {
+    let prices = usage::builtin_prices();
     let mut keys = HashSet::new();
     let mut out = Vec::new();
     for (_, path) in event_files(dir) {
-        for e in read_file(&path) {
+        for e in read_file(&path, &prices) {
             if keys.insert(e.key()) {
                 out.push(e);
             }
@@ -217,6 +227,39 @@ pub struct RollupRow {
     pub cache_hit: Option<f64>,
     /// Cost of the done records divided by their count.
     pub cost_per_done: Option<f64>,
+    /// Events with no price (an unknown model): their tokens are in
+    /// `tokens`, their cost is not in `cost_usd`.
+    #[serde(default)]
+    pub unpriced_events: u64,
+}
+
+/// The events of one model the price table does not know (TEL-10: listed,
+/// never counted as $0).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UnpricedRow {
+    pub model: String,
+    pub events: u64,
+    pub tokens: TokenClasses,
+}
+
+/// The unpriced events of `events`, one row per model, sorted by model.
+pub fn unpriced<'a>(events: impl Iterator<Item = &'a Event>) -> Vec<UnpricedRow> {
+    let mut by_model: BTreeMap<&str, UnpricedRow> = BTreeMap::new();
+    for e in events.filter(|e| e.cost_usd.is_none()) {
+        add_unpriced(&mut by_model, e);
+    }
+    by_model.into_values().collect()
+}
+
+pub(crate) fn add_unpriced<'a>(by_model: &mut BTreeMap<&'a str, UnpricedRow>, e: &'a Event) {
+    let row = by_model
+        .entry(e.model.as_str())
+        .or_insert_with(|| UnpricedRow {
+            model: e.model.clone(),
+            ..UnpricedRow::default()
+        });
+    row.events += 1;
+    row.tokens.add(&e.tokens);
 }
 
 /// The six groupings of one window.
@@ -228,6 +271,9 @@ pub struct Rollup {
     pub by_project: Vec<RollupRow>,
     pub by_plan: Vec<RollupRow>,
     pub by_kind: Vec<RollupRow>,
+    /// The window's unpriced events, per model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unpriced: Vec<UnpricedRow>,
 }
 
 impl Rollup {
@@ -271,6 +317,8 @@ pub(crate) struct GroupSums {
     pub done: u64,
     /// The cost of the done records' events.
     pub done_cost: f64,
+    /// Events with no price.
+    pub unpriced_events: u64,
 }
 
 /// The rows of one grouping, sorted by cost, highest first.
@@ -285,6 +333,7 @@ pub(crate) fn rows_from(groups: impl IntoIterator<Item = (String, GroupSums)>) -
             records: g.records,
             done: g.done,
             cost_per_done: (g.done > 0).then(|| g.done_cost / g.done as f64),
+            unpriced_events: g.unpriced_events,
         })
         .collect();
     rows.sort_by(|a, b| {
@@ -309,11 +358,14 @@ pub fn rollup_rows<'a>(
         cost: f64,
         records: BTreeSet<&'e str>,
         done_cost: f64,
+        unpriced: u64,
     }
     let mut acc: BTreeMap<&str, Acc> = BTreeMap::new();
     for e in events {
         let a = acc.entry(group_key(e, group)).or_default();
         a.tokens.add(&e.tokens);
+        // An unpriced event adds its tokens and is counted; it adds no $0.
+        a.unpriced += u64::from(e.cost_usd.is_none());
         let cost = e.cost_usd.unwrap_or(0.0);
         a.cost += cost;
         a.records.insert(&e.record_id);
@@ -328,6 +380,7 @@ pub fn rollup_rows<'a>(
             tokens: a.tokens,
             cost: a.cost,
             done_cost: a.done_cost,
+            unpriced_events: a.unpriced,
         };
         (key.to_string(), sums)
     }))
@@ -347,6 +400,7 @@ pub fn rollup(events: &[Event], since: Option<&str>, done: &BTreeSet<String>) ->
         by_project: rollup_rows(pick(), "project", done),
         by_plan: rollup_rows(pick(), "plan", done),
         by_kind: rollup_rows(pick(), "kind", done),
+        unpriced: unpriced(pick()),
     }
 }
 
@@ -444,6 +498,66 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "{f}");
         }
+    }
+
+    /// Read-time pricing (W9): an event stored with no cost, on a model the
+    /// table prices now, is priced on read with the one pricing function. A
+    /// stored cost is the price at the time and is kept. A model with no
+    /// price stays unpriced.
+    #[test]
+    fn tel_10_a_stored_event_without_a_cost_is_priced_at_read_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut late = ev("late", "2026-09-28T17:00:00Z", "r1", 1000, 0.0);
+        late.model = "claude-sonnet-5-5".into();
+        late.cost_usd = None;
+        let mut kept = late.clone();
+        kept.event_id = "kept".into();
+        kept.cost_usd = Some(0.5);
+        let mut unknown = late.clone();
+        unknown.event_id = "unknown".into();
+        unknown.model = "codex-auto-review".into();
+        let lines: Vec<String> = [&late, &kept, &unknown]
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        std::fs::write(
+            tmp.path().join("events-2026-09-28.jsonl"),
+            lines.join("\n") + "\n",
+        )
+        .unwrap();
+        let prices = usage::builtin_prices();
+        let want = usage::cost_of(&prices, "claude-sonnet-5-5", &late.tokens.priced());
+        assert!(want.is_some_and(|c| c > 0.0));
+        let opened = Store::open(tmp.path(), now(), 35).unwrap().events;
+        for events in [read_all(tmp.path()), opened] {
+            let cost = |id: &str| events.iter().find(|e| e.event_id == id).unwrap().cost_usd;
+            assert_eq!(cost("late"), want);
+            assert_eq!(cost("kept"), Some(0.5), "the stored price is kept");
+            assert_eq!(cost("unknown"), None, "unpriced, not $0");
+        }
+    }
+
+    /// Never zero the unpriced (W9): an unpriced event adds its tokens and a
+    /// count, and no cost; the window lists it per model.
+    #[test]
+    fn tel_10_rollups_list_unpriced_events_and_never_count_them_as_zero() {
+        let mut free = ev("b", "2026-09-28T17:01:00Z", "r1", 10, 0.0);
+        free.cost_usd = None;
+        free.model = "mystery-9".into();
+        let events = vec![ev("a", "2026-09-28T17:00:00Z", "r1", 10, 1.0), free];
+        let r = rollup(&events, None, &BTreeSet::new());
+        let row = &r.by_teammate[0];
+        assert_eq!(row.unpriced_events, 1);
+        assert!((row.cost_usd - 1.0).abs() < 1e-12);
+        assert_eq!(row.tokens.output, 20, "the unpriced tokens still count");
+        assert_eq!(
+            r.unpriced,
+            vec![UnpricedRow {
+                model: "mystery-9".into(),
+                events: 1,
+                tokens: events[1].tokens,
+            }]
+        );
     }
 
     #[test]

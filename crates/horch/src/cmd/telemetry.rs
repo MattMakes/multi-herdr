@@ -360,7 +360,7 @@ fn live_lines(rows: &[&LiveRow], width: usize, max: usize) -> Vec<String> {
                 pad(&human(r.tokens.fresh()), 8),
                 pad(&human(r.tokens.cache_read), 9),
                 pad(&human(r.tokens.output), 7),
-                pad(&format!("{:.2}", r.cost_usd), 8),
+                pad(&money(r.cost_usd, r.unpriced_events), 8),
                 human(r.rate_tokens_per_min.round() as u64),
                 flags
             ),
@@ -368,6 +368,37 @@ fn live_lines(rows: &[&LiveRow], width: usize, max: usize) -> Vec<String> {
         ));
     }
     out
+}
+
+/// Dollars, with a `*` when some events have no price: their cost is not
+/// in the figure, and the `UNPRICED` line lists them (never $0).
+fn money(cost: f64, unpriced: u64) -> String {
+    if unpriced > 0 {
+        format!("{cost:.2}*")
+    } else {
+        format!("{cost:.2}")
+    }
+}
+
+/// The `UNPRICED` line for one window: the events whose model has no price.
+fn unpriced_line(rows: &[store::UnpricedRow], width: usize) -> Option<String> {
+    if rows.is_empty() {
+        return None;
+    }
+    let events: u64 = rows.iter().map(|u| u.events).sum();
+    let tokens: u64 = rows.iter().map(|u| u.tokens.total()).sum();
+    let models: Vec<String> = rows
+        .iter()
+        .map(|u| format!("{} {}", u.model, u.events))
+        .collect();
+    Some(clip(
+        &format!(
+            "* UNPRICED  plus {events} event(s), {} tokens, not in $: {}",
+            human(tokens),
+            models.join(", ")
+        ),
+        width,
+    ))
 }
 
 fn rollup_lines(title: &str, rows: &[RollupRow], width: usize, max: usize) -> Vec<String> {
@@ -394,7 +425,7 @@ fn rollup_lines(title: &str, rows: &[RollupRow], width: usize, max: usize) -> Ve
                 "{}{}{}{}{}{}",
                 pad(&r.key, 31),
                 pad(&human(r.tokens.total()), 9),
-                pad(&format!("{:.2}", r.cost_usd), 9),
+                pad(&money(r.cost_usd, r.unpriced_events), 9),
                 pad(
                     &if total > 0.0 {
                         pct(r.cost_usd / total)
@@ -485,9 +516,18 @@ pub fn render(snap: &Snapshot, view: &ViewState, width: u16, height: u16) -> Vec
     if let Some(s) = &view.status {
         tail.push(clip(&format!("! {s}"), width));
     }
+    let window = view.window_name();
+    // The live view counts the last 5 hours' unpriced events.
+    let priced_window = if window == "live" { "5h" } else { window };
+    if let Some(line) = snap
+        .rollups
+        .get(priced_window)
+        .and_then(|r| unpriced_line(&r.unpriced, width))
+    {
+        tail.push(line);
+    }
 
     let room = height.saturating_sub(lines.len() + tail.len());
-    let window = view.window_name();
     if window == "live" {
         lines.extend(live_lines(&live, width, room.saturating_sub(1)));
     } else {
@@ -910,6 +950,44 @@ mod tests {
             )
         });
         assert_eq!(frame, want, "{name}");
+    }
+
+    /// Never zero the unpriced (W9): a row with unpriced events marks its
+    /// cost with `*`, and the window's `UNPRICED` line counts the events,
+    /// their tokens and their models.
+    #[test]
+    fn tel_10_the_screen_lists_unpriced_events() {
+        let mut snap = fixture_snapshot();
+        let today = snap.rollups.get_mut("today").unwrap();
+        today.by_teammate[0].unpriced_events = 3;
+        today.unpriced = vec![store::UnpricedRow {
+            model: "codex-auto-review".into(),
+            events: 3,
+            tokens: horch_core::telemetry::TokenClasses {
+                input: 12_000,
+                ..Default::default()
+            },
+        }];
+        let cost = format!("{:.2}*", today.by_teammate[0].cost_usd);
+        let frame = render(
+            &snap,
+            &ViewState::with("teammate", "today").unwrap(),
+            120,
+            40,
+        );
+        let text = frame.join("\n");
+        assert!(
+            text.contains("* UNPRICED  plus 3 event(s), 12k tokens, not in $: codex-auto-review 3"),
+            "{text}"
+        );
+        assert!(text.contains(&cost), "{text}");
+        let plain = render(
+            &fixture_snapshot(),
+            &ViewState::with("teammate", "today").unwrap(),
+            120,
+            40,
+        );
+        assert!(!plain.join("\n").contains("UNPRICED"));
     }
 
     /// A change in layout is a change to these files.
