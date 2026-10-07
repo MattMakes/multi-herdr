@@ -462,10 +462,14 @@ impl Harness for Codex {
     /// matches its prefix, so `horch note x 2>&1; echo $?` ran sandboxed and
     /// failed on the lock (live check B2). `horch tell` writes under the
     /// temp dir, which the sandbox already allows; the data dir is only read.
+    /// Only a `workspace-write` launch (or codex's default) gets the root:
+    /// a `read-only` one exits at launch on `--add-dir`, and full access
+    /// needs none.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
+        let home = codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref());
         let rules = Rules::install(
             &ctx.paths.home,
-            &codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref()),
+            &home,
             &ctx.paths.state_root,
             req.role,
             req.exec_rules,
@@ -473,13 +477,17 @@ impl Harness for Codex {
         if let Some(skills) = req.skills {
             rules.attach_skills(&skills.skills_dir())?;
         }
-        let mut prepared = Prepared {
-            extra_args: vec![
+        let sandbox = launch_sandbox(req.teammate, || read_config(&home.join("config.toml")));
+        let mut prepared = Prepared::default();
+        // Codex 0.160.0 exits 1 when `--add-dir` meets a read-only sandbox
+        // ("the effective permissions do not allow additional writable
+        // roots"), and full access needs no extra root.
+        if sandbox.as_deref().is_none_or(|s| s == WORKSPACE_WRITE) {
+            prepared.extra_args = vec![
                 "--add-dir".into(),
                 ctx.paths.state_root.to_string_lossy().into_owned(),
-            ],
-            ..Prepared::default()
-        };
+            ];
+        }
         if let Rules::Private { dir } = &rules {
             // On the child only. This process keeps the real CODEX_HOME, so the
             // session discovery still reads the real sessions directory.
@@ -659,6 +667,49 @@ fn toml_scalar(raw: &str) -> String {
         return raw.replace('_', "");
     }
     raw.to_string()
+}
+
+/// Codex's sandbox name that allows extra writable roots.
+const WORKSPACE_WRITE: &str = "workspace-write";
+
+/// The sandbox a codex launch of `teammate` runs: `read-only`,
+/// `workspace-write` or `danger-full-access`. `None`: codex's own default.
+///
+/// A sandbox flag in the argv wins over a `-c sandbox_mode=` pair, which
+/// wins over `config` (the inherited `config.toml`, read only when needed).
+/// Among flags, the teammate's args come after `permission_mode`'s and win.
+fn launch_sandbox(teammate: &Teammate, config: impl FnOnce() -> Option<String>) -> Option<String> {
+    let mode_args = teammate
+        .permission_mode
+        .and_then(|m| m.codex_args())
+        .unwrap_or_default();
+    let mut flag: Option<String> = None;
+    let mut pair: Option<String> = None;
+    let mut it = mode_args.iter().chain(&teammate.args);
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-s" | "--sandbox" => flag = it.next().cloned(),
+            "--full-auto" => flag = Some(WORKSPACE_WRITE.into()),
+            "--dangerously-bypass-approvals-and-sandbox" | "--yolo" => {
+                flag = Some("danger-full-access".into())
+            }
+            "-c" | "--config" => {
+                let Some((key, value)) = it.next().and_then(|p| p.split_once('=')) else {
+                    continue;
+                };
+                if key.trim() == "sandbox_mode" {
+                    pair = Some(toml_scalar(value));
+                }
+            }
+            other => {
+                if let Some(s) = other.strip_prefix("--sandbox=") {
+                    flag = Some(s.to_string());
+                }
+            }
+        }
+    }
+    flag.or(pair)
+        .or_else(|| codex_config_value(&config()?, args_profile(&teammate.args), "sandbox_mode"))
 }
 
 /// The profile a codex launch runs: the value after `-p` or `--profile` in
@@ -1181,6 +1232,112 @@ mod tests {
         let state = ctx.paths.state_root.to_string_lossy().into_owned();
         assert_eq!(dirs, vec!["/teammate/own", state.as_str()]);
         assert_eq!(args.last().map(String::as_str), Some("P"));
+    }
+
+    /// The `--add-dir` values a prepared launch for `teammate` passes, with
+    /// `config` as the codex home's `config.toml`.
+    #[cfg(unix)]
+    fn fleet_dirs(teammate: &Teammate, config: Option<&str>) -> Vec<String> {
+        let tmp = tempfile::tempdir().unwrap();
+        if let Some(text) = config {
+            let dir = tmp.path().join("home").join(".codex");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("config.toml"), text).unwrap();
+        }
+        let (_, prepared) = prepare_in(tmp.path(), teammate);
+        prepared
+            .extra_args
+            .windows(2)
+            .filter(|w| w[0] == "--add-dir")
+            .map(|w| w[1].clone())
+            .collect()
+    }
+
+    /// Codex 0.160.0 exits 1 at launch when `--add-dir` meets a read-only
+    /// sandbox: "Ignoring --add-dir (...) because the effective permissions
+    /// do not allow additional writable roots" (the X6 repro). Full access
+    /// needs no extra root. Only a workspace-write launch gets the state root.
+    #[cfg(unix)]
+    #[test]
+    fn the_state_root_is_added_only_for_a_workspace_write_sandbox() {
+        use crate::roster::PermissionMode::*;
+        for (mode, expect) in [
+            (Some(Plan), false),
+            (Some(AcceptEdits), true),
+            (Some(Auto), true),
+            (Some(BypassPermissions), false),
+            (None, true),
+        ] {
+            let teammate = Teammate {
+                permission_mode: mode,
+                ..Default::default()
+            };
+            assert_eq!(
+                fleet_dirs(&teammate, None).len(),
+                usize::from(expect),
+                "permission_mode {mode:?}"
+            );
+        }
+    }
+
+    /// The teammate's own sandbox args come after `permission_mode` and win,
+    /// as they do in the argv.
+    #[cfg(unix)]
+    #[test]
+    fn a_teammates_own_sandbox_args_decide_the_state_root() {
+        use crate::roster::PermissionMode::*;
+        for (mode, args, expect) in [
+            (None, vec!["-s", "read-only"], false),
+            (None, vec!["--sandbox=read-only"], false),
+            (None, vec!["-c", "sandbox_mode=\"read-only\""], false),
+            (
+                None,
+                vec!["--dangerously-bypass-approvals-and-sandbox"],
+                false,
+            ),
+            (None, vec!["--full-auto"], true),
+            (Some(Plan), vec!["--sandbox", "workspace-write"], true),
+            (Some(Auto), vec!["-s", "danger-full-access"], false),
+        ] {
+            let teammate = Teammate {
+                permission_mode: mode,
+                args: args.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            };
+            assert_eq!(
+                fleet_dirs(&teammate, None).len(),
+                usize::from(expect),
+                "permission_mode {mode:?} args {args:?}"
+            );
+        }
+    }
+
+    /// With no sandbox in the argv, the inherited `config.toml` decides: its
+    /// profile, then its top level.
+    #[cfg(unix)]
+    #[test]
+    fn the_operator_config_sandbox_decides_when_the_argv_sets_none() {
+        let plain = Teammate::default();
+        assert!(fleet_dirs(&plain, Some("sandbox_mode = \"read-only\"\n")).is_empty());
+        assert_eq!(
+            fleet_dirs(&plain, Some("sandbox_mode = \"workspace-write\"\n")).len(),
+            1
+        );
+        let profiled = Teammate {
+            args: vec!["-p".into(), "ro".into()],
+            ..Default::default()
+        };
+        let text =
+            "sandbox_mode = \"workspace-write\"\n[profiles.ro]\nsandbox_mode = \"read-only\"\n";
+        assert!(fleet_dirs(&profiled, Some(text)).is_empty());
+        let plan_over_config = Teammate {
+            permission_mode: Some(crate::roster::PermissionMode::Auto),
+            ..Default::default()
+        };
+        assert_eq!(
+            fleet_dirs(&plan_over_config, Some("sandbox_mode = \"read-only\"\n")).len(),
+            1
+        );
     }
 
     /// A machine that has never run codex has no home to mirror. That is not an
