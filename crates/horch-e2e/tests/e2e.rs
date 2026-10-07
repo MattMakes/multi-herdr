@@ -665,10 +665,13 @@ fn spc_03_ensure_argv() {
     h.set("HORCH_FAKE_SCENARIO", "exec");
     let out = h.run(&["telemetry", "ensure"]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    // Besides the read-only `workspace list` that looks for an old
+    // collector workspace (W17), only these 2 calls.
     let calls: Vec<Vec<String>> = h
         .calls_of("herdr")
         .into_iter()
-        .map(|c| serde_json::from_value(c["argv"].clone()).unwrap())
+        .map(|c| serde_json::from_value::<Vec<String>>(c["argv"].clone()).unwrap())
+        .filter(|a| a[..2] != ["workspace", "list"])
         .collect();
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert_eq!(
@@ -720,6 +723,153 @@ fn spc_03_ensure_warns_and_succeeds_for_a_collector_it_cannot_stop() {
     assert!(err.contains("runs `horch telemetry collect`"), "{err}");
     // This test process is the recorded pid: reaching here means no signal
     // ended it.
+    assert!(h.calls_of("herdr").is_empty(), "no herdr call at all");
+}
+
+/// Seed the fake herdr with workspaces: `(id, label, pane count)`.
+fn seed_workspaces(h: &Harness, workspaces: &[(&str, &str, usize)]) {
+    let all: Vec<Value> = workspaces
+        .iter()
+        .map(|(id, label, panes)| {
+            let panes: Vec<Value> = (1..=*panes)
+                .map(|n| {
+                    serde_json::json!({
+                        "pane_id": format!("{id}:p{n}"),
+                        "workspace_id": id,
+                        "tab_id": format!("{id}:t1"),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "workspace_id": id, "label": label, "active_tab_id": format!("{id}:t1"),
+                "panes": panes, "next_pane": panes.len() + 1, "focused": false,
+            })
+        })
+        .collect();
+    let mut path = h.log.clone().into_os_string();
+    path.push(".state.json");
+    let state = serde_json::json!({"workspaces": all, "next": workspaces.len() + 1});
+    std::fs::write(PathBuf::from(path), state.to_string()).unwrap();
+}
+
+/// The fake herdr's workspaces now: `(id, label)`.
+fn workspaces_of(h: &Harness) -> Vec<(String, String)> {
+    let mut path = h.log.clone().into_os_string();
+    path.push(".state.json");
+    let state: Value =
+        serde_json::from_str(&std::fs::read_to_string(PathBuf::from(path)).unwrap()).unwrap();
+    state["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| {
+            (
+                w["workspace_id"].as_str().unwrap().to_string(),
+                w["label"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// A collector record whose pid is dead: the holder ran in `pane` and
+/// ended without releasing the lock (L7's `kill -9`).
+#[cfg(unix)]
+fn hold_dead_lock(h: &Harness, pane: &str) {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    write_lock(
+        h,
+        &serde_json::json!({
+            "pid": pid, "started_at": NOW, "host": "test", "pane_id": pane,
+            "pid_start": 1u64,
+        })
+        .to_string(),
+    );
+}
+
+/// Each violation once: a fake that logs as it goes logs one several times.
+fn herdr_violations(h: &Harness) -> Vec<String> {
+    let mut all = h.violations();
+    all.dedup();
+    all
+}
+
+/// W17 (SPC-03): a restart after a dead collector runs the new one in the
+/// old collector workspace and closes the other old one. herdr then holds 1
+/// `horch telemetry` workspace. A workspace with another label stays.
+#[cfg(unix)]
+#[test]
+fn spc_03_restart_after_a_dead_collector_leaves_1_telemetry_workspace() {
+    let mut h = corpus("spc03d");
+    h.set("HORCH_FAKE_SCENARIO", "exec");
+    seed_workspaces(
+        &h,
+        &[
+            ("w1", "multi-herdr", 1),
+            ("w2", "horch telemetry", 1),
+            ("w3", "horch telemetry", 1),
+        ],
+    );
+    hold_dead_lock(&h, "w2:p1");
+    let _guard = CollectorGuard(h.state.clone());
+    let out = h.run(&["telemetry", "ensure"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        workspaces_of(&h),
+        [
+            ("w1".to_string(), "multi-herdr".to_string()),
+            ("w2".to_string(), "horch telemetry".to_string()),
+        ]
+    );
+    let info: Value = serde_json::from_str(
+        &std::fs::read_to_string(h.state.join("telemetry/collector.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(info["pane_id"], "w2:p1", "the old workspace is reused");
+    assert_eq!(
+        herdr_violations(&h),
+        ["herdr: mutating call: herdr workspace close w3"]
+    );
+}
+
+/// W17: an old collector workspace that cannot be reused (it has 2 panes)
+/// is closed after the new collector, in a new workspace, holds the lock.
+#[cfg(unix)]
+#[test]
+fn spc_03_restart_closes_an_old_workspace_it_cannot_reuse() {
+    let mut h = corpus("spc03e");
+    h.set("HORCH_FAKE_SCENARIO", "exec");
+    seed_workspaces(&h, &[("w1", "horch telemetry", 2), ("w2", "telemetry", 1)]);
+    let _guard = CollectorGuard(h.state.clone());
+    let out = h.run(&["telemetry", "ensure"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        workspaces_of(&h),
+        [
+            ("w2".to_string(), "telemetry".to_string()),
+            ("w3".to_string(), "horch telemetry".to_string()),
+        ]
+    );
+    assert_eq!(
+        herdr_violations(&h),
+        ["herdr: mutating call: herdr workspace close w1"]
+    );
+}
+
+/// W17: a live collector on the current binary keeps its workspace, and
+/// `ensure` closes no other telemetry workspace either: it calls herdr never.
+#[test]
+fn spc_03_a_live_collector_keeps_every_workspace() {
+    let h = corpus("spc03f");
+    seed_workspaces(
+        &h,
+        &[("w1", "horch telemetry", 1), ("w2", "horch telemetry", 1)],
+    );
+    hold_lock(&h);
+    let out = h.run(&["telemetry", "ensure"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    assert_eq!(workspaces_of(&h).len(), 2);
     assert!(h.calls_of("herdr").is_empty(), "no herdr call at all");
 }
 

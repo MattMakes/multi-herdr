@@ -834,8 +834,9 @@ fn filtered(snap: &Snapshot, view: &ViewState, root: &Path) -> Snapshot {
 /// `horch telemetry ensure` (SPC-03): nothing when a live collector runs
 /// this binary; else a new workspace, never focused, running
 /// `horch telemetry`. A live collector on another binary (an older build)
-/// is stopped first. Only `workspace create --no-focus` and `pane run`
-/// touch herdr.
+/// is stopped first. Besides read-only list calls, only `workspace create
+/// --no-focus`, `pane run` and the `workspace close` of an old collector
+/// workspace touch herdr (W17).
 pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
     ensure_current(ctx, herdr, quiet, &ctx.bins.exe()?, true)
 }
@@ -908,12 +909,144 @@ fn report_live(info: &lock::LockInfo, quiet: bool) {
     }
 }
 
-/// A new workspace, never focused, running `exe telemetry`.
+/// Where the live collector runs, as far as herdr can tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LiveIn {
+    /// No live collector.
+    Nothing,
+    /// The live collector's pane is in this workspace.
+    Workspace(String),
+    /// A live collector whose workspace is not known (it recorded no pane,
+    /// or herdr does not know it). No telemetry workspace can be proved free.
+    Unknown,
+}
+
+fn live_collector_in(herdr: &Herdr, root: &Path) -> LiveIn {
+    let Holder::Live(info) = lock::holder(root) else {
+        return LiveIn::Nothing;
+    };
+    let Some(pane) = info.pane_id else {
+        return LiveIn::Unknown;
+    };
+    // herdr pane ids are `<workspace>:p<n>`: a pane herdr no longer reports
+    // still names its workspace.
+    let ws = herdr
+        .pane_get(&pane)
+        .ok()
+        .and_then(|p| p.workspace_id)
+        .or(info.workspace_id)
+        .or_else(|| pane.split_once(':').map(|(w, _)| w.to_string()));
+    ws.map(LiveIn::Workspace).unwrap_or(LiveIn::Unknown)
+}
+
+/// The workspaces labelled [`WORKSPACE_LABEL`] that hold no live collector:
+/// a collector that died or was stopped leaves its workspace with its pane at
+/// a shell prompt. A workspace with another label is never one of them.
+fn old_collector_workspaces(
+    listed: &[horch_core::workspace::model::Workspace],
+    live: &LiveIn,
+) -> Vec<String> {
+    if *live == LiveIn::Unknown {
+        return Vec::new();
+    }
+    listed
+        .iter()
+        .filter(|w| w.label.as_deref() == Some(WORKSPACE_LABEL))
+        .filter(|w| *live != LiveIn::Workspace(w.workspace_id.clone()))
+        .map(|w| w.workspace_id.clone())
+        .collect()
+}
+
+/// Wait up to 5 s for a live collector; its pid.
+fn wait_for_collector(root: &Path) -> Option<u32> {
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until {
+        if let Holder::Live(info) = lock::holder(root) {
+            if info.pid != 0 {
+                return Some(info.pid);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
+/// `exe telemetry` in the telemetry workspace, never focused. A restart
+/// leaves 1 telemetry workspace: an old collector workspace with 1 pane is
+/// reused, and every other old one is closed once the new collector holds
+/// the lock.
 fn start(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool, exe: &Path) -> Result<()> {
     let root = ctx.paths.state_root.clone();
-    let ws = herdr
-        .workspace_create(WORKSPACE_LABEL, None, false)
-        .context("creating the telemetry workspace")?;
+    let command = collector_command(ctx, exe);
+    let old = herdr
+        .workspace_list()
+        .map(|all| old_collector_workspaces(&all, &live_collector_in(herdr, &root)))
+        .unwrap_or_default();
+    let mut started = None;
+    if let Some((ws, pane)) = old.iter().find_map(|ws| match herdr.pane_list(ws) {
+        Ok(panes) if panes.len() == 1 => Some((ws.clone(), panes[0].pane_id.clone())),
+        _ => None,
+    }) {
+        if herdr.pane_run(&pane, &command).is_ok() {
+            started = wait_for_collector(&root).map(|pid| (pid, ws.clone()));
+        }
+        if started.is_none() {
+            eprintln!(
+                "horch: the telemetry collector did not start in the old workspace {ws}; starting it in a new one"
+            );
+        }
+    }
+    let (pid, ws) = match started {
+        Some(s) => s,
+        None => {
+            let ws = herdr
+                .workspace_create(WORKSPACE_LABEL, None, false)
+                .context("creating the telemetry workspace")?;
+            herdr.pane_run(&ws.root_pane_id, &command)?;
+            let Some(pid) = wait_for_collector(&root) else {
+                bail!(
+                    "the telemetry collector did not start within 5s in workspace {}",
+                    ws.workspace_id
+                )
+            };
+            (pid, ws.workspace_id)
+        }
+    };
+    if !quiet {
+        output::println(&format!(
+            "telemetry collector started: pid {pid}, workspace {ws}"
+        ));
+    }
+    close_old_workspaces(herdr, &root, &old, &ws, quiet);
+    Ok(())
+}
+
+/// Close the old collector workspaces in `old`, except `keep`. Each one is
+/// checked again first: it still has the telemetry label, and the live
+/// collector does not run in it.
+fn close_old_workspaces(herdr: &Herdr, root: &Path, old: &[String], keep: &str, quiet: bool) {
+    if old.iter().all(|w| w == keep) {
+        return;
+    }
+    let Ok(all) = herdr.workspace_list() else {
+        return;
+    };
+    for ws in old_collector_workspaces(&all, &live_collector_in(herdr, root)) {
+        if ws == keep || !old.contains(&ws) {
+            continue;
+        }
+        match herdr.workspace_close(&ws) {
+            Ok(()) if !quiet => {
+                output::println(&format!("closed the old telemetry workspace {ws}"))
+            }
+            Ok(()) => {}
+            Err(e) => eprintln!("horch: could not close the old telemetry workspace {ws}: {e:#}"),
+        }
+    }
+}
+
+/// The shell line that runs `exe telemetry` in a pane.
+fn collector_command(ctx: &RuntimeContext, exe: &Path) -> String {
     let mut args = vec!["telemetry".to_string()];
     // A pane does not inherit this process's environment.
     if let Some(dir) = super::path_text(ctx.paths.state_override.as_deref()) {
@@ -921,30 +1054,10 @@ fn start(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool, exe: &Path) -> Result
         args.push(dir);
     }
     let data_root = ctx.paths.data_root.to_string_lossy();
-    let command = horch_core::workspace::paneshell::PaneShell::host().command_line_with_env(
+    horch_core::workspace::paneshell::PaneShell::host().command_line_with_env(
         exe,
         &[("HORCH_DATA_DIR", data_root.as_ref())],
         &args,
-    );
-    herdr.pane_run(&ws.root_pane_id, &command)?;
-    let until = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < until {
-        if let Holder::Live(info) = lock::holder(&root) {
-            if info.pid != 0 {
-                if !quiet {
-                    output::println(&format!(
-                        "telemetry collector started: pid {}, workspace {}",
-                        info.pid, ws.workspace_id
-                    ));
-                }
-                return Ok(());
-            }
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    bail!(
-        "the telemetry collector did not start within 5s in workspace {}",
-        ws.workspace_id
     )
 }
 
@@ -1165,6 +1278,37 @@ mod tests {
         // SAFETY: our own child, still unreaped by its waiter.
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         ended.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    fn ws(id: &str, label: &str) -> horch_core::workspace::model::Workspace {
+        serde_json::from_value(serde_json::json!({"workspace_id": id, "label": label})).unwrap()
+    }
+
+    /// W17 (SPC-03): an old collector workspace is one labelled `horch
+    /// telemetry` that does not hold the live collector. A workspace with
+    /// another label is never one. With a live collector whose workspace is
+    /// not known, no workspace is.
+    #[test]
+    fn spc_03_old_collector_workspaces() {
+        let listed = [
+            ws("w1", "multi-herdr"),
+            ws("w2", WORKSPACE_LABEL),
+            ws("w3", WORKSPACE_LABEL),
+            ws("w4", "horch telemetry 2"),
+        ];
+        assert_eq!(
+            old_collector_workspaces(&listed, &LiveIn::Nothing),
+            ["w2", "w3"]
+        );
+        assert_eq!(
+            old_collector_workspaces(&listed, &LiveIn::Workspace("w3".into())),
+            ["w2"]
+        );
+        assert_eq!(
+            old_collector_workspaces(&listed, &LiveIn::Workspace("w1".into())),
+            ["w2", "w3"]
+        );
+        assert!(old_collector_workspaces(&listed, &LiveIn::Unknown).is_empty());
     }
 
     /// A change in layout is a change to these files.
