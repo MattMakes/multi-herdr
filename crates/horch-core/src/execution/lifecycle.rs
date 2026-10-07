@@ -326,10 +326,16 @@ pub fn write_startup_error(data_root: &Path, role: &str, error: &str) -> Result<
 
 /// Read and delete the startup error of the worker in `role`. A file
 /// written before `since` belongs to an earlier worker in that role: it is
-/// deleted and not returned.
+/// deleted and not returned. `since` is compared at whole seconds, the
+/// coarsest mtime a file system keeps, so a file written in the same second
+/// as `since` counts even when its mtime reads earlier.
 pub fn take_startup_error(data_root: &Path, role: &str, since: SystemTime) -> Option<String> {
     let path = startup_error_path(data_root, role)?;
     let written = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+    let since = since
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| SystemTime::UNIX_EPOCH + Duration::from_secs(d.as_secs()))
+        .unwrap_or(since);
     let text = (written >= since)
         .then(|| std::fs::read_to_string(&path).ok())
         .flatten();
@@ -1133,6 +1139,39 @@ mod tests {
             write_startup_error(tmp.path(), "sonnet-1", "old").unwrap();
             let later = std::time::SystemTime::now() + Duration::from_secs(60);
             assert_eq!(take_startup_error(tmp.path(), "sonnet-1", later), None);
+            assert!(!startup_error_path(tmp.path(), "sonnet-1").unwrap().exists());
+        }
+
+        /// Write the startup error of `sonnet-1` with its mtime set to `at`.
+        fn write_startup_error_at(dir: &Path, at: SystemTime) {
+            write_startup_error(dir, "sonnet-1", "boom").unwrap();
+            let path = startup_error_path(dir, "sonnet-1").unwrap();
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(at).unwrap();
+        }
+
+        /// A file system with whole-second mtimes stamps a file written in
+        /// the spawn's second earlier than the spawn: it still counts.
+        #[test]
+        fn a_startup_error_in_the_spawns_second_counts() {
+            let tmp = tempfile::tempdir().unwrap();
+            let second = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+            write_startup_error_at(tmp.path(), second);
+            let since = second + Duration::from_millis(900);
+            assert_eq!(
+                take_startup_error(tmp.path(), "sonnet-1", since).as_deref(),
+                Some("boom")
+            );
+        }
+
+        /// A file from the second before the spawn is an earlier worker's.
+        #[test]
+        fn a_startup_error_from_the_second_before_is_stale() {
+            let tmp = tempfile::tempdir().unwrap();
+            let second = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+            write_startup_error_at(tmp.path(), second - Duration::from_millis(1));
+            let since = second + Duration::from_millis(900);
+            assert_eq!(take_startup_error(tmp.path(), "sonnet-1", since), None);
             assert!(!startup_error_path(tmp.path(), "sonnet-1").unwrap().exists());
         }
 
