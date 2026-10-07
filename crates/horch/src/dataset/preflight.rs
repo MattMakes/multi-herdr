@@ -93,8 +93,14 @@ pub(crate) fn repo_facts(
     }
 }
 
+/// The namespace of the branches a competition round may create: the
+/// promotion makes `compete/<slug>` at the winner's commit (fleet-dataset
+/// §7.3).
+const NEW_BRANCH_PREFIX: &str = "compete/";
+
 /// Why `target` cannot take a promotion, or `None` when it can: it must
-/// be an existing local branch and not a candidate branch.
+/// be an existing local branch and not a candidate branch, or a valid
+/// `compete/<slug>` branch that does not exist yet.
 fn promote_target_problem(git: &GitCli, dir: &Path, target: &str) -> Option<String> {
     if target.starts_with("mh/exp/") {
         return Some(format!(
@@ -103,10 +109,25 @@ fn promote_target_problem(git: &GitCli, dir: &Path, target: &str) -> Option<Stri
     }
     match git.rev_parse(dir, &format!("refs/heads/{target}")) {
         Ok(Some(_)) => None,
+        Ok(None) if target.starts_with(NEW_BRANCH_PREFIX) && branch_name_ok(target) => None,
         _ => Some(format!(
-            "the promotion target '{target}' is not a local branch"
+            "the promotion target '{target}' is not a local branch \
+             (only a new {NEW_BRANCH_PREFIX}<slug> branch may be created)"
         )),
     }
+}
+
+/// `name` can name a branch, by the rules of `git check-ref-format`.
+fn branch_name_ok(name: &str) -> bool {
+    let bad_char = |c: char| c.is_ascii_control() || " ~^:?*[\\".contains(c);
+    !name.is_empty()
+        && !name.contains("..")
+        && !name.contains("@{")
+        && !name.chars().any(bad_char)
+        && !name.ends_with('.')
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
 /// Why the `--plan` file cannot brief the candidates, or `None` (FDS-09).
@@ -717,6 +738,27 @@ mod tests {
         assert_eq!(m["sonnet"].estimate.input, 400);
         assert_eq!(m["sonnet"].estimate.cache_write_1h, 7);
         assert!(measured_tokens(&paths, "never run").is_empty());
+    }
+
+    /// Only a `compete/` branch may be new, and only with a name git takes.
+    #[test]
+    fn branch_names_follow_check_ref_format() {
+        for ok in ["compete/greeting", "compete/f2-run", "compete/a.b"] {
+            assert!(branch_name_ok(ok), "{ok}");
+        }
+        for bad in [
+            "compete/",
+            "compete//x",
+            "compete/.x",
+            "compete/x.lock",
+            "compete/a..b",
+            "compete/a b",
+            "compete/a:b",
+            "compete/a@{1}",
+            "compete/x.",
+        ] {
+            assert!(!branch_name_ok(bad), "{bad}");
+        }
     }
 
     /// Every harness kind resolves by name, so preflight shows its version.

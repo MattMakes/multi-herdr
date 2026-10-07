@@ -5,13 +5,16 @@
 //!
 //! 1. The candidate's worktree HEAD and branch must still be the frozen
 //!    commit; otherwise the judgment is stale (PRO-01).
-//! 2. The target's commit is `dest_before`.
-//! 3. A target at or behind the candidate's base is fast-forwarded. A target
+//! 2. The target's commit is `dest_before`. A target branch that does not
+//!    exist has the all-zero `dest_before` (fleet-dataset §7.3).
+//! 3. A target that does not exist, or one at or behind the candidate's
+//!    base, is fast-forwarded: an absent target is created. A target
 //!    that moved gets `base..head` cherry-picked onto it in a temp worktree
 //!    under `plan.integration_root`. A conflict needs the operator, and
 //!    every candidate worktree is kept (PRO-04).
 //! 4. The integrated commit is validated again (PRO-02).
-//! 5. Publish: a compare-and-swap `update-ref`. When a clean worktree has
+//! 5. Publish: a compare-and-swap `update-ref`; with an all-zero old value
+//!    it creates the target only while it does not exist. When a clean worktree has
 //!    the target checked out, its index and files then follow by
 //!    `read-tree -m -u` (the receipt calls that mode
 //!    `update_ref_cas_read_tree`). A dirty checkout is never touched
@@ -235,18 +238,19 @@ impl<G: GitClient, V: Validator, R: Recorder> PromotionEngine for GitPromotionEn
             return self.reject(candidate, plan, RejectReason::StaleJudgment);
         }
 
-        // 2.
+        // 2. A target that does not exist is created (fleet-dataset §7.3).
         let refname = target.refname();
         let dest_before = self
             .git
             .rev_parse(repo, &refname)?
-            .with_context(|| format!("target {refname} does not exist"))?;
+            .unwrap_or_else(|| absent(&candidate.head_sha));
 
         // 3. Integrate in a temp worktree on a temp branch.
         let temp = TempIntegration::new(target, plan)?;
-        let fast_forward = self
-            .git
-            .is_ancestor(repo, &dest_before, &candidate.base_sha)?;
+        let fast_forward = is_absent(&dest_before)
+            || self
+                .git
+                .is_ancestor(repo, &dest_before, &candidate.base_sha)?;
         let (strategy, start) = if fast_forward {
             (PromotionStrategy::FastForward, candidate.head_sha.as_str())
         } else {
@@ -346,14 +350,18 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
     ) -> Result<PromotionResult> {
         let temp = TempIntegration::new(target, plan)?;
         let current = self.git.rev_parse(&target.repo, &started.target)?;
-        if current.as_deref() == Some(started.planned_after.as_str()) {
+        // A created target that is still absent holds the all-zero value.
+        let held = current
+            .clone()
+            .unwrap_or_else(|| absent(&started.planned_after));
+        if held == started.planned_after {
             if let Some(reason) = self.settle_checkout(target, started)? {
                 temp.discard(self.git)?;
                 return self.needs_intervention(candidate, plan, reason);
             }
             return self.finish(candidate, target, plan, started, &started.publish, &temp);
         }
-        if current.as_deref() == Some(started.dest_before.as_str()) {
+        if held == started.dest_before {
             let mode = match self.publish_mode(target)? {
                 Ok(mode) => mode,
                 Err(reason) => {
@@ -433,6 +441,11 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         }
         let refname = &receipt.dest_ref;
         let current = self.git.rev_parse(&target.repo, refname)?;
+        // A created target is rolled back by deleting it: its `dest_before`
+        // is all zeros, as an absent ref reads here.
+        let held = current
+            .clone()
+            .unwrap_or_else(|| absent(&receipt.dest_after));
         let emit = || {
             self.recorder.append(NewEvent {
                 kind: EventKind::PromotionRolledBack(PromotionRolledBack {
@@ -451,11 +464,11 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
             restored: receipt.dest_before.clone(),
         };
         // A restart after the swap: record it, move nothing.
-        if current.as_deref() == Some(receipt.dest_before.as_str()) {
+        if held == receipt.dest_before {
             emit()?;
             return Ok(restored);
         }
-        if current.as_deref() != Some(receipt.dest_after.as_str()) {
+        if held != receipt.dest_after {
             return Ok(RollbackResult::NeedsIntervention {
                 reason: format!(
                     "{refname} moved to {} after the promotion to {}",
@@ -779,6 +792,16 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         }
         Ok(())
     }
+}
+
+/// The all-zero object id as long as `like`: what `update-ref` takes as the
+/// value of a ref that does not exist.
+fn absent(like: &str) -> String {
+    "0".repeat(like.len())
+}
+
+fn is_absent(sha: &str) -> bool {
+    !sha.is_empty() && sha.bytes().all(|b| b == b'0')
 }
 
 /// The temp integration worktree and its branch,
