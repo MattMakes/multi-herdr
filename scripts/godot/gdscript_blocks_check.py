@@ -23,9 +23,12 @@ the first one registers it and the other is checked without its
 `class_name`.
 
 With `--strict-own skills/copied.json`, a failing block in a file that
-copied.json lists as copied is reported with
-"(copied, report only)" and does not fail the run. Blocks in own files
-(not in `copied_files`) still fail it.
+copied.json lists as copied does not fail the run by itself. The run counts
+these blocks per skill and compares the counts with
+`scripts/godot/copied-baseline.json` (`--baseline`): a count above its
+baseline fails the run, a count below it asks for a lower baseline
+(`--update-baseline` writes the counts). See `copied_ratchet.py`. Blocks in
+own files (not in `copied_files`) still fail it.
 
 A `<!-- gdscript-check: skip -->` line just before the opening fence (blank
 lines between are allowed) skips the block.
@@ -38,7 +41,6 @@ Exit status: 0 when every block parses, 1 when any (strict) block fails, 2 on a 
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import shutil
 import subprocess
@@ -49,6 +51,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_check import REPO, find_godot  # noqa: E402
+import copied_ratchet  # noqa: E402
 
 LANGS = {"gdscript", "gd"}
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})\s*([^\s`]*)")
@@ -257,19 +260,14 @@ def report_line(b: Block) -> tuple[int, str]:
 
 
 def copied_files(copied: Path) -> set[Path]:
-    """Files that copied.json lists as copied.
+    """Files that copied.json lists as copied (resolved paths).
 
     A `copied_files` path `<rel>` of skill `<skill>` is the file
     `<copied.json dir>/<skill>/<rel>`.
     Our edits to a copied file (an API fix, a "Fleet additions" list) do not
     make it own text; a reference that is not a source is own text.
     """
-    root = copied.resolve().parent
-    out = set()
-    for entry in json.loads(copied.read_text())["skills"]:
-        for rel in entry["copied_files"]:
-            out.add(root / entry["name"] / rel)
-    return out
+    return set(copied_ratchet.copied_skills(copied))
 
 
 def files_under(paths: list[Path]) -> list[Path]:
@@ -291,12 +289,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=600, help="seconds per Godot run")
     ap.add_argument(
         "--strict-own", type=Path, metavar="COPIED",
-        help="report, but do not fail on, blocks in files that COPIED (skills/copied.json) "
-        "lists as copied",
+        help="count per skill, and fail only above the baseline, blocks in files that "
+        "COPIED (skills/copied.json) lists as copied",
     )
+    ap.add_argument("--baseline", type=Path, default=copied_ratchet.BASELINE, help="the copied-failure baseline")
+    ap.add_argument("--update-baseline", action="store_true", help="write the copied counts to --baseline")
     ap.add_argument("paths", nargs="+", type=Path)
     args = ap.parse_args(argv)
-    copied = copied_files(args.strict_own) if args.strict_own else set()
+    copied = copied_ratchet.copied_skills(args.strict_own) if args.strict_own else {}
 
     godot = find_godot()
     if godot is None:
@@ -320,20 +320,28 @@ def main(argv: list[str] | None = None) -> int:
 
     failed = [b for b in blocks if b.passed is None]
     strict = [b for b in failed if b.path.resolve() not in copied]
+    up = []
     for b in failed:
         line, msg = report_line(b)
-        tag = "" if b in strict else " (copied, report only)"
-        print(f"{b.path}:{line}:{tag} {msg}")
+        if b in strict:
+            print(f"{b.path}:{line}: {msg}")
+        else:
+            up.append((b.path, f"{b.path}:{line}: {msg}"))
     whole = sum(1 for b in blocks if b.passed == "whole")
     extends = sum(1 for b in blocks if b.passed and b.passed.startswith("extends"))
     in_func = sum(1 for b in blocks if b.passed and b.passed.startswith("in a func"))
     print(
         f"gdscript_blocks_check: {len(files)} files, {len(blocks)} blocks, "
         f"{len(blocks) - len(failed)} parse ({whole} whole, {extends} with an added extends, "
-        f"{in_func} in a func), {len(failed)} fail ({len(failed) - len(strict)} copied, report only)",
+        f"{in_func} in a func), {len(failed)} fail ({len(failed) - len(strict)} copied)",
         file=sys.stderr,
     )
-    return 1 if strict else 0
+    grew = 0
+    if args.strict_own:
+        grew = copied_ratchet.apply(
+            "gdscript_blocks_check", "blocks", up, files, copied, args.baseline, args.update_baseline
+        )
+    return 1 if strict or grew else 0
 
 
 if __name__ == "__main__":

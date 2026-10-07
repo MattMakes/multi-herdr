@@ -95,11 +95,25 @@ class ApiCheckTest(unittest.TestCase):
             f"{path}:6: deprecated Node.old_make_things (Use [method add_child] instead.)",
         ])
 
-    def test_deprecated_names_report_only_in_copied(self):
-        code, out = run("--doctool", DOCTOOL, "--strict-own", CLASSES / "copied.json", CLASSES / "up")
-        self.assertEqual(code, 0)
-        self.assertEqual(len(out.splitlines()), 3)
-        self.assertTrue(all("(copied, report only) deprecated" in x for x in out.splitlines()))
+    def test_deprecated_names_in_copied_are_counted_against_the_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.json"
+            baseline.write_text('{"api_check": {"up": 3}}')
+            args = ("--doctool", DOCTOOL, "--strict-own", CLASSES / "copied.json", "--baseline", baseline)
+            code, out = run(*args, CLASSES / "up")
+            self.assertEqual(code, 0, out)
+            self.assertEqual(out.splitlines(), [
+                "api_check: 3 copied deprecated names fail in 1 skills, report only (baseline 3, baseline.json)",
+                "  per skill: up 3",
+            ])
+            # U-22: a count above the baseline fails; --update-baseline lowers it.
+            baseline.write_text('{"api_check": {"up": 2}}')
+            code, out = run(*args, CLASSES / "up")
+            self.assertEqual(code, 1)
+            self.assertIn("FAIL api_check: up has 3 copied deprecated names that fail, baseline 2.", out)
+            code, _ = run(*args, "--update-baseline", CLASSES / "up")
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(baseline.read_text()), {"api_check": {"up": 3}})
 
     def test_deprecated_json_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -38,8 +38,10 @@ which the editor writes to the user cache directory) because the
 marks it prints "deprecated: no data" on stderr and checks the rest.
 
 With `--strict-own skills/copied.json`, a deprecated name in a file that
-copied.json lists as copied prints with "(copied, report
-only)" and does not fail the run (the rule of `gdscript_blocks_check.py`).
+copied.json lists as copied does not print and does not fail the run by
+itself: the run counts these names per skill and fails when a count is above
+`scripts/godot/copied-baseline.json` (the ratchet of
+`gdscript_blocks_check.py`, see `copied_ratchet.py`).
 Unknown names fail in every file.
 
 A `api-check: allow <Name>` comment on a line allows that name on purpose
@@ -67,6 +69,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import copied_ratchet  # noqa: E402
 MAC_GODOT = "/Applications/Godot.app/Contents/MacOS/Godot"
 
 GD_LANGS = {"gdscript", "gd"}
@@ -248,11 +252,10 @@ class Unknown:
     kind: str = "unknown"
     message: str = ""
 
-    def text(self, copied: bool = False) -> str:
+    def text(self) -> str:
         if self.kind == "deprecated":
-            tag = " (copied, report only)" if copied else ""
             msg = " ".join(self.message.split())
-            return f"{self.path}:{self.line}:{tag} deprecated {self.name}" + (f" ({msg})" if msg else "")
+            return f"{self.path}:{self.line}: deprecated {self.name}" + (f" ({msg})" if msg else "")
         return f"{self.path}:{self.line}: unknown {self.name}"
 
 
@@ -508,20 +511,16 @@ def ensure_doctool(godot: str) -> Path:
     return dump
 
 
-def copied_files(copied_json: Path) -> set[Path]:
-    from gdscript_blocks_check import copied_files as copied
-
-    return {p.resolve() for p in copied(copied_json)}
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--doctool", type=Path, help="a `Godot --doctool` dump directory")
     ap.add_argument(
         "--strict-own", type=Path, metavar="COPIED",
-        help="report, but do not fail on, deprecated names in files that COPIED "
-        "(skills/copied.json) lists as copied",
+        help="count per skill, and fail only above the baseline, deprecated names in files "
+        "that COPIED (skills/copied.json) lists as copied",
     )
+    ap.add_argument("--baseline", type=Path, default=copied_ratchet.BASELINE, help="the copied-failure baseline")
+    ap.add_argument("--update-baseline", action="store_true", help="write the copied counts to --baseline")
     ap.add_argument("paths", nargs="+", type=Path)
     args = ap.parse_args(argv)
 
@@ -538,27 +537,31 @@ def main(argv: list[str] | None = None) -> int:
     api = Api.load(doctool)
     if not api.deprecated:
         print("deprecated: no data", file=sys.stderr)
-    copied = copied_files(args.strict_own) if args.strict_own else set()
+    copied = copied_ratchet.copied_skills(args.strict_own) if args.strict_own else {}
 
     files = files_under(args.paths)
     known = load_known_classes()
     found = [u for f in files for u in check_file(api, f, known)]
     failing = 0
-    report_only = 0
+    up = []
     for u in found:
-        up = u.kind == "deprecated" and u.path.resolve() in copied
-        print(u.text(up))
-        if up:
-            report_only += 1
+        if u.kind == "deprecated" and u.path.resolve() in copied:
+            up.append((u.path, u.text()))
         else:
+            print(u.text())
             failing += 1
     unknown = sum(1 for u in found if u.kind == "unknown")
     print(
         f"api_check: {len(files)} files, {unknown} unknown names, "
-        f"{len(found) - unknown} deprecated ({report_only} copied, report only)",
+        f"{len(found) - unknown} deprecated ({len(up)} copied)",
         file=sys.stderr,
     )
-    return 1 if failing else 0
+    grew = 0
+    if args.strict_own:
+        grew = copied_ratchet.apply(
+            "api_check", "deprecated names", up, files, copied, args.baseline, args.update_baseline
+        )
+    return 1 if failing or grew else 0
 
 
 if __name__ == "__main__":

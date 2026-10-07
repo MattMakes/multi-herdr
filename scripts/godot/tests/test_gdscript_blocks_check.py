@@ -78,17 +78,34 @@ class ParseTest(unittest.TestCase):
         self.assertIn("6 blocks, 5 parse (3 whole, 1 with an added extends, 1 in a func), 1 fail", err)
         self.assertEqual(list(self.scratch.iterdir()), [], "the scratch project is removed")
 
-    def test_strict_own_reports_copied_and_fails_own(self):
+    def test_strict_own_counts_copied_and_fails_own(self):
         copied = make_skills(self.scratch)
         skill = copied.parent / "godot-x"
-        code, out, err = run("--scratch", self.scratch, "--strict-own", copied, skill / "SKILL.md")
+        baseline = self.scratch / "baseline.json"
+        baseline.write_text('{"gdscript_blocks_check": {"godot-x": 1}}')
+        args = ("--scratch", self.scratch, "--strict-own", copied, "--baseline", baseline)
+        code, out, err = run(*args, skill / "SKILL.md")
         self.assertEqual(code, 0, out)
-        self.assertIn("SKILL.md:57: (copied, report only) Parse Error:", out)
-        self.assertIn("1 fail (1 copied, report only)", err)
-        code, out, err = run("--scratch", self.scratch, "--strict-own", copied, skill)
+        # U-22: a copied failure is counted, not printed.
+        self.assertNotIn("Parse Error", out)
+        self.assertIn("gdscript_blocks_check: 1 copied blocks fail in 1 skills, report only (baseline 1,", out)
+        self.assertIn("1 fail (1 copied)", err)
+        code, out, err = run(*args, skill)
         self.assertEqual(code, 1)
         self.assertIn("own.md:57: Parse Error:", out)
-        self.assertIn("2 fail (1 copied, report only)", err)
+        self.assertIn("2 fail (1 copied)", err)
+
+    def test_copied_count_above_the_baseline_fails(self):
+        copied = make_skills(self.scratch)
+        baseline = self.scratch / "baseline.json"
+        baseline.write_text("{}")
+        code, out, _ = run(
+            "--scratch", self.scratch, "--strict-own", copied, "--baseline", baseline,
+            copied.parent / "godot-x" / "SKILL.md",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL gdscript_blocks_check: godot-x has 1 copied blocks that fail, baseline 0.", out)
+        self.assertIn("SKILL.md:57: Parse Error:", out)
 
 
 if __name__ == "__main__":

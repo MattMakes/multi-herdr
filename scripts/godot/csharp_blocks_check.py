@@ -32,8 +32,10 @@ on the line before the fence (blank lines between are allowed) skips the
 block.
 
 With `--strict-own skills/copied.json`, a failing block in a file that
-copied.json lists as copied prints with "(copied, report
-only)" and does not fail the run (the rule of `gdscript_blocks_check.py`).
+copied.json lists as copied does not print and does not fail the run by
+itself: the run counts these blocks per skill and fails when a count is above
+`scripts/godot/copied-baseline.json` (the ratchet of
+`gdscript_blocks_check.py`, see `copied_ratchet.py`).
 
 The NuGet packages go to `<scratch>/nuget` (`NUGET_PACKAGES`) and the dotnet
 home to `<scratch>/dotnet-home`, so nothing is written under the real home.
@@ -55,6 +57,9 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import copied_ratchet  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_SCRATCH = REPO / ".worktrees" / "_scratch" / "godot-csblockcheck"
@@ -264,13 +269,6 @@ def report_line(b: Block) -> tuple[int, str]:
     return b.line + max(line - best.first_line, 0), msg
 
 
-def copied_files(copied_json: Path) -> set[Path]:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from gdscript_blocks_check import copied_files as copied
-
-    return {p.resolve() for p in copied(copied_json)}
-
-
 def files_under(paths: list[Path]) -> list[Path]:
     out = []
     for p in paths:
@@ -290,16 +288,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=900, help="seconds for the dotnet build")
     ap.add_argument(
         "--strict-own", type=Path, metavar="COPIED",
-        help="report, but do not fail on, blocks in files that COPIED (skills/copied.json) "
-        "lists as copied",
+        help="count per skill, and fail only above the baseline, blocks in files that "
+        "COPIED (skills/copied.json) lists as copied",
     )
+    ap.add_argument("--baseline", type=Path, default=copied_ratchet.BASELINE, help="the copied-failure baseline")
+    ap.add_argument("--update-baseline", action="store_true", help="write the copied counts to --baseline")
     ap.add_argument("paths", nargs="+", type=Path)
     args = ap.parse_args(argv)
 
     if shutil.which("dotnet") is None:
         print("skipped: no dotnet")
         return 0
-    copied = copied_files(args.strict_own) if args.strict_own else set()
+    copied = copied_ratchet.copied_skills(args.strict_own) if args.strict_own else {}
     files = files_under(args.paths)
     blocks = [b for f in files for b in extract(f)]
     if not blocks:
@@ -322,17 +322,25 @@ def main(argv: list[str] | None = None) -> int:
 
     failed = [b for b in blocks if not b.passed]
     strict = [b for b in failed if b.path.resolve() not in copied]
+    up = []
     for b in failed:
         line, msg = report_line(b)
-        tag = "" if b in strict else " (copied, report only)"
-        print(f"{b.path}:{line}:{tag} {msg}")
+        if b in strict:
+            print(f"{b.path}:{line}: {msg}")
+        else:
+            up.append((b.path, f"{b.path}:{line}: {msg}"))
     whole = sum(1 for b in blocks if b.passed and b.forms[0].name == "whole")
     print(
         f"csharp_blocks_check: {len(files)} files, {len(blocks)} blocks, {len(blocks) - len(failed)} compile "
-        f"({whole} whole), {len(failed)} fail ({len(failed) - len(strict)} copied, report only)",
+        f"({whole} whole), {len(failed)} fail ({len(failed) - len(strict)} copied)",
         file=sys.stderr,
     )
-    return 1 if strict else 0
+    grew = 0
+    if args.strict_own:
+        grew = copied_ratchet.apply(
+            "csharp_blocks_check", "blocks", up, files, copied, args.baseline, args.update_baseline
+        )
+    return 1 if strict or grew else 0
 
 
 if __name__ == "__main__":
