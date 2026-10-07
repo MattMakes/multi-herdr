@@ -419,6 +419,12 @@ fn head_names_cwd(path: &Path, workdir: &Workdir) -> bool {
     })
 }
 
+/// The operator's `config.toml`, read bounded (a FIFO, a device or a file
+/// over 1 MiB counts as absent).
+fn read_config(path: &Path) -> Option<String> {
+    crate::fsx::read_regular_bounded(path).ok().flatten()
+}
+
 /// The codex adapter.
 pub struct Codex;
 
@@ -489,7 +495,7 @@ impl Harness for Codex {
     /// `config.toml`: the active profile, then the top level (design §6.4).
     fn operator_window(&self, inputs: &WindowInputs<'_>) -> Option<OperatorWindow> {
         let path = inputs.codex_home.join("config.toml");
-        let text = std::fs::read_to_string(&path).ok();
+        let text = read_config(&path);
         codex_operator_limit(
             text.as_deref(),
             args_profile(&inputs.teammate.args),
@@ -761,7 +767,7 @@ pub(super) fn codex_command(
     cmd.args(default_args(teammate, || {
         let home = env.home()?;
         let dir = codex_home(home, env.codex_home.as_deref());
-        std::fs::read_to_string(dir.join("config.toml")).ok()
+        read_config(&dir.join("config.toml"))
     }));
     // The fleet window, with the defaults: only when the decision applies
     // it, and not over the teammate's own pair.
@@ -784,6 +790,40 @@ mod tests {
     use super::*;
     use crate::roster::Roster;
     use std::time::Duration;
+
+    /// Run `read` in a thread; panic when it does not return within 1 s.
+    #[cfg(unix)]
+    fn within_1s<T: Send + 'static>(read: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the read blocked")
+    }
+
+    #[cfg(unix)]
+    fn mkfifo(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(made.success());
+    }
+
+    /// A FIFO at `config.toml` neither blocks the operator-window read nor
+    /// counts as a value (u9b step 10).
+    #[cfg(unix)]
+    #[test]
+    fn codex_config_fifo_does_not_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("codex/config.toml");
+        mkfifo(&path);
+        let read = path.clone();
+        assert_eq!(within_1s(move || read_config(&read)), None);
+        drop(tmp);
+    }
 
     #[cfg(unix)]
     #[test]

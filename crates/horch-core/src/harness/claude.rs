@@ -353,13 +353,15 @@ fn operator_settings(env: &LaunchEnv) -> ClaudeSettingsTexts {
 /// Read the settings files of the operator chain. `managed` is
 /// `RuntimeContext.paths.claude_managed_settings`; `None` reads no managed
 /// file. The user file is `<config_dir or home/.claude>/settings.json`.
+/// The project files belong to the repository, so each read is bounded: a
+/// FIFO, a device or a file over 1 MiB counts as absent.
 pub(crate) fn read_claude_settings(
     managed: Option<&Path>,
     home: Option<&Path>,
     config_dir: Option<&Path>,
     workdir: Option<&Path>,
 ) -> ClaudeSettingsTexts {
-    let read = |p: &Path| std::fs::read_to_string(p).ok();
+    let read = |p: &Path| crate::fsx::read_regular_bounded(p).ok().flatten();
     let user_path = config_dir
         .map(Path::to_path_buf)
         .or_else(|| home.map(|h| h.join(".claude")))
@@ -834,6 +836,41 @@ pub(crate) const AMBIENT_SKILL_CREATOR: [&str; 2] =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run `read` in a thread; panic when it does not return within 1 s.
+    #[cfg(unix)]
+    fn within_1s<T: Send + 'static>(read: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the read blocked")
+    }
+
+    #[cfg(unix)]
+    fn mkfifo(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(made.success());
+    }
+
+    /// A FIFO at the repository's `.claude/settings.json` neither blocks the
+    /// operator chain read nor counts as a file (u9b step 10).
+    #[cfg(unix)]
+    #[test]
+    fn claude_project_settings_fifo_does_not_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workdir = tmp.path().join("project");
+        mkfifo(&workdir.join(".claude/settings.json"));
+        std::fs::write(workdir.join(".claude/settings.local.json"), "{}").unwrap();
+        let texts = within_1s(move || read_claude_settings(None, None, None, Some(&workdir)));
+        assert_eq!(texts.project, None);
+        assert_eq!(texts.local.as_deref(), Some("{}"));
+    }
 
     /// HDF-02: the operator chain is managed, then local, then project, then
     /// user; `setting_sources` drops the sources it does not name, never
