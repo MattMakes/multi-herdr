@@ -168,3 +168,38 @@ cursors), 8 ticks, same host:
 Run it with `HORCH_PERF_STATE=<copy of a state root> cargo test --release -p
 horch-core --test nfr -- --ignored --nocapture nfr_02_live_store_rss`. The
 ticks write into the copy, so never point it at the live state root.
+
+## Run 2026-10-06 (UTC 2026-10-07), after W18 and W20
+
+Tools: horch 0.1.0 at `e00f7ec` (`touch crates/horch-core/build.rs` and `just
+install` ran; the L7 restart gave the collector pid 1512 on the new binary),
+claude 2.1.292, codex-cli 0.160.0, herdr 0.8.2. Paid: L6 (1 `sonnet-9` worker),
+L8 (1 `researcher` worker run as `codex-sol`), both 1-line tasks. L7 ran with
+`LIVE_TELEMETRY_KILL_COLLECTOR=1`. `scripts/live/telemetry.sh` now prints the
+load average (1, 5 and 15 minutes) on every result line. Host load average was
+23.6 at the start and 17.3 at the end, on 18 cores. That is lower than W17's run
+(load 40 to 900), and the whole run took about 2 minutes 30 seconds.
+
+| step | claim it proves | result | evidence |
+|---|---|---|---|
+| L1 fixture drift | the key paths each reader uses exist in real files | PASS | claude 11 of 11, codex 9 of 9 record paths, pi 4 of 4, opencode 6 of 6. Prime: SKIP. Codex rate limits (new, checked apart): 1 window in the newest rollout, `primary=10080min` (the weekly window; 0.160 has no 5-hour window and a null `secondary`). Load 23.6. |
+| L2 cost parity, fresh store | `usage` equals `cost` per record and class (TEL-10) | PASS | 159 settled records equal; 5 live records skipped. Load 22.9. |
+| L2 cost parity, live store | the same on the collector's own store | PASS | 159 of 159 settled records equal. Load 22.9. |
+| L3 probe truth | the pool windows equal `/usage` and `/status` | SKIP (operator) | `horch quota --refresh` read: claude 5h 33% (resets 2026-10-07T05:20Z), 7d 57% (resets 2026-10-09T14:00Z), 7d fable 0%; codex 7d 0% (resets 2026-10-14T03:45Z). Compare with `/usage` and `/status` as above. |
+| L4 probe hygiene | the probes write no transcript | PASS | 3 refreshes, both probes read; 0 new probe transcripts. Load 20.8. |
+| L5 singleton in herdr | 1 collector workspace, focus unchanged, same pid | SKIP (operator) | procedure above. The script's L7 count of `horch telemetry` workspaces was 1. |
+| L6 live latency | the first event is in the store within 5 s after the first usage line is on disk | PASS | 1.5 s from disk to store (limit 5 s) at load 19.3. INFO: 4.1 s from the line's timestamp `2026-10-07T04:33:27.488Z` to the store; the line reached the disk 2.6 s after its timestamp. |
+| L6 totals | store totals equal the transcript totals | PASS | `{"input":2,"cache_write_5m":0,"cache_write_1h":10761,"cache_read":12267,"output":87}` on both sides. Load 18.4. |
+| L7 crash recovery | no loss, no duplicates after `kill -9` | PASS | `kill -9` on pid 93438, then `horch telemetry ensure`: new collector pid 1512; totals of the L6 record unchanged; duplicate keys 0 before and 0 after; events 113,419 before and after; `horch telemetry` workspaces 1. Load 18.1. |
+| L8 gate drill | the gate substitutes `codex-sol` and the record shows it | PASS | `SUBSTITUTED: researcher runs on codex-sol` (claude 7d 100% on the shifted fixture); record `8afd7fff-3ff6-4183-bedc-361a3215ccb0` has agent `codex`, teammate `researcher`, `routing.resolved: codex-sol`; store events carry `via: codex-sol`. `REFUSED` with 2 reset times on the shifted all-exhausted fixture. Load 19.2. |
+| L9 real gate | the gate follows the real pools | PASS | both pools `ok`: `SPAWN: opus runs as itself`. Load 19.2. |
+| L10 perf, synthetic 1 GB | cold start under 30 s, steady tick under 200 ms | PASS | cold 12.0 s (10.1 s CPU), steady 136.2 ms at load 17.3. |
+| L10 collector RSS | under 150 MB | PASS | 60.8 MiB (63.7 MB) after 1 min 11 s (script, load 17.3); 52.8 MiB (55.3 MB) after 4 min 31 s (`ps`, load 15.8), on a 61 MB store of about 113,400 events. W17 measured 153.9 MiB after 3 min on the older binary. |
+
+No step failed, so L6 was not re-run (the plan re-runs only a failure). The
+L10 perf test ran a second time, by hand, with `just verify-perf`: cold 13.6 s
+(10.6 s CPU), steady 106.1 ms (74.6 ms CPU) at load 16.0, 1,541,871 events,
+RSS of the test process 540.5 MiB. The 2 steady ticks (136.2 ms and 106.1 ms)
+differ by 30 ms at the same load, so the 200 ms limit has a margin of 64 to 94
+ms. W17's L6 and L10 failures happened at load 40 to 900; at load 16 to 24 L6
+needs 1.5 s of 5 s. This run does not show a collector defect.

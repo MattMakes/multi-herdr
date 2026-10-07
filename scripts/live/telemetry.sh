@@ -18,8 +18,10 @@ TEL=$HOME/.local/state/horch/telemetry   # the operator's live store
 FX=$ROOT/crates/horch-core/tests/fixtures/telemetry
 mkdir -p "$S" "$STATE/horch/telemetry" "$S/probe-cwd"
 fails=0
-pass() { echo "PASS $1${2:+: $2}"; }
-fail() { echo "FAIL $1: $2"; fails=$((fails + 1)); }
+# The load average (1, 5, 15 min) goes on every result line: a timing means little without it.
+load() { uptime | sed 's/.*load averages*: *//; s/,//g'; }
+pass() { echo "PASS $1${2:+: $2} [load $(load)]"; }
+fail() { echo "FAIL $1: $2 [load $(load)]"; fails=$((fails + 1)); }
 skip() { echo "SKIP $1: $2"; }
 info() { echo "     $*"; }
 now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
