@@ -797,10 +797,11 @@ impl Roster {
                     None => problems.push(format!(
                         "{file}: in_place entry {entry} is not a harness name"
                     )),
-                    Some(kind) if !kind.capabilities().compaction.has_command() => problems
-                        .push(format!(
+                    Some(kind) if !kind.capabilities().compaction.has_command() => {
+                        problems.push(format!(
                         "{file}: in_place entry {entry}: horch has no compact command for {entry}"
-                    )),
+                    ))
+                    }
                     Some(_) => {}
                 }
             }
