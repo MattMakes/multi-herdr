@@ -91,7 +91,9 @@ pub struct Bundle {
     root: PathBuf,
     catalog: SkillCatalog,
     plan: SkillActivationPlan,
-    _files: MaterializedSkills,
+    /// `None` for a bundle that activates nothing: it carries only the
+    /// briefing's `Skipped:` notes, and no directory exists.
+    _files: Option<MaterializedSkills>,
 }
 
 impl Bundle {
@@ -109,7 +111,9 @@ impl Bundle {
     /// Plan `teammate`'s skills against `catalog` plus its
     /// `operator_skills:` (`~/` expanded against `home`), and materialize
     /// the activated ones under `<state_root>/skill-bundles/<execution_id>/`.
-    /// `None` when nothing is activated.
+    /// `None` when nothing is activated and no operator skill was skipped.
+    /// A bundle with an empty plan and no directory is returned when every
+    /// operator skill was skipped, so the briefing can still say so (U-53).
     pub(crate) fn install_from(
         state_root: &Path,
         teammate: &Teammate,
@@ -125,13 +129,21 @@ impl Bundle {
         let Some(files) =
             MaterializedSkills::materialize(&plan, &catalog, state_root, execution_id)?
         else {
-            return Ok(None);
+            if catalog.skipped_operator().is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(Self {
+                root: state_root.join("skill-bundles").join(execution_id),
+                catalog,
+                plan,
+                _files: None,
+            }));
         };
         Ok(Some(Self {
             root: files.root.clone(),
             catalog,
             plan,
-            _files: files,
+            _files: Some(files),
         }))
     }
 

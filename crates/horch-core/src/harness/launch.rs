@@ -158,8 +158,13 @@ pub fn command_with_skills_in(
         return command_in(env, teammate, session, prompt, model_override);
     };
     let adapter = teammate.agent.adapter();
-    let adjusted = adapter.expose_skills(teammate, bundle, env.home())?;
     let prompt = format!("{}\n{prompt}", bundle.briefing_in(teammate, env.home()));
+    // A bundle with an empty plan carries only the briefing's `Skipped:`
+    // notes: there is no skill directory to expose.
+    if bundle.plan().activated.is_empty() {
+        return command_in(env, teammate, session, &prompt, model_override);
+    }
+    let adjusted = adapter.expose_skills(teammate, bundle, env.home())?;
     let mut cmd = command_in(env, &adjusted, session, &prompt, model_override)?;
     adapter.expose_skills_env(
         &mut cmd,
@@ -244,7 +249,8 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
         &PrepareRequest {
             role: req.role,
             exec_rules: req.exec_rules,
-            skills: skills.as_ref(),
+            // An empty-plan bundle has no directory for the adapter to link.
+            skills: skills.as_ref().filter(|b| !b.plan().activated.is_empty()),
         },
     )?;
 
@@ -2071,5 +2077,62 @@ mod tests {
         .filter(|key| seen.lines().any(|l| l.starts_with(&format!("{key}="))))
         .collect();
         assert!(leaked.is_empty(), "the agent sees {leaked:?}");
+    }
+
+    /// U-53: a teammate whose only skills are operator skills, all missing on
+    /// this host, has an empty plan and so no skill files. Its briefing still
+    /// carries the `Skipped:` note, and the harness exposes nothing.
+    #[test]
+    fn operator_only_teammate_with_every_skill_missing_still_gets_the_skipped_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut t = Roster::builtin().unwrap().require("opus").unwrap().clone();
+        t.phase = None;
+        t.skills.clear();
+        t.plugin_skills.clear();
+        t.operator_skills = Some(crate::roster::OperatorSkills {
+            dir: tmp.path().join("exported").to_string_lossy().into_owned(),
+            names: vec!["swiftui-whats-new-27".into()],
+        });
+        let bundle = crate::skills::Bundle::install_from(
+            &tmp.path().join("state"),
+            &t,
+            crate::skills::SkillCatalog::bundled().unwrap(),
+            &crate::mint_uuid(),
+            None,
+        )
+        .unwrap()
+        .expect("the skipped note needs a bundle");
+        assert!(bundle.plan().activated.is_empty());
+        assert!(!bundle.root().exists(), "an empty plan writes no files");
+        let cmd = command_with_skills_in(
+            &LaunchEnv::for_test(),
+            &t,
+            Session::Unmanaged,
+            "the task",
+            None,
+            Some(&bundle),
+        )
+        .unwrap();
+        let a = argv(&cmd);
+        let prompt = a.last().unwrap();
+        assert!(
+            prompt.contains("Skipped: operator skill swiftui-whats-new-27 is not installed"),
+            "{prompt}"
+        );
+        assert!(prompt.ends_with("the task"), "{prompt}");
+        assert!(!prompt.contains("Available native skills"), "{prompt}");
+        assert!(!a.iter().any(|x| x == "--plugin-dir"), "{a:?}");
+
+        // No operator skill at all: no bundle, as before.
+        t.operator_skills = None;
+        let none = crate::skills::Bundle::install_from(
+            &tmp.path().join("state"),
+            &t,
+            crate::skills::SkillCatalog::bundled().unwrap(),
+            &crate::mint_uuid(),
+            None,
+        )
+        .unwrap();
+        assert!(none.is_none());
     }
 }

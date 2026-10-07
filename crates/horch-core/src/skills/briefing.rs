@@ -79,7 +79,7 @@ pub fn render(plan: &SkillActivationPlan, catalog: &SkillCatalog, ctx: &Briefing
                 others.join(", ")
             ));
         }
-    } else {
+    } else if !others.is_empty() {
         out.push_str(&format!(
             " Available native skills: {}. Load only the skill matching your current step; do not read every skill at startup.",
             others.join(", ")
@@ -90,9 +90,13 @@ pub fn render(plan: &SkillActivationPlan, catalog: &SkillCatalog, ctx: &Briefing
     for skipped in catalog.skipped_operator() {
         out.push_str(&format!(" Skipped: {}.", skipped.note()));
     }
-    out.push_str(&format!(
-        " If a same-named ambient skill exists, use the fleet copy under {}. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n",
-        ctx.skills_dir.display()
-    ));
+    // A plan that activates nothing has no fleet copy to point at.
+    if !plan.activated.is_empty() {
+        out.push_str(&format!(
+            " If a same-named ambient skill exists, use the fleet copy under {}. Skills do not change tool permissions.",
+            ctx.skills_dir.display()
+        ));
+    }
+    out.push_str(" Report unresolved dependencies through horch tell orchestrator.\n");
     out
 }
