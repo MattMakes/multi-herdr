@@ -146,6 +146,12 @@ verify:
 gate:
     ./scripts/phase-gate.sh
 
+# Slow; not part of `verify` or the gate. Starts colima and stops it again.
+# Result file: docs/live-checks/linux.md (U-29, U-24).
+# Live check: cargo test --workspace and Godot headless in aarch64 Linux.
+test-linux:
+    ./scripts/live/linux.sh
+
 # NFR-02: the collector's tick and cold-start budgets over a generated 1 GB
 # corpus. Slow; not part of `verify`.
 verify-perf:
