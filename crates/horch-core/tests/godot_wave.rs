@@ -1,4 +1,4 @@
-//! The Godot wave (GDW-01 to GDW-11, `docs/specs/godot.md`): the Godot
+//! The Godot wave (GDW-01 to GDW-12, `docs/specs/godot.md`): the Godot
 //! requirement, the 19 `godot-*` seats, the 65 `godot-*` skills and the
 //! gate's Godot checks.
 //!
@@ -14,7 +14,7 @@ use std::process::Command;
 
 use horch_core::harness::HarnessKind;
 use horch_core::roster::{offered_in, project_skills, ProjectFacts, Requirement, Roster, Teammate};
-use horch_core::runtime::bins::{host_tool_bin, GODOT_APP};
+use horch_core::runtime::bins::{host_tool_bin, GODOT_APP, GODOT_MONO_APP};
 use horch_core::skills::{SkillCatalog, BUNDLED_SKILL_FILES};
 
 /// The C# skills that `skills_when` adds in a project with a `*.csproj`.
@@ -541,4 +541,72 @@ fn gdw_11_the_language_skill_is_on_every_godot_seat() {
     assert!(BUNDLED_SKILL_FILES
         .iter()
         .any(|(path, _)| *path == "godot-language-choice/references/evidence.md"));
+}
+
+/// Runs `godot-run.sh --version` in `project` with `GODOT_PATH` set to a
+/// standard engine and `GODOT_MONO_PATH` to a .NET engine (fakes). Returns
+/// the exit code and stdout plus stderr.
+#[cfg(unix)]
+fn godot_run_version(project: &Path, standard: &Path, mono: &Path) -> (i32, String) {
+    let out = Command::new("bash")
+        .arg(repo().join("skills/godot-build-verify/scripts/godot-run.sh"))
+        .arg("--version")
+        .current_dir(project)
+        .env_remove("CODEX_SANDBOX")
+        .env("GODOT_PATH", standard)
+        .env("GODOT_MONO_PATH", mono)
+        .output()
+        .unwrap();
+    let text =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    (out.status.code().unwrap_or(-1), text)
+}
+
+#[cfg(unix)]
+#[test]
+fn gdw_12_a_csharp_project_runs_only_the_dotnet_engine() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let fake = |name: &str, version: &str| {
+        let bin = tmp.path().join(name);
+        std::fs::write(&bin, format!("#!/bin/sh\necho {version}\n")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    };
+    let standard = fake("godot", "4.7.2.stable.official.fake");
+    let mono = fake("godot-mono", "4.7.2.stable.mono.official.fake");
+    let project = tmp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+
+    std::fs::write(project.join("project.godot"), "config_version=5\n").unwrap();
+    let (code, out) = godot_run_version(&project, &standard, &mono);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(".official.fake") && !out.contains("mono"),
+        "{out}"
+    );
+
+    std::fs::write(
+        project.join("project.godot"),
+        "config_version=5\nconfig/features=PackedStringArray(\"4.7\", \"C#\")\n",
+    )
+    .unwrap();
+    let (code, out) = godot_run_version(&project, &standard, &mono);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains(".mono.official.fake"), "{out}");
+
+    // No fallback to the standard engine in a C# project.
+    let (code, out) = godot_run_version(&project, &standard, &tmp.path().join("missing"));
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("GODOT_MONO_PATH"), "{out}");
+    assert!(out.contains("Godot_mono.app"), "{out}");
+
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            GODOT_MONO_APP,
+            Some("/Applications/Godot_mono.app/Contents/MacOS/Godot")
+        );
+    } else {
+        assert_eq!(GODOT_MONO_APP, None);
+    }
 }

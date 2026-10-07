@@ -12,7 +12,7 @@ use std::process::Command;
 use anyhow::{bail, Result};
 use horch_core::harness::inventory::BinaryFacts;
 use horch_core::roster::{operator_effort_warnings, Requirement, Roster};
-use horch_core::runtime::bins::{host_tool_bin, BLENDER_APP, GODOT_APP};
+use horch_core::runtime::bins::{host_tool_bin, BLENDER_APP, GODOT_APP, GODOT_MONO_APP};
 use horch_core::runtime::{process, RuntimeContext};
 use horch_core::workspace::herdr::Herdr;
 
@@ -52,6 +52,8 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
             blender_path: ctx.inherited.blender_path.as_deref(),
             blender_app: BLENDER_APP.map(Path::new),
             godot_path: ctx.inherited.godot_path.as_deref(),
+            godot_mono_path: ctx.inherited.godot_mono_path.as_deref(),
+            godot_mono_app: GODOT_MONO_APP.map(Path::new),
         },
         &ctx.bins.harness.git,
         ctx.paths.project().ok().as_deref(),
@@ -145,12 +147,18 @@ pub(crate) struct HostTools<'a> {
     pub blender_app: Option<&'a Path>,
     /// `GODOT_PATH`.
     pub godot_path: Option<&'a OsStr>,
+    /// `GODOT_MONO_PATH`: the Godot .NET engine of a C# project.
+    pub godot_mono_path: Option<&'a OsStr>,
+    /// The Godot .NET app bundle executable ([`GODOT_MONO_APP`]); `None` in
+    /// tests.
+    pub godot_mono_app: Option<&'a Path>,
 }
 
 /// What is missing for the `requires:` of the teammates `roster` offers, one
 /// line per requirement. Nothing is checked that no offered teammate needs.
 /// `git` is the fleet's git (`HORCH_GIT_BIN`, else `git`); `project` is the
-/// project directory, whose `.gitattributes` the git-lfs check reads.
+/// project directory, whose `.gitattributes` the git-lfs check reads and
+/// whose C# test adds the Godot .NET checks.
 pub(crate) fn requirement_problems(
     roster: &Roster,
     path: Option<&OsStr>,
@@ -187,7 +195,16 @@ pub(crate) fn requirement_problems(
                 git_lfs_problem(path, pathext, git).or_else(|| project.and_then(lfs_rule_problem))
             }
         };
-        if let Some(problem) = problem {
+        let mut found: Vec<String> = problem.into_iter().collect();
+        if requirement == Requirement::Godot && project.is_some_and(csharp_project) {
+            found.extend(godot_csharp_problems(
+                path,
+                pathext,
+                tools.godot_mono_path,
+                tools.godot_mono_app,
+            ));
+        }
+        for problem in found {
             problems.push(format!(
                 "{} (needed by {}): {problem}",
                 requirement.as_str(),
@@ -536,6 +553,77 @@ fn godot_problem(
             bin.display()
         )),
     }
+}
+
+/// A C# Godot project: `"C#"` in `config/features` of `project.godot`, or a
+/// `*.csproj` at the top (the test of `godot-project-context` and
+/// `godot-run.sh`).
+fn csharp_project(project: &Path) -> bool {
+    let features = std::fs::read_to_string(project.join("project.godot")).is_ok_and(|text| {
+        text.lines()
+            .any(|l| l.starts_with("config/features=") && l.contains("\"C#\""))
+    });
+    features
+        || std::fs::read_dir(project).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                e.path().extension().is_some_and(|x| x == "csproj")
+                    && e.file_type().is_ok_and(|t| t.is_file())
+            })
+        })
+}
+
+/// A C# project needs the Godot .NET engine and `dotnet`: the standard
+/// engine cannot build or run C#, and `godot-run.sh` never falls back to it.
+/// Looks at `GODOT_MONO_PATH`, then `app` (the macOS bundle) when it exists.
+/// One line per missing tool, each with its fix.
+fn godot_csharp_problems(
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    mono_path: Option<&OsStr>,
+    app: Option<&Path>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let bin = mono_path
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| app.filter(|a| a.is_file()).map(Path::to_path_buf));
+    match bin {
+        None => problems.push(
+            "C# project: no Godot .NET engine: GODOT_MONO_PATH is not set and the \
+             .NET app is not installed. Install Godot .NET 4.3 or later, then set \
+             GODOT_MONO_PATH (macOS: /Applications/Godot_mono.app/Contents/MacOS/Godot). \
+             The standard engine cannot run C#."
+                .into(),
+        ),
+        Some(bin) => match Command::new(&bin).arg("--version").output() {
+            Err(e) => problems.push(format!(
+                "C# project: could not run {}: {e}. Set GODOT_MONO_PATH to the Godot \
+                 .NET executable (macOS: /Applications/Godot_mono.app/Contents/MacOS/Godot).",
+                bin.display()
+            )),
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if !out.status.success() || !stdout.contains(".mono.") {
+                    problems.push(format!(
+                        "C# project: {} is not a working Godot .NET engine (`--version` \
+                         gave {}: {}). Point GODOT_MONO_PATH at the Godot .NET executable \
+                         (macOS: /Applications/Godot_mono.app/Contents/MacOS/Godot).",
+                        bin.display(),
+                        out.status,
+                        stdout.lines().next().unwrap_or("").trim()
+                    ));
+                }
+            }
+        },
+    }
+    if process::which(path, pathext, "dotnet").is_none() {
+        problems.push(
+            "C# project: dotnet not found on PATH. Install the .NET SDK 8 or later \
+             (macOS: `brew install --cask dotnet-sdk`), then put `dotnet` on PATH."
+                .into(),
+        );
+    }
+    problems
 }
 
 /// `(major, minor)` from the first `X.Y[.Z].<status>...` line of
@@ -1034,6 +1122,114 @@ mod tests {
         let odd = fake_godot("godot", "hello", 0);
         let problem = godot_at(odd.path(), None, None).unwrap();
         assert!(problem.contains("printed no Godot version"), "{problem}");
+    }
+
+    /// The Godot lines of `requirement_problems` in `project`, with a good
+    /// standard `godot` and, when `dotnet` is true, a `dotnet` on PATH, and
+    /// `GODOT_MONO_PATH` set to `mono`.
+    fn csharp_godot_problems(project: &Path, dotnet: bool, mono: Option<&Path>) -> Vec<String> {
+        let bin = fake_godot("godot", "4.7.2.stable.official.e4f5a6b7c", 0);
+        if dotnet {
+            let d = bin.path().join("dotnet");
+            std::fs::write(&d, "#!/bin/sh\nexit 0\n").unwrap();
+            process::make_executable(&d).unwrap();
+        }
+        requirement_problems(
+            &roster_requiring_godot(),
+            Some(bin.path().as_os_str()),
+            None,
+            HostTools {
+                godot_mono_path: mono.map(Path::as_os_str),
+                ..HostTools::default()
+            },
+            Path::new("git"),
+            Some(project),
+        )
+        .into_iter()
+        .filter(|p| p.starts_with("godot "))
+        .collect()
+    }
+
+    /// A project with `"C#"` in `config/features`, and one with a `*.csproj`.
+    fn csharp_projects() -> [tempfile::TempDir; 2] {
+        let features = tempfile::tempdir().unwrap();
+        std::fs::write(
+            features.path().join("project.godot"),
+            "config_version=5\n[application]\n\
+             config/features=PackedStringArray(\"4.7\", \"C#\", \"Forward Plus\")\n",
+        )
+        .unwrap();
+        let csproj = tempfile::tempdir().unwrap();
+        std::fs::write(csproj.path().join("project.godot"), "config_version=5\n").unwrap();
+        std::fs::write(csproj.path().join("Game.csproj"), "<Project />\n").unwrap();
+        [features, csproj]
+    }
+
+    #[test]
+    fn csharp_project_without_the_dotnet_engine_is_reported() {
+        for project in csharp_projects() {
+            let problems = csharp_godot_problems(project.path(), true, None);
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].contains("godot-test"), "{}", problems[0]);
+            assert!(
+                problems[0].contains("no Godot .NET engine"),
+                "{}",
+                problems[0]
+            );
+            assert!(problems[0].contains("GODOT_MONO_PATH"), "{}", problems[0]);
+            assert!(problems[0].contains("Godot_mono.app"), "{}", problems[0]);
+        }
+        // The standard engine is not a .NET engine.
+        let standard = fake_godot("Godot", "4.7.2.stable.official.e4f5a6b7c", 0);
+        let [project, _] = csharp_projects();
+        let problems =
+            csharp_godot_problems(project.path(), true, Some(&standard.path().join("Godot")));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("not a working Godot .NET engine"),
+            "{}",
+            problems[0]
+        );
+    }
+
+    #[test]
+    fn csharp_project_without_dotnet_is_reported() {
+        let mono = fake_godot("Godot", "4.7.2.stable.mono.official.ed1daf0bf", 0);
+        for project in csharp_projects() {
+            let problems =
+                csharp_godot_problems(project.path(), false, Some(&mono.path().join("Godot")));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(
+                problems[0].contains("dotnet not found on PATH"),
+                "{}",
+                problems[0]
+            );
+            assert!(problems[0].contains(".NET SDK"), "{}", problems[0]);
+        }
+    }
+
+    #[test]
+    fn csharp_project_with_the_dotnet_engine_and_dotnet_is_fine() {
+        let mono = fake_godot("Godot", "4.7.2.stable.mono.official.ed1daf0bf", 0);
+        for project in csharp_projects() {
+            let problems =
+                csharp_godot_problems(project.path(), true, Some(&mono.path().join("Godot")));
+            assert!(problems.is_empty(), "{problems:?}");
+        }
+    }
+
+    #[test]
+    fn gdscript_project_gets_no_csharp_check() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join("project.godot"),
+            "config_version=5\n[application]\n\
+             config/features=PackedStringArray(\"4.7\", \"Forward Plus\")\n",
+        )
+        .unwrap();
+        assert!(!csharp_project(project.path()));
+        let problems = csharp_godot_problems(project.path(), false, None);
+        assert!(problems.is_empty(), "{problems:?}");
     }
 
     #[test]

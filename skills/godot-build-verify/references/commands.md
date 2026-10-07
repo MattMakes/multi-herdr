@@ -8,10 +8,17 @@ Quote paths: project paths often contain spaces.
 
 ```bash
 RUN="<skill dir>/scripts/godot-run.sh"   # see "Common setup"
-GODOT="${GODOT_PATH:-}"
-if [ -z "$GODOT" ]; then GODOT="$(command -v godot || true)"; fi
-if [ -z "$GODOT" ] && [ -x /Applications/Godot.app/Contents/MacOS/Godot ]; then
-  GODOT=/Applications/Godot.app/Contents/MacOS/Godot
+if grep -q '^config/features=.*"C#"' project.godot || compgen -G '*.csproj' > /dev/null; then
+  GODOT="${GODOT_MONO_PATH:-}"   # C# project: the .NET engine only
+  if [ -z "$GODOT" ] && [ -x /Applications/Godot_mono.app/Contents/MacOS/Godot ]; then
+    GODOT=/Applications/Godot_mono.app/Contents/MacOS/Godot
+  fi
+else
+  GODOT="${GODOT_PATH:-}"
+  if [ -z "$GODOT" ]; then GODOT="$(command -v godot || true)"; fi
+  if [ -z "$GODOT" ] && [ -x /Applications/Godot.app/Contents/MacOS/Godot ]; then
+    GODOT=/Applications/Godot.app/Contents/MacOS/Godot
+  fi
 fi
 [ -n "$GODOT" ] && [ -x "$GODOT" ] || { echo "NO_ENGINE: ${GODOT:-not found}"; exit 2; }
 have="$(bash "$RUN" --version | tail -1 | cut -d. -f1-2)"
@@ -26,10 +33,12 @@ fi
 - Exit 3: the project is newer than the engine. Report `BLOCKED:`.
 - `--version` prints `4.7.2.stable.official.ed1daf0bf`; the script compares
   major.minor only.
-- A C# project needs the .NET build to run C#: on macOS,
-  `/Applications/Godot_mono.app/Contents/MacOS/Godot` (proof: not run (needs
-  Godot .NET)). Measured: the standard build prints `No loader found for
-  resource: res://Player.cs` for a scene with a C# script, and exits 0.
+- A C# project needs the .NET build to run C#: `GODOT_MONO_PATH`, then on
+  macOS `/Applications/Godot_mono.app/Contents/MacOS/Godot` (proof:
+  headless-run, `docs/live-checks/godot-csharp.md`). `godot-run.sh` uses only
+  that engine in a C# project, and exits 2 without it. Measured: the standard
+  build prints `No loader found for resource: res://Player.cs` for a scene
+  with a C# script, and exits 0.
 
 ## Common setup
 

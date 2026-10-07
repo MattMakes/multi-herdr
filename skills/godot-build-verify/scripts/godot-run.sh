@@ -11,8 +11,26 @@ CERT=/etc/ssl/cert.pem
 
 die() { printf 'godot-run: %s\n' "$1" >&2; exit 2; }
 
-# Print the engine path. Order: GODOT_PATH, godot on PATH, the macOS app.
+MONO_APP=/Applications/Godot_mono.app/Contents/MacOS/Godot
+
+# A C# project: "C#" in config/features of project.godot, or a *.csproj in
+# the project root.
+is_csharp() {
+  grep -q '^config/features=.*"C#"' project.godot && return 0
+  compgen -G '*.csproj' > /dev/null
+}
+
+# Print the engine path. A C# project gets only the .NET engine: the
+# standard engine cannot build or run C#. Order: GODOT_MONO_PATH, the macOS
+# Godot_mono app. Any other project: GODOT_PATH, godot on PATH, the macOS app.
 find_engine() {
+  if is_csharp; then
+    local mono="${GODOT_MONO_PATH:-}"
+    if [ -z "$mono" ] && [ -x "$MONO_APP" ]; then mono="$MONO_APP"; fi
+    [ -n "$mono" ] && [ -x "$mono" ] || return 1
+    printf '%s\n' "$mono"
+    return 0
+  fi
   local engine="${GODOT_PATH:-}"
   if [ -z "$engine" ]; then engine="$(command -v godot || true)"; fi
   if [ -z "$engine" ] && [ -x /Applications/Godot.app/Contents/MacOS/Godot ]; then
@@ -73,7 +91,11 @@ count_sandbox_lines() {
 
 [ -f ./project.godot ] || die "no ./project.godot; run from the project root"
 
-ENGINE="$(find_engine)" || die "no Godot engine (GODOT_PATH, godot on PATH, /Applications/Godot.app)"
+if is_csharp; then
+  ENGINE="$(find_engine)" || die "C# project: no Godot .NET engine (GODOT_MONO_PATH, $MONO_APP); the standard engine cannot run C#"
+else
+  ENGINE="$(find_engine)" || die "no Godot engine (GODOT_PATH, godot on PATH, /Applications/Godot.app)"
+fi
 
 ROOT="$PWD"
 REAL="$(pwd -P)"

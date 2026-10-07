@@ -1,4 +1,4 @@
-"""Tests for skills/godot-build-verify/scripts/godot-run.sh (GDW-10). Run: python3 -m unittest discover -s scripts/godot/tests
+"""Tests for skills/godot-build-verify/scripts/godot-run.sh (GDW-10, GDW-12). Run: python3 -m unittest discover -s scripts/godot/tests
 
 A fake engine stands in for Godot: it prints its environment and arguments,
 prints the lines in FAKE_LINES, and exits with FAKE_EXIT. No real Godot runs.
@@ -47,11 +47,14 @@ class GodotRunTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_script(self, *args, lines="", code=0, sandbox=None, cwd=None):
-        env = {k: v for k, v in os.environ.items() if k != "CODEX_SANDBOX"}
+    def run_script(self, *args, lines="", code=0, sandbox=None, cwd=None, mono=None):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("CODEX_SANDBOX", "GODOT_MONO_PATH")}
         env.update(GODOT_PATH=str(self.engine), FAKE_LINES=lines, FAKE_EXIT=str(code))
         if sandbox:
             env["CODEX_SANDBOX"] = sandbox
+        if mono is not None:
+            env["GODOT_MONO_PATH"] = mono
         return subprocess.run(["bash", str(SCRIPT), *args], cwd=cwd or self.project, env=env,
                               capture_output=True, text=True, timeout=60)
 
@@ -149,6 +152,49 @@ class GodotRunTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("tls/certificate_bundle_override", r.stdout + r.stderr)
         self.assertEqual(cfg.read_text(), '[display]\nwindow/size/viewport_width=320\n')
+        self.assertNotIn("ARGS", r.stdout)
+
+    def fake_mono(self):
+        mono = self.engine.parent / "fake-godot-mono"
+        mono.write_text(FAKE.replace("4.7.2.stable.fake", "4.7.2.stable.mono.fake")
+                        .replace('echo "ARGS $*"', 'echo "MONO ARGS $*"'))
+        mono.chmod(mono.stat().st_mode | stat.S_IXUSR)
+        return mono
+
+    def test_gdscript_project_uses_the_standard_engine(self):
+        r = self.run_script("--import", mono=str(self.fake_mono()))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ARGS --headless --import\n", r.stdout)
+        self.assertNotIn("MONO", r.stdout)
+
+    def test_csharp_feature_uses_the_mono_engine(self):
+        (self.project / "project.godot").write_text(
+            'config_version=5\n[application]\nconfig/features=PackedStringArray("4.7", "C#", "Forward Plus")\n')
+        r = self.run_script("--import", mono=str(self.fake_mono()))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("MONO ARGS --headless --import\n", r.stdout)
+
+    def test_csproj_uses_the_mono_engine(self):
+        (self.project / "Game.csproj").write_text("<Project Sdk=\"Godot.NET.Sdk/4.7.2\" />\n")
+        r = self.run_script("--version", mono=str(self.fake_mono()))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("mono", r.stdout)
+
+    @unittest.skipIf(Path("/Applications/Godot_mono.app/Contents/MacOS/Godot").exists(),
+                     "the host has the Godot .NET app")
+    def test_csharp_project_without_mono_engine_exits_2(self):
+        (self.project / "Game.csproj").write_text("<Project />\n")
+        r = self.run_script("--import", mono="")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("GODOT_MONO_PATH", r.stderr)
+        self.assertIn("/Applications/Godot_mono.app/Contents/MacOS/Godot", r.stderr)
+        self.assertNotIn("ARGS", r.stdout)
+
+    def test_csharp_project_with_bad_mono_path_exits_2(self):
+        (self.project / "Game.csproj").write_text("<Project />\n")
+        r = self.run_script("--import", mono=str(self.project / "no-such-godot"))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("the standard engine cannot run C#", r.stderr)
         self.assertNotIn("ARGS", r.stdout)
 
 

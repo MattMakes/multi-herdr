@@ -22,7 +22,9 @@ pub enum Requirement {
     /// `blender` on PATH, or `BLENDER_PATH`, and `--version` runs.
     Blender,
     /// `GODOT_PATH`, `godot` on PATH, or the macOS app bundle, and
-    /// `--version` reports 4.3 or later.
+    /// `--version` reports 4.3 or later. In a C# project (`"C#"` in
+    /// `config/features`, or a `*.csproj`), also the Godot .NET engine
+    /// (`GODOT_MONO_PATH`, or the macOS `Godot_mono.app`) and `dotnet` on PATH.
     Godot,
     /// `git lfs version` runs with the fleet's git (`HORCH_GIT_BIN`, else
     /// `git` on PATH). In an Unreal project, `.gitattributes` also needs an

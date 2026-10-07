@@ -187,6 +187,9 @@ pub struct Inherited {
     /// `GODOT_PATH`: the Godot executable. `horch doctor` checks it before
     /// `godot` on `PATH`.
     pub godot_path: Option<OsString>,
+    /// `GODOT_MONO_PATH`: the Godot .NET executable. `horch doctor` checks
+    /// it before the macOS app in a C# project.
+    pub godot_mono_path: Option<OsString>,
     /// `OPENCODE_CONFIG_CONTENT`, raw.
     pub opencode_config_content: Option<String>,
     /// `CODEX_HOME`.
@@ -245,6 +248,7 @@ impl Inherited {
             pathext: env.var("PATHEXT"),
             blender_path: env.var_os("BLENDER_PATH").filter(|p| !p.is_empty()),
             godot_path: env.var_os("GODOT_PATH").filter(|p| !p.is_empty()),
+            godot_mono_path: env.var_os("GODOT_MONO_PATH").filter(|p| !p.is_empty()),
             opencode_config_content: env.var("OPENCODE_CONFIG_CONTENT"),
             codex_home: nonempty_path(env, "CODEX_HOME"),
             claude_config_dir: nonempty_path(env, "CLAUDE_CONFIG_DIR"),

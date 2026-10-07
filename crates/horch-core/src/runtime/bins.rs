@@ -227,6 +227,14 @@ pub const GODOT_APP: Option<&str> = if cfg!(target_os = "macos") {
     None
 };
 
+/// Where the Godot .NET app bundle keeps its executable: the last place the
+/// .NET engine lookup of a C# project tries. Only macOS has one.
+pub const GODOT_MONO_APP: Option<&str> = if cfg!(target_os = "macos") {
+    Some("/Applications/Godot_mono.app/Contents/MacOS/Godot")
+} else {
+    None
+};
+
 /// A host tool's executable, as `horch doctor` checks it and a launch passes
 /// it on: `var` (the operator's `BLENDER_PATH` or `GODOT_PATH`) when it is
 /// set, else `name` on `path`, else `app` when it is a file. `var` wins

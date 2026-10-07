@@ -50,8 +50,10 @@ parse all exit 0. Read the output, not only the exit code.
    the project root. It finds the engine in this order:
    `GODOT_PATH`, then `godot` on `PATH`, then
    `/Applications/Godot.app/Contents/MacOS/Godot`, and exits 2 when none runs.
-   Read the version in `config/features` of `project.godot` (for example
-   `"4.7"`). If the project version is newer than the engine (`--version`),
+   In a C# project (step 6) it uses only the .NET engine: `GODOT_MONO_PATH`,
+   then `/Applications/Godot_mono.app/Contents/MacOS/Godot`; exit 2 when
+   neither runs. Read the version in `config/features` of `project.godot`
+   (for example `"4.7"`). If the project version is newer than the engine (`--version`),
    stop and report `BLOCKED:` with both versions. Do not open a newer project
    with an older engine. Script: `references/commands.md`, "Find the engine".
    Check: you can write the engine path and both versions in one line.
@@ -109,10 +111,10 @@ parse all exit 0. Read the output, not only the exit code.
    `*.csproj`): `dotnet build` in the project root. It exits 1 on a compile
    error and prints `error CS<code>`. The output goes to
    `.godot/mono/temp/bin/Debug/`. Running C# scenes and tests needs the .NET
-   build of Godot (`Godot_mono.app`); the standard build cannot run C#. If only
-   the standard build is installed, say "C# built, not run" in the report.
-   The C# lines of the Godot skills are proof: parse-checked only (compiled
-   with dotnet; running them needs Godot .NET).
+   build of Godot (`Godot_mono.app`); the standard build cannot run C#, so
+   `godot-run.sh` never falls back to it in a C# project: an exit 2 there is
+   `BLOCKED:` with the missing .NET engine named. A C# line of a Godot skill
+   without a note is proof: parse-checked only (compiled with dotnet).
    Check: `Build succeeded.` and `0 Error(s)`.
 
 7. **Run the tests** with the project's framework (`addons/gut` or
