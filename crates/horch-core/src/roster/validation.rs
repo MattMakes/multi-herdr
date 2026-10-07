@@ -30,6 +30,9 @@ use crate::routing::quota;
 use crate::runtime::context::DEFAULT_ENV_YIELD;
 use crate::skills::SkillCatalog;
 
+/// The tokens a teammate's `compact_at` may hold (CTX-21).
+const COMPACT_AT_RANGE: std::ops::RangeInclusive<u64> = 50_000..=1_000_000;
+
 impl Roster {
     /// Whether this teammate may be started by `horch spawn`. Orchestrators
     /// are launched by `pane-launch`, never spawned, so this is where the
@@ -656,11 +659,20 @@ impl Roster {
 
     /// The context-policy rules of `horch teammates --check` (design 6.3):
     /// 1 the headroom floor (CTX-08), 2 no window outside `compact_window`,
-    /// 3 no `compact_window` without a lever, 4 the 2 context bases.
+    /// 3 no `compact_window` without a lever, 4 the 2 context bases, 5 the
+    /// `compact_at` range (CTX-21).
     fn context_policy_problems(&self) -> Vec<String> {
         let mut problems = Vec::new();
         for t in self.teammates.values() {
             problems.extend(self.headroom_problem(t));
+            if let Some(n) = t.compact_at.filter(|n| !COMPACT_AT_RANGE.contains(n)) {
+                problems.push(format!(
+                    "{}: compact_at {n} is outside {} to {}",
+                    t.name,
+                    COMPACT_AT_RANGE.start(),
+                    COMPACT_AT_RANGE.end()
+                ));
+            }
             let settings = self.teammate_settings(t);
             problems.extend(window_outside_compact_window(t, settings.as_ref()));
             let trigger = t.agent.capabilities().compaction.trigger;

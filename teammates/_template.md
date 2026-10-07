@@ -343,6 +343,15 @@ env: {}
 #   harness with no lever (opencode, antigravity).
 #compact_window: 150000
 
+# compact_at -> horch's own watch base for this teammate, in tokens, in place
+#   of the fleet base (300000). The watch threshold is the lower of the base
+#   and 80% of the native trigger. `horch context`, `horch compact` and the
+#   `horch note` warning all use it. It does not change the native setting:
+#   that is `compact_window`. 50000 to 1000000; `horch teammates --check`
+#   refuses a value outside that range. Set it here only: there is no env
+#   variable, because a pane does not inherit the spawner's env.
+#compact_at: 100000
+
 # ─── first instruction ───────────────────────────────────────────────────────
 # Optional. Rendered as the very last line the teammate reads, after the task.
 # Use it for a mandatory first move. Placeholders: {role} {task} {model}

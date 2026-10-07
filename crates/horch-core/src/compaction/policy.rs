@@ -21,6 +21,10 @@ pub const EVENT_COMPACTED: &str = "compacted";
 /// Ledger event: a compaction failed or was lost (CTX-15).
 pub const EVENT_FAILED: &str = "compact-failed";
 
+/// A `compacted` event this long after a marker, or less, confirms that
+/// horch drove the compaction (CTX-25).
+pub const HORCH_MATCH_WINDOW: Duration = Duration::from_secs(15 * 60);
+
 /// Without an ask, a handoff older than this is stale (CTX-14).
 pub const HANDOFF_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 
@@ -126,6 +130,39 @@ pub fn should_warn(i: &RowInputs) -> bool {
 /// `roster`.
 pub fn watch_base(compact_at: Option<u64>) -> u64 {
     compact_at.unwrap_or(BASE_THRESHOLD)
+}
+
+/// CTX-25: how many of the markers at `marks_at` were native and how many
+/// horch drove, as `(native, horch)`. A marker is horch-driven when a
+/// `compacted` event is at or after it and at most [`HORCH_MATCH_WINDOW`]
+/// after it; each event matches 1 marker. Times compare as UTC instants. A
+/// marker with no readable time is native.
+pub fn count_compactions(marks_at: &[String], history: &[HistoryEntry]) -> (usize, usize) {
+    let mut marks: Vec<Option<DateTime<Utc>>> =
+        marks_at.iter().map(|m| crate::clock::parse(m)).collect();
+    // `None` first: unreadable marks never match, so their place is free.
+    marks.sort();
+    let mut events: Vec<DateTime<Utc>> = history
+        .iter()
+        .filter(|e| e.event == EVENT_COMPACTED)
+        .filter_map(|e| crate::clock::parse(&e.at))
+        .collect();
+    events.sort();
+    let window = chrono::Duration::from_std(HORCH_MATCH_WINDOW).expect("15 minutes");
+    // Oldest mark first, each takes the oldest free event in its window: no
+    // other order matches more marks, because every window has one length.
+    let mut next = 0;
+    let mut horch = 0;
+    for mark in marks.iter().flatten() {
+        while next < events.len() && events[next] < *mark {
+            next += 1;
+        }
+        if next < events.len() && events[next] <= *mark + window {
+            horch += 1;
+            next += 1;
+        }
+    }
+    (marks_at.len() - horch, horch)
 }
 
 /// Rule A (CTX-10, CTX-11.2): the cycle starts at the later of the newest

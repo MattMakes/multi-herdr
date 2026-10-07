@@ -15,8 +15,8 @@ use horch_core::compaction::jobfile::{
     SPAWNED_FILE,
 };
 use horch_core::compaction::policy::{
-    already_asked, asked_at, classify, compact_line, handoff_fresh, handoff_path, should_warn,
-    watch_base, HandoffProblem, JobLiveness, RowInputs, RowState,
+    already_asked, asked_at, classify, compact_line, count_compactions, handoff_fresh,
+    handoff_path, should_warn, watch_base, HandoffProblem, JobLiveness, RowInputs, RowState,
 };
 use horch_core::compaction::window::{
     decide, fleet_window, headroom, native_trigger, threshold, OperatorWindow, WindowSource,
@@ -64,6 +64,7 @@ fn reading(tokens: Option<u64>) -> Reading {
         model: None,
         last_compaction: None,
         marks: 0,
+        marks_at: Vec::new(),
         transcript: PathBuf::from("/t/rollout.jsonl"),
     }
 }
@@ -369,6 +370,66 @@ fn ctx_10_rule_a_cycle_starts_at_newest_compaction() {
         &[ev("2026-09-20T10:06:00Z", "note")],
         Some(&m)
     ));
+}
+
+// ─── CTX-25: native and horch compactions ───────────────────────────────────
+
+fn marks_at(at: &[&str]) -> Vec<String> {
+    at.iter().map(|s| s.to_string()).collect()
+}
+
+/// CTX-25: a mark is horch-driven when a `compacted` event is at or after it
+/// and within 15 minutes of it; each event matches 1 mark; the rest are
+/// native.
+#[test]
+fn ctx_25_counts_native_and_horch_compactions() {
+    // 2 marks, 1 matched `compacted` event: 1 native, 1 horch.
+    let marks = marks_at(&["2026-09-20T09:00:00Z", "2026-09-20T10:05:00Z"]);
+    let history = vec![
+        ev("2026-09-20T10:04:00Z", "compact-requested"),
+        ev("2026-09-20T10:06:00Z", "compacted"),
+    ];
+    assert_eq!(count_compactions(&marks, &history), (1, 1));
+
+    // No marks: nothing, whatever the ledger says.
+    assert_eq!(count_compactions(&[], &history), (0, 0));
+
+    // The window: at the mark and at 15 minutes match; before the mark and
+    // after 15 minutes do not.
+    let mark = marks_at(&["2026-09-20T10:00:00Z"]);
+    for (event_at, want) in [
+        ("2026-09-20T10:00:00Z", (0, 1)),
+        ("2026-09-20T10:15:00Z", (0, 1)),
+        ("2026-09-20T10:15:01Z", (1, 0)),
+        ("2026-09-20T09:59:59Z", (1, 0)),
+    ] {
+        let history = vec![ev(event_at, "compacted")];
+        assert_eq!(count_compactions(&mark, &history), want, "{event_at}");
+    }
+
+    // 1 event matches 1 mark, not 2.
+    let close = marks_at(&["2026-09-20T10:00:00Z", "2026-09-20T10:01:00Z"]);
+    let one = vec![ev("2026-09-20T10:02:00Z", "compacted")];
+    assert_eq!(count_compactions(&close, &one), (1, 1));
+    let two = vec![
+        ev("2026-09-20T10:02:00Z", "compacted"),
+        ev("2026-09-20T10:03:00Z", "compacted"),
+    ];
+    assert_eq!(count_compactions(&close, &two), (0, 2));
+
+    // Only `compacted` counts; mark times compare as instants, not strings.
+    let other = vec![
+        ev("2026-09-20T10:01:00Z", "compact-failed"),
+        ev("2026-09-20T10:01:00Z", "context-warned"),
+    ];
+    assert_eq!(count_compactions(&mark, &other), (1, 0));
+    let offset = marks_at(&["2026-09-20T12:00:00+02:00"]);
+    let utc = vec![ev("2026-09-20T10:05:00.000Z", "compacted")];
+    assert_eq!(count_compactions(&offset, &utc), (0, 1));
+
+    // A mark with no readable time is native.
+    let bad = marks_at(&[""]);
+    assert_eq!(count_compactions(&bad, &utc), (1, 0));
 }
 
 // ─── CTX-12, CTX-14: handoffs ───────────────────────────────────────────────

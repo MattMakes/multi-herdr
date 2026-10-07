@@ -75,6 +75,9 @@ pub struct Reading {
     pub last_compaction: Option<CompactionMark>,
     /// The markers in the file.
     pub marks: usize,
+    /// The time of each marker in the file, as written, oldest first
+    /// (CTX-25: `compaction::policy::count_compactions`).
+    pub marks_at: Vec<String>,
     pub transcript: PathBuf,
 }
 
@@ -146,6 +149,7 @@ pub fn read_current(
         model,
         last_compaction: last,
         marks: marks.len(),
+        marks_at: marks.iter().map(|m| m.at.clone()).collect(),
         transcript: path,
     })
 }
@@ -433,6 +437,7 @@ fn read_opencode(db: &Path, sqlite3: &Path, sid: &str) -> Result<Reading, Unread
         model,
         last_compaction: last,
         marks: marks.len(),
+        marks_at: marks.iter().map(|m| m.at.clone()).collect(),
         transcript: db.to_path_buf(),
     })
 }

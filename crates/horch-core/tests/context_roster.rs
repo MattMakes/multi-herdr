@@ -796,3 +796,39 @@ fn sol_orchestrator_takes_its_model_window() {
         Some((200_000, "context-policy windows codex/gpt-5.6-sol".into()))
     );
 }
+
+/// CTX-21: `compact_at` is the teammate's watch base. The check refuses a
+/// value outside 50,000 to 1,000,000 and names the range.
+#[test]
+fn ctx_21_compact_at_range_checked() {
+    let dir = roster_dir(&[(
+        "low.md",
+        teammate_file("low", "claude", "compact_at: 40000\n"),
+    )]);
+    let errors = problems_with(&load(dir.path()), &["compact_at"]);
+    assert_eq!(
+        errors,
+        vec!["low: compact_at 40000 is outside 50000 to 1000000".to_string()]
+    );
+
+    let dir = roster_dir(&[(
+        "high.md",
+        teammate_file("high", "claude", "compact_at: 1000001\n"),
+    )]);
+    let errors = problems_with(&load(dir.path()), &["compact_at"]);
+    assert_eq!(
+        errors,
+        vec!["high: compact_at 1000001 is outside 50000 to 1000000".to_string()]
+    );
+
+    for ok in [50_000, 60_000, 1_000_000] {
+        let dir = roster_dir(&[(
+            "fine.md",
+            teammate_file("fine", "claude", &format!("compact_at: {ok}\n")),
+        )]);
+        let roster = load(dir.path());
+        assert_eq!(roster.get("fine").unwrap().compact_at, Some(ok));
+        let errors = problems_with(&roster, &["compact_at"]);
+        assert!(errors.is_empty(), "{ok}: {errors:?}");
+    }
+}

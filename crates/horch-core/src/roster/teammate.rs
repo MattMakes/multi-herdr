@@ -234,6 +234,12 @@ pub struct Teammate {
     /// the `windows` of `_base/context-windows.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_window: Option<u64>,
+    /// The watch base of this teammate (CTX-21): `horch context`, `horch
+    /// compact` and the `horch note` check use it in place of the fleet base.
+    /// Tokens, 50,000 to 1,000,000. Frontmatter only, no env variable: a pane
+    /// does not inherit the spawner's env.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_at: Option<u64>,
     /// The file body. Its meaning depends on `base`: a persona when `base` is
     /// set, the entire prompt when it is not.
     #[serde(skip)]
@@ -283,6 +289,7 @@ impl Default for Teammate {
             requires: Vec::new(),
             harness_defaults: Vec::new(),
             compact_window: None,
+            compact_at: None,
             persona: String::new(),
         }
     }

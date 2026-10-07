@@ -462,6 +462,22 @@ Not switched off:
 - The Codex automatic thread title had no switch in 0.154.0 (checked
   2026-09-18, not re-checked on 0.160.0).
 
+## Context: `compact_window` and `compact_at`
+
+2 optional fields tune the context watch of 1 teammate:
+
+- `compact_window` is the native auto-compact setting horch gives the
+  harness when the operator set none (see `_base/context-windows.md`).
+- `compact_at` is horch's watch base, in place of the fleet base of 300000
+  tokens. The threshold is the lower of the base and 80% of the native
+  trigger. `horch context`, `horch compact` and the `horch note` warning use
+  it. `--check` refuses a value outside 50000 to 1000000. There is no env
+  variable for it: a pane does not inherit the spawner's env.
+
+`horch context` counts the compactions of each session in 2 groups: native
+(the harness compacted by itself) and horch (a `compacted` ledger event is at
+most 15 minutes after the marker).
+
 ## Running `pi` on local models
 
 `pi` needs an Ollama provider before `ollama/qwen3.8` resolves. Add
