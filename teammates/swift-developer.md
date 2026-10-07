@@ -46,9 +46,10 @@ operator_skills:
 # builds, tests, runs and drives the simulator without Xcode open. Pinned:
 # fleet launches are reproducible. MOBILEBUILDMCP_SENTRY_DISABLED stops its
 # default error telemetry to Sentry (fleet rule: no third-party telemetry
-# from agent panes; the value must be the string "true"). The ui-automation workflow (snapshot_ui,
-# tap, screenshot) and swift-package are off by default, so the env turns
-# them on.
+# from agent panes; the value must be the string "true"). The default
+# simulator workflow carries snapshot_ui and screenshot. The ui-automation
+# workflow (tap, type_text, gesture, batch) and swift-package are off by
+# default, so the env turns them on.
 # context7 pulls current Apple API docs instead of training-set memory.
 # Both servers are pinned. To update a pin: `npm view <package> version`,
 # read the release notes, change the version here and in every teammate

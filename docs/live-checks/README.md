@@ -48,6 +48,7 @@ that starts an orchestrator.
 | telemetry | `scripts/live/telemetry.sh` | [telemetry.md](telemetry.md) | the telemetry spec's local acceptance steps (`docs/specs/telemetry.md` §17, L1 to L10) against real sessions | a herdr server; 2 steps spawn 1 worker each (paid); 2 steps need the operator |
 | dataset | `scripts/live/dataset.sh` | [dataset.md](dataset.md) | the candidate idle rule (Spec B §4.11.5) with a real Codex candidate: 1 nudge, then `idle_without_done` | a herdr server, `codex`; 1 small round (paid) |
 | linux | `scripts/live/linux.sh` | [linux.md](linux.md) | `cargo test --workspace` on aarch64 Linux (the `procid` Linux paths) and Godot headless with `XDG_*` paths | `colima` and Docker; `just test-linux` runs the test step |
+| godot-csharp | `scripts/godot/live_csharp.sh` | [godot-csharp.md](godot-csharp.md) | a C# scene and a C# signal run headless on Godot .NET 4.7 (U-24) | Godot .NET 4.7 (`GODOT_MONO_PATH`, else `/Applications/Godot_mono.app`) and `dotnet`; no model session |
 
 A family whose result file does not exist yet has not run on this branch.
 

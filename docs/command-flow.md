@@ -100,7 +100,16 @@ that opened it, so the pane command carries what the pane must see. Every
 pane command horch runs (`PaneShell::command_line_with_env` in
 `crates/horch-core/src/workspace/paneshell.rs`) does 2 things first:
 
-- It removes `ANTHROPIC_API_KEY`.
+- It removes `ANTHROPIC_API_KEY`. The way depends on the pane shell
+  (`paneshell.rs`):
+  - Posix: the line starts with `exec /usr/bin/env -u <NAME>`. The `exec`
+    replaces the pane's shell, so no pane process keeps the variable.
+  - Posix, a pane that keeps its shell (`PaneShell::command_line_keep_shell`,
+    used by smoke, which types more lines): the line starts with
+    `unset <NAME>;`, so the shell drops the variable, and then runs
+    `/usr/bin/env -u <NAME> ...` without `exec`.
+  - PowerShell: the line starts with
+    `Remove-Item Env:<NAME> -ErrorAction SilentlyContinue;`.
 - It sets `HORCH_DATA_DIR` to the data root of the `horch` that opened the
   pane, so the pane, its agent and every `horch` command the agent runs use
   the same skill store.

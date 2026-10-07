@@ -91,7 +91,7 @@ result = {"marker": "BLENDER-VERIFY", "problems": problems}
 
 ## Evidence
 
-Checked on 2026-10-04. Blender facts are against the 5.2 LTS API and manual (the latest release, 5.2.2). Unreal facts are against the 5.8 documentation.
+Checked on 2026-10-04. Blender facts are against the 5.2 LTS API and manual (the latest release, 5.2.2). The live checks ran the Blender steps on Blender 3.5.1 (headless) and the `bpy` 5.0.1 module (`docs/live-checks/blender.md`); no run used Blender 5.2. Unreal facts are against the 5.8 documentation.
 
 | rule | evidence |
 |---|---|

@@ -1326,7 +1326,8 @@ codex-cli 0.160.0) showed:
 - Codex records it in `$CODEX_HOME/config.toml` (default `~/.codex`) as a
   table `[projects."<root>"]` with `trust_level = "trusted"`.
 - agy asks "Do you trust the contents of this project?" on the first launch
-  in each directory. horch cannot read where it keeps the answer.
+  in each directory. horch reads the answer (PRE-14): `trustedWorkspaces` in
+  `~/.gemini/antigravity-cli/settings.json` lists the trusted paths.
 - opencode, pi and prime have no trust step (no trust text in their
   binaries or bundles).
 
