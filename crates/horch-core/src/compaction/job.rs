@@ -2,7 +2,8 @@
 //!
 //! [`run`] waits for the pane to be idle, types the compact line, confirms
 //! the compaction by the transcript marker, waits for idle again, types the
-//! resume line, and reports. Every effect goes through [`JobPorts`], so a
+//! resume line, and reports. A failure line that the harness prints in the
+//! pane after the send stops the job at once. Every effect goes through [`JobPorts`], so a
 //! fake runs the whole job in a test with a fake clock.
 //!
 //! Every end records 1 event and sends 1 report: `compacted` and the
@@ -25,6 +26,8 @@ pub trait JobPorts {
     fn pane_status(&self) -> Result<Option<String>>;
     /// Type 1 line into the target pane.
     fn send(&self, line: &str) -> Result<()>;
+    /// The target pane's recent output, 1 terminal line per text line.
+    fn pane_text(&self) -> Result<String>;
     /// The target session's current context.
     fn reading(&self) -> Result<Reading, Unreadable>;
     /// Record a ledger event on the target record.
@@ -50,6 +53,11 @@ pub struct JobPlan {
     /// The handoff path, as the `compacted` event names it.
     pub handoff: String,
     pub role: String,
+    /// The harness name in a failure reason (`pi said "..."`).
+    pub harness: String,
+    /// The harness's compaction failure lines, as substrings
+    /// ([`CompactionCaps::failure_lines`](crate::harness::capabilities::CompactionCaps::failure_lines)).
+    pub failure_lines: Vec<String>,
     pub log_path: String,
     /// Between 2 polls: 2 s.
     pub poll: Duration,
@@ -171,6 +179,7 @@ fn steps(
     let mut marker_since = None;
     let mark = 'send: loop {
         wait_idle(ports, plan, Step::WaitIdle, plan.idle_timeout)?;
+        let before = pane_before(ports, plan);
         ports.log(Step::Send, &plan.compact_line);
         ports.send(&plan.compact_line).map_err(|e| JobFailure {
             step: Step::Send,
@@ -185,6 +194,12 @@ fn steps(
                 if let Some(m) = r.last_compaction.filter(|m| m.offset >= start) {
                     break 'send m;
                 }
+            }
+            if let Some(line) = before.as_ref().and_then(|b| new_failure(ports, plan, b)) {
+                return Err(JobFailure {
+                    step: Step::WaitMarker,
+                    reason: format!("{} said \"{line}\"", plan.harness),
+                });
             }
             let now = ports.elapsed();
             if now.saturating_sub(first_send) >= plan.marker_timeout {
@@ -260,6 +275,42 @@ fn wait_idle(
         ports.sleep(plan.poll);
     }
 }
+
+/// The pane text right before a send, so that only lines after the send
+/// count. None: no failure lines, or the pane did not read (then the job
+/// waits for the marker only).
+fn pane_before(ports: &dyn JobPorts, plan: &JobPlan) -> Option<String> {
+    if plan.failure_lines.is_empty() {
+        return None;
+    }
+    match ports.pane_text() {
+        Ok(text) => Some(text),
+        Err(e) => {
+            ports.log(
+                Step::Send,
+                &format!("no pane text, no failure check: {e:#}"),
+            );
+            None
+        }
+    }
+}
+
+/// The first failure line that the pane shows more often now than in
+/// `before`. A count, not a position: a TUI redraws its screen, and old
+/// lines leave the scrollback, so neither makes an old line new.
+fn new_failure(ports: &dyn JobPorts, plan: &JobPlan, before: &str) -> Option<String> {
+    let now = ports.pane_text().ok()?;
+    let failure = |l: &&str| plan.failure_lines.iter().any(|f| l.contains(f.as_str()));
+    let count = |text: &str, line: &str| text.lines().filter(|l| l.trim() == line).count();
+    now.lines()
+        .filter(failure)
+        .map(str::trim)
+        .find(|line| count(&now, line) > count(before, line))
+        .map(|line| line.chars().take(MAX_LINE_CHARS).collect())
+}
+
+/// The longest harness line that a report quotes.
+const MAX_LINE_CHARS: usize = 200;
 
 fn best_effort(ports: &dyn JobPorts, step: Step, result: Result<()>) {
     if let Err(e) = result {

@@ -712,6 +712,8 @@ fn plan_for(env: &Env, t: &Target, timeout: Option<u64>) -> Result<JobPlan> {
         )?,
         handoff,
         role: role.into(),
+        harness: t.row.kind.as_str().into(),
+        failure_lines: caps.failure_lines.iter().map(|s| s.to_string()).collect(),
         log_path: log,
         poll: POLL,
         idle_polls: IDLE_POLLS,
@@ -741,6 +743,11 @@ impl JobPorts for Ports<'_> {
 
     fn send(&self, line: &str) -> Result<()> {
         delivery::send_line(self.env.ws, self.pane, line)
+    }
+
+    /// Unwrapped, so a long failure line stays on 1 line.
+    fn pane_text(&self) -> Result<String> {
+        self.env.ws.pane_read(self.pane, "recent-unwrapped")
     }
 
     fn reading(&self) -> Result<Reading, Unreadable> {

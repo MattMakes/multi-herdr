@@ -71,6 +71,10 @@ pub struct CompactionCaps {
     /// Sends allowed per job: 1 where a busy harness queues the command.
     pub max_sends: u8,
     pub trigger: TriggerRule,
+    /// Substrings of the lines the harness prints in its pane when a
+    /// requested compaction fails. A new one after the send stops the job
+    /// (CTX-13). A busy rejection is not one: the job sends again.
+    pub failure_lines: &'static [&'static str],
 }
 
 impl CompactionCaps {
@@ -133,6 +137,45 @@ impl Capabilities {
     }
 }
 
+// The compaction failure lines, from each installed harness (2026-10-07).
+
+/// Claude Code 2.1.292 (`strings` on the binary): the `/compact` command
+/// throws `Error during compaction: ...` and `Compaction canceled.`, and
+/// prints `Not enough messages to compact.` as its output.
+const CLAUDE_FAILURES: &[&str] = &[
+    "Error during compaction: ",
+    "Not enough messages to compact.",
+    "Compaction canceled.",
+];
+
+/// Codex 0.160.0 (`strings` on the binary): the TUI error when the
+/// compact request fails. Its busy rejection, `'/compact' is disabled while
+/// a task is in progress.`, is not here.
+const CODEX_FAILURES: &[&str] = &["thread/compact/start failed in TUI"];
+
+/// OpenCode 1.18.35 (its bundled JS): the error on the summary message
+/// when the conversation does not fit the model.
+const OPENCODE_FAILURES: &[&str] = &[
+    "Conversation history too large to compact",
+    "Session too large to compact",
+];
+
+/// pi 0.99.1 (`dist/core/agent-session.js:2204`,
+/// `dist/modes/interactive/interactive-mode.js:2903` and `:2929`):
+/// `showError` prints `Error: Compaction failed: <message>` (for example
+/// `Nothing to compact (session too small)`) or `Error: Compaction cancelled`.
+const PI_FAILURES: &[&str] = &["Error: Compaction failed: ", "Error: Compaction cancelled"];
+
+/// Prime Agent 0.9.4 (`dist/core/agent-session.js:6104`, `:6143`, `:6145`;
+/// `dist/modes/interactive/interactive-mode.js:4757`, `:4770`): the pi lines,
+/// plus 2 skip warnings that `showWarning` prints after `⚠ `.
+const PRIME_FAILURES: &[&str] = &[
+    "Error: Compaction failed: ",
+    "Error: Compaction cancelled",
+    "Already compacted",
+    "Session is too short to compact",
+];
+
 pub(crate) const CLAUDE: Capabilities = Capabilities {
     caller_minted_session: true,
     resumes: true,
@@ -149,6 +192,7 @@ pub(crate) const CLAUDE: Capabilities = Capabilities {
         command: CompactCommand::WithInstructions,
         max_sends: 1,
         trigger: TriggerRule::WindowMinusReserve { reserve: 33_000 },
+        failure_lines: CLAUDE_FAILURES,
     },
 };
 
@@ -168,6 +212,7 @@ pub(crate) const CODEX: Capabilities = Capabilities {
         command: CompactCommand::Bare,
         max_sends: 3,
         trigger: TriggerRule::CodexLimit,
+        failure_lines: CODEX_FAILURES,
     },
 };
 
@@ -187,6 +232,7 @@ pub(crate) const OPENCODE: Capabilities = Capabilities {
         command: CompactCommand::Bare,
         max_sends: 3,
         trigger: TriggerRule::PerModel,
+        failure_lines: OPENCODE_FAILURES,
     },
 };
 
@@ -208,6 +254,7 @@ pub(crate) const PI: Capabilities = Capabilities {
         command: CompactCommand::WithInstructions,
         max_sends: 1,
         trigger: TriggerRule::WindowMinusReserve { reserve: 16_384 },
+        failure_lines: PI_FAILURES,
     },
 };
 
@@ -227,6 +274,7 @@ pub(crate) const PRIME: Capabilities = Capabilities {
         command: CompactCommand::WithInstructions,
         max_sends: 1,
         trigger: TriggerRule::WindowMinusReserve { reserve: 16_384 },
+        failure_lines: PRIME_FAILURES,
     },
 };
 
@@ -250,6 +298,7 @@ pub(crate) const ANTIGRAVITY: Capabilities = Capabilities {
         command: CompactCommand::Unknown,
         max_sends: 0,
         trigger: TriggerRule::Unknown,
+        failure_lines: &[],
     },
 };
 
@@ -269,6 +318,7 @@ pub(crate) const NONE: Capabilities = Capabilities {
         command: CompactCommand::Unknown,
         max_sends: 0,
         trigger: TriggerRule::Unknown,
+        failure_lines: &[],
     },
 };
 

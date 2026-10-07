@@ -535,6 +535,12 @@ struct Fake {
     sends: RefCell<Vec<String>>,
     events: RefCell<Vec<(String, String)>>,
     reports: RefCell<Vec<String>>,
+    /// The pane's scrollback before the first send.
+    scrollback: String,
+    /// After send n (1-based) the pane shows this line. None: no new line.
+    pane_line: Option<(usize, &'static str)>,
+    /// Pane reads, as a count.
+    pane_reads: Cell<usize>,
 }
 
 impl Fake {
@@ -549,6 +555,9 @@ impl Fake {
             sends: RefCell::default(),
             events: RefCell::default(),
             reports: RefCell::default(),
+            scrollback: String::new(),
+            pane_line: None,
+            pane_reads: Cell::new(0),
         }
     }
 
@@ -594,6 +603,20 @@ impl JobPorts for Fake {
         })
     }
 
+    fn pane_text(&self) -> anyhow::Result<String> {
+        self.pane_reads.set(self.pane_reads.get() + 1);
+        let mut text = self.scrollback.clone();
+        let sends = compact_sends(self);
+        if let Some((after, line)) = self.pane_line {
+            // 1 new line per send from send `after` on.
+            for _ in after..=sends {
+                text.push_str(line);
+                text.push('\n');
+            }
+        }
+        Ok(text)
+    }
+
     fn record_event(&self, event: &str, text: &str) -> anyhow::Result<()> {
         self.events.borrow_mut().push((event.into(), text.into()));
         Ok(())
@@ -624,6 +647,12 @@ fn plan(max_sends: u8) -> JobPlan {
         failed_tmpl: FAILED.into(),
         handoff: "ai_docs/handoffs/sonnet-1-whats-next.md".into(),
         role: "sonnet-1".into(),
+        harness: "pi".into(),
+        failure_lines: caps(HarnessKind::Pi)
+            .failure_lines
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         log_path: "/s/job.log".into(),
         poll: Duration::from_secs(2),
         idle_polls: 2,
@@ -770,6 +799,98 @@ fn ctx_23_job_reports_success_once() {
         *f.reports.borrow(),
         ["[horch] NOTE: sonnet-1 compacted. 311225 -> 18207 tokens.".to_string()]
     );
+}
+
+const PI_FAILURE: &str = "  Error: Compaction failed: Nothing to compact (session too small)";
+const CODEX_BUSY: &str = "  '/compact' is disabled while a task is in progress.";
+
+#[test]
+fn ctx_13_harness_failure_line_stops_the_job_within_one_poll() {
+    let mut f = Fake::new(&["idle"], None);
+    f.pane_line = Some((1, PI_FAILURE));
+    let err = run(&f, &plan(1)).unwrap_err();
+    assert_eq!(compact_sends(&f), 1, "no second send");
+    let line = PI_FAILURE.trim();
+    assert_eq!(
+        err,
+        JobFailure {
+            step: Step::WaitMarker,
+            reason: format!("pi said \"{line}\""),
+        }
+    );
+    // 2 idle polls (1 sleep) before the send, then at most 1 poll.
+    assert!(f.elapsed() <= Duration::from_secs(4), "{:?}", f.elapsed());
+    assert_eq!(
+        *f.events.borrow(),
+        [(
+            "compact-failed".to_string(),
+            format!("step wait-marker: pi said \"{line}\"")
+        )]
+    );
+    assert_eq!(
+        *f.reports.borrow(),
+        [format!(
+            "[horch] BLOCKED: compaction of sonnet-1 failed at step wait-marker: \
+             pi said \"{line}\". log /s/job.log"
+        )]
+    );
+}
+
+#[test]
+fn ctx_13_failure_line_in_old_scrollback_does_not_stop_the_job() {
+    // The same text from an earlier attempt, before this send.
+    let mut f = Fake::new(&["idle"], Some(1));
+    f.scrollback = format!("{PI_FAILURE}\n> /compact\n");
+    let done = run(&f, &plan(1)).unwrap();
+    assert_eq!(done.mark.offset, NEW_MARK);
+
+    // No marker: the job waits the full marker timeout, as before.
+    let mut f = Fake::new(&["idle"], None);
+    f.scrollback = format!("{PI_FAILURE}\n");
+    let err = run(&f, &plan(1)).unwrap_err();
+    assert_eq!(err.reason, "no compaction marker after 1 sends");
+    assert!(f.pane_reads.get() > 2, "the job read the pane at each poll");
+}
+
+#[test]
+fn ctx_13_codex_busy_rejection_still_resends() {
+    let mut f = Fake::new(&["idle"], Some(2));
+    f.pane_line = Some((1, CODEX_BUSY));
+    let mut p = plan(3);
+    p.harness = "codex".into();
+    p.failure_lines = caps(HarnessKind::Codex)
+        .failure_lines
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let done = run(&f, &p).unwrap();
+    assert_eq!(done.mark.offset, NEW_MARK);
+    assert_eq!(compact_sends(&f), 2, "the busy rejection led to a resend");
+}
+
+#[test]
+fn ctx_13_failure_lines_are_cited_per_harness() {
+    for kind in [
+        HarnessKind::Claude,
+        HarnessKind::Codex,
+        HarnessKind::OpenCode,
+        HarnessKind::Pi,
+        HarnessKind::Prime,
+    ] {
+        let lines = caps(kind).failure_lines;
+        assert!(!lines.is_empty(), "{kind:?}");
+        for line in lines {
+            assert!(!line.trim().is_empty(), "{kind:?}");
+            assert!(!CODEX_BUSY.contains(line), "{kind:?}: {line}");
+        }
+    }
+    for kind in [HarnessKind::Antigravity, HarnessKind::None] {
+        assert!(caps(kind).failure_lines.is_empty(), "{kind:?}");
+    }
+    assert!(caps(HarnessKind::Pi)
+        .failure_lines
+        .iter()
+        .any(|l| PI_FAILURE.contains(l)));
 }
 
 // ─── CTX-15: the job dir and the shared heartbeat ───────────────────────────
