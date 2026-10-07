@@ -11,17 +11,23 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
 use horch_core::compaction::policy;
+use horch_core::competition::budget::UsageMeter;
+use horch_core::competition::observe::TelemetryUsage;
 use horch_core::execution::lifecycle::{self, DoneRequest, DoneSteps, ReportTarget};
 use horch_core::execution::records::Ledger;
 use horch_core::execution::store::to_execution;
 use horch_core::execution::ExecutionKind;
+use horch_core::fleet_runs::facts::{record_run, RunSources};
+use horch_core::fleet_runs::rows::WrittenBy;
 use horch_core::harness::launch;
+use horch_core::measure::paths::DatasetPaths;
 use horch_core::messaging::delivery;
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
 use horch_core::prompts;
 use horch_core::runtime::RuntimeContext;
 use horch_core::usage::Locations;
+use horch_core::vcs::git::GitCli;
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 
@@ -357,6 +363,23 @@ impl DoneSteps for CliDone<'_> {
             role,
             record_id,
         )
+    }
+
+    fn record_run(&self, record_id: &str) -> Result<()> {
+        let record = Ledger::open_in(self.ctx)?.get(record_id)?;
+        let project = self.ctx.paths.project()?;
+        let paths = DatasetPaths::new(&self.ctx.paths.state_root, &project);
+        let usage = TelemetryUsage {
+            locations: Locations::from_context(self.ctx),
+        };
+        let git = GitCli::new(self.ctx.bins.harness.git.clone());
+        let sources = RunSources {
+            usage: &usage,
+            meter: &UsageMeter::default(),
+            git: &git,
+        };
+        let now = horch_core::clock::now();
+        record_run(&paths, &project, &record, &sources, now, WrittenBy::Done).map(|_| ())
     }
 }
 
