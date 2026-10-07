@@ -140,9 +140,10 @@ pub fn agent_prompt(roster: &Roster, teammate: &Teammate, role: &str) -> Result<
     render(&base.body, &vars)
 }
 
-/// Render message `key` of base `context-messages` (CTX-11, CTX-23). Error:
-/// the base or the key is missing, or the message names a placeholder that
-/// `vars` does not give.
+/// Render message `key` of base `context-messages` (CTX-11, CTX-23) as 1
+/// line: each `\r` and `\n` in a value becomes a space, because a newline
+/// typed into a pane submits early. Error: the base or the key is missing,
+/// or the message names a placeholder that `vars` does not give.
 pub fn context_message(roster: &Roster, key: &str, vars: &BTreeMap<&str, &str>) -> Result<String> {
     let base = roster
         .context_messages()
@@ -150,7 +151,12 @@ pub fn context_message(roster: &Roster, key: &str, vars: &BTreeMap<&str, &str>) 
     let Some(message) = base.messages.get(key) else {
         bail!("base 'context-messages' has no message '{key}'");
     };
-    render(message, vars).with_context(|| format!("context message '{key}'"))
+    let flat: BTreeMap<&str, String> = vars
+        .iter()
+        .map(|(k, v)| (*k, v.replace(['\r', '\n'], " ")))
+        .collect();
+    let flat: BTreeMap<&str, &str> = flat.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    render(message, &flat).with_context(|| format!("context message '{key}'"))
 }
 
 /// Render one execpolicy `prefix_rule` block for `~/.codex/execpolicy`.

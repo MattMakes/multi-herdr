@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Result};
 
 use super::operator::expand_home;
+use super::parser::parse_base;
+use super::repository::BUILTIN_BASES;
 use super::teammate::{
     HarnessDefault, CONTEXT_MESSAGES_BASE, CONTEXT_MESSAGE_KEYS, CONTEXT_MESSAGE_PLACEHOLDERS,
     CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY,
@@ -512,24 +514,31 @@ impl Roster {
                 problems.push(format!("{who}: plugin_dir '{dir}' does not exist"));
             }
         }
-        // A teammate that brings its own settings file takes over the status
-        // line too; one without a statusLine would be the only pane in the
-        // fleet with none.
-        if let Some(path) = &t.settings {
-            let path = expand_home(path, self.home.as_deref());
-            match std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|x| serde_json::from_str::<serde_json::Value>(&x).ok())
-            {
+        // A teammate that brings its own settings takes over the status line
+        // too; one without a statusLine would be the only pane in the fleet
+        // with none. `settings` is inline JSON (starts with `{`) or a file.
+        if let Some(settings) = &t.settings {
+            let inline = is_inline(settings);
+            let path = expand_home(settings, self.home.as_deref());
+            match self.teammate_settings(t) {
+                None if inline => {
+                    problems.push(format!("{who}: inline settings are not a JSON object"))
+                }
                 None => problems.push(format!(
                     "{who}: settings file '{}' is missing or not valid JSON",
                     path.display()
                 )),
-                Some(v) if v.get("statusLine").is_none() => problems.push(format!(
-                    "{who}: settings file '{}' defines no statusLine, so this pane \
-                     would be the only one in the fleet without one",
-                    path.display()
-                )),
+                Some(v) if !v.contains_key("statusLine") => {
+                    let what = if inline {
+                        "inline settings define".to_string()
+                    } else {
+                        format!("settings file '{}' defines", path.display())
+                    };
+                    problems.push(format!(
+                        "{who}: {what} no statusLine, so this pane would be the only one in \
+                         the fleet without one"
+                    ))
+                }
                 Some(_) => {}
             }
         }
@@ -626,6 +635,25 @@ impl Roster {
 }
 
 impl Roster {
+    /// The teammate's `settings` as a JSON object: the inline JSON, or the
+    /// file it names. None: no settings, or they do not read or parse as an
+    /// object.
+    fn teammate_settings(
+        &self,
+        t: &Teammate,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let settings = t.settings.as_deref()?;
+        let text = if is_inline(settings) {
+            settings.to_string()
+        } else {
+            std::fs::read_to_string(expand_home(settings, self.home.as_deref())).ok()?
+        };
+        match serde_json::from_str(&text).ok()? {
+            serde_json::Value::Object(map) => Some(map),
+            _ => None,
+        }
+    }
+
     /// The context-policy rules of `horch teammates --check` (design 6.3):
     /// 1 the headroom floor (CTX-08), 2 no window outside `compact_window`,
     /// 3 no `compact_window` without a lever, 4 the 2 context bases.
@@ -633,7 +661,8 @@ impl Roster {
         let mut problems = Vec::new();
         for t in self.teammates.values() {
             problems.extend(self.headroom_problem(t));
-            problems.extend(window_outside_compact_window(t));
+            let settings = self.teammate_settings(t);
+            problems.extend(window_outside_compact_window(t, settings.as_ref()));
             let trigger = t.agent.capabilities().compaction.trigger;
             if t.compact_window.is_some()
                 && matches!(trigger, TriggerRule::Unknown | TriggerRule::PerModel)
@@ -644,27 +673,88 @@ impl Roster {
                 ));
             }
         }
+        problems.extend(self.windows_key_problems());
         problems.extend(self.context_base_problems());
         problems
     }
 
-    /// Rule 1 (CTX-08): the fleet window of `t` leaves at least
-    /// `HEADROOM_FLOOR` tokens between the watch threshold and the native
-    /// trigger. A teammate with no fleet window, or on a harness whose
-    /// trigger horch cannot compute, is skipped.
+    /// Rule 1 (CTX-08) for a teammate's own `compact_window`: it leaves at
+    /// least `HEADROOM_FLOOR` tokens between the watch threshold and the
+    /// native trigger. The `windows` keys are checked by themselves, in
+    /// [`Self::windows_key_problems`]. A harness whose trigger horch cannot
+    /// compute is skipped.
     fn headroom_problem(&self, t: &Teammate) -> Option<String> {
+        let w = t.compact_window?;
         let model = t.model.as_deref().unwrap_or("");
-        let (w, _) = self.fleet_window(t, model)?;
         let rule = t.agent.capabilities().compaction.trigger;
         let native = native_trigger(rule, t.agent.as_str(), model, Some(w), None)?;
-        let t_watch = threshold(BASE_THRESHOLD, Some(native));
-        let h = headroom(native, t_watch);
-        (h < HEADROOM_FLOOR).then(|| {
-            format!(
-                "{}: compact window {w} leaves headroom {h} tokens, below the {HEADROOM_FLOOR} floor (native trigger {native}, threshold {t_watch})",
-                t.name
-            )
-        })
+        let (t_watch, h) = below_floor(native)?;
+        Some(format!(
+            "{}: compact window {w} leaves headroom {h} tokens, below the {HEADROOM_FLOOR} floor (native trigger {native}, threshold {t_watch})",
+            t.name
+        ))
+    }
+
+    /// Rules 1 and 4 for each `windows` key `<harness>/<name>`, independent
+    /// of the teammates: a substitution launches a teammate on its
+    /// fallback's harness, so any key can apply. Each key has a harness with
+    /// a window setting and a name, meets the floor, and has 1 reading.
+    fn windows_key_problems(&self) -> Vec<String> {
+        let file = format!("_base/{CONTEXT_WINDOWS_BASE}.md");
+        let Some(windows) = self.context_windows().and_then(|b| b.windows.as_ref()) else {
+            return Vec::new();
+        };
+        let mut problems = Vec::new();
+        for (key, &w) in windows {
+            let Some((kind, name)) = split_window_key(key) else {
+                problems.push(format!(
+                    "{file}: windows key {key} is not <harness>/<teammate or model> with a harness name"
+                ));
+                continue;
+            };
+            if name.is_empty() {
+                problems.push(format!(
+                    "{file}: windows key {key} has no teammate or model name"
+                ));
+                continue;
+            }
+            let rule = kind.capabilities().compaction.trigger;
+            let native = match rule {
+                TriggerRule::Unknown | TriggerRule::PerModel => {
+                    problems.push(format!(
+                        "{file}: windows key {key} does nothing on harness {kind}: it has no window setting"
+                    ));
+                    continue;
+                }
+                // A teammate name as the model part: the model window is
+                // unknown, so the key's value is the window.
+                TriggerRule::WindowMinusReserve { reserve } => {
+                    native_trigger(rule, kind.as_str(), name, Some(w), None)
+                        .unwrap_or_else(|| w.saturating_sub(reserve))
+                }
+                TriggerRule::CodexLimit => w,
+            };
+            if let Some((t_watch, h)) = below_floor(native) {
+                problems.push(format!(
+                    "{file}: windows {key} {w} leaves headroom {h} tokens, below the {HEADROOM_FLOOR} floor (native trigger {native}, threshold {t_watch})"
+                ));
+            }
+            // Finding 3: teammate `name` runs another model, and `name` is
+            // also the model of a teammate on the same harness.
+            if let Some(t) = self.get(name).filter(|t| t.agent == kind) {
+                let model = t.model.as_deref().unwrap_or("");
+                let also_model = self
+                    .teammates
+                    .values()
+                    .any(|o| o.agent == kind && o.model.as_deref() == Some(name));
+                if model != name && also_model {
+                    problems.push(format!(
+                        "{file}: windows key {key} is teammate {name} (model {model}) and model {name}; set compact_window in {name}.md instead"
+                    ));
+                }
+            }
+        }
+        problems
     }
 
     /// Rule 4: both context bases exist, each holds only its own keys, no
@@ -679,8 +769,8 @@ impl Roster {
         for (name, base) in &self.bases {
             let file = format!("_base/{name}.md");
             for (key, set, owner) in [
-                ("windows", !base.windows.is_empty(), CONTEXT_WINDOWS_BASE),
-                ("in_place", !base.in_place.is_empty(), CONTEXT_WINDOWS_BASE),
+                ("windows", base.windows.is_some(), CONTEXT_WINDOWS_BASE),
+                ("in_place", base.in_place.is_some(), CONTEXT_WINDOWS_BASE),
                 ("messages", !base.messages.is_empty(), CONTEXT_MESSAGES_BASE),
             ] {
                 if set && name != owner {
@@ -692,19 +782,26 @@ impl Roster {
         }
         if let Some(base) = self.context_windows() {
             let file = format!("_base/{CONTEXT_WINDOWS_BASE}.md");
-            for key in base.windows.keys() {
-                let harness = key.split_once('/').map(|(h, _)| h);
-                if !harness.is_some_and(is_harness_name) {
+            for (key, set) in [
+                ("windows", base.windows.is_some()),
+                ("in_place", base.in_place.is_some()),
+            ] {
+                if !set {
                     problems.push(format!(
-                        "{file}: windows key {key} is not <harness>/<teammate or model> with a harness name"
+                        "{file} sets no {key}; a copy replaces the whole file, so keep both keys"
                     ));
                 }
             }
-            for entry in &base.in_place {
-                if !is_harness_name(entry) {
-                    problems.push(format!(
+            for entry in base.in_place.iter().flatten() {
+                match harness_kind(entry) {
+                    None => problems.push(format!(
                         "{file}: in_place entry {entry} is not a harness name"
-                    ));
+                    )),
+                    Some(kind) if !kind.capabilities().compaction.has_command() => problems
+                        .push(format!(
+                        "{file}: in_place entry {entry}: horch has no compact command for {entry}"
+                    )),
+                    Some(_) => {}
                 }
             }
         }
@@ -720,6 +817,9 @@ impl Roster {
                 .map(|p| (p, ""))
                 .collect();
             for (key, message) in &base.messages {
+                if message.trim().is_empty() {
+                    problems.push(format!("{file}: message {key} is empty"));
+                }
                 if message.contains(['\n', '\r']) {
                     problems.push(format!(
                         "{file}: message {key} has a newline; a newline submits the line early"
@@ -734,36 +834,119 @@ impl Roster {
     }
 }
 
-fn is_harness_name(name: &str) -> bool {
-    HarnessKind::ALL.iter().any(|k| k.as_str() == name)
+/// Warnings, not errors, of the context policy:
+/// - a `context-messages` base whose content differs from the built-in one
+///   (the briefings name its prefixes);
+/// - a `windows` key whose name is no teammate and no model of a teammate on
+///   its harness (an operator can add a model before its teammate).
+pub fn context_policy_warnings(roster: &Roster) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(windows) = roster.context_windows().and_then(|b| b.windows.as_ref()) {
+        for key in windows.keys() {
+            let Some((kind, name)) = split_window_key(key) else {
+                continue;
+            };
+            // An empty name or a harness without a window setting is
+            // already a check problem.
+            let lever = !matches!(
+                kind.capabilities().compaction.trigger,
+                TriggerRule::Unknown | TriggerRule::PerModel
+            );
+            let known = name.is_empty()
+                || !lever
+                || roster.get(name).is_some()
+                || roster
+                    .teammates
+                    .values()
+                    .any(|t| t.agent == kind && t.model.as_deref() == Some(name));
+            if !known {
+                out.push(format!(
+                    "_base/{CONTEXT_WINDOWS_BASE}.md: windows key {key} names no teammate and no model of a teammate on {kind}"
+                ));
+            }
+        }
+    }
+    let builtin = BUILTIN_BASES
+        .iter()
+        .find(|(name, _)| *name == CONTEXT_MESSAGES_BASE)
+        .and_then(|(name, text)| parse_base(name, text).ok());
+    if let (Some(loaded), Some(builtin), Some(path)) = (
+        roster.context_messages(),
+        builtin,
+        roster.base_origin(CONTEXT_MESSAGES_BASE),
+    ) {
+        if *loaded != builtin {
+            out.push(format!(
+                "_base/{CONTEXT_MESSAGES_BASE}.md: {} replaces the built-in protocol messages; the briefings name their prefixes, so delete the copy",
+                path.display()
+            ));
+        }
+    }
+    out
 }
 
-/// Rule 2: a teammate sets its compaction window in `env`, in inline
-/// `settings` JSON or in `args`. These bypass the operator check or do
-/// nothing; `compact_window` is the lever.
-fn window_outside_compact_window(t: &Teammate) -> Vec<String> {
-    const CLAUDE_WINDOW: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
-    const CODEX_LIMIT: &str = "model_auto_compact_token_limit";
-    let mut places = Vec::new();
-    if t.env.contains_key(CLAUDE_WINDOW) {
-        places.push(format!("env {CLAUDE_WINDOW}"));
+/// The harness and the name part of a `windows` key. None: the part before
+/// the first `/` is not a harness name.
+fn split_window_key(key: &str) -> Option<(HarnessKind, &str)> {
+    let (harness, name) = key.split_once('/')?;
+    Some((harness_kind(harness)?, name))
+}
+
+fn harness_kind(name: &str) -> Option<HarnessKind> {
+    HarnessKind::ALL
+        .iter()
+        .copied()
+        .find(|k| k.as_str() == name)
+}
+
+/// The threshold and headroom of `native` when the headroom is below
+/// `HEADROOM_FLOOR`. None: the floor holds.
+fn below_floor(native: u64) -> Option<(u64, u64)> {
+    let t_watch = threshold(BASE_THRESHOLD, Some(native));
+    let h = headroom(native, t_watch);
+    (h < HEADROOM_FLOOR).then_some((t_watch, h))
+}
+
+/// Whether a `settings:` value is inline JSON rather than a file path.
+fn is_inline(settings: &str) -> bool {
+    settings.trim_start().starts_with('{')
+}
+
+/// Rule 2: a teammate sets its compaction window in `env`, in its `settings`
+/// (inline JSON or a file) or in an `args` `-c` pair, with any of
+/// [`WINDOW_KEYS`]. These bypass the operator check or do nothing;
+/// `compact_window` is the lever.
+fn window_outside_compact_window(
+    t: &Teammate,
+    settings: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Vec<String> {
+    let mut places: Vec<String> = t
+        .env
+        .keys()
+        .filter(|k| WINDOW_KEYS.contains(&k.as_str()))
+        .map(|k| format!("env {k}"))
+        .collect();
+    let mut paths = Vec::new();
+    if let Some(settings) = settings {
+        json_paths(settings, "", &mut paths);
     }
-    let settings = t
-        .settings
-        .as_deref()
-        .filter(|s| s.trim_start().starts_with('{'))
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
-    if settings
-        .as_ref()
-        .and_then(|v| v.get("env"))
-        .and_then(|env| env.get(CLAUDE_WINDOW))
-        .is_some()
-    {
-        places.push(format!("settings env.{CLAUDE_WINDOW}"));
-    }
-    if t.args.iter().any(|a| a.contains(CODEX_LIMIT)) {
-        places.push(format!("args {CODEX_LIMIT}"));
-    }
+    paths.sort();
+    places.extend(
+        paths
+            .iter()
+            .filter(|p| {
+                p.rsplit('.')
+                    .next()
+                    .is_some_and(|k| WINDOW_KEYS.contains(&k))
+            })
+            .map(|p| format!("settings {p}")),
+    );
+    places.extend(
+        HarnessDefault::config_keys(&t.args)
+            .into_iter()
+            .filter(|k| WINDOW_KEYS.contains(k))
+            .map(|k| format!("args {k}")),
+    );
     places
         .into_iter()
         .map(|place| {

@@ -3,8 +3,9 @@ name: context-windows
 description: >
   The fleet's native auto-compact windows and in-place route as data. horch
   applies a window here only when the operator's own settings set none
-  (design.md §5). An operator overlay of this file changes no message.
-# Fleet default native auto-compact settings (plans_to_improve §2.3).
+  (docs/specs/context-policy.md). An operator overlay of this file changes
+  no message.
+# Fleet default native auto-compact settings (docs/specs/context-policy.md).
 # Key: <harness>/<teammate name> first, then <harness>/<model>.
 windows:
   claude/orchestrator: 300000
@@ -23,6 +24,11 @@ Claude `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, the Codex
 `model_auto_compact_token_limit`, the Prime `contextWindow`. A teammate's
 `compact_window` wins over this file. A value in the operator's own settings
 wins over both, and horch then applies nothing.
+
+A substituted launch keeps the original teammate's name and takes the
+fallback's harness and model. So a key `<fallback harness>/<teammate>` can
+apply to it, and a `compact_window` comes from the fallback's file; the
+recorded detail then names the fallback.
 
 `in_place` lists the harnesses that horch compacts in the same pane. Every
 other harness takes the fresh-session route.
@@ -43,6 +49,22 @@ other harness takes the fresh-session route.
 horch watches `threshold = min(300000, floor(0.8 x native trigger))`.
 When the native trigger is unknown, the threshold is 300000.
 `horch teammates --check` fails a window that leaves less than 20000 tokens between threshold and native trigger.
+It checks every `windows` key by itself, whichever teammate it reaches.
+
+## Check
+
+`horch teammates --check` also fails:
+
+- a key on a harness with no window setting (opencode, antigravity), or with
+  no name after the `/`;
+- a key `<harness>/<name>` where teammate `<name>` runs another model and
+  `<name>` is also the model of a teammate on that harness: set
+  `compact_window` in the teammate file instead;
+- an `in_place` entry for a harness that horch has no compact command for;
+- a copy that leaves out `windows` or `in_place`.
+
+It warns about a key whose name is no teammate and no model of a teammate on
+its harness.
 
 ## Override
 

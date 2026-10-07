@@ -353,17 +353,54 @@ impl Roster {
     /// The fleet window of `t` running `model`, with its 1-line source:
     /// `t.compact_window`, else `windows["<harness>/<teammate>"]`, else
     /// `windows["<harness>/<model>"]`. None: the harness default.
+    ///
+    /// A substituted launch (`routing::decision::merge`) carries the
+    /// fallback's `compact_window` under the original name; the detail then
+    /// names the fallback, whose file sets it.
     pub fn fleet_window(&self, t: &Teammate, model: &str) -> Option<(u64, String)> {
         let empty = BTreeMap::new();
-        let windows = self.context_windows().map_or(&empty, |b| &b.windows);
-        window::fleet_window(windows, t.agent.as_str(), &t.name, model, t.compact_window)
+        let windows = self
+            .context_windows()
+            .and_then(|b| b.windows.as_ref())
+            .unwrap_or(&empty);
+        let found =
+            window::fleet_window(windows, t.agent.as_str(), &t.name, model, t.compact_window);
+        match (found, self.compact_window_owner(t)) {
+            (Some((n, _)), Some(owner)) => Some((
+                n,
+                format!("teammate {owner} compact_window (fallback of {})", t.name),
+            )),
+            (found, _) => found,
+        }
+    }
+
+    /// The fallback whose `compact_window` `t` carries, when `t` is a merged
+    /// launch and its own file sets another value.
+    fn compact_window_owner<'a>(&'a self, t: &'a Teammate) -> Option<&'a str> {
+        let n = t.compact_window?;
+        if self.get(&t.name)?.compact_window == Some(n) {
+            return None;
+        }
+        t.fallbacks.iter().map(String::as_str).find(|f| {
+            self.get(f)
+                .is_some_and(|f| f.agent == t.agent && f.compact_window == Some(n))
+        })
     }
 
     /// Whether horch compacts `harness` in place (CTX-17): only when
-    /// `in_place` of `context-windows` names it.
+    /// `in_place` of `context-windows` names it and horch has a compact
+    /// command for it.
     pub fn compacts_in_place(&self, harness: HarnessKind) -> bool {
-        self.context_windows()
-            .is_some_and(|b| b.in_place.iter().any(|h| h == harness.as_str()))
+        let listed = self
+            .context_windows()
+            .and_then(|b| b.in_place.as_ref())
+            .is_some_and(|l| l.iter().any(|h| h == harness.as_str()));
+        listed && harness.capabilities().compaction.has_command()
+    }
+
+    /// The overlay file base `name` came from. None: the built-in.
+    pub(crate) fn base_origin(&self, name: &str) -> Option<&Path> {
+        self.base_origins.get(name).map(PathBuf::as_path)
     }
 
     fn rules_of(&self, base: &str) -> &[ExecRule] {

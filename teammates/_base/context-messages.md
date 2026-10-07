@@ -32,7 +32,9 @@ horch types these lines into a pane for the context watch.
 
 Placeholders: `{role}`, `{tokens}`, `{threshold}`, `{handoff}`, `{pre}`,
 `{post}`, `{step}`, `{reason}`, `{log}`. `horch teammates --check` fails any
-other placeholder, a missing key, and a message with a newline.
+other placeholder, a missing key, an empty message, and a message with a
+newline. horch replaces a newline in a placeholder value with a space, so
+each line stays 1 line.
 
 ## Prefixes the briefings name
 
@@ -45,3 +47,4 @@ other placeholder, a missing key, and a message with a newline.
 | `[horch] BLOCKED:` | starts `failed` |
 
 An operator does not need to copy this file; a change here lands with the matching briefing change.
+`horch teammates --check` warns when a copy differs from the built-in file.

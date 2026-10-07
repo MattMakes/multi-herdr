@@ -342,13 +342,16 @@ pub struct Base {
     #[serde(default)]
     pub defaults: Vec<HarnessDefault>,
     /// `_base/context-windows.md`: the fleet's native auto-compact settings,
-    /// keyed `<harness>/<teammate name>` or `<harness>/<model>`.
+    /// keyed `<harness>/<teammate name>` or `<harness>/<model>`. None: the
+    /// key is absent, which the check refuses in that base (an overlay
+    /// replaces the whole file); `windows: {}` is an explicit empty value.
     #[serde(default)]
-    pub windows: BTreeMap<String, u64>,
+    pub windows: Option<BTreeMap<String, u64>>,
     /// `_base/context-windows.md`: the harnesses horch compacts in place
-    /// (CTX-17). Every other harness takes the fresh-session route.
+    /// (CTX-17). Every other harness takes the fresh-session route. None: the
+    /// key is absent, as for `windows`.
     #[serde(default)]
-    pub in_place: Vec<String>,
+    pub in_place: Option<Vec<String>>,
     /// `_base/context-messages.md`: every line horch types for the context
     /// watch, by key. Rust only fills the placeholders.
     #[serde(default)]

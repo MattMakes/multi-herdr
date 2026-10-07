@@ -428,3 +428,371 @@ fn check_names_a_missing_context_base() {
         );
     }
 }
+
+// ─── u3 review findings (ai_docs/plans/wave2/w1/u3-review.md) ───────────────
+
+fn shipped(rel: &str) -> String {
+    std::fs::read_to_string(teammates_dir().join(rel)).unwrap()
+}
+
+/// The shipped `_base/context-windows.md` with `extra` lines under `windows:`.
+fn windows_with(extra: &str) -> String {
+    shipped("_base/context-windows.md").replace("windows:\n", &format!("windows:\n{extra}"))
+}
+
+/// The shipped `_base/context-messages.md` with message `key` set to `value`.
+fn messages_with(key: &str, value: &str) -> String {
+    let text = shipped("_base/context-messages.md");
+    let old = text
+        .lines()
+        .find(|l| l.starts_with(&format!("  {key}: ")))
+        .unwrap()
+        .to_string();
+    text.replace(&old, &format!("  {key}: {value}"))
+}
+
+fn all_vars() -> BTreeMap<&'static str, &'static str> {
+    BTreeMap::from([
+        ("role", "sonnet-1"),
+        ("tokens", "311225"),
+        ("threshold", "300000"),
+        ("handoff", "ai_docs/handoffs/sonnet-1-whats-next.md"),
+        ("pre", "311225"),
+        ("post", "20000"),
+        ("step", "send"),
+        ("reason", "pane closed"),
+        ("log", "ai_docs/x.log"),
+    ])
+}
+
+fn warnings(roster: &Roster) -> Vec<String> {
+    horch_core::roster::validation::context_policy_warnings(roster)
+}
+
+/// Finding 1 (R5, R4): every `windows` key is held to the floor by itself,
+/// also a `<fallback harness>/<teammate>` key and a model no teammate runs.
+#[test]
+fn ctx_08_check_holds_every_windows_key_to_the_floor() {
+    let dir = roster_dir(&[(
+        "_base/context-windows.md",
+        windows_with("  claude/codex-sol: 50000\n  claude/haiku: 100000\n"),
+    )]);
+    let roster = load(dir.path());
+    assert_eq!(
+        problems_with(&roster, &["headroom"]),
+        vec![
+            "_base/context-windows.md: windows claude/codex-sol 50000 leaves headroom 3400 tokens, \
+             below the 20000 floor (native trigger 17000, threshold 13600)"
+                .to_string(),
+            "_base/context-windows.md: windows claude/haiku 100000 leaves headroom 13400 tokens, \
+             below the 20000 floor (native trigger 67000, threshold 53600)"
+                .to_string(),
+        ]
+    );
+}
+
+/// Finding 2a (R1): a blank message fails the check.
+#[test]
+fn check_refuses_a_blank_context_message() {
+    for (key, value) in [("failed", "\"\""), ("resume", "\"   \"")] {
+        let dir = roster_dir(&[("_base/context-messages.md", messages_with(key, value))]);
+        assert_eq!(
+            problems_with(&load(dir.path()), &[]),
+            vec![format!("_base/context-messages.md: message {key} is empty")],
+            "{key}"
+        );
+    }
+}
+
+/// Finding 2b (R2): a copy of the messages base that differs from the
+/// built-in one is a warning, not a problem. The shipped file is quiet.
+#[test]
+fn context_policy_warnings_name_a_copied_messages_base() {
+    let text = messages_with(
+        "failed",
+        "\"Compaction of {role} failed at step {step}: {reason}. Log: {log}.\"",
+    );
+    let dir = roster_dir(&[("_base/context-messages.md", text)]);
+    let roster = load(dir.path());
+    assert!(
+        problems_with(&roster, &[]).is_empty(),
+        "{:?}",
+        roster.check()
+    );
+    let path = dir.path().join("_base/context-messages.md");
+    assert_eq!(
+        warnings(&roster),
+        vec![format!(
+            "_base/context-messages.md: {} replaces the built-in protocol messages; the \
+             briefings name their prefixes, so delete the copy",
+            path.display()
+        )]
+    );
+
+    assert!(warnings(&builtin()).is_empty());
+    assert!(warnings(&load(&teammates_dir())).is_empty());
+}
+
+/// Finding 3 (R6): a windows key that is both a teammate (on another model)
+/// and a model fails the check.
+#[test]
+fn check_refuses_a_windows_key_with_two_readings() {
+    let opus = shipped("opus.md").replace("\nmodel: opus\n", "\nmodel: sonnet\n");
+    assert!(opus.contains("\nmodel: sonnet\n"));
+    let dir = roster_dir(&[("opus.md", opus)]);
+    assert_eq!(
+        problems_with(&load(dir.path()), &["windows key"]),
+        vec![
+            "_base/context-windows.md: windows key claude/opus is teammate opus (model sonnet) \
+             and model opus; set compact_window in opus.md instead"
+                .to_string()
+        ]
+    );
+    assert!(problems_with(&builtin(), &["windows key"]).is_empty());
+}
+
+/// Finding 4 (R8): a key on a harness with no window setting, or with an
+/// empty name, fails; a key that names no teammate and no model warns.
+#[test]
+fn check_refuses_dead_windows_keys() {
+    let dir = roster_dir(&[(
+        "_base/context-windows.md",
+        windows_with(
+            "  claude/sonet: 150000\n  opencode/opencode/big-pickle: 100000\n  antigravity/x: 1\n  claude/: 5\n",
+        ),
+    )]);
+    let roster = load(dir.path());
+    assert_eq!(
+        problems_with(&roster, &["windows key"]),
+        vec![
+            "_base/context-windows.md: windows key antigravity/x does nothing on harness \
+             antigravity: it has no window setting"
+                .to_string(),
+            "_base/context-windows.md: windows key claude/ has no teammate or model name"
+                .to_string(),
+            "_base/context-windows.md: windows key opencode/opencode/big-pickle does nothing on \
+             harness opencode: it has no window setting"
+                .to_string(),
+        ]
+    );
+    assert!(problems_with(&roster, &["sonet"]).is_empty());
+    assert_eq!(
+        warnings(&roster),
+        vec![
+            "_base/context-windows.md: windows key claude/sonet names no teammate and no model \
+             of a teammate on claude"
+                .to_string()
+        ]
+    );
+    assert!(warnings(&builtin()).is_empty());
+}
+
+/// Finding 5 (R7): `in_place` refuses a harness without a compact command,
+/// and the accessor never routes it in place.
+#[test]
+fn check_refuses_in_place_without_a_compact_command() {
+    let text = shipped("_base/context-windows.md").replace(
+        "in_place: [claude, codex]",
+        "in_place: [claude, codex, antigravity, none]",
+    );
+    let dir = roster_dir(&[("_base/context-windows.md", text)]);
+    let roster = load(dir.path());
+    assert_eq!(
+        problems_with(&roster, &["in_place"]),
+        vec![
+            "_base/context-windows.md: in_place entry antigravity: horch has no compact command \
+             for antigravity"
+                .to_string(),
+            "_base/context-windows.md: in_place entry none: horch has no compact command for none"
+                .to_string(),
+        ]
+    );
+    assert!(roster.compacts_in_place(HarnessKind::Claude));
+    for kind in [HarnessKind::Antigravity, HarnessKind::None] {
+        assert!(!roster.compacts_in_place(kind), "{kind:?}");
+    }
+}
+
+/// Finding 6 (R9): a newline in a value never reaches the rendered line.
+#[test]
+fn context_message_renders_one_line_whatever_the_values() {
+    let mut vars = all_vars();
+    vars.insert("reason", "exit 1\r\nstderr: boom");
+    assert_eq!(
+        context_message(&builtin(), "failed", &vars).unwrap(),
+        "[horch] BLOCKED: Compaction of sonnet-1 failed at step send: exit 1  stderr: boom. \
+         Log: ai_docs/x.log."
+    );
+}
+
+/// Finding 7 (R3): a windows base that leaves out a key fails the check; an
+/// explicit empty value stays valid.
+#[test]
+fn check_refuses_a_windows_base_without_both_keys() {
+    let dir = roster_dir(&[(
+        "_base/context-windows.md",
+        "---\nname: context-windows\nin_place: [claude]\n---\nbody\n".into(),
+    )]);
+    assert_eq!(
+        problems_with(&load(dir.path()), &[]),
+        vec![
+            "_base/context-windows.md sets no windows; a copy replaces the whole file, so keep \
+             both keys"
+                .to_string()
+        ]
+    );
+    let dir = roster_dir(&[(
+        "_base/context-windows.md",
+        "---\nname: context-windows\nwindows:\n  claude/opus: 200000\n---\nbody\n".into(),
+    )]);
+    assert_eq!(
+        problems_with(&load(dir.path()), &[]),
+        vec![
+            "_base/context-windows.md sets no in_place; a copy replaces the whole file, so keep \
+             both keys"
+                .to_string()
+        ]
+    );
+    let dir = roster_dir(&[(
+        "_base/context-windows.md",
+        "---\nname: context-windows\nwindows: {}\nin_place: []\n---\nbody\n".into(),
+    )]);
+    assert!(problems_with(&load(dir.path()), &[]).is_empty());
+}
+
+/// Finding 8 (R10, R15): rule 2 reads a settings file and every window key.
+#[test]
+fn check_refuses_every_window_key_in_env_and_a_settings_file() {
+    let settings_dir = tempfile::tempdir().unwrap();
+    let settings = settings_dir.path().join("win.json");
+    std::fs::write(
+        &settings,
+        r#"{"statusLine": {"type": "command", "command": "true"}, "env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "100000"}}"#,
+    )
+    .unwrap();
+    let dir = roster_dir(&[
+        (
+            "pct.md",
+            teammate_file(
+                "pct",
+                "claude",
+                "env:\n  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: \"50\"\n",
+            ),
+        ),
+        (
+            "winfile.md",
+            teammate_file(
+                "winfile",
+                "claude",
+                &format!("settings: {}\n", settings.display()),
+            ),
+        ),
+        (
+            "inline.md",
+            teammate_file(
+                "inline",
+                "claude",
+                "settings: '{\"statusLine\": {\"type\": \"command\", \"command\": \"true\"}, \"autoCompactWindow\": 100000}'\n",
+            ),
+        ),
+    ]);
+    let roster = load(dir.path());
+    assert_eq!(
+        problems_with(&roster, &["set the compaction window"]),
+        vec![
+            "inline: set the compaction window with compact_window, not settings autoCompactWindow"
+                .to_string(),
+            "pct: set the compaction window with compact_window, not env \
+             CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
+                .to_string(),
+            "winfile: set the compaction window with compact_window, not settings \
+             env.CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+                .to_string(),
+        ]
+    );
+}
+
+/// Nit 9 (R14): after a substitution the detail names the fallback's file.
+#[test]
+fn fleet_window_names_the_fallback_after_a_substitution() {
+    let opus =
+        shipped("opus.md").replace("\nmodel: opus\n", "\nmodel: opus\ncompact_window: 180000\n");
+    let dir = roster_dir(&[("opus.md", opus)]);
+    let roster = load(dir.path());
+    let original = roster.get("codex-sol").unwrap();
+    assert_eq!(original.compact_window, None);
+    let merged = horch_core::routing::decision::merge(original, roster.get("opus").unwrap());
+    assert_eq!(
+        roster.fleet_window(&merged, "opus"),
+        Some((
+            180_000,
+            "teammate opus compact_window (fallback of codex-sol)".into()
+        ))
+    );
+    assert_eq!(
+        roster.fleet_window(roster.get("opus").unwrap(), "opus"),
+        Some((180_000, "teammate opus compact_window".into()))
+    );
+}
+
+/// Inline settings JSON (outside the review): a JSON object passes the
+/// settings check, a broken one fails, a missing file still fails.
+#[test]
+fn check_accepts_inline_settings_json() {
+    let dir = roster_dir(&[
+        (
+            "good.md",
+            teammate_file(
+                "good",
+                "claude",
+                "settings: '{\"statusLine\": {\"type\": \"command\", \"command\": \"true\"}}'\n",
+            ),
+        ),
+        (
+            "nostatus.md",
+            teammate_file("nostatus", "claude", "settings: '{\"env\": {}}'\n"),
+        ),
+        (
+            "broken.md",
+            teammate_file("broken", "claude", "settings: '{\"env\": '\n"),
+        ),
+        (
+            "nofile.md",
+            teammate_file("nofile", "claude", "settings: /no/such/settings.json\n"),
+        ),
+    ]);
+    let roster = load(dir.path());
+    assert!(
+        problems_with(&roster, &["good:"]).is_empty(),
+        "{:?}",
+        roster.check()
+    );
+    assert_eq!(
+        problems_with(&roster, &["nostatus:"]),
+        vec!["nostatus: inline settings define no statusLine, so this pane would be the only one in the fleet without one".to_string()]
+    );
+    assert_eq!(
+        problems_with(&roster, &["broken:"]),
+        vec!["broken: inline settings are not a JSON object".to_string()]
+    );
+    assert_eq!(
+        problems_with(&roster, &["nofile:"]),
+        vec![
+            "nofile: settings file '/no/such/settings.json' is missing or not valid JSON"
+                .to_string()
+        ]
+    );
+}
+
+/// Q1 (R13): `horch fleet sol` runs orchestrator-codex on gpt-5.6-sol, and
+/// it takes that model's window; Codex has no orchestrator key.
+#[test]
+fn sol_orchestrator_takes_its_model_window() {
+    let roster = builtin();
+    let mut orchestrator = roster.get("orchestrator-codex").unwrap().clone();
+    orchestrator.model = Some("gpt-5.6-sol".into());
+    assert_eq!(
+        roster.fleet_window(&orchestrator, "gpt-5.6-sol"),
+        Some((200_000, "context-policy windows codex/gpt-5.6-sol".into()))
+    );
+}
