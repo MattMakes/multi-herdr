@@ -39,8 +39,7 @@ func before_test() -> void:
 public void BeforeTest()
 {
     var scene = GD.Load<PackedScene>("res://scenes/player.tscn");
-    _player = AutoFree(scene.Instantiate<Player>());
-    AddChild(_player);
+    _player = AddNode(scene.Instantiate<Player>());   // adds to the test scene tree, frees after the test
 }
 ```
 
@@ -79,15 +78,13 @@ func test_health_emits_signal() -> void:
 
 ```csharp
 [TestCase]
-public async GdUnitAwaiter HealthEmitsSignal()
+public async Task HealthEmitsSignal()
 {
-    var monitor = MonitorSignals(_health);
+    var signal = AssertSignal(_health).StartMonitoring();
     _health.TakeDamage(10);
 
-    AssertSignal(monitor).IsEmitted("health_changed");
-    AssertSignal(monitor).IsEmitted("health_changed").WithArgs(100, 90);
-    AssertSignal(monitor).IsNotEmitted("died");
-    await Task.CompletedTask;
+    await signal.IsEmitted("HealthChanged", 100, 90).WithTimeout(500);
+    await signal.IsNotEmitted("Died").WithTimeout(500);
 }
 ```
 
@@ -125,19 +122,20 @@ func test_player_uses_health_component() -> void:
     verify(mock_health).take_damage(25)
 ```
 
-#### gdUnit4 (C#) — `Mock<T>()`
+#### gdUnit4 (C#) — real object or hand-written stub
+
+`gdUnit4.api` 5.0.0 has no `Mock<T>()` or `Verify`. Inject a real component and assert its state, or write a stub class by hand, as `StubAudio` does in the dependency-injection skill.
 
 ```csharp
 [TestCase]
 public void PlayerUsesHealthComponent()
 {
-    var mockHealth = Mock<HealthComponent>();
-    mockHealth.MockProperty(h => h.CurrentHealth, 75);
+    var health = AutoFree(new HealthComponent { CurrentHealth = 75 });
 
-    _player.HealthComponent = mockHealth;
+    _player.HealthComponent = health;
     _player.TakeHit(25);
 
-    Verify(mockHealth).TakeDamage(25);
+    AssertThat(health.CurrentHealth).IsEqual(50);
 }
 ```
 
@@ -171,10 +169,10 @@ func test_tween_completes() -> void:
 
 ```csharp
 [TestCase(Timeout = 1000)]
-public async GdUnitAwaiter TweenCompletes()
+public async Task TweenCompletes()
 {
     _player.StartMoveTween();
-    await ISceneRunner.SimulateFrames(30);
+    await _runner.SimulateFrames(30);
     AssertThat(_player.Position).IsEqual(new Vector2(100, 0));
 }
 ```

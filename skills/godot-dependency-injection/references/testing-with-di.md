@@ -84,10 +84,12 @@ public partial class StubAudio : Node
 ```
 
 ```csharp
+using System.Threading.Tasks;
 using GdUnit4;
 using static GdUnit4.Assertions;
 
 [TestSuite]
+[RequireGodotRuntime]   // the tests create Godot nodes, so they need the Godot runtime
 public partial class HealthComponentTest
 {
     private HealthComponent _health = null!;
@@ -122,13 +124,14 @@ public partial class HealthComponentTest
     }
 
     [TestCase]
-    public void TakeDamage_AtZeroHealth_EmitsDiedSignal()
+    public async Task TakeDamage_AtZeroHealth_EmitsDiedSignal()
     {
-        var signalAssert = AssertSignal(_health).IsEmitted(nameof(HealthComponent.SignalName.Died));
+        var signal = AssertSignal(_health).StartMonitoring();
 
         _health.TakeDamage(100);
 
-        signalAssert.WithTimeout(100);
+        // Awaiting WithTimeout makes the test fail when Died does not come within 100 ms
+        await signal.IsEmitted(nameof(HealthComponent.SignalName.Died)).WithTimeout(100);
     }
 }
 ```

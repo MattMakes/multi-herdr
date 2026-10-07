@@ -159,3 +159,35 @@ Not fixed (outside the files of this unit): `skills/godot-testing/references/tes
 still uses `MonitorSignals`, `GdUnitAwaiter` and `.WithArgs`. The signal block of
 `testing-with-di.md` compiles, but its test does not await the task from
 `WithTimeout`, so it asserts nothing.
+
+## 2026-10-07 (gdUnit4Net timeout)
+
+Cause: before a run, the gdUnit4Net adapter rebuilds the Godot project and
+stops the rebuild at its `CompileProcessTimeout`. The adapter documents a
+default of 20 seconds, and the earlier failed run hit its limit under CPU load.
+The run then ends with `Rebuild Godot Project ends with exit code: 137`. A
+scratch project with `<CompileProcessTimeout>1000</CompileProcessTimeout>` in
+the `<GdUnit4>` element of `.runsettings` reproduced that exit 137 and the
+message `ACTION REQUIRED: To increase the compilation timeout, set the
+'CompileProcessTimeout' property`. So the key works.
+
+Fix: `scripts/godot/live_csharp.sh` writes
+`<GdUnit4><CompileProcessTimeout>300000</CompileProcessTimeout></GdUnit4>` to
+its `.runsettings` (300 seconds). It does not retry.
+
+Loaded runs: 18 `yes > /dev/null` processes (1 per core, stopped by their own
+PIDs afterwards) ran in the background of each full run of the script.
+- Run 1: exit 0, 167 seconds, 15 PASS lines, no FAIL.
+- Run 2: exit 0, 39 seconds, 15 PASS lines, no FAIL.
+Not shown: the old setting failing under this same load. The reproduction above
+is the proof that the key controls the timeout.
+
+Skill fixes in this unit:
+- `testing-patterns.md`: `MonitorSignals(_health)` and `AssertSignal(monitor)` became `AssertSignal(_health).StartMonitoring()`; `public async GdUnitAwaiter` became `public async Task` (2 tests); `IsEmitted("health_changed").WithArgs(100, 90)` became `IsEmitted("HealthChanged", 100, 90).WithTimeout(500)`; `IsNotEmitted("died")` became `IsNotEmitted("Died").WithTimeout(500)`; `ISceneRunner.SimulateFrames(30)` became `_runner.SimulateFrames(30)`; `AutoFree` plus `AddChild(_player)` became `AddNode(...)`; the `Mock<T>()`, `MockProperty` and `Verify` block became an injected real component with a state assertion.
+- `testing-with-di.md`: the Died signal test is `async Task`, starts monitoring, and awaits `IsEmitted(...).WithTimeout(100)`, so it fails when the signal does not come. The suite gets `[RequireGodotRuntime]`: without it the test host crashes at the first `new HealthComponent()` (a Godot node outside the engine).
+- All 6 C# blocks of the 2 files compile against `gdUnit4.api` 5.0.0 in the unit J scratch project.
+
+Proof of the DI signal test (scratch project, the 2 C# blocks of
+`testing-with-di.md` taken verbatim, plus a stub `HealthComponent`):
+- Stub that emits `Died` in `TakeDamage(100)`: 3 passed, 0 failed.
+- Stub that never emits `Died`: 1 failed (`Expecting do emitting signal: "Died(<Empty>)"`), 2 passed.

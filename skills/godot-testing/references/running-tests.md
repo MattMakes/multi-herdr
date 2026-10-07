@@ -87,6 +87,12 @@ gd -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessM
   .NET 10 with `net8.0`) needs `DOTNET_ROLL_FORWARD=Major` for `dotnet test`,
   or the test host stops; proof: `scripts/godot/live_csharp.sh` exports it
   and its 3 gdUnit4Net steps passed on .NET 10.0.101.
+  The adapter rebuilds the Godot project before a run and stops the rebuild at
+  its `CompileProcessTimeout`, which ends the run with `Rebuild Godot Project
+  ends with exit code: 137`; add `<GdUnit4><CompileProcessTimeout>300000</CompileProcessTimeout></GdUnit4>`
+  (milliseconds) to `.runsettings` on a slow or busy host; proof:
+  `scripts/godot/live_csharp.sh` sets it and passed 2 runs with 18 busy processes
+  (`docs/live-checks/godot-csharp.md`, section `gdUnit4Net timeout`).
 - gdUnit4 `-c` and GUT `-gjunit_xml_file` come from the addon help text.
   proof: not run (needs the addons in a project).
 

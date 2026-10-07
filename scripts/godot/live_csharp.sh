@@ -403,6 +403,9 @@ cat > counter.tscn <<'EOF'
 [node name="Counter" type="Node"]
 script = ExtResource("1")
 EOF
+# The adapter rebuilds the Godot project before each run and kills the rebuild at its
+# CompileProcessTimeout (a short default), which ends the run with exit 137 under CPU
+# load. 300000 ms (5 minutes) is the documented runsettings key, set high.
 cat > .runsettings <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <RunSettings>
@@ -413,6 +416,9 @@ cat > .runsettings <<EOF
       <GODOT_BIN>$godot</GODOT_BIN>
     </EnvironmentVariables>
   </RunConfiguration>
+  <GdUnit4>
+    <CompileProcessTimeout>300000</CompileProcessTimeout>
+  </GdUnit4>
 </RunSettings>
 EOF
 # The test host targets net8.0 and this host has only the .NET 10 runtime.
