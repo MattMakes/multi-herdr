@@ -29,3 +29,19 @@ Steps: `godot-dotnet`, `dotnet-build`, `csharp-scene`, `csharp-signal`,
 
 The operator runs `scripts/godot/live_csharp.sh` on a host that has Godot
 .NET 4.7 and `dotnet`, then appends the table of that run to this file.
+
+## 2026-10-07
+
+| Step | Claim it proves | Tool version | Result | Evidence |
+|------|-----------------|--------------|--------|----------|
+| godot-dotnet | A Godot .NET 4.7 build is installed. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | `PASS godot-dotnet 4.7.2.stable.mono.official.ed1daf0bf` |
+| dotnet-build | The C# project builds with `Godot.NET.Sdk/4.7.2`. | dotnet 10.0.101 | PASS | `dotnet build` exit 0. |
+| csharp-scene | A C# scene runs headless. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | `LIVE_CS_SCENE` line in the run log. |
+| csharp-signal | A C# signal fires and the handler runs. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | `LIVE_CS_SIGNAL 7` line in the run log. |
+| csharp-errors | The run log has no script errors. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | The script prints nothing for this step when it finds no `SCRIPT ERROR` or `No loader found` line. None was printed. |
+
+Host: macOS 26.5.1, arm64, Godot .NET 4.7.2.stable.mono.official.ed1daf0bf,
+dotnet SDK 10.0.101. SHA-512 of `Godot_v4.7.2-stable_mono_macos.universal.zip`
+matched its line in `SHA512-SUMS.txt`. `codesign --verify --deep --strict`
+passed, and `spctl --assess --type execute` accepted the app (Notarized
+Developer ID, Prehensile Tales B.V.).
