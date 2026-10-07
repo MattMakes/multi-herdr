@@ -154,7 +154,7 @@ func test_tween_completes() -> void:
     assert_eq(_player.position, Vector2(100, 0))
 
     # Wait a number of frames
-    await wait_frames(10)
+    await wait_process_frames(10)
     assert_true(_player.tween_finished)
 ```
 

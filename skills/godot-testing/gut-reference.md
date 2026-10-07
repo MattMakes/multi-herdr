@@ -204,7 +204,7 @@ func test_animation_finishes() -> void:
 ```gdscript
 func test_physics_step() -> void:
     _body.apply_force(Vector2(100, 0))
-    await wait_frames(5)
+    await wait_physics_frames(5)
     assert_gt(_body.velocity.x, 0)
 ```
 

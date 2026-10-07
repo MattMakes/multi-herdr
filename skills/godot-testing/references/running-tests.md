@@ -106,10 +106,14 @@ jobs:
 
       - name: Run GUT tests
         # GUT exits 0 when a test script does not parse; fail on the log too.
+        # No pipe and no PIPESTATUS (bash only, empty in zsh); `if` because
+        # `! grep` does not stop a `-e` shell.
         run: |
-          godot --headless -s addons/gut/gut_cmdln.gd -gdir=res://tests -ginclude_subdirs -gexit -glog=2 -gdisable_colors 2>&1 | tee gut.log
-          test "${PIPESTATUS[0]}" -eq 0
-          ! grep -E 'SCRIPT ERROR|Nothing was run' gut.log
+          code=0
+          godot --headless -s addons/gut/gut_cmdln.gd -gdir=res://tests -ginclude_subdirs -gexit -glog=2 -gdisable_colors > gut.log 2>&1 || code=$?
+          cat gut.log
+          if grep -E 'SCRIPT ERROR|Parse Error|Nothing was run' gut.log; then exit 1; fi
+          test "$code" -eq 0
 
   test-gdunit4:
     name: gdUnit4 Tests (GDScript + C#)

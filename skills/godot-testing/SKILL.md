@@ -152,3 +152,4 @@ Avoid testing things that add noise without catching real bugs:
 - [references/golden-state-tests.md](references/golden-state-tests.md) — golden JSON state files and how to update them
 - [references/budgets-leaks-and-network-tests.md](references/budgets-leaks-and-network-tests.md) — performance budgets, orphan checks, multiplayer tests in one process
 - Runner exit codes and log checks for GUT 9.7.1 and gdUnit4 6.2.1: [references/running-tests.md](references/running-tests.md) and **godot-build-verify** `references/commands.md`
+- [references/headless-gut.md](references/headless-gut.md) — GUT 9.7.1 install without the editor, `.gutconfig.json`, a run script that checks the log (bash and zsh), autoloads in tests, `wait_physics_frames` and `wait_process_frames`
