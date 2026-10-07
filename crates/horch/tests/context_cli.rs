@@ -416,3 +416,175 @@ fn ctx_27_no_api_key_in_context_policy_code() {
         assert!(!body.contains(name), "Inherited::from_env reads {name}");
     }
 }
+
+/// The keys of 1 JSON object, in the order the text has them (serde_json
+/// sorts a `Value`'s keys, so a `Value` cannot show the order), and the keys
+/// of its `last_compaction` object.
+struct Keys(Vec<String>, Option<Vec<String>>);
+
+impl<'de> serde::Deserialize<'de> for Keys {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Keys, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Keys;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(self, mut m: M) -> Result<Keys, M::Error> {
+                let (mut keys, mut mark) = (Vec::new(), None);
+                while let Some(k) = m.next_key::<String>()? {
+                    if k == "last_compaction" {
+                        mark = m.next_value::<Option<Keys>>()?.map(|k| k.0);
+                    } else {
+                        m.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                    keys.push(k);
+                }
+                Ok(Keys(keys, mark))
+            }
+        }
+        d.deserialize_map(Visit)
+    }
+}
+
+/// CTX-24: `horch context --json` on the fixture home, plus a pi session
+/// whose last entry is a compaction: every key in order, unknown values
+/// `null`. No herdr answers (`PATH` has none), so `pane` and `pane_status`
+/// are `null` and the run still exits 0 with an empty stderr.
+#[test]
+fn ctx_24_json_has_every_key_and_nulls() {
+    let w = World::new();
+    let ledger = horch_core::execution::records::Ledger::for_project(w.root.join("state"), PROJECT);
+    let mut records: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(ledger.path()).unwrap()).unwrap();
+    let mut pi = record(
+        "rec-pi",
+        "pi-1",
+        "pi",
+        "pi",
+        "aaaaaaaa-0000-4000-8000-000000000002",
+    );
+    pi["model"] = "ollama/qwen3.8".into();
+    records.push(pi);
+    std::fs::write(ledger.path(), serde_json::to_string(&records).unwrap()).unwrap();
+
+    let out = w.stdout(&["context", "--json"], &[]);
+    let keys: Vec<Keys> = serde_json::from_str(&out).unwrap();
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    let want = [
+        "role",
+        "record_id",
+        "harness",
+        "model",
+        "session_id",
+        "transcript",
+        "pane",
+        "pane_status",
+        "tokens",
+        "provisional",
+        "pending",
+        "window",
+        "native_trigger",
+        "native_setting",
+        "native_source",
+        "native_detail",
+        "threshold",
+        "last_compaction",
+        "state",
+        "reason",
+        "route",
+        "handoff",
+    ];
+    let roles: Vec<&str> = rows.iter().map(|r| r["role"].as_str().unwrap()).collect();
+    assert_eq!(
+        roles,
+        [
+            "orchestrator",
+            "codex-sol-1",
+            "opus-1",
+            "pi-1",
+            "sonnet-1",
+            "sonnet-2"
+        ],
+        "{out}"
+    );
+    for k in &keys {
+        assert_eq!(k.0, want, "{out}");
+        if let Some(mark) = &k.1 {
+            assert_eq!(mark, &["at", "trigger", "pre_tokens", "post_tokens"]);
+        }
+    }
+    assert_eq!(keys.iter().filter(|k| k.1.is_some()).count(), 3, "{out}");
+    let row = |role: &str| rows.iter().find(|r| r["role"] == role).unwrap();
+    for r in &rows {
+        assert_eq!(r["pane"], serde_json::Value::Null, "{r}");
+        assert_eq!(r["pane_status"], serde_json::Value::Null, "{r}");
+        let handoff = format!(
+            "{PROJECT}/ai_docs/handoffs/{}-whats-next.md",
+            r["role"].as_str().unwrap()
+        );
+        assert_eq!(r["handoff"], handoff.as_str(), "{r}");
+    }
+
+    let s1 = row("sonnet-1");
+    assert_eq!(s1["record_id"], "rec-s1");
+    assert_eq!(s1["harness"], "claude");
+    assert_eq!(s1["session_id"], OVER);
+    assert!(s1["transcript"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!("{OVER}.jsonl")));
+    assert_eq!(s1["tokens"], 311_225);
+    assert_eq!(s1["provisional"], false);
+    assert_eq!(s1["pending"], false);
+    assert_eq!(s1["window"], 1_000_000);
+    assert_eq!(s1["native_trigger"], 467_000);
+    assert_eq!(s1["native_setting"], 500_000);
+    assert_eq!(s1["native_source"], "operator");
+    assert!(s1["native_detail"]
+        .as_str()
+        .unwrap()
+        .ends_with("/.claude/settings.json"));
+    assert_eq!(s1["threshold"], 300_000);
+    assert_eq!(s1["last_compaction"], serde_json::Value::Null);
+    assert_eq!(s1["state"], "over");
+    assert_eq!(s1["reason"], serde_json::Value::Null);
+    assert_eq!(s1["route"], "in-place");
+
+    let o1 = row("opus-1");
+    assert_eq!(o1["tokens"], 10_486);
+    assert_eq!(o1["provisional"], true);
+    assert_eq!(o1["pending"], true);
+    assert_eq!(o1["last_compaction"]["at"], "2026-09-20T10:05:00.000Z");
+    assert_eq!(o1["last_compaction"]["post_tokens"], 10_486);
+
+    let pi = row("pi-1");
+    assert_eq!(pi["harness"], "pi");
+    assert_eq!(pi["tokens"], serde_json::Value::Null);
+    assert_eq!(pi["pending"], true);
+    assert_eq!(pi["provisional"], false);
+    assert_eq!(pi["last_compaction"]["pre_tokens"], 201_500);
+    assert_eq!(pi["last_compaction"]["trigger"], serde_json::Value::Null);
+    assert_eq!(
+        pi["last_compaction"]["post_tokens"],
+        serde_json::Value::Null
+    );
+    assert_eq!(pi["route"], "fresh");
+
+    let s2 = row("sonnet-2");
+    assert_eq!(s2["state"], "no-transcript");
+    assert_eq!(s2["transcript"], serde_json::Value::Null);
+    assert_eq!(s2["tokens"], serde_json::Value::Null);
+    assert_eq!(s2["provisional"], serde_json::Value::Null);
+    assert_eq!(s2["pending"], serde_json::Value::Null);
+    assert_eq!(s2["last_compaction"], serde_json::Value::Null);
+    assert_eq!(s2["reason"], "no transcript found");
+
+    let codex = row("codex-sol-1");
+    assert_eq!(codex["native_setting"], 200_000);
+    assert_eq!(codex["native_source"], "fleet");
+    assert_eq!(
+        codex["native_detail"],
+        "context-policy windows codex/gpt-5.6-sol"
+    );
+}

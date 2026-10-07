@@ -4,8 +4,10 @@
 //! The rules live in `horch_core::compaction` (design §6.7, review finding
 //! 8). This module gathers the inputs of 1 row ([`build_row`]), calls the
 //! rules and prints. `horch compact` and the `horch note` check build their
-//! rows with the same function. Text mode makes no herdr call.
+//! rows with the same function. Text mode makes no herdr call; `--json`
+//! (CTX-24) makes 1 `herdr pane list` call per workspace of its rows.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -22,12 +24,13 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::telemetry::context::{read_current, Reading};
 use horch_core::telemetry::readers::Unreadable;
 use horch_core::usage::Locations;
+use horch_core::workspace::client::WorkspaceClient;
+use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::model::Pane;
+use serde::Serialize;
 
 /// What `--over` prints when no row is over, requested or lost.
 const NONE_OVER: &str = "no session is over its threshold";
-
-/// What `--json` prints in slice 1 (u10 replaces it).
-const JSON_LATER: &str = "horch context: --json lands in slice 2";
 
 /// Everything 1 row is built from. Tests fill it from a temp state dir, a
 /// temp ledger and a fixture home.
@@ -78,9 +81,19 @@ impl Row {
         self.job_dir.join(LOG_FILE)
     }
 
-    /// The `reasons:` text of a row that has no number (CTX-04).
+    /// The `reasons:` line of a row that has no number (CTX-04).
     pub fn reason(&self) -> Option<String> {
-        let text = match (&self.state, &self.job, &self.reading) {
+        let text = self.reason_text()?;
+        Some(format!(
+            "{}: {}: {text}",
+            self.record.role,
+            self.state.as_str()
+        ))
+    }
+
+    /// The reason of [`Row::reason`] without the role and the state.
+    fn reason_text(&self) -> Option<String> {
+        Some(match (&self.state, &self.job, &self.reading) {
             (RowState::CompactLost, JobLiveness::Lost { step }, _) => format!(
                 "the compaction job is lost at step {step}; log {}",
                 self.log_path().display()
@@ -95,12 +108,7 @@ impl Row {
             ) => why.to_string(),
             (RowState::Unknown, _, Ok(_)) => "the transcript has no usable response".into(),
             _ => return None,
-        };
-        Some(format!(
-            "{}: {}: {text}",
-            self.record.role,
-            self.state.as_str()
-        ))
+        })
     }
 
     /// The token count, when the reading has one.
@@ -247,10 +255,6 @@ pub(crate) fn shown_records(records: &[Record]) -> Vec<Record> {
 
 /// `horch context [--over] [--windows] [--json]`.
 pub fn context(ctx: &RuntimeContext, over: bool, windows: bool, json: bool) -> Result<ExitCode> {
-    if json {
-        eprintln!("{JSON_LATER}");
-        return Ok(ExitCode::from(2));
-    }
     let roster = match super::load_roster(ctx, None) {
         Ok(r) => r,
         Err(_) => Roster::builtin()?,
@@ -270,7 +274,13 @@ pub fn context(ctx: &RuntimeContext, over: bool, windows: bool, json: bool) -> R
         loc: &loc,
         cache_dir: &cache,
     };
-    match context_text(&src, over) {
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let out = if json {
+        context_json(&src, &herdr)
+    } else {
+        context_text(&src, over)
+    };
+    match out {
         Ok(text) => {
             crate::output::print(&text);
             Ok(ExitCode::SUCCESS)
@@ -285,11 +295,8 @@ pub fn context(ctx: &RuntimeContext, over: bool, windows: bool, json: bool) -> R
 /// The text of `horch context` (`--over`: only rows in `over`, `requested`
 /// or `compact-lost`). Err only when the ledger does not read.
 pub(crate) fn context_text(src: &Sources, over: bool) -> Result<String> {
-    let records = src.ledger.read()?;
-    let workspace = src.ctx.herdr.workspace.as_ref().map(|w| w.to_string());
-    let rows: Vec<Row> = shown_records(&records)
+    let rows: Vec<Row> = shown_rows(src)?
         .into_iter()
-        .map(|r| build_row(src, r, workspace.as_deref()))
         .filter(|row| {
             !over
                 || matches!(
@@ -302,6 +309,133 @@ pub(crate) fn context_text(src: &Sources, over: bool) -> Result<String> {
         return Ok(format!("{NONE_OVER}\n"));
     }
     Ok(rows_table(&rows))
+}
+
+/// The rows of every shown record. Err only when the ledger does not read.
+fn shown_rows(src: &Sources) -> Result<Vec<Row>> {
+    let records = src.ledger.read()?;
+    let workspace = caller_workspace(src.ctx);
+    Ok(shown_records(&records)
+        .into_iter()
+        .map(|r| build_row(src, r, workspace.as_deref()))
+        .collect())
+}
+
+/// The herdr workspace of the caller, if it runs in one.
+fn caller_workspace(ctx: &RuntimeContext) -> Option<String> {
+    ctx.herdr.workspace.as_ref().map(|w| w.to_string())
+}
+
+/// 1 object of `horch context --json` (CTX-24, design §6.10). The field
+/// order is the key order. Every unknown value is `null`.
+#[derive(Serialize)]
+pub(crate) struct JsonRow {
+    pub role: String,
+    pub record_id: String,
+    pub harness: &'static str,
+    pub model: String,
+    pub session_id: Option<String>,
+    pub transcript: Option<PathBuf>,
+    /// The record's pane, when herdr lists it in the record's workspace.
+    pub pane: Option<String>,
+    /// herdr's `agent_status` of that pane.
+    pub pane_status: Option<String>,
+    pub tokens: Option<u64>,
+    /// None when the transcript does not read.
+    pub provisional: Option<bool>,
+    pub pending: Option<bool>,
+    pub window: Option<u64>,
+    pub native_trigger: Option<u64>,
+    /// The window setting of the decision (Claude
+    /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, Codex
+    /// `model_auto_compact_token_limit`, Prime and pi `contextWindow`).
+    pub native_setting: Option<u64>,
+    /// `operator`, `fleet` or `harness`.
+    pub native_source: &'static str,
+    pub native_detail: String,
+    pub threshold: u64,
+    pub last_compaction: Option<JsonCompaction>,
+    pub state: &'static str,
+    /// The text of the row's `reasons:` line, without the role and state.
+    pub reason: Option<String>,
+    /// `in-place` or `fresh`.
+    pub route: &'static str,
+    /// The handoff file, resolved against the record's workdir.
+    pub handoff: PathBuf,
+}
+
+/// `last_compaction` of a [`JsonRow`]: every key, `null` when unknown.
+#[derive(Serialize)]
+pub(crate) struct JsonCompaction {
+    pub at: String,
+    pub trigger: Option<String>,
+    pub pre_tokens: Option<u64>,
+    pub post_tokens: Option<u64>,
+}
+
+/// The `--json` array: 1 object per row, in the order of the text table.
+/// Err only when the ledger does not read.
+pub(crate) fn context_json(src: &Sources, ws: &dyn WorkspaceClient) -> Result<String> {
+    let rows = shown_rows(src)?;
+    let caller = caller_workspace(src.ctx);
+    // 1 `pane list` per workspace; None: herdr did not answer.
+    let mut panes: BTreeMap<String, Option<Vec<Pane>>> = BTreeMap::new();
+    let out: Vec<JsonRow> = rows
+        .iter()
+        .map(|row| {
+            let workspace = row.record.workspace_id.clone().or_else(|| caller.clone());
+            let pane = match (workspace, row.record.pane_id.as_deref()) {
+                (Some(w), Some(id)) => panes
+                    .entry(w)
+                    .or_insert_with_key(|w| ws.pane_list(w).ok())
+                    .as_ref()
+                    .and_then(|list| list.iter().find(|p| p.pane_id == id)),
+                _ => None,
+            };
+            json_row(src, row, pane)
+        })
+        .collect();
+    Ok(format!("{}\n", serde_json::to_string_pretty(&out)?))
+}
+
+/// The [`JsonRow`] of `row`; `pane` is herdr's entry for its pane.
+fn json_row(src: &Sources, row: &Row, pane: Option<&Pane>) -> JsonRow {
+    let reading = row.reading.as_ref().ok();
+    JsonRow {
+        role: row.record.role.clone(),
+        record_id: row.record.record_id.clone(),
+        harness: row.kind.as_str(),
+        model: row.model.clone(),
+        session_id: row.record.session_id.clone(),
+        transcript: reading.map(|r| r.transcript.clone()),
+        pane: pane.map(|p| p.pane_id.clone()),
+        pane_status: pane.and_then(|p| p.agent_status.clone()),
+        tokens: row.tokens(),
+        provisional: reading.map(|r| r.provisional),
+        pending: reading.map(|r| r.pending),
+        window: row.window,
+        native_trigger: row.native,
+        native_setting: row.decision.tokens,
+        native_source: source_name(row.decision.source),
+        native_detail: row.decision.detail.clone(),
+        threshold: row.threshold,
+        last_compaction: reading
+            .and_then(|r| r.last_compaction.as_ref())
+            .map(|m| JsonCompaction {
+                at: m.at.clone(),
+                trigger: m.trigger.clone(),
+                pre_tokens: m.pre_tokens,
+                post_tokens: m.post_tokens,
+            }),
+        state: row.state.as_str(),
+        reason: row.reason_text(),
+        route: if src.roster.compacts_in_place(row.kind) {
+            "in-place"
+        } else {
+            "fresh"
+        },
+        handoff: record_workdir(src.ctx, &row.record).join(policy::handoff_path(&row.record.role)),
+    }
 }
 
 /// The table of rows and its `reasons:` block.
@@ -419,15 +553,20 @@ pub(crate) fn windows_table(ctx: &RuntimeContext, roster: &Roster, workdir: &Pat
 /// The SOURCE column: `operator`, `fleet` or `harness`, with ` (now)` when
 /// the record has no recorded decision.
 fn source_text(source: WindowSource, now: bool) -> String {
-    let name = match source {
-        WindowSource::Operator => "operator",
-        WindowSource::Fleet => "fleet",
-        WindowSource::Harness => "harness",
-    };
+    let name = source_name(source);
     if now {
         format!("{name} (now)")
     } else {
         name.into()
+    }
+}
+
+/// `operator`, `fleet` or `harness`.
+fn source_name(source: WindowSource) -> &'static str {
+    match source {
+        WindowSource::Operator => "operator",
+        WindowSource::Fleet => "fleet",
+        WindowSource::Harness => "harness",
     }
 }
 
@@ -925,6 +1064,54 @@ mod tests {
                 "{out}"
             );
         }
+    }
+
+    /// CTX-24: `pane` and `pane_status` come from 1 `pane list` call per
+    /// workspace; when herdr does not answer, both are `null`.
+    #[test]
+    fn ctx_24_json_pane_from_one_pane_list() {
+        use horch_core::workspace::testing::FakeWorkspace;
+        let w = World::new();
+        let ws = FakeWorkspace::new();
+        let new = ws.workspace_create("fleet", None, false).unwrap();
+        assert_eq!(new.workspace_id, "w1");
+        ws.set_agent_states(&new.root_pane_id, &[(Some("claude"), Some("idle"))]);
+        for (id, role, pane) in [
+            ("r-1", "sonnet-1", Some(new.root_pane_id.clone())),
+            ("r-2", "sonnet-2", None),
+        ] {
+            w.ledger
+                .insert(Record {
+                    record_id: id.into(),
+                    session_id: Some(SMALL.into()),
+                    agent: "claude".into(),
+                    tier: "sonnet".into(),
+                    model: "sonnet".into(),
+                    role: role.into(),
+                    task: "work".into(),
+                    workspace_id: Some("w1".into()),
+                    pane_id: pane,
+                    ..Record::default()
+                })
+                .unwrap();
+        }
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&context_json(&w.sources(), &ws).unwrap()).unwrap();
+        assert_eq!(rows[0]["pane"], new.root_pane_id.as_str());
+        assert_eq!(rows[0]["pane_status"], "idle");
+        assert_eq!(rows[1]["pane"], serde_json::Value::Null);
+        let lists = ws
+            .calls()
+            .iter()
+            .filter(|c| c.method == "pane_list")
+            .count();
+        assert_eq!(lists, 1);
+
+        ws.set_reachable(false);
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&context_json(&w.sources(), &ws).unwrap()).unwrap();
+        assert_eq!(rows[0]["pane"], serde_json::Value::Null);
+        assert_eq!(rows[0]["pane_status"], serde_json::Value::Null);
     }
 
     #[test]
