@@ -126,9 +126,10 @@ impl Harness for OpenCode {
     }
 
     /// opencode 1.18.34 opens `--session <id>` and ignores `--prompt`
-    /// (LA-3, 2026-10-04: three resumes, one of them without horch, sat idle
-    /// with no task). If a later opencode honours it, the task arrives twice:
-    /// re-check on an upgrade.
+    /// (LA-3, 2026-10-04; re-checked live 2026-10-06, U-64,
+    /// docs/live-checks/harnesses.md). The resume argv carries no `--prompt`
+    /// (`opencode_command`), so the typed prompt is the 1 delivery path
+    /// and a later opencode cannot deliver the task twice.
     fn resume_prompt_typed(&self) -> bool {
         true
     }
@@ -166,9 +167,9 @@ impl Harness for OpenCode {
 ///
 /// The prompt is a FLAG here, not a trailing positional, so it cannot be eaten
 /// by a variadic - but `args` still goes before it, to keep every builder in
-/// this file ordered the same way. On a resume opencode ignores `--prompt`;
-/// it stays in the argv (the A0 launch oracles freeze it), and the launch
-/// types the prompt in as well ([`Harness::resume_prompt_typed`]).
+/// this file ordered the same way. A resume passes no `--prompt`: opencode
+/// ignores it beside `--session`, and the launch types the prompt in
+/// instead ([`Harness::resume_prompt_typed`]), so the task arrives once.
 pub(super) fn opencode_command(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -216,7 +217,9 @@ pub(super) fn opencode_command(
         cmd.arg("--session").arg(id);
     }
     cmd.args(&teammate.args);
-    cmd.arg("--prompt").arg(prompt);
+    if !matches!(session, Session::Resume(_)) {
+        cmd.arg("--prompt").arg(prompt);
+    }
     Ok(cmd)
 }
 
@@ -273,6 +276,41 @@ fn skills_config(inherited: Option<&str>, skills: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn argv(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// U-64: opencode 1.18.34 ignores `--prompt` beside `--session` (seen
+    /// live, docs/live-checks/harnesses.md), and the launch types the prompt
+    /// in. A resume argv without the flag delivers the task once, even if a
+    /// later opencode starts to honour it. A fresh launch keeps it.
+    #[test]
+    fn only_a_fresh_launch_passes_the_prompt_flag() {
+        use super::super::launch::command_in;
+        let teammate = crate::roster::Roster::builtin()
+            .unwrap()
+            .require("opencode-pickle")
+            .unwrap()
+            .clone();
+        let env = LaunchEnv::for_test();
+        let fresh = argv(&command_in(&env, &teammate, Session::Unmanaged, "TASK", None).unwrap());
+        assert_eq!(fresh[fresh.len() - 2..], ["--prompt", "TASK"], "{fresh:?}");
+
+        let resumed =
+            argv(&command_in(&env, &teammate, Session::Resume("ses_abc"), "TASK", None).unwrap());
+        assert!(
+            resumed.windows(2).any(|w| w == ["--session", "ses_abc"]),
+            "{resumed:?}"
+        );
+        assert!(
+            !resumed.iter().any(|a| a == "--prompt" || a == "TASK"),
+            "{resumed:?}"
+        );
+        assert!(OpenCode.resume_prompt_typed());
+    }
 
     #[test]
     fn skills_opencode_overlay_preserves_provider_and_denials() {

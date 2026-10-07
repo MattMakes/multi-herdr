@@ -833,11 +833,17 @@ mod tests {
                 )
                 .unwrap();
                 let args = argv(&cmd);
-                assert!(
-                    args.last().unwrap().ends_with("BRIEFING"),
-                    "{name}: {args:?}"
-                );
-                assert!(args.last().unwrap().contains("Fleet skill phase: research"));
+                // U-64: an opencode resume passes no `--prompt`; the launch
+                // types the prompt in instead (`resume_prompt_typed`).
+                if t.agent == HarnessKind::OpenCode && matches!(session, Session::Resume(_)) {
+                    assert!(!args.iter().any(|a| a == "--prompt"), "{name}: {args:?}");
+                } else {
+                    assert!(
+                        args.last().unwrap().ends_with("BRIEFING"),
+                        "{name}: {args:?}"
+                    );
+                    assert!(args.last().unwrap().contains("Fleet skill phase: research"));
+                }
                 match t.agent {
                     HarnessKind::Claude => assert!(args.contains(&"--plugin-dir".into())),
                     HarnessKind::Pi | HarnessKind::Prime => {
@@ -1462,8 +1468,8 @@ mod tests {
     }
 
     /// LA-3: opencode 1.18.34 ignores `--prompt` beside `--session`, so a
-    /// resume also gets its prompt typed in. The argv keeps the flag, as the
-    /// A0 launch oracles freeze it.
+    /// resume gets its prompt typed in. The resume argv drops the flag
+    /// (U-64), so the typed prompt is the 1 delivery path.
     #[test]
     fn only_an_opencode_resume_types_its_prompt() {
         assert!(HarnessKind::OpenCode.adapter().resume_prompt_typed());
