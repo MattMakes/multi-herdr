@@ -122,21 +122,29 @@ impl Table {
     }
 }
 
-/// Create (or truncate) a file readable by its owner only (section 15).
-pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Create (or truncate) a file readable by its owner only (section 15), and
+/// sync it when `sync`.
+fn write_private(path: &Path, bytes: &[u8], sync: bool) -> std::io::Result<()> {
     let mut f = private_options()
         .write(true)
         .create(true)
         .truncate(true)
         .open(path)?;
     f.write_all(bytes)?;
-    f.sync_all()
+    if sync {
+        f.sync_all()?;
+    }
+    Ok(())
 }
 
 /// Replace `path` atomically: write a private temp file, then rename.
 pub(crate) fn replace_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    replace_private_with(path, bytes, true)
+}
+
+fn replace_private_with(path: &Path, bytes: &[u8], sync: bool) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    write_private(&tmp, bytes)?;
+    write_private(&tmp, bytes, sync)?;
     std::fs::rename(&tmp, path)
 }
 
@@ -328,9 +336,13 @@ pub fn load_cursors(dir: &Path) -> Cursors {
         .unwrap_or_default()
 }
 
-pub(crate) fn save_cursors(dir: &Path, cursors: &Cursors) -> Result<()> {
+/// Replace the cursor file. `sync: false` leaves the new file in the page
+/// cache. That is safe after the events are synced: a power loss can only
+/// keep the old cursors, or a torn file that loads as none, and both re-read
+/// input the store already holds, whose repeats it drops (section 8.2).
+pub(crate) fn save_cursors(dir: &Path, cursors: &Cursors, sync: bool) -> Result<()> {
     let json = serde_json::to_vec(cursors)?;
-    replace_private(&cursors_path(dir), &json)
+    replace_private_with(&cursors_path(dir), &json, sync)
         .with_context(|| format!("saving {}", cursors_path(dir).display()))
 }
 
@@ -613,7 +625,7 @@ mod tests {
         let mut s = Store::open(tmp.path(), now(), 35).unwrap();
         s.append(vec![ev("m1", "2026-09-28T17:00:00Z", "r1", 5, 0.1)])
             .unwrap();
-        save_cursors(tmp.path(), &Cursors::new()).unwrap();
+        save_cursors(tmp.path(), &Cursors::new(), true).unwrap();
         for f in ["events-2026-09-28.jsonl", "cursors.json"] {
             let mode = std::fs::metadata(tmp.path().join(f))
                 .unwrap()

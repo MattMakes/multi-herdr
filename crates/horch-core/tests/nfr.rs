@@ -368,7 +368,10 @@ fn perf_corpus(w: &World, sessions: usize, bytes_per_file: u64) {
 
 /// NFR-02: a steady-state tick over 50 live sessions under 200 ms, and a cold
 /// start under 30 s. Generates a corpus of `HORCH_PERF_MB` (default 1024) MB.
+/// `HORCH_PERF_BATCH` sets the collector's batch (default [`BATCH`]).
 /// Run with `just verify-perf`.
+///
+/// [`BATCH`]: horch_core::telemetry::collect::BATCH
 #[test]
 #[ignore]
 fn nfr_02_tick_budget() {
@@ -380,6 +383,12 @@ fn nfr_02_tick_budget() {
     perf_corpus(&w, 50, mb * 1024 * 1024 / 50);
     let now = horch_core::clock::parse("2026-09-28T18:00:00Z").unwrap();
     let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now).unwrap();
+    if let Some(batch) = std::env::var("HORCH_PERF_BATCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        c.batch = batch;
+    }
     let (cold, cold_cpu) = (Instant::now(), thread_cpu());
     c.tick(now).unwrap();
     let (cold, cold_cpu) = (cold.elapsed(), thread_cpu() - cold_cpu);
@@ -387,8 +396,10 @@ fn nfr_02_tick_budget() {
     c.tick(now).unwrap();
     let (warm, warm_cpu) = (warm.elapsed(), thread_cpu() - warm_cpu);
     eprintln!(
-        "cold {cold:?} ({cold_cpu:?} CPU), steady {warm:?} ({warm_cpu:?} CPU), {} events, RSS {:.1} MiB",
+        "cold {cold:?} ({cold_cpu:?} CPU), steady {warm:?} ({warm_cpu:?} CPU), {} events, \
+         at most {} new events held, RSS {:.1} MiB",
         c.store.len(),
+        c.peak_pending,
         rss_mib()
     );
     assert!(cold.as_secs() < 30, "cold start {cold:?}");
@@ -453,6 +464,83 @@ fn nfr_02_the_store_keeps_little_per_event() {
         "the store keeps {per_event} B per event ({small} B at {small_events} events, \
          {big} B at {big_events})"
     );
+}
+
+/// The events stored under `state`, each as its JSON line with the world's
+/// root as `<root>`, sorted, and how many lines the event files hold (an
+/// event stored twice adds a line).
+fn stored(state: &Path) -> (Vec<String>, usize) {
+    let dir = horch_core::telemetry::dir(state);
+    let root = state.parent().unwrap().to_string_lossy().into_owned();
+    let mut events: Vec<String> = horch_core::telemetry::store::read_all(&dir)
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap().replace(&root, "<root>"))
+        .collect();
+    events.sort();
+    let lines = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("events-"))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap().lines().count())
+        .sum();
+    (events, lines)
+}
+
+/// NFR-02, L7: a first read goes in batches. A cold tick held every new
+/// event of the corpus (1.5 million, 3.4 GB peak RSS, on the 1 GB corpus)
+/// until W18; it holds at most one batch now. A crash after the first
+/// batch's append, before its cursor save, resumes with no event lost and
+/// none stored twice.
+#[test]
+fn nfr_02_a_cold_read_holds_one_batch() {
+    const BATCH: usize = 256;
+    let now = horch_core::clock::parse("2026-09-28T18:00:00Z").unwrap();
+    let open = |w: &World, batch: usize| {
+        let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now).unwrap();
+        c.batch = batch;
+        c
+    };
+
+    // The reference: one read with no bound.
+    let whole = world(Part::Whole);
+    perf_corpus(&whole, 5, 400_000);
+    let mut c = open(&whole, usize::MAX);
+    c.tick(now).unwrap();
+    let want = stored(&whole.state);
+    assert!(
+        c.peak_pending > 4 * BATCH,
+        "the corpus is {} events, too few for 4 batches",
+        c.peak_pending
+    );
+    assert_eq!(want.0.len(), want.1);
+
+    let w = world(Part::Whole);
+    perf_corpus(&w, 5, 400_000);
+    let mut c = open(&w, BATCH);
+    c.fail_after_append = true;
+    assert!(c.tick(now).is_err(), "the fault stops the first batch");
+    let first = stored(&w.state).0.len();
+    assert!(
+        first > 0 && first < want.0.len(),
+        "1 batch is stored: {first}"
+    );
+    drop(c);
+
+    let mut c = open(&w, BATCH);
+    c.tick(now).unwrap();
+    assert!(
+        c.peak_pending <= BATCH,
+        "a cold tick held {} new events, the batch is {BATCH}",
+        c.peak_pending
+    );
+    let got = stored(&w.state);
+    let missing: Vec<&String> = want.0.iter().filter(|e| !got.0.contains(e)).collect();
+    let extra: Vec<&String> = got.0.iter().filter(|e| !want.0.contains(e)).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "lost {missing:#?}, gained {extra:#?}"
+    );
+    assert_eq!(got.1, want.1, "an event stored twice");
 }
 
 /// This process's resident set size in MiB, from `ps`.

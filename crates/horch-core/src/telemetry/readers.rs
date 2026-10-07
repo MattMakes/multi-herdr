@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::cursor::{poll_lines, Cursor, Seen};
+use super::cursor::{poll_lines_until, Cursor, Seen};
 use super::{Observation, QuotaSignal, RawUsage, TokenClasses};
 use crate::clock;
 use crate::routing::quota::Window;
@@ -57,6 +57,9 @@ pub struct Polled {
     pub observations: Vec<Observation>,
     /// The files read (the main transcript first).
     pub files: Vec<PathBuf>,
+    /// The read stopped at its limit before the end of the input: poll
+    /// again for the rest.
+    pub more: bool,
 }
 
 /// The cursor key of one input.
@@ -125,18 +128,25 @@ pub fn poll_record(
     let Some(sid) = session_id.filter(|s| !s.is_empty()) else {
         return Err(Unreadable::NoSessionId);
     };
-    poll_located(loc, agent, sid, locate(loc, agent, sid)?, cursors)
+    let located = locate(loc, agent, sid)?;
+    poll_located(loc, agent, sid, located, cursors, usize::MAX)
 }
 
 /// [`poll_record`] on inputs already found by [`locate`]. The collector
 /// keeps what `locate` found across ticks, because finding walks the
 /// transcript trees (NFR-02).
+///
+/// A transcript read stops at the line that brings the observations to
+/// `limit`, and sets [`Polled::more`]; the cursors then point at the first
+/// unread line (NFR-02: the collector's first read of a large history goes
+/// in batches). OpenCode's query is read whole.
 pub(crate) fn poll_located(
     loc: &Locations,
     agent: &str,
     sid: &str,
     located: Located,
     cursors: &mut Cursors,
+    limit: usize,
 ) -> Result<Polled, Unreadable> {
     let mut polled = Polled::default();
     match located {
@@ -148,6 +158,11 @@ pub(crate) fn poll_located(
         }
         Located::Files(files) => {
             for (i, path) in files.iter().enumerate() {
+                if polled.observations.len() >= limit {
+                    polled.more = true;
+                    break;
+                }
+                let limit = limit - polled.observations.len();
                 match agent {
                     "claude" => {
                         let subagent = i > 0;
@@ -157,11 +172,14 @@ pub(crate) fn poll_located(
                             path,
                             cursors,
                             &mut polled,
+                            limit,
                             |c, at, line, out| claude_line(c, at, line, subagent, out),
                         )?;
                     }
-                    "codex" => poll_file(agent, sid, path, cursors, &mut polled, codex_line)?,
-                    _ => poll_file(agent, sid, path, cursors, &mut polled, pi_line)?,
+                    "codex" => {
+                        poll_file(agent, sid, path, cursors, &mut polled, limit, codex_line)?
+                    }
+                    _ => poll_file(agent, sid, path, cursors, &mut polled, limit, pi_line)?,
                 }
             }
         }
@@ -175,12 +193,19 @@ fn poll_file(
     path: &Path,
     cursors: &mut Cursors,
     polled: &mut Polled,
+    limit: usize,
     mut line_fn: impl FnMut(&mut Cursor, u64, &str, &mut Vec<Observation>),
 ) -> Result<(), Unreadable> {
     let cursor = cursors.entry(input_key(agent, sid, path)).or_default();
     let out = &mut polled.observations;
-    poll_lines(path, cursor, |c, at, line| line_fn(c, at, line, out))
-        .map_err(|e| Unreadable::Failed(format!("reading {}: {e}", path.display())))?;
+    let (start, mut full) = (out.len(), false);
+    poll_lines_until(path, cursor, |c, at, line| {
+        line_fn(c, at, line, out);
+        full = out.len() - start >= limit;
+        !full
+    })
+    .map_err(|e| Unreadable::Failed(format!("reading {}: {e}", path.display())))?;
+    polled.more |= full;
     polled.files.push(path.to_path_buf());
     Ok(())
 }

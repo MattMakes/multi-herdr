@@ -104,7 +104,7 @@ Every requirement has an ID. Tests carry the ID in their name (section 16.4), an
 | ID | Requirement |
 |---|---|
 | NFR-01 | `cargo test --workspace` is hermetic: no network, no real harness binary, no herdr server, no file outside a temp dir. |
-| NFR-02 | Budgets: a steady-state tick with 50 live sessions takes under 200 ms. A cold start over 1 GB of transcripts takes under 30 s. Collector RSS stays under 150 MB. The collector keeps at most 320 B in memory per stored event (a test guard), and a steady tick reads only the ledgers and transcripts that changed. |
+| NFR-02 | Budgets: a steady-state tick with 50 live sessions takes under 200 ms. A cold start over 1 GB of transcripts takes under 30 s. Collector RSS stays under 150 MB. The collector keeps at most 320 B in memory per stored event (a test guard), and a steady tick reads only the ledgers and transcripts that changed. A tick holds at most 1 batch of new events (10,000) before it stores them (a test guard), so a first read of a large history does not hold the history. Measured on the 1 GB corpus (1,541,871 events, W18, a loaded host): cold tick 13.8 to 15.9 s before and 14.8 to 23.4 s after batches, with the same thread CPU (12.0 to 12.6 s); the difference is the wait for 1 event-file sync per batch. Peak RSS 3.4 GB before and 0.51 to 0.57 GB after; most of what is left is the index of 1.5 million stored events at about 200 B each. |
 | NFR-03 | Existing tests, `horch teammates --check` and the prompt goldens stay green. Every touched `.rs` file is rustfmt-clean. |
 | NFR-04 | Linux and macOS both pass (the cloud VM is Linux; the operator runs macOS). No Unix-only call without a Windows `cfg` path. |
 | NFR-05 | New runtime crates: only `ratatui` and `crossterm`, in the `horch` crate only. SQLite is reached through the `sqlite3` CLI. |
@@ -264,7 +264,7 @@ A record is listed in `snapshot.unread` with 1 reason when it has: no session id
 - `events-YYYY-MM-DD.jsonl` (UTC date of the event). Append-only.
 - Dedupe key: `(agent, session_id, event_id)`. The collector keeps an in-memory set of keys for the retention window, rebuilt from the event files at start. Before appending, it drops duplicate keys.
 - Memory: the collector keeps each stored event for as long as it runs, so it keeps only what the snapshot folds: the time, the tokens, the cost, the model and the record with its 6 group keys, as interned ids (about 200 B per event). The full events stay on disk. At start it reads each event file line by line.
-- Crash safety: append the events, `fsync`, then write the cursor (temp file + rename). A crash between the 2 steps re-reads some input, and the dedupe index drops the repeats. This is what TEL-07 tests.
+- Crash safety: append the events, `fsync`, then write the cursor (temp file + rename). A crash between the 2 steps re-reads some input, and the dedupe index drops the repeats. This is what TEL-07 tests. A tick does this once per batch of at most 10,000 new events (`collect::BATCH`): a reader stops at the line that fills the batch, and its cursor points at the next unread line. The cursor file of a batch inside a tick is not synced; the tick's last cursor save is. A power loss keeps the old cursor file or a torn one, which loads as no cursors; both re-read input that is already stored.
 - Retention: 35 days (setting `retention_days`). Files older than that are deleted at collector start.
 - Pricing: `cost_usd` is the list price when the event was collected, or `null` when the price table did not know the model then. Every reader of the event files (`Store::open`, `store::read_all`) prices a `null` cost from the current table at read time, so a price added later reaches events already stored. A set cost is kept: it is the price at the time. A model the table still does not know stays `null`, and every sum lists it as unpriced, never as $0.
 
@@ -285,7 +285,7 @@ Every `tick_ms` (default 2000):
 1. Read every `state_root/*.json` ledger whose length or modification time changed. On a parse error, keep the last good copy of that ledger and retry next tick (a ledger write may be in flight).
 2. Select records whose `updated_at` is inside the retention window.
 3. Resolve each record to its reader and files. A found transcript stays found while it is a file. A record with no transcript is searched for on every tick while its `updated_at` is under 10 minutes old (a new spawn), else every 30 s: a search walks the transcript trees. Claude subagent files are listed again when a directory of the last listing changed. Poll a record only when one of its files changed its length, inode or modification time (OpenCode: the database or its `-wal` file; an empty `-wal` counts as none, because on Linux the first `sqlite3 -readonly` read of a WAL database creates an empty one).
-4. Append events, then save cursors (8.2 order). A tick that polled nothing saves no cursor.
+4. Append events, then save cursors (8.2 order), once per batch of new events. A tick that polled nothing saves no cursor.
 5. Hand `QuotaSignal`s to the quota module. Run a probe if one is due (section 11.2).
 6. Recompute the snapshot and write it with temp file + rename.
 
@@ -736,7 +736,7 @@ Test names start with the requirement ID. U = unit test in the module; I = integ
 | BAL-08 | `bal_08_fleet_auto_choice`: 4 quota fixtures -> flavor chosen, printed reason | E |
 | BAL-09 | `bal_09_never_trains_on_input`: property test: every roster permutation of fallbacks with an `opencode-*` entry fails `--check`, and `decide()` never returns an opencode teammate | U |
 | NFR-01 | `nfr_01_no_real_binaries`: the e2e harness asserts that every spawned program's path is inside the fakes dir; a `PATH` without the fakes fails the harness | E |
-| NFR-02 | `nfr_02_tick_budget` (`#[ignore]`; run by `just verify-perf`): a generated corpus of 50 sessions and 1 GB | I |
+| NFR-02 | `nfr_02_tick_budget` (`#[ignore]`; run by `just verify-perf`): a generated corpus of 50 sessions and 1 GB; `nfr_02_a_cold_read_holds_one_batch`: a cold read holds at most 1 batch, and a crash after the first batch loses no event and stores none twice | I |
 | NFR-03 | the existing suite, `golden_prompts`, `horch teammates --check`, rustfmt on changed files | all |
 | NFR-04 | `nfr_04_file_identity` under `cfg(unix)` and `cfg(windows)` | U |
 | NFR-05 | `scripts/check-deps.sh`: `cargo tree -e normal` shows no new crate outside the allowed list | script |

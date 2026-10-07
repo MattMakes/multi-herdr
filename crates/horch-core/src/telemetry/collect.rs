@@ -4,7 +4,8 @@
 //!    keeps its last good copy: a write may be in flight).
 //! 2. Keep the records updated inside the retention window.
 //! 3. Poll each record's reader.
-//! 4. Append the events, sync, then save the cursors.
+//! 4. Append the events, sync, then save the cursors: per batch of
+//!    [`BATCH`] events, so a first read of a large history holds one batch.
 //! 5. Fold limit signals into the quota readings; probe when due.
 //! 6. Write `snapshot.json` (temp file + rename).
 
@@ -177,6 +178,10 @@ pub struct Collector {
     polled: HashMap<(String, String), Vec<Option<Stamp>>>,
     /// How many times a tick searched the transcript trees.
     pub searches: u64,
+    /// The most new events a tick holds before it stores them ([`BATCH`]).
+    pub batch: usize,
+    /// The most new events any tick held at once, for the NFR-02 guard.
+    pub peak_pending: usize,
     /// Test hook: fail after the append, before the cursor save.
     pub fail_after_append: bool,
     /// Test hook: die there instead, leaving a stale lock (a `kill -9`).
@@ -268,6 +273,8 @@ impl Collector {
             places: HashMap::new(),
             polled: HashMap::new(),
             searches: 0,
+            batch: BATCH,
+            peak_pending: 0,
             fail_after_append: false,
             abort_after_append: false,
         })
@@ -321,7 +328,8 @@ impl Collector {
 
     fn tick_on(&mut self, records: &[&Record], now: DateTime<Utc>) -> Result<Snapshot> {
         let oldest = clock::stamp(now - Duration::days(self.policy.retention_days));
-        let mut new_events = Vec::new();
+        let batch = self.batch.max(1);
+        let mut pending = Vec::new();
         let mut signals: Vec<QuotaSignal> = Vec::new();
         let mut unread = Vec::new();
         let mut moved = false;
@@ -329,42 +337,39 @@ impl Collector {
             .iter()
             .filter(|r| r.updated_at.as_str() >= oldest.as_str())
         {
-            let polled = match r.session_id.as_deref().filter(|s| !s.is_empty()) {
-                None => Err(Unreadable::NoSessionId),
-                Some(sid) => self.poll(r, sid, now),
+            let Some(sid) = r.session_id.as_deref().filter(|s| !s.is_empty()) else {
+                unread.push(unread_row(r, Unreadable::NoSessionId));
+                continue;
             };
-            match polled {
-                Ok(None) => {}
-                Ok(Some(polled)) => {
-                    moved = true;
-                    for o in polled.observations {
-                        match o {
-                            Observation::Usage(u) => new_events.push(event_for(r, u, &self.prices)),
-                            Observation::Quota(s) => signals.push(s),
-                        }
+            // A read stops when the batch is full; store it, then read on.
+            loop {
+                let polled = match self.poll(r, sid, now, batch - pending.len()) {
+                    Ok(None) => break,
+                    Ok(Some(polled)) => polled,
+                    Err(why) => {
+                        unread.push(unread_row(r, why));
+                        break;
+                    }
+                };
+                moved = true;
+                for o in polled.observations {
+                    match o {
+                        Observation::Usage(u) => pending.push(event_for(r, u, &self.prices)),
+                        Observation::Quota(s) => signals.push(s),
                     }
                 }
-                Err(why) => unread.push(Unread {
-                    record_id: r.record_id.clone(),
-                    role: r.role.clone(),
-                    agent: r.agent.clone(),
-                    reason: why.to_string(),
-                }),
+                self.peak_pending = self.peak_pending.max(pending.len());
+                if pending.len() >= batch {
+                    self.store_batch(std::mem::take(&mut pending), Some(false))?;
+                    moved = false;
+                }
+                if !polled.more {
+                    break;
+                }
             }
         }
-        // Append and sync first, cursors second (section 8.2).
-        self.store.append(new_events)?;
-        if self.abort_after_append {
-            eprintln!("HORCH_FAULT=abort-after-append: dying before the cursor save");
-            std::process::abort();
-        }
-        if self.fail_after_append {
-            anyhow::bail!("HORCH_FAULT=after-append: stopping before the cursor save");
-        }
         // A cursor moves only when its input is polled.
-        if moved {
-            store::save_cursors(self.store.dir(), &self.cursors)?;
-        }
+        self.store_batch(pending, moved.then_some(true))?;
 
         let quota = self.update_quota(now, &signals)?;
         let snapshot = build_indexed(
@@ -380,15 +385,38 @@ impl Collector {
         Ok(snapshot)
     }
 
+    /// Append and sync `events`, then save the cursors when `save` is
+    /// `Some(sync)`: the events first, the cursors second (section 8.2). A
+    /// crash between the two re-reads from the last saved cursors, and the
+    /// store drops the repeats. A batch inside a read leaves its cursors
+    /// unsynced ([`store::save_cursors`]); the tick's last save syncs.
+    fn store_batch(&mut self, events: Vec<Event>, save: Option<bool>) -> Result<()> {
+        self.store.append(events)?;
+        if self.abort_after_append {
+            eprintln!("HORCH_FAULT=abort-after-append: dying before the cursor save");
+            std::process::abort();
+        }
+        if self.fail_after_append {
+            anyhow::bail!("HORCH_FAULT=after-append: stopping before the cursor save");
+        }
+        if let Some(sync) = save {
+            store::save_cursors(self.store.dir(), &self.cursors, sync)?;
+        }
+        Ok(())
+    }
+
     /// Poll the inputs of `r` when they changed since its last poll
     /// (NFR-02: opening every transcript of every record took most of a
-    /// tick). `None`: nothing changed, so there is nothing new to read. The
-    /// stamps are taken before the poll, so a write during it shows next tick.
+    /// tick), reading at most `limit` observations. `None`: nothing changed,
+    /// so there is nothing new to read. The stamps are taken before the
+    /// poll, so a write during it shows next tick; they are kept only when
+    /// the poll read to the end ([`Polled::more`] is false).
     fn poll(
         &mut self,
         r: &Record,
         sid: &str,
         now: DateTime<Utc>,
+        limit: usize,
     ) -> Result<Option<Polled>, Unreadable> {
         let located = self.locate(r, sid, now)?;
         let stamps: Vec<Option<Stamp>> = match &located {
@@ -401,8 +429,11 @@ impl Collector {
             return Ok(None);
         }
         self.polled.remove(&key);
-        let polled = readers::poll_located(&self.loc, &r.agent, sid, located, &mut self.cursors)?;
-        self.polled.insert(key, stamps);
+        let polled =
+            readers::poll_located(&self.loc, &r.agent, sid, located, &mut self.cursors, limit)?;
+        if !polled.more {
+            self.polled.insert(key, stamps);
+        }
         Ok(Some(polled))
     }
 
@@ -516,6 +547,10 @@ enum Place {
 /// A file or directory as it was: `(length, inode, modification time)`.
 type Stamp = (u64, u64, Option<std::time::SystemTime>);
 
+/// How many new events a tick holds before it stores them (NFR-02): about
+/// 10 MB of events. A first read of a large history goes in batches.
+pub const BATCH: usize = 10_000;
+
 /// The stamp of `db`'s write-ahead log, an empty one stamped as none. The
 /// first `sqlite3 -readonly` read of a WAL database creates an empty
 /// `-wal` on Linux (sqlite 3.40), so the stamp a tick takes before that
@@ -525,6 +560,15 @@ fn wal_stamp(db: &Path) -> Option<Stamp> {
     let mut wal = db.as_os_str().to_owned();
     wal.push("-wal");
     stamp(Path::new(&wal)).filter(|s| s.0 > 0)
+}
+
+fn unread_row(r: &Record, why: Unreadable) -> Unread {
+    Unread {
+        record_id: r.record_id.clone(),
+        role: r.role.clone(),
+        agent: r.agent.clone(),
+        reason: why.to_string(),
+    }
 }
 
 fn stamp(path: &Path) -> Option<Stamp> {

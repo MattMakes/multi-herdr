@@ -116,6 +116,21 @@ pub(crate) fn poll_lines(
     cursor: &mut Cursor,
     mut f: impl FnMut(&mut Cursor, u64, &str),
 ) -> std::io::Result<bool> {
+    poll_lines_until(path, cursor, |c, at, line| {
+        f(c, at, line);
+        true
+    })
+}
+
+/// [`poll_lines`], stopping after the line for which `f` returns false. The
+/// cursor then points at the start of the first unread line, so the next
+/// call resumes there: no line is read twice and none is skipped (NFR-02:
+/// the collector's first read of a large history goes in batches).
+pub(crate) fn poll_lines_until(
+    path: &Path,
+    cursor: &mut Cursor,
+    mut f: impl FnMut(&mut Cursor, u64, &str) -> bool,
+) -> std::io::Result<bool> {
     let file = std::fs::File::open(path)?;
     let meta = file.metadata()?;
     let (dev, ino) = file_identity(&meta);
@@ -148,8 +163,8 @@ pub(crate) fn poll_lines(
         consumed_any = true;
         let text = String::from_utf8_lossy(&buf[..n - 1]);
         let line = text.trim_end_matches('\r');
-        if !line.trim().is_empty() {
-            f(cursor, at, line);
+        if !line.trim().is_empty() && !f(cursor, at, line) {
+            break;
         }
     }
     if consumed_any {
@@ -187,6 +202,36 @@ mod tests {
         assert_eq!(lines_of(&p, &mut c), vec![(5, "ccc".into())]);
         assert_eq!(lines_of(&p, &mut c), vec![]);
         assert_eq!(c.quiet_ticks, 1);
+    }
+
+    /// NFR-02: a file read in batches of at most 3 lines gives every line
+    /// once, in order, in 3 batches; after each batch the cursor is at the
+    /// start of the first unread line. A blank line counts toward no batch.
+    #[test]
+    fn nfr_02_a_file_read_in_3_batches_gives_every_line_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("t.jsonl");
+        std::fs::write(&p, "a\nbb\n\nccc\nd\nee\nf\ng\n").unwrap();
+        let whole = lines_of(&p, &mut Cursor::default());
+        let mut c = Cursor::default();
+        let (mut batches, mut read) = (Vec::new(), Vec::new());
+        loop {
+            let mut batch = Vec::new();
+            poll_lines_until(&p, &mut c, |_, at, l| {
+                batch.push((at, l.to_string()));
+                batch.len() < 3
+            })
+            .unwrap();
+            if batch.is_empty() {
+                break;
+            }
+            batches.push((batch.len(), c.offset));
+            read.extend(batch);
+        }
+        assert_eq!(read, whole);
+        assert_eq!(whole.len(), 7);
+        // "ccc" ends at 10, "f" at 17, "g" at 19: the next unread line starts there.
+        assert_eq!(batches, vec![(3, 10), (3, 17), (1, 19)]);
     }
 
     #[test]
