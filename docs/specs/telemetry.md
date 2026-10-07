@@ -61,6 +61,10 @@ Every requirement has an ID. Tests carry the ID in their name (section 16.4), an
 | TEL-09 | All ledgers under the state root are read, so every project on the machine is covered. |
 | TEL-10 | For the same records and the same time range, `horch usage` totals equal `horch cost` totals, token class by token class, and the costs match to 1e-6 USD. An event whose model has no price is never counted as $0: both commands list it as unpriced, with its model and tokens. |
 | TEL-11 | No message content, prompt text, email address, account id or credential is written to any telemetry or quota file. |
+| TEL-12 | `horch cost` with no filter writes 3 reports, for the 30 days, 7 days and 24 hours that end now, to `<dir>/<YYYY_MM_DD_HHMMSS>_30d.json`, `_7d.json` and `_24h.json`. The prefix is the local time at the start of the run, the same for all 3. `<dir>` is `<project>/ai_docs/reports/cost/` (created when absent); `--dir` overrides it. Stdout is JSON: `generated_at` (RFC 3339 with offset), `project`, `files` and each window's sessions, calls, tokens per class, cost and unpriced sessions. `--text` prints each window's tables instead and still writes the files. Each file holds the window's start and end, the price table date, the tables per tier (workers only), orchestrator and teammate with means per session, the skill use per teammate, and the unpriced lists. |
+| TEL-13 | A `horch cost` window, and `--since`, count each call and each skill load by its own time, not by when its session started. A session appears in a window when it has a call in it, with only those calls. A record that cannot be read appears in a window when its ledger life (created to last updated) overlaps it. |
+| TEL-14 | `horch cost` with `--since`, `--record` or `--session` prints 1 report: JSON by default, the tables with `--text`. It writes `<dir>/<prefix>_custom.json` only when `--dir` is given. `--json` is accepted and changes nothing; `--reprice` and `--pricing` work in every mode. |
+| TEL-15 | `horch cost` is informational: spend telemetry to see where tokens go, not an input to routing, model or teammate choice. No report field recommends, ranks or chooses, and `--help`, the README and the `--text` header say so. |
 
 ### Quota (QUO)
 
@@ -237,7 +241,7 @@ pub enum Observation { Usage(Event), QuotaSignal(QuotaSignal) }
 
 ### 7.2 Shared with `horch cost`
 
-`usage.rs` keeps its price table and `Price` logic. `horch cost` calls the same readers from offset 0 with a throwaway cursor, and sums the events. That is how TEL-10 holds by construction. The 2 known bugs (Codex final response, Claude subagents) are fixed in the readers, so `horch cost` output changes. The changelog line says so.
+`usage.rs` keeps its price table and `Price` logic. `horch cost` calls the same readers from offset 0 with a throwaway cursor, and sums the events. That is how TEL-10 holds by construction. It reads each session once (`usage::read_session_events`) and sums only the events whose own time is inside the range (`usage::Span`, start inclusive, end exclusive, stamps compared as strings as `horch usage --since` compares them), so the 30d, 7d and 24h windows (TEL-12, TEL-13) cost 1 read. The 2 known bugs (Codex final response, Claude subagents) are fixed in the readers, so `horch cost` output changes. The changelog line says so.
 
 One pricing function serves both: `usage::cost_of(prices, model, tokens)`, the price-table lookup times the token classes. The collector prices each event with it, `horch cost` prices each model's sum with it, and a reader of the store prices an event stored without a cost with it (section 8.2).
 
@@ -713,6 +717,10 @@ Test names start with the requirement ID. U = unit test in the module; I = integ
 | TEL-09 | `tel_09_two_projects_both_counted` | I |
 | TEL-10 | `tel_10_usage_equals_cost`: `horch usage --json` against `horch cost --json` on the same fixtures, per record and per class (E). `tel_10_usage_and_cost_agree_per_record_with_an_unpriced_model`: one fixture with a priced and an unpriced model, before and after the stored costs are erased (U). `tel_10_a_stored_event_without_a_cost_is_priced_at_read_time`, `tel_10_rollups_list_unpriced_events_and_never_count_them_as_zero`, `tel_10_the_screen_lists_unpriced_events` (U) | E, U |
 | TEL-11 | `tel_11_no_content_or_identity_persisted`: after a full e2e run, scan every file under the state dir for fixture sentinels (`SENTINEL-CONTENT`, the fixture emails, `acct_`, `user.email`) -> 0 hits | E |
+| TEL-12 | `tel_12_text_prints_the_tables_and_dir_moves_the_files`: `--text` prints the tables of all 3 windows; `--dir` holds the 3 files and the project gets none. `tel_13_no_filter_writes_3_window_files_that_count_calls_by_their_own_time` also checks the file names, the summary and the table columns. | U |
+| TEL-13 | `tel_13_a_span_counts_calls_and_skill_loads_by_their_own_time` (a 40-day-old session in 24h, 7d and 30d spans). `tel_13_no_filter_writes_3_window_files_that_count_calls_by_their_own_time`: the 24h report holds the old worker with only its last call. `tel_10_a_window_equals_horch_usage_over_the_same_range`: per window, stored events in the range equal the report rows (TEL-10). | U |
+| TEL-14 | `tel_14_a_filter_prints_one_report_and_writes_only_with_dir`: `--since` (by call time), `--record` with `--dir`, and a bad `--since` | U |
+| TEL-15 | `tel_15_no_report_field_recommends_anything`: no key in the summary or the 3 files names a recommendation; the `--text` header says the report is informational | U |
 | QUO-01 | `quo_01_claude_probe_protocol`: fake-claude logs exactly 1 stdin line, of subtype `get_usage`; no `user` line; `ANTHROPIC_API_KEY=dummy` set in the parent is absent in the child; `--model haiku` in argv | E |
 | QUO-02 | `quo_02_codex_probe_protocol`: exactly `initialize`, `initialized`, `account/rateLimits/read` | E |
 | QUO-03 | `quo_03_fallback_on_probe_failure`: `hang` and `error` scenarios -> the rollout snapshot is used, and its age is shown | E |

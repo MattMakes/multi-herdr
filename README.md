@@ -513,12 +513,32 @@ harness, model, effective effort, phase, expected skills and price.
 ### Measuring a run
 
 ```bash
-horch cost                              # this project's ledger, every session
-horch cost --since 2026-09-24           # one run
+horch cost                              # 30d, 7d and 24h reports to ai_docs/reports/cost/
+horch cost --text                       # the same, with the tables printed
+horch cost --dir /tmp/cost              # the 3 files somewhere else
+horch cost --since 2026-09-24           # 1 report of the calls since then, on stdout
 horch cost --reprice claude-sonnet-5    # what-if: the same tokens on Sonnet
-horch cost --session claude:<id>        # add the orchestrator's own session
-horch cost --json                       # for the tune-fleet skill
+horch cost --session claude:<id>        # add a session outside the ledger
 ```
+
+`horch cost` is informational: spend telemetry to see where tokens go; not
+an input to routing, model or teammate choice. Nothing in its output
+recommends anything.
+
+With no filter it writes 3 reports, for the 30 days, 7 days and 24 hours
+that end now, as `<YYYY_MM_DD_HHMMSS>_30d.json`, `_7d.json` and `_24h.json`
+(the local start time of the run) in `<project>/ai_docs/reports/cost/`, and
+prints a JSON summary: `generated_at`, `project`, `files`, and each window's
+sessions, calls, tokens, cost and unpriced sessions. A window counts each
+call by its own time, so a long session that started before the window shows
+only its calls inside it. Each file holds the window's tables (per tier,
+workers only; the orchestrator; per teammate, with means per session), the
+skill use per teammate, and what could not be priced.
+
+With `--since`, `--record` or `--session` it prints 1 report (JSON, or the
+tables with `--text`) and writes a `<prefix>_custom.json` file only with
+`--dir`. `--since` counts calls by their own time too, as `horch usage
+--since` does. `--json` is still accepted; JSON is the default.
 
 `horch cost` reads each worker's transcript by the session id the ledger
 already holds, so attribution is exact, never a guess from timestamps:
@@ -529,10 +549,10 @@ already holds, so attribution is exact, never a guess from timestamps:
 It prices the tokens with a dated per-MTok table; `--pricing <file.json>`
 overrides any row. It reports:
 - **each worker's cost**;
-- **roll-ups** per role family, harness and teammate, including the
-  cache-read share. cezaar#40 found cache reads were 60-70% of spend.
-- **a skills table**: what each worker actually loaded, and which of its
-  expected skills it never touched.
+- **roll-ups** per tier, teammate, role family and harness, with means per
+  session;
+- **a skills table**: per teammate, how many sessions loaded each expected
+  skill, and which other skills they loaded.
 
 **Never counted as $0:** sessions without a transcript, OpenCode sessions on
 a machine without `sqlite3`, and models the table does not know. These are

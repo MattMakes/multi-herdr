@@ -82,9 +82,10 @@ variant (`Antigravity`) and `<bin>` the binary (`agy`).
     and the count heading ("Six harnesses") and the environment table in
     `README.md`, the module table in `crates/horch-core/src/lib.rs`, and
     [command-flow.md](../command-flow.md). Check: read them once.
-13. Optional: `horch cost` support. Add a reader to `usage.rs` (the `match
-    agent` in the transcript reader) and to `telemetry/readers.rs`, only if
-    the CLI writes a local usage or transcript file. Antigravity has none.
+13. Optional: `horch cost` support. Add a reader to `telemetry/readers.rs`
+    for tokens and a skill scan to `usage.rs` (the `match agent` in
+    `skill_loads_in`), only if the CLI writes a local usage or transcript
+    file. Antigravity has none.
 14. Run the gate: `HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`.
 
 ## Files this recipe touches
