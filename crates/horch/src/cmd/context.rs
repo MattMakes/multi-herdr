@@ -19,7 +19,8 @@ use horch_core::compaction::window::{self, WindowDecision, WindowSource, HEADROO
 use horch_core::execution::legacy::Record;
 use horch_core::execution::records::Ledger;
 use horch_core::harness::{launch, HarnessKind};
-use horch_core::roster::Roster;
+use horch_core::roster::{Roster, Teammate};
+use horch_core::routing::decision::merge;
 use horch_core::runtime::RuntimeContext;
 use horch_core::telemetry::context::{read_current, Reading};
 use horch_core::telemetry::readers::Unreadable;
@@ -193,9 +194,9 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
         decision.tokens,
         transcript_window,
     );
-    // CTX-21: the teammate's `compact_at`. `horch context`, `horch compact`
-    // and the `horch note` check all build the row here.
-    let compact_at = src.roster.get(&record.tier).and_then(|t| t.compact_at);
+    // CTX-21: the `compact_at` of the teammate that ran. `horch context`,
+    // `horch compact` and the `horch note` check all build the row here.
+    let compact_at = launched_teammate(src, &record).and_then(|t| t.compact_at);
     let threshold = window::threshold(policy::watch_base(compact_at), native);
 
     let job_dir = record_job_dir(src.ctx, &record, workspace);
@@ -231,15 +232,34 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
     row
 }
 
+/// The teammate whose settings the launch of `record` ran with. After a
+/// substitution that is the requested teammate merged with the fallback
+/// (`routing.resolved`, or `via` in a record from before routing
+/// provenance), as the spawn gate built it: the requested name, the
+/// fallback's harness, model, `compact_window` and `compact_at`.
+fn launched_teammate(src: &Sources, record: &Record) -> Option<Teammate> {
+    let fallback = record
+        .routing
+        .as_ref()
+        .map(|r| r.resolved.as_str())
+        .filter(|name| *name != record.tier)
+        .or(record.via.as_deref())
+        .and_then(|name| src.roster.get(name));
+    match (src.roster.get(&record.tier), fallback) {
+        (Some(requested), Some(fallback)) => Some(merge(requested, fallback)),
+        (requested, fallback) => fallback.or(requested).cloned(),
+    }
+}
+
 /// The window decision a launch of `record` would make now.
 fn decide_now(src: &Sources, record: &Record) -> WindowDecision {
-    match src.roster.get(&record.tier) {
+    match launched_teammate(src, record) {
         Some(t) => launch::window_decision(
             src.ctx,
-            t,
+            &t,
             &record.model,
             &record_workdir(src.ctx, record),
-            src.roster.fleet_window(t, &record.model),
+            src.roster.fleet_window(&t, &record.model),
         ),
         None => window::decide(None, None),
     }

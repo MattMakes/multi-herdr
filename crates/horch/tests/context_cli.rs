@@ -747,6 +747,59 @@ fn ctx_21_compact_at_sets_base() {
     );
 }
 
+/// X1b: a substituted launch keeps the requested teammate's name and runs
+/// with its fallback's settings, so it is watched at the fallback's
+/// `compact_at`. `routing.resolved` names the fallback; a record from
+/// before routing provenance names it in `via` only.
+#[test]
+fn ctx_21_substituted_launch_takes_the_fallback_compact_at() {
+    let w = World::new();
+    let dir = w.root.join("home/.config/horch/teammates");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("high-base.md"),
+        "---\nname: high-base\nbrief_description: the requested teammate\n\
+         hidden: true\nbase: fleet-worker\nagent: claude\nmodel: opus\ncompact_at: 300000\n\
+         fallbacks: [low-base]\n---\nbody\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("low-base.md"),
+        "---\nname: low-base\nbrief_description: the fallback that ran\n\
+         hidden: true\nbase: fleet-worker\nagent: claude\nmodel: sonnet\ncompact_at: 60000\n---\nbody\n",
+    )
+    .unwrap();
+    // OVER holds 311,225 tokens: over 60,000, under 300,000.
+    let mut routed = record("rec-sub", "sub-1", "claude", "high-base", OVER);
+    routed["model"] = "sonnet".into();
+    routed["via"] = "low-base".into();
+    routed["routing"] = serde_json::json!({
+        "requested": "high-base", "resolved": "low-base", "fallback_index": 0,
+        "pool": "claude-max", "pool_state": "ok", "reason": "opus is tight",
+        "mode": "auto"
+    });
+    w.add_record(routed);
+    let mut old = record("rec-via", "sub-2", "claude", "high-base", OVER);
+    old["model"] = "sonnet".into();
+    old["via"] = "low-base".into();
+    old["updated_at"] = "2026-10-06T09:01:00Z".into();
+    w.add_record(old);
+
+    let table = w.stdout(&["context"], &[]);
+    for role in ["sub-1", "sub-2"] {
+        assert_eq!(cell(&table, role, "THRESHOLD"), "60,000", "\n{table}");
+        assert_eq!(cell(&table, role, "STATE"), "over", "\n{table}");
+    }
+    assert_eq!(w.json_row("sub-1")["threshold"], 60_000);
+
+    let me = [("HORCH_RECORD_ID", "rec-sub")];
+    let warning = w.stdout(&["note", "step 1 done"], &me);
+    assert!(
+        warning.contains("Your context is 311225 tokens. Your threshold is 60000 tokens."),
+        "{warning}"
+    );
+}
+
 /// X1: `horch context --windows` shows each teammate's `compact_at` and
 /// where it comes from beside the threshold: `teammate` for a file that
 /// sets it, `fleet base` (300,000) for one that does not.

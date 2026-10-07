@@ -459,7 +459,8 @@ fn worker_reads_the_skill_store_its_spawner_read() {
 /// Write an operator skill directory `<home>/.agents/skills/<name>/`, as
 /// `xcrun agent skills export` would, and overlay teammate `name` on `agent`
 /// that names `tdd` in `skills:` and the operator skill in
-/// `operator_skills:`, with the directory written `~/`-relative.
+/// `operator_skills:`, with the directory written `~/`-relative. The
+/// teammate states `compact_at`, so `--check` has nothing to say about it.
 fn operator_world(test: &str, name: &str, agent: &str, model: &str) -> Harness {
     let h = world(test, name, agent, model, &["tdd"]);
     let skill = h.home.join(".agents/skills/test-modernizer");
@@ -480,7 +481,7 @@ fn operator_world(test: &str, name: &str, agent: &str, model: &str) -> Harness {
         h.home.join(format!(".config/horch/teammates/{name}.md")),
         format!(
             "---\nname: {name}\nbrief_description: Operator skills probe.\nbase: fleet-worker\n\
-             agent: {agent}\nmodel: {model}\nskills: [tdd]\n{deny}\
+             agent: {agent}\nmodel: {model}\ncompact_at: 300000\nskills: [tdd]\n{deny}\
              operator_skills:\n  dir: ~/.agents/skills\n  names: [test-modernizer]\n---\nProbe.\n"
         ),
     )
