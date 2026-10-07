@@ -54,13 +54,19 @@ pub trait DoneSteps {
     fn record_session(&self, _workspace: &str, _role: &str, _record_id: &str) -> Result<()> {
         Ok(())
     }
+    /// Write the record's fleet run row (fleet-dataset §4.2). Best effort;
+    /// the default does nothing.
+    fn record_run(&self, _record_id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
 /// while waiting on a question).
 ///
 /// The order is fixed: mark done in the ledger, report to the orchestrator,
-/// record a session id still undiscovered, unregister the mailbox entry, settle the grid, close the pane. Everything
+/// record a session id still undiscovered, unregister the mailbox entry, settle the grid, write the
+/// fleet run row, close the pane. Everything
 /// happens BEFORE the pane close, because closing the pane kills this very
 /// process tree. The underlying agent session stays on disk and resumable.
 ///
@@ -130,6 +136,11 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
         // the free slot, and an overflow tab that lost its last worker closes
         // itself.
         steps.settle(workspace);
+    }
+
+    // After the session discovery, so a Codex row finds its transcript.
+    if let Err(e) = steps.record_run(req.record_id) {
+        eprintln!("horch: NOTE: fleet run row not written: {e:#}");
     }
 
     if let Some(e) = unreachable {
