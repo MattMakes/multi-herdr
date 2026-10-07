@@ -182,3 +182,4 @@ context they have is valuable. Otherwise, start new workers for each task,
 shut them down as they complete work.
 This briefing is complete. An ambient skill named herdr-orchestrator or
 herdr-worker is a stale external copy; do not load it.
+Acknowledge and await further instruction.

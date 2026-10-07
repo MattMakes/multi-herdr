@@ -249,8 +249,10 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
     assert_eq!(checked, 15);
 }
 
+/// The orchestration-orchestrator briefing gains one closing line: the
+/// operator starts it with no task. The worker briefing is unchanged.
 #[test]
-fn the_orchestration_recipe_briefings_are_unchanged() {
+fn the_orchestration_recipe_briefings_differ_only_by_the_await_line() {
     let r = roster();
     assert_eq!(
         prompts::agent_prompt(
@@ -259,7 +261,10 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
             "orchestrator"
         )
         .unwrap(),
-        golden("orchestration-orchestrator")
+        format!(
+            "{}\n\nAcknowledge and await further instruction.",
+            golden("orchestration-orchestrator")
+        )
     );
     assert_eq!(
         prompts::agent_prompt(&r, r.require("orchestration-worker").unwrap(), "sonnet-1").unwrap(),
@@ -267,7 +272,7 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
     );
 }
 
-/// The orchestrator briefing differs in exactly thirteen places, and this pins them.
+/// The orchestrator briefing differs in exactly fourteen places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -466,6 +471,10 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     // context section, after the usage limits (CTX-09, CTX-16, CTX-18, CTX-19).
     let context_watch = ORCHESTRATOR_CONTEXT_WATCH;
 
+    // Fourteenth: the operator starts an orchestrator with no task, so the
+    // briefing ends with the instruction to acknowledge and wait.
+    let await_line = "\nAcknowledge and await further instruction.";
+
     let expected = was
         .replace(old_block, &new_block)
         .replace(old_fleet, new_fleet)
@@ -475,11 +484,11 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         .replace(spawn_sentence, workers_only)
         .replace(old_placement, new_placement)
         .replace(spawning_header, &format!("{core_loop}{spawning_header}"))
-        .replace(close, &format!("{close}{guard}"))
+        .replace(close, &format!("{close}{guard}{await_line}"))
         .replace(context, &format!("{usage_limits}{context_watch}{context}"));
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the thirteen sanctioned blocks"
+        "the orchestrator briefing changed outside the fourteen sanctioned blocks"
     );
 }
 
@@ -583,6 +592,31 @@ fn worker_briefing(name: &str, role: &str) -> String {
     let r = roster();
     let t = r.require(name).unwrap();
     prompts::worker_prompt(&r, t, role, "Do the task", &SessionMode::Fresh(None)).unwrap()
+}
+
+/// The operator starts an orchestrator with no task; a worker gets its task at spawn.
+#[test]
+fn orchestrator_briefings_end_with_the_await_instruction() {
+    let r = roster();
+    for name in [
+        "orchestrator",
+        "orchestrator-codex",
+        "orchestration-orchestrator",
+    ] {
+        let t = r.require(name).unwrap();
+        let p = prompts::agent_prompt(&r, t, "orchestrator").unwrap();
+        assert!(
+            p.trim_end()
+                .ends_with("Acknowledge and await further instruction."),
+            "{name} briefing does not end with the await instruction"
+        );
+    }
+    for name in ["sonnet", "opus", "codex-sol"] {
+        assert!(
+            !worker_briefing(name, "sonnet-1").contains("await further instruction"),
+            "{name} worker briefing holds the await instruction"
+        );
+    }
 }
 
 /// CTX-09: both orchestrator briefings name the 2 checkpoints, and the Codex

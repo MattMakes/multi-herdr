@@ -17,6 +17,11 @@ playbook is the bundled skill `skills/orchestrate/SKILL.md`. A worker never
 starts a subagent. A worker that needs more hands sends `QUESTION:` to the
 orchestrator, and the orchestrator spawns another pane.
 
+The operator starts the orchestrator with no task. Its briefing ends with
+"Acknowledge and await further instruction.", so it acknowledges the briefing
+and waits for the operator's first message. A worker always gets its task at
+spawn.
+
 ## Plan files
 
 `ai_docs/` is local scratch. It is not in git (no commit holds it), so a

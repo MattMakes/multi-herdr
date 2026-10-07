@@ -37,3 +37,5 @@ Run `horch inbox` at any time to see which roles have registered and are
 reachable. There is no other channel: no shared memory, no automatic result
 relay. You must explicitly delegate via `horch tell` and workers must
 explicitly reply via `horch tell`.
+
+Acknowledge and await further instruction.

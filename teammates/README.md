@@ -29,7 +29,8 @@ choose from** — there is no registry to update and nothing to recompile.
   appears in the roster. `smoke.md` uses this, so `horch smoke fleet` keeps
   working without costing the orchestrator a roster line for a fake agent; the
   two orchestrators use it because they are launched into a pane, never spawned
-  into one.
+  into one. An orchestrator starts with no task, so both orchestrator
+  briefings end with "Acknowledge and await further instruction."
 - **The top tier is reserved for the orchestrator.** `fable` and `gpt-6-astra`
   are refused by `horch spawn`, whichever flavor is orchestrating: a fleet has
   at most one top-tier session (none under `horch fleet opus` or `sol`). The
