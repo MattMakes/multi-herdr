@@ -1060,19 +1060,19 @@ mod tests {
     #[test]
     fn no_launch_carries_the_anthropic_api_key() {
         let r = Roster::builtin().unwrap();
+        // A sandboxed teammate launches only where the host can sandbox it:
+        // on Linux, `bwrap` and `socat` on PATH. Fake ones stand in.
+        let tmp = tempfile::tempdir().unwrap();
+        let env = LaunchEnv {
+            path: Some(super::super::claude::sandbox_tools_path(tmp.path(), true)),
+            ..LaunchEnv::for_test()
+        };
         for name in r.names() {
             let t = r.require(name).unwrap();
             if t.agent == HarnessKind::None {
                 continue;
             }
-            let cmd = command_in(
-                &LaunchEnv::for_test(),
-                t,
-                Session::Unmanaged,
-                "p",
-                Some("m"),
-            )
-            .unwrap();
+            let cmd = command_in(&env, t, Session::Unmanaged, "p", Some("m")).unwrap();
             assert!(
                 cmd.get_envs()
                     .any(|(k, v)| k == "ANTHROPIC_API_KEY" && v.is_none()),

@@ -585,6 +585,23 @@ pub(crate) fn sandbox_host_problem(
     }
 }
 
+/// A `PATH` of 1 temp directory for a sandbox test: with fake `bwrap` and
+/// `socat` executables when `tools` is true, else empty. The Linux sandbox
+/// check looks there, so a test does not depend on the host's PATH.
+#[cfg(test)]
+pub(crate) fn sandbox_tools_path(dir: &Path, tools: bool) -> std::ffi::OsString {
+    std::fs::create_dir_all(dir).unwrap();
+    if tools {
+        for bin in ["bwrap", "socat"] {
+            let path = dir.join(bin);
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            crate::runtime::process::make_executable(&path).unwrap();
+        }
+    }
+    std::env::join_paths([dir]).unwrap()
+}
+
 /// Add the skill switches every Claude launch overlays on the operator's
 /// settings. Shared by the plain overlay above and [`skills_settings`], which
 /// is the path fleet panes take.
@@ -789,13 +806,23 @@ mod tests {
         }
     }
 
-    fn host_can_sandbox() -> bool {
+    /// Whether a launch in `env` passes the host sandbox check.
+    fn host_can_sandbox(env: &LaunchEnv) -> bool {
         sandbox_host_problem(
             std::env::consts::OS,
-            std::env::var_os("PATH").as_deref(),
+            env.path.as_deref(),
             Path::new(SANDBOX_EXEC).exists(),
         )
         .is_none()
+    }
+
+    /// 2 launch environments: PATH with the Linux sandbox tools, and PATH
+    /// without them. The temp dir must outlive them.
+    fn sandbox_envs(tmp: &Path) -> [LaunchEnv; 2] {
+        [true, false].map(|tools| LaunchEnv {
+            path: Some(sandbox_tools_path(&tmp.join(tools.to_string()), tools)),
+            ..LaunchEnv::for_test()
+        })
     }
 
     fn settings_arg(cmd: &Command) -> Value {
@@ -816,39 +843,37 @@ mod tests {
             "network": {"allowedDomains": ["api.appstoreconnect.apple.com"]},
             "filesystem": {"allowRead": ["~/.config/horch/asc"]}
         }));
-        let built = super::super::launch::command_in(
-            &LaunchEnv::for_test(),
-            &t,
-            Session::Fresh("id"),
-            "go",
-            None,
-        );
-        if !host_can_sandbox() {
-            let err = built.unwrap_err().to_string();
-            assert!(
-                err.contains("refusing to launch without a sandbox"),
-                "{err}"
+        let tmp = tempfile::tempdir().unwrap();
+        for env in sandbox_envs(tmp.path()) {
+            let built =
+                super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None);
+            if !host_can_sandbox(&env) {
+                let err = built.unwrap_err().to_string();
+                assert!(
+                    err.contains("refusing to launch without a sandbox"),
+                    "{err}"
+                );
+                continue;
+            }
+            let settings = settings_arg(&built.unwrap());
+            assert_eq!(
+                settings["sandbox"],
+                json!({
+                    "enabled": true,
+                    "failIfUnavailable": true,
+                    "allowUnsandboxedCommands": false,
+                    "network": {
+                        "allowedDomains": ["api.appstoreconnect.apple.com"],
+                        "strictAllowlist": true
+                    },
+                    "filesystem": {"allowRead": ["~/.config/horch/asc"]}
+                })
             );
-            return;
+            assert_eq!(
+                settings["permissions"]["blockReadsOutsideWorkingDirectories"],
+                true
+            );
         }
-        let settings = settings_arg(&built.unwrap());
-        assert_eq!(
-            settings["sandbox"],
-            json!({
-                "enabled": true,
-                "failIfUnavailable": true,
-                "allowUnsandboxedCommands": false,
-                "network": {
-                    "allowedDomains": ["api.appstoreconnect.apple.com"],
-                    "strictAllowlist": true
-                },
-                "filesystem": {"allowRead": ["~/.config/horch/asc"]}
-            })
-        );
-        assert_eq!(
-            settings["permissions"]["blockReadsOutsideWorkingDirectories"],
-            true
-        );
     }
 
     /// The shipped release preparer launches inside the sandbox: only the
@@ -901,26 +926,39 @@ mod tests {
         assert!(plain.get("permissions").is_none());
     }
 
+    /// The Linux check finds `bwrap` and `socat` on the launch's PATH, and
+    /// names what is missing. Run on every host, macOS included.
+    #[cfg(unix)]
+    #[test]
+    fn the_linux_sandbox_check_reads_the_launch_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [with, without] = sandbox_envs(tmp.path());
+        assert_eq!(
+            sandbox_host_problem("linux", with.path.as_deref(), false),
+            None
+        );
+        let problem = sandbox_host_problem("linux", without.path.as_deref(), false).unwrap();
+        assert!(problem.contains("bwrap and socat not on PATH"), "{problem}");
+        assert!(sandbox_host_problem("linux", None, false).is_some());
+    }
+
     /// A settings file replaces the overlay, so it would drop the sandbox.
     #[test]
     fn a_sandbox_with_a_settings_file_is_refused() {
         let mut t = sandboxed(json!({}));
         t.settings = Some("~/my-settings.json".into());
-        let err = super::super::launch::command_in(
-            &LaunchEnv::for_test(),
-            &t,
-            Session::Unmanaged,
-            "go",
-            None,
-        )
-        .unwrap_err()
-        .to_string();
-        let expected = if host_can_sandbox() {
-            "sandbox cannot be combined with a settings file"
-        } else {
-            "refusing to launch without a sandbox"
-        };
-        assert!(err.contains(expected), "{err}");
+        let tmp = tempfile::tempdir().unwrap();
+        for env in sandbox_envs(tmp.path()) {
+            let err = super::super::launch::command_in(&env, &t, Session::Unmanaged, "go", None)
+                .unwrap_err()
+                .to_string();
+            let expected = if host_can_sandbox(&env) {
+                "sandbox cannot be combined with a settings file"
+            } else {
+                "refusing to launch without a sandbox"
+            };
+            assert!(err.contains(expected), "{err}");
+        }
     }
 
     #[test]
