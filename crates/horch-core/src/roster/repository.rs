@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use super::parser::{md_files, parse_base, parse_teammate};
-use super::teammate::HARNESS_DEFAULTS_BASE;
+use super::teammate::{CONTEXT_MESSAGES_BASE, CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE};
 use super::{offered_in, with_project_skills, Base, ExecRule, ProjectFacts, Teammate};
+use crate::compaction::window;
+use crate::harness::HarnessKind;
 
 include!(concat!(env!("OUT_DIR"), "/builtin_teammates.rs"));
 
@@ -336,6 +338,32 @@ impl Roster {
     /// needs to build a fleet with.
     pub fn orchestrator_exec_rules(&self) -> &[ExecRule] {
         self.rules_of("codex-orchestrator-execpolicy")
+    }
+
+    /// Base `context-windows`: the fleet windows and the in-place harnesses.
+    pub fn context_windows(&self) -> Option<&Base> {
+        self.bases.get(CONTEXT_WINDOWS_BASE)
+    }
+
+    /// Base `context-messages`: the lines horch types for the context watch.
+    pub fn context_messages(&self) -> Option<&Base> {
+        self.bases.get(CONTEXT_MESSAGES_BASE)
+    }
+
+    /// The fleet window of `t` running `model`, with its 1-line source:
+    /// `t.compact_window`, else `windows["<harness>/<teammate>"]`, else
+    /// `windows["<harness>/<model>"]`. None: the harness default.
+    pub fn fleet_window(&self, t: &Teammate, model: &str) -> Option<(u64, String)> {
+        let empty = BTreeMap::new();
+        let windows = self.context_windows().map_or(&empty, |b| &b.windows);
+        window::fleet_window(windows, t.agent.as_str(), &t.name, model, t.compact_window)
+    }
+
+    /// Whether horch compacts `harness` in place (CTX-17): only when
+    /// `in_place` of `context-windows` names it.
+    pub fn compacts_in_place(&self, harness: HarnessKind) -> bool {
+        self.context_windows()
+            .is_some_and(|b| b.in_place.iter().any(|h| h == harness.as_str()))
     }
 
     fn rules_of(&self, base: &str) -> &[ExecRule] {

@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::execution::SessionMode;
 use crate::roster::{ExecRule, Roster, Teammate};
@@ -138,6 +138,19 @@ pub fn agent_prompt(roster: &Roster, teammate: &Teammate, role: &str) -> Result<
     let base = roster.require_base(base_name)?;
     vars.insert("persona", teammate.persona.as_str());
     render(&base.body, &vars)
+}
+
+/// Render message `key` of base `context-messages` (CTX-11, CTX-23). Error:
+/// the base or the key is missing, or the message names a placeholder that
+/// `vars` does not give.
+pub fn context_message(roster: &Roster, key: &str, vars: &BTreeMap<&str, &str>) -> Result<String> {
+    let base = roster
+        .context_messages()
+        .context("base 'context-messages' does not exist in _base/")?;
+    let Some(message) = base.messages.get(key) else {
+        bail!("base 'context-messages' has no message '{key}'");
+    };
+    render(message, vars).with_context(|| format!("context message '{key}'"))
 }
 
 /// Render one execpolicy `prefix_rule` block for `~/.codex/execpolicy`.

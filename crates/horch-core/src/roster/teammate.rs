@@ -229,6 +229,11 @@ pub struct Teammate {
     /// picks the entries of the final harness ([`HarnessDefault::for_harness`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub harness_defaults: Vec<HarnessDefault>,
+    /// The native auto-compact setting this teammate gets when the operator
+    /// set none: Claude window, Codex limit, Prime `contextWindow`. Overrides
+    /// the `windows` of `_base/context-windows.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_window: Option<u64>,
     /// The file body. Its meaning depends on `base`: a persona when `base` is
     /// set, the entire prompt when it is not.
     #[serde(skip)]
@@ -277,6 +282,7 @@ impl Default for Teammate {
             skills_when: BTreeMap::new(),
             requires: Vec::new(),
             harness_defaults: Vec::new(),
+            compact_window: None,
             persona: String::new(),
         }
     }
@@ -335,12 +341,55 @@ pub struct Base {
     /// [`HarnessDefault`].
     #[serde(default)]
     pub defaults: Vec<HarnessDefault>,
+    /// `_base/context-windows.md`: the fleet's native auto-compact settings,
+    /// keyed `<harness>/<teammate name>` or `<harness>/<model>`.
+    #[serde(default)]
+    pub windows: BTreeMap<String, u64>,
+    /// `_base/context-windows.md`: the harnesses horch compacts in place
+    /// (CTX-17). Every other harness takes the fresh-session route.
+    #[serde(default)]
+    pub in_place: Vec<String>,
+    /// `_base/context-messages.md`: every line horch types for the context
+    /// watch, by key. Rust only fills the placeholders.
+    #[serde(default)]
+    pub messages: BTreeMap<String, String>,
     #[serde(skip)]
     pub body: String,
 }
 
 /// The base that holds the per-harness launch defaults.
 pub(crate) const HARNESS_DEFAULTS_BASE: &str = "harness-defaults";
+
+/// The base that holds the fleet windows and the in-place harnesses.
+pub(crate) const CONTEXT_WINDOWS_BASE: &str = "context-windows";
+
+/// The base that holds the context-watch messages.
+pub(crate) const CONTEXT_MESSAGES_BASE: &str = "context-messages";
+
+/// Every key `_base/context-messages.md` must set.
+pub(crate) const CONTEXT_MESSAGE_KEYS: [&str; 8] = [
+    "request",
+    "warning",
+    "warning-orchestrator",
+    "instructions",
+    "instructions-orchestrator",
+    "resume",
+    "reported",
+    "failed",
+];
+
+/// The placeholders a context message may use.
+pub(crate) const CONTEXT_MESSAGE_PLACEHOLDERS: [&str; 9] = [
+    "role",
+    "tokens",
+    "threshold",
+    "handoff",
+    "pre",
+    "post",
+    "step",
+    "reason",
+    "log",
+];
 
 /// One entry of `_base/harness-defaults.md`: env, args and settings that
 /// every teammate of a harness gets at launch. A teammate's own value for the

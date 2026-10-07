@@ -7,12 +7,19 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Result};
 
 use super::operator::expand_home;
-use super::teammate::{HarnessDefault, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY};
+use super::teammate::{
+    HarnessDefault, CONTEXT_MESSAGES_BASE, CONTEXT_MESSAGE_KEYS, CONTEXT_MESSAGE_PLACEHOLDERS,
+    CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY,
+};
 use super::{
     effort_problem, reserved_tier, ExecRule, PermissionMode, Roster, Teammate,
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
     ORCHESTRATOR_ONLY_SKILLS,
 };
+use crate::compaction::window::{
+    headroom, native_trigger, threshold, BASE_THRESHOLD, HEADROOM_FLOOR,
+};
+use crate::harness::capabilities::TriggerRule;
 use crate::harness::launch::FORBIDDEN_ENV;
 use crate::harness::HarnessKind;
 use crate::routing::decision::merge;
@@ -547,6 +554,7 @@ impl Roster {
         }
         problems.extend(fallback_problems(self));
         problems.extend(self.harness_default_problems());
+        problems.extend(self.context_policy_problems());
         // Every command an agent is told to run must be allowed for codex, and
         // nothing more: a rule with no command behind it is standing permission
         // nobody asked for.
@@ -615,6 +623,156 @@ impl Roster {
         }
         problems
     }
+}
+
+impl Roster {
+    /// The context-policy rules of `horch teammates --check` (design 6.3):
+    /// 1 the headroom floor (CTX-08), 2 no window outside `compact_window`,
+    /// 3 no `compact_window` without a lever, 4 the 2 context bases.
+    fn context_policy_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        for t in self.teammates.values() {
+            problems.extend(self.headroom_problem(t));
+            problems.extend(window_outside_compact_window(t));
+            let trigger = t.agent.capabilities().compaction.trigger;
+            if t.compact_window.is_some()
+                && matches!(trigger, TriggerRule::Unknown | TriggerRule::PerModel)
+            {
+                problems.push(format!(
+                    "{}: compact_window does nothing on harness {}: it has no window setting",
+                    t.name, t.agent
+                ));
+            }
+        }
+        problems.extend(self.context_base_problems());
+        problems
+    }
+
+    /// Rule 1 (CTX-08): the fleet window of `t` leaves at least
+    /// `HEADROOM_FLOOR` tokens between the watch threshold and the native
+    /// trigger. A teammate with no fleet window, or on a harness whose
+    /// trigger horch cannot compute, is skipped.
+    fn headroom_problem(&self, t: &Teammate) -> Option<String> {
+        let model = t.model.as_deref().unwrap_or("");
+        let (w, _) = self.fleet_window(t, model)?;
+        let rule = t.agent.capabilities().compaction.trigger;
+        let native = native_trigger(rule, t.agent.as_str(), model, Some(w), None)?;
+        let t_watch = threshold(BASE_THRESHOLD, Some(native));
+        let h = headroom(native, t_watch);
+        (h < HEADROOM_FLOOR).then(|| {
+            format!(
+                "{}: compact window {w} leaves headroom {h} tokens, below the {HEADROOM_FLOOR} floor (native trigger {native}, threshold {t_watch})",
+                t.name
+            )
+        })
+    }
+
+    /// Rule 4: both context bases exist, each holds only its own keys, no
+    /// other base holds them, and every name and message is well formed.
+    fn context_base_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        for name in [CONTEXT_WINDOWS_BASE, CONTEXT_MESSAGES_BASE] {
+            if !self.bases.contains_key(name) {
+                problems.push(format!("_base/{name}.md is missing"));
+            }
+        }
+        for (name, base) in &self.bases {
+            let file = format!("_base/{name}.md");
+            for (key, set, owner) in [
+                ("windows", !base.windows.is_empty(), CONTEXT_WINDOWS_BASE),
+                ("in_place", !base.in_place.is_empty(), CONTEXT_WINDOWS_BASE),
+                ("messages", !base.messages.is_empty(), CONTEXT_MESSAGES_BASE),
+            ] {
+                if set && name != owner {
+                    problems.push(format!(
+                        "{file}: {key} belongs in _base/{owner}.md; delete it here"
+                    ));
+                }
+            }
+        }
+        if let Some(base) = self.context_windows() {
+            let file = format!("_base/{CONTEXT_WINDOWS_BASE}.md");
+            for key in base.windows.keys() {
+                let harness = key.split_once('/').map(|(h, _)| h);
+                if !harness.is_some_and(is_harness_name) {
+                    problems.push(format!(
+                        "{file}: windows key {key} is not <harness>/<teammate or model> with a harness name"
+                    ));
+                }
+            }
+            for entry in &base.in_place {
+                if !is_harness_name(entry) {
+                    problems.push(format!(
+                        "{file}: in_place entry {entry} is not a harness name"
+                    ));
+                }
+            }
+        }
+        if let Some(base) = self.context_messages() {
+            let file = format!("_base/{CONTEXT_MESSAGES_BASE}.md");
+            for key in CONTEXT_MESSAGE_KEYS {
+                if !base.messages.contains_key(key) {
+                    problems.push(format!("{file}: message {key} is missing"));
+                }
+            }
+            let known: BTreeMap<&str, &str> = CONTEXT_MESSAGE_PLACEHOLDERS
+                .into_iter()
+                .map(|p| (p, ""))
+                .collect();
+            for (key, message) in &base.messages {
+                if message.contains(['\n', '\r']) {
+                    problems.push(format!(
+                        "{file}: message {key} has a newline; a newline submits the line early"
+                    ));
+                }
+                if let Err(e) = crate::prompts::render(message, &known) {
+                    problems.push(format!("{file}: message {key}: {e}"));
+                }
+            }
+        }
+        problems
+    }
+}
+
+fn is_harness_name(name: &str) -> bool {
+    HarnessKind::ALL.iter().any(|k| k.as_str() == name)
+}
+
+/// Rule 2: a teammate sets its compaction window in `env`, in inline
+/// `settings` JSON or in `args`. These bypass the operator check or do
+/// nothing; `compact_window` is the lever.
+fn window_outside_compact_window(t: &Teammate) -> Vec<String> {
+    const CLAUDE_WINDOW: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+    const CODEX_LIMIT: &str = "model_auto_compact_token_limit";
+    let mut places = Vec::new();
+    if t.env.contains_key(CLAUDE_WINDOW) {
+        places.push(format!("env {CLAUDE_WINDOW}"));
+    }
+    let settings = t
+        .settings
+        .as_deref()
+        .filter(|s| s.trim_start().starts_with('{'))
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    if settings
+        .as_ref()
+        .and_then(|v| v.get("env"))
+        .and_then(|env| env.get(CLAUDE_WINDOW))
+        .is_some()
+    {
+        places.push(format!("settings env.{CLAUDE_WINDOW}"));
+    }
+    if t.args.iter().any(|a| a.contains(CODEX_LIMIT)) {
+        places.push(format!("args {CODEX_LIMIT}"));
+    }
+    places
+        .into_iter()
+        .map(|place| {
+            format!(
+                "{}: set the compaction window with compact_window, not {place}",
+                t.name
+            )
+        })
+        .collect()
 }
 
 /// Check rule 1: the teammate's lines that only repeat a harness default of
