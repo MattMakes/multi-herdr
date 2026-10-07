@@ -20,8 +20,9 @@ use crate::execution::records::Ledger;
 use crate::execution::SessionMode;
 use crate::messaging::delivery::{self, Readiness, Timing};
 use crate::messaging::mailbox::Mailbox;
-use crate::roster::{ExecRule, Teammate};
+use crate::roster::{ExecRule, HarnessDefault, Teammate};
 use crate::runtime::bins::{host_tool_bin, BLENDER_APP};
+use crate::runtime::context::DEFAULT_ENV_YIELD;
 #[cfg(test)]
 use crate::runtime::BinOverrides;
 use crate::runtime::{HarnessBins, RuntimeContext};
@@ -50,6 +51,21 @@ pub struct LaunchEnv {
     /// `{path_of:blender}` lookup tries. A test leaves it `None`, so it never
     /// finds the machine's real Blender.
     pub blender_app: Option<PathBuf>,
+    /// The operator's values for the [`DEFAULT_ENV_YIELD`] names
+    /// (`Inherited::operator_env`): a non-Claude harness default `env` key
+    /// yields to them. An allow-list, so no other variable is carried.
+    pub operator_env: BTreeMap<String, String>,
+    /// `$CODEX_HOME`: the codex home whose `config.toml` a codex default
+    /// `-c` pair yields to (`codex::codex_home`).
+    pub codex_home: Option<PathBuf>,
+    /// `$CLAUDE_CONFIG_DIR`: where the operator's Claude user settings live.
+    pub claude_config_dir: Option<PathBuf>,
+    /// `RuntimeContext.paths.claude_managed_settings`. `None` reads no
+    /// managed settings.
+    pub claude_managed_settings: Option<PathBuf>,
+    /// The directory the agent starts in (the bootstrap cwd), whose
+    /// `.claude/` project settings a Claude settings default yields to.
+    pub workdir: Option<PathBuf>,
 }
 
 impl LaunchEnv {
@@ -62,6 +78,14 @@ impl LaunchEnv {
             pathext: ctx.inherited.pathext.clone(),
             blender_path: ctx.inherited.blender_path.clone(),
             blender_app: BLENDER_APP.map(PathBuf::from),
+            operator_env: DEFAULT_ENV_YIELD
+                .iter()
+                .filter_map(|k| Some((k.to_string(), ctx.inherited.operator_env(k)?.to_string())))
+                .collect(),
+            codex_home: ctx.inherited.codex_home.clone(),
+            claude_config_dir: ctx.inherited.claude_config_dir.clone(),
+            claude_managed_settings: Some(ctx.paths.claude_managed_settings.clone()),
+            workdir: ctx.paths.cwd.clone(),
         }
     }
 
@@ -77,6 +101,11 @@ impl LaunchEnv {
             pathext: None,
             blender_path: None,
             blender_app: None,
+            operator_env: BTreeMap::new(),
+            codex_home: None,
+            claude_config_dir: None,
+            claude_managed_settings: None,
+            workdir: None,
         }
     }
 
@@ -119,7 +148,8 @@ pub enum Session<'a> {
 }
 
 /// Environment a teammate's CLI starts with: its `subagent_model` and its
-/// `env` block, the latter winning. The caller gives it to the child command
+/// `env` block, the latter winning, then the `env` of its harness defaults
+/// for the keys it does not set. The caller gives it to the child command
 /// with [`crate::runtime::process::inherit_env`], so a value the builder set
 /// on the command still wins, as it did when this was exported into the
 /// parent's environment.
@@ -132,7 +162,7 @@ pub enum Session<'a> {
 /// executable ([`LaunchEnv::host_tool`]). When the tool is not found, the
 /// variable is left out, so the launch still works and the CLI keeps what
 /// it inherits.
-pub(crate) fn teammate_env(teammate: &Teammate, env: &LaunchEnv) -> Vec<(String, String)> {
+pub fn teammate_env(teammate: &Teammate, env: &LaunchEnv) -> Vec<(String, String)> {
     let mut out = BTreeMap::new();
     if let Some(sub) = &teammate.subagent_model {
         out.insert("CLAUDE_CODE_SUBAGENT_MODEL".to_string(), sub.clone());
@@ -150,6 +180,22 @@ pub(crate) fn teammate_env(teammate: &Teammate, env: &LaunchEnv) -> Vec<(String,
         };
         out.insert(key.clone(), value);
     }
+    // Harness defaults of the final harness, under the teammate's own keys.
+    // A later entry wins over an earlier one. A non-Claude default yields to
+    // the operator's own value (Claude's settings `env` already beats the
+    // process env).
+    let mut defaults = BTreeMap::new();
+    for entry in HarnessDefault::for_harness(&teammate.harness_defaults, teammate.agent) {
+        for (key, value) in &entry.env {
+            if out.contains_key(key)
+                || (teammate.agent != HarnessKind::Claude && env.operator_env.contains_key(key))
+            {
+                continue;
+            }
+            defaults.insert(key.clone(), value.clone());
+        }
+    }
+    out.extend(defaults);
     out.into_iter().collect()
 }
 
@@ -1544,9 +1590,16 @@ mod tests {
         assert_eq!(v["agent"]["build"]["variant"], "high", "{v}");
         assert!(v["skills"]["paths"].as_array().unwrap().len() == 1, "{v}");
 
-        // No effort, no overlay from the builder.
+        // No effort: the builder sets only the harness default `config`.
         t.effort = None;
         t.env.clear();
+        let cmd = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap();
+        assert_eq!(
+            overlay(&cmd),
+            serde_json::json!({"agent": {"title": {"disable": true}}})
+        );
+        // No effort and no defaults: no overlay from the builder.
+        t.harness_defaults.clear();
         let cmd = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap();
         assert!(cmd.get_envs().all(|(k, _)| k != "OPENCODE_CONFIG_CONTENT"));
     }

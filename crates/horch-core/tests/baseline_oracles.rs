@@ -163,7 +163,10 @@ const PINNED: [(&str, Option<&str>); 20] = [
     ("RLM_MAX_DEPTH", None),
     ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None),
     ("PRIME_AGENT_CODING_AGENT_DIR", None),
-    ("HORCH_CLAUDE_MANAGED_SETTINGS", Some("<TMP>/managed-settings.json")),
+    (
+        "HORCH_CLAUDE_MANAGED_SETTINGS",
+        Some("<TMP>/managed-settings.json"),
+    ),
 ];
 
 /// The operator's settings as the fake home holds them: one enabled plugin,
@@ -385,6 +388,22 @@ fn launch_oracle_with(world: &World, t: &Teammate, build: &Build) -> Value {
         "skills_bundle_error": bundle_note,
         "modes": modes,
     })
+}
+
+/// HDF-04 (finding 5): every `env` key of `_base/harness-defaults.md` is
+/// pinned to null, so no oracle depends on the machine's value for it.
+#[test]
+fn hdf_04_oracle_world_pins_every_default_env_key() {
+    let roster = Roster::builtin().unwrap();
+    let defaults = &roster.base("harness-defaults").unwrap().defaults;
+    let keys: Vec<&String> = defaults.iter().flat_map(|d| d.env.keys()).collect();
+    assert!(!keys.is_empty());
+    for key in keys {
+        assert!(
+            PINNED.contains(&(key.as_str(), None)),
+            "{key}: pin it to None in PINNED"
+        );
+    }
 }
 
 #[test]

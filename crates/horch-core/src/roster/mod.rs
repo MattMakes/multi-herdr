@@ -56,7 +56,7 @@ pub(crate) use operator::{expand_home, operator_enabled_plugins, operator_status
 pub use permission::PermissionMode;
 pub use phase::Phase;
 pub use repository::{Roster, TEMPLATE};
-pub use teammate::{reserved_tier, Base, ExecRule, OperatorSkills, Teammate};
+pub use teammate::{reserved_tier, Base, ExecRule, HarnessDefault, OperatorSkills, Teammate};
 pub(crate) use teammate::{
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS, ORCHESTRATOR_ONLY_SKILLS,
 };

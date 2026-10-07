@@ -1,11 +1,12 @@
 //! The loaded roster: built-ins, then each overlay directory on top.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use super::parser::{md_files, parse_base, parse_teammate};
+use super::teammate::HARNESS_DEFAULTS_BASE;
 use super::{offered_in, with_project_skills, Base, ExecRule, ProjectFacts, Teammate};
 
 include!(concat!(env!("OUT_DIR"), "/builtin_teammates.rs"));
@@ -34,6 +35,9 @@ pub struct Roster {
     /// missing here is the built-in.
     teammate_origins: BTreeMap<String, PathBuf>,
     base_origins: BTreeMap<String, PathBuf>,
+    /// Teammates whose FILE set `harness_defaults`, recorded before the
+    /// roster attaches the real entries over it. Check rule 2 reads it.
+    pub(crate) defaults_set_in_file: BTreeSet<String>,
 }
 
 /// One overlay file that did not load.
@@ -87,13 +91,43 @@ impl Roster {
             );
         }
         for (name, text) in BUILTIN_TEAMMATES {
-            r.teammates.insert(
-                name.to_string(),
-                parse_teammate(name, text)
-                    .with_context(|| format!("compiled-in teammate '{name}'"))?,
-            );
+            let t = parse_teammate(name, text)
+                .with_context(|| format!("compiled-in teammate '{name}'"))?;
+            r.insert_parsed(name.to_string(), t);
         }
+        r.attach_harness_defaults();
         Ok(r)
+    }
+
+    /// Add a parsed teammate, and record whether its file set
+    /// `harness_defaults` before [`Roster::attach_harness_defaults`]
+    /// overwrites the field.
+    fn insert_parsed(&mut self, name: String, t: Teammate) {
+        if t.harness_defaults.is_empty() {
+            self.defaults_set_in_file.remove(&name);
+        } else {
+            self.defaults_set_in_file.insert(name.clone());
+        }
+        self.teammates.insert(name, t);
+    }
+
+    /// Give every teammate the entries of `_base/harness-defaults.md` whose
+    /// `base` matches its own, for every harness, in file order. The builder
+    /// selects by harness at launch (`HarnessDefault::for_harness`). Run
+    /// after every load, so an overlaid base or teammate is seen.
+    fn attach_harness_defaults(&mut self) {
+        let defaults = self
+            .bases
+            .get(HARNESS_DEFAULTS_BASE)
+            .map(|b| b.defaults.clone())
+            .unwrap_or_default();
+        for t in self.teammates.values_mut() {
+            t.harness_defaults = defaults
+                .iter()
+                .filter(|d| d.matches_base(t.base.as_deref()))
+                .cloned()
+                .collect();
+        }
     }
 
     /// Built-ins, overlaid by `<home>/.config/horch/teammates`, then by
@@ -163,7 +197,7 @@ impl Roster {
             }
             match read_parsed(&path, |text| parse_teammate(&stem, text)) {
                 Ok(t) => {
-                    self.teammates.insert(stem.clone(), t);
+                    self.insert_parsed(stem.clone(), t);
                     self.broken_teammates.remove(&stem);
                     self.teammate_origins.insert(stem, path);
                 }
@@ -181,6 +215,7 @@ impl Roster {
                 }
             }
         }
+        self.attach_harness_defaults();
         Ok(())
     }
 

@@ -5,16 +5,18 @@
 use anyhow::{bail, Result};
 
 use super::operator::expand_home;
-use super::teammate::HEADLESS_ONLY;
+use super::teammate::{HarnessDefault, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY};
 use super::{
     effort_problem, reserved_tier, ExecRule, PermissionMode, Roster, Teammate,
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
     ORCHESTRATOR_ONLY_SKILLS,
 };
+use crate::harness::launch::FORBIDDEN_ENV;
 use crate::harness::HarnessKind;
 use crate::routing::decision::merge;
 use crate::routing::eligible::trains_on_input;
 use crate::routing::quota;
+use crate::runtime::context::DEFAULT_ENV_YIELD;
 use crate::skills::SkillCatalog;
 
 impl Roster {
@@ -542,6 +544,7 @@ impl Roster {
             problems.extend(self.check_teammate(t));
         }
         problems.extend(fallback_problems(self));
+        problems.extend(self.harness_default_problems());
         // Every command an agent is told to run must be allowed for codex, and
         // nothing more: a rule with no command behind it is standing permission
         // nobody asked for.
@@ -563,6 +566,129 @@ impl Roster {
             ));
         }
         problems
+    }
+}
+
+/// Env keys, `-c` keys and settings key paths that set a native compaction
+/// window. A harness default never sets one: the per-tier windows live in
+/// the context-windows base.
+const WINDOW_KEYS: [&str; 4] = [
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+    "model_auto_compact_token_limit",
+    "autoCompactWindow",
+];
+
+impl Roster {
+    /// Check rules 2 and 3 of the harness defaults (design 6A.3): no
+    /// teammate file sets `harness_defaults`, and every entry of
+    /// `_base/harness-defaults.md` is well formed.
+    fn harness_default_problems(&self) -> Vec<String> {
+        let mut problems: Vec<String> = self
+            .defaults_set_in_file
+            .iter()
+            .map(|name| {
+                format!(
+                    "{name}: harness_defaults is set by _base/{HARNESS_DEFAULTS_BASE}.md; delete it from the teammate file"
+                )
+            })
+            .collect();
+        let Some(base) = self.bases.get(HARNESS_DEFAULTS_BASE) else {
+            return problems;
+        };
+        for (i, entry) in base.defaults.iter().enumerate() {
+            let who = format!(
+                "_base/{HARNESS_DEFAULTS_BASE}.md entry {} ({})",
+                i + 1,
+                entry.harness
+            );
+            problems.extend(
+                harness_default_entry_problems(entry)
+                    .into_iter()
+                    .map(|p| format!("{who}: {p}")),
+            );
+        }
+        problems
+    }
+}
+
+/// What is wrong with one harness-default entry (check rule 3).
+fn harness_default_entry_problems(entry: &HarnessDefault) -> Vec<String> {
+    let mut out = Vec::new();
+    let kind = entry.harness;
+    for (field, set, owner) in [
+        ("settings", entry.settings.is_some(), HarnessKind::Claude),
+        ("config", entry.config.is_some(), HarnessKind::OpenCode),
+        (
+            "agent_settings",
+            entry.agent_settings.is_some(),
+            HarnessKind::Prime,
+        ),
+    ] {
+        if set && kind != owner {
+            out.push(format!("{field} is only for harness {owner}"));
+        }
+    }
+    if entry.force.as_deref().is_some_and(|f| f.trim().is_empty()) {
+        out.push("force must give the reason and the decision that allowed it".into());
+    }
+    let mut args = entry.args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "-c" {
+            match args.next() {
+                Some(pair) if pair.contains('=') => {}
+                _ => out.push("args: -c needs a <key>=<value> after it".into()),
+            }
+        } else if !arg.starts_with('-') {
+            out.push(format!(
+                "args: '{arg}' is neither a -c <key>=<value> pair nor a flag"
+            ));
+        }
+    }
+    for key in entry.env.keys() {
+        if FORBIDDEN_ENV.contains(&key.as_str()) || key.starts_with("ANTHROPIC_") {
+            out.push(format!("env {key} is forbidden in a fleet launch"));
+        } else if kind != HarnessKind::Claude && !DEFAULT_ENV_YIELD.contains(&key.as_str()) {
+            out.push(format!(
+                "env {key}: add it to runtime::context::DEFAULT_ENV_YIELD"
+            ));
+        }
+    }
+    let mut settings_paths = Vec::new();
+    if let Some(settings) = &entry.settings {
+        json_paths(settings, "", &mut settings_paths);
+    }
+    let window = entry
+        .env
+        .keys()
+        .map(String::as_str)
+        .chain(HarnessDefault::config_keys(&entry.args))
+        .chain(settings_paths.iter().flat_map(|p| p.rsplit('.').next()))
+        .find(|k| WINDOW_KEYS.contains(k));
+    if let Some(key) = window {
+        out.push(format!(
+            "{key} sets a compaction window; windows belong in _base/context-windows.md"
+        ));
+    }
+    out
+}
+
+/// Every key path of a JSON object, dotted, parents included.
+fn json_paths(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    prefix: &str,
+    out: &mut Vec<String>,
+) {
+    for (key, value) in obj {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        if let serde_json::Value::Object(inner) = value {
+            json_paths(inner, &path, out);
+        }
+        out.push(path);
     }
 }
 

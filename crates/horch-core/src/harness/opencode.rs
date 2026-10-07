@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, Workdir};
-use crate::roster::Teammate;
+use crate::roster::{HarnessDefault, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 
@@ -112,12 +112,21 @@ impl Harness for OpenCode {
     ) -> Result<()> {
         // The builder may already have set it (the effort variant); build
         // on that rather than on the teammate's or the operator's value.
-        let inherited = cmd
+        let set = cmd
             .get_envs()
             .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
-            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
-            .or_else(|| teammate.env.get("OPENCODE_CONFIG_CONTENT").cloned())
-            .or_else(|| inherited.map(str::to_owned));
+            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()));
+        let inherited = match set {
+            Some(set) => Some(set),
+            None => {
+                let base = teammate
+                    .env
+                    .get("OPENCODE_CONFIG_CONTENT")
+                    .map(String::as_str)
+                    .or(inherited);
+                with_config_defaults(base, teammate)?
+            }
+        };
         cmd.env(
             "OPENCODE_CONFIG_CONTENT",
             skills_config(inherited.as_deref(), &skills.skills_dir())?,
@@ -183,16 +192,24 @@ pub(super) fn opencode_command(
     // OpenCode calls reasoning effort a model "variant". The TUI horch
     // launches has no `--variant` flag - 1.18.2 swallows it silently - so the level goes
     // through the config overlay instead, as the default agent's `variant`.
+    // The teammate's config, else the operator's, with the harness default
+    // `config` keys merged under it.
+    let base = teammate
+        .env
+        .get("OPENCODE_CONFIG_CONTENT")
+        .or(env.opencode_config_content.as_ref());
+    let config = with_config_defaults(base.map(String::as_str), teammate)?;
     if let Some(effort) = &teammate.effort {
-        let inherited = teammate
-            .env
-            .get("OPENCODE_CONFIG_CONTENT")
-            .cloned()
-            .or_else(|| env.opencode_config_content.clone());
         cmd.env(
             "OPENCODE_CONFIG_CONTENT",
-            opencode_variant_config(inherited.as_deref(), effort)?,
+            opencode_variant_config(config.as_deref(), effort)?,
         );
+    } else if config.as_ref() != base {
+        // Only when a default added a key: else the teammate env layer (or
+        // the inherited env) already carries this exact value.
+        if let Some(config) = config {
+            cmd.env("OPENCODE_CONFIG_CONTENT", config);
+        }
     }
     if let Some(mode) = teammate.permission_mode {
         match mode.opencode_args() {
@@ -244,6 +261,64 @@ pub(crate) fn opencode_variant_config(inherited: Option<&str>, effort: &str) -> 
         .context("agent.build config must be an object")?;
     build.insert("variant".into(), serde_json::json!(effort));
     Ok(value.to_string())
+}
+
+/// `base` (an `OPENCODE_CONFIG_CONTENT` text) with the `config` keys of the
+/// teammate's OpenCode harness defaults deep-merged under it: a key path
+/// `base` already has wins. Among the defaults, a later entry wins. `base`
+/// comes back unchanged, byte for byte, when no default adds a key.
+pub(crate) fn with_config_defaults(
+    base: Option<&str>,
+    teammate: &Teammate,
+) -> Result<Option<String>> {
+    let mut defaults = serde_json::Map::new();
+    for entry in HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::OpenCode) {
+        if let Some(config) = &entry.config {
+            merge_json(&mut defaults, config, true);
+        }
+    }
+    if defaults.is_empty() {
+        return Ok(base.map(str::to_owned));
+    }
+    let mut value: serde_json::Value = match base {
+        Some(s) => serde_json::from_str(s).context("invalid OPENCODE_CONFIG_CONTENT JSON")?,
+        None => serde_json::json!({}),
+    };
+    let object = value
+        .as_object_mut()
+        .context("OPENCODE_CONFIG_CONTENT must be an object")?;
+    if !merge_json(object, &defaults, false) {
+        return Ok(base.map(str::to_owned));
+    }
+    Ok(Some(value.to_string()))
+}
+
+/// Deep-merge `from` into `into`. `overwrite`: a leaf of `from` replaces the
+/// same leaf of `into`; else `into` keeps it. Returns whether `into` changed.
+pub(crate) fn merge_json(
+    into: &mut serde_json::Map<String, serde_json::Value>,
+    from: &serde_json::Map<String, serde_json::Value>,
+    overwrite: bool,
+) -> bool {
+    let mut changed = false;
+    for (key, value) in from {
+        match (into.get_mut(key), value) {
+            (Some(serde_json::Value::Object(inner)), serde_json::Value::Object(add)) => {
+                changed |= merge_json(inner, add, overwrite);
+            }
+            (Some(old), _) => {
+                if overwrite && old != value {
+                    *old = value.clone();
+                    changed = true;
+                }
+            }
+            (None, _) => {
+                into.insert(key.clone(), value.clone());
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 /// Add `skills` to `skills.paths` in an OpenCode config overlay, keeping

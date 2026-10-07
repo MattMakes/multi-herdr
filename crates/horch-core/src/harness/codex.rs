@@ -31,7 +31,7 @@ use super::{
     Session, Workdir,
 };
 use crate::prompts;
-use crate::roster::{ExecRule, Teammate};
+use crate::roster::{ExecRule, HarnessDefault, Teammate};
 use crate::runtime::RuntimeContext;
 
 /// Path to codex's shared rules file: `~/.codex/rules/default.rules`.
@@ -499,6 +499,156 @@ impl Harness for Codex {
     }
 }
 
+/// The value of `key` (dotted, for example `tui.auto_recap`) in a codex
+/// `config.toml`: under `[profiles.<p>]` first, then at the top level and in
+/// its tables. `p` is `profile`, else the file's top-level `profile`. A
+/// string loses its quotes and a number its `_` separators. A line scanner
+/// like `trust::codex_trust`, not a TOML parser: no TOML crate.
+pub fn codex_config_value(text: &str, profile: Option<&str>, key: &str) -> Option<String> {
+    let entries = toml_entries(text);
+    let lookup = |full: &str| {
+        entries
+            .iter()
+            .find(|(k, _)| k == full)
+            .map(|(_, v)| toml_scalar(v))
+    };
+    let profile = profile.map(str::to_string).or_else(|| lookup("profile"));
+    if let Some(p) = profile {
+        if let Some(v) = lookup(&format!("profiles.{p}.{key}")) {
+            return Some(v);
+        }
+    }
+    lookup(key)
+}
+
+/// Every `key = value` line of a TOML text, as (full dotted key, raw value).
+/// The key includes its `[table]`; quotes around key parts are dropped. An
+/// array-of-tables (`[[x]]`) section is skipped.
+fn toml_entries(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut table: Option<String> = Some(String::new());
+    for line in text.lines() {
+        let line = strip_toml_comment(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("[[") {
+            table = None;
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+            table = Some(toml_key(header));
+            continue;
+        }
+        let (Some(table), Some((key, value))) = (&table, line.split_once('=')) else {
+            continue;
+        };
+        let key = toml_key(key);
+        let full = if table.is_empty() {
+            key
+        } else {
+            format!("{table}.{key}")
+        };
+        out.push((full, value.trim().to_string()));
+    }
+    out
+}
+
+/// A dotted TOML key with its parts unquoted and trimmed.
+fn toml_key(key: &str) -> String {
+    key.split('.')
+        .map(|part| part.trim().trim_matches('"').trim_matches('\''))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// `line` up to a `#` that is outside a string.
+fn strip_toml_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (i, c) in line.char_indices() {
+        match (quote, c) {
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, '#') => return &line[..i],
+            _ => {}
+        }
+    }
+    line
+}
+
+/// A raw TOML value as text: a string without its quotes, a number without
+/// `_` separators, anything else as written.
+fn toml_scalar(raw: &str) -> String {
+    let raw = raw.trim();
+    for q in ['"', '\''] {
+        if let Some(inner) = raw.strip_prefix(q).and_then(|r| r.strip_suffix(q)) {
+            return inner.to_string();
+        }
+    }
+    if raw.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') {
+        return raw.replace('_', "");
+    }
+    raw.to_string()
+}
+
+/// The profile a codex launch runs: the value after `-p` or `--profile` in
+/// the teammate's args. `None` lets the config's own `profile` decide.
+fn args_profile(args: &[String]) -> Option<&str> {
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "-p" || arg == "--profile" {
+            return it.next().map(String::as_str);
+        }
+        if let Some(p) = arg.strip_prefix("--profile=") {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// The harness-default args of a codex launch, which go before the
+/// teammate's own. A `-c <key>=` pair is left out when the teammate's args
+/// set the key, or when `config` (the inherited `config.toml`) sets it and
+/// the entry has no `force`. Any other token is left out when the teammate's
+/// args hold it. `config` is read only when a pair needs it.
+pub(crate) fn default_args(
+    teammate: &Teammate,
+    config: impl FnOnce() -> Option<String>,
+) -> Vec<String> {
+    let teammate_keys = HarnessDefault::config_keys(&teammate.args);
+    let profile = args_profile(&teammate.args);
+    let mut config = Some(config);
+    let mut text: Option<String> = None;
+    let mut operator_sets = |key: &str| {
+        if let Some(read) = config.take() {
+            text = read();
+        }
+        text.as_deref()
+            .is_some_and(|t| codex_config_value(t, profile, key).is_some())
+    };
+    let mut out = Vec::new();
+    for entry in HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Codex) {
+        let mut it = entry.args.iter();
+        while let Some(arg) = it.next() {
+            if arg == "-c" {
+                let Some(pair) = it.next() else { break };
+                let key = pair
+                    .split_once('=')
+                    .map_or(pair.as_str(), |(k, _)| k)
+                    .trim();
+                if teammate_keys.contains(&key) || (entry.force.is_none() && operator_sets(key)) {
+                    continue;
+                }
+                out.push(arg.clone());
+                out.push(pair.clone());
+            } else if !teammate.args.contains(arg) {
+                out.push(arg.clone());
+            }
+        }
+    }
+    out
+}
+
 pub(super) fn codex_command(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -543,6 +693,12 @@ pub(super) fn codex_command(
         cmd.arg("-c")
             .arg(format!("model_reasoning_effort=\"{effort}\""));
     }
+    // Harness defaults first, so the teammate's own args come later and win.
+    cmd.args(default_args(teammate, || {
+        let home = env.home()?;
+        let dir = codex_home(home, env.codex_home.as_deref());
+        std::fs::read_to_string(dir.join("config.toml")).ok()
+    }));
     cmd.args(&teammate.args);
     if let Session::Resume(id) = session {
         cmd.arg(id);

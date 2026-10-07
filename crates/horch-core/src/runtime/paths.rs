@@ -30,7 +30,20 @@ pub struct Paths {
     pub temp_root: PathBuf,
     /// `$HOME` (`%USERPROFILE%` on Windows), else `.`.
     pub home: PathBuf,
+    /// Claude Code's managed settings file: `$HORCH_CLAUDE_MANAGED_SETTINGS`,
+    /// else the platform path ([`CLAUDE_MANAGED_SETTINGS`]). A test points
+    /// it into a temp dir, so no result depends on the machine's file.
+    pub claude_managed_settings: PathBuf,
 }
+
+/// Where Claude Code reads managed (organisation) settings on this platform.
+pub(crate) const CLAUDE_MANAGED_SETTINGS: &str = if cfg!(target_os = "macos") {
+    "/Library/Application Support/ClaudeCode/managed-settings.json"
+} else if cfg!(windows) {
+    r"C:\Program Files\ClaudeCode\managed-settings.json"
+} else {
+    "/etc/claude-code/managed-settings.json"
+};
 
 impl Paths {
     pub fn from_env(env: &dyn EnvSource) -> Paths {
@@ -43,6 +56,8 @@ impl Paths {
             data_root: data_root(env, &home),
             temp_root: env.temp_dir(),
             home,
+            claude_managed_settings: nonempty_path(env, "HORCH_CLAUDE_MANAGED_SETTINGS")
+                .unwrap_or_else(|| PathBuf::from(CLAUDE_MANAGED_SETTINGS)),
         }
     }
 

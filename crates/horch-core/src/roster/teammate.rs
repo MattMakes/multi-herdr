@@ -223,6 +223,12 @@ pub struct Teammate {
     /// project is offered this teammate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<Requirement>,
+    /// The entries of `_base/harness-defaults.md` whose `base` matches this
+    /// teammate, for EVERY harness, in file order. The roster attaches them
+    /// at load; a teammate file that sets this fails the check. The builder
+    /// picks the entries of the final harness ([`HarnessDefault::for_harness`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub harness_defaults: Vec<HarnessDefault>,
     /// The file body. Its meaning depends on `base`: a persona when `base` is
     /// set, the entire prompt when it is not.
     #[serde(skip)]
@@ -270,6 +276,7 @@ impl Default for Teammate {
             offer_when: Vec::new(),
             skills_when: BTreeMap::new(),
             requires: Vec::new(),
+            harness_defaults: Vec::new(),
             persona: String::new(),
         }
     }
@@ -324,6 +331,91 @@ pub struct Base {
     pub task_idle: String,
     #[serde(default)]
     pub rules: Vec<ExecRule>,
+    /// `_base/harness-defaults.md`: launch defaults per harness. See
+    /// [`HarnessDefault`].
+    #[serde(default)]
+    pub defaults: Vec<HarnessDefault>,
     #[serde(skip)]
     pub body: String,
+}
+
+/// The base that holds the per-harness launch defaults.
+pub(crate) const HARNESS_DEFAULTS_BASE: &str = "harness-defaults";
+
+/// One entry of `_base/harness-defaults.md`: env, args and settings that
+/// every teammate of a harness gets at launch. A teammate's own value for the
+/// same key wins, and so does the operator's own config, unless `force` is
+/// set (design `ai_docs/plans/wave2/w1/design.md` section 6A.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessDefault {
+    pub harness: HarnessKind,
+    /// Only teammates with this `base` (for example fleet-worker). None: all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Claude only: keys merged into the one `--settings` overlay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// OpenCode only: keys merged into `OPENCODE_CONFIG_CONTENT`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Prime only: keys merged into the fleet agent dir `settings.json`.
+    /// Parsed and checked now; applied by the Prime agent dir (slice 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Present: this default wins over the operator's config too. The text
+    /// is the reason, and it names the decision that allowed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force: Option<String>,
+}
+
+impl HarnessDefault {
+    /// The entries for `kind`, in file order. Every builder reads only this
+    /// selection, so a teammate whose `agent` changes after load gets the
+    /// defaults of the harness it runs on.
+    pub fn for_harness(
+        all: &[HarnessDefault],
+        kind: HarnessKind,
+    ) -> impl Iterator<Item = &HarnessDefault> {
+        all.iter().filter(move |d| d.harness == kind)
+    }
+
+    /// Whether this entry applies to a teammate with `base`.
+    pub(crate) fn matches_base(&self, base: Option<&str>) -> bool {
+        self.base.is_none() || self.base.as_deref() == base
+    }
+
+    /// The keys of the `-c <key>=<value>` pairs in `args`.
+    pub fn config_keys(args: &[String]) -> Vec<&str> {
+        let mut keys = Vec::new();
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            if arg == "-c" {
+                if let Some(key) = it.next().and_then(|pair| pair.split_once('=')) {
+                    keys.push(key.0.trim());
+                }
+            }
+        }
+        keys
+    }
+}
+
+/// A Claude entry with nothing in it: tests and struct updates start here.
+impl Default for HarnessDefault {
+    fn default() -> Self {
+        HarnessDefault {
+            harness: HarnessKind::Claude,
+            base: None,
+            env: BTreeMap::new(),
+            args: Vec::new(),
+            settings: None,
+            config: None,
+            agent_settings: None,
+            force: None,
+        }
+    }
 }

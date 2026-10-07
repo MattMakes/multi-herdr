@@ -13,8 +13,8 @@ use super::launch::model_for;
 use serde_json::{json, Value};
 
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session};
-use crate::roster::Teammate;
 use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
+use crate::roster::{HarnessDefault, Teammate};
 use crate::skills::Bundle;
 
 /// The plugin the skills bundle loads as. Its skills show as `horch:<id>`.
@@ -183,8 +183,27 @@ pub(super) fn claude_command(
                 teammate.name
             );
         }
-        // The teammate named its own file; that file owns the overlay.
-        cmd.arg("--settings").arg(env.expand_home(settings));
+        let has_defaults =
+            HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
+                .any(|d| d.settings.is_some());
+        if has_defaults && settings.trim_start().starts_with('{') {
+            // Inline JSON (the teammate's own, or the skills overlay): the
+            // harness defaults merge under it. Unchanged text when none adds
+            // a key.
+            let mut value: Value =
+                serde_json::from_str(settings).context("invalid teammate settings JSON")?;
+            let obj = value
+                .as_object_mut()
+                .context("teammate settings must be a JSON object")?;
+            if merge_settings_defaults(teammate, obj, || operator_settings(env))? {
+                cmd.arg("--settings").arg(value.to_string());
+            } else {
+                cmd.arg("--settings").arg(settings);
+            }
+        } else {
+            // The teammate named its own file; that file owns the overlay.
+            cmd.arg("--settings").arg(env.expand_home(settings));
+        }
     } else {
         let mut overlay = serde_json::Map::new();
         // Switch the operator's globally-enabled plugins off, by name, for this
@@ -212,6 +231,7 @@ pub(super) fn claude_command(
             }
         }
         overlay_sandbox(teammate, &mut overlay)?;
+        merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
         if !overlay.is_empty() {
             cmd.arg("--settings")
                 .arg(serde_json::Value::Object(overlay).to_string());
@@ -273,6 +293,173 @@ fn skills_settings(teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
     }
     overlay_sandbox(teammate, obj)?;
     Ok(settings)
+}
+
+/// The texts of the operator's Claude settings files, for one launch. A
+/// file that does not exist is `None`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClaudeSettingsTexts {
+    pub managed: Option<String>,
+    pub local: Option<String>,
+    pub project: Option<String>,
+    pub user: Option<String>,
+    /// Where `user` was read from, for the detail.
+    pub user_path: String,
+}
+
+/// The operator's settings files for a launch in `env`.
+fn operator_settings(env: &LaunchEnv) -> ClaudeSettingsTexts {
+    read_claude_settings(
+        env.claude_managed_settings.as_deref(),
+        env.home(),
+        env.claude_config_dir.as_deref(),
+        env.workdir.as_deref(),
+    )
+}
+
+/// Read the settings files of the operator chain. `managed` is
+/// `RuntimeContext.paths.claude_managed_settings`; `None` reads no managed
+/// file. The user file is `<config_dir or home/.claude>/settings.json`.
+pub(crate) fn read_claude_settings(
+    managed: Option<&Path>,
+    home: Option<&Path>,
+    config_dir: Option<&Path>,
+    workdir: Option<&Path>,
+) -> ClaudeSettingsTexts {
+    let read = |p: &Path| std::fs::read_to_string(p).ok();
+    let user_path = config_dir
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|h| h.join(".claude")))
+        .map(|d| d.join("settings.json"));
+    ClaudeSettingsTexts {
+        managed: managed.and_then(read),
+        local: workdir.and_then(|w| read(&w.join(".claude/settings.local.json"))),
+        project: workdir.and_then(|w| read(&w.join(".claude/settings.json"))),
+        user: user_path.as_deref().and_then(read),
+        user_path: user_path
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    }
+}
+
+/// The first source of the operator chain (managed, local, project, user)
+/// that sets the dotted `path`, as (value, detail). A source other than
+/// managed counts only when `sources` is `None` or names it (the teammate's
+/// `setting_sources`).
+pub(crate) fn claude_operator_value(
+    t: &ClaudeSettingsTexts,
+    sources: Option<&[String]>,
+    path: &str,
+) -> Option<(Value, String)> {
+    let named = |name: &str| sources.is_none_or(|s| s.iter().any(|x| x == name));
+    let chain = [
+        (t.managed.as_deref(), true, "managed settings".to_string()),
+        (
+            t.local.as_deref(),
+            named("local"),
+            ".claude/settings.local.json".into(),
+        ),
+        (
+            t.project.as_deref(),
+            named("project"),
+            ".claude/settings.json".into(),
+        ),
+        (t.user.as_deref(), named("user"), t.user_path.clone()),
+    ];
+    chain.into_iter().find_map(|(text, on, detail)| {
+        let doc: Value = serde_json::from_str(text.filter(|_| on)?).ok()?;
+        Some((json_at(&doc, path)?.clone(), detail))
+    })
+}
+
+/// The value at a dotted key path in a JSON document.
+fn json_at<'a>(doc: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.').try_fold(doc, |node, key| node.get(key))
+}
+
+/// Every leaf key path of a settings object, dotted: a nested object is
+/// walked, any other value (or an empty object) is a leaf.
+fn leaf_paths(obj: &serde_json::Map<String, Value>, prefix: &str, out: &mut Vec<(String, Value)>) {
+    for (key, value) in obj {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match value {
+            Value::Object(inner) if !inner.is_empty() => leaf_paths(inner, &path, out),
+            _ => out.push((path, value.clone())),
+        }
+    }
+}
+
+/// Whether the overlay sets `parents.key`, or a parent of it as a
+/// non-object: either way a default cannot go there.
+fn overlay_blocks(overlay: &serde_json::Map<String, Value>, parents: &[&str], key: &str) -> bool {
+    let mut node = overlay;
+    for parent in parents {
+        match node.get(*parent) {
+            Some(Value::Object(inner)) => node = inner,
+            Some(_) => return true,
+            None => return false,
+        }
+    }
+    node.contains_key(key)
+}
+
+/// Merge the teammate's Claude harness-default `settings` into a
+/// `--settings` overlay at the lowest precedence. A key path is left out
+/// when the overlay has it (the teammate's inline settings or horch's fixed
+/// switches), or when the operator chain sets it and the entry has no
+/// `force`. Among the defaults, a later entry wins. `texts` is read only
+/// when a non-forced key needs it. Returns whether the overlay changed.
+pub(crate) fn merge_settings_defaults(
+    teammate: &Teammate,
+    overlay: &mut serde_json::Map<String, Value>,
+    texts: impl FnOnce() -> ClaudeSettingsTexts,
+) -> Result<bool> {
+    let mut leaves: Vec<(String, Value, bool)> = Vec::new();
+    for entry in HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude) {
+        let Some(settings) = &entry.settings else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        leaf_paths(settings, "", &mut paths);
+        for (path, value) in paths {
+            leaves.retain(|(p, _, _)| *p != path);
+            leaves.push((path, value, entry.force.is_some()));
+        }
+    }
+    let mut texts = Some(texts);
+    let mut read: Option<ClaudeSettingsTexts> = None;
+    let mut changed = false;
+    for (path, value, forced) in leaves {
+        let mut parts: Vec<&str> = path.split('.').collect();
+        let key = parts.pop().expect("a non-empty key path");
+        if overlay_blocks(overlay, &parts, key) {
+            continue;
+        }
+        if !forced {
+            if let Some(f) = texts.take() {
+                read = Some(f());
+            }
+            let chain = read.as_ref().expect("read above");
+            if claude_operator_value(chain, teammate.setting_sources.as_deref(), &path).is_some() {
+                continue;
+            }
+        }
+        let mut node = &mut *overlay;
+        for parent in parts {
+            node = node
+                .entry(parent)
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .context("checked above: an object")?;
+        }
+        node.insert(key.to_string(), value);
+        changed = true;
+    }
+    Ok(changed)
 }
 
 /// Where macOS keeps the Seatbelt launcher Claude Code's sandbox runs under.
@@ -503,6 +690,34 @@ pub(crate) const AMBIENT_SKILL_CREATOR: [&str; 2] =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HDF-02: the operator chain is managed, then local, then project, then
+    /// user; `setting_sources` drops the sources it does not name, never
+    /// managed. A dotted path walks nested objects.
+    #[test]
+    fn hdf_02_claude_operator_value_follows_the_chain_order() {
+        let texts = ClaudeSettingsTexts {
+            managed: Some(r#"{"a": "managed"}"#.into()),
+            local: Some(r#"{"a": "local", "b": "local"}"#.into()),
+            project: Some(r#"{"a": "project", "b": "project", "c": "project"}"#.into()),
+            user: Some(r#"{"a": "user", "b": "user", "c": "user", "d": {"e": "user"}}"#.into()),
+            user_path: "/u/settings.json".into(),
+        };
+        let value =
+            |sources: Option<&[String]>, path: &str| claude_operator_value(&texts, sources, path);
+        assert_eq!(value(None, "a").unwrap().0, json!("managed"));
+        assert_eq!(value(None, "b").unwrap().0, json!("local"));
+        assert_eq!(value(None, "c").unwrap().0, json!("project"));
+        let (v, detail) = value(None, "d.e").unwrap();
+        assert_eq!((v, detail.as_str()), (json!("user"), "/u/settings.json"));
+        assert_eq!(value(None, "z"), None);
+
+        let project = ["project".to_string()];
+        assert_eq!(value(Some(&project), "a").unwrap().0, json!("managed"));
+        assert_eq!(value(Some(&project), "b").unwrap().0, json!("project"));
+        assert_eq!(value(Some(&project), "d.e"), None, "user is not named");
+        assert_eq!(value(Some(&[]), "c"), None);
+    }
 
     /// A plugin skill ignores `skillOverrides`, so a disabled `herdr:<skill>`
     /// switches the herdr plugin off under every key it is enabled or

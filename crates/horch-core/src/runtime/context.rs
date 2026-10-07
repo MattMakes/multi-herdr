@@ -207,9 +207,36 @@ pub struct Inherited {
     pub hostname: Option<String>,
     /// `HERDR_SESSION`.
     pub herdr_session: Option<String>,
+    /// `OPENCODE_DISABLE_EXTERNAL_SKILLS` (an OpenCode harness default yields to it).
+    pub opencode_disable_external_skills: Option<String>,
+    /// `RLM_MAX_DEPTH` (a Prime harness default yields to it).
+    pub rlm_max_depth: Option<String>,
+    /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (the Claude window resolver).
+    pub claude_code_auto_compact_window: Option<String>,
+    /// `PRIME_AGENT_CODING_AGENT_DIR` (the Prime agent dir source; slice 2 reads it).
+    pub prime_agent_dir: Option<PathBuf>,
 }
 
+/// The env names a non-Claude harness default may yield to. Each one is a
+/// named field of [`Inherited`]: horch never keeps a map of the whole
+/// process environment, so a `FORBIDDEN_ENV` name is never captured.
+pub(crate) const DEFAULT_ENV_YIELD: [&str; 2] =
+    ["OPENCODE_DISABLE_EXTERNAL_SKILLS", "RLM_MAX_DEPTH"];
+
 impl Inherited {
+    /// [`DEFAULT_ENV_YIELD`], reachable through the public `Inherited`.
+    pub const DEFAULT_ENV_YIELD: [&'static str; 2] = DEFAULT_ENV_YIELD;
+
+    /// The inherited value of `key` when `key` is in [`DEFAULT_ENV_YIELD`];
+    /// else `None`. An operator value here wins over a harness default.
+    pub fn operator_env(&self, key: &str) -> Option<&str> {
+        match key {
+            "OPENCODE_DISABLE_EXTERNAL_SKILLS" => self.opencode_disable_external_skills.as_deref(),
+            "RLM_MAX_DEPTH" => self.rlm_max_depth.as_deref(),
+            _ => None,
+        }
+    }
+
     pub fn from_env(env: &dyn EnvSource) -> Inherited {
         let nonempty = |key: &str| env.var(key).filter(|s| !s.is_empty());
         Inherited {
@@ -228,6 +255,10 @@ impl Inherited {
             local_app_data: nonempty_path(env, "LOCALAPPDATA"),
             hostname: nonempty("HOSTNAME").or_else(|| nonempty("COMPUTERNAME")),
             herdr_session: nonempty("HERDR_SESSION"),
+            opencode_disable_external_skills: env.var("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
+            rlm_max_depth: env.var("RLM_MAX_DEPTH"),
+            claude_code_auto_compact_window: env.var("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+            prime_agent_dir: nonempty_path(env, "PRIME_AGENT_CODING_AGENT_DIR"),
         }
     }
 }
