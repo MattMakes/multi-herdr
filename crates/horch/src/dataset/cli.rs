@@ -192,7 +192,7 @@ pub struct RunArgs {
     #[arg(value_name = "TASK", required_unless_present = "plan")]
     pub task: Option<String>,
     /// The unit's plan file, committed at the base commit. Without TASK,
-    /// the task is "Read and follow <PATH> exactly.", with <PATH> relative
+    /// the task is "Read and follow PATH exactly.", with PATH relative
     /// to the project root.
     #[arg(long, value_name = "PATH")]
     pub plan: Option<PathBuf>,
