@@ -74,6 +74,8 @@ step cargo fmt --all --check
 step cargo build --workspace --all-targets
 step cargo build --workspace --bins
 step cargo clippy --workspace --all-targets -- -D warnings
+# N-12: a rustdoc warning (a link to a private or renamed item) fails too.
+step env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 step cargo test --workspace --no-fail-fast
 step env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check
 # No arguments: every requirement ID in docs/specs/*.md needs a test.

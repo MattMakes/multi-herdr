@@ -9,7 +9,7 @@ to read a failure, and the rules for oracles, goldens and fakes.
 HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate
 ```
 
-`just gate` runs `scripts/phase-gate.sh` (11 steps). It stops at the first failure and
+`just gate` runs `scripts/phase-gate.sh` (12 steps). It stops at the first failure and
 prints `GATE GREEN` at the end. On a full machine it takes about 4 minutes.
 
 Warning: never run the gate or a test under `git rebase -x`, or from a git
@@ -26,17 +26,18 @@ of defence. Do not depend on it.
 
 | # | step | a failure means | open first |
 |---|---|---|---|
-| 1 | `no_spec_todo` (`git grep` for an unresolved spec marker) | a file holds an unresolved spec marker; the step prints each hit | the file and line in the output; close the marker |
+| 1 | `no_spec_todo` (`git grep` for an unresolved spec marker: the spec-todo token in any file, or a Markdown line that starts with a `PENDING:` placeholder) | a file holds an unresolved spec marker; the step prints each hit | the file and line in the output; close the marker |
 | 2 | `cargo fmt --all --check` | the formatting differs | run `cargo fmt --all` |
 | 3 | `cargo build --workspace --all-targets` | code or a test does not compile | the first `error[...]` in the output |
 | 4 | `cargo build --workspace --bins` | a binary does not compile (the e2e tests need all of them) | the same |
 | 5 | `cargo clippy --workspace --all-targets -- -D warnings` | a clippy warning; every warning is an error | the first `warning:` in the output |
-| 6 | `cargo test --workspace --no-fail-fast` | a test failed; every test runs, so read the summary at the end | the failing test file |
-| 7 | `env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check` | a file in `teammates/` breaks a roster rule | the named teammate file; rules in `crates/horch-core/src/roster/validation.rs` |
-| 8 | `scripts/check-req-coverage.sh` | a requirement ID has no test | the ID's requirement table in `docs/specs/` |
-| 9 | `scripts/check-deps.sh` | a crate has a dependency that is not allowed | the `Cargo.toml` you changed |
-| 10 | `scripts/verify-telemetry-e2e.sh` | the hermetic telemetry story changed | `crates/horch-e2e/tests/scenario.rs` |
-| 11 | `godot_skills` (the Python checks in `scripts/godot/`) | a Godot skill names an unknown engine API, a code block does not parse, or a cross-reference does not resolve; the Godot and dotnet checks skip when those tools are absent | the first failing script in the output, then the named file in `skills/godot-*/` |
+| 6 | `env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` | a rustdoc warning, for example a public doc that links to a private or renamed item | the first `-->` location; make the link plain code or point it at the current item |
+| 7 | `cargo test --workspace --no-fail-fast` | a test failed; every test runs, so read the summary at the end | the failing test file |
+| 8 | `env HORCH_TEAMMATES_DIR=teammates cargo run --quiet --bin horch -- teammates --check` | a file in `teammates/` breaks a roster rule | the named teammate file; rules in `crates/horch-core/src/roster/validation.rs` |
+| 9 | `scripts/check-req-coverage.sh` | a requirement ID has no test | the ID's requirement table in `docs/specs/` |
+| 10 | `scripts/check-deps.sh` | a crate has a dependency that is not allowed | the `Cargo.toml` you changed |
+| 11 | `scripts/verify-telemetry-e2e.sh` | the hermetic telemetry story changed | `crates/horch-e2e/tests/scenario.rs` |
+| 12 | `godot_skills` (the Python checks in `scripts/godot/`) | a Godot skill names an unknown engine API, a code block does not parse, or a cross-reference does not resolve; the Godot and dotnet checks skip when those tools are absent | the first failing script in the output, then the named file in `skills/godot-*/` |
 
 `HORCH_REQUIRE_GIT=1` and `HORCH_REQUIRE_SQLITE=1` turn a skip into a
 failure. Without them, a test that cannot find `git` (for example in

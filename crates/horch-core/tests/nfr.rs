@@ -218,6 +218,7 @@ fn nfr_08_phase_gate_runs_every_check() {
         "cargo build --workspace --all-targets",
         "cargo build --workspace --bins",
         "cargo clippy --workspace --all-targets -- -D warnings",
+        "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --workspace",
         "cargo test --workspace",
         "HORCH_TEAMMATES_DIR=teammates",
         "teammates --check",
