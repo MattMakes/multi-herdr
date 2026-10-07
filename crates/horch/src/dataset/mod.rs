@@ -33,6 +33,8 @@ pub mod exit {
     pub const SUCCESS: u8 = 0;
     /// Any error that is not one of the codes below.
     pub const FAILURE: u8 = 1;
+    /// A usage error: `run --detach` without a pane to report to.
+    pub(crate) const USAGE: u8 = 2;
     /// The budget or the quota refused the run.
     pub(crate) const BUDGET_REFUSED: u8 = 3;
     /// Preflight failed: no worktree was created and no model was called.

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use horch_e2e::bin_dir;
-use horch_e2e::harness::Harness;
+use horch_e2e::harness::{wait_for_or, Harness};
 use serde_json::{json, Value};
 
 /// The harness fakes that stand for agent CLIs. Any call to one of them
@@ -25,6 +25,12 @@ const AGENTS: [&str; 5] = ["claude", "codex", "opencode", "pi", "prime"];
 
 /// The plan file every test commits (or not).
 const PLAN: &str = "docs/plan.md";
+
+/// The pane the detached caller runs in (`HERDR_PANE_ID`).
+const CALLER_PANE: &str = "w9:p1";
+
+/// The branch a detached round promotes onto. It does not exist before.
+const ROUND_BRANCH: &str = "compete/greeting";
 
 // ── round helpers (a copy of tests/promotion.rs) ─────────────────────────
 
@@ -130,6 +136,10 @@ fn git(h: &Harness, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn done(file: &str) -> Value {
+    json!({"write": {file: "hello\n"}, "commit": true, "exit": "done"})
 }
 
 /// Write the plan file into the project.
@@ -399,6 +409,184 @@ fn fds_09_plan_untracked_or_dirty_refused() {
     assert!(of_kind(&events, "round.created").is_empty());
     assert!(of_kind(&events, "worktree.created").is_empty());
     assert_eq!(worktree_count(&h), 1);
+    assert_no_agent_launch(&h);
+    assert_clean(&h);
+}
+
+// ── FDS-10 ───────────────────────────────────────────────────────────────
+
+/// The `herdr` argv of every fake herdr call, in order.
+fn herdr_argvs(h: &Harness) -> Vec<Vec<String>> {
+    h.calls()
+        .into_iter()
+        .filter(|c| c["fake"] == "herdr")
+        .map(|c| {
+            c["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|a| a.as_str().map(str::to_string))
+                .collect()
+        })
+        .collect()
+}
+
+/// The lines typed into `pane` by `herdr agent prompt`.
+fn prompts_to(h: &Harness, pane: &str) -> Vec<String> {
+    herdr_argvs(h)
+        .into_iter()
+        .filter(|a| a.len() == 4 && a[0] == "agent" && a[1] == "prompt" && a[2] == pane)
+        .map(|a| a[3].clone())
+        .collect()
+}
+
+/// The command of each `herdr pane run`.
+fn pane_runs(h: &Harness) -> Vec<(String, String)> {
+    h.calls_of("herdr")
+        .into_iter()
+        .filter_map(|c| {
+            let ran = c["ran"].as_str()?.to_string();
+            Some((c["argv"][2].as_str()?.to_string(), ran))
+        })
+        .collect()
+}
+
+/// `run --plan --detach` passes preflight in the caller, records the plan,
+/// starts the coordinator in a new pane of the round's dataset workspace
+/// and returns at once with 1 line. The pane runs `resume --report-to`;
+/// the round's 1 report line reaches the caller's pane (`HERDR_PANE_ID`)
+/// and names the new `compete/` branch at the winner's commit.
+#[test]
+fn fds_10_detach_returns_after_start() {
+    let Some(h) = round_harness(
+        "fds10detach",
+        500_000_000_000,
+        json!({"A": done("a.txt"), "B": done("b.txt")}),
+    ) else {
+        return;
+    };
+    commit_plan(&h);
+    let main_before = git(&h, &["rev-parse", "refs/heads/main"]);
+    let out = run_plan(
+        &h,
+        &h.project,
+        PLAN,
+        &["--allow-dirty", "--promote-to", ROUND_BRANCH, "--detach"],
+        &[("HERDR_PANE_ID", CALLER_PANE)],
+    );
+    // The caller is back before the round reports.
+    let early = prompts_to(&h, CALLER_PANE);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(early.is_empty(), "{early:?}");
+
+    let events = events(&h);
+    let round = of_kind(&events, "round.created")[0]["round_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let exp = events[0]["experiment_id"].as_str().unwrap().to_string();
+    let exp8: String = {
+        let plain: Vec<char> = exp.chars().filter(char::is_ascii_alphanumeric).collect();
+        plain[plain.len() - 8..].iter().collect()
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(
+        stdout,
+        format!(
+            "round {round} started: workspace multi-herdr-dataset {exp8}, report to {CALLER_PANE}\n"
+        ),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(of_kind(&events, "candidate.planned").len(), 2);
+
+    // The coordinator runs in a new pane of the dataset workspace, not in
+    // the caller: `resume <exp> --report-to <pane>`.
+    let runs = pane_runs(&h);
+    let (pane, command) = runs
+        .iter()
+        .find(|(_, cmd)| cmd.contains("resume"))
+        .unwrap_or_else(|| panic!("no resume pane: {runs:?}"));
+    assert!(command.contains(&exp), "{command}");
+    assert!(command.contains("--report-to"), "{command}");
+    assert!(command.contains(CALLER_PANE), "{command}");
+    assert!(!command.contains("ANTHROPIC_API_KEY="), "{command}");
+    let ws = pane.split(':').next().unwrap();
+    assert!(
+        runs.iter()
+            .any(|(p, cmd)| p == &format!("{ws}:p1") && cmd.contains("watch")),
+        "{runs:?}"
+    );
+
+    let report = wait_for_or(
+        "the round's report line",
+        || prompts_to(&h, CALLER_PANE).into_iter().next(),
+        || format!("{runs:?}\n{:?}", herdr_argvs(&h)),
+    );
+    let branch_tip = git(&h, &["rev-parse", &format!("refs/heads/{ROUND_BRANCH}")]);
+    let events = self::events(&h);
+    let winner = &of_kind(&events, "winner.selected")[0]["payload"];
+    assert_eq!(winner["head_sha"], branch_tip.as_str());
+    let config_id = of_kind(&events, "candidate.planned")
+        .into_iter()
+        .find(|e| e["payload"]["label"] == winner["label"])
+        .map(|e| e["payload"]["config_id"].as_str().unwrap().to_string())
+        .unwrap();
+    assert_eq!(
+        report,
+        format!(
+            "[compete-{exp8}] DONE: round {round} is DECIDED. Winner: {config_id}. \
+             Promoted: {ROUND_BRANCH}@{branch_tip}. Reason: none."
+        )
+    );
+    // The working branch is untouched: the winner lands on the new branch.
+    assert_eq!(git(&h, &["rev-parse", "refs/heads/main"]), main_before);
+    // Exactly 1 report line.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(prompts_to(&h, CALLER_PANE).len(), 1);
+    assert_clean(&h);
+}
+
+/// `--detach` keeps every refusal of `run`: a failed preflight prints the
+/// report and exits 4 before any workspace, pane or worktree; no pane to
+/// report to exits 2 before preflight, with nothing recorded.
+#[test]
+fn fds_10_detach_refusal_exit_4() {
+    let Some(h) = round_harness("fds10refused", 0, json!({})) else {
+        return;
+    };
+    commit_plan(&h);
+    let out = run_plan(
+        &h,
+        &h.project,
+        PLAN,
+        &["--promote-to", ROUND_BRANCH, "--detach"],
+        &[("HERDR_PANE_ID", CALLER_PANE)],
+    );
+    assert_eq!(out.status.code(), Some(4), "{}", text(&out));
+    assert!(text(&out).contains("REFUSED"), "{}", text(&out));
+    assert!(text(&out).contains("PRE-02"), "{}", text(&out));
+    let events = events(&h);
+    assert!(failed_checks(&events)[0].contains(&"PRE-02".to_string()));
+    assert!(of_kind(&events, "round.created").is_empty());
+    let argvs = herdr_argvs(&h);
+    assert!(
+        !argvs
+            .iter()
+            .any(|a| a.first().is_some_and(|n| n == "workspace")
+                && a.get(1).is_some_and(|v| v == "create")),
+        "{argvs:?}"
+    );
+    assert!(pane_runs(&h).is_empty());
+    assert!(prompts_to(&h, CALLER_PANE).is_empty());
+    assert_eq!(worktree_count(&h), 1);
+
+    // No --report-to and no HERDR_PANE_ID: exit 2, nothing recorded.
+    let before = events.len();
+    let out = run_plan(&h, &h.project, PLAN, &["--detach"], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    assert!(text(&out).contains("--report-to"), "{}", text(&out));
+    assert_eq!(self::events(&h).len(), before);
     assert_no_agent_launch(&h);
     assert_clean(&h);
 }

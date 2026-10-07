@@ -167,7 +167,7 @@ pub enum RoundOutcome {
 /// The dataset workspace of an experiment, kept in
 /// `experiments/<exp>/workspace.json` so a resume reuses it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DatasetWorkspace {
+pub struct DatasetWorkspace {
     pub workspace_id: String,
     pub root_pane: String,
 }
@@ -202,6 +202,99 @@ pub fn candidate_task(roster: &Roster, task: &str, worktree: &std::path::Path) -
     )
 }
 
+/// Record `round.created` and each missing `candidate.planned` of `plan`,
+/// with a fresh execution id per candidate. Idempotent. `run --detach`
+/// records the plan this way before its pane resumes the round (FDS-10).
+pub fn record_round_plan(
+    recorder: &JsonlRecorder,
+    experiment: &ExperimentId,
+    round: &RoundId,
+    plan: &RoundPlan,
+    clock: &dyn Fn() -> DateTime<Utc>,
+) -> Result<()> {
+    if plan.candidates.is_empty() {
+        bail!("the round plan has no candidates");
+    }
+    let emit = |kind: EventKind, key: String, execution_id: Option<ExecutionId>| {
+        recorder.append(NewEvent {
+            kind,
+            actor: Actor::Coordinator,
+            experiment_id: experiment.clone(),
+            round_id: Some(round.clone()),
+            execution_id,
+            idempotency_key: key,
+            occurred_at: clock(),
+        })
+    };
+    emit(
+        EventKind::RoundCreated(round_created_payload(plan)),
+        format!("round.created:{round}"),
+        None,
+    )?;
+    let view = fold(&recorder.read_all()?.events)
+        .rounds
+        .remove(round)
+        .with_context(|| format!("round {round} has no events"))?;
+    for slot in &plan.candidates {
+        let label = slot.label.to_string();
+        if view
+            .candidates
+            .get(&label)
+            .is_some_and(|c| c.planned.is_some())
+        {
+            continue;
+        }
+        emit(
+            EventKind::CandidatePlanned(candidate_planned_payload(slot)),
+            format!("plan:{round}:{label}"),
+            Some(ExecutionId::mint(clock())),
+        )?;
+    }
+    Ok(())
+}
+
+/// The herdr workspace of `experiment`: reused when its root pane still
+/// exists, else created without focus as `multi-herdr-dataset <exp8>`. Its
+/// root pane runs `watch_command`; no pane is registered as
+/// `orchestrator`. Kept in `experiments/<exp>/workspace.json`.
+pub fn dataset_workspace(
+    workspace: &dyn WorkspaceClient,
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    repo: &Path,
+    watch_command: &str,
+) -> Result<DatasetWorkspace> {
+    let file = paths.experiment_dir(experiment)?.join("workspace.json");
+    if let Some(ws) = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<DatasetWorkspace>(&b).ok())
+    {
+        if workspace.pane_get(&ws.root_pane).is_ok() {
+            return Ok(ws);
+        }
+    }
+    let repo = repo.to_string_lossy();
+    let created = workspace
+        .workspace_create(&workspace_name(experiment), Some(&repo), false)
+        .context("creating the dataset workspace")?;
+    let ws = DatasetWorkspace {
+        workspace_id: created.workspace_id,
+        root_pane: created.root_pane_id,
+    };
+    if let Err(e) = workspace.pane_run(&ws.root_pane, watch_command) {
+        eprintln!("multi-herdr-dataset: starting watch failed: {e:#}");
+    }
+    observe::ensure_dirs(paths, file.parent().context("workspace file")?)?;
+    fsx::write_atomic(&file, &serde_json::to_vec_pretty(&ws)?, 0o600)
+        .with_context(|| format!("writing {}", file.display()))?;
+    Ok(ws)
+}
+
+/// The name of `experiment`'s herdr workspace: `multi-herdr-dataset <exp8>`.
+pub fn workspace_name(experiment: &ExperimentId) -> String {
+    format!("{WORKSPACE_LABEL} {}", experiment.short())
+}
+
 /// The role a candidate registers as in the dataset workspace.
 pub fn candidate_role(label: &str) -> String {
     format!("candidate-{label}")
@@ -217,33 +310,13 @@ impl<G: GitClient> Coordinator<'_, G> {
     /// Record `round.created` and each missing `candidate.planned`, with a
     /// fresh execution id per candidate. Idempotent.
     pub(crate) fn record_plan(&self, spec: &RoundSpec, plan: &RoundPlan) -> Result<()> {
-        if plan.candidates.is_empty() {
-            bail!("the round plan has no candidates");
-        }
-        self.emit(
-            spec,
-            EventKind::RoundCreated(round_created_payload(plan)),
-            format!("round.created:{}", spec.round),
-            None,
-        )?;
-        let view = self.view(spec)?;
-        for slot in &plan.candidates {
-            let label = slot.label.to_string();
-            if view
-                .candidates
-                .get(&label)
-                .is_some_and(|c| c.planned.is_some())
-            {
-                continue;
-            }
-            self.emit(
-                spec,
-                EventKind::CandidatePlanned(candidate_planned_payload(slot)),
-                format!("plan:{}:{label}", spec.round),
-                Some(ExecutionId::mint((self.clock)())),
-            )?;
-        }
-        Ok(())
+        record_round_plan(
+            self.recorder,
+            &spec.experiment,
+            &spec.round,
+            plan,
+            self.clock,
+        )
     }
 
     /// Run the round from wherever its events say it is, to JUDGING_BACKGROUND
@@ -363,36 +436,15 @@ impl<G: GitClient> Coordinator<'_, G> {
             .join("workspace.json"))
     }
 
-    /// The experiment's herdr workspace: reused when its root pane still
-    /// exists, else created without focus. Its root pane runs `watch`; no
-    /// pane is registered as `orchestrator`.
+    /// The experiment's herdr workspace ([`dataset_workspace`]).
     fn dataset_workspace(&self, spec: &RoundSpec) -> Result<DatasetWorkspace> {
-        let file = self.workspace_file(spec)?;
-        if let Some(ws) = std::fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<DatasetWorkspace>(&b).ok())
-        {
-            if self.workspace.pane_get(&ws.root_pane).is_ok() {
-                return Ok(ws);
-            }
-        }
-        let exp8 = spec.experiment.short();
-        let repo = spec.repo.to_string_lossy();
-        let created = self
-            .workspace
-            .workspace_create(&format!("{WORKSPACE_LABEL} {exp8}"), Some(&repo), false)
-            .context("creating the dataset workspace")?;
-        let ws = DatasetWorkspace {
-            workspace_id: created.workspace_id,
-            root_pane: created.root_pane_id,
-        };
-        if let Err(e) = self.workspace.pane_run(&ws.root_pane, &spec.watch_command) {
-            eprintln!("multi-herdr-dataset: starting watch failed: {e:#}");
-        }
-        observe::ensure_dirs(self.paths, file.parent().context("workspace file")?)?;
-        fsx::write_atomic(&file, &serde_json::to_vec_pretty(&ws)?, 0o600)
-            .with_context(|| format!("writing {}", file.display()))?;
-        Ok(ws)
+        dataset_workspace(
+            self.workspace,
+            self.paths,
+            &spec.experiment,
+            &spec.repo,
+            &spec.watch_command,
+        )
     }
 
     /// Close the dataset workspace once no candidate runs in it. Best effort.

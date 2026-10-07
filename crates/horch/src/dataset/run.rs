@@ -15,7 +15,10 @@ use horch_core::competition::budget::{resolve_estimate, MeasuredTokens, UsageMet
 use horch_core::competition::config::{
     self, DatasetConfig, ExpectedTokens, JudgeMode, RunFlags, Strategy,
 };
-use horch_core::competition::coordinator::{monotonic, Coordinator, RoundOutcome, RoundSpec};
+use horch_core::competition::coordinator::{
+    dataset_workspace, monotonic, record_round_plan, workspace_name, Coordinator, RoundOutcome,
+    RoundSpec,
+};
 use horch_core::competition::judging::DetachedLauncher;
 use horch_core::competition::model::RoundState;
 use horch_core::competition::observe::{self, TelemetryUsage};
@@ -47,6 +50,7 @@ use horch_core::usage::Locations;
 use horch_core::vcs::git::GitCli;
 use horch_core::vcs::worktree::WorktreeSpec;
 use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::model::Direction;
 use horch_core::workspace::paneshell::PaneShell;
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +64,22 @@ pub(crate) fn run(
     env: &BTreeMap<String, String>,
     args: &RunArgs,
 ) -> Result<u8> {
+    // `--detach` reports to the caller's pane by default; with no pane to
+    // report to, nothing is created (FDS-10).
+    let report_to = match (&args.report_to, args.detach) {
+        (Some(pane), _) => Some(pane.clone()),
+        (None, true) => match &ctx.herdr.pane {
+            Some(internal) => Some(public_pane(ctx, internal.as_str())),
+            None => {
+                eprintln!(
+                    "multi-herdr-dataset: run --detach needs a pane to report to: \
+                     pass --report-to <PANE>, or run it in a herdr pane (HERDR_PANE_ID)"
+                );
+                return Ok(exit::USAGE);
+            }
+        },
+        (None, false) => None,
+    };
     let paths = dataset_paths(ctx)?;
     let project = ctx.paths.project()?;
     let plan = args
@@ -72,9 +92,34 @@ pub(crate) fn run(
         (None, None) => bail!("run needs a TASK or --plan"),
     };
     let experiment = ExperimentId::mint(clock::now());
-    let saved = SavedRun::from_args(args, &task, plan);
+    let saved = SavedRun::from_args(args, &task, plan, report_to);
     saved.write(&paths, &experiment)?;
-    preflight_and_run(ctx, env, &paths, &experiment, &task, &saved)
+    let start = if args.detach {
+        Start::Detached
+    } else {
+        Start::Here
+    };
+    preflight_and_run(ctx, env, &paths, &experiment, &task, &saved, start)
+}
+
+/// Where a round that passed preflight runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// The coordinator runs in this process.
+    Here,
+    /// `--detach`: the coordinator runs in a new pane of the round's
+    /// dataset workspace, and this process returns (FDS-10).
+    Detached,
+}
+
+/// The public id of the pane with herdr's internal id `internal`
+/// (`HERDR_PANE_ID`), as `horch tell` names panes; the internal id when
+/// herdr does not answer.
+fn public_pane(ctx: &RuntimeContext, internal: &str) -> String {
+    Herdr::with_bin(&ctx.bins.harness.herdr)
+        .pane_get(internal)
+        .map(|p| p.pane_id)
+        .unwrap_or_else(|_| internal.to_string())
 }
 
 /// `--plan` as a path relative to the project root, `/`-separated (FDS-09).
@@ -133,7 +178,15 @@ pub(crate) fn resume_reporting(
     }
     let Some(x) = projection.experiments.get(&experiment) else {
         // Killed before `experiment.created`: start over under the same id.
-        return preflight_and_run(ctx, env, &paths, &experiment, &saved.task, &saved);
+        return preflight_and_run(
+            ctx,
+            env,
+            &paths,
+            &experiment,
+            &saved.task,
+            &saved,
+            Start::Here,
+        );
     };
     match x.state {
         RoundState::Aborted => {
@@ -141,7 +194,15 @@ pub(crate) fn resume_reporting(
             return Ok(exit::PREFLIGHT_FAILED);
         }
         RoundState::Preflight if x.preflight.is_none() => {
-            return preflight_and_run(ctx, env, &paths, &experiment, &saved.task, &saved);
+            return preflight_and_run(
+                ctx,
+                env,
+                &paths,
+                &experiment,
+                &saved.task,
+                &saved,
+                Start::Here,
+            );
         }
         RoundState::Preflight => {
             bail!("experiment {experiment} failed preflight but was not aborted")
@@ -207,6 +268,7 @@ fn preflight_and_run(
     experiment: &ExperimentId,
     task: &str,
     saved: &SavedRun,
+    start: Start,
 ) -> Result<u8> {
     let project = ctx.paths.project()?;
     let flags = saved.flags()?;
@@ -282,9 +344,12 @@ fn preflight_and_run(
     )?;
     drop(recorder);
 
-    println!("experiment {experiment}");
-    print!("{}", render_plan(&plan));
-    print!("{}", preflight::render(&report));
+    // A detached pass prints its 1 line only (FDS-10); a refusal prints all.
+    if start == Start::Here || !failed.is_empty() {
+        println!("experiment {experiment}");
+        print!("{}", render_plan(&plan));
+        print!("{}", preflight::render(&report));
+    }
     // An empty plan fails PRE-08, but the planner refused every candidate
     // (excluded, or over its usage limits): that is the budget/quota
     // refusal, exit 3 (dataset design §6 B2), not a failed machine check.
@@ -304,6 +369,9 @@ fn preflight_and_run(
         return Ok(exit::PREFLIGHT_FAILED);
     }
     ctx.settings.faults.abort_if("abort-after-preflight");
+    if start == Start::Detached {
+        return start_detached(ctx, paths, experiment, &round_id, &plan, saved);
+    }
     coordinate(
         ctx,
         paths,
@@ -326,6 +394,110 @@ fn preflight_and_run(
         },
         Some(&plan),
     )
+}
+
+/// `--detach` after a passed preflight: record the round's plan, open its
+/// dataset workspace, and run `resume <experiment> --report-to <pane>` in a
+/// new pane there. The resumed coordinator drives the round from its plan
+/// and reports at the end. The pane is a visible herdr pane, not a
+/// background job (CMP-16).
+fn start_detached(
+    ctx: &RuntimeContext,
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    round: &RoundId,
+    plan: &RoundPlan,
+    saved: &SavedRun,
+) -> Result<u8> {
+    let project = ctx.paths.project()?;
+    let report_to = saved
+        .report_to
+        .as_deref()
+        .context("a detached round has no pane to report to")?;
+    let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
+    record_round_plan(&recorder, experiment, round, plan, &monotonic(clock::now))?;
+    drop(recorder);
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let watch = watch_command(ctx, &project, experiment)?;
+    let ws = dataset_workspace(&herdr, paths, experiment, &project, &watch)?;
+    let pane = herdr
+        .pane_split(&ws.root_pane, Direction::Down)
+        .context("opening the coordinator pane in the dataset workspace")?;
+    let exe = ctx.bins.exe()?;
+    let env = pane_env(ctx);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let command = PaneShell::host().command_line_with_env(
+        &exe,
+        &env,
+        &[
+            "resume".to_string(),
+            experiment.to_string(),
+            "--report-to".to_string(),
+            report_to.to_string(),
+            "--project".to_string(),
+            project.to_string_lossy().into_owned(),
+        ],
+    );
+    if let Err(e) = herdr.pane_run(&pane, &command) {
+        let _ = herdr.pane_close(&pane);
+        return Err(e.context(format!(
+            "starting the coordinator of round {round}; run multi-herdr-dataset resume {experiment}"
+        )));
+    }
+    println!(
+        "round {round} started: workspace {}, report to {report_to}",
+        workspace_name(experiment)
+    );
+    Ok(exit::SUCCESS)
+}
+
+/// What the dataset workspace's root pane runs: `watch <experiment>`.
+fn watch_command(
+    ctx: &RuntimeContext,
+    project: &Path,
+    experiment: &ExperimentId,
+) -> Result<String> {
+    let exe = ctx.bins.exe()?;
+    let data_root = ctx.paths.data_root.to_string_lossy();
+    Ok(PaneShell::host().command_line_with_env(
+        &exe,
+        &[("HORCH_DATA_DIR", data_root.as_ref())],
+        &[
+            "watch".to_string(),
+            experiment.to_string(),
+            "--state-dir".to_string(),
+            ctx.paths.state_root.to_string_lossy().into_owned(),
+            "--project".to_string(),
+            project.to_string_lossy().into_owned(),
+        ],
+    ))
+}
+
+/// The settings a detached coordinator needs from this process: a pane
+/// does not inherit its environment. The stores, the roster, the binaries,
+/// and the machine, quota and balance overrides.
+fn pane_env(ctx: &RuntimeContext) -> Vec<(&'static str, String)> {
+    let text = |p: &Path| p.to_string_lossy().into_owned();
+    let mut out = vec![
+        ("HORCH_DATA_DIR", text(&ctx.paths.data_root)),
+        ("HORCH_STATE_DIR", text(&ctx.paths.state_root)),
+    ];
+    if let Some(dir) = &ctx.bins.roster_override {
+        out.push(("HORCH_TEAMMATES_DIR", text(dir)));
+    }
+    if let Some(balance) = &ctx.settings.balance_override {
+        out.push(("HORCH_BALANCE", balance.clone()));
+    }
+    if let Some(file) = &ctx.settings.quota_file {
+        out.push(("HORCH_QUOTA_FILE", text(file)));
+    }
+    if let Some(file) = &ctx.settings.machine_file {
+        out.push(("HORCH_MACHINE_FILE", text(file)));
+    }
+    for (key, value) in ctx.bins.overrides.env_pairs() {
+        out.push((key, text(&value)));
+    }
+    out
 }
 
 /// The round a coordinator runs.
@@ -456,20 +628,7 @@ fn coordinate(
     };
     let clock = monotonic(clock::now);
     let sleep = |d: Duration| std::thread::sleep(d);
-    let exe = ctx.bins.exe()?;
-    let data_root = ctx.paths.data_root.to_string_lossy();
-    let watch_command = PaneShell::host().command_line_with_env(
-        &exe,
-        &[("HORCH_DATA_DIR", data_root.as_ref())],
-        &[
-            "watch".to_string(),
-            r.experiment.to_string(),
-            "--state-dir".to_string(),
-            ctx.paths.state_root.to_string_lossy().into_owned(),
-            "--project".to_string(),
-            project.to_string_lossy().into_owned(),
-        ],
-    );
+    let watch_command = watch_command(ctx, &project, r.experiment)?;
     let coordinator = Coordinator {
         ctx: &spawn_ctx,
         recorder: &recorder,
@@ -725,7 +884,12 @@ pub(crate) struct SavedRun {
 }
 
 impl SavedRun {
-    fn from_args(args: &RunArgs, task: &str, plan: Option<String>) -> Self {
+    fn from_args(
+        args: &RunArgs,
+        task: &str,
+        plan: Option<String>,
+        report_to: Option<String>,
+    ) -> Self {
         SavedRun {
             task: redact(task).into_owned(),
             candidates: args.candidates,
@@ -737,7 +901,7 @@ impl SavedRun {
             worktree_root: args.worktree_root.clone(),
             allow_dirty: args.allow_dirty,
             plan,
-            report_to: args.report_to.clone(),
+            report_to,
         }
     }
 
