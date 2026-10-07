@@ -665,6 +665,8 @@ fn ctx_05_prime_launch_sweeps_old_agent_dirs() {
 // ─── X2: Prime reports its pane state to herdr ──────────────────────────────
 
 /// A `herdr` that appends each argv to `<tmp>/herdr.log`, 1 line per call.
+/// Like herdr 0.8.2, it fails when the pane id does not follow the
+/// subcommand (`pane report-agent --source x ...` exits 2).
 #[cfg(unix)]
 fn fake_herdr(w: &World) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
@@ -672,7 +674,10 @@ fn fake_herdr(w: &World) -> (PathBuf, PathBuf) {
     let log = w.tmp.path().join("herdr.log");
     write(
         &bin,
-        &format!("#!/bin/sh\necho \"$@\" >> '{}'\n", log.display()),
+        &format!(
+            "#!/bin/sh\ncase \"$3\" in --*) echo \"unknown option: $4\" >&2; exit 2;; esac\necho \"$@\" >> '{}'\n",
+            log.display()
+        ),
     );
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     // The first run of a new executable on macOS can take over 2 s (the
@@ -743,7 +748,7 @@ fn x2_prime_status_hook_in_a_herdr_pane() {
     let calls = std::fs::read_to_string(&log).unwrap();
     assert!(
         calls.starts_with(
-            "pane report-agent --source horch:prime --agent prime --state idle --seq 5 p_7\n"
+            "pane report-agent p_7 --source horch:prime --agent prime --state idle --seq 5\n"
         ),
         "{calls}"
     );
@@ -753,8 +758,7 @@ fn x2_prime_status_hook_in_a_herdr_pane() {
         .collect();
     assert_eq!(release.len(), 1, "{calls}");
     assert!(
-        release[0].starts_with("pane release-agent --source horch:prime --agent prime --seq ")
-            && release[0].ends_with(" p_7"),
+        release[0].starts_with("pane release-agent p_7 --source horch:prime --agent prime --seq "),
         "{calls}"
     );
     assert!(std::fs::symlink_metadata(&hook).is_err(), "the hook stayed");
@@ -877,7 +881,7 @@ await fire("session_shutdown", { reason: "quit" }, root);
             line.contains("--source horch:prime --agent prime --seq "),
             "{line}"
         );
-        assert!(line.ends_with(" p_7"), "{line}");
+        assert!(line.split_whitespace().nth(2) == Some("p_7"), "{line}");
     }
     let seqs: Vec<u64> = lines.iter().map(|l| seq_of(l)).collect();
     assert!(seqs.windows(2).all(|p| p[0] < p[1]), "{seqs:?}");

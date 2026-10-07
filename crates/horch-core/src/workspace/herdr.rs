@@ -437,11 +437,13 @@ impl Herdr {
         Ok(())
     }
 
-    /// `herdr pane report-agent --source <source> --agent <agent> --state
-    /// <state> --seq <seq> <pane>` (herdr 0.8.2): `state` is `idle`,
+    /// `herdr pane report-agent <pane> --source <source> --agent <agent>
+    /// --state <state> --seq <seq>` (herdr 0.8.2): `state` is `idle`,
     /// `working`, `blocked` or `unknown`. herdr keeps the report with the
     /// highest `seq` of a source, so a report with a lower one is stale.
-    /// For a harness herdr does not detect itself (Prime).
+    /// For a harness herdr does not detect itself (Prime). The pane id
+    /// comes first: herdr 0.8.2 answers `unknown option: <source>` when it
+    /// comes last, as its `--help` shows it (live check X2, 2026-10-07).
     pub fn report_agent(
         &self,
         pane: &str,
@@ -454,6 +456,7 @@ impl Herdr {
         self.output(&[
             "pane",
             "report-agent",
+            pane,
             "--source",
             source,
             "--agent",
@@ -462,26 +465,25 @@ impl Herdr {
             state,
             "--seq",
             &seq,
-            pane,
         ])?;
         Ok(())
     }
 
-    /// `herdr pane release-agent --source <source> --agent <agent> --seq
-    /// <seq> <pane>`: the end of [`Herdr::report_agent`]'s reports, so herdr
+    /// `herdr pane release-agent <pane> --source <source> --agent <agent>
+    /// --seq <seq>`: the end of [`Herdr::report_agent`]'s reports, so herdr
     /// stops showing that agent in the pane.
     pub fn release_agent(&self, pane: &str, source: &str, agent: &str, seq: u64) -> Result<()> {
         let seq = seq.to_string();
         self.output(&[
             "pane",
             "release-agent",
+            pane,
             "--source",
             source,
             "--agent",
             agent,
             "--seq",
             &seq,
-            pane,
         ])?;
         Ok(())
     }

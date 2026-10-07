@@ -372,9 +372,10 @@ function run(args) {
   });
 }
 
-function send(args) {
+// herdr 0.8.2 reads the pane id only right after the subcommand.
+function send(command, more = []) {
   seq += 1;
-  const full = [...args, "--source", SOURCE, "--agent", AGENT, "--seq", String(seq), PANE];
+  const full = [...command, PANE, "--source", SOURCE, "--agent", AGENT, "--seq", String(seq), ...more];
   queue = queue.then(() => run(full));
   return queue;
 }
@@ -388,7 +389,7 @@ function root(ctx) {
   }
 }
 
-const report = (state) => send(["pane", "report-agent", "--state", state]);
+const report = (state) => send(["pane", "report-agent"], ["--state", state]);
 
 export default function (pi) {
   pi.on("session_start", (_event, ctx) => {
