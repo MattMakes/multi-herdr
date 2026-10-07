@@ -143,7 +143,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Variables the builders and loaders read today, and what each is pinned to.
 /// `<TMP>` and `<HOME>` stand for the temp dirs below.
-const PINNED: [(&str, Option<&str>); 13] = [
+const PINNED: [(&str, Option<&str>); 20] = [
     ("HOME", Some("<HOME>")),
     ("PATH", Some("<TMP>/bin")),
     ("HORCH_CLAUDE_BIN", None),
@@ -157,6 +157,13 @@ const PINNED: [(&str, Option<&str>); 13] = [
     ("CLAUDE_CODE_EFFORT_LEVEL", None),
     ("HORCH_NOW", None),
     ("ANTHROPIC_API_KEY", None),
+    ("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", None),
+    ("DISABLE_AUTOUPDATER", None),
+    ("OPENCODE_DISABLE_EXTERNAL_SKILLS", None),
+    ("RLM_MAX_DEPTH", None),
+    ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None),
+    ("PRIME_AGENT_CODING_AGENT_DIR", None),
+    ("HORCH_CLAUDE_MANAGED_SETTINGS", Some("<TMP>/managed-settings.json")),
 ];
 
 /// The operator's settings as the fake home holds them: one enabled plugin,
