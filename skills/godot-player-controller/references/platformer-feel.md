@@ -1,5 +1,7 @@
 # Platformer feel extras
 
+> proof: not run (needs a human play test) for how a value feels.
+
 Adds air control, ceiling bonk, wall slide with a wall-coyote window, knockback that decays, a dash with an invulnerability signal and a jump-arc debug view. Read it after the platformer controller in SKILL.md works and the jump needs tuning.
 
 All code targets Godot 4.7 and a `CharacterBody2D` with the default `MOTION_MODE_GROUNDED`.

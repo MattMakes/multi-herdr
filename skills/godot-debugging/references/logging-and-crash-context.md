@@ -95,6 +95,8 @@ exists, so use it only around a specific failure.
 
 ## 3. Checks That Survive Release Builds
 
+> proof: not run (needs a release export template). The statements on release builds were not measured; only debug runs were.
+
 `assert()` is removed from release exports: the condition is not even
 evaluated. Use it only for programmer errors you want to catch while
 developing. A check that protects the player's data must stay:
@@ -118,6 +120,8 @@ Never put a needed side effect inside `assert()` (`assert(load_save())`): in
 release the call disappears with the assert.
 
 ## 4. Debug-Only Output
+
+> proof: not run (needs a release export template) for release output; the `print_debug()` text was measured on a debug run.
 
 Wrap development logging so that it does not ship:
 

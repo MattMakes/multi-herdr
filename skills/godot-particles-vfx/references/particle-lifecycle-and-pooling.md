@@ -2,6 +2,8 @@ Adds the runtime side of particle effects: the one-shot lifecycle with `restart(
 
 # Particle Lifecycle, Pooling and Culling
 
+> proof: not run (needs a GPU renderer) for what the particles draw, collide with and cost. Headless Godot simulates no GPU particle.
+
 > ← Back to [SKILL.md](../SKILL.md). Property recipes are in [process-material-basics.md](process-material-basics.md); general pitfalls are in [performance-and-pitfalls.md](performance-and-pitfalls.md).
 
 All code targets Godot 4.7. The examples use `GPUParticles3D`; the 2D nodes

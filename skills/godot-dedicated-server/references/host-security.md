@@ -183,6 +183,8 @@ Call `forget(peer)` from the `peer_disconnected` handler.
 
 ## 5. Encrypt with DTLS when it matters
 
+> proof: not run (needs TLS certificates and 2 hosts).
+
 ENet traffic is plain UDP. If clients send anything sensitive (tokens,
 chat, purchases), enable DTLS on the ENet host right after creating it,
 on both sides.

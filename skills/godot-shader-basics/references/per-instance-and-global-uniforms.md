@@ -2,6 +2,8 @@ Adds ways to vary a shader per object or per world without new materials: instan
 
 # Per-Instance and Global Shader Data
 
+> proof: not run (needs a GPU renderer). Headless Godot uses a dummy renderer and compiles no shader, so the shader blocks here are not compiled.
+
 > ← Back to [SKILL.md](../SKILL.md). Basic uniforms and `set_shader_parameter()` are in SKILL.md section 2.
 
 All shader code is Godot 4.7 shading language. GDScript is 4.7.

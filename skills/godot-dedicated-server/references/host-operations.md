@@ -83,6 +83,8 @@ peer id as the sender.
 
 ## Browser clients need WebSocket
 
+> proof: not run (needs a TLS certificate and a browser client) for the `wss://` path.
+
 Browsers cannot open UDP sockets, so a web build cannot use ENet. Run a
 `WebSocketMultiplayerPeer` server for web players. Behind HTTPS, browsers
 also require `wss://`, so pass TLS options (or terminate TLS at a reverse
@@ -161,6 +163,8 @@ counter, so each line shows one interval. A rising `objects` or `orphans`
 count over hours is a leak: free nodes when matches end.
 
 ## Matchmaker hand-off
+
+> proof: not run (needs a matchmaking service).
 
 A client asks a matchmaking service for a server, gets an address and a
 one-time token, connects, and presents the token in the handshake

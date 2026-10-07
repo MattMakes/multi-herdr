@@ -144,6 +144,8 @@ something changes.
 
 ## Store SDKs behind a guard
 
+> proof: not run (needs the Steam client and GodotSteam) for the Steam calls. A test reaches only the path with no singleton.
+
 Steam (GodotSteam), Epic and Discord integrations are GDExtensions or
 modules that exist only in some builds. Never call them directly from
 gameplay code. Wrap them in one autoload that checks for the singleton and

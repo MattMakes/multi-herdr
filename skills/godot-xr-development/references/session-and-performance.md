@@ -2,6 +2,8 @@ Adds the OpenXR session lifecycle (focus, visibility, recenter, loss) and the fr
 
 # OpenXR session lifecycle and frame time
 
+> proof: not run (needs an XR headset with an OpenXR runtime). The session events, foveation, refresh rates and frame times need the device.
+
 > ← Back to [SKILL.md](../SKILL.md)
 
 ## Start the interface

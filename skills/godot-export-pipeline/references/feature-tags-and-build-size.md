@@ -6,6 +6,8 @@ Adds runtime feature tags, debug stripping, export filters and a build-size audi
 
 ## Feature tags decide the variant at runtime
 
+> proof: not run (needs a release export template) for the `release` tag; only debug runs were measured.
+
 `OS.has_feature(tag)` answers from the running binary, not from the editor
 settings. Use it, not your own `is_debug` constants, to fork behaviour.
 

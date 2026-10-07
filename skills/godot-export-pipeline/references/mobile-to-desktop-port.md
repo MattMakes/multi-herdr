@@ -56,6 +56,8 @@ tooltips (`Control.tooltip_text`). Mobile UI was never tested for either.
 
 ## Graphics quality ladder
 
+> proof: not run (needs a GPU renderer). MSAA and the other quality steps change only what a renderer draws.
+
 One function applies a named preset, and the settings file stores the
 name. Detect a starting preset from a short benchmark only if you also let
 the player change it.

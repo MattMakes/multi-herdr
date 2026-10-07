@@ -2,6 +2,8 @@ Adds comfort-first locomotion: snap turn around the head, teleport that keeps th
 
 # Comfort and locomotion
 
+> proof: not run (needs an XR headset). Comfort also needs a human play test.
+
 > ← Back to [SKILL.md](../SKILL.md)
 
 The SKILL.md thumbstick recipe moves the `XROrigin3D` smoothly. Smooth

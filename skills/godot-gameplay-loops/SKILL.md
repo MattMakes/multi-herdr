@@ -95,6 +95,8 @@ Do not repeat their content here. Read them when the loop needs them.
 
 ## Prove the loop
 
+> proof: headless-run: `scripts/godot/gameplay_scenarios.py` runs the checks of every reference in the gate, the 3D pickup, harvest node and ghost included. Feel (ghost smoothness, respawn pacing): proof: not run (needs a human play test).
+
 A loop is done when a headless script drives it and checks the result. The
 manager is a plain `Node`, so a `SceneTree` script can create it, call its
 methods, and read its signals without a scene:

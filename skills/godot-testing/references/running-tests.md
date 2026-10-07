@@ -72,7 +72,9 @@ godot --headless -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --i
 - An exit of 0 with no tests found is not a pass: check the log for the
   test count.
 - C# test suites run through the gdUnit4Net `dotnet test` adapter, not
-  through `GdUnitCmdTool.gd`. That path was not measured here.
+  through `GdUnitCmdTool.gd`. proof: not run (needs Godot .NET).
+- gdUnit4 `-c` and GUT `-gjunit_xml_file` come from the addon help text.
+  proof: not run (needs the addons in a project).
 
 ### GitHub Actions CI
 

@@ -6,6 +6,8 @@ Adds what a console port needs from the project before a porting partner takes i
 
 ## How a Godot game reaches a console
 
+> proof: not run (needs a console dev kit and its NDA SDK).
+
 Godot's official builds have **no** PlayStation, Xbox or Nintendo Switch
 export templates. Console SDKs are under NDA, so console support comes
 from a licensed porting partner or a studio with its own NDA'd port. A

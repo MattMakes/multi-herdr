@@ -129,6 +129,8 @@ each shape again at the new scale.
 
 ## Headless limits
 
+> proof: not run (needs a GPU renderer) for sprite bakes, screenshots and visual checks.
+
 - Under `--headless` the renderer is a dummy. Measured on 4.7.2: a
   `SubViewport` with a `Camera3D` draws nothing, `RenderingServer.frame_post_draw`
   never fires, and `get_texture().get_image()` returns null. A fleet worker

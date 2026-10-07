@@ -196,6 +196,8 @@ incompatible servers.
 
 ## Listen servers behind a home router: UPnP
 
+> proof: not run (needs a UPnP router).
+
 When a player hosts from home, other players on the internet cannot reach
 the port unless the router forwards it. Many routers accept a UPnP
 request. `UPNP.discover()` blocks for up to its timeout (2000 ms by

@@ -184,6 +184,8 @@ locales, see `godot-localization`.
 
 ## Prove it
 
+> proof: headless-run: `scripts/godot/gameplay_scenarios.py` runs these checks and those of both references in the gate.
+
 Test the wallet headless in a `SceneTree` script: a spend over two
 currencies with one short leaves both balances unchanged; a grant past the
 cap returns the clamped amount; a sell price is below the buy price for every

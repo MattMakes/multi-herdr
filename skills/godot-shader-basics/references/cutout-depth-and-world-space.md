@@ -2,6 +2,8 @@ Adds 3D shader techniques that the recipes do not cover: alpha scissor and alpha
 
 # Cutouts, Depth and World-Space Techniques
 
+> proof: not run (needs a GPU renderer). Headless Godot uses a dummy renderer and compiles no shader, so the shader blocks here are not compiled.
+
 > ← Back to [SKILL.md](../SKILL.md). 2D dissolve and outline are in [2d-shader-recipes.md](2d-shader-recipes.md); screen-space overlays and Compositor effects are in [post-processing.md](post-processing.md) and [compositor-effects.md](compositor-effects.md).
 
 All shader code is Godot 4.7 shading language for the Forward+ and Mobile

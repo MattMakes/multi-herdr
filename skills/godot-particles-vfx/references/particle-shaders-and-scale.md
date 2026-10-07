@@ -2,6 +2,8 @@ Adds particle control beyond ParticleProcessMaterial: writing a `shader_type par
 
 # Particle Shaders, Masks and Large-Area Effects
 
+> proof: not run (needs a GPU renderer). Headless Godot compiles no shader and simulates no GPU particle, so the shaders, collisions and sub-emitters here are not run.
+
 > ← Back to [SKILL.md](../SKILL.md). Attractor and collider setup is in [attractors-and-collision.md](attractors-and-collision.md); sub-emitter basics are in [subemitters.md](subemitters.md).
 
 Shader code is Godot 4.7 shading language. GPU particle collision and

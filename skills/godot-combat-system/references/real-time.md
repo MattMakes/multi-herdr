@@ -174,7 +174,7 @@ run on real time while `Engine.time_scale` is low. Overlapping calls extend
 the stop; only the last timer restores the scale. Compare the stop count,
 not the clock: on 4.7.2 a 0.1 s timer can end before
 `Time.get_ticks_msec()` has moved 100 ms (measured: 0 ms and 99 ms), and a
-clock test then leaves the game slowed for ever. If the game uses
+clock test then leaves the game slowed for ever (proof: headless-run). If the game uses
 `time_scale` for slow motion, store and restore that value instead of 1.0.
 
 ## Knockback

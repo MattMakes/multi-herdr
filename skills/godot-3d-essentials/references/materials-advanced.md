@@ -4,6 +4,8 @@ Adds material techniques beyond the basics in SKILL.md: per-instance variation w
 
 # Advanced Material Techniques
 
+> proof: not run (needs a GPU renderer). Headless Godot uses a dummy renderer and compiles no shader, so the shader blocks here are not compiled.
+
 ## Vary instances without new materials
 
 SKILL.md shows `duplicate()` for a per-instance material. That is right for a few objects. For hundreds (crates in different colors, enemies whose tint shows health), a unique material per object costs memory and breaks batching. An **instance uniform** keeps one shared material and stores the value per `GeometryInstance3D`.

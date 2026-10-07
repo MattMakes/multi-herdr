@@ -127,6 +127,8 @@ The rules:
 
 ## Prove it
 
+> proof: headless-run: `scripts/godot/gameplay_scenarios.py` runs the checks of both references in the gate. Feel: proof: not run (needs a human play test).
+
 Combat math is plain code: test it headless. Build the resolver, the queue
 or the timeline in a `SceneTree` script with fixed stats and a seeded
 `RandomNumberGenerator`, check exact numbers, and `quit(1)` on a mismatch.

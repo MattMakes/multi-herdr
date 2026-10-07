@@ -252,6 +252,8 @@ The enemy emits `died(kind)` on the event bus; this node listens and calls
 
 ## Prove it
 
+> proof: headless-run: `scripts/godot/gameplay_scenarios.py` runs these checks and those of both references in the gate.
+
 Test the log headless in a `SceneTree` script: register two quests where B
 needs A; B is `LOCKED` until A completes; a kill event advances only the
 matching objective; the completion signal fires once even if more events

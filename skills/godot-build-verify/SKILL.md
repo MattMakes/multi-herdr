@@ -30,7 +30,8 @@ parse all exit 0. Read the output, not only the exit code.
    and shares `.godot/` with your import. List Godot processes:
    `ps -axo pid,args | grep -i '[g]odot'`. A process without `--headless` whose
    arguments name this project's path is an open editor: report `BLOCKED:` and
-   name the PID. Never kill a process you did not start.
+   name the PID. Never kill a process you did not start. (proof: not run
+   (needs a live editor): no fleet run may open the editor GUI.)
    Check: no editor process for this project, or you reported `BLOCKED:`.
 
 2. **Find the engine and check its version.** Use `GODOT_PATH`, then `godot` on
@@ -49,7 +50,7 @@ parse all exit 0. Read the output, not only the exit code.
    instances, and the operator's editor, out of each other's files. `.godot/` is
    git-ignored and never scanned for resources. On Linux, Godot reads
    `XDG_DATA_HOME` and `XDG_CONFIG_HOME`; set them to the same directory
-   (not run on this host: macOS only).
+   (proof: not run (needs Linux); `scripts/live/linux.sh` checks it).
    Check: `.godot/horch-home/` exists after the first call.
 
 4. **Import when `.godot/` is missing or files were added.**
@@ -73,6 +74,8 @@ parse all exit 0. Read the output, not only the exit code.
    `.godot/mono/temp/bin/Debug/`. Running C# scenes and tests needs the .NET
    build of Godot (`Godot_mono.app`); the standard build cannot run C#. If only
    the standard build is installed, say "C# built, not run" in the report.
+   The C# lines of the Godot skills are proof: parse-checked only (compiled
+   with dotnet; running them needs Godot .NET).
    Check: `Build succeeded.` and `0 Error(s)`.
 
 7. **Run the tests** with the project's framework (`addons/gut` or

@@ -26,8 +26,8 @@ fi
 - `--version` prints `4.7.2.stable.official.ed1daf0bf`; the script compares
   major.minor only.
 - A C# project needs the .NET build to run C#: on macOS,
-  `/Applications/Godot_mono.app/Contents/MacOS/Godot` (not installed on the test
-  host; not run). Measured: the standard build prints `No loader found for
+  `/Applications/Godot_mono.app/Contents/MacOS/Godot` (proof: not run (needs
+  Godot .NET)). Measured: the standard build prints `No loader found for
   resource: res://Player.cs` for a scene with a C# script, and exits 0.
 
 ## Common setup
