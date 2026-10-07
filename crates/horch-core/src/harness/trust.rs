@@ -55,6 +55,7 @@ pub fn asks_for_trust(harness: HarnessKind) -> bool {
 /// [`claude_config_file`]).
 pub const CLAUDE_TRUST_FILE: &str = "$CLAUDE_CONFIG_DIR/.claude.json";
 pub const CODEX_TRUST_FILE: &str = "$CODEX_HOME/config.toml";
+pub const ANTIGRAVITY_TRUST_FILE: &str = "~/.gemini/antigravity-cli/settings.json";
 
 /// The file Claude keeps its global config and trust decisions in:
 /// `$CLAUDE_CONFIG_DIR/.claude.json` when the variable is set, else
@@ -150,6 +151,52 @@ pub fn codex_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
     }
 }
 
+/// Antigravity's trust in `roots`: the list `trustedWorkspaces` in
+/// `~/.gemini/antigravity-cli/settings.json` holds the root. `file` is the
+/// file text, `None` when it does not exist. Trust is exact-path: a parent
+/// folder or a subdirectory does not count. Seen on agy 1.2.17
+/// (`docs/live-checks/harnesses.md`): `{"trustedWorkspaces": ["<dir>", ...]}`.
+pub fn antigravity_trust(file: Option<&str>, roots: &[PathBuf]) -> HarnessTrust {
+    let agy = HarnessKind::Antigravity;
+    let Some(text) = file else {
+        return HarnessTrust::new(
+            agy,
+            TrustState::Untrusted,
+            format!("{ANTIGRAVITY_TRUST_FILE} does not exist"),
+        );
+    };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
+        return HarnessTrust::new(
+            agy,
+            TrustState::Unknown,
+            format!("{ANTIGRAVITY_TRUST_FILE} is not valid JSON"),
+        );
+    };
+    let trusted = doc
+        .get("trustedWorkspaces")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|dirs| {
+            dirs.iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|dir| roots.iter().any(|root| Path::new(dir) == root))
+        });
+    if trusted {
+        HarnessTrust::new(
+            agy,
+            TrustState::Trusted,
+            format!("{ANTIGRAVITY_TRUST_FILE} trusts the repository root"),
+        )
+    } else {
+        HarnessTrust::new(
+            agy,
+            TrustState::Untrusted,
+            format!(
+                "{ANTIGRAVITY_TRUST_FILE} has no trustedWorkspaces entry for the repository root"
+            ),
+        )
+    }
+}
+
 /// The path of a `[projects."<path>"]` (or `[projects.'<path>']`) header.
 fn toml_project_header(line: &str) -> Option<String> {
     let inner = line.strip_prefix('[')?.trim_start();
@@ -217,8 +264,9 @@ pub fn trust_fix(harness: HarnessKind, root: &Path) -> String {
 /// What each harness in `harnesses` has recorded for `roots` (the
 /// repository root and its canonical form). It reads the stores and keeps
 /// only the verdict: the files can hold tokens, so nothing else of them
-/// leaves this function. `home` is the home directory; the two directories
-/// are `$CLAUDE_CONFIG_DIR` and `$CODEX_HOME` when they are set.
+/// leaves this function. `home` is the home directory (agy keeps its store
+/// under it); the two directories are `$CLAUDE_CONFIG_DIR` and
+/// `$CODEX_HOME` when they are set.
 pub fn read_trust(
     harnesses: &[HarnessKind],
     home: &Path,
@@ -238,6 +286,13 @@ pub fn read_trust(
                 match read_store(&file) {
                     Ok(text) => codex_trust(text.as_deref(), roots),
                     Err(()) => unreadable(harness, CODEX_TRUST_FILE),
+                }
+            }
+            HarnessKind::Antigravity => {
+                let file = home.join(".gemini/antigravity-cli/settings.json");
+                match read_store(&file) {
+                    Ok(text) => antigravity_trust(text.as_deref(), roots),
+                    Err(()) => unreadable(harness, ANTIGRAVITY_TRUST_FILE),
                 }
             }
             other => HarnessTrust::new(

@@ -18,7 +18,9 @@ use horch_core::competition::preflight::{
     TokenEstimate,
 };
 use horch_core::harness::capabilities::HARNESS_FOOTPRINT_BYTES;
-use horch_core::harness::trust::{claude_trust, codex_trust, trust_fix, HarnessTrust, TrustState};
+use horch_core::harness::trust::{
+    antigravity_trust, claude_trust, codex_trust, trust_fix, HarnessTrust, TrustState,
+};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::{ModelId, TeammateName};
 use horch_core::runtime::machine::{GpuClass, Known, MachineSnapshot};
@@ -941,6 +943,44 @@ fn pre_14_codex_store() {
     let missing = codex_trust(None, &roots());
     assert_eq!(missing.state, TrustState::Untrusted);
     assert!(missing.reason.contains("does not exist"));
+}
+
+/// U-62: the agy 1.2.17 store, `{"trustedWorkspaces": [...]}` (seen live,
+/// `docs/live-checks/harnesses.md`).
+#[test]
+fn pre_14_antigravity_store() {
+    let yes = r#"{"trustedWorkspaces":["/other","/Users/op/projects/app"]}"#;
+    let t = antigravity_trust(Some(yes), &roots());
+    assert_eq!(t.state, TrustState::Trusted);
+    assert!(t.reason.contains("settings.json"), "{}", t.reason);
+
+    // Exact path: a parent or a subdirectory does not trust the root.
+    let near = r#"{"trustedWorkspaces":["/Users/op/projects","/Users/op/projects/app/sub"]}"#;
+    assert_eq!(
+        antigravity_trust(Some(near), &roots()).state,
+        TrustState::Untrusted
+    );
+    assert_eq!(
+        antigravity_trust(Some(r#"{"other":1}"#), &roots()).state,
+        TrustState::Untrusted
+    );
+
+    // The canonical form of the root also matches.
+    let canonical = r#"{"trustedWorkspaces":["/private/tmp/app"]}"#;
+    let both = [PathBuf::from("/tmp/app"), PathBuf::from("/private/tmp/app")];
+    assert_eq!(
+        antigravity_trust(Some(canonical), &both).state,
+        TrustState::Trusted
+    );
+
+    // A missing file is untrusted; a broken one is unknown.
+    let missing = antigravity_trust(None, &roots());
+    assert_eq!(missing.state, TrustState::Untrusted);
+    assert!(missing.reason.contains("does not exist"));
+    assert_eq!(
+        antigravity_trust(Some("{not json"), &roots()).state,
+        TrustState::Unknown
+    );
 }
 
 #[test]
