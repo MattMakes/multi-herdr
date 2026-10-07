@@ -739,6 +739,9 @@ fn x2_prime_status_hook_in_a_herdr_pane() {
         !text.contains("process.env"),
         "the hook reads no environment"
     );
+    let pane_file = hook.parent().unwrap().join("pane");
+    assert_eq!(std::fs::read_to_string(&pane_file).unwrap(), "p_7\n");
+    assert_eq!(mode(&pane_file), 0o600);
 
     // The wrapper the hook's argv mirrors.
     horch_core::workspace::herdr::Herdr::with_bin(&herdr)
@@ -1008,4 +1011,66 @@ fn x2_prime_sweep_stops_an_orphan_daemon() {
     );
     foreign.kill().unwrap();
     foreign.wait().unwrap();
+}
+
+/// `horch done` closes the pane, and herdr kills the pane's processes
+/// within about 1 s, often before the launcher stops the daemon (live check
+/// X2: prime-4's daemon ran on). So `horch done` stops the daemon of each
+/// launch that ran in its pane, and only those.
+#[cfg(unix)]
+#[test]
+fn x2_prime_finish_pane_stops_only_that_panes_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    let prime = w.state().join("prime");
+    let launch = |name: &str, pane: &str| {
+        let dir = prime.join(name);
+        std::fs::create_dir_all(dir.join("agent")).unwrap();
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        write(&dir.join("herdr-status.mjs"), "// hook");
+        write(&dir.join("d.sock"), "");
+        write(&dir.join("pane"), &format!("{pane}\n"));
+        write(&dir.join("launcher"), &format!("{} \n", std::process::id()));
+        dir
+    };
+    let mine = launch("prime-4-mine", "w3F:p42");
+    let other = launch("prime-5-other", "w3F:p43");
+    let mut my_daemon = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut other_daemon = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let status = format!(
+        r#"[{{"socketPath":"{}","pid":{}}},{{"socketPath":"{}","pid":{}}}]"#,
+        mine.join("d.sock").display(),
+        my_daemon.id(),
+        other.join("d.sock").display(),
+        other_daemon.id()
+    );
+    write(&w.fake_prime(), &format!("#!/bin/sh\necho '{status}'\n"));
+    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::process::Command::new(w.fake_prime()).output().unwrap();
+
+    horch_core::harness::prime::finish_pane(&w.state(), &w.fake_prime(), "w3F:p42");
+
+    let ended = my_daemon.wait().unwrap();
+    assert!(!ended.success(), "this pane's daemon was not stopped");
+    assert!(!mine.join("d.sock").exists());
+    assert!(!mine.join("agent").exists());
+    assert!(!mine.join("herdr-status.mjs").exists());
+    assert!(mine.join("sessions").is_dir(), "sessions/ was removed");
+    assert_eq!(
+        other_daemon.try_wait().unwrap(),
+        None,
+        "another pane's daemon was stopped"
+    );
+    assert!(other.join("d.sock").exists());
+    other_daemon.kill().unwrap();
+    other_daemon.wait().unwrap();
+
+    // No Prime launch dir at all: nothing to do, no error.
+    horch_core::harness::prime::finish_pane(&w.tmp.path().join("none"), &w.fake_prime(), "w3F:p42");
 }

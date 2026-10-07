@@ -251,7 +251,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
 
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let ledger = Ledger::open_in(ctx)?;
-    lifecycle::done(
+    let closed = lifecycle::done(
         &herdr,
         &CliDone {
             ctx,
@@ -265,7 +265,20 @@ pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
             summary,
             report_to: report_target(ctx, workspace.as_deref(), &role),
         },
-    )
+    );
+    // After the close, and only when it worked: a Prime pane's tools (this
+    // process too) run under Prime's daemon, in another session, so the
+    // close does not end this process, and a stop before the close could.
+    // herdr kills a closed pane's processes within about 1 s, often before
+    // the launcher stops the daemon. No Prime launch in this pane: nothing.
+    if closed.is_ok() {
+        horch_core::harness::prime::finish_pane(
+            &ctx.paths.state_root,
+            &ctx.bins.harness.prime,
+            &pane_env,
+        );
+    }
+    closed
 }
 
 /// Who this worker reports to: its brief says. A candidate's brief says

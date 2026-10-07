@@ -281,6 +281,8 @@ const HARNESS_STATE: &str = "harness";
 /// The launch's agent dir and the file that names its launcher.
 const AGENT_DIR: &str = "agent";
 const LAUNCHER: &str = "launcher";
+/// The herdr pane a launch ran in, for [`finish_pane`].
+const PANE: &str = "pane";
 
 /// The agent dir a launch links from: the teammate's own
 /// `PRIME_AGENT_CODING_AGENT_DIR`, else the inherited one, else
@@ -345,6 +347,39 @@ fn sweep_agent_dirs(prime_root: &Path, bin: &Path) {
         }
         let _ = std::fs::remove_dir_all(launch.join(AGENT_DIR));
         let _ = std::fs::remove_file(launch.join(STATUS_HOOK));
+    }
+}
+
+/// Stop the daemon of every launch that ran in herdr pane `pane` and still
+/// has a socket, through [`Daemon::finish`] with the launcher file's time as
+/// the install time. `horch done` runs it after it closes the pane: herdr
+/// sends SIGHUP, then SIGTERM, then SIGKILL to a closed pane's processes
+/// within about 1 s, so the launcher's own finish often does not run.
+/// `horch done` itself runs under Prime's daemon, in another session, so the
+/// close does not end it; a stop before the close could. `bin` answers
+/// `status`. Does nothing for a pane that ran no Prime launch.
+pub fn finish_pane(state_root: &Path, bin: &Path, pane: &str) {
+    let Ok(entries) = std::fs::read_dir(state_root.join("prime")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let launch = entry.path();
+        let ran_here = std::fs::read_to_string(launch.join(PANE)).is_ok_and(|p| p.trim() == pane);
+        let socket = launch.join("d.sock");
+        if !ran_here || std::fs::symlink_metadata(&socket).is_err() {
+            continue;
+        }
+        let Ok(installed) = std::fs::metadata(launch.join(LAUNCHER)).and_then(|m| m.modified())
+        else {
+            continue;
+        };
+        Daemon {
+            socket,
+            sessions: launch.join("sessions"),
+            bin: bin.to_path_buf(),
+            installed,
+        }
+        .finish();
     }
 }
 
@@ -812,6 +847,17 @@ impl Harness for Prime {
         // reports its own state. Without the hook the pane still runs.
         let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
         if let Some(pane) = &pane {
+            let launch = daemon.socket().parent().unwrap_or(daemon.sessions_dir());
+            if let Err(e) = crate::fsx::write_atomic(
+                &launch.join(PANE),
+                format!("{pane}\n").as_bytes(),
+                crate::fsx::PRIVATE_FILE,
+            ) {
+                eprintln!(
+                    "horch[{}]: Prime pane file not written, horch done cannot stop the daemon: {e:#}",
+                    req.role
+                );
+            }
             let hook = daemon
                 .socket()
                 .parent()
