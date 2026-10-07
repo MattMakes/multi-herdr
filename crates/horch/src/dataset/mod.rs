@@ -68,15 +68,19 @@ pub fn dispatch(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, cli: C
                 })
             },
         );
-        if matches!(
-            command,
-            Command::Run(_)
-                | Command::Resume { .. }
-                | Command::Status { .. }
-                | Command::Promote(_)
-                | Command::Rollback(_)
-                | Command::Cleanup(_)
-        ) {
+        // `run --detach` prints 1 line on a pass (FDS-10).
+        let detached = matches!(&command, Command::Run(args) if args.detach);
+        if !detached
+            && matches!(
+                command,
+                Command::Run(_)
+                    | Command::Resume { .. }
+                    | Command::Status { .. }
+                    | Command::Promote(_)
+                    | Command::Rollback(_)
+                    | Command::Cleanup(_)
+            )
+        {
             if let Some(project) = &ctx.paths.project_dir {
                 let head = git.head(project).ok();
                 println!("{}", target_line(project, head.as_deref()));
@@ -85,7 +89,10 @@ pub fn dispatch(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, cli: C
     }
     match command {
         Command::Run(args) => run::run(ctx, env, &args),
-        Command::Resume { experiment } => run::resume(ctx, env, &experiment),
+        Command::Resume {
+            experiment,
+            report_to,
+        } => run::resume_reporting(ctx, env, &experiment, report_to.as_deref()),
         Command::Status { experiment } => status::status(ctx, experiment.as_deref()),
         Command::Export { label_policy } => export::export(ctx, label_policy.as_deref()),
         Command::Readiness {

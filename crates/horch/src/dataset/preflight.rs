@@ -14,8 +14,8 @@ use horch_core::competition::budget::{measured_from_runs, MeasuredTokens};
 use horch_core::competition::config::DatasetConfig;
 use horch_core::competition::observe::load_usage_records;
 use horch_core::competition::preflight::{
-    storage_probe, CheckStatus, GitFacts, PoolFacts, PreflightCandidate, PreflightPlan,
-    PreflightReport, StorageProbe,
+    storage_probe, CheckResult, CheckStatus, GitFacts, PoolFacts, PreflightCandidate,
+    PreflightPlan, PreflightReport, StorageProbe,
 };
 use horch_core::fsx;
 use horch_core::harness::trust::{asks_for_trust, read_trust, HarnessTrust};
@@ -107,6 +107,71 @@ fn promote_target_problem(git: &GitCli, dir: &Path, target: &str) -> Option<Stri
             "the promotion target '{target}' is not a local branch"
         )),
     }
+}
+
+/// Why the `--plan` file cannot brief the candidates, or `None` (FDS-09).
+/// The candidates start from `base`, so the plan must be tracked there and
+/// the work tree must hold the same bytes. `plan` is relative to `dir`, the
+/// repo root, `/`-separated.
+pub(crate) fn plan_problem(
+    git: &GitCli,
+    dir: &Path,
+    base: Option<&str>,
+    plan: &str,
+) -> Option<String> {
+    let fix = format!("commit {plan} first");
+    let tracked = base
+        .is_some_and(|base| matches!(git.rev_parse(dir, &format!("{base}:{plan}")), Ok(Some(_))));
+    if !tracked {
+        return Some(format!(
+            "the plan {plan} is not tracked at the base commit: {fix}"
+        ));
+    }
+    // The base is HEAD, so `status` lists the plan when it differs.
+    let changed = git
+        .status_porcelain(dir)
+        .map(|s| s.lines().any(|l| porcelain_path(l) == plan))
+        .unwrap_or(true);
+    changed.then(|| format!("the plan {plan} differs from the base commit: {fix}"))
+}
+
+/// The path of one `git status --porcelain` line: after the status letters,
+/// the new name of a rename, unquoted.
+fn porcelain_path(line: &str) -> &str {
+    let path = line
+        .trim_start()
+        .split_once(' ')
+        .map_or("", |(_, p)| p.trim_start());
+    let path = path.rsplit_once(" -> ").map_or(path, |(_, new)| new);
+    path.strip_prefix('"')
+        .and_then(|p| p.strip_suffix('"'))
+        .unwrap_or(path)
+}
+
+/// Fail PRE-01, the git check, with `problem` as well: a plan that the
+/// base commit does not hold is a git fact (FDS-09).
+pub(crate) fn fail_pre_01(report: &mut PreflightReport, problem: &str) {
+    if let Some(c) = report.checks.iter_mut().find(|c| c.id == "PRE-01") {
+        c.detail = match c.status {
+            CheckStatus::Fail => format!("{}; {problem}", c.detail),
+            _ => problem.to_string(),
+        };
+        c.status = CheckStatus::Fail;
+        if let Some(m) = c.measured.as_object_mut() {
+            m.insert("plan_problem".to_string(), problem.into());
+        }
+    } else {
+        report.checks.insert(
+            0,
+            CheckResult {
+                id: "PRE-01".to_string(),
+                status: CheckStatus::Fail,
+                detail: problem.to_string(),
+                measured: serde_json::json!({ "plan_problem": problem }),
+            },
+        );
+    }
+    report.passed = false;
 }
 
 /// `--version` of every harness in `harnesses`, redacted (PRE-06, PRE-07).

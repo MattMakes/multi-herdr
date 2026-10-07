@@ -49,7 +49,7 @@ use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::paneshell::PaneShell;
 use serde::{Deserialize, Serialize};
 
-use super::cli::RunArgs;
+use super::cli::{plan_task, RunArgs};
 use super::preflight::{self, ExperimentFacts, GatherInput};
 use super::{dataset_paths, exit};
 use crate::project::project_facts;
@@ -60,20 +60,68 @@ pub(crate) fn run(
     args: &RunArgs,
 ) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
+    let project = ctx.paths.project()?;
+    let plan = args
+        .plan
+        .as_deref()
+        .map(|p| plan_in_project(&project, ctx.paths.cwd.as_deref(), p));
+    let task = match (&args.task, &plan) {
+        (Some(task), _) => task.clone(),
+        (None, Some(plan)) => plan_task(plan),
+        (None, None) => bail!("run needs a TASK or --plan"),
+    };
     let experiment = ExperimentId::mint(clock::now());
-    let saved = SavedRun::from_args(args);
+    let saved = SavedRun::from_args(args, &task, plan);
     saved.write(&paths, &experiment)?;
-    preflight_and_run(ctx, env, &paths, &experiment, &args.task, &saved)
+    preflight_and_run(ctx, env, &paths, &experiment, &task, &saved)
+}
+
+/// `--plan` as a path relative to the project root, `/`-separated (FDS-09).
+/// A relative `plan` is relative to `cwd`. A path outside the project stays
+/// as given; preflight then refuses it as untracked.
+fn plan_in_project(project: &Path, cwd: Option<&Path>, plan: &Path) -> String {
+    let full = match cwd {
+        Some(cwd) if plan.is_relative() => cwd.join(plan),
+        _ => plan.to_path_buf(),
+    };
+    let rel = full
+        .strip_prefix(project)
+        .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            let (full, project) = (full.canonicalize().ok()?, project.canonicalize().ok()?);
+            full.strip_prefix(project).ok().map(Path::to_path_buf)
+        });
+    let Some(rel) = rel else {
+        return plan.to_string_lossy().into_owned();
+    };
+    rel.components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// `resume <exp>` with the report target the experiment saved.
+pub(crate) fn resume(
+    ctx: &mut RuntimeContext,
+    env: &BTreeMap<String, String>,
+    exp: &str,
+) -> Result<u8> {
+    resume_reporting(ctx, env, exp, None)
 }
 
 /// `resume <exp>`: re-enter the experiment where its events stop. Preflight
 /// runs again when it never completed; a planned round is planned again with
 /// its own id; a running round is driven on, adopting every candidate that a
 /// killed coordinator started.
-pub(crate) fn resume(
+///
+/// `report_to` (`--report-to`) replaces the saved report target.
+pub(crate) fn resume_reporting(
     ctx: &mut RuntimeContext,
     env: &BTreeMap<String, String>,
     exp: &str,
+    _report_to: Option<&str>,
 ) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let experiment = ExperimentId::new(exp)?;
@@ -201,7 +249,18 @@ fn preflight_and_run(
             view: &view,
         },
     );
-    let report = evaluate(&pre_plan, &snapshot);
+    let mut report = evaluate(&pre_plan, &snapshot);
+    if let Some(plan) = &saved.plan {
+        let dir = pre_plan
+            .git
+            .toplevel
+            .clone()
+            .unwrap_or_else(|| project.clone());
+        let base = pre_plan.git.base_sha.as_deref();
+        if let Some(problem) = preflight::plan_problem(&git, &dir, base, plan) {
+            preflight::fail_pre_01(&mut report, &problem);
+        }
+    }
 
     let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
     let failed = preflight::record(
@@ -637,12 +696,16 @@ pub(crate) struct SavedRun {
     pub promote_to: Option<String>,
     pub worktree_root: Option<PathBuf>,
     pub allow_dirty: bool,
+    /// The `--plan` file, relative to the project root: preflight checks it
+    /// again on a resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 impl SavedRun {
-    fn from_args(args: &RunArgs) -> Self {
+    fn from_args(args: &RunArgs, task: &str, plan: Option<String>) -> Self {
         SavedRun {
-            task: redact(&args.task).into_owned(),
+            task: redact(task).into_owned(),
             candidates: args.candidates,
             strategy: args.strategy,
             budget_usd: args.budget_usd.clone(),
@@ -651,6 +714,7 @@ impl SavedRun {
             promote_to: args.promote_to.clone(),
             worktree_root: args.worktree_root.clone(),
             allow_dirty: args.allow_dirty,
+            plan,
         }
     }
 

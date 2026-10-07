@@ -43,6 +43,10 @@ pub enum Command {
     Resume {
         #[arg(value_name = "EXPERIMENT")]
         experiment: String,
+        /// The pane that gets 1 report line when the round ends. Default:
+        /// the pane `run --report-to` or `run --detach` saved.
+        #[arg(long, value_name = "PANE")]
+        report_to: Option<String>,
     },
 
     /// Show the experiments and rounds with their state.
@@ -169,9 +173,14 @@ pub struct CleanupArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct RunArgs {
-    /// The task every candidate works on.
-    #[arg(value_name = "TASK")]
-    pub task: String,
+    /// The task every candidate works on. Optional with --plan.
+    #[arg(value_name = "TASK", required_unless_present = "plan")]
+    pub task: Option<String>,
+    /// The unit's plan file, committed at the base commit. Without TASK,
+    /// the task is "Read and follow <PATH> exactly.", with <PATH> relative
+    /// to the project root.
+    #[arg(long, value_name = "PATH")]
+    pub plan: Option<PathBuf>,
     /// Candidates in the round.
     #[arg(long, value_name = "N")]
     pub candidates: Option<u32>,
@@ -194,13 +203,31 @@ pub struct RunArgs {
     /// Run on a dirty work tree (the candidates start from HEAD).
     #[arg(long)]
     pub allow_dirty: bool,
+    /// Run preflight here, then start the round in a new pane of its
+    /// dataset workspace and return at once.
+    #[arg(long)]
+    pub detach: bool,
+    /// The pane that gets 1 report line when the round ends. Default with
+    /// --detach: $HERDR_PANE_ID.
+    #[arg(long, value_name = "PANE")]
+    pub report_to: Option<String>,
 }
 
 impl RunArgs {
+    /// The task text: TASK, else the `--plan` task ([`plan_task`]) of the
+    /// path as given.
+    pub fn task_text(&self) -> String {
+        match (&self.task, &self.plan) {
+            (Some(task), _) => task.clone(),
+            (None, Some(plan)) => plan_task(&plan.to_string_lossy()),
+            (None, None) => String::new(),
+        }
+    }
+
     /// The flags as `config::load` takes them.
     pub fn flags(&self) -> Result<RunFlags> {
         Ok(RunFlags {
-            task: self.task.clone(),
+            task: self.task_text(),
             candidates: self.candidates,
             strategy: self.strategy,
             budget_usd: self.budget_usd.clone(),
@@ -215,6 +242,12 @@ impl RunArgs {
             allow_dirty: self.allow_dirty,
         })
     }
+}
+
+/// The task text of a `--plan` round (FDS-09). `plan` is relative to the
+/// project root.
+pub fn plan_task(plan: &str) -> String {
+    format!("Read and follow {plan} exactly.")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
