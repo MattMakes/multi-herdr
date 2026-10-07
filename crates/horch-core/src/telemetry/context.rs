@@ -15,7 +15,12 @@
 //! |---|---|---|
 //! | claude | a main-chain `assistant` line with usage | `system` / `compact_boundary` |
 //! | codex | an `event_msg` `token_count` with `info` | `compacted` |
-//! | pi, prime, opencode | slice 2 | slice 2 |
+//! | pi, prime | an assistant `message` that did not fail, with usage | `compaction` |
+//! | opencode | the newest finished assistant row that is not a summary | a summary row |
+//!
+//! OpenCode keeps its sessions in a database, not a file: each read queries
+//! it through `sqlite3`, and the summary rows are the markers, so it uses no
+//! marker cache.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -25,7 +30,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::readers::{first_n, locate, n, Located, Unreadable};
+use super::readers::{first_n, locate, n, sqlite_json, Located, Unreadable};
+use crate::clock;
 use crate::usage::Locations;
 
 /// The first tail window. It doubles until it holds a usable line.
@@ -100,15 +106,10 @@ pub fn read_current(
     let Some(sid) = session_id.filter(|s| !s.is_empty()) else {
         return Err(Unreadable::NoSessionId);
     };
-    if matches!(agent, "pi" | "prime" | "opencode") {
-        return Err(Unreadable::NotRead(format!(
-            "the {agent} context reader lands in slice 2"
-        )));
-    }
     let path = match locate(loc, agent, sid)? {
         // The main transcript; subagent files have their own context.
         Located::Files(files) => files.into_iter().next(),
-        Located::OpenCode(_) => None,
+        Located::OpenCode(db) => return read_opencode(&db, &loc.sqlite3, sid),
     }
     .ok_or_else(|| Unreadable::NotRead(format!("no {agent} context reader")))?;
     let failed = |e: std::io::Error| Unreadable::Failed(format!("reading {}: {e}", path.display()));
@@ -123,7 +124,8 @@ pub fn read_current(
     };
     let (tokens, provisional) = if pending {
         // Claude writes the post figure into its marker; Codex writes a new
-        // token_count at once, so it has none.
+        // token_count at once, and pi and Prime a new response, so they have
+        // none.
         let post = last
             .as_ref()
             .and_then(|m| m.post_tokens)
@@ -209,6 +211,16 @@ fn newest_usable(buf: &[u8], base: u64, agent: &str) -> Option<Usable> {
                     return found;
                 }
             }
+            (None, "pi" | "prime") => {
+                if let Some((tokens, model)) = pi_usable(&v) {
+                    return Some(Usable {
+                        offset: base + start as u64,
+                        tokens,
+                        window: None,
+                        model,
+                    });
+                }
+            }
             (None, _) => {
                 found = codex_usable(&v).map(|(tokens, window)| Usable {
                     offset: base + start as u64,
@@ -287,6 +299,144 @@ fn codex_usable(v: &Value) -> Option<(u64, Option<u64>)> {
     Some((first_n(last, &["total_tokens"]), window))
 }
 
+/// A pi or Prime response that did not fail: its context and its model.
+///
+/// The context is `totalTokens` when it is above 0, else the sum of the
+/// token classes. A `toolResult` line is not a response.
+fn pi_usable(v: &Value) -> Option<(u64, Option<String>)> {
+    let message = v.get("message")?;
+    if v.get("type").and_then(Value::as_str) != Some("message")
+        || message.get("role").and_then(Value::as_str) != Some("assistant")
+        || matches!(
+            message.get("stopReason").and_then(Value::as_str),
+            Some("aborted" | "error")
+        )
+    {
+        return None;
+    }
+    let usage = message.get("usage").filter(|u| u.is_object())?;
+    let tokens = match n(usage, "/totalTokens") {
+        0 => {
+            n(usage, "/input")
+                + n(usage, "/output")
+                + n(usage, "/cacheRead")
+                + n(usage, "/cacheWrite")
+        }
+        total => total,
+    };
+    let model = message.get("model").and_then(Value::as_str);
+    (tokens > 0).then(|| (tokens, model.map(str::to_owned)))
+}
+
+// ─── opencode ───────────────────────────────────────────────────────────────
+
+/// The current context of 1 OpenCode session, from its assistant rows in
+/// `db`. The newest summary row is the last compaction; its `offset` is the
+/// row's `time_updated` (ms), as rows have no byte offset.
+fn read_opencode(db: &Path, sqlite3: &Path, sid: &str) -> Result<Reading, Unreadable> {
+    // The id goes into the SQL text: `ses_` and letters and digits only.
+    let id_ok = sid
+        .strip_prefix("ses_")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric()));
+    if !id_ok {
+        return Err(Unreadable::Failed(format!(
+            "unexpected opencode session id '{sid}'"
+        )));
+    }
+    if !db.is_file() {
+        return Err(Unreadable::NoTranscript(format!(
+            "no opencode database at {}",
+            db.display()
+        )));
+    }
+    let query = format!(
+        "SELECT time_updated, data FROM message WHERE session_id = '{sid}' \
+         AND json_extract(data, '$.role') = 'assistant' ORDER BY time_updated, id;"
+    );
+    let rows = sqlite_json(sqlite3, db, &query).map_err(|e| match e {
+        // The cost reader says "sqlite3 not found"; this reason names the fix.
+        Unreadable::NotRead(_) => Unreadable::NotRead("sqlite3 not on PATH".into()),
+        other => other,
+    })?;
+    let mut usable: Option<Usable> = None;
+    let mut marks: Vec<CompactionMark> = Vec::new();
+    for row in rows {
+        let updated = row.get("time_updated").and_then(Value::as_u64).unwrap_or(0);
+        let data: Value = match row.get("data") {
+            Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
+            Some(v) => v.clone(),
+            None => Value::Null,
+        };
+        if data.get("summary").and_then(Value::as_bool) == Some(true) {
+            let at = data
+                .pointer("/time/created")
+                .and_then(Value::as_i64)
+                .and_then(clock::from_epoch_ms)
+                .map(clock::stamp)
+                .unwrap_or_default();
+            marks.push(CompactionMark {
+                at,
+                offset: updated,
+                trigger: None,
+                pre_tokens: usable.as_ref().map(|u| u.tokens),
+                post_tokens: None,
+            });
+            continue;
+        }
+        if data.get("finish").is_none_or(Value::is_null) {
+            continue;
+        }
+        let t = data.get("tokens").unwrap_or(&Value::Null);
+        let tokens = match n(t, "/total") {
+            0 => {
+                n(t, "/input")
+                    + n(t, "/output")
+                    + n(t, "/reasoning")
+                    + n(t, "/cache/read")
+                    + n(t, "/cache/write")
+            }
+            total => total,
+        };
+        if tokens == 0 {
+            continue;
+        }
+        let model = match (
+            data.get("providerID").and_then(Value::as_str),
+            data.get("modelID").and_then(Value::as_str),
+        ) {
+            (Some(p), Some(m)) => Some(format!("{p}/{m}")),
+            (None, Some(m)) => Some(m.to_string()),
+            _ => None,
+        };
+        usable = Some(Usable {
+            offset: updated,
+            tokens,
+            window: None,
+            model,
+        });
+    }
+    let last = marks.last().cloned();
+    let pending = match (&last, &usable) {
+        (Some(m), Some(u)) => m.offset > u.offset,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    let (tokens, model) = match usable {
+        Some(u) => ((!pending).then_some(u.tokens), u.model),
+        None => (None, None),
+    };
+    Ok(Reading {
+        tokens,
+        provisional: false,
+        pending,
+        window: None,
+        model,
+        last_compaction: last,
+        marks: marks.len(),
+        transcript: db.to_path_buf(),
+    })
+}
+
 // ─── markers ────────────────────────────────────────────────────────────────
 
 /// The marker cache of 1 transcript.
@@ -307,6 +457,7 @@ fn cache_file(cache_dir: &Path, transcript: &str) -> PathBuf {
 fn needle(agent: &str) -> &'static [u8] {
     match agent {
         "claude" => br#""subtype":"compact_boundary""#,
+        "pi" | "prime" => br#""type":"compaction""#,
         _ => br#""type":"compacted""#,
     }
 }
@@ -467,6 +618,18 @@ fn confirm(line: &[u8], offset: u64, agent: &str) -> Option<CompactionMark> {
                     .map(str::to_owned),
                 pre_tokens: meta.get("preTokens").and_then(Value::as_u64),
                 post_tokens: meta.get("postTokens").and_then(Value::as_u64),
+            })
+        }
+        "pi" | "prime" => {
+            if kind != Some("compaction") {
+                return None;
+            }
+            Some(CompactionMark {
+                at,
+                offset,
+                trigger: None,
+                pre_tokens: v.get("tokensBefore").and_then(Value::as_u64),
+                post_tokens: None,
             })
         }
         _ => {

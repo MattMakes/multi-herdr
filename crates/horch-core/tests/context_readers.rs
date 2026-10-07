@@ -16,6 +16,7 @@ const PENDING: &str = "22222222-2222-4222-8222-222222222222";
 const POST: &str = "33333333-3333-4333-8333-333333333333";
 const ITERATIONS: &str = "44444444-4444-4444-8444-444444444444";
 const CODEX: &str = "01a0de6e-0000-7000-8000-00000000000";
+const PI: &str = "aaaaaaaa-0000-4000-8000-00000000000";
 
 fn home() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context/home")
@@ -32,6 +33,10 @@ fn read(agent: &str, sid: &str) -> Reading {
 
 fn codex(n: u8) -> String {
     format!("{CODEX}{n}")
+}
+
+fn pi(n: u8) -> String {
+    format!("{PI}{n}")
 }
 
 /// A Claude assistant line with 1 usage figure: `tokens` in `input_tokens`.
@@ -175,20 +180,132 @@ fn ctx_04_missing_transcript_is_no_transcript() {
 #[test]
 fn ctx_04_harness_without_reader_is_not_read() {
     let cache = tempfile::tempdir().unwrap();
-    for agent in ["pi", "prime", "opencode"] {
-        let got = read_current(&fixture_loc(), cache.path(), agent, Some(PRE));
-        assert_eq!(
-            got,
-            Err(Unreadable::NotRead(format!(
-                "the {agent} context reader lands in slice 2"
-            ))),
-        );
-    }
     let got = read_current(&fixture_loc(), cache.path(), "antigravity", Some(PRE));
     assert_eq!(
         got,
         Err(Unreadable::NotRead("unknown agent 'antigravity'".into()))
     );
+}
+
+#[test]
+fn ctx_04_opencode_without_sqlite3_is_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("opencode.db");
+    std::fs::write(&db, b"").unwrap();
+    let loc = Locations {
+        opencode_db: db,
+        sqlite3: dir.path().join("no-such-sqlite3"),
+        ..fixture_loc()
+    };
+    let got = read_current(&loc, dir.path(), "opencode", Some("ses_pickle"));
+    assert_eq!(got, Err(Unreadable::NotRead("sqlite3 not on PATH".into())));
+}
+
+#[test]
+fn ctx_02_pi_skips_error_and_tool_result_lines() {
+    // The `stop` line: totalTokens 201,000. The `error` line after it (zero
+    // usage) and the toolResult line (999,999) do not count.
+    let r = read("pi", &pi(1));
+    assert_eq!(r.tokens, Some(201_000));
+    assert_eq!(r.model.as_deref(), Some("qwen3.8"));
+    assert!(!r.pending);
+    assert!(!r.provisional);
+    assert_eq!(r.window, None);
+    assert_eq!(r.last_compaction, None);
+    assert_eq!(r.marks, 0);
+}
+
+#[test]
+fn ctx_03_pi_pending_is_unknown() {
+    // A trailing `compaction` entry: pending, and pi writes no post figure.
+    let r = read("pi", &pi(2));
+    assert!(r.pending);
+    assert_eq!(r.tokens, None);
+    assert!(!r.provisional);
+    let m = r.last_compaction.expect("a compaction mark");
+    assert_eq!(m.at, "2026-09-20T12:00:00.000Z");
+    assert_eq!(m.pre_tokens, Some(201_500));
+    assert_eq!(m.post_tokens, None);
+    assert_eq!(r.marks, 1);
+}
+
+#[test]
+fn ctx_02_prime_after_compaction() {
+    // Prime's record keeps the session file's path as its session id.
+    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/context/prime/2026-09-20-prime-post.jsonl");
+    let r = read("prime", file.to_str().unwrap());
+    assert_eq!(r.tokens, Some(25_000));
+    assert!(!r.pending);
+    assert_eq!(r.model.as_deref(), Some("claude-opus-5-5"));
+    let m = r.last_compaction.expect("a compaction mark");
+    assert_eq!(m.pre_tokens, Some(280_000));
+    assert_eq!(r.marks, 1);
+    assert_eq!(r.transcript, file);
+}
+
+/// A temp `opencode.db` built from `opencode/rows.sql`, or None (with a
+/// printed reason) when `sqlite3` is not on PATH. `HORCH_REQUIRE_SQLITE=1`
+/// (the gate) turns the skip into a failure.
+fn opencode_db() -> Option<(tempfile::TempDir, Locations)> {
+    let sql = std::fs::File::open(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/context/opencode/rows.sql"),
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("opencode.db");
+    match std::process::Command::new("sqlite3")
+        .arg(&db)
+        .stdin(sql)
+        .status()
+    {
+        Ok(s) => assert!(s.success(), "sqlite3 < rows.sql: {s}"),
+        Err(e) => {
+            assert!(
+                std::env::var_os("HORCH_REQUIRE_SQLITE").is_none(),
+                "HORCH_REQUIRE_SQLITE is set and sqlite3 does not run: {e}"
+            );
+            eprintln!("skipped: sqlite3 does not run: {e}");
+            return None;
+        }
+    }
+    let loc = Locations {
+        opencode_db: db,
+        ..fixture_loc()
+    };
+    Some((dir, loc))
+}
+
+#[test]
+fn ctx_02_opencode_newest_finished_row() {
+    let Some((dir, loc)) = opencode_db() else {
+        return;
+    };
+    // The unfinished row after it does not count.
+    let r = read_current(&loc, dir.path(), "opencode", Some("ses_pickle")).unwrap();
+    assert_eq!(r.tokens, Some(17_009));
+    assert_eq!(r.model.as_deref(), Some("opencode/big-pickle"));
+    assert!(!r.pending);
+    assert_eq!(r.last_compaction, None);
+    assert_eq!(r.marks, 0);
+    assert_eq!(r.transcript, loc.opencode_db);
+
+    // After the summary row: `tokens.total` is 0, so the sum 1,500 + 500 +
+    // 7,500. The summary row itself (31,200) is not a response.
+    let r = read_current(&loc, dir.path(), "opencode", Some("ses_post")).unwrap();
+    assert_eq!(r.tokens, Some(9_500));
+    assert!(!r.pending);
+    let m = r.last_compaction.expect("a compaction mark");
+    assert_eq!(m.pre_tokens, Some(30_000));
+    assert_eq!(r.marks, 1);
+    // The database is queried; no marker cache is written.
+    assert!(!dir.path().join("markers").exists());
+
+    // An id that is not `ses_<alnum>` never reaches the SQL text.
+    for bad in ["ses_x' OR 1=1 --", "abc", "ses_", "ses_a-b"] {
+        let got = read_current(&loc, dir.path(), "opencode", Some(bad));
+        assert!(matches!(got, Err(Unreadable::Failed(_))), "{bad}: {got:?}");
+    }
 }
 
 #[cfg(unix)]
