@@ -14,7 +14,10 @@ one the runner:
    exactly as the skill text has it: a block with `class_name X` is `X.gd`,
    another block is `<file stem>_<n>.gd`, where n counts the gdscript blocks
    of that markdown file from 1;
-3. runs `--import`, so the `class_name` scripts are registered;
+3. writes the class list `.godot/global_script_class_cache.cfg`, so the
+   `class_name` scripts are registered. `--import` writes the same file
+   (byte-equal for the 4 bundles on Godot 4.7.2), but it starts the editor:
+   about 2.5 s of CPU per bundle, and the check run takes about 0.2 s;
 4. runs `res://check.gd`, with a time bound.
 
 A scenario passes when Godot exits 0, prints `scenario: N of N checks
@@ -43,7 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_check import REPO, find_godot  # noqa: E402
-from gdscript_blocks_check import CLASS_NAME, extract  # noqa: E402
+from gdscript_blocks_check import CLASS_NAME, class_cache, extract, script_base  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "tests" / "fixtures" / "gameplay"
 SKILLS = REPO / "skills"
@@ -79,6 +82,18 @@ def write_blocks(skill_dir: Path, out: Path) -> list[str]:
     return names
 
 
+def register_classes(project: Path) -> None:
+    """Write the class list of `project`: the class, base and path of each `class_name` script."""
+    entries = []
+    for path in sorted(project.rglob("*.gd")):
+        code = path.read_text(encoding="utf-8")
+        m = next((m for ln in code.split("\n") if (m := CLASS_NAME.match(ln))), None)
+        if m:
+            entries.append((m[1], script_base(code), f"res://{path.relative_to(project).as_posix()}"))
+    (project / ".godot").mkdir(exist_ok=True)
+    (project / ".godot" / "global_script_class_cache.cfg").write_text(class_cache(sorted(entries)))
+
+
 def run_one(godot: str, skill: str, timeout: int, keep: bool = False) -> Result:
     SCRATCH.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix=f"{skill}-", dir=SCRATCH))
@@ -87,19 +102,16 @@ def run_one(godot: str, skill: str, timeout: int, keep: bool = False) -> Result:
         shutil.copytree(FIXTURES / skill, project)
         shutil.copyfile(FIXTURES / "expect.gd", project / "expect.gd")
         write_blocks(SKILLS / skill, project / "skill")
+        register_classes(project)
         home = root / "home"
         env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(home / "data"),
                    XDG_CONFIG_HOME=str(home / "config"), XDG_CACHE_HOME=str(home / "cache"))
-        base = [godot, "--headless", "--path", str(project)]
         try:
-            imp = subprocess.run(base + ["--import"], env=env, capture_output=True, text=True, timeout=timeout)
-            run = subprocess.run(base + ["--script", "res://check.gd"], env=env,
-                                 capture_output=True, text=True, timeout=timeout)
+            run = subprocess.run([godot, "--headless", "--path", str(project), "--script", "res://check.gd"],
+                                 env=env, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired as e:
             return Result(skill, False, f"timed out after {timeout} s", str(e.stdout or "") + str(e.stderr or ""))
         output = run.stdout + run.stderr
-        if imp.returncode != 0:
-            return Result(skill, False, f"--import exited {imp.returncode}", imp.stdout + imp.stderr)
         errors = ERROR.findall(output)
         summary = SUMMARY.search(output)
         if errors:

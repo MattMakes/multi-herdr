@@ -19,6 +19,41 @@ import gameplay_scenarios as gs  # noqa: E402
 
 GW9 = ["godot-combat-system", "godot-economy-system", "godot-gameplay-loops", "godot-quest-system"]
 
+CLASS_BLOCKS = (
+    "```gdscript\nclass_name Alpha extends Node2D\n```\n"
+    "```gdscript\nclass_name Beta\nextends Alpha\n```\n"
+    "```gdscript\nclass_name Gamma\n\nvar x := 1\n```\n"
+    "```gdscript\nfunc not_a_class() -> void:\n\tpass\n```\n"
+)
+
+# What `Godot --headless --import` (4.7.2) writes for CLASS_BLOCKS.
+EDITOR_CLASSES = """list=[{
+"base": &"Node2D",
+"class": &"Alpha",
+"icon": "",
+"is_abstract": false,
+"is_tool": false,
+"language": &"GDScript",
+"path": "res://skill/Alpha.gd"
+}, {
+"base": &"Alpha",
+"class": &"Beta",
+"icon": "",
+"is_abstract": false,
+"is_tool": false,
+"language": &"GDScript",
+"path": "res://skill/Beta.gd"
+}, {
+"base": &"RefCounted",
+"class": &"Gamma",
+"icon": "",
+"is_abstract": false,
+"is_tool": false,
+"language": &"GDScript",
+"path": "res://skill/Gamma.gd"
+}]
+"""
+
 
 class LayoutTest(unittest.TestCase):
     def test_every_gw9_bundle_has_a_fixture(self):
@@ -43,6 +78,18 @@ class LayoutTest(unittest.TestCase):
             (skill / "SKILL.md").write_text(block + block)
             with self.assertRaises(SystemExit):
                 gs.write_blocks(skill, Path(tmp) / "out")
+
+    def test_the_class_list_is_the_one_import_writes(self):
+        # C5: the runner writes the class list; `--import` started the editor.
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "skill"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(CLASS_BLOCKS)
+            project = Path(tmp) / "project"
+            gs.write_blocks(skill, project / "skill")
+            gs.register_classes(project)
+            text = (project / ".godot" / "global_script_class_cache.cfg").read_text()
+        self.assertEqual(text, EDITOR_CLASSES)
 
 
 def fake_bundle(root: Path, check: str) -> None:

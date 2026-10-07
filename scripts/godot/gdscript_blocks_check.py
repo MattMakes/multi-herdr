@@ -154,6 +154,12 @@ def tries(block: Block, owns_class: bool) -> list[Try]:
     return out
 
 
+def script_base(code: str) -> str:
+    """The base that the class list gives a script: its one-word `extends` name, else RefCounted."""
+    ext = EXTENDS.search(code)
+    return ext[1] if ext and re.fullmatch(r"\w+", ext[1]) else "RefCounted"
+
+
 def class_cache(entries: list[tuple[str, str, str]]) -> str:
     items = []
     for name, base, res in entries:
@@ -216,9 +222,7 @@ def check(blocks: list[Block], godot: str, project: Path, timeout: int) -> None:
             b.class_name = m[1]
             if m[1] not in owners:
                 owners[m[1]] = b
-                ext = EXTENDS.search(b.code)
-                base = ext[1] if ext and re.fullmatch(r"\w+", ext[1]) else "RefCounted"
-                registry.append((m[1], base, f"res://blocks/b{i:05d}_0.gd"))
+                registry.append((m[1], script_base(b.code), f"res://blocks/b{i:05d}_0.gd"))
     (project / ".godot" / "global_script_class_cache.cfg").write_text(class_cache(registry))
 
     plans = {b.index: tries(b, owners.get(b.class_name) is b) for b in blocks}
