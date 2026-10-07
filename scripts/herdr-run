@@ -1,0 +1,7 @@
+#!/bin/sh
+# Start a herdr fleet in the current directory with the multi-herdr roster.
+# Installed by `just install`. Usage: herdr-run [opus|fable|astra|sol]  (default opus)
+# The fleet launcher without competition mode: the orchestrator works alone.
+HORCH_TEAMMATES_DIR="__TEAMMATES_DIR__"
+export HORCH_TEAMMATES_DIR
+exec horch fleet "$@" --cwd "$PWD"

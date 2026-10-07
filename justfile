@@ -28,16 +28,18 @@ default:
     @just --list
 
 # Build the release binaries, install them as ~/.local/bin/horch and
-# ~/.local/bin/multi-herdr-dataset, install the herdr-fleet launcher next
-# to them, and remove the old herdr-fleet shell function from ~/.zshrc (a
+# ~/.local/bin/multi-herdr-dataset, install the herdr-fleet and herdr-run
+# launchers next to them, and remove the old herdr-fleet shell function from ~/.zshrc (a
 # backup is written first).
 install:
     cargo build --release --bin horch --bin multi-herdr-dataset
     ./target/release/horch install
     sed "s|__TEAMMATES_DIR__|{{justfile_directory()}}/teammates|" scripts/herdr-fleet > ~/.local/bin/herdr-fleet
     chmod 755 ~/.local/bin/herdr-fleet
+    sed "s|__TEAMMATES_DIR__|{{justfile_directory()}}/teammates|" scripts/herdr-run > ~/.local/bin/herdr-run
+    chmod 755 ~/.local/bin/herdr-run
     ./scripts/remove-zsh-fleet-function ~/.zshrc
-    @echo "Installed: $(~/.local/bin/horch --version). Open a new shell, then run: herdr-fleet"
+    @echo "Installed: $(~/.local/bin/horch --version). Open a new shell, then run: herdr-fleet or herdr-run"
 
 # Fail fast with a clear message if herdr is missing or unreachable.
 require-herdr:
