@@ -451,10 +451,10 @@ impl<G: GitClient> Coordinator<'_, G> {
             // The live budget (CMP-10). Measured spend is read on check
             // ticks; the policy runs every tick, so a launch never misses
             // what the running candidates are committed to. Committed spend
-            // is the orchestrator's policy pending the Spec B §budget text:
-            // each running candidate counts max(measured, projected), and
-            // the judge's reserve is held in the policy's limit until it
-            // completes (see `budget`).
+            // (Spec B §4.11): each running candidate counts
+            // max(measured, projected), and the judge's reserve is held in
+            // the policy's limit until it completes (see `budget`). Each
+            // launch must also fit its own projection (`launch_wave`).
             let records = self.records()?;
             let view = self.view(spec)?;
             if check {
@@ -493,7 +493,14 @@ impl<G: GitClient> Coordinator<'_, G> {
             let records = self.records()?;
             match &stop {
                 Some(why) => self.cancel_unlaunched(spec, &view, &records, why)?,
-                None => self.launch_wave(spec, ws, &view, &records)?,
+                None => {
+                    if self.launch_wave(spec, ws, &view, &records, spent, committed)? {
+                        stop = Some(Stop::Budget);
+                        let view = self.view(spec)?;
+                        let records = self.records()?;
+                        self.cancel_unlaunched(spec, &view, &records, &Stop::Budget)?;
+                    }
+                }
             }
 
             if self
@@ -846,19 +853,25 @@ impl<G: GitClient> Coordinator<'_, G> {
             .map(|(l, _)| l)
     }
 
-    /// Start candidates until `safe_n` are live.
+    /// Start candidates until `safe_n` are live, in label order, while
+    /// each one's projection fits the budget on top of `spent` and
+    /// `committed` (Spec B §4.11). True when a candidate does not fit and
+    /// none is live: no end of a running candidate can make room.
     fn launch_wave(
         &self,
         spec: &RoundSpec,
         ws: &DatasetWorkspace,
         view: &RoundView,
         records: &BTreeMap<String, Execution>,
-    ) -> Result<()> {
+        spent: MicroUsd,
+        mut committed: MicroUsd,
+    ) -> Result<bool> {
         let mut live = view
             .candidates
             .iter()
             .filter(|(l, c)| !c.is_terminal() && records.contains_key(&self.key(spec, l)))
             .count() as u32;
+        let mut blocked = false;
         for (label, c) in &view.candidates {
             if live >= spec.safe_n.max(1) {
                 break;
@@ -869,10 +882,19 @@ impl<G: GitClient> Coordinator<'_, G> {
             {
                 continue;
             }
+            let next = c
+                .planned
+                .as_ref()
+                .map_or(MicroUsd(0), |p| self.meter.projected(p.model.as_str()));
+            if !BudgetPolicy::fits(spent, committed, next, &spec.config.budget) {
+                blocked = true;
+                break;
+            }
             self.launch(spec, ws, label, c)?;
+            committed = MicroUsd(committed.0.saturating_add(next.0));
             live += 1;
         }
-        Ok(())
+        Ok(blocked && live == 0)
     }
 
     /// Start one candidate through the execution service (CMP-05, ARC-24).

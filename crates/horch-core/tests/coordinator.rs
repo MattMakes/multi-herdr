@@ -860,13 +860,25 @@ fn arc_24_candidate_record_lists_operator_skills() {
     }
 }
 
-#[test]
-fn cmp_10_committed_spend_counts_running_candidates() {
-    // 3 candidates, 2 at once, no measured spend at all. The hard limit
-    // minus the judge reserve is the projected cost of the first 2, so
-    // once they run the third never starts, and the 2 running are not
-    // cancelled.
-    let Some(w) = world() else { return };
+/// What one budget round left: its outcome, the most candidates that were
+/// live at once, the execution records and the round's candidates.
+struct BudgetRun {
+    outcome: RoundOutcome,
+    max_live: u32,
+    records: Vec<horch_core::execution::legacy::LedgerRecordV1>,
+    unstarted: Vec<FailureKind>,
+}
+
+/// A round of `n` candidates, `safe_n` at once, with no measured spend at
+/// all. `limit` gets the plan and the meter and returns the hard limit
+/// minus the judge reserve. A started candidate runs for 3 ticks, then
+/// crashes.
+fn budget_round(
+    n: u32,
+    safe_n: u32,
+    limit: impl FnOnce(&RoundPlan, &UsageMeter) -> i64,
+) -> Option<BudgetRun> {
+    let w = world()?;
     let roster = roster();
     let paths = DatasetPaths::new(&w.ctx.paths.state_root, &w.repo);
     let recorder = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
@@ -883,7 +895,7 @@ fn cmp_10_committed_spend_counts_running_candidates() {
         },
     )
     .unwrap();
-    config.candidates = 3;
+    config.candidates = n;
     config.worktree_root = Some(w.root.join("worktrees"));
     let now = horch_core::clock::parse("2026-10-02T12:00:00Z").unwrap();
     let experiment = ExperimentId::mint(now);
@@ -898,25 +910,16 @@ fn cmp_10_committed_spend_counts_running_candidates() {
         round_id: &round,
         index: 0,
         base_sha: &w.base,
-        n: 3,
+        n,
         baseline: None,
         roster: &roster,
         view: &view,
         filter: &EligibilityFilter::default(),
         config: &config,
     });
-    assert_eq!(plan.candidates.len(), 3);
-    // A and B start first (label order). Together they commit exactly the
-    // limit; C's model does not matter.
-    let first_two: i64 = plan
-        .candidates
-        .iter()
-        .filter(|c| ["A", "B"].contains(&c.label.as_str()))
-        .map(|c| meter.projected(c.model.as_str()).0)
-        .sum();
-    assert!(first_two > 0, "A or B has a priced model: {plan:?}");
+    assert_eq!(plan.candidates.len(), n as usize);
     config.budget.judge_reserve_usd_micro = 1_000_000;
-    config.budget.hard_usd_micro = 1_000_000 + first_two;
+    config.budget.hard_usd_micro = 1_000_000 + limit(&plan, &meter);
     config.budget.soft_usd_micro = config.budget.hard_usd_micro;
 
     // The experiment as `run` leaves it after preflight.
@@ -926,12 +929,12 @@ fn cmp_10_committed_spend_counts_running_candidates() {
             "experiment.created",
             json!({"task_id": "task-1", "task_digest": digest(), "config_digest": digest(),
                    "base_sha": w.base, "repo_digest": digest(), "environment_digest": digest(),
-                   "candidates": 3, "strategy": "diverse", "budget_usd_micro": 100_000_000,
+                   "candidates": n, "strategy": "diverse", "budget_usd_micro": 100_000_000,
                    "promote_to": null}),
         ),
         (
             "preflight.completed",
-            json!({"report": {"schema_version": "1.0.0", "checks": [], "safe_n": 2, "waves": 1,
+            json!({"report": {"schema_version": "1.0.0", "checks": [], "safe_n": safe_n, "waves": 1,
                    "projected_cost_microusd": 0,
                    "machine": {"os": "macos", "arch": "aarch64", "cpus": 10,
                                "mem_total_bytes": null, "mem_available_bytes": null,
@@ -955,11 +958,19 @@ fn cmp_10_committed_spend_counts_running_candidates() {
     }
 
     // The agents: a started candidate runs for 3 ticks, then crashes.
+    // `max_live` counts the records that are live at one sleep.
     let ticks = Cell::new(0u32);
+    let max_live = Cell::new(0u32);
     let sleep = |_: Duration| {
         ticks.set(ticks.get() + 1);
         assert!(ticks.get() < 50, "the round never ended");
-        for r in store.read().unwrap() {
+        let records = store.read().unwrap();
+        let live = records
+            .iter()
+            .filter(|r| r.execution_status().is_live())
+            .count() as u32;
+        max_live.set(max_live.get().max(live));
+        for r in records {
             match r.execution_status() {
                 ExecutionStatus::Starting => {
                     store
@@ -1010,18 +1021,52 @@ fn cmp_10_committed_spend_counts_running_candidates() {
         task: "add a greeting".into(),
         repo: w.repo.clone(),
         worktree_root: w.root.join("worktrees"),
-        safe_n: 2,
+        safe_n,
         tick: Duration::from_millis(1),
         watch_command: "watch".into(),
     };
     let outcome = coordinator.start(&spec, &plan).unwrap();
-    assert_eq!(outcome, RoundOutcome::Rejected { budget: true });
+    let events = recorder.read_all().unwrap().events;
+    let unstarted = fold(&events).rounds[&round]
+        .candidates
+        .values()
+        .filter(|c| c.spawned.is_none())
+        .map(|c| c.failed.as_ref().unwrap().failure.clone())
+        .collect();
+    Some(BudgetRun {
+        outcome,
+        max_live: max_live.get(),
+        records: store.read().unwrap(),
+        unstarted,
+    })
+}
 
+/// The projected cost of the candidates with these labels.
+fn projected(plan: &RoundPlan, meter: &UsageMeter, labels: &[&str]) -> i64 {
+    let cost: i64 = plan
+        .candidates
+        .iter()
+        .filter(|c| labels.contains(&c.label.as_str()))
+        .map(|c| meter.projected(c.model.as_str()).0)
+        .sum();
+    assert!(cost > 0, "{labels:?} have a priced model: {plan:?}");
+    cost
+}
+
+#[test]
+fn cmp_10_committed_spend_counts_running_candidates() {
+    // 3 candidates, 2 at once. The hard limit minus the judge reserve is
+    // the projected cost of the first 2 (label order), so once they run
+    // the third never starts, and the 2 running are not cancelled.
+    let Some(run) = budget_round(3, 2, |plan, meter| projected(plan, meter, &["A", "B"])) else {
+        return;
+    };
+    assert_eq!(run.outcome, RoundOutcome::Rejected { budget: true });
+    assert_eq!(run.max_live, 2);
     // 2 candidates started and ran to their own end; the third was
     // cancelled for the budget before it started.
-    let records = store.read().unwrap();
-    assert_eq!(records.len(), 2, "{records:?}");
-    for record in &records {
+    assert_eq!(run.records.len(), 2, "{:?}", run.records);
+    for record in &run.records {
         assert_eq!(
             to_execution(record).unwrap().status,
             ExecutionStatus::Failed {
@@ -1029,19 +1074,49 @@ fn cmp_10_committed_spend_counts_running_candidates() {
             }
         );
     }
-    let events = recorder.read_all().unwrap().events;
-    let r = &fold(&events).rounds[&round];
-    let unstarted: Vec<_> = r
-        .candidates
-        .values()
-        .filter(|c| c.spawned.is_none())
-        .collect();
-    assert_eq!(unstarted.len(), 1);
     assert_eq!(
-        unstarted[0].failed.as_ref().unwrap().failure,
-        FailureKind::Cancelled {
+        run.unstarted,
+        [FailureKind::Cancelled {
             reason: "budget".into()
-        }
+        }]
+    );
+}
+
+#[test]
+fn cmp_10_a_launch_waits_until_its_own_projection_fits() {
+    // U-44, Spec B §4.11: a new launch must fit its own projection under
+    // the limit. The limit holds A or B but not both, so B waits for A to
+    // end (A's measured spend is 0), then runs. Both run; never at once.
+    let Some(run) = budget_round(2, 2, |plan, meter| projected(plan, meter, &["A", "B"]) - 1)
+    else {
+        return;
+    };
+    assert_eq!(run.max_live, 1, "B launched while A ran");
+    assert_eq!(run.records.len(), 2, "{:?}", run.records);
+    assert!(run.unstarted.is_empty(), "{:?}", run.unstarted);
+    assert_eq!(run.outcome, RoundOutcome::Rejected { budget: false });
+}
+
+#[test]
+fn cmp_10_a_launch_that_can_never_fit_is_cancelled() {
+    // U-44: nothing runs, and A's own projection is over the limit, so no
+    // end of a running candidate can make room. Every candidate is
+    // cancelled for the budget before it starts.
+    let Some(run) = budget_round(2, 2, |plan, meter| projected(plan, meter, &["A"]) - 1) else {
+        return;
+    };
+    assert_eq!(run.outcome, RoundOutcome::Rejected { budget: true });
+    assert!(run.records.is_empty(), "{:?}", run.records);
+    assert_eq!(
+        run.unstarted,
+        [
+            FailureKind::Cancelled {
+                reason: "budget".into()
+            },
+            FailureKind::Cancelled {
+                reason: "budget".into()
+            }
+        ]
     );
 }
 

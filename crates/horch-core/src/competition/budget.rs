@@ -11,13 +11,18 @@
 //!   candidates go on; no new candidate starts.
 //! - otherwise: [`BudgetAction::Continue`].
 //!
-//! `committed` (the coordinator's policy, the orchestrator's decision until
-//! Spec B §budget says otherwise): each running candidate counts the max of
+//! `committed` (Spec B §4.11): each running candidate counts the max of
 //! what it has spent and its projected cost ([`UsageMeter::projected`]),
 //! minus what it has spent. The judge's
 //! reserve is held until the judge completes; it is already in `limit`.
 //! So a round whose projected spend crosses the limit stops launching
 //! before its measured spend does.
+//!
+//! A new launch must also fit: [`BudgetPolicy::fits`] needs
+//! `spent + committed + its own projection ≤ limit`, the rule PRE-09
+//! applies to the whole round. A candidate that does not fit waits for a
+//! running candidate to end; with none running, it never fits, and the
+//! round stops launching.
 //!
 //! A hard ceiling of 0 means none is configured. Preflight (PRE-09) refuses
 //! such a run, so this rule never sees it in a real round; if it does, the
@@ -48,9 +53,7 @@ impl BudgetPolicy {
     /// has used; `committed` is the expected further spend of candidates
     /// already running or about to launch.
     pub fn check(spent: MicroUsd, committed: MicroUsd, config: &BudgetConfig) -> BudgetAction {
-        let limit = config
-            .hard_usd_micro
-            .saturating_sub(config.judge_reserve_usd_micro);
+        let limit = Self::limit(config);
         if spent.0 >= limit {
             BudgetAction::CancelRunning
         } else if spent.0.saturating_add(committed.0) >= limit {
@@ -58,6 +61,26 @@ impl BudgetPolicy {
         } else {
             BudgetAction::Continue
         }
+    }
+
+    /// Whether a new candidate whose projected cost is `next` may launch
+    /// now: the round's spend, the running candidates' committed spend
+    /// and `next` together stay within the limit (Spec B §4.11).
+    pub fn fits(
+        spent: MicroUsd,
+        committed: MicroUsd,
+        next: MicroUsd,
+        config: &BudgetConfig,
+    ) -> bool {
+        spent.0.saturating_add(committed.0).saturating_add(next.0) <= Self::limit(config)
+    }
+
+    /// What the candidates may use: the hard ceiling minus the judge
+    /// reserve.
+    fn limit(config: &BudgetConfig) -> i64 {
+        config
+            .hard_usd_micro
+            .saturating_sub(config.judge_reserve_usd_micro)
     }
 }
 

@@ -1445,6 +1445,35 @@ would push it to stop early. The orchestrator already sees every pane's
 A fleet Codex worker's blocked commits are a different problem: git-writing
 units go to Claude teammates.
 
+#### 4.11.6 Live budget: committed spend and the launch rule (CMP-10)
+
+Decision (2026-10-06, wave 2, item U-44): the interim committed-spend rule
+of B3 is the rule. The live limit is `hard_usd_micro - judge_reserve_usd_micro`;
+the judge reserve is held until the judge completes. `spent` is the
+measured spend of every started candidate of the round
+(`UsageMeter::price` of its transcript).
+
+- `committed`: each running candidate counts max(measured, projected), less
+  what it has measured, never below 0. `projected` is
+  `UsageMeter::projected` with the estimates PRE-09 resolved (§4.11.1).
+- `spent >= limit`: cancel every running candidate, keep its worktree and
+  data, launch nothing.
+- `spent + committed >= limit`: no new candidate starts; running
+  candidates go on.
+- A new launch must fit its own projection: `spent + committed +
+  projected(next) <= limit`. This is PRE-09's rule (projection plus judge
+  reserve within the hard ceiling), applied per launch on live data.
+  Candidates launch in label order. A candidate that does not fit waits
+  for a running candidate to end. When none runs, no end can make room:
+  every unlaunched candidate ends `Cancelled{reason: "budget"}`.
+
+Code: `competition/budget.rs` (`BudgetPolicy::check`,
+`BudgetPolicy::fits`) and `competition/coordinator.rs` (`committed`,
+`launch_wave`). Tests: `cmp_10_hard_budget_cancels_and_retains`,
+`cmp_10_committed_spend_counts_running_candidates`,
+`cmp_10_a_launch_waits_until_its_own_projection_fits`,
+`cmp_10_a_launch_that_can_never_fit_is_cancelled`.
+
 ---
 
 ## 5. Round state machine (CMP-03)
