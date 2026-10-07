@@ -12,18 +12,20 @@ Reference for `skills/godot-testing/SKILL.md` — GUT CLI, gdUnit4 CLI, GitHub A
 Commands and exit codes below were measured with GUT 9.7.1 on Godot 4.7.2
 (the same facts as **godot-build-verify**, `references/commands.md`).
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ```bash
 # Run all tests in res://tests and its subdirectories, then quit
-godot --headless -s addons/gut/gut_cmdln.gd -gdir=res://tests -ginclude_subdirs -gexit
+gd -s addons/gut/gut_cmdln.gd -gdir=res://tests -ginclude_subdirs -gexit
 
 # Run a specific directory
-godot --headless -s addons/gut/gut_cmdln.gd -gdir=res://tests/unit -gexit
+gd -s addons/gut/gut_cmdln.gd -gdir=res://tests/unit -gexit
 
 # Run a specific file
-godot --headless -s addons/gut/gut_cmdln.gd -gtest=res://tests/unit/test_health_component.gd -gexit
+gd -s addons/gut/gut_cmdln.gd -gtest=res://tests/unit/test_health_component.gd -gexit
 
 # Verbose output with a JUnit XML report
-godot --headless -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit -glog=3 -gjunit_xml_file=res://test_results/gut.xml
+gd -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit -glog=3 -gjunit_xml_file=res://test_results/gut.xml
 ```
 
 - Without `-gexit`, GUT does not quit.
@@ -43,16 +45,16 @@ directory or a test-suite file.
 
 ```bash
 # Run all tests
-godot --headless -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessMode
+gd -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessMode
 
 # Run a specific directory
-godot --headless -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests/unit --ignoreHeadlessMode
+gd -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests/unit --ignoreHeadlessMode
 
 # Run a specific test file
-godot --headless -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests/unit/test_health_component.gd --ignoreHeadlessMode
+gd -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests/unit/test_health_component.gd --ignoreHeadlessMode
 
 # Run every test after a failure (the default stops at the first failure), with reports
-godot --headless -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessMode -c -rd res://reports
+gd -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessMode -c -rd res://reports
 ```
 
 | Result | Exit |

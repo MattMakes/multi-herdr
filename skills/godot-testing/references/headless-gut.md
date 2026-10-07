@@ -57,6 +57,8 @@ before the text). A log check must strip them first, for example
 
 ## Run script
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 GUT exits 0 when a test script does not parse (it skips the script) and when
 no test is found. Save this as `tests/run_gut.sh` and run it from any shell
 (it runs under bash through its first line; it uses no pipe, so it needs no
@@ -69,13 +71,14 @@ no test is found. Save this as `tests/run_gut.sh` and run it from any shell
 # script also greps the log. Run it with bash, from any shell (zsh included).
 set -u
 cd "$(dirname "$0")/.." || exit 2
-GODOT="${GODOT_PATH:-/Applications/Godot.app/Contents/MacOS/Godot}"
+RUN="<skill dir>/scripts/godot-run.sh"
+gd() { bash "$RUN" --path "$PWD" "$@"; }
 GH="$PWD/.godot/horch-home"
 LOG="$GH/logs/gut.log"
 mkdir -p "$GH/logs"
 
-HOME="$GH" "$GODOT" --headless --path "$PWD" --import > "$GH/logs/import.log" 2>&1
-HOME="$GH" "$GODOT" --headless --path "$PWD" -s res://addons/gut/gut_cmdln.gd \
+gd --import > "$GH/logs/import.log" 2>&1
+gd -s res://addons/gut/gut_cmdln.gd \
   -gconfig=res://.gutconfig.json > "$LOG" 2>&1
 code=$?
 if grep -Eq 'SCRIPT ERROR|Parse Error|Nothing was run' "$LOG"; then

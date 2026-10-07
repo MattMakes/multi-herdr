@@ -126,6 +126,8 @@ Add common test sizes under **Project > Project Settings > Display > Window > Si
 
 Launch from the command line with an override resolution:
 
+This command opens game windows for a person at the screen; a fleet worker does not run it.
+
 ```bash
 # Windows
 godot.exe --path "C:/projects/mygame" --resolution 1280x720

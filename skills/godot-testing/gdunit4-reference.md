@@ -375,10 +375,12 @@ Verify(spyHealth).TakeDamage(10);                 // call tracked
 
 ## CLI Commands
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ### GDScript tests only
 
 ```bash
-godot --headless \
+gd \
   -s addons/gdUnit4/GdUnitRunner.gd \
   -- \
   --testsuites res://tests
@@ -387,7 +389,7 @@ godot --headless \
 ### C# tests (requires .NET Godot build)
 
 ```bash
-godot --headless \
+gd \
   -s addons/gdUnit4/bin/GdUnit4CSharpApiLoader.cs \
   -- \
   --testsuites res://tests

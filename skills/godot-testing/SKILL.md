@@ -64,7 +64,9 @@ res://
 
 ## Running Tests
 
-Both frameworks ship a CLI runner. **GUT:** `addons/gut/gut_cmdln.gd` invoked via `godot --headless --path . -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit` (without `-gexit` it does not quit). **gdUnit4:** `addons/gdUnit4/bin/GdUnitCmdTool.gd` invoked via `godot --headless --path . -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessMode`, or via the editor "GdUnit Tests" dock. CI: tag-triggered or PR-triggered GitHub Action that installs Godot and runs the suite. GUT exits 1 on a failed test but 0 when a test script does not parse or no test is found; gdUnit4 exits 100 on a failed test, 101 on orphans and 105 on a broken script, and 0 when no test is found. So the CI step must also check the log (counts, `SCRIPT ERROR`), not only the exit code.
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
+Both frameworks ship a CLI runner. **GUT:** `addons/gut/gut_cmdln.gd` invoked via `gd -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit` (without `-gexit` it does not quit). **gdUnit4:** `addons/gdUnit4/bin/GdUnitCmdTool.gd` invoked via `gd -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessMode`, or via the editor "GdUnit Tests" dock. CI: tag-triggered or PR-triggered GitHub Action that installs Godot and runs the suite. GUT exits 1 on a failed test but 0 when a test script does not parse or no test is found; gdUnit4 exits 100 on a failed test, 101 on orphans and 105 on a broken script, and 0 when no test is found. So the CI step must also check the log (counts, `SCRIPT ERROR`), not only the exit code.
 
 > See [references/running-tests.md](references/running-tests.md) for full GUT and gdUnit4 CLI invocations + a copy-pasteable GitHub Actions workflow.
 

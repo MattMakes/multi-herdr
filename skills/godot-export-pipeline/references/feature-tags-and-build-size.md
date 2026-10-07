@@ -103,9 +103,11 @@ early, and commit the result.
 Run this headless script against the project. It lists the largest files
 under `res://` that are not excluded by a `.gdignore`.
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ```gdscript
 # tools/size_report.gd
-# Run: godot --headless --path . -s res://tools/size_report.gd
+# Run: gd -s res://tools/size_report.gd
 extends SceneTree
 
 const TOP_N: int = 25

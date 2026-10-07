@@ -11,6 +11,8 @@ Adds local multi-instance testing, a latency and loss proxy for ENet, LAN server
 - From the shell, pass role arguments after `--`; the game reads them with
   `OS.get_cmdline_user_args()`:
 
+This command opens game windows for a person at the screen; a fleet worker does not run it.
+
 ```bash
 godot --path . -- --host --port=7000 &
 godot --path . -- --join=127.0.0.1 --port=7000 &
@@ -49,9 +51,11 @@ ENet runs over UDP, so a small UDP relay between client and server adds
 delay, jitter and loss without changing the game and without root rights.
 Clients connect to the relay's port instead of the server's.
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ```gdscript
 # tools/lag_proxy.gd - a UDP relay that adds delay, jitter and loss.
-# Run: godot --headless --path . -s res://tools/lag_proxy.gd -- 7001 127.0.0.1 7000 75 20 0.02
+# Run: gd -s res://tools/lag_proxy.gd -- 7001 127.0.0.1 7000 75 20 0.02
 # Clients connect to port 7001; the proxy forwards to the server at 127.0.0.1:7000.
 # Arguments: listen port, server host, server port, one-way delay ms, jitter ms, loss 0..1.
 extends SceneTree
@@ -112,10 +116,12 @@ func _pump(from: PacketPeerUDP, to: PacketPeerUDP) -> void:
 	_queue.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.due < b.due)
 ```
 
+This command opens game windows for a person at the screen; a fleet worker does not run it.
+
 ```bash
 # Server on 7000, relay on 7001 with 75 ms one way (about 150 ms round trip), 20 ms jitter, 2 % loss.
-godot --headless --path . -- --host --port=7000 &
-godot --headless --path . -s res://tools/lag_proxy.gd -- 7001 127.0.0.1 7000 75 20 0.02 &
+gd -- --host --port=7000 &
+gd -s res://tools/lag_proxy.gd -- 7001 127.0.0.1 7000 75 20 0.02 &
 godot --path . -- --join=127.0.0.1 --port=7001
 ```
 

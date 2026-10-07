@@ -10,16 +10,17 @@ addon, Jolt, a stretch mode and an export preset.
 
 ## Run
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 Write the script to `.godot/horch-home/context_scan.gd` (git-ignored, not
 scanned), then:
 
 ```bash
 mkdir -p .godot/horch-home
-HOME="$PWD/.godot/horch-home" "$GODOT" --headless --path "$PWD" -s "$PWD/.godot/horch-home/context_scan.gd"
+gd -s "$PWD/.godot/horch-home/context_scan.gd"
 ```
 
-`$GODOT` comes from `godot-build-verify`, `references/commands.md`, "Find the
-engine". `HOME` keeps Godot's user files out of the operator's directory.
+The wrapper keeps Godot's user files out of the operator's directory.
 Exit 1 with `SCAN_ERROR:` when `project.godot` cannot be read.
 
 Example output (the scratch project with an autoload, an addon and Jolt):

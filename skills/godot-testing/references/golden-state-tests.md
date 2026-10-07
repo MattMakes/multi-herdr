@@ -110,9 +110,11 @@ func test_dungeon_seed_42_is_stable() -> void:
 
 ## Updating goldens is a reviewed change
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ```bash
 # Regenerate after an intended change, then review the diff like code.
-UPDATE_GOLDENS=1 godot --headless --path . -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit
+UPDATE_GOLDENS=1 gd -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit
 git diff -- tests/goldens/
 ```
 

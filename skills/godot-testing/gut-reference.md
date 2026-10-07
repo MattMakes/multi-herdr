@@ -251,8 +251,10 @@ func test_emits_ready() -> void:
 
 ## CLI Flags
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ```bash
-godot --headless -s addons/gut/gut_cmdln.gd [flags]
+gd -s addons/gut/gut_cmdln.gd [flags]
 ```
 
 | Flag                          | Description                                          |

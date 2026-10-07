@@ -105,12 +105,14 @@ public void TakeDamage(int amount)
 - Run any existing tests: `gut -gdir=res://tests` or `gdunit4_runner`.
 - Check for regressions in related functionality.
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ```bash
 # Run GUT tests headless
-godot --headless --script res://addons/gut/gut_cmdln.gd -gdir=res://tests -gexit
+gd --script res://addons/gut/gut_cmdln.gd -gdir=res://tests -gexit
 
 # Run gdUnit4 tests headless
-godot --headless -s res://addons/gdUnit4/bin/GdUnit4CmdTool.gd
+gd -s res://addons/gdUnit4/bin/GdUnit4CmdTool.gd
 ```
 
 ### Step 7 — Add a Test

@@ -54,11 +54,13 @@ Rules:
 Since Godot 4.4 the editor can export a pack that holds only the files
 changed since earlier packs:
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ```bash
 # base.pck is the shipped release. patch_1.pck holds only the changes.
-godot --headless --path . --export-patch "Windows Desktop" build/patch_1.pck --patches build/base.pck
+gd --export-patch "Windows Desktop" build/patch_1.pck --patches build/base.pck
 # A second patch lists every earlier pack, comma-separated.
-godot --headless --path . --export-patch "Windows Desktop" build/patch_2.pck --patches build/base.pck,build/patch_1.pck
+gd --export-patch "Windows Desktop" build/patch_2.pck --patches build/base.pck,build/patch_1.pck
 ```
 
 The SKILL.md section on PCKs covers `PCKPacker` for packs built from code.
@@ -139,7 +141,7 @@ loops.
 
 ```gdscript
 # tools/export_all.gd
-# Run: godot --headless --path . -s res://tools/export_all.gd -- release
+# Run: gd -s res://tools/export_all.gd -- release
 extends SceneTree
 
 

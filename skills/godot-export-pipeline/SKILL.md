@@ -108,16 +108,18 @@ ssh_remote_deploy/cleanup_script="#!/usr/bin/env bash\nkill $(pgrep -x -f \"{tem
 
 Run Godot in headless mode to export without opening the GUI. This is the standard approach for CI/CD.
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ### Release Export
 
 ```bash
-godot --headless --export-release "Windows Desktop" build/windows/MyGame.exe
+gd --export-release "Windows Desktop" build/windows/MyGame.exe
 ```
 
 ### Debug Export
 
 ```bash
-godot --headless --export-debug "Windows Desktop" build/windows/MyGame.exe
+gd --export-debug "Windows Desktop" build/windows/MyGame.exe
 ```
 
 ### Export .pck Only (no executable)
@@ -125,7 +127,7 @@ godot --headless --export-debug "Windows Desktop" build/windows/MyGame.exe
 Use `--export-pack` when you only want to ship updated game data alongside a fixed engine binary (e.g., DLC or patch distribution):
 
 ```bash
-godot --headless --export-pack "Windows Desktop" build/windows/MyGame.pck
+gd --export-pack "Windows Desktop" build/windows/MyGame.pck
 ```
 
 > **Godot 4.7+:** When exporting patch PCKs for Android, an APK or AAB can be provided as the base pack, extending PCK-patching workflows to Android builds. ([GH-116553](https://github.com/godotengine/godot/pull/116553))
@@ -272,7 +274,7 @@ The Shader Baker runs automatically when exporting via the editor GUI or CLI (`-
 
 ```bash
 # Shader Baker runs as part of normal export (no extra flag needed).
-godot --headless --export-release "Windows Desktop" build/windows/MyGame.exe
+gd --export-release "Windows Desktop" build/windows/MyGame.exe
 ```
 
 ---

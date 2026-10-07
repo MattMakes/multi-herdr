@@ -21,11 +21,13 @@ Two fixes, best used together:
 - Install a `Logger` that counts errors, and quit with 1 when the count is
   not zero.
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ```gdscript
 extends SceneTree
 
 ## Headless smoke run: loads a scene, runs N frames, fails on any error.
-## godot --headless --path . --script res://tools/smoke_run.gd
+## gd --script res://tools/smoke_run.gd
 const SCENE := "res://main.tscn"
 const FRAMES := 120
 

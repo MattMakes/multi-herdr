@@ -16,7 +16,9 @@ gdUnit4 tests alike. Call them from a test method with `await`.
 | Node interaction after instantiating a scene | Scene test | Yes |
 | Physics contacts, movement over time | Scene test that steps physics frames | Yes |
 | Several peers talking | Network test in one process (see [budgets-leaks-and-network-tests.md](budgets-leaks-and-network-tests.md)) | Yes |
-| The whole game boots | Smoke run: `godot --headless --path . --quit-after 120` and grep the log | Yes |
+| The whole game boots | Smoke run: `gd --quit-after 120` and grep the log | Yes |
+
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
 
 Most tests belong in the first two rows. A failure in a large scene test
 says "something broke"; a failure in a unit test says what.

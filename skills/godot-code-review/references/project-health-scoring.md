@@ -14,9 +14,11 @@ The script reads every `.gd` and `.tscn` file under a folder (skipping
 `.godot/`, `addons/` and folders with a `.gdignore`) and prints one line
 per finding plus a summary. It edits nothing.
 
+`gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
+
 ```gdscript
 # tools/review_audit.gd - measurable review facts for a Godot project.
-# Run: godot --headless --path . -s res://tools/review_audit.gd -- res://
+# Run: gd -s res://tools/review_audit.gd -- res://
 # Prints one line per finding and a summary block. Exit code 0 always:
 # the numbers feed a review; they are not a gate by themselves.
 extends SceneTree
@@ -106,7 +108,7 @@ func _audit_scene(path: String) -> void:
 ```
 
 ```bash
-godot --headless --path . -s res://tools/review_audit.gd -- res:// > audit.txt
+gd -s res://tools/review_audit.gd -- res:// > audit.txt
 grep '^SUMMARY' audit.txt
 ```
 

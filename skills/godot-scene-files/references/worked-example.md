@@ -10,7 +10,8 @@ exist yet. `gd` and `$LOGS` come from `godot-build-verify`,
 GH="$PWD/.godot/horch-home"
 LOGS="$GH/logs"
 mkdir -p "$LOGS"
-gd() { HOME="$GH" "$GODOT" --headless --path "$PWD" "$@"; }
+RUN="<skill dir>/scripts/godot-run.sh"
+gd() { bash "$RUN" --path "$PWD" "$@"; }
 ```
 
 The project holds `project.godot` and `levels/level.gd`:
