@@ -38,6 +38,53 @@ impl SkillExposure {
     }
 }
 
+/// How horch asks a harness to compact, as data (CTX-13, CTX-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactCommand {
+    /// `/compact <instructions>` on 1 line (claude, pi, prime).
+    WithInstructions,
+    /// `/compact` alone: text after it becomes a prompt (codex, opencode).
+    Bare,
+    /// No known command (antigravity, none).
+    Unknown,
+}
+
+/// How the harness computes its own auto-compact trigger (CTX-07).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerRule {
+    /// min(setting, model window) - reserve. claude: 33_000; pi, prime: 16_384.
+    WindowMinusReserve {
+        reserve: u64,
+    },
+    /// codex: min(limit, floor(transcript window x 18 / 19)).
+    CodexLimit,
+    /// opencode: a fixed trigger per model
+    /// (`compaction::window::OPENCODE_TRIGGERS`).
+    PerModel,
+    Unknown,
+}
+
+/// How a harness compacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactionCaps {
+    pub command: CompactCommand,
+    /// Sends allowed per job: 1 where a busy harness queues the command.
+    pub max_sends: u8,
+    pub trigger: TriggerRule,
+}
+
+impl CompactionCaps {
+    /// horch can type a compact command into the pane.
+    pub fn has_command(self) -> bool {
+        self.command != CompactCommand::Unknown && self.max_sends > 0
+    }
+
+    /// The command takes the compaction instructions on its own line.
+    pub fn takes_instructions(self) -> bool {
+        self.command == CompactCommand::WithInstructions
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     /// horch chooses the session id before launch (`--session-id`).
@@ -62,6 +109,10 @@ pub struct Capabilities {
     pub footprint_bytes: u64,
     /// The model runs on this machine, so its weights count against memory.
     pub local_model: bool,
+    /// How horch asks it to compact, and how it triggers its own compaction.
+    /// Whether it may be compacted in place is data, not a capability
+    /// (`in_place:` in `teammates/_base/context-windows.md`, CTX-17).
+    pub compaction: CompactionCaps,
 }
 
 impl Capabilities {
@@ -94,6 +145,11 @@ pub(crate) const CLAUDE: Capabilities = Capabilities {
     headless: true,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
+    compaction: CompactionCaps {
+        command: CompactCommand::WithInstructions,
+        max_sends: 1,
+        trigger: TriggerRule::WindowMinusReserve { reserve: 33_000 },
+    },
 };
 
 pub(crate) const CODEX: Capabilities = Capabilities {
@@ -108,6 +164,11 @@ pub(crate) const CODEX: Capabilities = Capabilities {
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
+    compaction: CompactionCaps {
+        command: CompactCommand::Bare,
+        max_sends: 3,
+        trigger: TriggerRule::CodexLimit,
+    },
 };
 
 pub(crate) const OPENCODE: Capabilities = Capabilities {
@@ -122,6 +183,11 @@ pub(crate) const OPENCODE: Capabilities = Capabilities {
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
+    compaction: CompactionCaps {
+        command: CompactCommand::Bare,
+        max_sends: 3,
+        trigger: TriggerRule::PerModel,
+    },
 };
 
 const PI_FAMILY_EFFORT: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -138,6 +204,11 @@ pub(crate) const PI: Capabilities = Capabilities {
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: true,
+    compaction: CompactionCaps {
+        command: CompactCommand::WithInstructions,
+        max_sends: 1,
+        trigger: TriggerRule::WindowMinusReserve { reserve: 16_384 },
+    },
 };
 
 pub(crate) const PRIME: Capabilities = Capabilities {
@@ -152,6 +223,11 @@ pub(crate) const PRIME: Capabilities = Capabilities {
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
+    compaction: CompactionCaps {
+        command: CompactCommand::WithInstructions,
+        max_sends: 1,
+        trigger: TriggerRule::WindowMinusReserve { reserve: 16_384 },
+    },
 };
 
 /// Antigravity CLI (`agy`). It mints its own conversation ids and has no
@@ -170,6 +246,11 @@ pub(crate) const ANTIGRAVITY: Capabilities = Capabilities {
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
+    compaction: CompactionCaps {
+        command: CompactCommand::Unknown,
+        max_sends: 0,
+        trigger: TriggerRule::Unknown,
+    },
 };
 
 pub(crate) const NONE: Capabilities = Capabilities {
@@ -184,6 +265,11 @@ pub(crate) const NONE: Capabilities = Capabilities {
     headless: false,
     footprint_bytes: NONE_FOOTPRINT_BYTES,
     local_model: false,
+    compaction: CompactionCaps {
+        command: CompactCommand::Unknown,
+        max_sends: 0,
+        trigger: TriggerRule::Unknown,
+    },
 };
 
 #[cfg(test)]

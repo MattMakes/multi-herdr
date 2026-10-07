@@ -20,6 +20,7 @@
 //! | [`execution`]   | executions: model, ledger record and store, spawn plan, lifecycle |
 //! | [`messaging`]   | the worker brief, the mailbox and message delivery          |
 //! | [`workspace`]   | the herdr client, layout, tiling and balancing              |
+//! | [`compaction`]  | context windows, thresholds, row states, the compaction job |
 //! | [`telemetry`]   | live per-pane token telemetry and the collector             |
 //! | [`usage`]       | what a run cost, read back from each harness's own records  |
 //! | [`vcs`]         | typed git and worktrees for the dataset mode                |
@@ -36,6 +37,7 @@
 #![warn(unreachable_pub)]
 
 pub mod clock;
+pub mod compaction;
 pub mod competition;
 pub mod dataset;
 pub mod evaluation;

@@ -660,3 +660,35 @@ fn cmp_02_evaluation_domain_has_no_adapter_imports() {
         found.join("\n")
     );
 }
+
+/// The compaction rules are pure (CTX-07): windows, thresholds and the row
+/// policy start no process and touch no file, environment or workspace.
+#[test]
+fn ctx_07_compaction_pure_modules_do_no_io() {
+    let root = crate_src("horch-core");
+    let files = [
+        root.join("compaction/window.rs"),
+        root.join("compaction/policy.rs"),
+    ];
+    for file in &files {
+        assert!(file.is_file(), "{} is missing", file.display());
+    }
+    let found = forbidden_lines(
+        &root,
+        &files,
+        &[
+            "std::fs",
+            "std::process",
+            "std::env",
+            "Command",
+            "herdr",
+            "workspace::",
+            "launch::",
+        ],
+    );
+    assert!(
+        found.is_empty(),
+        "I/O in the pure compaction modules:\n{}",
+        found.join("\n")
+    );
+}
