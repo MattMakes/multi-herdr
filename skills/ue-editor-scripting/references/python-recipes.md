@@ -101,7 +101,7 @@ if not levels.load_level("/Game/Maps/Arena"):
     fail("load level")
 cls = bel.generated_class(load("/Game/Pickups/BP_Coin"))
 a = actors.spawn_actor_from_class(cls, unreal.Vector(0, 0, 100))
-a.set_actor_label("Coin_01")                     # unverified on 5.8: not on the 5.8 Actor page; skip if missing
+a.set_actor_label("Coin_01")                     # works on 5.8.1 (docs/live-checks/unreal.md), though the 5.8 Actor page omits it
 if not levels.save_current_level():
     fail("save level")
 ```
@@ -112,7 +112,7 @@ A World Partition map stores actors in separate external files (one per actor). 
 
 ```python
 tools = unreal.AssetToolsHelpers.get_asset_tools()
-new = tools.create_asset("DA_Sword", "/Game/Data", unreal.MyItemData, None)   # factory None: unverified on 5.8 (typed Factory); pass a DataAssetFactory if it fails
+new = tools.create_asset("DA_Sword", "/Game/Data", unreal.MyItemData, None)   # factory None works on 5.8.1 for a UDataAsset subclass (docs/live-checks/unreal.md)
 tools.duplicate_asset("BP_Coin_Gold", "/Game/Pickups", load("/Game/Pickups/BP_Coin"))
 tools.rename_assets([unreal.AssetRenameData(obj, "/Game/NewFolder", "NewName")])  # (asset, new_package_path, new_name) on 5.8
 ```

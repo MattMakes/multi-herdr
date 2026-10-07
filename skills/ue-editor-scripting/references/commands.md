@@ -11,7 +11,7 @@ The `.uproject` `Plugins` array enables plugins by name:
 { "Name": "EditorScriptingUtilities", "Enabled": true }
 ```
 
-Epic's 5.8 page names them "Python Editor Script Plugin" and "Editor Scripting Utilities". The descriptor names above are the long-standing ones, unverified on 5.8: check `<Engine>/Engine/Plugins/**/PythonScriptPlugin.uplugin` and `EditorScriptingUtilities.uplugin` exist. `BlueprintEditorLibrary` is its own module in the 5.8 Python reference; if `unreal.BlueprintEditorLibrary` is missing at run time, find the plugin that contains `BlueprintEditorLibrary` under `<Engine>/Engine/Plugins` and ask the orchestrator before you enable it.
+Epic's 5.8 page names them "Python Editor Script Plugin" and "Editor Scripting Utilities". The descriptor names above are verified on 5.8.1: the plugins are `<Engine>/Engine/Plugins/Experimental/PythonScriptPlugin/PythonScriptPlugin.uplugin` and `<Engine>/Engine/Plugins/Editor/EditorScriptingUtilities/EditorScriptingUtilities.uplugin`, and the editor mounts both from these entries (live check `docs/live-checks/unreal.md`). `BlueprintEditorLibrary` is not a plugin: it is the engine editor module `Engine/Source/Editor/BlueprintEditorLibrary`, and `unreal.BlueprintEditorLibrary` exists with only the 2 plugins above enabled. If it is missing at run time, report it to the orchestrator; there is no plugin to enable.
 
 ## Form 1: commandlet (default)
 
@@ -21,7 +21,7 @@ Epic's 5.8 page names them "Python Editor Script Plugin" and "Editor Scripting U
 
 - Fast; no editor UI. It does not load a level. Call `unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).load_level("/Game/Maps/MyMap")` first when the script works on actors.
 - `-script=` takes a file path, or Python statements with `\n` for line breaks. Use a file: it is reviewed and repeatable.
-- On macOS and Linux, use the editor binary in `<Engine>/Engine/Binaries/Mac/` or `Linux/` (Epic's 5.8 Linux quickstart names `Engine/Binaries/Linux/UnrealEditor`; the `-Cmd` name is unverified on 5.8; list the directory).
+- On macOS, use `<Engine>/Engine/Binaries/Mac/UnrealEditor-Cmd` (verified on 5.8.1, live check `docs/live-checks/unreal.md`). On Linux, use the editor binary in `<Engine>/Engine/Binaries/Linux/` (Epic's 5.8 Linux quickstart names `Engine/Binaries/Linux/UnrealEditor`; the Linux `-Cmd` name is unverified on 5.8; list the directory).
 
 ## Form 2: full editor start
 
@@ -34,7 +34,8 @@ Epic's 5.8 page names them "Python Editor Script Plugin" and "Editor Scripting U
 
 ## Exit status and logs
 
-- Do not rely on the exit code to show a Python failure (unverified on 5.8). The proof is the log: your marker line, and 0 `LogPython: Error` lines.
+- On UE 5.8.1 (macOS), a script that raises an uncaught exception makes the commandlet exit with code 255, and a clean script exits with 0 (live check `docs/live-checks/unreal.md`). Treat a non-zero exit as a failure. A zero exit is not the proof: the proof is the log, your marker line, and 0 `LogPython: Error` lines.
+- Read the `-abslog` file, not the `-stdout` output. `unreal.log` writes at Log verbosity, and on 5.8.1 those lines reach the `-abslog` file but not standard output. `LogPython: Error` lines reach both.
 - `unreal.log`, `unreal.log_warning`, `unreal.log_error` write to the `LogPython` category.
 - A Python exception prints a traceback under `LogPython: Error`. Search for `Traceback` too.
 
@@ -52,14 +53,17 @@ Rechecked on 2026-10-04. UE 5.8 (hotfix 5.8.3, 2026-09-22) is the latest release
 | "does not automatically load levels" | Commandlet limit | same page | yes |
 | `-ExecutePythonScript=<file>` | Run a script after full editor start | same page | yes |
 | Python Editor Script Plugin, Editor Scripting Utilities | Required plugins | same page | yes (display names) |
-| `PythonScriptPlugin`, `EditorScriptingUtilities` descriptor names | `.uproject` entries | long-standing engine plugin names | no |
+| `PythonScriptPlugin`, `EditorScriptingUtilities` descriptor names | `.uproject` entries | engine plugin files; live check `docs/live-checks/unreal.md` | yes (5.8.1 live run: both mounted) |
+| `unreal.BlueprintEditorLibrary` | Blueprint editing API | engine module `Engine/Source/Editor/BlueprintEditorLibrary`; live check `docs/live-checks/unreal.md` | yes (present without an extra plugin) |
+| `Engine/Binaries/Mac/UnrealEditor-Cmd` | Headless editor on macOS | live check `docs/live-checks/unreal.md` | yes (5.8.1 live run) |
 | `unreal.ScopedEditorTransaction` | One undo step | same page | yes |
 | `unreal.log`, `log_warning`, `log_error` (`LogPython`) | Logging | Epic 5.8 Python API, module `unreal` | yes |
 | `-unattended`, `-nullrhi`, `-nosplash`, `-stdout`, `-abslog=` | Headless, logging | Epic 5.8, Command-Line Arguments Reference | yes |
 | `-run=` | Commandlet selector | Epic 5.8 Python page (as `-run=pythonscript`); not listed in the argument reference | yes, in that form |
-| Exit code on a Python error | Failure signal | none found | no (not used) |
+| Exit code on a Python error | Failure signal | live check `docs/live-checks/unreal.md` | yes on 5.8.1 macOS: 255 on an uncaught exception, 0 on success; the log stays the proof |
+| `unreal.log` lines in `-stdout` | Where the marker is | live check `docs/live-checks/unreal.md` | yes on 5.8.1: only in the `-abslog` file |
 | `unreal.load_class` | Load a C++ class by path | Epic 5.8 Python API, module `unreal` | yes (rechecked 2026-10-04) |
 | `BlueprintEditorLibrary.add_event_override(blueprint, event_name, position: IntPoint)` | Event override node | Unreal Python 5.8, `BlueprintEditorLibrary` | yes (rechecked 2026-10-04); the recipe used `Vector2D` before |
 | `AssetRenameData(asset, new_package_path, new_name)` | Rename or move | Unreal Python 5.8, `AssetRenameData` | yes (rechecked 2026-10-04) |
-| `AssetTools.create_asset(..., factory)` with `factory=None` | Create without a factory | Unreal Python 5.8, `AssetTools` types `factory` as `Factory` | no |
-| `Actor.set_actor_label` | Name a placed actor | not on the Unreal Python 5.8 `Actor` page (only `get_actor_label`) | no |
+| `AssetTools.create_asset(..., factory)` with `factory=None` | Create without a factory | Unreal Python 5.8, `AssetTools` types `factory` as `Factory`; live check `docs/live-checks/unreal.md` | yes (5.8.1 live run: a C++ `UDataAsset` subclass, created and saved) |
+| `Actor.set_actor_label` | Name a placed actor | not on the Unreal Python 5.8 `Actor` page (only `get_actor_label`); live check `docs/live-checks/unreal.md` | yes (5.8.1 live run: `get_actor_label` returns the new label) |

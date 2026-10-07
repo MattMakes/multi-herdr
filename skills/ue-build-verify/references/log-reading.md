@@ -13,7 +13,7 @@ Search, in this order:
 | Text in the log | Meaning | Action |
 |---|---|---|
 | `Unable to build while Live Coding is active` | The editor holds Live Coding | `BLOCKED:`; do not close the editor |
-| A conflicting instance of UnrealBuildTool | Another build is running | `BLOCKED:`; name it to the orchestrator |
+| `A conflicting instance of ... is already running.` | Another build is running | `BLOCKED:`; name it to the orchestrator |
 | `error LNK2019`, `undefined symbol` | Linker: missing module dependency or missing `*_API` export | `ue-module-build-system`, `common-build-errors.md`, "Linker Errors" |
 | `error C1083`, `file not found` (`#include`) | Include path or missing dependency | same file, "Compiler Errors" |
 | An error that names a `.generated.h` or `GENERATED_BODY` | UnrealHeaderTool | same file, "UnrealHeaderTool Errors" |
@@ -21,13 +21,13 @@ Search, in this order:
 | `Unable to instantiate module 'UnrealEd'` | Runtime module depends on an editor module | same file, "Packaging and Cooking Failures" |
 | Permission denied or access denied on a file | A read-only Git LFS lockable file that you have not locked, or a file held open by a running editor | `BLOCKED:` with the path and `git lfs locks --path="<path>"` (`git-lfs.md`) |
 
-The Live Coding text is quoted from Epic forum reports, and the conflicting-instance text is from community reports. Both are unverified on 5.8. Search for "Live Coding" and "conflicting instance" as substrings, not for the full sentence.
+Both texts are in the UBT source that ships with UE 5.8.1: `Engine/Source/Programs/UnrealBuildTool/System/HotReload.cs` ("Unable to build while Live Coding is active. Exit the editor and game, ...") and `Engine/Source/Programs/Shared/EpicGames.Build/System/GlobalSingleInstanceMutex.cs` ("A conflicting instance of {Mutex} is already running."). Search for "Live Coding" and "conflicting instance" as substrings, not for the full sentence (live check `docs/live-checks/unreal.md`).
 
 On macOS and Linux the compiler is Clang. The error codes are different (no `LNK`, no `C1083`), but the messages name the same causes.
 
 ## Test output
 
-The JSON report in the `-ReportExportPath` directory is the result. In UE 5.x the file is `index.json`, next to an HTML viewer; the name is unverified on 5.8, so list the directory. It holds totals (succeeded, failed, not run, warnings) and one entry per test with its full name, state and messages. Report the totals from this file.
+The JSON report in the `-ReportExportPath` directory is the result. On UE 5.8.1 the directory holds `index.json` and `index.html` (live check `docs/live-checks/unreal.md`). `index.json` has the totals `succeeded`, `succeededWithWarnings`, `failed`, `notRun` and `inProcess`, and a `tests` array: one entry per test with `fullTestPath`, `state`, `errors`, `warnings` and `entries` (the messages). Report the totals from this file.
 
 If the report is missing, the run did not finish (a crash, a timeout, or a bad filter). Then:
 

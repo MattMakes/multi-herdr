@@ -42,7 +42,7 @@ Command lines, flags and API facts with their 5.8 evidence are in `references/co
 
    Check: the script names every asset path it saves, and it has the marker line.
 
-5. **Run it headless.** Use the commandlet form: `UnrealEditor-Cmd <Proj> -run=pythonscript -script="<abs script>"` with `-unattended -nullrhi -nosplash -stdout -abslog=<file>` (`references/commands.md`). The commandlet does not load a level. A script that works on actors must load the level first with `LevelEditorSubsystem.load_level`. Run it in the background with the output in a log file, the same as a build. Check: the process exited, the log has your marker, and the log has 0 `LogPython: Error` lines.
+5. **Run it headless.** Use the commandlet form: `UnrealEditor-Cmd <Proj> -run=pythonscript -script="<abs script>"` with `-unattended -nullrhi -nosplash -stdout -abslog=<file>` (`references/commands.md`). The commandlet does not load a level. A script that works on actors must load the level first with `LevelEditorSubsystem.load_level`. Run it in the background with the output in a log file, the same as a build. Check: the process exited with code 0, the `-abslog` file has your marker, and it has 0 `LogPython: Error` lines. `unreal.log` lines do not reach `-stdout`; read the `-abslog` file.
 
 6. **Check what changed on disk.** List the changed files with the version control tool (`git status --porcelain`). Check: exactly the `.uasset` and `.umap` files you meant to change, plus your script. Nothing else. An extra file means the script touched something you did not plan; find out why before you continue.
 
