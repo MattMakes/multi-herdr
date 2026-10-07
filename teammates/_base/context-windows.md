@@ -15,7 +15,7 @@ windows:
   codex/gpt-5.6-terra: 150000
 # Harnesses whose compaction live check passed (CTX-17). Others use the
 # fresh-session route.
-in_place: [claude, codex]
+in_place: [claude, codex, opencode]
 ---
 # Context windows
 

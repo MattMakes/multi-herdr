@@ -235,3 +235,38 @@ free tier. The C4 and C5 pane steps follow in the next table.
 | C5 opencode-pickle pane | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | opencode 1.18.35 | SKIP | operator step; set LIVE_CONTEXT_C5_OPENCODE_ROLE to check the ledger and the pane |
 | C5 pi pane | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | pi 0.99.1 | SKIP | operator step; set LIVE_CONTEXT_C5_PI_ROLE to check the ledger and the pane |
 | C5 prime pane | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | prime-agent 0.9.4 | SKIP | operator step; set LIVE_CONTEXT_C5_PRIME_ROLE to check the ledger and the pane |
+
+## 2026-10-07, part C, panes
+
+The pane steps, in the operator's fleet (`LIVE_CONTEXT_PROJECT` = this
+repo), on horch `bd7afdd`; prime-1 ran `ollama/qwen3.8` from the roster
+copy. Result file
+`.worktrees/_scratch/live-context/results/2026-10-07T06-04-58Z.md`. The
+orchestrator ran the round trips: `--request`, `COMPACT-READY`, a plain
+`horch compact` refused (fresh route), then `horch compact --force`. The
+warning step (a small `compact_window`) did not run, so the `warns` rows are
+SKIP. The pi and Prime round-trip rows carry the orchestrator's evidence.
+
+| step | claim it proves | tool version | result | evidence |
+|---|---|---|---|---|
+| C4 prime autoRefine off | CTX-05: the Prime pane agent dir turns autoRefine off and sets the fleet window (`harness/prime.rs`) | prime-agent 0.9.4 | PASS | /Users/mascott/.local/state/horch/prime/prime-1-9b0285c7-728d-4cb7-b203-b1ef00f0ea14/agent/settings.json has autoRefine {"enabled":false} |
+| C4 prime window | CTX-05: the Prime pane agent dir turns autoRefine off and sets the fleet window (`harness/prime.rs`) | prime-agent 0.9.4 | PASS | prime-agent model list with PRIME_AGENT_CODING_AGENT_DIR=/Users/mascott/.local/state/horch/prime/prime-1-9b0285c7-728d-4cb7-b203-b1ef00f0ea14/agent: ollama/qwen3.8 context 262.1K; horch decided 262144 operator |
+| C5 opencode-pickle horch note records | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | opencode 1.18.35 | PASS | opencode-pickle-2 has 1 note 'x' |
+| C5 opencode-pickle horch note warns | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | opencode 1.18.35 | SKIP | no context-warned event on opencode-pickle-2 (step 3 not run) |
+| C5 opencode-pickle agent_status | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | opencode 1.18.35 | PASS | herdr read: working done |
+| C5 opencode-pickle compaction round trip | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | opencode 1.18.35 | PASS | opencode-pickle-2: compact-requested (tokens 17085 threshold 112000), handoff note, compacted '19090 -> 16045 tokens; handoff ai_docs/handoffs/opencode-pickle-2-whats-next.md' |
+| C5 pi horch note records | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | pi 0.99.1 | PASS | pi-3 has 1 note 'x' |
+| C5 pi horch note warns | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | pi 0.99.1 | SKIP | no context-warned event on pi-3 (step 3 not run) |
+| C5 pi agent_status | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | pi 0.99.1 | PASS | herdr read: working idle |
+| C5 pi compaction round trip | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | pi 0.99.1 | SKIP | not verifiable: pi-3 got `/compact` from `horch compact --force` and printed 'Compaction failed: Nothing to compact (session too small)' at about 16,000 tokens (compact-requested at 15,566); no compacted event. pi stays on the fresh route |
+| C5 prime horch note records | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | prime-agent 0.9.4 | PASS | prime-1 has 1 note 'x' |
+| C5 prime horch note warns | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | prime-agent 0.9.4 | SKIP | no context-warned event on prime-1 (step 3 not run) |
+| C5 prime agent_status | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | prime-agent 0.9.4 | SKIP | known gap: herdr does not detect the agent in the pane (agent null), so agent_status stays unknown; the compaction job cannot see the pane go idle, so prime stays on the fresh route |
+| C5 prime compaction round trip | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | prime-agent 0.9.4 | FAIL | known gap: the job failed at step wait-idle, 'no idle status in 120 s', because herdr reads agent_status unknown for a Prime pane; 1 BLOCKED line, nothing typed; prime-1 then ran `horch done` with its handoff (the fresh route). Prime stays on the fresh route |
+
+Result for S2: `opencode` passes its compaction round trip, so
+`teammates/_base/context-windows.md` now has
+`in_place: [claude, codex, opencode]`. pi (not verifiable: its session was
+too small to compact) and Prime (the agent_status known gap) stay on the
+fresh route. Follow-up for the Prime gap: horch reports the Prime pane state
+with `herdr pane report-agent`, or herdr learns to detect `prime-agent`.

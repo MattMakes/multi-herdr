@@ -111,13 +111,17 @@ fn ctx_08_builtin_roster_passes_the_floor() {
 #[test]
 fn ctx_17_in_place_only_for_listed_harnesses() {
     let roster = builtin();
-    for kind in [HarnessKind::Claude, HarnessKind::Codex] {
+    // OpenCode passed its live round trip (docs/live-checks/context.md part C).
+    for kind in [
+        HarnessKind::Claude,
+        HarnessKind::Codex,
+        HarnessKind::OpenCode,
+    ] {
         assert!(roster.compacts_in_place(kind), "{kind:?}");
     }
     let fresh = [
         HarnessKind::Pi,
         HarnessKind::Prime,
-        HarnessKind::OpenCode,
         HarnessKind::Antigravity,
         HarnessKind::None,
     ];
@@ -592,8 +596,8 @@ fn check_refuses_dead_windows_keys() {
 #[test]
 fn check_refuses_in_place_without_a_compact_command() {
     let text = shipped("_base/context-windows.md").replace(
-        "in_place: [claude, codex]",
-        "in_place: [claude, codex, antigravity, none]",
+        "in_place: [claude, codex, opencode]",
+        "in_place: [claude, codex, opencode, antigravity, none]",
     );
     let dir = roster_dir(&[("_base/context-windows.md", text)]);
     let roster = load(dir.path());
