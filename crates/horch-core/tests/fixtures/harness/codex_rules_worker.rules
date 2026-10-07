@@ -9,6 +9,11 @@ prefix_rule(
     justification = "herdr-fleet: record progress in the session ledger",
 )
 prefix_rule(
+    pattern = ["horch", "skills", "read"],
+    decision = "allow",
+    justification = "herdr-fleet: read a catalog skill that the bundle does not hold",
+)
+prefix_rule(
     pattern = ["horch", "done"],
     decision = "allow",
     justification = "herdr-fleet: mark session done and close own pane",
