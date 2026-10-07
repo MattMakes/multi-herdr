@@ -1,10 +1,11 @@
 //! `multi-herdr-dataset readiness`: coverage per arm, the verdict and the
-//! gaps (EXP-05).
+//! gaps (EXP-05), then the `fleet observed:` section (fleet-dataset §6).
 
 use std::path::Path;
 
 use anyhow::Result;
 use horch_core::competition::planner::LABEL_POLICY_VERSION;
+use horch_core::dataset::fleet::{fleet_readiness, fleet_rows, render_fleet_readiness};
 use horch_core::dataset::readiness::{readiness as judge, ReadinessReport, ReadinessThresholds};
 use horch_core::runtime::RuntimeContext;
 
@@ -16,10 +17,16 @@ pub(crate) fn readiness(
     policy: Option<&Path>,
     label_policy: Option<&str>,
 ) -> Result<u8> {
+    super::fleet::sync_first(ctx);
     let paths = dataset_paths(ctx)?;
     let thresholds = ReadinessThresholds::load(policy)?;
     let rows = super::export::rows(ctx, &paths, label_policy.unwrap_or(LABEL_POLICY_VERSION))?;
-    output::print(&render(&judge(&rows, &thresholds)));
+    let fleet = fleet_readiness(&fleet_rows(&paths)?);
+    output::print(&format!(
+        "{}{}",
+        render(&judge(&rows, &thresholds)),
+        render_fleet_readiness(&fleet)
+    ));
     Ok(exit::SUCCESS)
 }
 

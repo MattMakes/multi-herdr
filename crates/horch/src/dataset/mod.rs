@@ -15,6 +15,7 @@ use horch_core::vcs::git::{GitCli, GitClient};
 pub(crate) mod cleanup;
 pub mod cli;
 pub(crate) mod export;
+pub(crate) mod fleet;
 pub(crate) mod judge_job;
 pub mod outcome;
 pub(crate) mod preflight;
@@ -101,6 +102,7 @@ pub fn dispatch(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, cli: C
             policy,
             label_policy,
         } => readiness::readiness(ctx, policy.as_deref(), label_policy.as_deref()),
+        Command::Fleet(cli::FleetCommand::Sync { all_projects }) => fleet::sync(ctx, all_projects),
         Command::Outcome {
             round,
             kind,

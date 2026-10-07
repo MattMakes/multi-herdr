@@ -1,5 +1,6 @@
 //! `multi-herdr-dataset export`: the decided rounds as JSONL (EXP-03,
-//! EXP-04), with the execution store adapted as the facts source.
+//! EXP-04), with the execution store adapted as the facts source, and the
+//! fleet rows (fleet-dataset §6).
 
 use std::collections::BTreeMap;
 
@@ -8,6 +9,7 @@ use horch_core::clock;
 use horch_core::competition::observe::{load_usage_records, UsageRecord};
 use horch_core::competition::planner::LABEL_POLICY_VERSION;
 use horch_core::dataset::export::{self as core_export, ExecutionFactsSource, ExportRow};
+use horch_core::dataset::fleet;
 use horch_core::execution::legacy::LedgerRecordV1;
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::ExecutionStatus;
@@ -19,12 +21,23 @@ use horch_core::usage::money::{CostSource, MicroUsd};
 
 use super::{dataset_paths, exit};
 
+/// Sync the fleet run rows first (FDS-18), then write the decided rounds and
+/// the fleet rows (`exports/fleet-observed-1/`) with one timestamp.
 pub(crate) fn export(ctx: &RuntimeContext, label_policy: Option<&str>) -> Result<u8> {
+    super::fleet::sync_first(ctx);
     let paths = dataset_paths(ctx)?;
     let lpv = label_policy.unwrap_or(LABEL_POLICY_VERSION);
     let rows = rows(ctx, &paths, lpv)?;
-    let file = core_export::write_export(&paths, lpv, &rows, clock::now())?;
+    let now = clock::now();
+    let file = core_export::write_export(&paths, lpv, &rows, now)?;
     println!("exported {} rows to {}", rows.len(), file.display());
+    let fleet_rows = fleet::fleet_rows(&paths)?;
+    let file = fleet::write_fleet_export(&paths, &fleet_rows, now)?;
+    println!(
+        "exported {} fleet rows to {}",
+        fleet_rows.len(),
+        file.display()
+    );
     Ok(exit::SUCCESS)
 }
 

@@ -73,6 +73,10 @@ pub enum Command {
         label_policy: Option<String>,
     },
 
+    /// The fleet run facts of ordinary fleet work.
+    #[command(subcommand)]
+    Fleet(FleetCommand),
+
     /// Record what happened to a decided round's change after the merge.
     Outcome {
         #[arg(value_name = "ROUND")]
@@ -109,6 +113,17 @@ pub enum Command {
     /// seconds until the candidates are done. Reads no input.
     #[command(hide = true)]
     Watch(WatchArgs),
+}
+
+/// `fleet` subcommands (fleet-dataset §4.2).
+#[derive(Debug, Subcommand)]
+pub enum FleetCommand {
+    /// Write a run row for every finished ledger record that has none.
+    Sync {
+        /// Every ledger of the state root, not only this project's.
+        #[arg(long)]
+        all_projects: bool,
+    },
 }
 
 #[derive(Debug, clap::Args)]
