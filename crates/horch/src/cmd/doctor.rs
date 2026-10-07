@@ -55,6 +55,15 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     for p in &tool_problems {
         eprintln!("warning: {p}");
     }
+    match xcode_export_check(
+        &roster,
+        ctx.inherited.path.as_deref(),
+        ctx.inherited.pathext.as_deref(),
+    ) {
+        Some(ExportCheck::Note(n)) => println!("note: {n}"),
+        Some(ExportCheck::Problem(p)) => eprintln!("warning: {p}"),
+        None => {}
+    }
     // Not fatal: the harness's teammates are unusable, the rest work.
     for w in broken_harness_warnings(&super::agentlist::gather(ctx, true)) {
         eprintln!("warning: {w}");
@@ -269,6 +278,107 @@ fn xcode_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String> 
         }
         Err(e) => Some(format!("could not run {}: {e}", bin.display())),
     }
+}
+
+/// The first Xcode with `xcrun agent skills export`.
+const XCODE_EXPORT_MIN: u32 = 27;
+
+/// What doctor says about the Xcode agent-skills export. A note is not a
+/// failure: it says the check cannot run on this host.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ExportCheck {
+    Note(String),
+    Problem(String),
+}
+
+/// U-54: an offered Apple teammate (`requires: xcode`) with `operator_skills:`
+/// gets them from `xcrun agent skills export --output-dir <dir>`
+/// (docs/skills-and-teams.md). On Xcode 27 or later, `--help` must run and
+/// name `--output-dir`. Below 27 the command does not exist, so this is a
+/// note. `None` when no such teammate is offered, when all is well, or when
+/// `xcodebuild` is missing ([`xcode_problem`] reports that).
+pub(crate) fn xcode_export_check(
+    roster: &Roster,
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+) -> Option<ExportCheck> {
+    let needed_by: Vec<&str> = roster
+        .offered()
+        .iter()
+        .filter(|t| t.requires.contains(&Requirement::Xcode) && t.operator_skills.is_some())
+        .map(|t| t.name.as_str())
+        .collect();
+    if needed_by.is_empty() {
+        return None;
+    }
+    let head = format!("xcode skills export (needed by {})", needed_by.join(", "));
+    let xcodebuild = process::which(path, pathext, "xcodebuild")?;
+    let version = Command::new(&xcodebuild)
+        .arg("-version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| xcode_version(&String::from_utf8_lossy(&o.stdout)));
+    let Some((major, text)) = version else {
+        return Some(ExportCheck::Note(format!(
+            "{head}: `xcodebuild -version` gave no Xcode version, so \
+             `xcrun agent skills export` is not verifiable here."
+        )));
+    };
+    if major < XCODE_EXPORT_MIN {
+        return Some(ExportCheck::Note(format!(
+            "{head}: Xcode {text} has no `xcrun agent skills export` (Xcode \
+             {XCODE_EXPORT_MIN} or later), so it is not verifiable here."
+        )));
+    }
+    let Some(xcrun) = process::which(path, pathext, "xcrun") else {
+        return Some(ExportCheck::Problem(format!(
+            "{head}: xcrun not found on PATH beside Xcode {text}."
+        )));
+    };
+    let args = ["agent", "skills", "export", "--help"];
+    match Command::new(&xcrun).args(args).output() {
+        Ok(out) => {
+            let help = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            if out.status.success() && help.contains("--output-dir") {
+                None
+            } else {
+                let detail = help.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                Some(ExportCheck::Problem(format!(
+                    "{head}: `{} {}` on Xcode {text} {} or does not name --output-dir. \
+                     Check docs/skills-and-teams.md against it.{}",
+                    xcrun.display(),
+                    args.join(" "),
+                    if out.status.success() {
+                        "ran"
+                    } else {
+                        "failed"
+                    },
+                    if detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" xcrun said: {}", detail.trim())
+                    }
+                )))
+            }
+        }
+        Err(e) => Some(ExportCheck::Problem(format!(
+            "{head}: could not run {}: {e}",
+            xcrun.display()
+        ))),
+    }
+}
+
+/// The major version and the full version from `xcodebuild -version`, whose
+/// first line is `Xcode 26.6`.
+fn xcode_version(stdout: &str) -> Option<(u32, String)> {
+    let text = stdout.lines().next()?.strip_prefix("Xcode ")?.trim();
+    let major = text.split('.').next()?.parse().ok()?;
+    Some((major, text.to_string()))
 }
 
 /// The oldest Blender the live MCP tools run on.
@@ -563,6 +673,93 @@ mod tests {
             "{}",
             problems[0]
         );
+    }
+
+    /// A PATH directory with a fake `xcodebuild` that prints `Xcode <version>`
+    /// for `-version`, and a fake `xcrun` that prints `help` and exits with
+    /// `code` for `agent skills export --help` only.
+    fn fake_xcode(version: &str, help: &str, code: i32) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let xcodebuild = dir.path().join("xcodebuild");
+        std::fs::write(
+            &xcodebuild,
+            format!("#!/bin/sh\n[ \"$1\" = -version ] || exit 99\nprintf 'Xcode {version}\\nBuild version 1A1\\n'\n"),
+        )
+        .unwrap();
+        process::make_executable(&xcodebuild).unwrap();
+        let xcrun = dir.path().join("xcrun");
+        std::fs::write(
+            &xcrun,
+            format!("#!/bin/sh\n[ \"$*\" = 'agent skills export --help' ] || exit 99\necho '{help}'\nexit {code}\n"),
+        )
+        .unwrap();
+        process::make_executable(&xcrun).unwrap();
+        dir
+    }
+
+    /// The built-in roster, all offered: swift-developer and
+    /// apple-platform-developer need Xcode and name operator skills.
+    fn export_check(dir: &Path) -> Option<ExportCheck> {
+        xcode_export_check(&Roster::builtin().unwrap(), Some(dir.as_os_str()), None)
+    }
+
+    /// U-54: on Xcode 26 the export command does not exist; doctor notes it
+    /// and does not fail.
+    #[test]
+    fn xcode_export_before_27_is_a_note() {
+        let dir = fake_xcode("26.6", "", 99);
+        let Some(ExportCheck::Note(n)) = export_check(dir.path()) else {
+            panic!("expected a note");
+        };
+        assert!(n.contains("not verifiable here"), "{n}");
+        assert!(n.contains("Xcode 26.6"), "{n}");
+        assert!(n.contains("swift-developer"), "{n}");
+    }
+
+    /// U-54: on Xcode 27 the `--help` of the export must name `--output-dir`.
+    #[test]
+    fn xcode_export_on_27_is_verified() {
+        let dir = fake_xcode("27.0", "  --output-dir <dir>  Where to write", 0);
+        assert_eq!(export_check(dir.path()), None);
+
+        let dir = fake_xcode("27.1", "error: unknown subcommand 'agent'", 1);
+        let Some(ExportCheck::Problem(p)) = export_check(dir.path()) else {
+            panic!("expected a problem");
+        };
+        assert!(p.contains("failed"), "{p}");
+        assert!(p.contains("unknown subcommand"), "{p}");
+
+        let dir = fake_xcode("27.0", "  --dest <dir>", 0);
+        let Some(ExportCheck::Problem(p)) = export_check(dir.path()) else {
+            panic!("expected a problem");
+        };
+        assert!(p.contains("--output-dir"), "{p}");
+    }
+
+    /// U-54: no check without an offered Xcode teammate that has operator
+    /// skills, and none without xcodebuild.
+    #[test]
+    fn xcode_export_is_not_checked_unless_needed() {
+        let dir = fake_xcode("27.0", "", 1);
+        let rust_project = Roster::builtin()
+            .unwrap()
+            .with_project_facts(horch_core::roster::ProjectFacts::from_names(["Cargo.toml"]));
+        assert_eq!(
+            xcode_export_check(&rust_project, Some(dir.path().as_os_str()), None),
+            None
+        );
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(export_check(empty.path()), None);
+    }
+
+    #[test]
+    fn xcode_version_reads_the_first_line() {
+        assert_eq!(
+            xcode_version("Xcode 26.6\nBuild version 17F113\n"),
+            Some((26, "26.6".to_string()))
+        );
+        assert_eq!(xcode_version("Xcode 27\n"), Some((27, "27".to_string())));
+        assert_eq!(xcode_version("xcodebuild: error\n"), None);
     }
 
     fn roster_requiring_blender() -> Roster {
