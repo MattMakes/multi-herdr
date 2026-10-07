@@ -323,21 +323,24 @@ impl WorkerSteps for PaneWorker<'_> {
     }
 
     fn enter_context(&mut self, brief: &Brief) -> Result<()> {
+        // The brief is this worker's context: its project, its ledger and
+        // the binary overrides the spawner ran with. A pane is a fresh
+        // shell, so none of them are in this process's environment. They
+        // apply before any step that can fail (N-11): a startup failure is
+        // recorded in the spawner's ledger, and the pane closes through the
+        // spawner's herdr.
         let project = PathBuf::from(&brief.project_dir);
+        self.ctx.paths.project_dir = Some(project.clone());
+        if let Some(state_dir) = &brief.state_dir {
+            self.ctx.paths.set_state_dir(state_dir);
+        }
+        self.ctx.apply_overrides(&brief.overrides());
         if !project.is_dir() {
             bail!("project dir '{}' is missing", brief.project_dir);
         }
         (self.enter_dir)(&project)
             .with_context(|| format!("entering project dir {}", brief.project_dir))?;
-        self.ctx.paths.cwd = Some(project.clone());
-        // The brief is this worker's context: its project, its ledger and
-        // the binary overrides the spawner ran with. A pane is a fresh
-        // shell, so none of them are in this process's environment.
-        self.ctx.paths.project_dir = Some(project);
-        if let Some(state_dir) = &brief.state_dir {
-            self.ctx.paths.set_state_dir(state_dir);
-        }
-        self.ctx.apply_overrides(&brief.overrides());
+        self.ctx.paths.cwd = Some(project);
         // The briefing tells the agent to run `horch tell` / `horch note` /
         // `horch done` by bare name, so this binary's directory has to be
         // reachable. Without it a worker launched from a build directory
@@ -886,9 +889,9 @@ mod tests {
             startup_error: Option<String>,
         }
 
-        impl WorkerSteps for Steps<'_> {
-            fn load_brief(&mut self) -> Result<Brief> {
-                Ok(Brief {
+        impl Steps<'_> {
+            fn brief() -> Brief {
+                Brief {
                     schema: SCHEMA,
                     role: "sonnet-1".into(),
                     teammate: "sonnet".into(),
@@ -906,7 +909,13 @@ mod tests {
                     workdir: None,
                     bin_overrides: BinOverrides::default(),
                     report_to: ReportTarget::Orchestrator,
-                })
+                }
+            }
+        }
+
+        impl WorkerSteps for Steps<'_> {
+            fn load_brief(&mut self) -> Result<Brief> {
+                Ok(Self::brief())
             }
             fn enter_context(&mut self, _: &Brief) -> Result<()> {
                 self.calls.push("enter_context");
@@ -1016,6 +1025,44 @@ mod tests {
                 ws.pane_ids().len(),
                 1,
                 "the pane stays when the close fails"
+            );
+        }
+
+        /// N-11: a project dir that is missing fails `enter_context` after
+        /// the brief's `state_dir` and `project_dir` apply, so the startup
+        /// failure and the exit reach the spawner's ledger.
+        #[test]
+        fn pane_worker_records_a_startup_failure_in_the_briefs_ledger() {
+            let tmp = tempfile::tempdir().unwrap();
+            let state = tmp.path().join("state");
+            let project = tmp.path().join("missing");
+            let project_text = project.to_string_lossy().into_owned();
+            let ledger = crate::execution::records::Ledger::for_project(&state, &project_text);
+            ledger
+                .add("r1", "claude", "sonnet", "sonnet", "sonnet-1", None, "t")
+                .unwrap();
+            let home = tmp.path().join("home");
+            let mut ctx = RuntimeContext::from_env(&MapEnv::new(&home)).unwrap();
+            let enter_dir = |_: &Path| -> Result<()> { Ok(()) };
+            let mut worker = PaneWorker::new(&mut ctx, "sonnet-1", &enter_dir);
+            let mut brief = Steps::brief();
+            brief.project_dir = project_text.clone();
+            brief.state_dir = Some(state.to_string_lossy().into_owned());
+
+            let e = worker.enter_context(&brief).unwrap_err();
+            worker.startup_failed(&brief, &format!("{e:#}")).unwrap();
+            worker.agent_exited(&brief, None).unwrap();
+
+            let r = ExecutionStore::for_project(&state, &project_text)
+                .get("r1")
+                .unwrap();
+            let h = r.history.last().unwrap();
+            assert_eq!(h.event, EVENT_STARTUP_FAILED);
+            assert_eq!(h.text, format!("project dir '{project_text}' is missing"));
+            assert!(
+                !r.execution_status().is_live(),
+                "{:?}",
+                r.execution_status()
             );
         }
 
