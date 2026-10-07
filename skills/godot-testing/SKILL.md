@@ -39,6 +39,7 @@ The standard Test-Driven Development cycle: write a failing test (RED), write mi
 
 ```
 res://
+├── .gutconfig.json                       # GUT configuration (optional; GUT's default path)
 ├── src/
 │   └── components/
 │       ├── health_component.gd
@@ -47,10 +48,9 @@ res://
     ├── unit/
     │   ├── test_health_component.gd      # GUT: test_ prefix required
     │   └── HealthComponentTest.cs        # gdUnit4 C#: [TestSuite] attribute
-    ├── integration/
-    │   ├── test_player_scene.gd
-    │   └── PlayerSceneTest.cs
-    └── .gutconfig.json                   # GUT configuration (optional)
+    └── integration/
+        ├── test_player_scene.gd
+        └── PlayerSceneTest.cs
 ```
 
 ### Naming conventions
