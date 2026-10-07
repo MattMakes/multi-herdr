@@ -476,6 +476,7 @@ pub struct Settings {
     pub machine_file: Option<PathBuf>,    // HORCH_MACHINE_FILE (B2)
     pub probe_timeout: Option<Duration>,  // HORCH_PROBE_TIMEOUT_MS
     pub tell_grace: Option<Duration>,     // HORCH_TELL_GRACE_MS
+    pub spawn_wait: Option<Duration>,     // HORCH_SPAWN_WAIT_MS (spawn waits for its worker to register)
     pub faults: Faults,                   // HORCH_FAULT
 }
 
