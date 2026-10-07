@@ -1,6 +1,6 @@
 # Rig helpers
 
-Load at step 2. Paste the functions you need at the top of your task script, or keep them in `Scripts/Blender/rig_helpers.py` and import it. Every function was run against the `bpy` 5.0.1 module in a background process: a two-bone tube was built and skinned, `weight_problems` reported 32 unnormalized vertices before `clean_weights` and none after, a 45-degree pose moved the top of the mesh in world space and the restore returned it, and an `AS_` action exported to FBX with `root`, `lower` and `upper` bones and re-imported with its 24 frames.
+Load at step 2. Paste the functions you need at the top of your task script, or keep them in `Scripts/Blender/rig_helpers.py` and import it. Every function was run against the `bpy` 5.0.1 module in a background process: a two-bone tube was built and skinned, `weight_problems` reported 32 unnormalized vertices before `clean_weights` and none after, a 45-degree pose moved the top of the mesh in world space and the restore returned it, and an `AS_` action exported to FBX with `root`, `lower` and `upper` bones and re-imported with its 24 frames. On 2026-10-06 they ran again on Blender 3.5.1 (`docs/live-checks/blender.md`), with the same results, and rigged a crate lid with an `AS_Crate_LidOpen` action.
 
 ```python
 import bpy

@@ -7,7 +7,7 @@ description: Use when a Blender mesh must deform in a game engine - building an 
 
 Make a skeletal mesh that imports into Unreal with a clean skeleton, deforms correctly and carries its animations. `blender-ue-pipeline` owns the conventions: the armature object named `Armature`, a single `root` bone, deform bones only, `SK_`/`SKEL_`/`AS_` names, and the FBX settings. This skill owns building the rig, the weights and the actions.
 
-Tested helper functions are in `references/rig-helpers.md`, run against the `bpy` 5.0.1 module. Confirm calls on the installed Blender with `get_python_api_docs`.
+Tested helper functions are in `references/rig-helpers.md`, run against the `bpy` 5.0.1 module. On 2026-10-06 the same helpers ran headless (`--background --factory-startup`) on Blender 3.5.1, the Blender installed on the operator's Mac; the results are in `docs/live-checks/blender.md`. Confirm calls on the installed Blender with `get_python_api_docs`.
 
 ## When to use
 

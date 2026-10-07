@@ -1,6 +1,6 @@
 # Bake helpers
 
-Load at step 4. Paste the functions you need at the top of your task script, or keep them in `Scripts/Blender/bake_helpers.py` and import it. Every function was run with Cycles on CPU against the `bpy` 5.0.1 module in a background process: a 16x8 sphere received a normal map from a displaced level-6 icosphere (mean (0.501, 0.501, 0.999), standard deviation 0.021 in red and green, so detail was captured), AO and roughness were baked and packed into an ORM, base color was baked with color only, and every PNG was saved and reloaded with matching values.
+Load at step 4. Paste the functions you need at the top of your task script, or keep them in `Scripts/Blender/bake_helpers.py` and import it. Every function was run with Cycles on CPU against the `bpy` 5.0.1 module in a background process: a 16x8 sphere received a normal map from a displaced level-6 icosphere (mean (0.501, 0.501, 0.999), standard deviation 0.021 in red and green, so detail was captured), AO and roughness were baked and packed into an ORM, base color was baked with color only, and every PNG was saved and reloaded with matching values. On 2026-10-06 they ran again on Blender 3.5.1 (`docs/live-checks/blender.md`), with the same results, and baked a crate's 1024 normal map and ORM.
 
 ```python
 import bpy

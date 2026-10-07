@@ -7,7 +7,7 @@ description: Use when building or fixing game-mesh geometry in Blender by script
 
 Make the geometry right before it is exported: the right size, clean topology, a UV layout that bakes and textures cleanly, LODs that hit their budgets, and collision that is convex and cheap. `blender-ue-pipeline` owns the conventions (names, scale, axes, smoothing, export) and the workflow wrapper (tool check, locks, hand-off). This skill owns how to build what that workflow exports.
 
-Tested helper functions for every step are in `references/mesh-helpers.md`. They were run against the `bpy` 5.0.1 module. Before you rely on a call, confirm it on the installed Blender with `get_python_api_docs` or `search_api_docs`: operator arguments change between releases.
+Tested helper functions for every step are in `references/mesh-helpers.md`. They were run against the `bpy` 5.0.1 module. On 2026-10-06 the same helpers ran headless (`--background --factory-startup`) on Blender 3.5.1, the Blender installed on the operator's Mac; the results are in `docs/live-checks/blender.md`. Before you rely on a call, confirm it on the installed Blender with `get_python_api_docs` or `search_api_docs`: operator arguments change between releases.
 
 ## When to use
 
@@ -69,6 +69,8 @@ Tested helper functions for every step are in `references/mesh-helpers.md`. They
 - A collision hull that wraps a concave shape: the player cannot walk through the doorway.
 - Removing a UV layer from `Mesh.uv_layers` on a new mesh can fail on internal layers. Build meshes without UVs in bmesh instead, as `make_convex_collision` does.
 - `bmesh.ops.convex_hull` adds the hull beside the source geometry. Hull a vertex-only bmesh, or delete the source faces.
+- Merging doubles across separate parts: `remove_doubles` welds a lid to its box where their corners touch, and the mesh becomes non-manifold. Leave a gap of 1 mm or more between parts, or merge each part alone.
+- `bpy.ops.uv.seams_from_islands` marked no seams in a background run on Blender 3.5.1. Set `edge.use_seam` from the sharp flags in the data API, then check that the UVs split along each sharp edge.
 
 ## Review checklist
 

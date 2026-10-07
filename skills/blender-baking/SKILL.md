@@ -7,7 +7,7 @@ description: Use when texture maps must be baked in Blender for a game asset - h
 
 Transfer detail from a high-poly or source mesh onto the game mesh's UV layout as textures, and save them so that Unreal reads them correctly. `blender-ue-pipeline` owns the texture rules: `T_<Name>_BC`, `_N`, `_ORM` names, power-of-two sizes, sRGB for base color and linear for data, and normal maps baked with MikkTSpace in OpenGL (green up) convention. This skill owns producing those files.
 
-Tested helper functions are in `references/bake-helpers.md`, run with Cycles on CPU against the `bpy` 5.0.1 module. Confirm calls on the installed Blender with `get_python_api_docs`.
+Tested helper functions are in `references/bake-helpers.md`, run with Cycles on CPU against the `bpy` 5.0.1 module. On 2026-10-06 the same helpers ran headless (`--background --factory-startup`) on Blender 3.5.1, the Blender installed on the operator's Mac; the results are in `docs/live-checks/blender.md`. Confirm calls on the installed Blender with `get_python_api_docs`.
 
 ## When to use
 
@@ -62,6 +62,7 @@ If any of these changes after the bake, bake again.
 |---|---|---|
 | Wavy lines on flat faces near hard edges | Averaged normals across a hard edge with no seam | Mark the edge sharp and seam it, or use a cage |
 | Black or missing areas | Rays too short, or the high mesh is outside the cage | Increase extrusion; check the high mesh is inside it |
+| AO near 0 in bands where high parts meet | Coplanar faces of overlapping high meshes (a board flush with a box face): the ray hits inside the other part | Inset one of the 2 faces by 1 to 2 mm in the high mesh |
 | Detail from a neighbouring part | Rays too long, parts too close | Lower max ray distance; explode the bake |
 | Visible seam lines | Too little padding, or a seam on a smooth edge | Raise the margin; move seams onto sharp edges |
 | Stepping on curved surfaces | 8-bit normal map | Bake to a 16-bit float target |
