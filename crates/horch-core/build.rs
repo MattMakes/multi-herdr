@@ -58,8 +58,15 @@ fn main() {
     }
     files.sort();
     let mut bundled = String::from("pub static BUNDLED_SKILL_FILES: &[(&str, &[u8])] = &[\n");
-    for (relative, absolute) in files {
+    for (relative, absolute) in &files {
         writeln!(bundled, "    ({relative:?}, include_bytes!({absolute:?})),").unwrap();
+    }
+    bundled.push_str("];\n");
+    // The tree digest of each bundled skill, so no process digests the
+    // compiled-in files at run time.
+    bundled.push_str("pub(crate) static BUNDLED_SKILL_DIGESTS: &[(&str, [u8; 32])] = &[\n");
+    for (name, digest) in skill_digests(&files) {
+        writeln!(bundled, "    ({name:?}, {digest:?}),").unwrap();
     }
     bundled.push_str("];\n");
     // Which files of each bundled skill were copied into this repository.
@@ -76,6 +83,46 @@ fn main() {
         bundled,
     )
     .unwrap();
+}
+
+/// The tree digest of every skill in `files` (sorted `(relative, absolute)`
+/// pairs), by the rule of `skills::catalog`: a skill is a top-level
+/// `<name>/SKILL.md`; its digest is sha256 over the sorted lines
+/// `<path under <name>/>\0<hex sha256 of the bytes>\n`.
+fn skill_digests(files: &[(String, String)]) -> Vec<(String, [u8; 32])> {
+    use sha2::{Digest as _, Sha256};
+    let mut out = Vec::new();
+    for (relative, _) in files {
+        let Some(name) = relative.strip_suffix("/SKILL.md") else {
+            continue;
+        };
+        if name.contains('/') {
+            continue;
+        }
+        let prefix = format!("{name}/");
+        let mut lines: Vec<(&str, String)> = files
+            .iter()
+            .filter_map(|(rel, absolute)| {
+                let rel = rel.strip_prefix(&prefix)?;
+                let bytes = std::fs::read(absolute).unwrap();
+                let hash: String = Sha256::digest(&bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                Some((rel, hash))
+            })
+            .collect();
+        lines.sort();
+        let mut tree = Sha256::new();
+        for (rel, hash) in &lines {
+            tree.update(rel.as_bytes());
+            tree.update([0u8]);
+            tree.update(hash.as_bytes());
+            tree.update(b"\n");
+        }
+        out.push((name.to_owned(), tree.finalize().into()));
+    }
+    out
 }
 
 fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) {

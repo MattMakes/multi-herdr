@@ -20,9 +20,8 @@ use horch_marketplace::{
     Store,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
-use super::{BUNDLED_COPIED, BUNDLED_SKILL_FILES};
+use super::{BUNDLED_COPIED, BUNDLED_SKILL_DIGESTS, BUNDLED_SKILL_FILES};
 use crate::ids::SkillId;
 use crate::measure::digest::Digest;
 use crate::roster::Teammate;
@@ -242,7 +241,12 @@ impl SkillCatalog {
                 .iter()
                 .filter_map(|(p, b)| p.strip_prefix(&prefix).map(|rel| (rel, *b)))
                 .collect();
-            let digest = tree_digest(&files);
+            // `build.rs` digested the same bytes at build time.
+            let digest = BUNDLED_SKILL_DIGESTS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, d)| Digest(*d))
+                .with_context(|| format!("{path}: no build-time digest"))?;
             let id = SkillId::new(name).with_context(|| format!("{path}: skill id"))?;
             let copied = copied.remove(name);
             for rel in copied.iter().flat_map(|c| &c.copied_files) {
@@ -707,8 +711,11 @@ fn validate_skill_md(path: &str, name: &str, bytes: &[u8]) -> Result<Metadata> {
 
 /// The marketplace tree-digest rule (`horch_marketplace::integrity::tree_digest`)
 /// over in-memory files: sha256 over the sorted lines
-/// `<relative path>\0<hex sha256 of the bytes>\n`.
+/// `<relative path>\0<hex sha256 of the bytes>\n`. `build.rs` applies it to
+/// the bundled skills; the test checks that both agree.
+#[cfg(test)]
 fn tree_digest(files: &[(&str, &[u8])]) -> Digest {
+    use sha2::{Digest as _, Sha256};
     let mut lines: Vec<(&str, String)> = files
         .iter()
         .map(|(rel, bytes)| (*rel, crate::measure::digest::sha256_bytes(bytes).hex()))
@@ -722,4 +729,27 @@ fn tree_digest(files: &[(&str, &[u8])]) -> Digest {
         tree.update(b"\n");
     }
     Digest(tree.finalize().into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The build-time digest of each bundled skill is the run-time tree
+    /// digest of its embedded files, and every bundled skill has one.
+    #[test]
+    fn build_time_digests_equal_the_run_time_digest() {
+        let catalog = SkillCatalog::bundled().unwrap();
+        assert_eq!(catalog.entries.len(), BUNDLED_SKILL_DIGESTS.len());
+        for (name, built) in BUNDLED_SKILL_DIGESTS {
+            let prefix = format!("{name}/");
+            let files: Vec<(&str, &[u8])> = BUNDLED_SKILL_FILES
+                .iter()
+                .filter_map(|(p, b)| p.strip_prefix(&prefix).map(|rel| (rel, *b)))
+                .collect();
+            assert!(!files.is_empty(), "{name}");
+            assert_eq!(tree_digest(&files), Digest(*built), "{name}");
+            assert_eq!(catalog.entries[*name].digest, Digest(*built), "{name}");
+        }
+    }
 }
