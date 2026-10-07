@@ -792,7 +792,7 @@ Network level: Trusted (crates.io, the Ubuntu archive, GitHub).
 
 ## 17. Local acceptance on the operator's Mac
 
-The cloud proves the logic against fixtures. These steps prove the fixtures match reality, and that the pieces work in herdr. `scripts/verify-telemetry-local.sh` guides each step and writes the results to `ai_docs/reports/telemetry-acceptance-<date>.md`. That report is a local operator artifact: `ai_docs/` is not in git, so a clone has no such report until the operator runs the script.
+The cloud proves the logic against fixtures. These steps prove the fixtures match reality, and that the pieces work in herdr. `scripts/live/telemetry.sh` is the only script for these steps: it runs each one, prints `PASS`, `FAIL` or `SKIP` per step, and the dated results are in `docs/live-checks/telemetry.md`, with the exact procedure for the steps that need the operator (L3, L5). L7 kills the shared collector, so it runs only with `LIVE_TELEMETRY_KILL_COLLECTOR=1`.
 
 | step | action | pass condition |
 |---|---|---|
@@ -803,8 +803,8 @@ The cloud proves the logic against fixtures. These steps prove the fixtures matc
 | L5 singleton in herdr | `horch fleet` in 2 scratch projects | 1 `horch telemetry` workspace in `herdr workspace list`; the operator's focused pane does not change; the `collector.json` pid is the same after the second fleet |
 | L6 live latency | Spawn 1 `sonnet` worker with a 1-line task | its row appears within 5 s of its first response, and its totals match its transcript |
 | L7 crash recovery | `kill -9` the collector during L6, then `horch telemetry ensure` | totals unchanged; no duplicate event keys (`jq` check in the script) |
-| L8 gate drill | `HORCH_QUOTA_FILE=<fixture: claude exhausted, codex ok> horch route researcher`, then `horch spawn researcher "Reply with DONE"` in a scratch fleet | `SUBSTITUTED` line; the record has `via: codex-sol`; the pane runs codex with the researcher briefing |
-| L9 real gate | With the real pools (both exhausted until 2026-10-02), `horch route opus` | `REFUSED` with both reset times |
+| L8 gate drill | `HORCH_QUOTA_FILE=<fixture: claude exhausted, codex ok, dates shifted to now> horch route researcher`, then `horch spawn researcher "Reply with DONE"` in a scratch fleet | `SUBSTITUTED` line; the record has `via: codex-sol`; the pane runs codex with the researcher briefing |
+| L9 real gate | `horch route opus` on the real pools | the answer follows the pools: `REFUSED` with both reset times when both are exhausted, else `SPAWN` or `SUBSTITUTED`. The script also drills `REFUSED` on the shifted all-exhausted fixture |
 | L10 perf | `just verify-perf` on the real state dir | tick under 200 ms after the first; RSS under 150 MB |
 
 ## 18. Build plan

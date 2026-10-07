@@ -24,8 +24,7 @@ the quota probes (no model session). **L7 sends `kill -9` to the shared live
 collector** and restarts it with `horch telemetry ensure`, so it runs only with
 `LIVE_TELEMETRY_KILL_COLLECTOR=1`.
 
-How the steps differ from `scripts/verify-telemetry-local.sh` (the older,
-interactive guide, which writes `ai_docs/reports/`, not tracked):
+How the steps run (they refine the wording of the design's table):
 
 - L2 compares per record and per token class (usage `records[]` against cost
   `rows[]`), skips records whose transcript changed in the last 5 minutes, and
