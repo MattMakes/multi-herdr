@@ -99,6 +99,12 @@ impl DatasetPaths {
         self.root.join("events.lock")
     }
 
+    /// `fleet/`: the fleet run facts (`starts.jsonl`, `runs.jsonl`,
+    /// `verdicts.jsonl`) and their `fleet.lock`. Its writer creates it.
+    pub fn fleet_dir(&self) -> PathBuf {
+        self.root.join("fleet")
+    }
+
     pub fn experiments_dir(&self) -> PathBuf {
         self.root.join("experiments")
     }

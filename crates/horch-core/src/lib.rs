@@ -28,6 +28,7 @@
 //! | [`competition`] | competitive mode: config, preflight, planner, coordinator, promotion |
 //! | [`evaluation`]  | validation gates, judge input, judging and winner policy    |
 //! | [`dataset`]     | the dataset outputs: export rows and readiness              |
+//! | [`fleet_runs`]  | fleet run facts: start, run and verdict rows per worker     |
 //! | [`teacher`]     | the System One decision-model seam (inert)                  |
 //!
 //! Nothing here shells out to `bash`, `jq`, `node`, or `just`. The external
@@ -42,6 +43,7 @@ pub mod competition;
 pub mod dataset;
 pub mod evaluation;
 pub mod execution;
+pub mod fleet_runs;
 pub mod fsx;
 pub mod harness;
 pub mod heartbeat;

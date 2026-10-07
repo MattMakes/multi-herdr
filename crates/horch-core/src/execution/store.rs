@@ -661,6 +661,7 @@ fn render_records(records: &[LedgerRecordV1], out: &mut String) {
             .filter(|h| {
                 h.event == "done"
                     || h.event == "note"
+                    || h.event == "verdict"
                     || h.event == crate::execution::lifecycle::EVENT_STARTUP_FAILED
             })
             .collect();
