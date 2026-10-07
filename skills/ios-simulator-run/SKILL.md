@@ -7,7 +7,7 @@ description: Build, run and inspect an iOS app on a simulator through the Mobile
 
 A short playbook. Use the MobileBuildMCP tools for simulator control, UI inspection and logs. The tool names below are the bare names from MobileBuildMCP 2.7.1 (the npm package `mobilebuildmcp`, formerly `xcodebuildmcp`); your harness may show them with a server prefix, and versions rename tools. Match each step to the tool in the server's tool list that does that job. If the server is not connected, use the `xcrun simctl` commands given here, and say in your report that you did.
 
-The server must enable the `simulator` and `ui-automation` workflows (`MOBILEBUILDMCP_ENABLED_WORKFLOWS=simulator,ui-automation` in its environment, or `enabledWorkflows` in `.mobilebuildmcp/config.yaml`). Only `simulator` is on by default, so without `ui-automation` there is no `snapshot_ui`, `tap` or `screenshot`. If those tools are missing, use the `xcrun simctl` fallbacks and say so in your report.
+The server must enable the `simulator` and `ui-automation` workflows (`MOBILEBUILDMCP_ENABLED_WORKFLOWS=simulator,ui-automation` in its environment, or `enabledWorkflows` in `.mobilebuildmcp/config.yaml`). Only `simulator` is on by default. It carries `snapshot_ui` and `screenshot`; `tap`, `type_text`, `gesture` and `batch` come only with `ui-automation` (checked live on 2.7.1, see `docs/live-checks/apple.md` in the horch repository). If those tools are missing, use the `xcrun simctl` fallbacks and say so in your report.
 
 Follow this sequence unless the task asks for a narrower action.
 
