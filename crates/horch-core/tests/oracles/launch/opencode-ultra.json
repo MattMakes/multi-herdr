@@ -57,7 +57,7 @@
         "GIT_REPLACE_REF_BASE": null,
         "GIT_SHALLOW_FILE": null,
         "GIT_WORK_TREE": null,
-        "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"title\":{\"disable\":true}},\"skills\":{\"paths\":[\"<BUNDLE>/skills\"]}}"
+        "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"title\":{\"disable\":true}},\"compaction\":{\"prune\":true},\"skills\":{\"paths\":[\"<BUNDLE>/skills\"]}}"
       },
       "program": "opencode"
     },
@@ -91,7 +91,7 @@
         "GIT_REPLACE_REF_BASE": null,
         "GIT_SHALLOW_FILE": null,
         "GIT_WORK_TREE": null,
-        "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"title\":{\"disable\":true}},\"skills\":{\"paths\":[\"<BUNDLE>/skills\"]}}"
+        "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"title\":{\"disable\":true}},\"compaction\":{\"prune\":true},\"skills\":{\"paths\":[\"<BUNDLE>/skills\"]}}"
       },
       "program": "opencode"
     },
@@ -125,7 +125,7 @@
         "GIT_REPLACE_REF_BASE": null,
         "GIT_SHALLOW_FILE": null,
         "GIT_WORK_TREE": null,
-        "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"title\":{\"disable\":true}},\"skills\":{\"paths\":[\"<BUNDLE>/skills\"]}}"
+        "OPENCODE_CONFIG_CONTENT": "{\"agent\":{\"title\":{\"disable\":true}},\"compaction\":{\"prune\":true},\"skills\":{\"paths\":[\"<BUNDLE>/skills\"]}}"
       },
       "program": "opencode"
     }
