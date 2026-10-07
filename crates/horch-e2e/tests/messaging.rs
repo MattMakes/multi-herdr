@@ -10,9 +10,8 @@
 //! `pane close` kills it. The codex fake runs in `stay`.
 
 use std::process::Output;
-use std::time::{Duration, Instant};
 
-use horch_e2e::harness::{fixtures, Harness};
+use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use serde_json::Value;
 
 const NOW: &str = "2026-09-28T18:00:00Z";
@@ -69,18 +68,6 @@ fn record(h: &Harness, id: &str) -> Value {
         .into_iter()
         .find(|r| r["record_id"] == id)
         .unwrap_or_else(|| panic!("no record {id}"))
-}
-
-/// Poll `f` for 30 s, with `context` in the panic message.
-fn wait_for_or<T>(what: &str, mut f: impl FnMut() -> Option<T>, context: impl Fn() -> String) -> T {
-    let until = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < until {
-        if let Some(v) = f() {
-            return v;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    panic!("timed out waiting for {what}\n{}", context());
 }
 
 /// What a worker pane wrote (fake-herdr `exec` saves its output), and the

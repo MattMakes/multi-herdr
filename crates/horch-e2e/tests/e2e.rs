@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, Instant};
 
-use horch_e2e::harness::{copy_tree, fixtures, Harness};
+use horch_e2e::harness::{self, copy_tree, fixtures, Harness};
 use serde_json::Value;
 
 const NOW: &str = "2026-09-28T18:00:00Z";
@@ -81,14 +81,7 @@ fn ledger_path(h: &Harness, slug: &str) -> PathBuf {
 }
 
 fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
-    let until = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < until {
-        if f() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    panic!("timed out waiting for {what}");
+    harness::wait_for(what, || f().then_some(()));
 }
 
 /// Stop the collector a test started, by the pid in `collector.json`, and
@@ -630,7 +623,33 @@ fn spc_02_viewer_when_locked() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(1500));
+    // Wait for the viewer to say what it is, not for a fixed time: under
+    // load the debug binary can take seconds to start.
+    let stderr_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    {
+        let mut pipe = child.stderr.take().unwrap();
+        let text = stderr_text.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = [0u8; 4096];
+            while let Ok(n @ 1..) = pipe.read(&mut buf) {
+                text.lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        });
+    }
+    harness::wait_for_or(
+        "the read-only viewer line",
+        || {
+            (stderr_text.lock().unwrap().contains("read-only viewer")
+                || child.try_wait().unwrap().is_some())
+            .then_some(())
+        },
+        || stderr_text.lock().unwrap().clone(),
+    );
+    let text = stderr_text.lock().unwrap().clone();
+    assert!(text.contains("read-only viewer"), "{text}");
     let info: Value = serde_json::from_str(
         &std::fs::read_to_string(h.state.join("telemetry/collector.json")).unwrap(),
     )
@@ -645,12 +664,7 @@ fn spc_02_viewer_when_locked() {
         "the viewer keeps running"
     );
     let _ = child.kill();
-    let out = child.wait_with_output().unwrap();
-    assert!(
-        stderr(&out).contains("read-only viewer"),
-        "{}",
-        stderr(&out)
-    );
+    let _ = child.wait();
     // And a second one-shot collector is refused.
     assert_eq!(
         h.run(&["telemetry", "collect", "--once"]).status.code(),

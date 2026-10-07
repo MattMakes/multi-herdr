@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -533,6 +534,36 @@ fn check_built_fakes() {
             path.display()
         );
     }
+}
+
+/// The one deadline of every e2e wait. A passing run never reaches it, so it
+/// is generous: under the parallel full suite on a 4-CPU Linux VM, one step
+/// of a debug build can take 10 times as long as it takes alone.
+pub const DEADLINE: Duration = Duration::from_secs(120);
+
+/// Poll `f` until it returns a value, for at most [`DEADLINE`].
+pub fn wait_for<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
+    wait_for_or(what, f, String::new)
+}
+
+/// [`wait_for`], with `context` in the panic message.
+pub fn wait_for_or<T>(
+    what: &str,
+    mut f: impl FnMut() -> Option<T>,
+    context: impl Fn() -> String,
+) -> T {
+    let until = Instant::now() + DEADLINE;
+    while Instant::now() < until {
+        if let Some(v) = f() {
+            return v;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!(
+        "timed out after {} s waiting for {what}\n{}",
+        DEADLINE.as_secs(),
+        context()
+    );
 }
 
 /// The repository root, from this crate's manifest dir.
