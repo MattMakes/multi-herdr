@@ -194,7 +194,8 @@ pub struct RunArgs {
     /// The baseline teammate (slot A).
     #[arg(long, value_name = "TEAMMATE")]
     pub baseline: Option<String>,
-    /// Promote the winner onto this branch.
+    /// Promote the winner onto this branch. A `compete/<slug>` branch that
+    /// does not exist is created at the winner's commit.
     #[arg(long, value_name = "BRANCH")]
     pub promote_to: Option<String>,
     /// Where the candidate worktrees go. Defaults to the dataset dir.
