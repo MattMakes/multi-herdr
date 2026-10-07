@@ -16,6 +16,7 @@ use anyhow::Result;
 use super::policy::{EVENT_COMPACTED, EVENT_FAILED};
 use crate::telemetry::context::{CompactionMark, Reading};
 use crate::telemetry::readers::Unreadable;
+use crate::workspace::model::at_prompt;
 
 /// Everything the job does to the world.
 pub trait JobPorts {
@@ -229,8 +230,9 @@ fn steps(
     })
 }
 
-/// Wait for `idle_polls` polls in a row whose status is `idle` or `done`.
-/// Any other status, none, or a failed poll starts the count again.
+/// Wait for `idle_polls` polls in a row whose status is at the prompt
+/// ([`at_prompt`]: `idle` or `done`). Any other status, none, or a failed
+/// poll starts the count again.
 fn wait_idle(
     ports: &dyn JobPorts,
     plan: &JobPlan,
@@ -241,11 +243,11 @@ fn wait_idle(
     let begin = ports.elapsed();
     let mut idle = 0u8;
     loop {
-        let at_prompt = matches!(
-            ports.pane_status(),
-            Ok(Some(s)) if s == "idle" || s == "done"
-        );
-        idle = if at_prompt { idle + 1 } else { 0 };
+        let ready = match ports.pane_status() {
+            Ok(status) => at_prompt(status.as_deref()),
+            Err(_) => false,
+        };
+        idle = if ready { idle + 1 } else { 0 };
         if idle >= plan.idle_polls.max(1) {
             return Ok(());
         }

@@ -8,7 +8,8 @@
 //!   handoff, then starts the job: a detached `horch compact <role>
 //!   --foreground`. It prints `scheduled` only when the child wrote
 //!   `job.json` at step `wait-idle` within [`START_TIMEOUT`]; else it records
-//!   `compact-failed` and prints the rendered `failed` line. Under 2 s.
+//!   `compact-failed` and prints the rendered `failed` line. A start that
+//!   works returns at once; a failed start returns within the timeout.
 //! - `--foreground` is that child. It checks again, holds `job.json`, beats
 //!   the shared heartbeat (`crate::heartbeat` in core, as the judge job
 //!   does) and runs `compaction::job::run` with the real ports. Every exit
@@ -48,8 +49,10 @@ use horch_core::workspace::herdr::Herdr;
 use super::context::{self, build_row, record_kind, record_workdir, Row, Sources};
 
 /// The start handshake: the child must write `job.json` at step
-/// `wait-idle` within this (design §6.8a).
-pub const START_TIMEOUT: Duration = Duration::from_millis(1500);
+/// `wait-idle` within this (design §6.8a). The wait ends as soon as the job
+/// file appears, so only a failed start waits this long. 5 s, not the
+/// design's 1.5 s: at load 211 a child once needed more than 1.5 s.
+pub const START_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The poll of the start handshake.
 const START_POLL: Duration = Duration::from_millis(50);
@@ -1015,7 +1018,8 @@ mod tests {
     }
 
     /// CTX-15 (review finding 1 a): a child that writes no `job.json` is
-    /// stopped after 1.5 s, and the start fails with 1 event and 1 line.
+    /// stopped at the start timeout (1.5 s here, so the test stays short),
+    /// and the start fails with 1 event and 1 line.
     #[cfg(unix)]
     #[test]
     fn ctx_15_compact_start_handshake_fails_without_job_file() {
@@ -1026,6 +1030,7 @@ mod tests {
         std::fs::write(&exe, "#!/bin/sh\nsleep 30\n").unwrap();
         horch_core::runtime::process::make_executable(&exe).unwrap();
         f.exe = exe;
+        f.start_timeout = Duration::from_millis(1500);
         f.pane("sonnet-1");
         f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
         f.handoff(&f.w.project(), "sonnet-1");
@@ -1034,7 +1039,7 @@ mod tests {
         let o = f.run("sonnet-1", |_| {});
         let took = begin.elapsed();
         assert!(
-            took >= START_TIMEOUT && took < Duration::from_secs(2),
+            took >= f.start_timeout && took < Duration::from_secs(2),
             "{took:?}"
         );
         assert_eq!(o.code, 1, "{o:?}");
