@@ -50,6 +50,11 @@ Create every directory in `dirs`. Measured: a missing one prints
 `[GUT ERROR]:  The path [res://tests/integration] does not exist.`, and the run
 goes on and exits 0. `run_gut.sh` below does not catch that line.
 
+GUT prints ANSI colour codes in `GUT ERROR` lines even with
+`"disable_colors": true` (measured: the log holds `ESC[31m[GUT ERROR]:  ESC[0m`
+before the text). A log check must strip them first, for example
+`sed 's/\x1b\[[0-9;]*m//g'`, or match a plain substring such as `does not exist`.
+
 ## Run script
 
 GUT exits 0 when a test script does not parse (it skips the script) and when

@@ -25,17 +25,18 @@ GODOT=/Applications/Godot.app/Contents/MacOS/Godot
 GH="$PWD/.godot/horch-home"; LOGS="$GH/logs"; mkdir -p "$LOGS"
 gd() { HOME="$GH" "$GODOT" --headless --path "$PWD" "$@"; }
 gd --import > "$LOGS/import.log" 2>&1; echo "import exit=$?"
-gd -s "$GH/parse_check_init.gd" -- --skip=addons,tests > "$LOGS/parse.log" 2>&1; echo "parse exit=$?"
+gd -s "$GH/parse_check.gd" -- --skip=addons,tests > "$LOGS/parse.log" 2>&1; echo "parse exit=$?"
 gd -s "$GH/scene_check.gd" -- res://scenes/main.tscn > "$LOGS/scene.log" 2>&1; echo "scene exit=$?"
 gd --quit-after 120 > "$LOGS/smoke.log" 2>&1; echo "smoke exit=$?"
 grep -n -E 'SCRIPT ERROR|Parse Error|^ERROR:|^WARNING:|PARSE_CHECK FAIL' "$LOGS"/{import,parse,scene,smoke}.log
 ```
 
-`parse_check_init.gd` is the parse checker from `godot-build-verify`
-(`references/parse-check.md`) with `func _init()` renamed to
-`func _initialize()`. `scene_check.gd` is the scene check from
-`godot-scene-files` (`references/worked-example.md`) with the same rename.
-Problem 1 below gives the reason.
+The 2026-10-07 run used renamed copies of the skill scripts
+(`parse_check_init.gd`, `scene_check.gd`), with `func _init()` renamed to
+`func _initialize()`. Problem 1 below gives the reason. Since commit `034607f`
+the skill's own scripts do this: `parse_check.gd` from `godot-build-verify`
+(`references/parse-check.md`) and `scene_check.gd` from `godot-scene-files`
+(`references/worked-example.md`). A re-run uses them as they are.
 
 It needs Godot 4.7.2 (standard build) at
 `/Applications/Godot.app/Contents/MacOS/Godot`. It starts no model session,

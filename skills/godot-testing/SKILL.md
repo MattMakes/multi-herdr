@@ -50,7 +50,7 @@ res://
     ├── integration/
     │   ├── test_player_scene.gd
     │   └── PlayerSceneTest.cs
-    └── gut_config.json                   # GUT configuration (optional)
+    └── .gutconfig.json                   # GUT configuration (optional)
 ```
 
 ### Naming conventions
