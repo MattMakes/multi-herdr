@@ -5,8 +5,8 @@
 //! the two re-reads some input on restart, and the dedupe index drops every
 //! event whose key `(agent, session_id, event_id)` is already stored.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::io::Write;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -19,13 +19,107 @@ use crate::usage::{self, Price};
 
 pub type Key = (String, String, String);
 
-/// The events on disk, with an in-memory copy for rollups and the index of
-/// keys already stored.
+/// The events on disk, with what the snapshot folds of each one in memory
+/// ([`Table`]) and the index of keys already stored.
+///
+/// The collector keeps every event of the retention window for as long as it
+/// runs (NFR-02 RSS), so it keeps no [`Event`]: a few interned ids, the time,
+/// the tokens and the cost. The full events stay on disk.
 #[derive(Debug, Default)]
 pub struct Store {
     dir: PathBuf,
-    keys: HashSet<Key>,
-    pub events: Vec<Event>,
+    /// `(agent, session, event id)`, the agent and session interned.
+    keys: HashSet<(u32, u32, Box<str>)>,
+    sessions: Interner,
+    pub(crate) table: Table,
+}
+
+/// Strings stored once, each with a dense id.
+#[derive(Debug, Default)]
+pub(crate) struct Interner {
+    pub names: Vec<Box<str>>,
+    ids: HashMap<Box<str>, u32>,
+}
+
+impl Interner {
+    pub(crate) fn id(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.ids.get(name) {
+            return id;
+        }
+        let id = self.names.len() as u32;
+        self.names.push(name.into());
+        self.ids.insert(name.into(), id);
+        id
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Option<u32> {
+        self.ids.get(name).copied()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.names.len()
+    }
+}
+
+/// A record and its keys in [`GROUPS`] order, as name ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Row {
+    pub record: u32,
+    pub groups: [u32; 6],
+}
+
+/// What the snapshot folds of one stored event.
+#[derive(Debug, Clone)]
+pub(crate) struct Kept {
+    pub ts: Box<str>,
+    pub tokens: TokenClasses,
+    pub cost: Option<f64>,
+    /// Into [`Table::rows`].
+    pub row: u32,
+    /// The model, a name id: the unpriced events are listed per model.
+    pub model: u32,
+    pub idle: bool,
+}
+
+/// The stored events in store order, interned for the snapshot fold
+/// (NFR-02): each event's record and 6 group keys become 1 shared [`Row`].
+#[derive(Debug, Default)]
+pub(crate) struct Table {
+    pub kept: Vec<Kept>,
+    pub rows: Vec<Row>,
+    row_ids: HashMap<Row, u32>,
+    /// The record ids, group keys and models.
+    pub names: Interner,
+}
+
+impl Table {
+    pub(crate) fn from_events<'a>(events: impl IntoIterator<Item = &'a Event>) -> Table {
+        let mut t = Table::default();
+        for e in events {
+            t.push(e);
+        }
+        t
+    }
+
+    pub(crate) fn push(&mut self, e: &Event) {
+        let row = Row {
+            record: self.names.id(&e.record_id),
+            groups: GROUPS.map(|g| self.names.id(group_key(e, g))),
+        };
+        let next = self.rows.len() as u32;
+        let id = *self.row_ids.entry(row).or_insert(next);
+        if id == next {
+            self.rows.push(row);
+        }
+        self.kept.push(Kept {
+            ts: e.ts.as_str().into(),
+            tokens: e.tokens,
+            cost: e.cost_usd,
+            row: id,
+            model: self.names.id(&e.model),
+            idle: e.idle,
+        });
+    }
 }
 
 /// Create (or truncate) a file readable by its owner only (section 15).
@@ -104,12 +198,13 @@ impl Store {
                 let _ = std::fs::remove_file(&path);
                 continue;
             }
-            for event in read_file(&path, &prices) {
-                if store.keys.insert(event.key()) {
-                    store.events.push(event);
+            for_each_event(&path, &prices, |event| {
+                if store.insert_key(&event) {
+                    store.table.push(&event);
                 }
-            }
+            });
         }
+        store.table.kept.shrink_to_fit();
         Ok(store)
     }
 
@@ -117,8 +212,30 @@ impl Store {
         &self.dir
     }
 
+    /// How many events the store holds.
+    pub fn len(&self) -> usize {
+        self.table.kept.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.table.kept.is_empty()
+    }
+
     pub fn contains(&self, key: &Key) -> bool {
-        self.keys.contains(key)
+        let (Some(agent), Some(session)) =
+            (self.table.names.get(&key.0), self.sessions.get(&key.1))
+        else {
+            return false;
+        };
+        self.keys.contains(&(agent, session, key.2.as_str().into()))
+    }
+
+    /// Record `e`'s key; false when it is already stored.
+    fn insert_key(&mut self, e: &Event) -> bool {
+        let agent = self.table.names.id(&e.agent);
+        let session = self.sessions.id(&e.session_id);
+        self.keys
+            .insert((agent, session, e.event_id.as_str().into()))
     }
 
     /// Append the events whose keys are new, and sync. Returns how many were
@@ -126,7 +243,7 @@ impl Store {
     pub fn append(&mut self, events: Vec<Event>) -> Result<usize> {
         let mut by_file: BTreeMap<PathBuf, Vec<Event>> = BTreeMap::new();
         for event in events {
-            if self.keys.insert(event.key()) {
+            if self.insert_key(&event) {
                 by_file
                     .entry(file_for(&self.dir, &event.ts))
                     .or_default()
@@ -148,32 +265,37 @@ impl Store {
             f.write_all(text.as_bytes())?;
             f.sync_all()?;
             n += batch.len();
-            self.events.extend(batch);
+            for e in &batch {
+                self.table.push(e);
+            }
         }
         Ok(n)
-    }
-
-    /// Every stored event with `ts >= since` (all when `None`).
-    pub fn since<'a>(&'a self, since: Option<&'a str>) -> impl Iterator<Item = &'a Event> + 'a {
-        self.events
-            .iter()
-            .filter(move |e| since.is_none_or(|s| e.ts.as_str() >= s))
     }
 }
 
 /// Every event in one file, an event stored without a cost priced from
-/// `prices` now ([`Event::price_if_unset`]). A torn last line (a crash
-/// mid-append) is skipped.
+/// `prices` now ([`Event::price_if_unset`]). A line that does not parse (a
+/// torn last line after a crash mid-append) is skipped.
 pub(crate) fn read_file(path: &Path, prices: &BTreeMap<String, Price>) -> Vec<Event> {
-    std::fs::read_to_string(path)
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Event>(l).ok())
-        .map(|mut e| {
+    let mut out = Vec::new();
+    for_each_event(path, prices, |e| out.push(e));
+    out
+}
+
+/// [`read_file`], one event at a time: the file is never in memory whole.
+fn for_each_event(path: &Path, prices: &BTreeMap<String, Price>, mut f: impl FnMut(Event)) {
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
+    for line in std::io::BufReader::new(file).split(b'\n') {
+        let Ok(line) = line else {
+            return;
+        };
+        if let Ok(mut e) = serde_json::from_slice::<Event>(&line) {
             e.price_if_unset(prices);
-            e
-        })
-        .collect()
+            f(e);
+        }
+    }
 }
 
 /// Every event in `dir`, deduplicated, without opening a [`Store`] (the
@@ -451,8 +573,9 @@ mod tests {
         assert_eq!(s.append(vec![a.clone(), a.clone()]).unwrap(), 1);
         drop(s);
         let mut s = Store::open(tmp.path(), now(), 35).unwrap();
-        assert_eq!(s.append(vec![a]).unwrap(), 0, "already stored");
-        assert_eq!(s.events.len(), 1);
+        assert_eq!(s.append(vec![a.clone()]).unwrap(), 0, "already stored");
+        assert_eq!(s.len(), 1);
+        assert!(s.contains(&a.key()));
         assert!(tmp.path().join("events-2026-09-28.jsonl").is_file());
     }
 
@@ -466,7 +589,7 @@ mod tests {
         ])
         .unwrap();
         let s = Store::open(tmp.path(), now(), 35).unwrap();
-        assert_eq!(s.events.len(), 1);
+        assert_eq!(s.len(), 1);
         assert!(!tmp.path().join("events-2026-08-01.jsonl").exists());
     }
 
@@ -479,7 +602,7 @@ mod tests {
             format!("{line}\n{}", &line[..20]),
         )
         .unwrap();
-        assert_eq!(Store::open(tmp.path(), now(), 35).unwrap().events.len(), 1);
+        assert_eq!(Store::open(tmp.path(), now(), 35).unwrap().len(), 1);
     }
 
     #[cfg(unix)]
@@ -528,13 +651,15 @@ mod tests {
         let prices = usage::builtin_prices();
         let want = usage::cost_of(&prices, "claude-sonnet-5-5", &late.tokens.priced());
         assert!(want.is_some_and(|c| c > 0.0));
-        let opened = Store::open(tmp.path(), now(), 35).unwrap().events;
-        for events in [read_all(tmp.path()), opened] {
-            let cost = |id: &str| events.iter().find(|e| e.event_id == id).unwrap().cost_usd;
-            assert_eq!(cost("late"), want);
-            assert_eq!(cost("kept"), Some(0.5), "the stored price is kept");
-            assert_eq!(cost("unknown"), None, "unpriced, not $0");
-        }
+        let events = read_all(tmp.path());
+        let cost = |id: &str| events.iter().find(|e| e.event_id == id).unwrap().cost_usd;
+        assert_eq!(cost("late"), want);
+        assert_eq!(cost("kept"), Some(0.5), "the stored price is kept");
+        assert_eq!(cost("unknown"), None, "unpriced, not $0");
+        // The collector's store, in file order: late, kept, unknown.
+        let opened = Store::open(tmp.path(), now(), 35).unwrap();
+        let costs: Vec<Option<f64>> = opened.table.kept.iter().map(|k| k.cost).collect();
+        assert_eq!(costs, vec![want, Some(0.5), None]);
     }
 
     /// Never zero the unpriced (W9): an unpriced event adds its tokens and a

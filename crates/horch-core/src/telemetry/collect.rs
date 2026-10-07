@@ -15,8 +15,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::readers::{poll_record, Cursors};
-use super::store::{self, GroupSums, Rollup, Store};
+use super::readers::{self, Cursors, Located, Polled, Unreadable};
+use super::store::{self, GroupSums, Kept, Rollup, Store, Table, UnpricedRow};
 use super::{Event, Observation, QuotaSignal, TokenClasses, Unread};
 use crate::clock;
 use crate::execution::legacy::{Record, KIND_ORCHESTRATOR};
@@ -40,8 +40,12 @@ pub fn read_ledgers(state_root: &Path) -> Vec<Record> {
 /// The ids of the records whose typed status is terminal: their spend counts
 /// as finished work in the rollups.
 pub fn done_record_ids(records: &[Record]) -> BTreeSet<String> {
+    done_ids(records)
+}
+
+fn done_ids<'r>(records: impl IntoIterator<Item = &'r Record>) -> BTreeSet<String> {
     records
-        .iter()
+        .into_iter()
         .filter(|r| r.execution_status().is_terminal())
         .map(|r| r.record_id.clone())
         .collect()
@@ -165,9 +169,14 @@ pub struct Collector {
     /// The quota file override, probe timeout and temp root.
     pub quota_env: QuotaEnv,
     pub info: CollectorInfo,
-    last_good: BTreeMap<PathBuf, Vec<Record>>,
-    /// `store.events`, interned for the snapshot fold.
-    index: EventIndex,
+    /// Each ledger's last good records, read again only when it changes.
+    last_good: BTreeMap<PathBuf, Ledger>,
+    /// Where each session's inputs are, kept across ticks.
+    places: HashMap<(String, String), Place>,
+    /// Each session's inputs as they were when last polled.
+    polled: HashMap<(String, String), Vec<Option<Stamp>>>,
+    /// How many times a tick searched the transcript trees.
+    pub searches: u64,
     /// Test hook: fail after the append, before the cursor save.
     pub fail_after_append: bool,
     /// Test hook: die there instead, leaving a stale lock (a `kill -9`).
@@ -256,7 +265,9 @@ impl Collector {
                 started_at: clock::stamp(now),
             },
             last_good: BTreeMap::new(),
-            index: EventIndex::default(),
+            places: HashMap::new(),
+            polled: HashMap::new(),
+            searches: 0,
             fail_after_append: false,
             abort_after_append: false,
         })
@@ -272,41 +283,60 @@ impl Collector {
     /// Every ledger's records, keeping the last good copy of one that does
     /// not parse right now.
     pub fn ledgers(&mut self) -> Vec<Record> {
-        let mut out = Vec::new();
-        for path in execution_store::ledger_paths(&self.state_root) {
-            match execution_store::read_ledger_file(&path) {
-                Some(records) => {
-                    self.last_good.insert(path, records.clone());
-                    out.extend(records);
-                }
-                None => {
-                    if let Some(records) = self.last_good.get(&path) {
-                        out.extend(records.clone());
-                    }
-                }
+        self.refresh_ledgers();
+        (self.last_good.values())
+            .flat_map(|l| l.records.iter().cloned())
+            .collect()
+    }
+
+    /// Read the ledgers whose length or modification time changed since
+    /// the last tick (NFR-02: parsing every ledger took most of a tick). A
+    /// ledger that does not parse keeps its last good copy and is read again
+    /// next tick; a deleted one is dropped.
+    fn refresh_ledgers(&mut self) {
+        let paths = execution_store::ledger_paths(&self.state_root);
+        self.last_good.retain(|p, _| paths.contains(p));
+        for path in paths {
+            let stamp = std::fs::metadata(&path)
+                .ok()
+                .map(|m| (m.len(), m.modified().ok()));
+            if stamp.is_some() && self.last_good.get(&path).map(|l| l.stamp) == Some(stamp) {
+                continue;
+            }
+            if let Some(records) = execution_store::read_ledger_file(&path) {
+                self.last_good.insert(path, Ledger { stamp, records });
             }
         }
-        out
     }
 
     /// Run one tick at `now` and write the snapshot.
     pub fn tick(&mut self, now: DateTime<Utc>) -> Result<Snapshot> {
-        let records = self.ledgers();
+        self.refresh_ledgers();
+        let ledgers = std::mem::take(&mut self.last_good);
+        let records: Vec<&Record> = ledgers.values().flat_map(|l| &l.records).collect();
+        let snapshot = self.tick_on(&records, now);
+        self.last_good = ledgers;
+        snapshot
+    }
+
+    fn tick_on(&mut self, records: &[&Record], now: DateTime<Utc>) -> Result<Snapshot> {
         let oldest = clock::stamp(now - Duration::days(self.policy.retention_days));
         let mut new_events = Vec::new();
         let mut signals: Vec<QuotaSignal> = Vec::new();
         let mut unread = Vec::new();
+        let mut moved = false;
         for r in records
             .iter()
             .filter(|r| r.updated_at.as_str() >= oldest.as_str())
         {
-            match poll_record(
-                &self.loc,
-                &r.agent,
-                r.session_id.as_deref(),
-                &mut self.cursors,
-            ) {
-                Ok(polled) => {
+            let polled = match r.session_id.as_deref().filter(|s| !s.is_empty()) {
+                None => Err(Unreadable::NoSessionId),
+                Some(sid) => self.poll(r, sid, now),
+            };
+            match polled {
+                Ok(None) => {}
+                Ok(Some(polled)) => {
+                    moved = true;
                     for o in polled.observations {
                         match o {
                             Observation::Usage(u) => new_events.push(event_for(r, u, &self.prices)),
@@ -331,14 +361,15 @@ impl Collector {
         if self.fail_after_append {
             anyhow::bail!("HORCH_FAULT=after-append: stopping before the cursor save");
         }
-        store::save_cursors(self.store.dir(), &self.cursors)?;
+        // A cursor moves only when its input is polled.
+        if moved {
+            store::save_cursors(self.store.dir(), &self.cursors)?;
+        }
 
         let quota = self.update_quota(now, &signals)?;
-        self.index.extend(&self.store.events);
         let snapshot = build_indexed(
-            &records,
-            &self.store.events,
-            &self.index,
+            records,
+            &self.store.table,
             quota,
             unread,
             now,
@@ -347,6 +378,86 @@ impl Collector {
         let json = serde_json::to_vec_pretty(&snapshot)?;
         store::replace_private(&snapshot_path(&self.state_root), &json)?;
         Ok(snapshot)
+    }
+
+    /// Poll the inputs of `r` when they changed since its last poll
+    /// (NFR-02: opening every transcript of every record took most of a
+    /// tick). `None`: nothing changed, so there is nothing new to read. The
+    /// stamps are taken before the poll, so a write during it shows next tick.
+    fn poll(
+        &mut self,
+        r: &Record,
+        sid: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Polled>, Unreadable> {
+        let located = self.locate(r, sid, now)?;
+        let stamps: Vec<Option<Stamp>> = match &located {
+            Located::Files(files) => files.iter().map(|f| stamp(f)).collect(),
+            // SQLite writes to the database or to its write-ahead log.
+            Located::OpenCode(db) => {
+                let mut wal = db.as_os_str().to_owned();
+                wal.push("-wal");
+                vec![stamp(db), stamp(Path::new(&wal))]
+            }
+        };
+        let key = (r.agent.clone(), sid.to_string());
+        if self.polled.get(&key) == Some(&stamps) {
+            return Ok(None);
+        }
+        self.polled.remove(&key);
+        let polled = readers::poll_located(&self.loc, &r.agent, sid, located, &mut self.cursors)?;
+        self.polled.insert(key, stamps);
+        Ok(Some(polled))
+    }
+
+    /// The inputs of session `sid`, from the places found on earlier ticks
+    /// (NFR-02: a search walks the transcript trees). A found file is kept
+    /// while it is a file. A session with no transcript is searched again
+    /// on every tick while its record is fresh (a new spawn), else after
+    /// [`SEARCH_AGAIN_S`]. Claude's subagent files are listed again when a
+    /// directory of the last listing changed.
+    fn locate(&mut self, r: &Record, sid: &str, now: DateTime<Utc>) -> Result<Located, Unreadable> {
+        if !matches!(r.agent.as_str(), "claude" | "codex" | "pi" | "prime") {
+            return readers::locate(&self.loc, &r.agent, sid);
+        }
+        let key = (r.agent.clone(), sid.to_string());
+        match self.places.get_mut(&key) {
+            Some(Place::File { main, subagents }) if main.is_file() => {
+                let mut files = vec![main.clone()];
+                if r.agent == "claude" {
+                    if !subagents.as_ref().is_some_and(Listing::unchanged) {
+                        *subagents = Some(Listing::of(main));
+                    }
+                    files.extend(subagents.iter().flat_map(|l| l.files.iter().cloned()));
+                }
+                return Ok(Located::Files(files));
+            }
+            Some(Place::Missing { why, again }) => {
+                let fresh = clock::stamp(now - Duration::minutes(FRESH_MIN));
+                if now < *again && r.updated_at.as_str() < fresh.as_str() {
+                    return Err(why.clone());
+                }
+            }
+            _ => {}
+        }
+        self.searches += 1;
+        let found = readers::locate(&self.loc, &r.agent, sid);
+        match &found {
+            Ok(Located::Files(files)) if !files.is_empty() => {
+                let main = files[0].clone();
+                let subagents = (r.agent == "claude").then(|| Listing::of(&main));
+                self.places.insert(key, Place::File { main, subagents });
+            }
+            Err(why @ Unreadable::NoTranscript(_)) => {
+                let again = now + Duration::seconds(SEARCH_AGAIN_S);
+                let why = why.clone();
+                self.places.insert(key, Place::Missing { why, again });
+            }
+            _ => {
+                self.places.remove(&key);
+            }
+        }
+        found
     }
 
     /// Fold signals into `quota.json`, probing when due. A file override
@@ -374,6 +485,87 @@ impl Collector {
         }
         file.write(&self.state_root, now, &self.policy)?;
         Ok(QuotaView::new(file, now, self.policy.clone(), false))
+    }
+}
+
+/// One ledger file's last good records, and the file's `(length, mtime)`
+/// when they were read.
+struct Ledger {
+    stamp: Option<(u64, Option<std::time::SystemTime>)>,
+    records: Vec<Record>,
+}
+
+/// A record updated this many minutes ago or less is searched for its
+/// transcript on every tick: a new spawn's transcript appears within seconds.
+const FRESH_MIN: i64 = 10;
+
+/// How long an older record with no transcript waits between 2 searches.
+pub const SEARCH_AGAIN_S: i64 = 30;
+
+/// Where one session's input is, as the collector last found it.
+enum Place {
+    /// The main transcript (Claude, Codex, pi, Prime), and Claude's
+    /// subagent files as last listed.
+    File {
+        main: PathBuf,
+        subagents: Option<Listing>,
+    },
+    /// None found; search again at `again`.
+    Missing {
+        why: Unreadable,
+        again: DateTime<Utc>,
+    },
+}
+
+/// A file or directory as it was: `(length, inode, modification time)`.
+type Stamp = (u64, u64, Option<std::time::SystemTime>);
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((
+        m.len(),
+        super::cursor::file_identity(&m).1,
+        m.modified().ok(),
+    ))
+}
+
+/// The `*.jsonl` files under a Claude `<sid>/subagents/` directory, nested
+/// ones included ([`readers::claude_subagent_files`]), with the stamp of
+/// every directory walked: a file added anywhere below changes one of them.
+struct Listing {
+    dirs: Vec<(PathBuf, Option<Stamp>)>,
+    files: Vec<PathBuf>,
+}
+
+impl Listing {
+    fn of(main: &Path) -> Listing {
+        let mut l = Listing {
+            dirs: Vec::new(),
+            files: Vec::new(),
+        };
+        l.walk(&main.with_extension("").join("subagents"));
+        l.files.sort();
+        l
+    }
+
+    fn walk(&mut self, dir: &Path) {
+        // The stamp first: a file added during the walk shows next tick.
+        self.dirs.push((dir.to_path_buf(), stamp(dir)));
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                self.walk(&path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                self.files.push(path);
+            }
+        }
+    }
+
+    fn unchanged(&self) -> bool {
+        self.dirs.iter().all(|(d, s)| stamp(d) == *s)
     }
 }
 
@@ -411,65 +603,23 @@ pub(crate) fn event_for(r: &Record, u: super::RawUsage, prices: &BTreeMap<String
     }
 }
 
+/// [`store::add_unpriced`] on the table: per model, sorted by model.
+fn add_unpriced<'t>(by_model: &mut BTreeMap<&'t str, UnpricedRow>, index: &'t Table, e: &Kept) {
+    let model = &*index.names.names[e.model as usize];
+    let row = by_model.entry(model).or_insert_with(|| UnpricedRow {
+        model: model.to_string(),
+        ..UnpricedRow::default()
+    });
+    row.events += 1;
+    row.tokens.add(&e.tokens);
+}
+
 fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
 fn share(part: f64, whole: f64) -> Option<f64> {
     (whole > 0.0).then(|| part / whole)
-}
-
-/// The stored events, interned for the snapshot fold (NFR-02). An event
-/// becomes a `Row`: its record and its 6 group keys. A tick then folds
-/// every event with no allocation and no string-keyed map.
-#[derive(Debug, Default)]
-pub struct EventIndex {
-    /// The row of each indexed event, in store order.
-    row_of: Vec<u32>,
-    rows: Vec<Row>,
-    row_ids: HashMap<Row, u32>,
-    /// The record ids and group keys.
-    names: Vec<String>,
-    name_ids: HashMap<String, u32>,
-}
-
-/// A record and its keys in [`store::GROUPS`] order, as name ids.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct Row {
-    record: u32,
-    groups: [u32; 6],
-}
-
-impl EventIndex {
-    /// Index the events after the ones indexed before. The store only
-    /// appends; a shorter slice is a new store, indexed from the start.
-    pub fn extend(&mut self, events: &[Event]) {
-        if self.row_of.len() > events.len() {
-            *self = EventIndex::default();
-        }
-        for e in &events[self.row_of.len()..] {
-            let row = Row {
-                record: self.name(&e.record_id),
-                groups: store::GROUPS.map(|g| self.name(store::group_key(e, g))),
-            };
-            let next = self.rows.len() as u32;
-            let id = *self.row_ids.entry(row).or_insert(next);
-            if id == next {
-                self.rows.push(row);
-            }
-            self.row_of.push(id);
-        }
-    }
-
-    fn name(&mut self, name: &str) -> u32 {
-        if let Some(&id) = self.name_ids.get(name) {
-            return id;
-        }
-        let id = self.names.len() as u32;
-        self.names.push(name.to_string());
-        self.name_ids.insert(name.to_string(), id);
-        id
-    }
 }
 
 /// Build the snapshot from the ledgers and the stored events. Pure.
@@ -483,28 +633,28 @@ pub fn build_snapshot(
     collector: CollectorInfo,
 ) -> Snapshot {
     let _ = policy;
-    let mut index = EventIndex::default();
-    index.extend(events);
-    build_indexed(records, events, &index, quota, unread, now, collector)
+    let table = Table::from_events(events);
+    let records: Vec<&Record> = records.iter().collect();
+    build_indexed(&records, &table, quota, unread, now, collector)
 }
 
-/// [`build_snapshot`] with `events` already in `index`. Each sum adds its
-/// events in store order, as [`store::rollup`] does, so the costs are the
-/// same to the last bit.
+/// [`build_snapshot`] from the store's [`Table`]. Each sum adds its events
+/// in store order, as [`store::rollup`] does, so the costs are the same to
+/// the last bit.
 fn build_indexed(
-    records: &[Record],
-    events: &[Event],
-    index: &EventIndex,
+    records: &[&Record],
+    index: &Table,
     quota: QuotaView,
     unread: Vec<Unread>,
     now: DateTime<Utc>,
     collector: CollectorInfo,
 ) -> Snapshot {
-    debug_assert_eq!(index.row_of.len(), events.len());
-    let done = done_record_ids(records);
+    let done = done_ids(records.iter().copied());
     let names = index.names.len();
     let rows = index.rows.len();
-    let is_done: Vec<bool> = index.names.iter().map(|n| done.contains(n)).collect();
+    let is_done: Vec<bool> = (index.names.names.iter())
+        .map(|n| done.contains(&**n))
+        .collect();
     let since = WINDOWS.map(|w| window_start(w, now).unwrap_or_default());
     let recent = clock::stamp(now - Duration::minutes(5));
 
@@ -527,24 +677,23 @@ fn build_indexed(
     let mut costs = vec![(0.0f64, 0.0f64); WINDOWS.len() * store::GROUPS.len() * names];
     // Per window, group and key: the unpriced events. Per window: per model.
     let mut unpriced = vec![0u64; WINDOWS.len() * store::GROUPS.len() * names];
-    let mut unpriced_models: [BTreeMap<&str, store::UnpricedRow>; WINDOWS.len()] =
-        Default::default();
+    let mut unpriced_models: [BTreeMap<&str, UnpricedRow>; WINDOWS.len()] = Default::default();
     // Insights over the 7-day window.
     let (mut total, mut orch, mut idle) = (0.0f64, 0.0f64, 0.0f64);
     let mut week_tokens = TokenClasses::default();
     let is_orch: Vec<bool> = index
         .rows
         .iter()
-        .map(|r| index.names[r.groups[5] as usize] == KIND_ORCHESTRATOR)
+        .map(|r| &*index.names.names[r.groups[5] as usize] == KIND_ORCHESTRATOR)
         .collect();
 
-    for (e, &row) in events.iter().zip(&index.row_of) {
-        let row = row as usize;
+    for e in &index.kept {
+        let row = e.row as usize;
         let r = index.rows[row];
         let record = r.record as usize;
-        let ts = e.ts.as_str();
-        let cost = e.cost_usd.unwrap_or(0.0);
-        let no_price = e.cost_usd.is_none();
+        let ts = &*e.ts;
+        let cost = e.cost.unwrap_or(0.0);
+        let no_price = e.cost.is_none();
         let a = &mut per[record];
         a.events += 1;
         a.tokens.add(&e.tokens);
@@ -573,7 +722,7 @@ fn build_indexed(
                 unpriced[at] += u64::from(no_price);
             }
             if no_price {
-                store::add_unpriced(&mut unpriced_models[w], e);
+                add_unpriced(&mut unpriced_models[w], index, e);
             }
         }
         if ts >= since[2].as_str() {
@@ -616,7 +765,7 @@ fn build_indexed(
                             done_cost,
                             unpriced_events: unpriced[at],
                         };
-                        (index.names[key as usize].clone(), sums)
+                        (index.names.names[key as usize].to_string(), sums)
                     },
                 ))
             });
@@ -640,9 +789,9 @@ fn build_indexed(
     let mut live = Vec::new();
     for r in records {
         let a = index
-            .name_ids
+            .names
             .get(&r.record_id)
-            .map(|id| &per[*id as usize])
+            .map(|id| &per[id as usize])
             .filter(|a| a.events > 0);
         let last = a.and_then(|a| a.last.map(str::to_string));
         let recent_event = last.as_deref().is_some_and(|l| l >= ten_min_ago.as_str());
@@ -794,23 +943,22 @@ mod tests {
         serde_json::from_value(serde_json::Value::from(ledger.to_vec())).unwrap()
     }
 
-    fn snapshot(records: &[Record], events: &[Event], index: &EventIndex) -> Snapshot {
+    fn snapshot(records: &[Record], index: &Table) -> Snapshot {
+        let records: Vec<&Record> = records.iter().collect();
         let policy = Policy::default();
         let quota = QuotaView::new(QuotaFile::default(), now(), policy, false);
         let info = CollectorInfo::default();
-        build_indexed(records, events, index, quota, Vec::new(), now(), info)
+        build_indexed(&records, index, quota, Vec::new(), now(), info)
     }
 
-    /// NFR-02: the indexed fold gives what the per-event sums gave, and an
-    /// index extended tick by tick gives what a fresh one gives.
+    /// NFR-02: the fold over the store's table gives what the per-event sums
+    /// give, and a table grown tick by tick gives what a fresh one gives.
     #[test]
     fn nfr_02_indexed_fold_matches_the_event_sums() {
         let records = records();
         property(0x4e46_5230_3220_0001, 200, |rng| {
             let events = events(rng);
-            let mut fresh = EventIndex::default();
-            fresh.extend(&events);
-            let snap = snapshot(&records, &events, &fresh);
+            let snap = snapshot(&records, &Table::from_events(&events));
 
             let done = done_record_ids(&records);
             for w in WINDOWS {
@@ -845,11 +993,25 @@ mod tests {
                 assert_eq!(row.last_event_at, mine.map(|e| e.ts.clone()).max());
             }
 
-            let mut grown = EventIndex::default();
+            // The store's table, appended in 2 ticks and reopened from the
+            // files, folds as a fresh table over the same events in the same
+            // order. An append files its events by day, oldest file first.
+            let tmp = tempfile::tempdir().unwrap();
+            let mut store = Store::open(tmp.path(), now(), 35).unwrap();
             let cut = events.len() / 2;
-            grown.extend(&events[..cut]);
-            grown.extend(&events);
-            assert_eq!(snapshot(&records, &events, &grown), snap);
+            let mut order = Vec::new();
+            for batch in [&events[..cut], &events[cut..]] {
+                store.append(batch.to_vec()).unwrap();
+                let mut by_day = batch.to_vec();
+                by_day.sort_by(|a, b| a.ts[..10].cmp(&b.ts[..10]));
+                order.extend(by_day);
+            }
+            let fresh = |events: &[Event]| snapshot(&records, &Table::from_events(events));
+            assert_eq!(snapshot(&records, &store.table), fresh(&order));
+            let reopened = Store::open(tmp.path(), now(), 35).unwrap();
+            assert_eq!(reopened.len(), events.len());
+            let on_disk = store::read_all(tmp.path());
+            assert_eq!(snapshot(&records, &reopened.table), fresh(&on_disk));
         });
     }
 }

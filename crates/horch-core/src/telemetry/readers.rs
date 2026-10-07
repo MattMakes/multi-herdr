@@ -125,8 +125,21 @@ pub fn poll_record(
     let Some(sid) = session_id.filter(|s| !s.is_empty()) else {
         return Err(Unreadable::NoSessionId);
     };
+    poll_located(loc, agent, sid, locate(loc, agent, sid)?, cursors)
+}
+
+/// [`poll_record`] on inputs already found by [`locate`]. The collector
+/// keeps what `locate` found across ticks, because finding walks the
+/// transcript trees (NFR-02).
+pub(crate) fn poll_located(
+    loc: &Locations,
+    agent: &str,
+    sid: &str,
+    located: Located,
+    cursors: &mut Cursors,
+) -> Result<Polled, Unreadable> {
     let mut polled = Polled::default();
-    match locate(loc, agent, sid)? {
+    match located {
         Located::OpenCode(db) => {
             let key = input_key(agent, sid, &db);
             let cursor = cursors.entry(key).or_default();

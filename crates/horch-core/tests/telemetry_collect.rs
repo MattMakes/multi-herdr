@@ -226,3 +226,156 @@ fn tel_11_no_content_or_identity_in_the_state_dir() {
         }
     }
 }
+
+/// A ledger with 1 Claude record for session `sid`, last updated at `updated`.
+fn ledger_with(w: &World, name: &str, sid: &str, updated: &str) {
+    let ledger = serde_json::json!([{
+        "record_id": format!("rec-{name}"), "session_id": sid, "agent": "claude", "tier": "sonnet",
+        "model": "claude-sonnet-5", "role": name, "status": "working", "task": "t", "history": [],
+        "created_at": updated, "updated_at": updated
+    }]);
+    std::fs::write(w.state.join(format!("-{name}.json")), ledger.to_string()).unwrap();
+}
+
+/// A Claude assistant line with usage, from the A2 fixture, as message `id`.
+fn assistant_line(w: &World, id: &str) -> String {
+    let text = std::fs::read_to_string(
+        w.home
+            .join(format!(".claude/projects/-work-alpha/{A2}.jsonl")),
+    )
+    .unwrap();
+    let line = text
+        .lines()
+        .find(|l| l.contains("\"assistant\"") && l.contains("\"usage\""))
+        .unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+    v["message"]["id"] = id.into();
+    v.to_string() + "\n"
+}
+
+fn at(seconds: i64) -> chrono::DateTime<chrono::Utc> {
+    now() + chrono::Duration::seconds(seconds)
+}
+
+/// NFR-02: a search for a transcript walks the transcript trees, so a
+/// session with no transcript is not searched on every tick. A fresh record
+/// (a new spawn) is searched every tick, and its transcript is read on the
+/// tick it appears. An older one waits `SEARCH_AGAIN_S` between searches.
+#[test]
+fn nfr_02_a_record_with_no_transcript_is_not_searched_every_tick() {
+    use horch_core::telemetry::collect::SEARCH_AGAIN_S;
+    let w = world(Part::Whole);
+    let fresh = "44444444-4444-4444-8444-444444444444";
+    ledger_with(
+        &w,
+        "old",
+        "55555555-5555-4555-8555-555555555555",
+        "2026-09-28T17:00:00Z",
+    );
+    ledger_with(&w, "new", fresh, "2026-09-28T17:59:00Z");
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    c.tick(now()).unwrap();
+    let first = c.searches;
+    for s in [2, 4] {
+        c.tick(at(s)).unwrap();
+        assert_eq!(
+            c.searches - first,
+            (s / 2) as u64,
+            "only the fresh record, at +{s} s"
+        );
+    }
+    let before = c.searches;
+    c.tick(at(SEARCH_AGAIN_S + 1)).unwrap();
+    let again = c.searches - before;
+    assert!(again >= 2, "the fresh one and the old one: {again}");
+    c.tick(at(SEARCH_AGAIN_S + 3)).unwrap();
+    assert_eq!(c.searches - before, again + 1, "the old one waits again");
+
+    // The fresh record's transcript appears: read on that tick.
+    let dir = w.home.join(".claude/projects/-work-new");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{fresh}.jsonl")),
+        assistant_line(&w, "msg_w15_new"),
+    )
+    .unwrap();
+    let snap = c.tick(at(SEARCH_AGAIN_S + 5)).unwrap();
+    assert!(events(&w).iter().any(|e| e.record_id == "rec-new"));
+    assert!(!snap.unread.iter().any(|u| u.record_id == "rec-new"));
+}
+
+/// A found transcript is kept across ticks while it is a file. When it
+/// moves, the collector searches again, reads it at its new place, and the
+/// store drops what it already holds.
+#[test]
+fn a_cached_transcript_that_moves_is_found_again() {
+    let w = world(Part::Whole);
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    c.tick(now()).unwrap();
+    let stored = events(&w).len();
+    let searches = c.searches;
+    c.tick(at(2)).unwrap();
+    assert_eq!(
+        c.searches, searches,
+        "a found transcript is not searched again"
+    );
+
+    let line = assistant_line(&w, "msg_w15_moved");
+    let moved = w.home.join(".claude/projects/-work-moved");
+    std::fs::create_dir_all(&moved).unwrap();
+    let to = moved.join(format!("{A2}.jsonl"));
+    std::fs::rename(
+        w.home
+            .join(format!(".claude/projects/-work-alpha/{A2}.jsonl")),
+        &to,
+    )
+    .unwrap();
+    c.tick(at(4)).unwrap();
+    assert_eq!(
+        c.searches,
+        searches + 1,
+        "the moved transcript is searched for"
+    );
+    assert_eq!(events(&w).len(), stored, "no event twice");
+
+    let mut f = std::fs::OpenOptions::new().append(true).open(&to).unwrap();
+    std::io::Write::write_all(&mut f, line.as_bytes()).unwrap();
+    c.tick(at(6)).unwrap();
+    let ev = events(&w);
+    assert_eq!(ev.len(), stored + 1);
+    assert!(ev
+        .iter()
+        .any(|e| e.event_id == "msg_w15_moved" && e.record_id == "rec-a2"));
+}
+
+/// NFR-02: a tick with no new input rewrites no cursor file (it held 1,534
+/// cursors, 2 MB, on the operator's Mac).
+#[cfg(unix)]
+#[test]
+fn a_quiet_tick_does_not_rewrite_the_cursors() {
+    let w = world(Part::Whole);
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    c.tick(now()).unwrap();
+    let path = horch_core::telemetry::dir(&w.state).join("cursors.json");
+    let ino = |p: &std::path::Path| {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(p).unwrap().ino()
+    };
+    let before = ino(&path);
+    c.tick(at(2)).unwrap();
+    assert_eq!(ino(&path), before, "a quiet tick keeps the cursor file");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(
+            w.home
+                .join(format!(".claude/projects/-work-alpha/{A2}.jsonl")),
+        )
+        .unwrap();
+    std::io::Write::write_all(&mut f, assistant_line(&w, "msg_w15_more").as_bytes()).unwrap();
+    c.tick(at(4)).unwrap();
+    assert_ne!(
+        ino(&path),
+        before,
+        "new input saves the cursors (temp file + rename)"
+    );
+}

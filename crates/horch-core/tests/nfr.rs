@@ -13,18 +13,22 @@ use horch_core::telemetry::collect::{Collector, Probing};
 thread_local! {
     /// The allocations this thread has made, for the NFR-02 guard.
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
+    /// The bytes this thread holds: allocated minus freed, for the RSS guard.
+    static LIVE: Cell<i64> = const { Cell::new(0) };
 }
 
-/// The system allocator, counting each thread's allocations.
+/// The system allocator, counting each thread's allocations and live bytes.
 struct Counting;
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
+        let _ = LIVE.try_with(|n| n.set(n.get() + layout.size() as i64));
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let _ = LIVE.try_with(|n| n.set(n.get() - layout.size() as i64));
         unsafe { System.dealloc(ptr, layout) }
     }
 }
@@ -376,13 +380,17 @@ fn nfr_02_tick_budget() {
     perf_corpus(&w, 50, mb * 1024 * 1024 / 50);
     let now = horch_core::clock::parse("2026-09-28T18:00:00Z").unwrap();
     let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now).unwrap();
-    let cold = Instant::now();
+    let (cold, cold_cpu) = (Instant::now(), thread_cpu());
     c.tick(now).unwrap();
-    let cold = cold.elapsed();
-    let warm = Instant::now();
+    let (cold, cold_cpu) = (cold.elapsed(), thread_cpu() - cold_cpu);
+    let (warm, warm_cpu) = (Instant::now(), thread_cpu());
     c.tick(now).unwrap();
-    let warm = warm.elapsed();
-    eprintln!("cold {cold:?}, steady {warm:?}");
+    let (warm, warm_cpu) = (warm.elapsed(), thread_cpu() - warm_cpu);
+    eprintln!(
+        "cold {cold:?} ({cold_cpu:?} CPU), steady {warm:?} ({warm_cpu:?} CPU), {} events, RSS {:.1} MiB",
+        c.store.len(),
+        rss_mib()
+    );
     assert!(cold.as_secs() < 30, "cold start {cold:?}");
     assert!(warm.as_millis() < 200, "steady tick {warm:?}");
 }
@@ -403,7 +411,7 @@ fn nfr_02_steady_tick_allocates_nothing_per_event() {
         let before = ALLOCS.with(Cell::get);
         c.tick(now).unwrap();
         let allocs = ALLOCS.with(Cell::get) - before;
-        (c.store.events.len() as u64, allocs)
+        (c.store.len() as u64, allocs)
     };
     let (small_events, small) = steady(50_000);
     let (big_events, big) = steady(500_000);
@@ -417,4 +425,115 @@ fn nfr_02_steady_tick_allocates_nothing_per_event() {
         "a steady tick allocates per stored event: {small} allocations at {small_events} \
          events, {big} at {big_events}"
     );
+}
+
+/// NFR-02 RSS guard for the debug gate: what the collector keeps per stored
+/// event. It kept every `Event` (872 B each on the operator's store of
+/// 111,840 events, 93 MiB) until W15; it keeps about 200 B now.
+#[test]
+fn nfr_02_the_store_keeps_little_per_event() {
+    let now = horch_core::clock::parse("2026-09-28T18:00:00Z").unwrap();
+    // (stored events, bytes the reopened collector holds)
+    let held = |bytes_per_file: u64| {
+        let w = world(Part::Whole);
+        perf_corpus(&w, 5, bytes_per_file);
+        let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now).unwrap();
+        c.tick(now).unwrap();
+        drop(c);
+        let before = LIVE.with(Cell::get);
+        let c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now).unwrap();
+        let held = LIVE.with(Cell::get) - before;
+        (c.store.len() as i64, held)
+    };
+    let (small_events, small) = held(50_000);
+    let (big_events, big) = held(500_000);
+    let per_event = (big - small) / (big_events - small_events);
+    assert!(
+        per_event <= 320,
+        "the store keeps {per_event} B per event ({small} B at {small_events} events, \
+         {big} B at {big_events})"
+    );
+}
+
+/// This process's resident set size in MiB, from `ps`.
+fn rss_mib() -> f64 {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .unwrap();
+    let kib: f64 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0.0);
+    kib / 1024.0
+}
+
+/// This thread's CPU time: other load on the host barely moves it, where it
+/// moves the wall clock a lot.
+#[cfg(unix)]
+fn thread_cpu() -> std::time::Duration {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `t` is a valid out pointer for the call.
+    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) };
+    std::time::Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+}
+
+#[cfg(not(unix))]
+fn thread_cpu() -> std::time::Duration {
+    std::time::Duration::ZERO
+}
+
+/// `HORCH_PERF_TICKS`, default 8.
+fn perf_ticks() -> u32 {
+    std::env::var("HORCH_PERF_TICKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8)
+}
+
+/// NFR-02 on a real store: the collector's RSS and steady tick over a COPY of
+/// a state root (`HORCH_PERF_STATE`; ticks write into it) and the real
+/// transcripts under `$HOME`. Run: `HORCH_PERF_STATE=<copy> cargo test --release
+/// -p horch-core --test nfr -- --ignored --nocapture nfr_02_live_store_rss`.
+#[test]
+#[ignore]
+fn nfr_02_live_store_rss() {
+    let Some(state) = std::env::var_os("HORCH_PERF_STATE") else {
+        eprintln!("HORCH_PERF_STATE is not set: nothing to measure");
+        return;
+    };
+    let env = horch_core::runtime::ProcessEnv;
+    let inherited = horch_core::runtime::Inherited::from_env(&env);
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+    let loc = horch_core::usage::Locations::under_home(&home, &inherited);
+    let now = horch_core::clock::now();
+    let live = || LIVE.with(Cell::get);
+    let before = live();
+    let mut c = Collector::open_at(Path::new(&state), loc, Probing::Never, now).unwrap();
+    let held = live() - before;
+    let events = c.store.len().max(1);
+    eprintln!(
+        "open: {events} events, {:.1} MiB held ({} B per event), RSS {:.1} MiB",
+        held as f64 / 1048576.0,
+        held / events as i64,
+        rss_mib()
+    );
+    let mut worst = std::time::Duration::ZERO;
+    for n in 1..=perf_ticks() {
+        let (t, cpu) = (Instant::now(), thread_cpu());
+        c.tick(horch_core::clock::now()).unwrap();
+        let (took, cpu) = (t.elapsed(), thread_cpu() - cpu);
+        if n > 1 {
+            worst = worst.max(took);
+        }
+        eprintln!(
+            "tick {n}: {took:?} ({cpu:?} CPU), {:.1} MiB held, RSS {:.1} MiB",
+            (live() - before) as f64 / 1048576.0,
+            rss_mib()
+        );
+    }
+    eprintln!("steady tick, worst after the first: {worst:?}");
 }
