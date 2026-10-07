@@ -91,6 +91,19 @@ gd --import > "$LOGS/import.log" 2>&1; echo "import exit=$?"
   has none.
 - It does not add a `uid=` to a `.tscn` header (see `godot-scene-files`).
 
+New project (measured on 4.7.2, 2026-10-07): when `run/main_scene` names a
+scene that the build script has not made yet, the first import prints these 2
+lines and exits 0:
+
+```text
+ERROR: Cannot open file 'res://scenes/main.tscn'.
+ERROR: Failed loading resource: res://scenes/main.tscn.
+```
+
+The order for a new project is: import, build the scenes, import again, then
+the parse check, scene check, tests and smoke run. Expect those 2 lines in the
+first import only. The second import printed 0 `ERROR:` lines.
+
 ## Parse check
 
 ```bash

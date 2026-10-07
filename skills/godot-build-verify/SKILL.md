@@ -22,16 +22,26 @@ parse all exit 0. Read the output, not only the exit code.
 - `.agents/godot-project-context.md`: engine version, C#, test framework, main
   scene. If it is missing, send `QUESTION:` and ask for `godot-tech-lead` to run
   `godot-project-context`. Do not write it from a guess.
+- A new project (no `project.godot` before your task) has no context file
+  yet. Use the engine version and the language that the brief names, and say
+  in your `DONE:` that they came from the brief. You do not write the context
+  file. If the brief names neither, send `QUESTION:`.
 - `project.godot`, and the list of files you changed.
 
 ## Workflow
 
 1. **Check for the operator's editor.** The editor rewrites scenes it has open
-   and shares `.godot/` with your import. List Godot processes:
-   `ps -axo pid,args | grep -i '[g]odot'`. A process without `--headless` whose
-   arguments name this project's path is an open editor: report `BLOCKED:` and
-   name the PID. Never kill a process you did not start. (proof: not run
-   (needs a live editor): no fleet run may open the editor GUI.)
+   and shares `.godot/` with your import. List Godot processes by process name:
+   `pgrep -x Godot | while read -r pid; do ps -o pid=,args= -p "$pid"; done`.
+   A process without `--headless` whose arguments name this project's path is
+   an open editor: report `BLOCKED:` and name the PID. Never kill a process you
+   did not start. Measured on macOS: the list holds only processes whose
+   binary is named `Godot`. A `ps | grep -i godot` filter also lists your own
+   shell, `claude` and `horch` processes when their arguments hold a path with
+   "godot" in it. On Linux, use the binary's file name:
+   `pgrep -x "$(basename "$GODOT" | cut -c1-15)"` (it found a headless Godot
+   on macOS; not run on Linux). (proof for the editor case: not run (needs a
+   live editor): no fleet run may open the editor GUI.)
    Check: no editor process for this project, or you reported `BLOCKED:`.
 
 2. **Find the engine and check its version.** Use `GODOT_PATH`, then `godot` on
@@ -59,8 +69,14 @@ parse all exit 0. Read the output, not only the exit code.
    `--headless --path . --import` exits 0 and writes a `.uid` sidecar next to
    every new script. One import at a time per working copy: `.godot/` is
    shared. Run a long import in the background with a log file, and poll it.
+   New project: import, build the scenes (`godot-scene-files`), import again,
+   then run steps 5 to 9. When `run/main_scene` names a scene that does not
+   exist yet, the first import prints
+   `ERROR: Cannot open file 'res://scenes/main.tscn'.` and exits 0. That 1
+   error is expected in the first import only; the second import must have 0.
    Check: exit 0, `.godot/imported/` exists, and `git status` shows the new
-   `.uid` files. Commit them with their scripts.
+   `.uid` files. Commit them with their scripts. In a git-ignored scratch
+   project, there is nothing to commit: say so in the report.
 
 5. **Run the parse check.** `--check-only --script` prints `Parse Error` and
    exits 0, so never gate on it. Write the checker from
@@ -68,6 +84,9 @@ parse all exit 0. Read the output, not only the exit code.
    it loads every `.gd`, `.tscn` and `.tres`, prints `PARSE_CHECK FAIL <path>`
    for each file that does not load, and exits 1. Run it after the import:
    a `class_name` from another file needs the import's global class cache.
+   The checker does its work in `_initialize()`, not `_init()`: the autoloads
+   do not exist in `_init()`, so every script that names one fails there
+   (`references/parse-check.md`).
    Check: exit 0 and `PARSE_CHECK checked=<n> failed=0`.
 
 6. **Build C#** when the context says C# (`"C#"` in `config/features`, or a
@@ -115,6 +134,16 @@ parse all exit 0. Read the output, not only the exit code.
 
 - Headless only: pass `--headless` to every Godot call. Never open the editor
   GUI. Never pass `-e` without `--headless`.
+- Stop only a Godot process that you started, by its PID (`kill "$pid"`, with
+  `pid=$!` saved when you start it). Never use `pkill` or `killall` with a
+  name: other workers and the operator's editor run Godot on the same Mac.
+- In a `-s` (`SceneTree`) script, do the work in `_initialize()`, not
+  `_init()`: the autoloads do not exist in `_init()`. The `-s` script itself
+  cannot name an autoload, even in `_initialize()`: it compiles before the
+  autoloads exist, and Godot prints
+  `SCRIPT ERROR: Compile Error: Identifier not found: <Name>` and exits 0.
+  Use `root.get_node("<Name>")`. Scripts that the `-s` script loads in
+  `_initialize()` can name autoloads.
 - One Godot import at a time per working copy. Parse checks, tests and smoke
   runs may run after the import finishes.
 - Set `HOME="$PWD/.godot/horch-home"` for every Godot call.
@@ -122,7 +151,8 @@ parse all exit 0. Read the output, not only the exit code.
 - Never edit `.godot/` contents (except `.godot/horch-home/`), `.import` files,
   or binary `.res` and `.scn` files. Never delete `.godot/` unless the
   orchestrator agrees: the next import rebuilds every asset.
-- Commit the `.uid` sidecars that the import writes, with their scripts.
+- Commit the `.uid` sidecars that the import writes, with their scripts. A
+  git-ignored scratch project has nothing to commit.
 - Never trust an exit code alone. Read the output.
 - A `DONE:` names the Godot version, the parse check result, the C# build
   result (C# projects), the test framework with counts, the smoke run, and the
@@ -138,7 +168,8 @@ parse all exit 0. Read the output, not only the exit code.
 - [ ] No open editor for this project, or I reported `BLOCKED:`.
 - [ ] The engine is at least the project's `config/features` version.
 - [ ] Every Godot call had `--headless` and the private `HOME`.
-- [ ] Import exit 0; new `.uid` files are in my commit.
+- [ ] Import exit 0; new `.uid` files are in my commit (none for a
+      git-ignored scratch project).
 - [ ] Parse check exit 0 with `failed=0`. I did not rely on `--check-only`.
 - [ ] C# project: `dotnet build` with 0 errors.
 - [ ] Tests ran with exact counts; gdUnit4 exit code read with its table.

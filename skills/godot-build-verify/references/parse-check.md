@@ -17,6 +17,15 @@ How it decides, measured on 4.7.2:
   `can_instantiate()` is `true`. Only an unknown name on `self` is a parse
   error. The tests and the smoke run catch the rest.
 
+- The work runs in `_initialize()`. In `_init()`, the autoloads do not exist
+  yet: `root.has_node("GameState")` is `false`, and a script that names the
+  autoload prints `SCRIPT ERROR: Compile Error: Identifier not found:
+  GameState` and gives `can_instantiate()` `false`. Measured on a project
+  with 4 scripts (2 name an autoload) and 1 scene: in `_init()` the check printed
+  `PARSE_CHECK checked=5 failed=2` (2 false failures); in `_initialize()`,
+  `failed=0`. A real parse error and an unknown identifier still fail in
+  `_initialize()`.
+
 It skips `.godot/`, every folder whose name starts with `.`, every folder that
 holds a `.gdignore`, and the folder names given with `--skip=`.
 
@@ -50,7 +59,8 @@ var _checked := 0
 var _failed: PackedStringArray = []
 
 
-func _init() -> void:
+# Not _init(): the autoloads exist only from _initialize() on.
+func _initialize() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--skip="):
 			_skip = arg.trim_prefix("--skip=").split(",", false)
