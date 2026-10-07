@@ -8,19 +8,29 @@
 //! [`SPAWN_WAIT`] for the worker to register, and fails with the worker's
 //! startup error when the worker dies first.
 
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
+use horch_core::competition::budget::UsageMeter;
+use horch_core::competition::observe::TelemetryUsage;
 use horch_core::execution::lifecycle::{await_worker, WorkerStart};
 use horch_core::execution::plan::{self, GateInputs, MintedIds, PlanInputs};
 use horch_core::execution::service::{ExecutionService, SpawnError};
 use horch_core::execution::store::ExecutionStore;
-use horch_core::execution::{ExecutionStatus, LaunchStage, SessionMode, SpawnRequest, TilingMode};
+use horch_core::execution::{
+    Execution, ExecutionStatus, LaunchStage, SessionMode, SpawnRequest, TilingMode,
+};
+use horch_core::fleet_runs::facts::{record_start, RunSources};
+use horch_core::fleet_runs::sync::sync_project;
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
+use horch_core::measure::paths::DatasetPaths;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::Phase;
 use horch_core::routing::decision::GateFlags;
 use horch_core::runtime::RuntimeContext;
+use horch_core::usage::Locations;
+use horch_core::vcs::git::GitCli;
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
@@ -206,6 +216,8 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     let started = SystemTime::now();
     let out = service.spawn(plan, args.role.as_deref())?;
     let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
+    // The record has its pane, and the spawn has run the ledger recovery.
+    fleet_facts(ctx, &store, &project, &out.plan.execution);
     // A pane line starts with `exec`, so a worker that fails at startup
     // closes its pane and takes its stderr with it. It leaves the error in a
     // file instead, and this wait reads it.
@@ -255,6 +267,38 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         }
     }
     Ok(out.pane)
+}
+
+/// The fleet run facts of a spawn (fleet-dataset §4.1, §4.2): the start row
+/// of `execution`, then a run row for every finished record of this project
+/// that has none. Each failure is 1 NOTE line on stderr; the spawn goes on.
+fn fleet_facts(
+    ctx: &RuntimeContext,
+    store: &ExecutionStore,
+    project: &Path,
+    execution: &Execution,
+) {
+    let paths = DatasetPaths::new(&ctx.paths.state_root, project);
+    let git = GitCli::new(ctx.bins.harness.git.clone());
+    let now = horch_core::clock::now();
+    let id = execution.id.as_str();
+    if let Err(e) = record_start(&paths, project, &git, id, &execution.task.text, now) {
+        eprintln!("horch: NOTE: fleet start row not written: {e:#}");
+    }
+    let usage = TelemetryUsage {
+        locations: Locations::from_context(ctx),
+    };
+    let sources = RunSources {
+        usage: &usage,
+        meter: &UsageMeter::default(),
+        git: &git,
+    };
+    let synced = store
+        .read()
+        .and_then(|records| sync_project(&paths, project, &records, &sources, now));
+    if let Err(e) = synced {
+        eprintln!("horch: NOTE: fleet run rows not synced: {e:#}");
+    }
 }
 
 #[cfg(test)]
