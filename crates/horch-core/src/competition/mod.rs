@@ -12,4 +12,5 @@ pub mod observe;
 pub mod planner;
 pub mod preflight;
 pub mod promotion;
+pub mod report;
 pub mod state;

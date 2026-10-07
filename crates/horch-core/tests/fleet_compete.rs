@@ -1,5 +1,6 @@
 //! Competition mode of the fleet (docs/specs/fleet-dataset.md §7):
-//! promotion onto a branch that does not exist yet (FDS-12).
+//! the round's report line (FDS-11) and promotion onto a branch that does
+//! not exist yet (FDS-12).
 //!
 //! Real git touches only temp repos (NFR-07), with an empty
 //! `GIT_CONFIG_GLOBAL` and pinned identities and dates. Without git on
@@ -11,15 +12,20 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use horch_core::competition::coordinator::RoundOutcome;
 use horch_core::competition::model::RoundState;
 use horch_core::competition::promotion::{
     BranchRef, FaultFired, GitPromotionEngine, PromotionEngine, PromotionPlan, PromotionResult,
     PromotionStrategy, RollbackResult, ABORT_AFTER_PROMOTION_STARTED,
 };
+use horch_core::competition::report::{deliver, RoundReport};
 use horch_core::evaluation::validator::{ValidationReport, Validator};
-use horch_core::ids::{ExecutionId, ExperimentId, JudgmentId, RoundId};
+use horch_core::evaluation::winner::RejectReason;
+use horch_core::harness::HarnessKind;
+use horch_core::ids::{ExecutionId, ExperimentId, JudgmentId, ModelId, RoundId, TeammateName};
 use horch_core::measure::event::{
-    EventEnvelope, EventKind, PromotionIntent, PromotionStarted, RoundCreated, WinnerSelected,
+    CandidatePlanned, EventEnvelope, EventKind, InterventionSource, PromotionIntent,
+    PromotionStarted, RoundCreated, RoundNeedsIntervention, SlotKind, WinnerSelected,
     WorktreeCreated,
 };
 use horch_core::measure::paths::DatasetPaths;
@@ -32,11 +38,16 @@ use horch_core::runtime::fault::Faults;
 use horch_core::teacher::TeacherRef;
 use horch_core::vcs::git::{GitCli, GitClient, GitIdentity};
 use horch_core::vcs::worktree::{FrozenCandidate, WorktreeManager, WorktreeSpec};
+use horch_core::workspace::client::WorkspaceClient;
+use horch_core::workspace::testing::FakeWorkspace;
 use horch_marketplace::git::GitRunner;
 use tempfile::TempDir;
 
 /// The branch a competition round promotes onto. It does not exist before.
 const NEW_BRANCH: &str = "compete/greeting";
+
+/// The winner's configuration id.
+const CONFIG_ID: &str = "claude/sonnet/medium";
 
 // ─── fixture (a copy of tests/promotion.rs) ─────────────────────────────────
 
@@ -256,6 +267,16 @@ fn decided_round(c: &FrozenCandidate) -> Projection {
             c.label.clone(),
             CandidateView {
                 execution_id: Some(c.execution_id.clone()),
+                planned: Some(CandidatePlanned {
+                    label: c.label.clone(),
+                    teammate: TeammateName::new("sonnet").unwrap(),
+                    harness: HarnessKind::Claude,
+                    model: ModelId::new("sonnet").unwrap(),
+                    effort: Some("medium".into()),
+                    slot: SlotKind::Baseline,
+                    propensity: 1.0,
+                    config_id: CONFIG_ID.into(),
+                }),
                 worktree: Some(WorktreeCreated {
                     label: c.label.clone(),
                     path: c.worktree.clone(),
@@ -397,4 +418,123 @@ fn fds_12_promote_new_branch_restart() {
     );
     assert_eq!(g.rev(&refname), Some(g.base.clone()), "not moved");
     assert!(!g.paths.promotion(&g.plan().round).unwrap().exists());
+}
+
+// ─── FDS-11 ─────────────────────────────────────────────────────────────────
+
+/// At the terminal state the coordinator types exactly 1 STE line into the
+/// report pane, the way `horch tell` does: the state, the winner's config
+/// id, the promoted branch and commit, and the reason. A pane that does not
+/// take the line gives `false` and nothing else.
+#[test]
+fn fds_11_report_line_on_terminal_state() {
+    let Some(f) = Fixture::new() else { return };
+    let faults = Faults::default();
+    f.engine(&faults)
+        .promote(&f.candidate, &f.target(), &f.plan())
+        .unwrap();
+    let mut p = decided_round(&f.candidate);
+    for e in f.events() {
+        p.apply(&e);
+    }
+    let promoted = p.rounds.values().next().unwrap().clone();
+    let plan = f.plan();
+    let exp8 = plan.experiment.short();
+    let report = |outcome: &RoundOutcome, view: &RoundView, reason: Option<&str>| {
+        RoundReport::from_view(&plan.experiment, &plan.round, outcome, view, reason)
+    };
+
+    // DECIDED and promoted: 1 `agent prompt` call carries the whole line.
+    let ws = FakeWorkspace::new();
+    let pane = ws
+        .workspace_create("orchestrator", None, false)
+        .unwrap()
+        .root_pane_id;
+    let decided = report(&RoundOutcome::Decided, &promoted, None);
+    assert!(deliver(&ws, &pane, &decided));
+    let want = format!(
+        "[compete-{exp8}] DONE: round r-1 is DECIDED. Winner: {CONFIG_ID}. \
+         Promoted: {NEW_BRANCH}@{}. Reason: none.",
+        f.candidate.head_sha
+    );
+    let typed: Vec<_> = ws
+        .calls()
+        .into_iter()
+        .filter(|c| c.method == "agent_prompt")
+        .collect();
+    assert_eq!(typed.len(), 1, "{typed:?}");
+    assert_eq!(typed[0].args, [pane.clone(), want]);
+    assert!(!ws.calls().iter().any(|c| c.method == "pane_send_text"));
+
+    // DECIDED without a promotion.
+    let mut plain = promoted.clone();
+    plain.promotion = PromotionView::default();
+    assert_eq!(
+        report(&RoundOutcome::Decided, &plain, None).line(),
+        format!(
+            "[compete-{exp8}] DONE: round r-1 is DECIDED. Winner: {CONFIG_ID}. \
+             Promoted: none. Reason: none."
+        )
+    );
+
+    // NEEDS_INTERVENTION: the latest reason wins over the projection's,
+    // on 1 line, without a doubled full stop.
+    let mut stuck = plain.clone();
+    stuck.needs_intervention = Some(RoundNeedsIntervention {
+        reason: "an older reason".into(),
+        source: InterventionSource::Promotion,
+    });
+    assert_eq!(
+        report(
+            &RoundOutcome::NeedsIntervention,
+            &stuck,
+            Some("the winner conflicts with\ncompete/greeting in a.txt.")
+        )
+        .line(),
+        format!(
+            "[compete-{exp8}] DONE: round r-1 is NEEDS_INTERVENTION. Winner: {CONFIG_ID}. \
+             Promoted: none. Reason: the winner conflicts with compete/greeting in a.txt."
+        )
+    );
+    assert!(report(&RoundOutcome::NeedsIntervention, &stuck, None)
+        .line()
+        .ends_with("Reason: an older reason."));
+
+    // REJECTED: no winner, the reject reason or the budget.
+    let mut rejected = plain.clone();
+    rejected.rejected = Some(RejectReason::NoEligible);
+    let line = report(&RoundOutcome::Rejected { budget: false }, &rejected, None).line();
+    assert_eq!(
+        line,
+        format!(
+            "[compete-{exp8}] DONE: round r-1 is REJECTED. Winner: none. Promoted: none. \
+             Reason: {}.",
+            RejectReason::NoEligible
+        )
+    );
+    assert!(
+        report(&RoundOutcome::Rejected { budget: true }, &rejected, None)
+            .line()
+            .ends_with("Reason: the budget stopped the candidates.")
+    );
+
+    // A coordinator that stopped on an error says how to go on.
+    let stopped = RoundReport::stopped(&plan.experiment, &plan.round, "git failed").line();
+    assert!(
+        stopped.starts_with(&format!("[compete-{exp8}] DONE: round r-1 is STOPPED.")),
+        "{stopped}"
+    );
+    assert!(
+        stopped.contains("multi-herdr-dataset resume exp-1"),
+        "{stopped}"
+    );
+
+    // A pane that is gone: false, and the line is not typed anywhere else.
+    let gone = FakeWorkspace::new();
+    assert!(!deliver(&gone, "w9:p9", &decided));
+    assert!(gone
+        .calls()
+        .iter()
+        .filter(|c| c.args.len() > 1)
+        .all(|c| c.args[0] == "w9:p9"));
 }

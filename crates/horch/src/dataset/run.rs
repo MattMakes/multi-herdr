@@ -24,6 +24,7 @@ use horch_core::competition::preflight::{
     evaluate, recorded_estimates, PreflightCandidate, PreflightReport, TokenEstimate,
 };
 use horch_core::competition::promotion::FaultFired;
+use horch_core::competition::report::{self, RoundReport};
 use horch_core::evaluation::validator::{CommandValidator, GateSpec};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::fsx;
@@ -121,14 +122,17 @@ pub(crate) fn resume_reporting(
     ctx: &mut RuntimeContext,
     env: &BTreeMap<String, String>,
     exp: &str,
-    _report_to: Option<&str>,
+    report_to: Option<&str>,
 ) -> Result<u8> {
     let paths = dataset_paths(ctx)?;
     let experiment = ExperimentId::new(exp)?;
     let projection = fold(&store::read_all(&paths)?.events);
+    let mut saved = SavedRun::read(&paths, &experiment)?;
+    if let Some(pane) = report_to {
+        saved.report_to = Some(pane.to_string());
+    }
     let Some(x) = projection.experiments.get(&experiment) else {
         // Killed before `experiment.created`: start over under the same id.
-        let saved = SavedRun::read(&paths, &experiment)?;
         return preflight_and_run(ctx, env, &paths, &experiment, &saved.task, &saved);
     };
     match x.state {
@@ -137,7 +141,6 @@ pub(crate) fn resume_reporting(
             return Ok(exit::PREFLIGHT_FAILED);
         }
         RoundState::Preflight if x.preflight.is_none() => {
-            let saved = SavedRun::read(&paths, &experiment)?;
             return preflight_and_run(ctx, env, &paths, &experiment, &saved.task, &saved);
         }
         RoundState::Preflight => {
@@ -151,7 +154,7 @@ pub(crate) fn resume_reporting(
         .context("the experiment has no preflight report")?;
     let base_sha = x.created.base_sha.clone();
     let config = manifest_config(&paths, &experiment)?;
-    let task = SavedRun::read(&paths, &experiment)?.task;
+    let task = saved.task.clone();
     let (round, plan, mut planned_models) = match x.rounds.last() {
         Some(round) => {
             let view = &projection.rounds[round];
@@ -189,6 +192,7 @@ pub(crate) fn resume_reporting(
             task: &task,
             safe_n: report.safe_n,
             estimates,
+            report_to: saved.report_to.as_deref(),
         },
         plan.as_ref(),
     )
@@ -318,6 +322,7 @@ fn preflight_and_run(
                 &config.budget.expected_tokens,
                 &pre_plan.measured_tokens,
             ),
+            report_to: saved.report_to.as_deref(),
         },
         Some(&plan),
     )
@@ -332,6 +337,8 @@ struct Round<'a> {
     safe_n: u32,
     /// The live meter's expected tokens per model ([`meter_estimates`]).
     estimates: BTreeMap<String, TokenEstimate>,
+    /// The pane that gets the round's report line (FDS-11).
+    report_to: Option<&'a str>,
 }
 
 /// The expected tokens of each candidate model for the live meter, resolved
@@ -503,13 +510,24 @@ fn coordinate(
                 eprintln!("multi-herdr-dataset: {f}: aborting");
                 std::process::exit(ABORT_EXIT_CODE);
             }
+            if let Some(pane) = r.report_to {
+                let stopped = RoundReport::stopped(r.experiment, r.round, &format!("{e:#}"));
+                report::deliver(&herdr, pane, &stopped);
+            }
             return Err(e);
         }
     };
-    coordinator.close_workspace(&spec);
     let view = coordinator.view(&spec)?;
     let events = store::read_all(paths)?.events;
     let reason = latest_intervention(&events, r.round);
+    // The report goes before the workspace closes: a detached coordinator
+    // runs in a pane of that workspace.
+    if let Some(pane) = r.report_to {
+        let report =
+            RoundReport::from_view(r.experiment, r.round, &outcome, &view, reason.as_deref());
+        report::deliver(&herdr, pane, &report);
+    }
+    coordinator.close_workspace(&spec);
     let (line, code) = outcome_line(&outcome, &view, reason.as_deref());
     println!("round {} {line}", r.round);
     Ok(code)
@@ -700,6 +718,10 @@ pub(crate) struct SavedRun {
     /// again on a resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    /// The pane that gets the round's report line (`--report-to`, or the
+    /// caller's pane with `--detach`). `resume --report-to` replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_to: Option<String>,
 }
 
 impl SavedRun {
@@ -715,6 +737,7 @@ impl SavedRun {
             worktree_root: args.worktree_root.clone(),
             allow_dirty: args.allow_dirty,
             plan,
+            report_to: args.report_to.clone(),
         }
     }
 
