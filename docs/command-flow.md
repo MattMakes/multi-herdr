@@ -93,6 +93,24 @@ sequenceDiagram
     H->>W: start a detached re-tile, close the pane
 ```
 
+### The spawn registration wait
+
+`horch spawn` does not return when the pane opens. It waits up to
+`HORCH_SPAWN_WAIT_MS` (default 15000 ms; `0` skips the wait) for the role to
+register in the mailbox, or for `<data root>/startup-errors/<role>.txt`. The
+worker writes that file when it fails before it registers, because its pane
+closes with its stderr. The wait ignores a file older than the spawn.
+
+| what comes first | what `horch spawn` does |
+|---|---|
+| the role registers on the new pane | prints the `spawned` line on stderr, exits 0 |
+| the error file appears | deletes it, ends the record `LaunchFailed{run}` with the worker's error as the reason, closes the pane if it is still open, unregisters the role, prints `worker <role> (pane <id>) failed to start: <error>` and exits 1 |
+| the wait ends | warns on stderr that the worker has not registered, exits 0; a worker that registers later still works |
+
+Stdout is the pane id only; every message above goes to stderr. The only
+earlier stdout lines are the quota gate line and a refusal line, which print
+before the pane opens.
+
 ### What a pane command carries
 
 A pane is a fresh shell. It does not inherit the environment of the `horch`

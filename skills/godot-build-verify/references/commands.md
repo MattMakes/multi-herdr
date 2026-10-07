@@ -46,6 +46,39 @@ Measured on macOS: Godot ignores `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and
 real user directory. Export templates live under the real `HOME`; an export
 run (not covered here) needs them.
 
+### Linux
+
+Measured on Linux (Godot 4.7.2.stable.official, aarch64, Debian bookworm
+container, 2026-10-06; `docs/live-checks/linux.md`): Godot reads
+`XDG_DATA_HOME`, `XDG_CONFIG_HOME` and `XDG_CACHE_HOME`, and `HOME` stays
+empty. Set all 3 under one directory:
+
+```bash
+GH="$PWD/.godot/horch-home"
+LOGS="$GH/logs"
+mkdir -p "$LOGS" "$GH/xdg/data" "$GH/xdg/config" "$GH/xdg/cache"
+gd() {
+  HOME="$GH" XDG_DATA_HOME="$GH/xdg/data" XDG_CONFIG_HOME="$GH/xdg/config" \
+    XDG_CACHE_HOME="$GH/xdg/cache" "$GODOT" --headless --path "$PWD" "$@"
+}
+```
+
+Under the 3 directories, the run wrote only these files, and nothing under
+`HOME` or elsewhere:
+
+| directory | file |
+|---|---|
+| `XDG_CONFIG_HOME` | `godot/editor_settings-4.7.tres` |
+| `XDG_DATA_HOME` | `godot/app_userdata/<project name>/` (`probe.txt`, `logs/godot.log`) |
+| `XDG_CACHE_HOME` | `godot/editor_doc_cache-4.7.res` |
+
+`OS.get_user_data_dir()` returned `$XDG_DATA_HOME/godot/app_userdata/<project
+name>`. The Linux run covered `--headless --version`, `--headless --import` and
+1 `--headless --script`. The Import, Parse check, Tests and Smoke run commands
+below were not run on Linux. The engine search above checks `godot` on `PATH`
+and `GODOT_PATH`; the Linux run used the official
+`Godot_v4.7.2-stable_linux.arm64.zip` from the `4.7.2-stable` release.
+
 ## Import
 
 ```bash
