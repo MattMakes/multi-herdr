@@ -115,6 +115,13 @@ impl Daemon {
 
     /// Stop this launch's daemon, and only this one.
     ///
+    /// First through Prime's own stop for 1 socket ([`prime_shutdown`]): it
+    /// stops the supervisor, its workers and its catalog. A SIGTERM stops
+    /// the supervisor only: Prime's workers outlive a supervisor, and a
+    /// worker starts a new one (live check X2: prime-5). So the agent dir,
+    /// which holds the worker records, is removed only after that stop.
+    ///
+    /// When Prime's stop cannot run (no `node`, another Prime layout):
     /// `status` names the pid; a pid can be given to another program once
     /// its process ends. So `status` is asked twice, and SIGTERM goes only
     /// to a pid that both answers name with the same start time, and that
@@ -132,7 +139,23 @@ impl Daemon {
     /// needs a `prime-agent` process that started after this launch, got the
     /// dead daemon's pid and holds this launch's private socket.
     pub fn finish(&self) {
-        let left_running = daemon_pid(&self.bin, &self.socket).is_some_and(|pid| {
+        let left_running = !prime_shutdown(&self.bin, &self.socket) && self.terminate_supervisor();
+        if !left_running {
+            let _ = std::fs::remove_file(&self.socket);
+            // The agent dir links the operator's live `auth.json`; it is
+            // not needed after the pane. `remove_dir_all` does not follow
+            // links. The sessions stay for a resume.
+            let _ = std::fs::remove_dir_all(self.agent_dir());
+            if let Some(launch) = self.socket.parent() {
+                let _ = std::fs::remove_file(launch.join(STATUS_HOOK));
+            }
+        }
+    }
+
+    /// SIGTERM to the supervisor `status` names, under the rules above.
+    /// Whether it was left running.
+    fn terminate_supervisor(&self) -> bool {
+        daemon_pid(&self.bin, &self.socket).is_some_and(|pid| {
             let first = pid_start(pid);
             let again = daemon_pid(&self.bin, &self.socket).map(|p| (p, pid_start(p)));
             let started_at = u32::try_from(pid).ok().and_then(crate::procid::started_at);
@@ -152,18 +175,56 @@ impl Daemon {
                     true
                 }
             }
-        });
-        if !left_running {
-            let _ = std::fs::remove_file(&self.socket);
-            // The agent dir links the operator's live `auth.json`; it is
-            // not needed after the pane. `remove_dir_all` does not follow
-            // links. The sessions stay for a resume.
-            let _ = std::fs::remove_dir_all(self.agent_dir());
-            if let Some(launch) = self.socket.parent() {
-                let _ = std::fs::remove_file(launch.join(STATUS_HOOK));
-            }
-        }
+        })
     }
+}
+
+/// The script [`prime_shutdown`] runs: Prime's exported
+/// `shutdownDaemonAndWait(socket, 5000)` (0.9.4 `dist/cli/daemon-launch.js`),
+/// the stop `prime-agent shutdown` runs for each daemon. It sends
+/// `shutdown` on that socket and waits until the daemon is gone. Exit 0:
+/// stopped, or no daemon was there.
+const PRIME_SHUTDOWN_JS: &str = r#"const [module, socket] = process.argv.slice(1);
+const { pathToFileURL } = await import("node:url");
+const { shutdownDaemonAndWait } = await import(pathToFileURL(module).href);
+process.exit((await shutdownDaemonAndWait(socket, 5000)) ? 0 : 1);
+"#;
+
+/// Stop the daemon on `socket` with Prime's own code: `node` (what the
+/// `prime-agent` script runs on) imports the module beside the program
+/// `bin` resolves to. The public `prime-agent shutdown` cannot be scoped to
+/// 1 socket; it stops every daemon. Whether the daemon is gone. False when
+/// the module is not there or `node` fails: the caller falls back.
+fn prime_shutdown(bin: &Path, socket: &Path) -> bool {
+    let Some(module) = prime_dist(bin).map(|d| d.join("cli").join("daemon-launch.js")) else {
+        return false;
+    };
+    if !module.is_file() {
+        return false;
+    }
+    let mut cmd = Command::new("node");
+    cmd.args(["--input-type=module", "-e", PRIME_SHUTDOWN_JS])
+        .arg(&module)
+        .arg(socket)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    cmd.status().is_ok_and(|s| s.success())
+}
+
+/// Prime's `dist` dir: `bin` (a path, or a name on PATH) resolves to
+/// `<dist>/bundle/cli.js` (0.9.4 `package.json` `bin`).
+fn prime_dist(bin: &Path) -> Option<PathBuf> {
+    let found = if bin.components().count() > 1 {
+        bin.to_path_buf()
+    } else {
+        let path = std::env::var_os("PATH");
+        crate::runtime::process::which(path.as_deref(), None, bin.to_str()?)?
+    };
+    let script = std::fs::canonicalize(found).ok()?;
+    let bundle = script.parent()?;
+    (bundle.file_name()? == "bundle").then(|| bundle.parent().map(Path::to_path_buf))?
 }
 
 /// How far a start time on the wall clock can be off: Linux counts it from a
@@ -1084,6 +1145,101 @@ mod tests {
             .status()
             .unwrap();
         assert_eq!(status.signal(), Some(libc::SIGHUP), "{status:?}");
+    }
+
+    /// A fake Prime install: `<tmp>/lib/dist/bundle/cli.js` (the `status`
+    /// program, a shell script) linked from `<tmp>/bin/prime-agent`, and
+    /// `dist/cli/daemon-launch.js` whose stop writes `<socket>.stopped` and
+    /// answers `stopped`.
+    #[cfg(unix)]
+    fn fake_prime_install(dir: &Path, stopped: bool) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dist = dir.join("lib/dist");
+        std::fs::create_dir_all(dist.join("bundle")).unwrap();
+        std::fs::create_dir_all(dist.join("cli")).unwrap();
+        let cli = dist.join("bundle/cli.js");
+        std::fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\ntouch '{}'\necho '[]'\n",
+                dir.join("status-called").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            dist.join("cli/daemon-launch.js"),
+            format!(
+                "import fs from \"node:fs\";\n\
+                 export async function shutdownDaemonAndWait(socket, timeoutMs) {{\n\
+                 fs.writeFileSync(socket + \".stopped\", String(timeoutMs));\n\
+                 return {stopped};\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let bin = dir.join("bin/prime-agent");
+        std::os::unix::fs::symlink(&cli, &bin).unwrap();
+        // The first run of a new executable on macOS can be slow.
+        let _ = std::process::Command::new(&bin).output();
+        let _ = std::fs::remove_file(dir.join("status-called"));
+        bin
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prime_dist_is_beside_the_bundle_the_program_links_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = fake_prime_install(tmp.path(), true);
+        assert_eq!(
+            prime_dist(&bin),
+            Some(std::fs::canonicalize(tmp.path().join("lib/dist")).unwrap())
+        );
+        // A program that is not in a `bundle` dir: not Prime's layout.
+        assert_eq!(
+            prime_dist(&tmp.path().join("lib/dist/cli/daemon-launch.js")),
+            None
+        );
+        assert_eq!(prime_dist(&tmp.path().join("missing")), None);
+    }
+
+    /// `finish` stops the daemon with Prime's own stop for its socket, then
+    /// removes the agent dir (live check X2: a SIGTERM left the workers,
+    /// and a worker started a new supervisor). When that stop fails, the
+    /// `status` path runs.
+    #[cfg(unix)]
+    #[test]
+    fn finish_uses_primes_own_stop_first() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipped: node is not on PATH");
+            return;
+        }
+        for stopped in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let bin = fake_prime_install(tmp.path(), stopped);
+            let daemon = Daemon::install(&tmp.path().join("state"), "prime-1", &bin).unwrap();
+            std::fs::create_dir_all(daemon.agent_dir().join("daemon-workers")).unwrap();
+            std::fs::write(daemon.socket(), "").unwrap();
+            daemon.finish();
+            let marker = PathBuf::from(format!("{}.stopped", daemon.socket().display()));
+            assert_eq!(
+                std::fs::read_to_string(&marker).unwrap(),
+                "5000",
+                "{stopped}"
+            );
+            assert_eq!(
+                tmp.path().join("status-called").exists(),
+                !stopped,
+                "the status path runs only when Prime's stop fails"
+            );
+            assert!(!daemon.agent_dir().exists(), "{stopped}");
+            assert!(!daemon.socket().exists(), "{stopped}");
+            assert!(daemon.sessions_dir().is_dir());
+        }
     }
 
     #[test]
