@@ -107,6 +107,8 @@ else
 fi
 if grep -q 'SCRIPT ERROR\|No loader found' "$work/run.log"; then
   fail "csharp-errors" "error lines in $work/run.log"
+else
+  pass "csharp-errors"
 fi
 
 rm -rf "$work/project/.godot" "$work/project/bin" "$work/project/obj"
