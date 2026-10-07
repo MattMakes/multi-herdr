@@ -342,6 +342,7 @@ impl SkillCatalog {
                     .map(|(path, bytes)| BundledFile {
                         path: (*path).to_owned(),
                         bytes: Cow::Borrowed(*bytes),
+                        executable: entry.executable.contains(path),
                     })
                     .collect(),
             });
@@ -810,5 +811,42 @@ mod tests {
         let entry = &catalog.entries["godot-build-verify"];
         assert!(entry.executable.contains(&"scripts/godot-run.sh"));
         assert!(!entry.executable.contains(&"SKILL.md"));
+    }
+
+    /// A marketplace install of `bundled:godot-build-verify` writes its
+    /// script with an execute bit and SKILL.md without one. The lock digest
+    /// is the mode-blind `tree_digest` of the store copy, so `check_store`
+    /// reports `Ok`.
+    #[cfg(unix)]
+    #[test]
+    fn skl_11_marketplace_install_keeps_the_execute_bit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = installer(tmp.path(), Path::new("git"))
+            .unwrap()
+            .install(
+                &horch_marketplace::SkillSource::parse("bundled:godot-build-verify").unwrap(),
+                &horch_marketplace::InstallOptions::default(),
+                None,
+            )
+            .unwrap();
+        let dir = version_dir(tmp.path(), &entry.id, &entry.version).unwrap();
+        let mode = |rel: &str| {
+            std::fs::metadata(dir.join(rel))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("scripts/godot-run.sh") & 0o111, 0o111);
+        assert_eq!(mode("SKILL.md") & 0o111, 0);
+        assert_eq!(
+            horch_marketplace::integrity::tree_digest(&dir).unwrap(),
+            entry.digest
+        );
+        let states = check_store(tmp.path()).unwrap();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].2, StoreState::Ok);
     }
 }

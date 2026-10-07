@@ -410,10 +410,12 @@ fn mkt_06_rejects_traversal() {
                 BundledFile {
                     path: "SKILL.md".into(),
                     bytes: skill_md("demo").into_bytes().into(),
+                    executable: false,
                 },
                 BundledFile {
                     path: path.into(),
                     bytes: b"x"[..].into(),
+                    executable: false,
                 },
             ],
         });

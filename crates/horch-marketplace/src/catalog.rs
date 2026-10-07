@@ -7,11 +7,13 @@ use std::collections::BTreeMap;
 use crate::model::SkillId;
 
 /// One file of a bundled skill. `path` is relative to the skill directory,
-/// `/`-separated; it is checked before anything is written.
+/// `/`-separated; it is checked before anything is written. `executable`
+/// files are written with mode 755 on Unix; the mode is not in the digest.
 #[derive(Debug, Clone)]
 pub struct BundledFile {
     pub path: String,
     pub bytes: Cow<'static, [u8]>,
+    pub executable: bool,
 }
 
 #[derive(Debug, Clone)]

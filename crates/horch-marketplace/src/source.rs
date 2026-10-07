@@ -27,6 +27,14 @@ pub fn fetch(git: &GitRunner, resolved: &ResolvedSource, staging: &Path) -> Resu
                     .map_err(|e| MarketplaceError::io(parent.display().to_string(), e))?;
                 fs::write(&path, &file.bytes)
                     .map_err(|e| MarketplaceError::io(format!("stage {}", file.path), e))?;
+                // The store renames the staged tree into place, so this
+                // mode is the store mode.
+                #[cfg(unix)]
+                if file.executable {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                        .map_err(|e| MarketplaceError::io(format!("chmod {}", file.path), e))?;
+                }
             }
             Ok(tree)
         }
