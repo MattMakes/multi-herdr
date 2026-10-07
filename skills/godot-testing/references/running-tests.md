@@ -83,6 +83,10 @@ gd -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessM
   passed (exit 0) and 1 test failed on purpose (exit 1)
   (`docs/live-checks/godot-csharp.md`, steps `gdunit4net-pass` and
   `gdunit4net-fail`).
+  A host whose only .NET runtime is newer than the test target (for example
+  .NET 10 with `net8.0`) needs `DOTNET_ROLL_FORWARD=Major` for `dotnet test`,
+  or the test host stops; proof: `scripts/godot/live_csharp.sh` exports it
+  and its 3 gdUnit4Net steps passed on .NET 10.0.101.
 - gdUnit4 `-c` and GUT `-gjunit_xml_file` come from the addon help text.
   proof: not run (needs the addons in a project).
 

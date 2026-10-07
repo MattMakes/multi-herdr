@@ -157,7 +157,7 @@ func before_test() -> void:
 public void BeforeTest()
 {
     _health = AutoFree(new HealthComponent());
-    AddChild(_health);
+    AddNode(_health, autoFree: false);
 }
 ```
 
@@ -262,7 +262,7 @@ AssertThat(n).IsGreaterEqual(x);
 AssertThat(n).IsLess(x);
 AssertThat(n).IsLessEqual(x);
 AssertThat(n).IsBetween(low, high);
-AssertThat(n).IsApproximately(expected, margin);
+AssertThat(n).IsEqualApprox(expected, margin);
 AssertThat(n).IsNegative();
 AssertThat(n).IsZero();
 ```
@@ -296,16 +296,13 @@ AssertThat(arr).HasSize(n);
 
 ```csharp
 [TestCase]
-public async GdUnitAwaiter SignalTest()
+public async Task SignalTest()
 {
-    var monitor = MonitorSignals(_health);
+    var signal = AssertSignal(_health).StartMonitoring();
     _health.TakeDamage(10);
 
-    AssertSignal(monitor).IsEmitted("health_changed");
-    AssertSignal(monitor).IsEmitted("health_changed").WithArgs(100, 90);
-    AssertSignal(monitor).IsNotEmitted("died");
-    AssertSignal(monitor).IsEmitted("health_changed").Exactly(1);
-    await Task.CompletedTask;
+    await signal.IsEmitted("HealthChanged", 100, 90).WithTimeout(500);
+    await signal.IsNotEmitted("Died").WithTimeout(500);
 }
 ```
 
@@ -345,31 +342,7 @@ verify(spy_health).take_damage(10)               # call was tracked
 
 ## Mocking API — C#
 
-```csharp
-// Create a mock (all methods stubbed)
-var mockHealth = Mock<HealthComponent>();
-
-// Stub method return value
-mockHealth.MockMethod(h => h.GetHealth(), 75);
-mockHealth.MockProperty(h => h.CurrentHealth, 75);
-
-// Use the mock
-_player.HealthComponent = mockHealth;
-_player.ReceiveHit(10);
-
-// Verify calls
-Verify(mockHealth).TakeDamage(10);
-Verify(mockHealth, Times(1)).TakeDamage(10);
-VerifyNoInteractions(mockHealth);
-
-// Spy — real object with call tracking
-var spyHealth = Spy(new HealthComponent());
-AddChild(AutoFree(spyHealth));
-spyHealth.TakeDamage(10);
-
-AssertThat(spyHealth.CurrentHealth).IsEqual(90);  // real behavior
-Verify(spyHealth).TakeDamage(10);                 // call tracked
-```
+gdUnit4Net `gdUnit4.api` 5.0.0 has no `Mock` and no `Spy`. For a test double, write a stub class by hand (see `StubAudio` in the dependency-injection skill's `testing-with-di.md`), or use Moq (a package dependency of `gdUnit4.api`) for an interface.
 
 ---
 

@@ -319,6 +319,7 @@ EOF
 # The passing test needs the Godot runtime and asserts the engine version, so a
 # pass proves that the adapter started the 4.7.2 engine from GODOT_BIN.
 cat > HealthTest.cs <<'EOF'
+using System.Threading.Tasks;
 using Godot;
 using GdUnit4;
 using static GdUnit4.Assertions;
@@ -343,7 +344,64 @@ public class HealthTest
         health.Damage(3);
         AssertThat(health.Value).IsEqual(8);
     }
+
+    // The patterns of the gdUnit4Net examples in the skills: AutoFree with AddNode,
+    // and the scene runner with AssertSignal. A signal name is the C# name (PascalCase).
+    [TestCase]
+    [RequireGodotRuntime]
+    public void AutoFreeAddsNodeToTree()
+    {
+        var counter = AutoFree(new Counter());
+        AddNode(counter, autoFree: false);
+        AssertThat(counter.IsInsideTree()).IsTrue();
+        AssertThat(counter.Value).IsEqual(5);
+    }
+
+    [TestCase]
+    [RequireGodotRuntime]
+    public async Task SceneRunnerSeesSignal()
+    {
+        var runner = ISceneRunner.Load("res://counter.tscn");
+        var counter = (Counter)runner.Scene();
+        var signal = AssertSignal(counter).StartMonitoring();
+        counter.Add(2);
+        await signal.IsEmitted("Changed", 5, 7).WithTimeout(500);
+        await signal.IsNotEmitted("Other").WithTimeout(500);
+        await runner.AwaitIdleFrame();
+        AssertThat(counter.Value).IsEqual(7);
+    }
 }
+EOF
+cat > Counter.cs <<'EOF'
+using Godot;
+
+public partial class Counter : Node
+{
+    [Signal]
+    public delegate void ChangedEventHandler(int oldValue, int newValue);
+
+    [Signal]
+    public delegate void OtherEventHandler();
+
+    public int Value { get; private set; }
+
+    public override void _Ready() { Value = 5; }
+
+    public void Add(int amount)
+    {
+        int old = Value;
+        Value += amount;
+        EmitSignal(SignalName.Changed, old, Value);
+    }
+}
+EOF
+cat > counter.tscn <<'EOF'
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://Counter.cs" id="1"]
+
+[node name="Counter" type="Node"]
+script = ExtResource("1")
 EOF
 cat > .runsettings <<EOF
 <?xml version="1.0" encoding="utf-8"?>
@@ -382,6 +440,17 @@ elif [ "$gdunit_code" != 0 ] && grep -Eq 'Failed!.*Failed: +1, Passed: +0,' "$wo
   pass "gdunit4net-fail (exit $gdunit_code, 1 failed)"
 else
   fail "gdunit4net-fail" "exit $gdunit_code, want non-zero and 1 failed (see $work/gdunit-fail.log)"
+fi
+gdunit_code=0
+if [ "$gdunit_built" = 1 ]; then
+  bounded 300 dotnet test --no-build --settings .runsettings --filter "Name=AutoFreeAddsNodeToTree|Name=SceneRunnerSeesSignal" > "$work/gdunit-api.log" 2>&1 || gdunit_code=$?
+fi
+if [ "$gdunit_built" = 0 ]; then
+  fail "gdunit4net-api" "dotnet build failed (see $work/gdunit-build.log)"
+elif [ "$gdunit_code" = 0 ] && grep -Eq 'Passed!.*Failed: +0, Passed: +2,' "$work/gdunit-api.log"; then
+  pass "gdunit4net-api (AutoFree, AddNode, scene runner, AssertSignal)"
+else
+  fail "gdunit4net-api" "exit $gdunit_code, want exit 0 and 2 passed (see $work/gdunit-api.log)"
 fi
 
 rm -rf "$work/project/.godot" "$work/project/bin" "$work/project/obj"

@@ -54,12 +54,13 @@ func test_death_signal_emitted_at_zero() -> void:
 
 ```csharp
 // tests/unit/HealthComponentTest.cs
+using System.Threading.Tasks;
 using Godot;
 using GdUnit4;
 using static GdUnit4.Assertions;
 
 [TestSuite]
-public partial class HealthComponentTest : GdUnit4.GdUnitTestSuite
+public class HealthComponentTest
 {
     private HealthComponent _health = default!;
 
@@ -71,7 +72,7 @@ public partial class HealthComponentTest : GdUnit4.GdUnitTestSuite
     {
         _health = AutoFree(new HealthComponent());
         _health.MaxHealth = 100;
-        AddChild(_health);
+        AddNode(_health, autoFree: false);
     }
 
     [TestCase]
@@ -108,12 +109,11 @@ public partial class HealthComponentTest : GdUnit4.GdUnitTestSuite
     }
 
     [TestCase]
-    public async GdUnitAwaiter DeathSignalEmittedAtZero()
+    public async Task DeathSignalEmittedAtZero()
     {
-        var monitor = MonitorSignals(_health);
+        var signal = AssertSignal(_health).StartMonitoring();
         _health.TakeDamage(100);
-        await monitor.AwaitSignal("died").WithTimeout(500);
-        AssertSignal(monitor).IsEmitted("died");
+        await signal.IsEmitted("Died").WithTimeout(500);
     }
 }
 ```

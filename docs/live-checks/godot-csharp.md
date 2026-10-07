@@ -113,3 +113,49 @@ Not proved by this run: `AutoFree`, `AddChild`, mocks, spies, scene runner
 and signal assertions in `skills/godot-testing/gdunit4-reference.md`. The
 `gdUnit4.api` 5.0.0 library names `RegisterForAutoFree` and no `AutoFree`
 method, so the `AutoFree(...)` examples are probably wrong too.
+
+## 2026-10-07 (gdUnit4Net API)
+
+Every C# gdUnit4 block of `skills/godot-testing` (`gdunit4-reference.md`,
+`references/tdd-workflow.md`), `skills/godot-dependency-injection`
+(`references/testing-with-di.md`) and `skills/godot-event-bus`
+(`references/testing.md`) now compiles against `gdUnit4.api` 5.0.0. A scratch
+project with the 3 packages of the steps above compiled 16 blocks: 7 failed,
+6 were fixed in place, and 1 (the C# mocking block) was replaced by 1 sentence.
+The public API came from `GdUnit4Api.dll` by reflection.
+`gdUnit4.api` 5.0.0 has `Assertions.AutoFree<T>` and `Assertions.AddNode<T>`,
+and has no `Mock`, no `Spy`, no `RegisterForAutoFree` and no `AddChild` helper.
+
+| Step | Claim it proves | Tool version | Result | Evidence |
+|------|-----------------|--------------|--------|----------|
+| gdunit4net-api | In a test run by `dotnet test` on Godot .NET 4.7.2, `AutoFree(new Counter())` with `AddNode(counter, autoFree: false)` puts the node in the tree and runs `_Ready`. `ISceneRunner.Load("res://counter.tscn")` returns the scene. `AssertSignal(...).StartMonitoring()`, `IsEmitted("Changed", 5, 7)` and `IsNotEmitted("Other")` with `WithTimeout(500)` pass, and `AwaitIdleFrame()` returns. | gdUnit4.api 5.0.0, gdUnit4.test.adapter 3.0.0, Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | 2 runs of `scripts/godot/live_csharp.sh`: exit 0, 15 PASS, 0 FAIL; the step line is `PASS gdunit4net-api` with `Passed!  - Failed:     0, Passed:     2`. |
+
+Fixed names (old name, new name):
+
+- `GdUnit4.GdUnitTestSuite` base class of `tdd-workflow.md`: removed; a `[TestSuite]` class has no base class.
+- `AddChild(_health)`: `AddNode(_health, autoFree: false)`.
+- `MonitorSignals(_health)` and `AssertSignal(monitor)`: `AssertSignal(_health).StartMonitoring()`.
+- `public async GdUnitAwaiter` test return type: `public async Task`.
+- `.IsEmitted("x").WithArgs(a, b)`: `.IsEmitted("X", a, b)`; the arguments belong to `IsEmitted`.
+- `.IsEmitted("x").Exactly(1)`: removed; the api has no `Exactly`.
+- `monitor.AwaitSignal("died").WithTimeout(500)`: `signal.IsEmitted("Died").WithTimeout(500)`.
+- `IsEmitted("health_changed")` and `IsEmitted("died")`: `IsEmitted("HealthChanged", 100, 90)` and `IsEmitted("Died")`; a C# `[Signal]` has a PascalCase name, and `IsEmitted("changed")` fails with `Expecting signal exists`.
+- `IsEmitted("Changed")` with no arguments for a signal that has arguments: pass the arguments; without them `IsEmitted` waits for an emission with no arguments, and `await` without `WithTimeout` never returns.
+- `IsApproximately(exp, margin)` (`gdunit4-reference.md`, `SKILL.md`): `IsEqualApprox(exp, margin)`.
+- `IsFalse("message")` and `IsTrue("message")`: `OverrideFailureMessage("message").IsFalse()` and `.IsTrue()`.
+- `_runner.AwaitSignal(tree, "process_frame").WithTimeout(500)`: `_runner.AwaitIdleFrame()`.
+- `Mock<T>`, `Spy`, `Verify`, `Times`, `VerifyNoInteractions`, `MockMethod`, `MockProperty`: no gdUnit4Net 5.0.0 name; the block is a sentence that names a hand-written stub class and Moq.
+- Missing `using System.Threading.Tasks;` in 3 blocks (`tdd-workflow.md`, 2 in `skills/godot-event-bus/references/testing.md`): added.
+- `SKILL.md` prose: `Mock<T>` and `GdUnit4.GdUnitTestSuite` named as gdUnit4Net features: reworded; `AssertSignal(mon)` in a table row: `AssertSignal(obj)`.
+
+Side checks in a scratch project, not steps of the script: a call to
+`IsEmitted` with the arguments after the emission passes (the monitor keeps the
+emission); the same call with no arguments fails; a call before the emission
+passes. A first run of the scratch project once failed with `Rebuild Godot
+Project ends with exit code: 137` (the 60 second `CompileProcessTimeout` of
+gdUnit4Net); the next run passed.
+
+Not fixed (outside the files of this unit): `skills/godot-testing/references/testing-patterns.md`
+still uses `MonitorSignals`, `GdUnitAwaiter` and `.WithArgs`. The signal block of
+`testing-with-di.md` compiles, but its test does not await the task from
+`WithTimeout`, so it asserts nothing.

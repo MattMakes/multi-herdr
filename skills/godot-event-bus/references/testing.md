@@ -53,6 +53,7 @@ func test_score_increments_correctly() -> void:
 ```csharp
 // C# equivalent — gdUnit4 producer-side signal assertions
 // Requires: gdUnit4 NuGet package (https://github.com/MikeSchulze/gdUnit4Net)
+using System.Threading.Tasks;
 using GdUnit4;
 using static GdUnit4.Assertions;
 
@@ -80,8 +81,7 @@ public partial class PlayerSignalTest
     {
         // Assert the signal fires with the expected (current=90, maximum=100) args
         var signalAssert = AssertSignal(_eventBus)
-            .IsEmitted(nameof(EventBus.SignalName.HealthChanged))
-            .WithArgs(90, 100);
+            .IsEmitted(nameof(EventBus.SignalName.HealthChanged), 90, 100);
 
         _player.TakeDamage(10);
 
@@ -110,14 +110,13 @@ public partial class PlayerSignalTest
         _player.AddScore(25);
 
         // Allow one frame for signal processing
-        await _runner.AwaitSignal(_runner.Scene().GetTree(), "process_frame").WithTimeout(500);
+        await _runner.AwaitIdleFrame();
 
         AssertThat(emitCount).IsEqual(2);
 
         // Verify the cumulative value from the last emission
         var signalAssert = AssertSignal(_eventBus)
-            .IsEmitted(nameof(EventBus.SignalName.ScoreChanged))
-            .WithArgs(75);
+            .IsEmitted(nameof(EventBus.SignalName.ScoreChanged), 75);
         await signalAssert.WithTimeout(100);
     }
 }
@@ -155,6 +154,7 @@ func test_hud_updates_score_label() -> void:
 
 ```csharp
 // C# equivalent — gdUnit4 consumer-side state assertions
+using System.Threading.Tasks;
 using GdUnit4;
 using static GdUnit4.Assertions;
 
@@ -180,15 +180,15 @@ public partial class HudLayerTest
     public async Task PlayerDied_ShowsDeathScreen()
     {
         var deathScreen = _hud.GetNode<Control>("DeathScreen");
-        AssertThat(deathScreen.Visible).IsFalse("death screen should start hidden");
+        AssertThat(deathScreen.Visible).OverrideFailureMessage("death screen should start hidden").IsFalse();
 
         // Emit directly on the autoload — HudLayer's handler fires synchronously
         _eventBus.EmitSignal(EventBus.SignalName.PlayerDied);
 
         // Allow one frame for _Process / deferred calls to settle
-        await _runner.AwaitSignal(_runner.Scene().GetTree(), "process_frame").WithTimeout(500);
+        await _runner.AwaitIdleFrame();
 
-        AssertThat(deathScreen.Visible).IsTrue("death screen should be visible after PlayerDied");
+        AssertThat(deathScreen.Visible).OverrideFailureMessage("death screen should be visible after PlayerDied").IsTrue();
     }
 
     [TestCase]
@@ -196,7 +196,7 @@ public partial class HudLayerTest
     {
         _eventBus.EmitSignal(EventBus.SignalName.ScoreChanged, 1234);
 
-        await _runner.AwaitSignal(_runner.Scene().GetTree(), "process_frame").WithTimeout(500);
+        await _runner.AwaitIdleFrame();
 
         AssertThat(_hud.GetNode<Label>("ScoreLabel").Text).IsEqual("Score: 1234");
     }
