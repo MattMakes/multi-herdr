@@ -333,7 +333,7 @@ pub struct RolloutCandidate {
     pub modified: SystemTime,
 }
 
-/// Rollout files created after `since` whose head names `project_dir` as its cwd,
+/// Rollout files modified at or after `since` whose head names `project_dir` as its cwd,
 /// newest first.
 ///
 /// The cwd check is what keeps two projects' concurrent codex sessions apart.
@@ -374,7 +374,9 @@ fn collect_rollouts(
         let Ok(modified) = meta.modified() else {
             continue;
         };
-        if modified <= since {
+        // An equal mtime is this launch's: mtimes come from a coarse clock,
+        // so a rollout written in the marker's tick has the marker's mtime.
+        if modified < since {
             continue;
         }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -819,6 +821,24 @@ mod tests {
 
         let future = SystemTime::now() + Duration::from_secs(3600);
         assert!(find_rollouts(&sessions, "/proj/mine", future).is_empty());
+    }
+
+    /// A filesystem stamps mtimes from a coarse clock (1 kernel tick on
+    /// Linux), so a rollout written right after the launch marker can carry
+    /// the marker's exact mtime. It is this launch's rollout, not an older one.
+    #[test]
+    fn finds_a_rollout_with_the_launch_markers_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        let path = write_rollout(
+            &sessions,
+            "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+            "/proj/mine",
+        );
+        let since = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        let found = find_rollouts(&sessions, "/proj/mine", since);
+        assert_eq!(found.len(), 1, "{found:#?}");
     }
 
     /// A project path containing characters that need JSON escaping must still
