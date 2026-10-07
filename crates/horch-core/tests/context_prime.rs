@@ -661,3 +661,279 @@ fn ctx_05_prime_launch_sweeps_old_agent_dirs() {
     );
     assert!(w.source().join("auth.json").is_file());
 }
+
+// ─── X2: Prime reports its pane state to herdr ──────────────────────────────
+
+/// A `herdr` that appends each argv to `<tmp>/herdr.log`, 1 line per call.
+#[cfg(unix)]
+fn fake_herdr(w: &World) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = w.tmp.path().join("herdr");
+    let log = w.tmp.path().join("herdr.log");
+    write(
+        &bin,
+        &format!("#!/bin/sh\necho \"$@\" >> '{}'\n", log.display()),
+    );
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The first run of a new executable on macOS can take over 2 s (the
+    // system scans it), longer than the hook waits for 1 call.
+    std::process::Command::new(&bin).status().unwrap();
+    std::fs::remove_file(&log).unwrap();
+    (bin, log)
+}
+
+/// The value after `-e` in the launch's extra args.
+fn status_hook_arg(prepared: &Prepared) -> Option<PathBuf> {
+    prepared
+        .extra_args
+        .windows(2)
+        .find(|w| w[0] == "-e")
+        .map(|w| PathBuf::from(&w[1]))
+}
+
+/// The `--seq` value of a logged herdr call.
+fn seq_of(line: &str) -> u64 {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let at = words.iter().position(|w| *w == "--seq").expect("--seq");
+    words[at + 1].parse().unwrap()
+}
+
+/// In a herdr pane, the launch writes the status hook beside its socket
+/// (0600, fixed values, no secret), loads it with `-e`, and on finish
+/// releases the pane's agent and removes the hook.
+#[cfg(unix)]
+#[test]
+fn x2_prime_status_hook_in_a_herdr_pane() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    write(&w.fake_prime(), "#!/bin/sh\necho '[]'\n");
+    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (herdr, log) = fake_herdr(&w);
+    let ctx = w.ctx(&[
+        ("HERDR_PANE_ID", "p_7"),
+        ("HORCH_HERDR_BIN", &herdr.to_string_lossy()),
+    ]);
+    let (t, decision) = decide(&w, &ctx);
+    let prepared = prepare(&w, &ctx, &t, &decision);
+    let hook = status_hook_arg(&prepared).expect("-e <hook> in the extra args");
+    let sessions = prepared.sessions_dir.clone().unwrap();
+    assert_eq!(
+        hook.parent(),
+        sessions.parent(),
+        "the hook is in the launch dir"
+    );
+    assert_eq!(hook.file_name().unwrap(), "herdr-status.mjs");
+    assert_eq!(mode(&hook), 0o600);
+    let text = std::fs::read_to_string(&hook).unwrap();
+    assert!(text.contains(r#"const PANE = "p_7";"#), "{text}");
+    assert!(text.contains(&format!("const HERDR = {:?};", herdr.to_string_lossy())));
+    assert!(text.contains(r#"const SOURCE = "horch:prime";"#));
+    assert!(text.contains(r#"const AGENT = "prime";"#));
+    assert!(!text.contains(TOKEN));
+    assert!(
+        !text.contains("process.env"),
+        "the hook reads no environment"
+    );
+
+    // The wrapper the hook's argv mirrors.
+    horch_core::workspace::herdr::Herdr::with_bin(&herdr)
+        .report_agent("p_7", "horch:prime", "prime", "idle", 5)
+        .unwrap();
+    prepared.finish();
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        calls.starts_with(
+            "pane report-agent --source horch:prime --agent prime --state idle --seq 5 p_7\n"
+        ),
+        "{calls}"
+    );
+    let release: Vec<&str> = calls
+        .lines()
+        .filter(|l| l.contains("release-agent"))
+        .collect();
+    assert_eq!(release.len(), 1, "{calls}");
+    assert!(
+        release[0].starts_with("pane release-agent --source horch:prime --agent prime --seq ")
+            && release[0].ends_with(" p_7"),
+        "{calls}"
+    );
+    assert!(std::fs::symlink_metadata(&hook).is_err(), "the hook stayed");
+}
+
+/// Outside a herdr pane there is nothing to report to: no hook, no `-e`.
+#[test]
+fn x2_prime_no_status_hook_outside_a_pane() {
+    let w = World::new();
+    let ctx = w.ctx(&[]);
+    let (t, decision) = decide(&w, &ctx);
+    let prepared = prepare(&w, &ctx, &t, &decision);
+    assert_eq!(status_hook_arg(&prepared), None);
+    assert!(!prepared
+        .extra_args
+        .iter()
+        .any(|a| a.ends_with("herdr-status.mjs")));
+    let launch = prepared.sessions_dir.clone().unwrap();
+    assert!(!launch.parent().unwrap().join("herdr-status.mjs").exists());
+}
+
+/// A launch killed before `finish` leaves its hook; the next launch's
+/// sweep removes it with the agent dir.
+#[cfg(unix)]
+#[test]
+fn x2_prime_sweep_removes_an_old_status_hook() {
+    let w = World::new();
+    let old = w.state().join("prime").join("prime-1-old");
+    write(&old.join("herdr-status.mjs"), "// old");
+    let ctx = w.ctx(&[]);
+    let (t, decision) = decide(&w, &ctx);
+    let _prepared = prepare(&w, &ctx, &t, &decision);
+    assert!(
+        !old.join("herdr-status.mjs").exists(),
+        "the old hook stayed"
+    );
+}
+
+/// The hook as Prime runs it, in `node` with a fake extension API: a turn
+/// reports `idle`, `working`, `idle`, then `quit` releases; every `--seq`
+/// is higher than the one before. A child session and other shutdown
+/// reasons send nothing. Skipped when `node` is not on PATH.
+#[cfg(unix)]
+#[test]
+fn x2_prime_status_hook_reports_a_turn() {
+    if std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: node is not on PATH");
+        return;
+    }
+    let w = World::new();
+    let (herdr, log) = fake_herdr(&w);
+    let ctx = w.ctx(&[
+        ("HERDR_PANE_ID", "p_7"),
+        ("HORCH_HERDR_BIN", &herdr.to_string_lossy()),
+    ]);
+    let (t, decision) = decide(&w, &ctx);
+    let prepared = prepare(&w, &ctx, &t, &decision);
+    let hook = status_hook_arg(&prepared).unwrap();
+    let sessions = prepared.sessions_dir.clone().unwrap();
+    let driver = w.tmp.path().join("driver.mjs");
+    write(
+        &driver,
+        r#"
+const [hook, sessions] = process.argv.slice(2);
+const handlers = {};
+const pi = { on: (name, fn) => { (handlers[name] ??= []).push(fn); } };
+(await import(hook)).default(pi);
+const ctx = (file, idle) => ({
+  sessionManager: { getSessionFile: () => file },
+  isIdle: () => idle,
+});
+const fire = async (name, event, c) => {
+  for (const fn of handlers[name] ?? []) await fn(event, c);
+};
+const root = ctx(`${sessions}/s-1.jsonl`, true);
+const child = ctx(`${sessions}/children/c-1/s-2.jsonl`, false);
+await fire("session_start", { reason: "startup" }, root);
+await fire("agent_start", {}, child);
+await fire("agent_start", {}, root);
+await fire("agent_end", {}, child);
+await fire("agent_end", {}, root);
+await fire("session_shutdown", { reason: "reload" }, root);
+await fire("session_shutdown", { reason: "quit" }, root);
+"#,
+    );
+    let out = std::process::Command::new("node")
+        .arg(&driver)
+        .arg(&hook)
+        .arg(&sessions)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let calls = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    let kinds: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            let words: Vec<&str> = l.split_whitespace().collect();
+            match words.iter().position(|w| *w == "--state") {
+                Some(at) => words[at + 1].to_string(),
+                None => words[1].to_string(),
+            }
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["idle", "working", "idle", "release-agent"],
+        "{calls}"
+    );
+    for line in &lines {
+        assert!(
+            line.contains("--source horch:prime --agent prime --seq "),
+            "{line}"
+        );
+        assert!(line.ends_with(" p_7"), "{line}");
+    }
+    let seqs: Vec<u64> = lines.iter().map(|l| seq_of(l)).collect();
+    assert!(seqs.windows(2).all(|p| p[0] < p[1]), "{seqs:?}");
+}
+
+/// herdr missing: the hook throws nothing and the turn goes on.
+#[cfg(unix)]
+#[test]
+fn x2_prime_status_hook_without_herdr_is_silent() {
+    if std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: node is not on PATH");
+        return;
+    }
+    let w = World::new();
+    let missing = w.tmp.path().join("no-herdr");
+    let ctx = w.ctx(&[
+        ("HERDR_PANE_ID", "p_7"),
+        ("HORCH_HERDR_BIN", &missing.to_string_lossy()),
+    ]);
+    let (t, decision) = decide(&w, &ctx);
+    let prepared = prepare(&w, &ctx, &t, &decision);
+    let hook = status_hook_arg(&prepared).unwrap();
+    let sessions = prepared.sessions_dir.clone().unwrap();
+    let driver = w.tmp.path().join("driver.mjs");
+    write(
+        &driver,
+        r#"
+const [hook, sessions] = process.argv.slice(2);
+const handlers = {};
+(await import(hook)).default({ on: (n, fn) => { (handlers[n] ??= []).push(fn); } });
+const c = { sessionManager: { getSessionFile: () => `${sessions}/s.jsonl` }, isIdle: () => true };
+for (const [n, e] of [["agent_start", {}], ["agent_end", {}], ["session_shutdown", { reason: "quit" }]]) {
+  for (const fn of handlers[n]) await fn(e, c);
+}
+console.log("ok");
+"#,
+    );
+    let out = std::process::Command::new("node")
+        .arg(&driver)
+        .arg(&hook)
+        .arg(&sessions)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

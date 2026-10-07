@@ -153,6 +153,9 @@ impl Daemon {
             // not needed after the pane. `remove_dir_all` does not follow
             // links. The sessions stay for a resume.
             let _ = std::fs::remove_dir_all(self.agent_dir());
+            if let Some(launch) = self.socket.parent() {
+                let _ = std::fs::remove_file(launch.join(STATUS_HOOK));
+            }
         }
     }
 }
@@ -304,9 +307,10 @@ fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Remove the agent dirs of earlier launches under `prime_root` that are
-/// over: no daemon socket and no live launcher. For panes killed before
-/// [`Daemon::finish`] ran. Best effort: an error leaves the dir.
+/// Remove the agent dirs and status hooks of earlier launches under
+/// `prime_root` that are over: no daemon socket and no live launcher. For
+/// panes killed before [`Daemon::finish`] ran. Best effort: an error leaves
+/// the entry.
 fn sweep_agent_dirs(prime_root: &Path) {
     let Ok(entries) = std::fs::read_dir(prime_root) else {
         return;
@@ -314,14 +318,110 @@ fn sweep_agent_dirs(prime_root: &Path) {
     for entry in entries.flatten() {
         let launch = entry.path();
         let agent = launch.join(AGENT_DIR);
-        if std::fs::symlink_metadata(&agent).is_err()
+        let hook = launch.join(STATUS_HOOK);
+        let leftover =
+            std::fs::symlink_metadata(&agent).is_ok() || std::fs::symlink_metadata(&hook).is_ok();
+        if !leftover
             || std::fs::symlink_metadata(launch.join("d.sock")).is_ok()
             || launcher_alive(&launch)
         {
             continue;
         }
         let _ = std::fs::remove_dir_all(&agent);
+        let _ = std::fs::remove_file(&hook);
     }
+}
+
+/// The Prime extension that reports this pane's agent state to herdr (X2,
+/// `ai_docs/plans/wave3/x2-design.md`), in the launch dir beside the socket.
+/// herdr detects no Prime agent itself, so without it a Prime pane reads
+/// `agent_status: unknown` and never looks idle.
+const STATUS_HOOK: &str = "herdr-status.mjs";
+/// The `--source` and `--agent` of every report.
+pub const STATUS_SOURCE: &str = "horch:prime";
+pub const STATUS_AGENT: &str = "prime";
+
+/// The status extension. Prime runs it in its worker process. It runs only
+/// `herdr pane report-agent|release-agent` with fixed args (no shell, output
+/// ignored, 2 s limit), in seq order through 1 queue, and ignores every
+/// failure: herdr down gives no error in the pane. Only the root session
+/// reports: an RLM child writes its session elsewhere. `{{HERDR}}`, `{{PANE}}`
+/// and `{{SESSIONS}}` are JSON string literals.
+const STATUS_HOOK_JS: &str = r#"// Written by horch for 1 Prime launch: reports the pane's agent state to herdr.
+import { spawn } from "node:child_process";
+import path from "node:path";
+
+const HERDR = {{HERDR}};
+const PANE = {{PANE}};
+const SESSIONS = path.resolve({{SESSIONS}});
+const SOURCE = "horch:prime";
+const AGENT = "prime";
+
+let seq = Date.now() * 1000;
+let queue = Promise.resolve();
+
+function run(args) {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(HERDR, args, { stdio: "ignore", timeout: 2000, windowsHide: true });
+      child.on("error", () => resolve());
+      child.on("close", () => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function send(args) {
+  seq += 1;
+  const full = [...args, "--source", SOURCE, "--agent", AGENT, "--seq", String(seq), PANE];
+  queue = queue.then(() => run(full));
+  return queue;
+}
+
+function root(ctx) {
+  try {
+    const file = ctx?.sessionManager?.getSessionFile?.();
+    return typeof file === "string" && path.dirname(path.resolve(file)) === SESSIONS;
+  } catch {
+    return false;
+  }
+}
+
+const report = (state) => send(["pane", "report-agent", "--state", state]);
+
+export default function (pi) {
+  pi.on("session_start", (_event, ctx) => {
+    if (root(ctx)) void report(ctx?.isIdle?.() === false ? "working" : "idle");
+  });
+  pi.on("agent_start", (_event, ctx) => {
+    if (root(ctx)) void report("working");
+  });
+  pi.on("agent_end", (_event, ctx) => {
+    if (root(ctx)) void report("idle");
+  });
+  pi.on("session_shutdown", (event, ctx) => {
+    if (event?.reason === "quit" && root(ctx)) return send(["pane", "release-agent"]);
+  });
+}
+"#;
+
+/// [`STATUS_HOOK_JS`] for 1 launch.
+fn status_hook(herdr: &Path, pane: &str, sessions: &Path) -> String {
+    let lit = |s: &str| Value::String(s.to_string()).to_string();
+    STATUS_HOOK_JS
+        .replace("{{HERDR}}", &lit(&herdr.to_string_lossy()))
+        .replace("{{PANE}}", &lit(pane))
+        .replace("{{SESSIONS}}", &lit(&sessions.to_string_lossy()))
+}
+
+/// A `--seq` above every report the hook sent before now: it counts from
+/// its load time in ms × 1000, 1 per report.
+fn release_seq() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64 * 1000 + 999)
+        .unwrap_or_default()
 }
 
 /// Whether the horch process that wrote `<launch>/launcher` still runs.
@@ -670,9 +770,40 @@ impl Harness for Prime {
                 }
             }
         }
+        // In a herdr pane only: herdr has no Prime detector, so the pane
+        // reports its own state. Without the hook the pane still runs.
+        let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
+        if let Some(pane) = &pane {
+            let hook = daemon
+                .socket()
+                .parent()
+                .unwrap_or(daemon.sessions_dir())
+                .join(STATUS_HOOK);
+            let text = status_hook(&ctx.bins.harness.herdr, pane, daemon.sessions_dir());
+            match crate::fsx::write_atomic(&hook, text.as_bytes(), crate::fsx::PRIVATE_FILE) {
+                Ok(()) => {
+                    prepared.extra_args.push("-e".into());
+                    prepared
+                        .extra_args
+                        .push(hook.to_string_lossy().into_owned());
+                }
+                Err(e) => eprintln!(
+                    "horch[{}]: Prime status hook not written, herdr shows no Prime state: {e:#}",
+                    req.role
+                ),
+            }
+        }
         // After the CLI has exited, not before: stopping the daemon early would
         // take the session it is still writing with it.
         prepared.on_finish(move || daemon.finish());
+        // After the daemon: its worker sends nothing more. Also when Prime
+        // did not quit cleanly. A closed pane or herdr down: nothing to do.
+        if let Some(pane) = pane {
+            let herdr = crate::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
+            prepared.on_finish(move || {
+                let _ = herdr.release_agent(&pane, STATUS_SOURCE, STATUS_AGENT, release_seq());
+            });
+        }
         Ok(prepared)
     }
 
