@@ -47,7 +47,7 @@
     {
       "description": "Use when work must transfer to another worker or continue after context loss.",
       "name": "handoff",
-      "skill_file_bytes": 2518
+      "skill_file_bytes": 2629
     },
     {
       "description": "Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.",

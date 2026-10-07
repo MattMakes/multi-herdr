@@ -27,7 +27,7 @@
     {
       "description": "Use when work must transfer to another worker or continue after context loss.",
       "name": "handoff",
-      "skill_file_bytes": 2518
+      "skill_file_bytes": 2629
     }
   ]
 }

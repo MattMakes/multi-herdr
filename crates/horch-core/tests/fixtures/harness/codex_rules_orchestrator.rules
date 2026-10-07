@@ -38,3 +38,13 @@ prefix_rule(
     decision = "allow",
     justification = "herdr-fleet: see what the usage-limit gate would do with a spawn",
 )
+prefix_rule(
+    pattern = ["horch", "context"],
+    decision = "allow",
+    justification = "herdr-fleet: report the context size of every session",
+)
+prefix_rule(
+    pattern = ["horch", "compact"],
+    decision = "allow",
+    justification = "herdr-fleet: compact a session at a stopping point",
+)
