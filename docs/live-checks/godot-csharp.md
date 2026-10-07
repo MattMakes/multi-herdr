@@ -21,8 +21,12 @@ build output at the end. It sets `HOME` and `NUGET_PACKAGES` to that folder.
 Steps: `godot-dotnet`, `dotnet-build`, `csharp-scene`, `csharp-signal`,
 `csharp-errors`, `mixed-gd-calls-cs`, `mixed-cs-signal-to-gd`,
 `mixed-cs-calls-gd`, `mixed-gd-signal-to-cs`, `mixed-untyped-array`,
-`mixed-errors`, `mixed-typed-array-rejected`. The `mixed-*` steps use the 3
-code blocks of step 5 of `skills/godot-language-choice/SKILL.md` unchanged.
+`mixed-errors`, `mixed-typed-array-rejected`, `gdunit4net-pass`,
+`gdunit4net-fail`. The `mixed-*` steps use the 3 code blocks of step 5 of
+`skills/godot-language-choice/SKILL.md` unchanged. The `gdunit4net-*` steps
+need the network for NuGet and `DOTNET_ROLL_FORWARD=Major` (this host has
+only the .NET 10 runtime, and the test host targets net8.0); the script sets
+both.
 
 ## 2026-10-06
 
@@ -73,3 +77,39 @@ rule that no class extends across languages; and the speed figures (third
 party, Godot 4.2). The `Hud.cs` marker for the signal is a lambda, because the
 block's `OnItemAdded` is one line that the proof does not change; the bare
 `sword` line proves that `OnItemAdded` ran.
+
+## 2026-10-07 (gdUnit4Net)
+
+The script ran twice and exited 0 both times, with `PASS` for all 14 steps.
+Packages: `gdUnit4.api` 5.0.0 and `gdUnit4.test.adapter` 3.0.0, with
+`Microsoft.NET.Test.Sdk` 18.0.1 (VSTest 18.0.1). They are the newest stable
+pair that resolves together: adapter 3.1.0 and 3.1.1 depend on the
+prerelease `gdUnit4.api` 5.1.0-rc5. gdUnit4Net states no Godot 4.7 support
+(its README lists Godot 4.3.0, 4.4.0 and 4.4.1) and its packages name
+GodotSharp 4.4.0. This run used Godot .NET 4.7.2 with `Godot.NET.Sdk/4.7.2`.
+
+| Step | Claim it proves | Tool version | Result | Evidence |
+|------|-----------------|--------------|--------|----------|
+| gdunit4net-pass | `dotnet test` with the gdUnit4Net adapter starts Godot .NET 4.7.2 from `GODOT_BIN` and a passing C# test reports 1 passed. The test has `[RequireGodotRuntime]` and asserts that the engine version starts with `4.7.2`. | gdUnit4.api 5.0.0, gdUnit4.test.adapter 3.0.0, Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | Exit 0 and `Passed!  - Failed:     0, Passed:     1, Skipped:     0, Total:     1`. |
+| gdunit4net-fail | A failing C# test makes `dotnet test` exit non-zero and report 1 failed. | gdUnit4.api 5.0.0, gdUnit4.test.adapter 3.0.0, Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | Exit 1 and `Failed!  - Failed:     1, Passed:     0, Skipped:     0, Total:     1`, with `Expecting be equal: '8' but is '7'`. |
+
+Side checks in a scratch project, not steps of the script:
+
+- With a wrong version (`StartsWith("9.9")`) the same test failed with
+  `"4.7.2-stable (official)" to start with "9.9"`, so the pass reads the
+  engine of 4.7.2.
+- With `GODOT_BIN` set to a missing path the adapter printed `The Godot
+  executable was not found at path: /nonexistent/godot`, so the adapter
+  reads `GODOT_BIN`.
+- Without `DOTNET_ROLL_FORWARD=Major`, the test host stopped with `You must
+  install or update .NET to run this application` (needs
+  `Microsoft.NETCore.App` 8.0.0, host has 10.0.1).
+- `GdUnit4.GdUnitTestSuite` does not exist in `gdUnit4.api` 5.0.0: a class
+  with `: GdUnit4.GdUnitTestSuite` fails with `error CS0234`. A `[TestSuite]`
+  class needs no base class. The fix is in
+  `skills/godot-testing/gdunit4-reference.md`.
+
+Not proved by this run: `AutoFree`, `AddChild`, mocks, spies, scene runner
+and signal assertions in `skills/godot-testing/gdunit4-reference.md`. The
+`gdUnit4.api` 5.0.0 library names `RegisterForAutoFree` and no `AutoFree`
+method, so the `AutoFree(...)` examples are probably wrong too.

@@ -74,7 +74,15 @@ gd -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd -a res://tests --ignoreHeadlessM
 - An exit of 0 with no tests found is not a pass: check the log for the
   test count.
 - C# test suites run through the gdUnit4Net `dotnet test` adapter, not
-  through `GdUnitCmdTool.gd`. proof: not run (needs Godot .NET).
+  through `GdUnitCmdTool.gd`. Pin `gdUnit4.api` 5.0.0 with
+  `gdUnit4.test.adapter` 3.0.0 and set `GODOT_BIN` in a `.runsettings` file.
+  Run `dotnet test --settings .runsettings`; a test that needs the engine
+  carries `[RequireGodotRuntime]`. gdUnit4Net states no Godot 4.7 support
+  (README: 4.3.0 to 4.4.1) and names GodotSharp 4.4.0.
+  proof: run on 2026-10-07 on Godot .NET 4.7.2 with those 2 versions: 1 test
+  passed (exit 0) and 1 test failed on purpose (exit 1)
+  (`docs/live-checks/godot-csharp.md`, steps `gdunit4net-pass` and
+  `gdunit4net-fail`).
 - gdUnit4 `-c` and GUT `-gjunit_xml_file` come from the addon help text.
   proof: not run (needs the addons in a project).
 

@@ -7,7 +7,7 @@
 # headless. It prints one line per step: PASS <step>, FAIL <step>: <reason>
 # or SKIP <step>: <reason>, and exits 1 when a step fails. A missing tool is
 # SKIP. It writes only under .worktrees/_scratch/live-godot-csharp/ and
-# removes the build output at the end.
+# removes the build output at the end. NuGet needs the network.
 #
 # Godot .NET: GODOT_MONO_PATH, else /Applications/Godot_mono.app.
 # Run: scripts/godot/live_csharp.sh
@@ -271,5 +271,119 @@ else
   fail "mixed-typed-array-rejected" "no element type error in $work/typed.log"
 fi
 
-rm -rf "$work/project/.godot""$work/project/bin" "$work/project/obj"
+# gdUnit4Net: a second project runs C# tests through the `dotnet test` adapter on
+# the .NET engine. gdUnit4Net states Godot 4.3 and 4.4 only and names GodotSharp
+# 4.4.0; this run is the check on Godot .NET 4.7.2. These are the newest stable
+# packages that resolve together (adapter 3.0.0 needs api 5.0.0; adapter 3.1.x
+# needs the prerelease api 5.1.0-rc5).
+gdunit_api=5.0.0
+gdunit_adapter=3.0.0
+gdunit="$work/gdunit"
+rm -rf "$gdunit"
+mkdir -p "$gdunit"
+cd "$gdunit"
+cat > project.godot <<'EOF'
+config_version=5
+
+[application]
+config/name="LiveGdUnit"
+config/features=PackedStringArray("4.7", "C#")
+
+[dotnet]
+project/assembly_name="LiveGdUnit"
+EOF
+cat > LiveGdUnit.csproj <<EOF
+<Project Sdk="Godot.NET.Sdk/$sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+    <PackageReference Include="gdUnit4.api" Version="$gdunit_api" />
+    <PackageReference Include="gdUnit4.test.adapter" Version="$gdunit_adapter" />
+  </ItemGroup>
+</Project>
+EOF
+cat > Health.cs <<'EOF'
+public class Health
+{
+    public int Value { get; private set; }
+
+    public Health(int value) { Value = value; }
+
+    public void Damage(int amount) { Value -= amount; }
+}
+EOF
+# The passing test needs the Godot runtime and asserts the engine version, so a
+# pass proves that the adapter started the 4.7.2 engine from GODOT_BIN.
+cat > HealthTest.cs <<'EOF'
+using Godot;
+using GdUnit4;
+using static GdUnit4.Assertions;
+
+[TestSuite]
+public class HealthTest
+{
+    [TestCase]
+    [RequireGodotRuntime]
+    public void DamageReducesValue()
+    {
+        var health = new Health(10);
+        health.Damage(3);
+        AssertThat(health.Value).IsEqual(7);
+        AssertThat((string)Engine.GetVersionInfo()["string"]).StartsWith("4.7.2");
+    }
+
+    [TestCase]
+    public void FailsOnPurpose()
+    {
+        var health = new Health(10);
+        health.Damage(3);
+        AssertThat(health.Value).IsEqual(8);
+    }
+}
+EOF
+cat > .runsettings <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <RunConfiguration>
+    <MaxCpuCount>1</MaxCpuCount>
+    <TreatNoTestsAsError>true</TreatNoTestsAsError>
+    <EnvironmentVariables>
+      <GODOT_BIN>$godot</GODOT_BIN>
+    </EnvironmentVariables>
+  </RunConfiguration>
+</RunSettings>
+EOF
+# The test host targets net8.0 and this host has only the .NET 10 runtime.
+export DOTNET_ROLL_FORWARD=Major
+gdunit_built=0
+if bounded 600 dotnet build > "$work/gdunit-build.log" 2>&1; then gdunit_built=1; fi
+gdunit_code=0
+if [ "$gdunit_built" = 1 ]; then
+  bounded 300 dotnet test --no-build --settings .runsettings --filter "Name=DamageReducesValue" > "$work/gdunit-pass.log" 2>&1 || gdunit_code=$?
+fi
+if [ "$gdunit_built" = 0 ]; then
+  fail "gdunit4net-pass" "dotnet build failed (see $work/gdunit-build.log)"
+elif [ "$gdunit_code" = 0 ] && grep -Eq 'Passed!.*Failed: +0, Passed: +1,' "$work/gdunit-pass.log"; then
+  pass "gdunit4net-pass (gdUnit4.api $gdunit_api, gdUnit4.test.adapter $gdunit_adapter)"
+else
+  fail "gdunit4net-pass" "exit $gdunit_code, want exit 0 and 1 passed (see $work/gdunit-pass.log)"
+fi
+gdunit_code=0
+if [ "$gdunit_built" = 1 ]; then
+  bounded 300 dotnet test --no-build --settings .runsettings --filter "Name=FailsOnPurpose" > "$work/gdunit-fail.log" 2>&1 || gdunit_code=$?
+fi
+if [ "$gdunit_built" = 0 ]; then
+  fail "gdunit4net-fail" "dotnet build failed (see $work/gdunit-build.log)"
+elif [ "$gdunit_code" != 0 ] && grep -Eq 'Failed!.*Failed: +1, Passed: +0,' "$work/gdunit-fail.log"; then
+  pass "gdunit4net-fail (exit $gdunit_code, 1 failed)"
+else
+  fail "gdunit4net-fail" "exit $gdunit_code, want non-zero and 1 failed (see $work/gdunit-fail.log)"
+fi
+
+rm -rf "$work/project/.godot" "$work/project/bin" "$work/project/obj"
+rm -rf "$gdunit/.godot" "$gdunit/bin" "$gdunit/obj" "$gdunit/TestResults"
 exit "$failed"

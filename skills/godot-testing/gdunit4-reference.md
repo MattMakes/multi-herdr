@@ -52,7 +52,7 @@ func test_example() -> void:
 | Convention   | Rule                                                                  |
 |--------------|-----------------------------------------------------------------------|
 | File name    | Any name; `*Test.cs` is the convention                               |
-| Class        | Decorated with `[TestSuite]`; inherits `GdUnit4.GdUnitTestSuite`     |
+| Class        | Decorated with `[TestSuite]`; no base class (api 5.0.0 has none)     |
 | Test method  | Decorated with `[TestCase]`                                           |
 
 ```csharp
@@ -61,7 +61,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 
 [TestSuite]
-public partial class HealthComponentTest : GdUnit4.GdUnitTestSuite
+public class HealthComponentTest
 {
     [TestCase]
     public void Example()
@@ -108,7 +108,7 @@ func after_test() -> void:
 
 ```csharp
 [TestSuite]
-public partial class ExampleTest : GdUnit4.GdUnitTestSuite
+public class ExampleTest
 {
     [Before]
     public void Before()
