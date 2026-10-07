@@ -37,6 +37,8 @@ pub fn agent_list(ctx: &RuntimeContext, json: bool, no_probe: bool) -> Result<()
 }
 
 /// The quota as last written, never refreshed. `None` when it cannot be read.
+/// A live `--version` answer from [`gather`] wins over its cached harness
+/// error (`inventory`, U-67).
 fn cached_view(ctx: &RuntimeContext) -> Option<QuotaView> {
     let root = ctx.paths.state_root.clone();
     let policy = super::quotacmd::load_policy(ctx, &root).ok()?;

@@ -76,11 +76,25 @@ pub struct AgentRow {
 }
 
 /// One row per real harness (never `None`), in [`HarnessKind::ALL`] order.
+///
+/// A harness whose live `--version` answered in `facts` is not broken,
+/// whatever the cached view says: the view's harness error is only as new
+/// as the last quota probe (U-67).
 pub fn inventory(
     teammates: &[&Teammate],
     facts: &BTreeMap<&'static str, BinaryFacts>,
     view: Option<&QuotaView>,
 ) -> Vec<AgentRow> {
+    let view = view.map(|v| {
+        let mut v = v.clone();
+        for (name, _) in facts.iter().filter(|(_, f)| f.version.is_some()) {
+            if let Some(health) = v.file.harnesses.get_mut(*name) {
+                health.error = None;
+            }
+        }
+        v
+    });
+    let view = view.as_ref();
     HarnessKind::ALL
         .iter()
         .copied()
@@ -358,5 +372,37 @@ mod tests {
         let claude = rows.iter().find(|r| r.agent == "claude").unwrap();
         assert_eq!(claude.status, "unavailable", "not found");
         assert_eq!(claude.broken, None);
+    }
+
+    /// U-67: a harness that recovered is not `broken` until the next quota
+    /// probe. Its own live `--version` answer wins over the cached error.
+    #[test]
+    fn agent_list_live_probe_wins_over_a_cached_broken() {
+        let mut file = QuotaFile::default();
+        file.harnesses.insert(
+            "codex".into(),
+            crate::routing::quota::HarnessHealth {
+                error: Some("codex --version exited 1: boom".into()),
+                ..Default::default()
+            },
+        );
+        let view = QuotaView::new(
+            file,
+            crate::clock::parse("2026-09-28T18:00:00Z").unwrap(),
+            Policy::default(),
+            true,
+        );
+        let facts = BTreeMap::from([("codex", found("/bin/codex", Some("codex-cli 0.200.0")))]);
+        let rows = inventory(&[], &facts, Some(&view));
+        let codex = rows.iter().find(|r| r.agent == "codex").unwrap();
+        assert_eq!(codex.broken, None);
+        assert_ne!(codex.status, "broken");
+        assert_ne!(codex.pool_state, "broken");
+
+        // Not probed: the cached error still stands.
+        let facts = BTreeMap::from([("codex", found("/bin/codex", None))]);
+        let rows = inventory(&[], &facts, Some(&view));
+        let codex = rows.iter().find(|r| r.agent == "codex").unwrap();
+        assert_eq!(codex.status, "broken");
     }
 }
