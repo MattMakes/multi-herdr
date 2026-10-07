@@ -15,6 +15,7 @@ pub(crate) mod activation;
 pub mod briefing;
 pub mod catalog;
 pub(crate) mod materialize;
+pub mod reading;
 pub(crate) mod selection;
 
 pub use activation::{plan_activation, InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};

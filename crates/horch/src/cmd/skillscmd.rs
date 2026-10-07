@@ -1,5 +1,5 @@
-//! `horch skills` - the skill catalog: the legacy listing, and the
-//! marketplace install, update and check commands.
+//! `horch skills` - the skill catalog: the legacy listing, reading a
+//! skill's files, and the marketplace install, update and check commands.
 //!
 //! `horch skills [list] [--phase <p>] [--json]` prints exactly what it
 //! printed before the marketplace existed (the A0 oracle).
@@ -12,7 +12,7 @@ use horch_core::roster::Phase;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::catalog::marketplace::{parse_source, InstallOptions, Lockfile, Store};
 use horch_core::skills::catalog::{self, StoreState};
-use horch_core::skills::{CatalogSource, SkillCatalog};
+use horch_core::skills::{reading, CatalogSource, SkillCatalog};
 use serde_json::json;
 
 use crate::output;
@@ -33,6 +33,16 @@ pub enum SkillsCommand {
         id: String,
         #[arg(long)]
         json: bool,
+    },
+    /// Print a file of a catalog skill (bundled or installed) to stdout,
+    /// for a skill that the bundle does not hold. Read-only.
+    Read {
+        id: String,
+        /// A path relative to the skill directory. Default: SKILL.md.
+        file: Option<String>,
+        /// List the skill's files instead, one per line.
+        #[arg(long, conflicts_with = "file")]
+        files: bool,
     },
     /// Install a skill from `owner/repo[@rev]`, an `https://` or `file://`
     /// git URL `[@rev]`, an absolute directory, or `bundled:<id>`, and pin
@@ -64,6 +74,7 @@ pub fn run(
         None => list(phase, json)?,
         Some(SkillsCommand::List { phase, json }) => list(phase, json)?,
         Some(SkillsCommand::Show { id, json }) => show(ctx, &id, json)?,
+        Some(SkillsCommand::Read { id, file, files }) => read(ctx, &id, file.as_deref(), files)?,
         Some(SkillsCommand::Install { source, path }) => install(ctx, &source, path.as_deref())?,
         Some(SkillsCommand::Update { id }) => update(ctx, id.as_deref())?,
         Some(SkillsCommand::Doctor) => return doctor(ctx),
@@ -121,6 +132,22 @@ fn show(ctx: &RuntimeContext, id: &str, json: bool) -> Result<()> {
             _ => "-".into(),
         }
     ));
+    Ok(())
+}
+
+/// `horch skills read <id> [<file>] [--files]`: the file's text as is, or
+/// the skill's file list. Fails on an unknown skill or file, and on a path
+/// that is absolute or contains `..`.
+fn read(ctx: &RuntimeContext, id: &str, file: Option<&str>, files: bool) -> Result<()> {
+    let catalog = SkillCatalog::installed(&ctx.paths.data_root)?;
+    if files {
+        for f in reading::files(&catalog, id)? {
+            output::println(&f);
+        }
+        return Ok(());
+    }
+    let bytes = reading::read(&catalog, id, file.unwrap_or("SKILL.md"))?;
+    output::print(&String::from_utf8_lossy(&bytes));
     Ok(())
 }
 
