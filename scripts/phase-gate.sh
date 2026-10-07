@@ -57,7 +57,7 @@ no_spec_todo() {
 # godot-<name> mention names a skill and every relative link resolves.
 # csharp_blocks_check compiles every csharp block with dotnet and
 # Godot.NET.Sdk (same --strict-own rule; "skipped: no dotnet" without dotnet;
-# 24 s on the 64 skills with a warm NuGet cache in .worktrees/_scratch).
+# 24 s on the 65 skills with a warm NuGet cache in .worktrees/_scratch).
 # The unit tests also run the 4 GW9 gameplay scenarios headless (U-25,
 # gameplay_scenarios.py).
 godot_skills() {
