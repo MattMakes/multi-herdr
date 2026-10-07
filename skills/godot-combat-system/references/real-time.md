@@ -152,6 +152,7 @@ multi-hit attack calls `begin_swing()` once per hit.
 extends Node
 
 var _stop_until_msec: int = 0
+var _stop_count: int = 0
 
 
 func hit_stop(duration_sec: float, time_scale: float = 0.05) -> void:
@@ -159,16 +160,21 @@ func hit_stop(duration_sec: float, time_scale: float = 0.05) -> void:
 	if until <= _stop_until_msec:
 		return
 	_stop_until_msec = until
+	_stop_count += 1
+	var this_stop: int = _stop_count
 	Engine.time_scale = time_scale
 	# process_always, not in physics, ignore_time_scale
 	await get_tree().create_timer(duration_sec, true, false, true).timeout
-	if Time.get_ticks_msec() >= _stop_until_msec:
+	if this_stop == _stop_count:
 		Engine.time_scale = 1.0
 ```
 
 Put it in an autoload. The fourth argument of `create_timer` makes the timer
 run on real time while `Engine.time_scale` is low. Overlapping calls extend
-the stop; only the last timer restores the scale. If the game uses
+the stop; only the last timer restores the scale. Compare the stop count,
+not the clock: on 4.7.2 a 0.1 s timer can end before
+`Time.get_ticks_msec()` has moved 100 ms (measured: 0 ms and 99 ms), and a
+clock test then leaves the game slowed for ever. If the game uses
 `time_scale` for slow motion, store and restore that value instead of 1.0.
 
 ## Knockback
