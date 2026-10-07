@@ -59,7 +59,7 @@ Every requirement has an ID. Tests carry the ID in their name (section 16.4), an
 | TEL-07 | Reading is incremental. A restart resumes from saved cursors. No event is ever counted twice, including after truncation, rotation, or a crash between append and cursor save. |
 | TEL-08 | Every event carries its task type: `kind` (orchestrator or worker), `phase`, and `plan` (the plan-file slug from the task text). |
 | TEL-09 | All ledgers under the state root are read, so every project on the machine is covered. |
-| TEL-10 | For the same records and the same time range, `horch usage` totals equal `horch cost` totals, token class by token class, and the costs match to 1e-6 USD. |
+| TEL-10 | For the same records and the same time range, `horch usage` totals equal `horch cost` totals, token class by token class, and the costs match to 1e-6 USD. An event whose model has no price is never counted as $0: both commands list it as unpriced, with its model and tokens. |
 | TEL-11 | No message content, prompt text, email address, account id or credential is written to any telemetry or quota file. |
 
 ### Quota (QUO)
@@ -80,7 +80,7 @@ Every requirement has an ID. Tests carry the ID in their name (section 16.4), an
 |---|---|
 | SPC-01 | At most 1 collector runs per state root. A stale lock (its pid is dead) is broken and reported. |
 | SPC-02 | `horch telemetry` becomes a read-only viewer when the lock is held. Any number of viewers can run. |
-| SPC-03 | `horch telemetry ensure` opens the collector in its own herdr workspace with `--no-focus`. It never focuses, moves, splits or tiles any existing pane, and it does nothing when a live collector exists. |
+| SPC-03 | `horch telemetry ensure` opens the collector in its own herdr workspace with `--no-focus`. It never focuses, moves, splits or tiles any existing pane, and it does nothing when a live collector runs the current binary. A live collector on another binary is stopped (by pid and start time) and replaced. |
 | SPC-04 | The screen shows pools, live panes, rollups and insights, with keys `g`, `w`, `p`, `q` (section 12.4). |
 | SPC-05 | `horch usage` and `horch quota` print the same data as the screen, as text or `--json`. |
 | SPC-06 | `horch fleet` calls `ensure`. If `ensure` fails, the fleet still starts and prints 1 warning line. |
@@ -239,6 +239,8 @@ pub enum Observation { Usage(Event), QuotaSignal(QuotaSignal) }
 
 `usage.rs` keeps its price table and `Price` logic. `horch cost` calls the same readers from offset 0 with a throwaway cursor, and sums the events. That is how TEL-10 holds by construction. The 2 known bugs (Codex final response, Claude subagents) are fixed in the readers, so `horch cost` output changes. The changelog line says so.
 
+One pricing function serves both: `usage::cost_of(prices, model, tokens)`, the price-table lookup times the token classes. The collector prices each event with it, `horch cost` prices each model's sum with it, and a reader of the store prices an event stored without a cost with it (section 8.2).
+
 ### 7.3 Unread records
 
 A record is listed in `snapshot.unread` with 1 reason when it has: no session id yet; no transcript found; an agent of `none` (the smoke fake); `sqlite3` absent; or a parse error (the reason includes the file and line number). An unread record never contributes a 0.
@@ -263,6 +265,7 @@ A record is listed in `snapshot.unread` with 1 reason when it has: no session id
 - Dedupe key: `(agent, session_id, event_id)`. The collector keeps an in-memory set of keys for the retention window, rebuilt from the event files at start. Before appending, it drops duplicate keys.
 - Crash safety: append the events, `fsync`, then write the cursor (temp file + rename). A crash between the 2 steps re-reads some input, and the dedupe index drops the repeats. This is what TEL-07 tests.
 - Retention: 35 days (setting `retention_days`). Files older than that are deleted at collector start.
+- Pricing: `cost_usd` is the list price when the event was collected, or `null` when the price table did not know the model then. Every reader of the event files (`Store::open`, `store::read_all`) prices a `null` cost from the current table at read time, so a price added later reaches events already stored. A set cost is kept: it is the price at the time. A model the table still does not know stays `null`, and every sum lists it as unpriced, never as $0.
 
 Event line:
 
@@ -313,7 +316,7 @@ Every `tick_ms` (default 2000):
 }
 ```
 
-A rollup row is `{key, tokens{...}, cost_usd, records, done, cache_hit, cost_per_done}`.
+A rollup row is `{key, tokens{...}, cost_usd, records, done, cache_hit, cost_per_done, unpriced_events}`. `tokens` includes the unpriced events; `cost_usd` does not. Each window's rollup also has `unpriced: [{model, events, tokens{...}}]`, one entry per model with no price (left out when empty). A live row has `unpriced_events` too (left out when 0).
 
 ### 9.1 Metric definitions
 
@@ -445,17 +448,18 @@ A reading whose `resets_at` has passed is treated as `used = 0` for that window 
 | command | behavior |
 |---|---|
 | `horch telemetry` | Try the lock. If acquired: collector + TUI. If held by a live pid: viewer (TUI over `snapshot.json`, refreshed every `tick_ms`). |
-| `horch telemetry ensure` | If a live collector holds the lock: print its location, exit 0. Else: `herdr workspace create --label "horch telemetry" --no-focus`, then run `horch telemetry` in its root pane, and wait up to 5 s for `collector.json` to show the new pid. |
+| `horch telemetry ensure` | If a live collector holds the lock and runs the current binary: print its location, exit 0. If it runs another binary (section 12.2): stop it, then start a new one as below. Else: `herdr workspace create --label "horch telemetry" --no-focus`, then run `horch telemetry` in its root pane, and wait up to 5 s for `collector.json` to show the new pid. |
 | `horch telemetry collect --once` | Takes the lock, runs exactly 1 tick with no TUI, and releases the lock. Exit 2 if a live collector holds the lock. Tests use a private `HORCH_STATE_DIR`. |
 | `horch telemetry render [--snapshot F] [--size 120x40] [--group G] [--window W]` | Render 1 frame to stdout as plain text. Used by golden tests and by the cloud verification. |
-| `horch usage [--json] [--since T] [--project P] [--by teammate\|phase\|agent\|project\|plan\|kind] [--window 5h\|today\|7d]` | Report from the event store. If no live collector holds the lock, it first runs the same step as `collect --once`, so the store is current. Otherwise it reads the store as it is. |
+| `horch usage [--json] [--since T] [--project P] [--by teammate\|phase\|agent\|project\|plan\|kind] [--window 5h\|today\|7d]` | Report from the event store. If no live collector holds the lock, it first runs the same step as `collect --once`, so the store is current. Otherwise it reads the store as it is. Each record lists its `unpriced_models` and `unpriced_events`; the total says "plus N unpriced event(s)", and the report lists the unpriced events per model with their tokens. |
 | `horch quota [--json] [--refresh]` | The pool table (section 12.4 header block). `--refresh` probes now, subject to QUO-07. |
 | `horch route <teammate> [--json]` | Print the gate decision (section 13.4) with no side effects. |
 
 ### 12.2 Singleton lock
 
 - The lock is `telemetry/collector.lock/`, created with `create_dir` (atomic), the same idiom as `Ledger::lock` [H].
-- The holder writes `collector.json` with `{pid, started_at, host, herdr_session, workspace_id, pane_id}`.
+- The holder writes `collector.json` with `{pid, started_at, host, herdr_session, workspace_id, pane_id, pid_start, exe}`. `pid_start` is the process start time (`procid::start_time`). `exe` is the binary it runs: `{path, len, mtime_ns}`, the path with symlinks resolved.
+- Stale binary: a collector keeps running the binary it started with, so after `just install` it runs old prices and old readers. `horch telemetry ensure` compares the live holder's `exe` with the current executable; `horch install` compares it with the binary it just installed. A holder with another `exe`, or none (a horch older than the field), is stopped with SIGTERM through `procid::signal_same`, which signals only the pid that still has the recorded `pid_start`; a holder without `pid_start` is never signalled. A new collector then starts on the current binary. `horch install` starts none when none was live, and a failed restart only warns. Windows has no signal here: the stale collector is reported.
 - Liveness: on Unix, `kill(pid, 0)` succeeds and `started_at` matches the process start time. On Windows, `OpenProcess` succeeds. A lock whose pid is dead is broken, and the breaker prints `horch: removed stale telemetry lock of pid <n>`.
 - On exit (normal exit, SIGINT or SIGTERM), the holder removes the lock.
 
@@ -488,6 +492,8 @@ orchestrator                   41M      230.00   27%     96%         -
 UNREAD  opencode-ultra-1: sqlite3 not found
 orchestrators 27% of spend · cache hit 91% · 6% of spend while idle
 ```
+
+A cost with a `*` leaves out events with no price. The tail then has 1 line for the shown window (5h for `live`): `* UNPRICED  plus <n> event(s), <tokens> tokens, not in $: <model> <n>, ...`.
 
 ## 13. Balancing
 
@@ -704,7 +710,7 @@ Test names start with the requirement ID. U = unit test in the module; I = integ
 | TEL-07 | `tel_07_append_in_stages_equals_whole`: split each fixture at every line boundary and at 3 mid-line offsets, tick after each part, and compare with 1 tick over the whole file. `tel_07_restart_resumes`. `tel_07_crash_between_append_and_cursor` (inject a failure after the append) -> no duplicate keys. `tel_07_rotation_resets`. | I |
 | TEL-08 | `tel_08_plan_slug_parsed` (table of task texts), `tel_08_kind_and_phase_on_events` | U |
 | TEL-09 | `tel_09_two_projects_both_counted` | I |
-| TEL-10 | `tel_10_usage_equals_cost`: `horch usage --json` against `horch cost --json` on the same fixtures, per record and per class | E |
+| TEL-10 | `tel_10_usage_equals_cost`: `horch usage --json` against `horch cost --json` on the same fixtures, per record and per class (E). `tel_10_usage_and_cost_agree_per_record_with_an_unpriced_model`: one fixture with a priced and an unpriced model, before and after the stored costs are erased (U). `tel_10_a_stored_event_without_a_cost_is_priced_at_read_time`, `tel_10_rollups_list_unpriced_events_and_never_count_them_as_zero`, `tel_10_the_screen_lists_unpriced_events` (U) | E, U |
 | TEL-11 | `tel_11_no_content_or_identity_persisted`: after a full e2e run, scan every file under the state dir for fixture sentinels (`SENTINEL-CONTENT`, the fixture emails, `acct_`, `user.email`) -> 0 hits | E |
 | QUO-01 | `quo_01_claude_probe_protocol`: fake-claude logs exactly 1 stdin line, of subtype `get_usage`; no `user` line; `ANTHROPIC_API_KEY=dummy` set in the parent is absent in the child; `--model haiku` in argv | E |
 | QUO-02 | `quo_02_codex_probe_protocol`: exactly `initialize`, `initialized`, `account/rateLimits/read` | E |
@@ -715,7 +721,7 @@ Test names start with the requirement ID. U = unit test in the module; I = integ
 | QUO-07 | `quo_07_cli_does_not_probe_when_collector_live`, `quo_07_probe_cadence` (with `HORCH_NOW` stepped) | E |
 | SPC-01 | `spc_01_second_collector_is_refused`, `spc_01_stale_lock_is_broken` (a lock with a dead pid) | I |
 | SPC-02 | `spc_02_viewer_when_locked` | I |
-| SPC-03 | `spc_03_ensure_argv` (fake-herdr log: `workspace create ... --no-focus`, `pane run`, nothing else), `spc_03_ensure_noop_when_live` | E |
+| SPC-03 | `spc_03_ensure_argv` (fake-herdr log: `workspace create ... --no-focus`, `pane run`, nothing else), `spc_03_ensure_noop_when_live` (E). `spc_03_ensure_restarts_a_collector_on_an_older_binary`, `a_collector_on_another_binary_is_found`, `stop_ends_the_recorded_collector`, `stop_never_signals_a_process_that_is_not_the_recorded_collector` (U, with a fake collector record) | E, U |
 | SPC-04 | `spc_04_render_*` goldens at 120x40 and 80x24, for every `g` and `w` value, from `snapshot-fixture.json` | G |
 | SPC-05 | `spc_05_usage_json_schema`, `spc_05_quota_json_schema` (every field in sections 9 and 11.3 present, with its type) | E |
 | SPC-06 | `spc_06_fleet_survives_ensure_failure` (fake-herdr fails `workspace create` for the label) | E |

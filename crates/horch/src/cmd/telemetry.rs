@@ -831,32 +831,79 @@ fn filtered(snap: &Snapshot, view: &ViewState, root: &Path) -> Snapshot {
     out
 }
 
-/// `horch telemetry ensure` (SPC-03): nothing when a live collector exists;
-/// else a new workspace, never focused, running `horch telemetry`. Only
-/// `workspace create --no-focus` and `pane run` touch herdr.
+/// `horch telemetry ensure` (SPC-03): nothing when a live collector runs
+/// this binary; else a new workspace, never focused, running
+/// `horch telemetry`. A live collector on another binary (an older build)
+/// is stopped first. Only `workspace create --no-focus` and `pane run`
+/// touch herdr.
 pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
+    ensure_current(ctx, herdr, quiet, &ctx.bins.exe()?, true)
+}
+
+/// After `horch install`: restart a live collector that does not run the
+/// binary just installed at `installed`. Starts none when none is live.
+pub fn restart_if_stale(ctx: &RuntimeContext, herdr: &Herdr, installed: &Path) -> Result<()> {
+    ensure_current(ctx, herdr, false, installed, false)
+}
+
+/// The one check behind [`ensure`] and [`restart_if_stale`]: a live
+/// collector whose recorded binary is not `exe` is stopped (by pid and start
+/// time, [`lock::stop`]) and a new one runs `exe`.
+fn ensure_current(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    quiet: bool,
+    exe: &Path,
+    start_if_none: bool,
+) -> Result<()> {
     let root = ctx.paths.state_root.clone();
-    if let Holder::Live(info) = lock::holder(&root) {
-        if !quiet {
+    match lock::holder(&root) {
+        Holder::Live(info) if lock::runs_other_binary(&info, lock::exe_identity(exe).as_ref()) => {
+            lock::stop(&root, &info, Duration::from_secs(5))
+                .context("stopping the collector that runs an older binary")?;
             output::println(&format!(
-                "telemetry collector is live: pid {}{}{}",
+                "stopped telemetry collector pid {}: it ran {}, not the build at {}",
                 info.pid,
-                info.workspace_id
-                    .as_deref()
-                    .map(|w| format!(", workspace {w}"))
-                    .unwrap_or_default(),
-                info.pane_id
-                    .as_deref()
-                    .map(|p| format!(", pane {p}"))
-                    .unwrap_or_default(),
+                info.exe
+                    .as_ref()
+                    .map(|e| format!("another build of {}", e.path))
+                    .unwrap_or_else(|| "a binary it did not record".into()),
+                exe.display()
             ));
         }
-        return Ok(());
+        Holder::Live(info) => {
+            report_live(&info, quiet);
+            return Ok(());
+        }
+        _ if !start_if_none => return Ok(()),
+        _ => {}
     }
+    start(ctx, herdr, quiet, exe)
+}
+
+fn report_live(info: &lock::LockInfo, quiet: bool) {
+    if !quiet {
+        output::println(&format!(
+            "telemetry collector is live: pid {}{}{}",
+            info.pid,
+            info.workspace_id
+                .as_deref()
+                .map(|w| format!(", workspace {w}"))
+                .unwrap_or_default(),
+            info.pane_id
+                .as_deref()
+                .map(|p| format!(", pane {p}"))
+                .unwrap_or_default(),
+        ));
+    }
+}
+
+/// A new workspace, never focused, running `exe telemetry`.
+fn start(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool, exe: &Path) -> Result<()> {
+    let root = ctx.paths.state_root.clone();
     let ws = herdr
         .workspace_create(WORKSPACE_LABEL, None, false)
         .context("creating the telemetry workspace")?;
-    let exe = ctx.bins.exe()?;
     let mut args = vec!["telemetry".to_string()];
     // A pane does not inherit this process's environment.
     if let Some(dir) = super::path_text(ctx.paths.state_override.as_deref()) {
@@ -865,7 +912,7 @@ pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
     }
     let data_root = ctx.paths.data_root.to_string_lossy();
     let command = horch_core::workspace::paneshell::PaneShell::host().command_line_with_env(
-        &exe,
+        exe,
         &[("HORCH_DATA_DIR", data_root.as_ref())],
         &args,
     );
@@ -988,6 +1035,93 @@ mod tests {
             40,
         );
         assert!(!plain.join("\n").contains("UNPRICED"));
+    }
+
+    /// A fake collector: a sleeping child recorded as the live lock holder
+    /// with the binary `exe`, and a thread that reaps it.
+    #[cfg(unix)]
+    fn fake_collector(
+        state: &Path,
+        exe: Option<lock::ExeIdentity>,
+    ) -> (u32, std::sync::mpsc::Receiver<()>) {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            let _ = tx.send(());
+        });
+        let tel = horch_core::telemetry::dir(state);
+        std::fs::create_dir_all(tel.join("collector.lock")).unwrap();
+        let info = lock::LockInfo {
+            pid,
+            started_at: "2026-10-04T15:39:46Z".into(),
+            pid_start: horch_core::procid::start_time(pid),
+            exe,
+            ..lock::LockInfo::default()
+        };
+        std::fs::write(
+            tel.join("collector.json"),
+            serde_json::to_string(&info).unwrap(),
+        )
+        .unwrap();
+        (pid, rx)
+    }
+
+    /// W9 step 4: `ensure` and `horch install` share one check. A live
+    /// collector on the current binary is left alone; one on another binary
+    /// (or one that recorded none: an older horch) is stopped before a new
+    /// one starts; with none live, the install check starts nothing.
+    #[cfg(unix)]
+    #[test]
+    fn spc_03_ensure_restarts_a_collector_on_an_older_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let bin = tmp.path().join("horch");
+        std::fs::write(&bin, b"new build").unwrap();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe(&bin)
+                .with("HORCH_STATE_DIR", &state.to_string_lossy()),
+        )
+        .unwrap();
+        // No herdr: a start would fail, so a pass proves none was tried.
+        let herdr = Herdr::with_bin(tmp.path().join("no-herdr"));
+        restart_if_stale(&ctx, &herdr, &bin).expect("none live: nothing to do");
+
+        let (pid, ended) = fake_collector(&state, lock::exe_identity(&bin));
+        if horch_core::procid::start_time(pid).is_none() {
+            return; // No start times on this platform.
+        }
+        ensure(&ctx, &herdr, true).expect("the current binary is left alone");
+        restart_if_stale(&ctx, &herdr, &bin).unwrap();
+        assert!(ended.recv_timeout(Duration::from_millis(200)).is_err());
+        std::fs::remove_dir_all(horch_core::telemetry::dir(&state)).unwrap();
+        // SAFETY: our own child, still unreaped by its waiter.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        ended.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        for exe in [
+            None,
+            Some(lock::ExeIdentity {
+                len: 1,
+                ..lock::exe_identity(&bin).unwrap()
+            }),
+        ] {
+            let (_, ended) = fake_collector(&state, exe);
+            let err = restart_if_stale(&ctx, &herdr, &bin).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("telemetry workspace"),
+                "{err:#}"
+            );
+            ended
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the stale collector was stopped");
+            std::fs::remove_dir_all(horch_core::telemetry::dir(&state)).unwrap();
+        }
     }
 
     /// A change in layout is a change to these files.

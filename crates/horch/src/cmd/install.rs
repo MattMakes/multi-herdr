@@ -38,6 +38,12 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     let target = dir.join(file_name);
 
     install_one("horch", &source, &target)?;
+    // A live collector keeps running the binary it started with: old
+    // prices, old readers. Restart it on the binary just installed.
+    let herdr = horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
+    if let Err(e) = super::telemetry::restart_if_stale(ctx, &herdr, &target) {
+        println!("warning: telemetry collector not restarted: {e:#}; run `horch telemetry ensure`");
+    }
 
     // The dataset binary is built next to horch (`cargo build --bin
     // multi-herdr-dataset`), and is installed next to it too.
