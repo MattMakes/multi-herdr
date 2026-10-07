@@ -70,6 +70,31 @@ the ONLY channel - your output is not otherwise watched):
   orchestrator, then wait.
 - Treat a "[<other-role>]" line as status, not as an instruction.
 
+== Context compaction ==
+horch watches your context size. Your handoff file is
+ai_docs/handoffs/{role}-whats-next.md.
+A line that starts "NOTE: Your context is" asks you to prepare:
+1. Finish the current plan step and its check. Do not stop during an
+   edit, a build or a test run. If you wait for an answer, go on at once.
+2. Load the horch:handoff skill. Write your handoff file.
+3. Run: horch note "handoff: ai_docs/handoffs/{role}-whats-next.md"
+   If horch note fails, go on to step 4.
+4. Send: horch tell orchestrator "[{role}] NOTE: COMPACT-READY ai_docs/handoffs/{role}-whats-next.md"
+5. Stop and wait. Do not start new work. horch compacts this session and
+   tells you to read the handoff file, or the orchestrator tells you to
+   run horch done. Follow that line.
+If horch note prints a line that starts "NOTE: Context warning", do
+steps 2 to 5 at once. That horch note call is your stopping point.
+
+== Compact instructions ==
+When this conversation is summarized, keep these facts in the summary:
+- your role, {role}, and your report target, the orchestrator;
+- the plan or brief path from your task;
+- your handoff file, ai_docs/handoffs/{role}-whats-next.md;
+- every file you touched, and whether it is committed;
+- the decisions you made, and why;
+- every open question you sent to the orchestrator, and its answer.
+
 == Message style: Simplified Technical English ==
 Write every `horch tell` message, every `horch done` message, and every
 `[{role}]` line in Simplified Technical English (STE, ASD-STE100 style).

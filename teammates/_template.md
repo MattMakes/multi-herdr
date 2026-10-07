@@ -326,8 +326,22 @@ args: []
 # env: set on the CLI's process, never through a shell. A value that starts
 # with `~/` expands against the launch's home. NO SECRETS: point at a file the
 # operator owns instead (see app-release-preparer.md).
+# A value that is exactly `{path_of:<tool>}` becomes the path of that host
+# tool (today: `blender`, found like `horch doctor` finds it). When the tool
+# is not found, the variable is left out and the launch goes on.
 # Harness-wide defaults: _base/harness-defaults.md.
 env: {}
+
+# compact_window -> the native auto-compact setting this teammate gets when the
+#   operator's own files set none: for Claude the window
+#   (CLAUDE_CODE_AUTO_COMPACT_WINDOW, in the --settings overlay), for Codex
+#   `-c model_auto_compact_token_limit=<n>`, for Prime the contextWindow.
+#   Tokens, a number. It overrides `windows` of _base/context-windows.md for
+#   this teammate. An operator value always wins. Do not set the window in
+#   `env:`, `settings:` or `args:`: `horch teammates --check` refuses that, and
+#   it refuses a window whose watch headroom is under 20000 tokens or one on a
+#   harness with no lever (opencode, antigravity).
+#compact_window: 150000
 
 # ─── first instruction ───────────────────────────────────────────────────────
 # Optional. Rendered as the very last line the teammate reads, after the task.

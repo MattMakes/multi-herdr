@@ -255,7 +255,11 @@ latest stable release on 2026-10-04 (4.7.2).
 official Blender Lab MCP server, pinned by commit, with no telemetry and no
 asset downloads. Its headless tools need only a `blender` binary (on PATH,
 or `BLENDER_PATH`); the live tools need Blender 5.1+ with the Blender Lab MCP
-add-on. It carries `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`
+add-on. Its `env` sets `BLENDER_PATH: "{path_of:blender}"`: an `env` value that
+is exactly `{path_of:<tool>}` (today only `blender`) becomes the resolved path
+of that tool, found like `horch doctor` finds it (`BLENDER_PATH`, then
+`blender` on PATH, then the macOS app). When the tool is not found, the
+variable is left out and the launch still works. It carries `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`
 and `blender-baking`, and names `ue-editor-scripting`. It
 exports to a source-art folder and never writes `.uasset`; `ue-technical-artist`
 or `ue-tools-engineer` imports. No fallback: Codex has no MCP parity here.

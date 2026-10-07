@@ -23,6 +23,10 @@ rules:
     justification: read the usage pools before spawning a batch
   - pattern: '"horch", "route"'
     justification: see what the usage-limit gate would do with a spawn
+  - pattern: '"horch", "context"'
+    justification: report the context size of every session
+  - pattern: '"horch", "compact"'
+    justification: compact a session at a stopping point
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a
 private `CODEX_HOME` that lives only as long as the pane, as:

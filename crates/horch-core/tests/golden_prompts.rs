@@ -46,6 +46,82 @@ fn roster() -> Roster {
     Roster::builtin().expect("built-in roster parses")
 }
 
+/// The `== Context compaction ==` and `== Compact instructions ==` blocks of
+/// `fleet-worker.md`, as they render for `role`, with their trailing blank line.
+fn worker_context_compaction(role: &str) -> String {
+    "== Context compaction ==\n\
+     horch watches your context size. Your handoff file is\n\
+     ai_docs/handoffs/{role}-whats-next.md.\n\
+     A line that starts \"NOTE: Your context is\" asks you to prepare:\n\
+     1. Finish the current plan step and its check. Do not stop during an\n\
+     \x20  edit, a build or a test run. If you wait for an answer, go on at once.\n\
+     2. Load the horch:handoff skill. Write your handoff file.\n\
+     3. Run: horch note \"handoff: ai_docs/handoffs/{role}-whats-next.md\"\n\
+     \x20  If horch note fails, go on to step 4.\n\
+     4. Send: horch tell orchestrator \"[{role}] NOTE: COMPACT-READY ai_docs/handoffs/{role}-whats-next.md\"\n\
+     5. Stop and wait. Do not start new work. horch compacts this session and\n\
+     \x20  tells you to read the handoff file, or the orchestrator tells you to\n\
+     \x20  run horch done. Follow that line.\n\
+     If horch note prints a line that starts \"NOTE: Context warning\", do\n\
+     steps 2 to 5 at once. That horch note call is your stopping point.\n\
+     \n\
+     == Compact instructions ==\n\
+     When this conversation is summarized, keep these facts in the summary:\n\
+     - your role, {role}, and your report target, the orchestrator;\n\
+     - the plan or brief path from your task;\n\
+     - your handoff file, ai_docs/handoffs/{role}-whats-next.md;\n\
+     - every file you touched, and whether it is committed;\n\
+     - the decisions you made, and why;\n\
+     - every open question you sent to the orchestrator, and its answer.\n\n"
+        .replace("{role}", role)
+}
+
+/// The `== Context watch ==` and `== Compact instructions ==` blocks of
+/// `fleet-orchestrator.md`, with their trailing blank line.
+const ORCHESTRATOR_CONTEXT_WATCH: &str = "== Context watch ==\n\
+    horch watches the context size of every session, yours included:\n\
+    \x20 horch context --over            sessions at or over their threshold\n\
+    \x20 horch context                   every live session and its threshold\n\
+    \x20 horch compact <role> --request  ask a worker to write its handoff\n\
+    \x20 horch compact <role>            compact a session that is ready\n\
+    Run horch context --over after you handle each worker message and before\n\
+    each spawn. For a worker in state \"over\":\n\
+    1. Run horch compact <role> --request once. The state becomes \"requested\".\n\
+    \x20  Do not ask a \"requested\" worker again.\n\
+    2. On \"[<role>] NOTE: COMPACT-READY <path>\", run horch compact <role>. It\n\
+    \x20  returns at once. horch compacts the worker when it is idle, then tells\n\
+    \x20  it to read its handoff file.\n\
+    3. If horch compact refuses with \"uses the fresh route\", or a line starts\n\
+    \x20  with \"[horch] BLOCKED:\", or the row state is \"compact-lost\", use the\n\
+    \x20  fresh route: tell the worker to run\n\
+    \x20  horch done with a summary that names <path>. Then spawn the same\n\
+    \x20  teammate with a task that names the plan file and\n\
+    \x20  \"PRIOR WORK: read <path> first\".\n\
+    A line that starts with \"[horch] NOTE:\" reports a finished compaction.\n\
+    When your own row is \"over\", compact yourself at your next stopping point:\n\
+    every worker message is answered, no spawn is half-done, and you are not\n\
+    verifying a DONE.\n\
+    1. Load horch:handoff. Write ai_docs/handoffs/orchestrator-whats-next.md.\n\
+    \x20  Name every live role from horch sessions, its plan file, every open\n\
+    \x20  question, and every COMPACT-READY line you did not yet act on.\n\
+    2. Run horch compact orchestrator.\n\
+    3. If it prints \"scheduled\", end your turn at once. horch compacts this\n\
+    \x20  pane when it is idle. Then it tells you to read the handoff file.\n\
+    \x20  If it prints a line that starts with \"[horch] BLOCKED:\", do not end your\n\
+    \x20  turn for it. Go on with your work and try again at the next stopping\n\
+    \x20  point.\n\
+    \n\
+    == Compact instructions ==\n\
+    When this conversation is summarized, keep these facts in the summary:\n\
+    - your role: the fleet orchestrator;\n\
+    - the roster: every live role, its teammate and its pane;\n\
+    - the ownership map: which role owns which plan file;\n\
+    - your plan file and your handoff file,\n\
+    \x20 ai_docs/handoffs/orchestrator-whats-next.md;\n\
+    - every open question from a worker, and its answer;\n\
+    - every COMPACT-READY line you did not yet act on;\n\
+    - the decisions you made, and why.\n\n";
+
 /// The `== Message style: Simplified Technical English ==` section that both
 /// base briefings gained, as it renders: the rules are word for word the same
 /// in `fleet-worker.md` and `fleet-orchestrator.md`, and only the lead-in (who
@@ -75,7 +151,7 @@ fn ste_section(lead: &[&str], example: &str) -> String {
     )
 }
 
-/// The worker briefing differs in exactly five places, and this pins them. The
+/// The worker briefing differs in exactly six places, and this pins them. The
 /// first: the orchestrator is no longer described to workers as a Claude session.
 ///
 /// `horch fleet codex` puts a Codex orchestrator in that pane, and OpenCode and
@@ -125,6 +201,10 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
          src/parse.rs in place, and option 2 adds src/parse/json.rs. I recommend option 2 \
          because the plan gives src/parse.rs to sonnet-2.",
     );
+    // Sixth: `context_compaction`, the compaction protocol and the keep-list
+    // (`== Context compaction ==` and `== Compact instructions ==`), inserted
+    // whole between the scope block and the STE section (CTX-11, CTX-19).
+    let context_compaction = worker_context_compaction("r-1");
     // No `fable` here: the generic Fable worker was removed when Fable became
     // the orchestrator's reserved model. Its goldens went with it.
     for name in ["sonnet", "opus", "codex-sol", "codex-terra", "smoke"] {
@@ -156,10 +236,12 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
             assert_eq!(
                 was.replace(old_agent, new_agent).replace(
                     lifecycle_end,
-                    &format!("gotchas, current state.\n{done_summary}\n{scope}{ste}")
+                    &format!(
+                        "gotchas, current state.\n{done_summary}\n{scope}{context_compaction}{ste}"
+                    )
                 ),
                 got,
-                "worker-{name}-{label} drifted outside the five sanctioned blocks"
+                "worker-{name}-{label} drifted outside the six sanctioned blocks"
             );
             checked += 1;
         }
@@ -185,7 +267,7 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
     );
 }
 
-/// The orchestrator briefing differs in exactly twelve places, and this pins them.
+/// The orchestrator briefing differs in exactly thirteen places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -379,6 +461,11 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         If your own pool becomes tight, write a handoff with horch:handoff and tell the operator.\n\n";
     assert_eq!(was.matches(context).count(), 1);
 
+    // Thirteenth: `context_watch`, the context-watch protocol, the orchestrator's
+    // self-compaction and its keep-list, inserted whole directly before the
+    // context section, after the usage limits (CTX-09, CTX-16, CTX-18, CTX-19).
+    let context_watch = ORCHESTRATOR_CONTEXT_WATCH;
+
     let expected = was
         .replace(old_block, &new_block)
         .replace(old_fleet, new_fleet)
@@ -389,10 +476,10 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         .replace(old_placement, new_placement)
         .replace(spawning_header, &format!("{core_loop}{spawning_header}"))
         .replace(close, &format!("{close}{guard}"))
-        .replace(context, &format!("{usage_limits}{context}"));
+        .replace(context, &format!("{usage_limits}{context_watch}{context}"));
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the twelve sanctioned blocks"
+        "the orchestrator briefing changed outside the thirteen sanctioned blocks"
     );
 }
 
@@ -479,4 +566,156 @@ fn the_codex_orchestrator_differs_from_the_claude_one_only_in_its_tier_block() {
         format!("{}{}", &text[..start], &text[end..])
     };
     assert_eq!(strip(&claude), strip(&codex));
+}
+
+fn orchestrator_briefings() -> Vec<(&'static str, String)> {
+    let r = roster();
+    ["orchestrator", "orchestrator-codex"]
+        .into_iter()
+        .map(|name| {
+            let t = r.require(name).unwrap();
+            (name, prompts::agent_prompt(&r, t, "orchestrator").unwrap())
+        })
+        .collect()
+}
+
+fn worker_briefing(name: &str, role: &str) -> String {
+    let r = roster();
+    let t = r.require(name).unwrap();
+    prompts::worker_prompt(&r, t, role, "Do the task", &SessionMode::Fresh(None)).unwrap()
+}
+
+/// CTX-09: both orchestrator briefings name the 2 checkpoints, and the Codex
+/// orchestrator may run the 2 new commands.
+#[test]
+fn ctx_09_orchestrator_briefing_names_the_checkpoints() {
+    for (name, p) in orchestrator_briefings() {
+        assert!(p.contains("horch context --over"), "{name}");
+        assert!(p.contains("after you handle each worker message"), "{name}");
+        assert!(p.contains("before\neach spawn"), "{name}");
+    }
+    let r = roster();
+    let rules: Vec<String> = r
+        .orchestrator_exec_rules()
+        .iter()
+        .map(|x| x.pattern.clone())
+        .collect();
+    assert!(
+        rules.iter().any(|p| p == "\"horch\", \"context\""),
+        "{rules:?}"
+    );
+    assert!(
+        rules.iter().any(|p| p == "\"horch\", \"compact\""),
+        "{rules:?}"
+    );
+}
+
+/// CTX-11: a worker briefing explains the COMPACT-READY protocol, with the
+/// fallback when `horch note` fails (review finding 2).
+#[test]
+fn ctx_11_worker_briefing_explains_compact_ready() {
+    let p = worker_briefing("sonnet", "sonnet-1");
+    assert!(p.contains("NOTE: COMPACT-READY ai_docs/handoffs/sonnet-1-whats-next.md"));
+    assert!(p.contains("NOTE: Your context is"));
+    assert!(p.contains("NOTE: Context warning"));
+    assert!(p.contains("If horch note fails, go on to step 4."));
+}
+
+/// CTX-11 (review finding 9): each prefix a briefing names starts the message
+/// horch types, so a change to one without the other fails here.
+#[test]
+fn ctx_11_briefing_prefixes_start_the_rendered_messages() {
+    let r = roster();
+    let path = "ai_docs/handoffs/sonnet-1-whats-next.md";
+    let vars = std::collections::BTreeMap::from([
+        ("role", "sonnet-1"),
+        ("tokens", "311225"),
+        ("threshold", "300000"),
+        ("handoff", path),
+        ("pre", "311225"),
+        ("post", "20000"),
+        ("step", "send"),
+        ("reason", "pane closed"),
+        ("log", "ai_docs/x.log"),
+    ]);
+    let msg = |key: &str| prompts::context_message(&r, key, &vars).unwrap();
+    let ready = format!("[sonnet-1] NOTE: COMPACT-READY {path}");
+
+    assert!(msg("request").starts_with("NOTE: Your context is"));
+    assert!(msg("warning").starts_with("NOTE: Context warning"));
+    assert!(msg("warning-orchestrator").starts_with("NOTE: Context warning"));
+    assert!(msg("request").contains(&ready));
+    assert!(msg("warning").contains(&ready));
+    assert!(msg("reported").starts_with("[horch] NOTE:"));
+    assert!(msg("failed").starts_with("[horch] BLOCKED:"));
+
+    let worker = worker_briefing("sonnet", "sonnet-1");
+    for prefix in [
+        "NOTE: Your context is",
+        "NOTE: Context warning",
+        "NOTE: COMPACT-READY",
+    ] {
+        assert!(worker.contains(prefix), "worker briefing lacks {prefix}");
+    }
+    for (name, p) in orchestrator_briefings() {
+        for prefix in ["[horch] NOTE:", "[horch] BLOCKED:"] {
+            assert!(p.contains(prefix), "{name} briefing lacks {prefix}");
+        }
+    }
+}
+
+/// CTX-12: the handoff skill writes a per-role path, so 2 workers never
+/// share a handoff file.
+#[test]
+fn ctx_12_handoff_skill_names_the_role_path() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/handoff/SKILL.md");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert!(text.contains("ai_docs/handoffs/<role>-whats-next.md"));
+    assert!(!text.contains("ai_docs/handoffs/whats-next.md"));
+}
+
+/// CTX-16: the orchestrator briefing names the fresh route and its triggers.
+#[test]
+fn ctx_16_orchestrator_briefing_names_the_fresh_route() {
+    for (name, p) in orchestrator_briefings() {
+        assert!(p.contains("uses the fresh route"), "{name}");
+        assert!(p.contains("compact-lost"), "{name}");
+        assert!(p.contains("PRIOR WORK: read <path> first"), "{name}");
+    }
+}
+
+/// CTX-18: the orchestrator briefing tells the orchestrator how to compact itself.
+#[test]
+fn ctx_18_orchestrator_briefing_has_self_compaction() {
+    for (name, p) in orchestrator_briefings() {
+        assert!(p.contains("horch compact orchestrator"), "{name}");
+        assert!(
+            p.contains("ai_docs/handoffs/orchestrator-whats-next.md"),
+            "{name}"
+        );
+    }
+}
+
+/// CTX-19: every fleet briefing has exactly 1 keep-list block, and the 2
+/// orchestrators name what they must keep.
+#[test]
+fn ctx_19_every_fleet_briefing_has_one_keep_list_block() {
+    let block = "== Compact instructions ==";
+    for name in [
+        "opus",
+        "codex-sol",
+        "opencode-pickle",
+        "pi",
+        "prime",
+        "antigravity",
+    ] {
+        let p = worker_briefing(name, "w-1");
+        assert_eq!(p.matches(block).count(), 1, "{name}");
+    }
+    for (name, p) in orchestrator_briefings() {
+        assert_eq!(p.matches(block).count(), 1, "{name}");
+        assert!(p.contains("the roster"), "{name}");
+        assert!(p.contains("the ownership map"), "{name}");
+    }
 }
