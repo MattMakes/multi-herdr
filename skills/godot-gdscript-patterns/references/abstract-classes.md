@@ -13,10 +13,9 @@ The `@abstract` annotation prevents a class from being instantiated directly and
 
 ```gdscript
 # base_enemy.gd — abstract base class; cannot be instantiated directly
+@abstract
 class_name BaseEnemy
 extends CharacterBody2D
-
-@abstract
 
 ## Subclasses must implement this to define their attack behavior.
 @abstract func perform_attack() -> void

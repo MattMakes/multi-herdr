@@ -93,7 +93,7 @@ using Godot.Collections;
 
 public partial class ItemRegistry : Node
 {
-    private readonly Dictionary<string, ItemData> _items = new();
+    private readonly System.Collections.Generic.Dictionary<string, ItemData> _items = new();
 
     public override void _Ready() => LoadAll("res://items/");
 

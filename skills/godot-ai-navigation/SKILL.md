@@ -349,7 +349,7 @@ Prior to Godot 4.5, `NavigationServer2D` was a thin frontend that delegated all 
 # The split is internal; you continue using NavigationServer2D as before.
 
 # Example: query a path directly via the server (unchanged API).
-func get_path_to(target: Vector2) -> PackedVector2Array:
+func query_path_to(target: Vector2) -> PackedVector2Array:
     var map: RID = get_world_2d().get_navigation_map()
     return NavigationServer2D.map_get_path(
         map,

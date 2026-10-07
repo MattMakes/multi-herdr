@@ -148,8 +148,8 @@ The simpler cross-platform alternative needs no 4.4: `Input.vibrate_handheld(dur
 func vibrate_ms(duration_ms: int) -> void:
     if Engine.has_singleton("AndroidRuntime"):
         var runtime := Engine.get_singleton("AndroidRuntime")
-        var context := runtime.getApplicationContext()
-        var vibrator := context.getSystemService("vibrator")
+        var context = runtime.getApplicationContext()
+        var vibrator = context.getSystemService("vibrator")
         if vibrator.hasVibrator():
             var Effect = JavaClassWrapper.wrap("android.os.VibrationEffect")
             var effect = Effect.createOneShot(duration_ms, Effect.DEFAULT_AMPLITUDE)
