@@ -50,7 +50,7 @@ the harness the teammate runs on. Merge order, first value wins:
 | opencode | `{"agent":{"title":{"disable":true}}}` in `OPENCODE_CONFIG_CONTENT` | a title call that sends the briefing to the operator's paid `small_model` (1.18.34) |
 | opencode | `OPENCODE_DISABLE_EXTERNAL_SKILLS: "1"` | the operator's personal skills from `~/.claude/` and `~/.agents/` going to a provider that trains on input. The phase skills still load |
 | prime | `RLM_MAX_DEPTH: "1"` | recursive child sessions, each a fresh Opus context (default depth 2); the fleet orchestrator already delegates. A global `rlmMaxDepth` setting wins |
-| prime | `autoRefine.enabled: false` (`agent_settings`) | Prime auto-refine. It has no env var or flag; the fleet-owned Prime agent dir applies it (not yet built) |
+| prime | `autoRefine.enabled: false` (`agent_settings`) | Prime auto-refine. It has no env var or flag; the fleet-owned Prime agent dir applies it (built per launch, CTX-05) |
 
 A Claude `env` default needs no operator check: a value in the operator's
 settings `env` beats the process env. A non-Claude `env` default yields to

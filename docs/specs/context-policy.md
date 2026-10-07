@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2: the OpenCode, pi and Prime readers (u8) and `--json` (u10a) are implemented; Prime's agent dir and the slice-2 live check are in progress. Slice 3 (`compact_at`, the native count; u11a) is implemented. |
+| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2: the OpenCode, pi and Prime readers (u8), `--json` (u10a) and Prime's agent dir (u9) are implemented; the slice-2 live check is in progress. Slice 3 (`compact_at`, the native count; u11a) is implemented. |
 | Date | 2026-10-06 |
 | Authors | product-lead-1 (requirements), staff-engineer-1 and staff-engineer-2 (design), architect-reviewer-1 (review), backend-developer units u0 to u7 (build). |
 | Evidence | The W1 requirements and design (`ai_docs/plans/wave2/w1/requirements.md`, `design.md`), the 14 review decisions (`review-decisions.md`), and the live check `scripts/live/context.sh` with its result in [`docs/live-checks/context.md`](../live-checks/context.md). [SEEN] marks a fact read on the operator's Mac on 2026-10-06. |
@@ -159,7 +159,23 @@ passes the fleet value only when there is none:
   fresh and resume launches.
 - Prime (slice 2): a provider the operator's `models.json` defines at all is
   the operator's; else a fleet agent dir with a `models.json` that holds
-  only the override.
+  only the override. Each launch gets its own agent dir,
+  `<state_root>/prime/<slug>-<uuid>/agent/`, passed as
+  `PRIME_AGENT_CODING_AGENT_DIR`:
+  - The source dir is the teammate's own `PRIME_AGENT_CODING_AGENT_DIR`,
+    else the inherited one, else `~/.prime/agent`. An inherited value under
+    `<state_root>/prime/` is another launch's agent dir and is ignored.
+  - Every source entry is a link, except `settings.json` and `models.json`
+    (generated) and `*.lock` and `*.tmp` (not linked). `auth.json` is always
+    linked, also when the source has none, so a login lands in the
+    operator's file.
+  - The `settings.json` copy drops the legacy `apiKeys`.
+  - horch reads the operator's and the project's files only as regular
+    files, with a size bound, so a FIFO in the project does not block the
+    launch.
+  - `Daemon::finish` removes the agent dir when it stops the pane's daemon.
+    Each launch sweeps the agent dirs of earlier launches with no daemon
+    socket and no live launcher.
 
 Prime agent dir security notes (u9 security review,
 `ai_docs/plans/wave2/w1/u9-security-review-result.md`):
@@ -680,7 +696,7 @@ slice 3 adds CTX-21 and CTX-25.
 | CTX-02 | Current context is the harness's comparison number from the newest completed response, never a cumulative total. Claude and Codex in slice 1; OpenCode, pi, Prime in slice 2. | W1 | ctx_02_claude_last_main_chain_response_with_output, ctx_02_claude_last_message_iteration, ctx_02_codex_last_token_count_total_and_window, ctx_02_pi_skips_error_and_tool_result_lines, ctx_02_prime_after_compaction, ctx_02_opencode_newest_finished_row |
 | CTX-03 | After a compaction and before the next response: `pending`, with the harness's post figure marked provisional, or unknown. Never 0, never the pre value. | W1 | ctx_03_claude_pending_uses_post_tokens_provisional, ctx_03_claude_new_response_ends_pending, ctx_03_codex_compacted_is_pending_until_token_count, ctx_03_pi_pending_is_unknown |
 | CTX-04 | An unreadable session shows `no-session`, `no-transcript`, `not-read` or `unknown`, never a number, with a 1-line reason. | W1 | ctx_04_no_session_id_is_no_session, ctx_04_missing_transcript_is_no_transcript, ctx_04_harness_without_reader_is_not_read, ctx_04_states_print_a_reason_line, ctx_04_opencode_without_sqlite3_is_not_read |
-| CTX-05 | Every fleet pane runs with its effective native window: the operator's value where any operator source sets one, else the fleet default of its tier. horch never overrides an operator value and never edits operator files. The launch records the decision. | W1 | ctx_05_claude_settings_chain_precedence, ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value, ctx_05_codex_operator_limit_from_profile_or_top_level, ctx_05_codex_fleet_limit_flag_only_without_operator_value, ctx_05_launch_records_window_decision, ctx_05_old_ledger_loads, ctx_05_recorded_applied_matches_the_command |
+| CTX-05 | Every fleet pane runs with its effective native window: the operator's value where any operator source sets one, else the fleet default of its tier. horch never overrides an operator value and never edits operator files. The launch records the decision. Prime (slice 2): each launch gets its own agent dir (§3.3): source dir from the teammate env, then the inherited value, then `~/.prime/agent`, a launch dir under the state root ignored; `*.lock` and `*.tmp` not linked; `auth.json` always linked; `apiKeys` dropped; bounded reads of regular files only; the dir removed when the daemon stops; old dirs swept. | W1 | ctx_05_claude_settings_chain_precedence, ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value, ctx_05_codex_operator_limit_from_profile_or_top_level, ctx_05_codex_fleet_limit_flag_only_without_operator_value, ctx_05_launch_records_window_decision, ctx_05_old_ledger_loads, ctx_05_recorded_applied_matches_the_command, ctx_05_prime_agent_dir_links_and_fleet_models, ctx_05_prime_operator_override_wins, ctx_05_prime_inherited_agent_dir_is_the_source, ctx_05_prime_launch_records_the_applied_window, ctx_05_prime_teammate_agent_dir_is_the_source, ctx_05_prime_inherited_launch_dir_is_ignored, ctx_05_prime_transient_entries_and_missing_auth, ctx_05_prime_settings_copy_drops_api_keys, ctx_05_prime_project_fifo_does_not_block, ctx_05_prime_finish_removes_the_agent_dir, ctx_05_prime_launch_sweeps_old_agent_dirs |
 | CTX-06 | The window a pane uses is proved per tier by a re-runnable live check that reads the harness's own report (`/autocompact` for Claude) and compares it with `horch context --windows`. | W1 | ctx_06_windows_view_lists_claude_and_codex_teammates, ctx_06_live_check_covers_every_tier |
 | CTX-07 | Threshold = `min(base, floor(0.8 x native))`, base 300,000; unknown native gives base. | W1 | ctx_07_threshold_is_min_of_base_and_eight_tenths, ctx_07_unknown_native_uses_base, ctx_07_native_trigger_per_rule, ctx_07_compaction_pure_modules_do_no_io |
 | CTX-08 | The roster check fails a teammate whose fleet window leaves headroom below 20,000. | W1 | ctx_08_roster_check_fails_headroom_below_floor, ctx_08_builtin_roster_passes_the_floor |
