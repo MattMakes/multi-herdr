@@ -307,7 +307,8 @@ check(p["non_manifold_edges"] == p["boundary_edges"] == p["loose_verts"] == p["z
 # ---- modeling step 5-6: sharp edges = seams, UV channel 0 ----
 for poly in me.polygons:
     poly.use_smooth = True
-me.use_auto_smooth = True; me.auto_smooth_angle = math.radians(180)
+if hasattr(me, "use_auto_smooth"):   # Blender < 4.1; 4.1+ honours sharp edges without it
+    me.use_auto_smooth = True; me.auto_smooth_angle = math.radians(180)
 bm = bmesh.new(); bm.from_mesh(me)
 for e in bm.edges:
     if e.is_manifold and e.calc_face_angle() > math.radians(40):
@@ -341,7 +342,8 @@ check(len(me.uv_layers) == 2 and me.uv_layers.active_index == 0 and MH.uv_out_of
       "modeling.8 lightmap_uv", layers=[l.name for l in me.uv_layers])
 
 # ---- pipeline rule 7: Triangulate modifier last ----
-tri = low.modifiers.new("Triangulate", 'TRIANGULATE'); tri.keep_custom_normals = True
+tri = low.modifiers.new("Triangulate", 'TRIANGULATE')
+if hasattr(tri, "keep_custom_normals"): tri.keep_custom_normals = True   # removed in Blender 4.1+
 mat = bpy.data.materials.new("M_Crate"); mat.use_nodes = True
 mat.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.7
 me.materials.append(mat)
@@ -375,7 +377,7 @@ hme = bpy.data.meshes.new("Crate_high"); hb.to_mesh(hme); hb.free()
 high = bpy.data.objects.new("Crate_high", hme); src.objects.link(high)
 bev = high.modifiers.new("Bevel", 'BEVEL'); bev.width = 0.006; bev.segments = 3; bev.limit_method = 'ANGLE'
 for poly in hme.polygons: poly.use_smooth = True
-hme.use_auto_smooth = True; hme.auto_smooth_angle = math.radians(30)
+if hasattr(hme, "use_auto_smooth"): hme.use_auto_smooth = True; hme.auto_smooth_angle = math.radians(30)
 log("modeling.rule5 source", high=high.name, high_tris=MH.evaluated_tris(high), collection="_source")
 
 # ---- modeling step 9: LODs ----
@@ -467,7 +469,8 @@ check(nb["size"] == (TEX, TEX) and abs(nb["mean"][2] - ns[2]) < 0.01 and files["
 # ---- rigging: SK_Crate, a copy of LOD0 with a lid hinge ----
 sk_me = low.data.copy(); sk_me.name = "SK_Crate"
 sk = bpy.data.objects.new("SK_Crate", sk_me); scene.collection.objects.link(sk)
-tri_sk = sk.modifiers.new("Triangulate", 'TRIANGULATE'); tri_sk.keep_custom_normals = True
+tri_sk = sk.modifiers.new("Triangulate", 'TRIANGULATE')
+if hasattr(tri_sk, "keep_custom_normals"): tri_sk.keep_custom_normals = True
 # Hinge on the back top edge: front faces Blender +X (pipeline rule 3), so the back is -X.
 HINGE = (-BODY[0] / 2, 0.0, BODY[2])
 arm = RH.build_armature("Crate", [
