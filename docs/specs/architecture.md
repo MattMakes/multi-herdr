@@ -129,6 +129,8 @@ crates/
     src/dataset/{run,preflight,status,watch,judge_job,promote,rollback,cleanup,export,readiness,outcome,rebuild}.rs
   horch-core/src/
     ids.rs  fsx.rs (atomic writes, DirLock)  clock.rs
+    heartbeat.rs                  the liveness scheme of both background jobs (judge, compaction): beat, read, liveness
+    compaction/{window,policy,job,jobfile}.rs   context policy (W1): window, policy pure; job through ports; jobfile file I/O
     runtime/{context,paths,bins,process,fault,machine}.rs
     roster/{teammate,phase,effort,permission,parser,repository,validation,operator}.rs
     harness/{capabilities,launch,claude,claude_plugins,codex,opencode,pi,prime,none,headless}.rs

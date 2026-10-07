@@ -574,6 +574,32 @@ a free `opencode-*` teammate. The quota probes use each harness's own client
 To retune the roster from these numbers, use the `tune-fleet` skill
 (`.claude/skills/tune-fleet/SKILL.md`) from a session in this repo.
 
+### Context watch
+
+Every fleet session is compacted, or replaced by a fresh session, at a
+stopping point it chooses, after it writes a handoff, and before its harness
+compacts it by itself:
+
+```bash
+horch context [--over] [--windows]   # each live session: context, native trigger, threshold, state
+horch compact sonnet-1 --request     # ask a worker to write its handoff and report COMPACT-READY
+horch compact sonnet-1               # then compact it in place (Claude, Codex); a detached job
+```
+
+The watch threshold is `min(300,000, 0.8 x the harness's own auto-compact
+trigger)`, so it always fires before the harness compacts. A worker's own
+`horch note` also prints a warning when it is over. The handoff goes to
+`ai_docs/handoffs/<role>-whats-next.md`.
+
+Your settings win: where your own config sets a native window
+(`CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `~/.claude/settings.json`,
+`model_auto_compact_token_limit` in `~/.codex/config.toml`), horch applies
+nothing and never edits the file. The fleet values in
+`teammates/_base/context-windows.md` apply only where you set none;
+`horch context --windows` shows which one each teammate gets. The spec is
+[docs/specs/context-policy.md](docs/specs/context-policy.md); the live check
+is `scripts/live/context.sh`.
+
 ### Free models are paid for with your prompts
 
 The `opencode-*` tiers cost nothing because the provider trains on what it is

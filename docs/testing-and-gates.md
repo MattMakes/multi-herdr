@@ -225,6 +225,7 @@ The checks below also run outside the gate:
 | `horch smoke fleet` | a herdr server | spawn, ledger, report, pane self-close with a fake agent |
 | `horch smoke tile` | a herdr server | the tiler across 2 tabs |
 | `just verify-perf` | time | the collector budgets over a 1 GB corpus (`nfr_02`) |
+| `scripts/live/context.sh` | a Claude and a Codex login; part B a herdr server and the installed horch | windows, readers, canary, survival, round trips |
 
 Run the smoke checks after a herdr upgrade. They spend no tokens.
 
