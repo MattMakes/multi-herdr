@@ -7,6 +7,18 @@ use horch_core::runtime::bins::{self, BinOverrides};
 use horch_core::runtime::{process, EnvSource, ProcessEnv};
 use horch_core::usage::Locations;
 
+/// Git output with each strict ISO UTC date `...T12:00:00Z` written as
+/// `...T12:00:00+00:00`. Git 2.50 prints the `Z` form for `%cI` and `%aI`;
+/// git 2.39 prints the `+00:00` form. Only a whole word that is a date
+/// changes, so a `Z` in a name or a subject stays.
+pub fn utc_offset_date(text: &str) -> String {
+    let word = |w: &str| match w.strip_suffix('Z') {
+        Some(time) if time.len() == 19 && time.as_bytes()[10] == b'T' => format!("{time}+00:00"),
+        _ => w.to_string(),
+    };
+    text.split(' ').map(word).collect::<Vec<_>>().join(" ")
+}
+
 pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/telemetry")
 }

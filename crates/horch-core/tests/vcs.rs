@@ -169,10 +169,10 @@ fn cmp_04_n_worktrees_same_base_modify_same_file() {
             .rev_parse(&f.repo, &format!("{}^", c.head_sha))
             .unwrap();
         assert_eq!(parent.as_deref(), Some(base.as_str()));
-        let author = f.git_in(
+        let author = common::utc_offset_date(&f.git_in(
             &f.repo,
             &["log", "-1", "--format=%an <%ae> %aI %s", &c.head_sha],
-        );
+        ));
         assert_eq!(
             author,
             format!(
@@ -344,7 +344,7 @@ fn git_cherry_pick_conflict_reports_paths() {
     };
     assert_eq!(head, f.git.head(&f.repo).unwrap());
     assert_eq!(
-        f.git_in(&f.repo, &["log", "-1", "--format=%cn %cI %an", &head]),
+        common::utc_offset_date(&f.git_in(&f.repo, &["log", "-1", "--format=%cn %cI %an", &head])),
         "picker 2026-10-02T11:00:00+00:00 Horch Fixture"
     );
     assert_eq!(

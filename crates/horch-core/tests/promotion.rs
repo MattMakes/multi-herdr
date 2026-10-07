@@ -6,6 +6,8 @@
 //! `PATH` the git tests are skipped, unless `HORCH_REQUIRE_GIT=1`. The
 //! validator is a fake whose verdict each test scripts.
 
+mod common;
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -570,9 +572,8 @@ fn pro_03_cherry_pick_when_target_moved() {
         "one\ntwo by A\nthree"
     );
     assert_eq!(
-        f.sh(&f.repo, &["log", "-1", "--format=%cn <%ce> %cI", &after]),
-        "multi-herdr-dataset <dataset@multi-herdr.invalid> 2026-10-02T11:00:00Z"
-            .replace("Z", "+00:00")
+        common::utc_offset_date(&f.sh(&f.repo, &["log", "-1", "--format=%cn <%ce> %cI", &after])),
+        "multi-herdr-dataset <dataset@multi-herdr.invalid> 2026-10-02T11:00:00+00:00"
     );
     // Revalidation saw exactly that commit.
     assert_eq!(*v.seen.borrow(), [(after.clone(), after.clone())]);

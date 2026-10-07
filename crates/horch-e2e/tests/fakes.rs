@@ -417,6 +417,18 @@ fn fake_prime_creates_session_file() {
     assert!(status(&h).is_empty(), "a killed launch is not listed");
 }
 
+/// Git output with each strict ISO UTC date `...T12:00:00Z` written as
+/// `...T12:00:00+00:00`. Git 2.50 prints the `Z` form for `%cI` and `%aI`;
+/// git 2.39 prints the `+00:00` form. Only a whole word that is a date
+/// changes, so a `Z` in a name stays.
+fn utc_offset_date(text: &str) -> String {
+    let word = |w: &str| match w.strip_suffix('Z') {
+        Some(time) if time.len() == 19 && time.as_bytes()[10] == b'T' => format!("{time}+00:00"),
+        _ => w.to_string(),
+    };
+    text.split(' ').map(word).collect::<Vec<_>>().join(" ")
+}
+
 #[test]
 fn harness_with_git_makes_repo() {
     let h = Harness::new("fakes-git").with_git();
@@ -443,7 +455,7 @@ fn harness_with_git_makes_repo() {
     assert_eq!(sha.len(), 40);
     assert_eq!(sha, git_out(&h, &["rev-parse", "HEAD"]));
     assert_eq!(
-        git_out(&h, &["log", "-1", "--format=%an <%ae> %aI"]),
+        utc_offset_date(&git_out(&h, &["log", "-1", "--format=%an <%ae> %aI"])),
         "Horch Fixture <fixture@horch.invalid> 2026-09-28T12:00:00+00:00"
     );
 
