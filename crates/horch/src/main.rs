@@ -90,7 +90,8 @@ enum Command {
         /// Show the native window that each teammate gets when it starts here.
         #[arg(long)]
         windows: bool,
-        /// Print JSON. This lands in slice 2.
+        /// Print every row as JSON: 1 object per session, unknown values
+        /// null. Ignores --over; --windows wins.
         #[arg(long)]
         json: bool,
     },

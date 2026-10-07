@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2 (OpenCode, pi, Prime readers, Prime's agent dir, `--json`) and slice 3 (`compact_at`, the native count) are planned. |
+| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2: the OpenCode, pi and Prime readers (u8) and `--json` (u10a) are implemented; Prime's agent dir and the slice-2 live check are in progress. Slice 3 (`compact_at`, the native count) is in progress. |
 | Date | 2026-10-06 |
 | Authors | product-lead-1 (requirements), staff-engineer-1 and staff-engineer-2 (design), architect-reviewer-1 (review), backend-developer units u0 to u7 (build). |
 | Evidence | The W1 requirements and design (`ai_docs/plans/wave2/w1/requirements.md`, `design.md`), the 14 review decisions (`review-decisions.md`), and the live check `scripts/live/context.sh` with its result in [`docs/live-checks/context.md`](../live-checks/context.md). [SEEN] marks a fact read on the operator's Mac on 2026-10-06. |
@@ -210,6 +210,17 @@ in a fleet Codex worker pane is still to do. Until it passes, the rule above
 stands. A `read-only` Codex pane (`permission_mode: plan`) ignores
 `--add-dir`, so its `horch note` can still fail.
 
+Security note on `--add-dir <state root>` (W21; orchestrator decision:
+accepted). Every Codex pane can now write the whole state root: the ledgers
+of all projects, the private `codex-home/<role>` dirs and the
+`skill-bundles/<execution_id>` dirs of live panes. A Claude worker has no OS
+sandbox and can already write there, so a Codex pane gets the same access,
+not more. Codex reads its rules only at startup, and each launch builds a
+new private home, so a write into a live pane's `codex-home` does not change
+that pane. Follow-up, not in this branch: move `codex-home` and
+`skill-bundles` out of the state root, then narrow `--add-dir` to the
+ledger and the dirs that `horch` writes.
+
 ### 4.2 Fresh-session route (OpenCode, pi, Prime in slice 1; the fallback for all)
 
 On `COMPACT-READY <path>` when `horch compact` refuses with "fresh route",
@@ -320,8 +331,40 @@ under 20,000), DETAIL (a file path with `~` for the home,
 `context-policy windows <key>`, `teammate <name> compact_window`, or
 `harness default`).
 
-`--json` (slice 2, CTX-24): in slice 1 it prints
-`horch context: --json lands in slice 2` on stderr and exits 2.
+`--json` (CTX-24): a JSON array on stdout, 1 object per row, in the order
+of the text table. Every row is in it: `--json` ignores `--over`, and
+`--windows` wins over `--json` (the windows table, no JSON). The keys, in
+this order:
+
+| key | value | `null` when |
+|---|---|---|
+| `role` | the record's role | never |
+| `record_id` | the record id | never |
+| `harness` | `claude`, `codex`, `opencode`, `pi`, `prime`, `antigravity` or `none` | never |
+| `model` | MODEL of the text row | never |
+| `session_id` | the record's harness session id | not yet harvested |
+| `transcript` | the transcript path that was read | the transcript does not read |
+| `pane` | the record's pane id, when herdr lists it | herdr does not answer, or does not list the pane |
+| `pane_status` | herdr's `agent_status` of that pane | as `pane`, or herdr gives no status |
+| `tokens` | CONTEXT of the text row | unknown (`-`), for example a pi `pending` row |
+| `provisional` | `true` for the harness's post-compaction figure | the transcript does not read |
+| `pending` | `true` when a marker is newer than the last usable response | the transcript does not read |
+| `window` | WINDOW | unknown |
+| `native_trigger` | NATIVE | unknown |
+| `native_setting` | the window setting of the decision (Claude `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, Codex `model_auto_compact_token_limit`, Prime and pi `contextWindow`) | no source sets one |
+| `native_source` | `operator`, `fleet` or `harness`, without `(now)` | never |
+| `native_detail` | the detail of the decision | never |
+| `threshold` | THRESHOLD | never |
+| `last_compaction` | `{at, trigger, pre_tokens, post_tokens}`; a member is `null` when the transcript does not give it | no marker, or the transcript does not read |
+| `state` | STATE, `compact-lost` included | never |
+| `reason` | the text of the row's `reasons:` line, without the role and the state | the row has no `reasons:` line |
+| `route` | `in-place` (the harness is in `in_place`) or `fresh` | never |
+| `handoff` | `ai_docs/handoffs/<role>-whats-next.md` resolved against the record's `workdir`, else the project dir | never |
+
+`pane` and `pane_status` come from 1 `herdr pane list` call per workspace
+(the record's `workspace_id`, else the caller's). A failed call gives `null`
+for both, not an error. The text table makes no herdr call. Exit codes are
+those of the text table.
 
 ### 5.2 `horch compact <role> --request`
 
@@ -587,9 +630,9 @@ slice 3 adds CTX-21 and CTX-25.
 | ID | Requirement | Phase | Tests |
 |---|---|---|---|
 | CTX-01 | `horch context` lists the orchestrator records first, then 1 row per live worker role of the project, with role, harness, model, context, window, native trigger, its source, threshold, last compaction time and state. | W1 | ctx_01_lists_orchestrator_first_then_live_workers, ctx_01_done_worker_has_no_row, ctx_01_cli_table_from_fixture_home |
-| CTX-02 | Current context is the harness's comparison number from the newest completed response, never a cumulative total. Claude and Codex in slice 1; OpenCode, pi, Prime in slice 2. | W1 | ctx_02_claude_last_main_chain_response_with_output, ctx_02_claude_last_message_iteration, ctx_02_codex_last_token_count_total_and_window |
-| CTX-03 | After a compaction and before the next response: `pending`, with the harness's post figure marked provisional, or unknown. Never 0, never the pre value. | W1 | ctx_03_claude_pending_uses_post_tokens_provisional, ctx_03_claude_new_response_ends_pending, ctx_03_codex_compacted_is_pending_until_token_count |
-| CTX-04 | An unreadable session shows `no-session`, `no-transcript`, `not-read` or `unknown`, never a number, with a 1-line reason. | W1 | ctx_04_no_session_id_is_no_session, ctx_04_missing_transcript_is_no_transcript, ctx_04_harness_without_reader_is_not_read, ctx_04_states_print_a_reason_line |
+| CTX-02 | Current context is the harness's comparison number from the newest completed response, never a cumulative total. Claude and Codex in slice 1; OpenCode, pi, Prime in slice 2. | W1 | ctx_02_claude_last_main_chain_response_with_output, ctx_02_claude_last_message_iteration, ctx_02_codex_last_token_count_total_and_window, ctx_02_pi_skips_error_and_tool_result_lines, ctx_02_prime_after_compaction, ctx_02_opencode_newest_finished_row |
+| CTX-03 | After a compaction and before the next response: `pending`, with the harness's post figure marked provisional, or unknown. Never 0, never the pre value. | W1 | ctx_03_claude_pending_uses_post_tokens_provisional, ctx_03_claude_new_response_ends_pending, ctx_03_codex_compacted_is_pending_until_token_count, ctx_03_pi_pending_is_unknown |
+| CTX-04 | An unreadable session shows `no-session`, `no-transcript`, `not-read` or `unknown`, never a number, with a 1-line reason. | W1 | ctx_04_no_session_id_is_no_session, ctx_04_missing_transcript_is_no_transcript, ctx_04_harness_without_reader_is_not_read, ctx_04_states_print_a_reason_line, ctx_04_opencode_without_sqlite3_is_not_read |
 | CTX-05 | Every fleet pane runs with its effective native window: the operator's value where any operator source sets one, else the fleet default of its tier. horch never overrides an operator value and never edits operator files. The launch records the decision. | W1 | ctx_05_claude_settings_chain_precedence, ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value, ctx_05_codex_operator_limit_from_profile_or_top_level, ctx_05_codex_fleet_limit_flag_only_without_operator_value, ctx_05_launch_records_window_decision, ctx_05_old_ledger_loads, ctx_05_recorded_applied_matches_the_command |
 | CTX-06 | The window a pane uses is proved per tier by a re-runnable live check that reads the harness's own report (`/autocompact` for Claude) and compares it with `horch context --windows`. | W1 | ctx_06_windows_view_lists_claude_and_codex_teammates, ctx_06_live_check_covers_every_tier |
 | CTX-07 | Threshold = `min(base, floor(0.8 x native))`, base 300,000; unknown native gives base. | W1 | ctx_07_threshold_is_min_of_base_and_eight_tenths, ctx_07_unknown_native_uses_base, ctx_07_native_trigger_per_rule, ctx_07_compaction_pure_modules_do_no_io |
@@ -608,6 +651,7 @@ slice 3 adds CTX-21 and CTX-25.
 | CTX-20 | The live check proves per harness whether a summary honours the block (canary); horch-driven compaction passes the keep-list as the argument where accepted. | W1 | ctx_20_compact_line_has_keep_list_only_where_accepted, ctx_20_live_check_plants_a_canary |
 | CTX-22 | Events `compact-requested`, `context-warned`, `compacted` (`<pre> -> <post> tokens; handoff <path>`), `compact-failed` (`step <step>: <reason>`). | W1 | ctx_22_job_records_compacted_with_exact_text, ctx_22_request_and_warning_event_texts |
 | CTX-23 | A successful compaction sends exactly 1 `[horch] NOTE: <role> compacted. ...` line. | W1 | ctx_23_job_reports_success_once |
+| CTX-24 | `horch context --json` prints a JSON array, 1 object per row, with the 22 keys of §5.1 in that order; an unknown value is `null`, never a guess; `pane` and `pane_status` come from 1 `herdr pane list` call per workspace and are `null` when herdr does not answer; `--json` ignores `--over`; `--windows` wins. | W1 | ctx_24_json_has_every_key_and_nulls, ctx_24_json_pane_from_one_pane_list |
 | CTX-26 | `horch context` with 10 sessions under 1 s; the `horch note` check under 0.5 s. | W1 | ctx_26_tail_read_is_bounded, ctx_26_marker_cache_reads_only_new_bytes |
 | CTX-27 | No CTX code reads, sets or passes `ANTHROPIC_API_KEY`; `runtime/context.rs` captures no `FORBIDDEN_ENV` name; live checks unset it. | W1 | ctx_27_no_api_key_in_context_policy_code |
 
