@@ -144,8 +144,19 @@ impl Daemon {
             .parent()
             .map(|launch| launch.join(STATUS_HOOK))
             .unwrap_or_default();
-        let left_running = !prime_shutdown(&self.bin, &self.socket, &hook, &self.agent_dir())
-            && self.terminate_supervisor();
+        let stopped = self
+            .socket
+            .parent()
+            .and_then(recorded_prime_dist)
+            .map_or(Stop::Failed, |dist| {
+                prime_shutdown(&dist, &self.socket, &hook, &self.agent_dir())
+            });
+        let left_running = match stopped {
+            Stop::Stopped => false,
+            // The stop process goes on alone and removes the files.
+            Stop::TimedOut => true,
+            Stop::Failed => self.terminate_supervisor(),
+        };
         if !left_running {
             let _ = std::fs::remove_file(&self.socket);
             // The agent dir links the operator's live `auth.json`; it is
@@ -203,21 +214,20 @@ rmSync(agent, { recursive: true, force: true });
 
 /// Stop the daemon on `socket` with Prime's own code, then remove the
 /// launch's socket, `hook` and `agent` dir: `node` (what the `prime-agent`
-/// script runs on) imports the module beside the program `bin` resolves
-/// to. The public `prime-agent shutdown` cannot be scoped to 1 socket; it
-/// stops every daemon.
+/// script runs on) imports the module in Prime's `dist`. The public
+/// `prime-agent shutdown` cannot be scoped to 1 socket; it stops every
+/// daemon. Whether the daemon is gone. False when the module is not there
+/// or `node` fails: the caller falls back.
 ///
-/// 1 process does both, in its own session: `horch done` in a Prime pane
-/// runs under the daemon's worker, and the stop ends that worker's
-/// processes, `horch done` too, before it could remove anything (live check
-/// X2: prime-6). Whether the daemon is gone. False when the module is not
-/// there or `node` fails: the caller falls back.
-fn prime_shutdown(bin: &Path, socket: &Path, hook: &Path, agent: &Path) -> bool {
-    let Some(module) = prime_dist(bin).map(|d| d.join("cli").join("daemon-launch.js")) else {
-        return false;
-    };
+/// The stop process runs in its own session (`spawn_detached`): `horch
+/// done` in a Prime pane runs under the daemon's worker, and Prime's stop
+/// ends that worker's process group with SIGKILL, `horch done` too, before
+/// it could remove anything (live check X2: prime-6). horch waits for it,
+/// at most [`STOP_WAIT`], so it is not a background job.
+fn prime_shutdown(dist: &Path, socket: &Path, hook: &Path, agent: &Path) -> Stop {
+    let module = dist.join("cli").join("daemon-launch.js");
     if !module.is_file() {
-        return false;
+        return Stop::Failed;
     }
     let mut cmd = Command::new("node");
     cmd.args(["--input-type=module", "-e", PRIME_SHUTDOWN_JS])
@@ -228,29 +238,76 @@ fn prime_shutdown(bin: &Path, socket: &Path, hook: &Path, agent: &Path) -> bool 
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    crate::runtime::process::scrub_child_env(&mut cmd);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        // SAFETY: `setsid` is async-signal-safe; nothing else runs here.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
-    cmd.status().is_ok_and(|s| s.success())
+    let Ok(mut child) = crate::runtime::process::spawn_detached(&mut cmd) else {
+        return Stop::Failed;
+    };
+    wait_for_stop(&mut child, STOP_WAIT, socket)
 }
 
-/// Prime's `dist` dir: `bin` (a path, or a name on PATH) resolves to
+/// Wait for the stop process at most `limit`; on timeout 1 stderr line, and
+/// the process goes on alone.
+fn wait_for_stop(
+    child: &mut std::process::Child,
+    limit: std::time::Duration,
+    socket: &Path,
+) -> Stop {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Stop::Stopped,
+            Ok(Some(_)) | Err(_) => return Stop::Failed,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                use std::io::Write as _;
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "horch: the Prime stop for {} still runs after {} s; going on",
+                    socket.display(),
+                    limit.as_secs()
+                );
+                return Stop::TimedOut;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+}
+
+/// How long horch waits for [`prime_shutdown`]'s process: Prime's own stop
+/// takes up to about 8 s (connect 1 s, hello 2 s, gone 5 s).
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What [`prime_shutdown`] gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// The daemon is gone and the files are removed.
+    Stopped,
+    /// Prime's stop could not run or did not stop it: the caller falls back.
+    Failed,
+    /// Still running at [`STOP_WAIT`]: it goes on alone.
+    TimedOut,
+}
+
+/// The file in a launch dir that names Prime's `dist` dir, for
+/// [`prime_shutdown`]. `prepare` writes it: it has the context's `PATH`.
+const PRIME_DIST: &str = "prime-dist";
+
+/// The `dist` dir `<launch>/prime-dist` names, if any.
+fn recorded_prime_dist(launch: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(launch.join(PRIME_DIST)).ok()?;
+    let dist = text.trim_end_matches('\n');
+    (!dist.is_empty()).then(|| PathBuf::from(dist))
+}
+
+/// Prime's `dist` dir: `bin` (a path, or a name on `path`) resolves to
 /// `<dist>/bundle/cli.js` (0.9.4 `package.json` `bin`).
-fn prime_dist(bin: &Path) -> Option<PathBuf> {
+fn prime_dist(
+    bin: &Path,
+    path: Option<&std::ffi::OsStr>,
+    pathext: Option<&str>,
+) -> Option<PathBuf> {
     let found = if bin.components().count() > 1 {
         bin.to_path_buf()
     } else {
-        let path = std::env::var_os("PATH");
-        crate::runtime::process::which(path.as_deref(), None, bin.to_str()?)?
+        crate::runtime::process::which(path, pathext, bin.to_str()?)?
     };
     let script = std::fs::canonicalize(found).ok()?;
     let bundle = script.parent()?;
@@ -901,6 +958,21 @@ impl Harness for Prime {
         sweep_agent_dirs(&ctx.paths.state_root.join("prime"), &ctx.bins.harness.prime);
         outlive_hangup();
         let daemon = Daemon::install(&ctx.paths.state_root, req.role, &ctx.bins.harness.prime)?;
+        if let (Some(launch), Some(dist)) = (
+            daemon.socket().parent(),
+            prime_dist(
+                &ctx.bins.harness.prime,
+                ctx.inherited.path.as_deref(),
+                ctx.inherited.pathext.as_deref(),
+            ),
+        ) {
+            let text = format!("{}\n", dist.display());
+            let _ = crate::fsx::write_atomic(
+                &launch.join(PRIME_DIST),
+                text.as_bytes(),
+                crate::fsx::PRIVATE_FILE,
+            );
+        }
         let mut prepared = Prepared {
             // pi-family builders append `--` before the prompt. These go into
             // the teammate's args, which come before that delimiter, or Prime
@@ -1222,15 +1294,26 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let bin = fake_prime_install(tmp.path(), true);
         assert_eq!(
-            prime_dist(&bin),
+            prime_dist(&bin, None, None),
             Some(std::fs::canonicalize(tmp.path().join("lib/dist")).unwrap())
         );
         // A program that is not in a `bundle` dir: not Prime's layout.
         assert_eq!(
-            prime_dist(&tmp.path().join("lib/dist/cli/daemon-launch.js")),
+            prime_dist(
+                &tmp.path().join("lib/dist/cli/daemon-launch.js"),
+                None,
+                None
+            ),
             None
         );
-        assert_eq!(prime_dist(&tmp.path().join("missing")), None);
+        assert_eq!(prime_dist(&tmp.path().join("missing"), None, None), None);
+        // A name is looked up on the given PATH only.
+        let path = std::ffi::OsString::from(tmp.path().join("bin"));
+        assert_eq!(
+            prime_dist(Path::new("prime-agent"), Some(&path), None),
+            prime_dist(&bin, None, None)
+        );
+        assert_eq!(prime_dist(Path::new("prime-agent"), None, None), None);
     }
 
     /// `finish` stops the daemon with Prime's own stop for its socket, then
@@ -1252,6 +1335,12 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let bin = fake_prime_install(tmp.path(), stopped);
             let daemon = Daemon::install(&tmp.path().join("state"), "prime-1", &bin).unwrap();
+            let dist = prime_dist(&bin, None, None).unwrap();
+            std::fs::write(
+                daemon.socket().parent().unwrap().join(PRIME_DIST),
+                format!("{}\n", dist.display()),
+            )
+            .unwrap();
             std::fs::create_dir_all(daemon.agent_dir().join("daemon-workers")).unwrap();
             std::fs::write(daemon.socket(), "").unwrap();
             daemon.finish();
@@ -1313,7 +1402,8 @@ mod tests {
         std::fs::write(&socket, "").unwrap();
         std::fs::write(&hook, "// hook").unwrap();
 
-        assert!(prime_shutdown(&bin, &socket, &hook, &agent));
+        let dist = prime_dist(&bin, None, None).unwrap();
+        assert_eq!(prime_shutdown(&dist, &socket, &hook, &agent), Stop::Stopped);
         assert!(
             launch.join("d.sock.stopped").exists(),
             "the stop did not finish"
@@ -1327,8 +1417,30 @@ mod tests {
         let bin = fake_prime_install(&tmp.path().join("failing"), false);
         std::fs::create_dir_all(&agent).unwrap();
         std::fs::write(&hook, "// hook").unwrap();
-        assert!(!prime_shutdown(&bin, &socket, &hook, &agent));
+        let dist = prime_dist(&bin, None, None).unwrap();
+        assert_eq!(prime_shutdown(&dist, &socket, &hook, &agent), Stop::Failed);
         assert!(agent.is_dir() && hook.exists());
+    }
+
+    /// `horch done` never hangs on the stop: past the limit it goes on.
+    #[cfg(unix)]
+    #[test]
+    fn the_wait_for_the_stop_is_bounded() {
+        let socket = Path::new("/x/d.sock");
+        let mut slow = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let limit = std::time::Duration::from_millis(200);
+        assert_eq!(wait_for_stop(&mut slow, limit, socket), Stop::TimedOut);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        slow.kill().unwrap();
+        slow.wait().unwrap();
+        let mut ok = std::process::Command::new("true").spawn().unwrap();
+        assert_eq!(wait_for_stop(&mut ok, limit * 10, socket), Stop::Stopped);
+        let mut bad = std::process::Command::new("false").spawn().unwrap();
+        assert_eq!(wait_for_stop(&mut bad, limit * 10, socket), Stop::Failed);
     }
 
     #[test]

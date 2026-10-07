@@ -1116,6 +1116,13 @@ fn x2_prime_finish_pane_with_primes_stop_leaves_no_files() {
         &launch.join("launcher"),
         &format!("{} \n", std::process::id()),
     );
+    let dist_dir = std::fs::canonicalize(&dist).unwrap();
+    write(
+        &launch.join("prime-dist"),
+        &format!("{}\n", dist_dir.display()),
+    );
+    // Prime's stop, not the `status` path, removes the files.
+    write(&cli, "#!/bin/sh\nexit 1\n");
 
     horch_core::harness::prime::finish_pane(&w.state(), &bin, "w3F:p4F");
 
@@ -1127,4 +1134,33 @@ fn x2_prime_finish_pane_with_primes_stop_leaves_no_files() {
         "sessions/ was removed"
     );
     assert!(w.source().join("auth.json").is_file());
+}
+
+/// `prepare` records Prime's `dist` dir, found from the program through the
+/// context's PATH (core code reads no environment, ARC-05), so the stop at
+/// `horch done` can find Prime's own shutdown.
+#[cfg(unix)]
+#[test]
+fn x2_prime_prepare_records_the_prime_dist() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    let dist = w.tmp.path().join("lib/dist");
+    let cli = dist.join("bundle/cli.js");
+    write(&cli, "#!/bin/sh\necho '[]'\n");
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bin_dir = w.tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::os::unix::fs::symlink(&cli, bin_dir.join("prime-agent")).unwrap();
+    let ctx = w.ctx(&[
+        ("PATH", &bin_dir.to_string_lossy()),
+        ("HORCH_PRIME_BIN", "prime-agent"),
+    ]);
+    let (t, decision) = decide(&w, &ctx);
+    let prepared = prepare(&w, &ctx, &t, &decision);
+    let launch = prepared.sessions_dir.clone().unwrap();
+    let recorded = std::fs::read_to_string(launch.parent().unwrap().join("prime-dist")).unwrap();
+    assert_eq!(
+        recorded,
+        format!("{}\n", std::fs::canonicalize(&dist).unwrap().display())
+    );
 }

@@ -607,6 +607,12 @@ pub(crate) fn inherit_env<K, V>(cmd: &mut Command, vars: impl IntoIterator<Item 
 pub(crate) fn scrub_child_env(cmd: &mut Command);                     // removes FORBIDDEN_ENV and the git repository variables (REPO_ENV, GIT_CONFIG_KEY_<n>, GIT_CONFIG_VALUE_<n>)
 ```
 
+`cmp_16_only_judge_and_compaction_jobs_detached` pins the files that call
+`spawn_detached` (or `setsid`, `process_group`). `harness/prime.rs` is one
+of them: the Prime stop process must outlive the Prime worker's
+process-group SIGKILL. horch waits for it, at most 30 s, so it is not a
+background job.
+
 The fault abort exit code is 86 (`runtime/fault.rs:ABORT_EXIT_CODE`).
 Spec A names no code. 86 is distinct from every exit code that `horch`
 (0 to 3, `horch/src/exit.rs`) and `multi-herdr-dataset` (0, 1, 3 to 6,

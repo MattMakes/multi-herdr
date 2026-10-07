@@ -820,7 +820,10 @@ fn sec_08_e2e_no_api_key_in_judge_job() {
 /// - `horch-e2e/src/bin/fake-herdr.rs` is a test fake;
 /// - `evaluation/scheduler.rs` starts the judge job;
 /// - `cmd/compact.rs` starts the compaction job; both jobs use
-///   `crate::heartbeat`.
+///   `crate::heartbeat`;
+/// - `harness/prime.rs`: the Prime stop process must outlive the Prime
+///   worker's process-group SIGKILL; horch waits for it, so it is not a
+///   background job.
 ///
 /// No competition, measure or dataset command code detaches anything.
 #[test]
@@ -833,6 +836,10 @@ fn cmp_16_only_judge_and_compaction_jobs_detached() {
         "crates/horch-e2e/src/bin/fake-herdr.rs",
         "crates/horch-core/src/evaluation/scheduler.rs",
         "crates/horch/src/cmd/compact.rs",
+        // The Prime stop process must outlive the Prime worker's
+        // process-group SIGKILL; horch waits for it, so it is not a
+        // background job.
+        "crates/horch-core/src/harness/prime.rs",
     ];
     let mut found = Vec::new();
     let mut stack = vec![root.join("crates")];
