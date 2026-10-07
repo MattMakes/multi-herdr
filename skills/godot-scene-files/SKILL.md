@@ -14,7 +14,10 @@ and command, is in `references/worked-example.md`.
 ## Inputs
 
 - `.agents/godot-project-context.md` (engine version, main scene). If it is
-  missing, send `QUESTION:` and ask for `godot-tech-lead`.
+  missing, send `QUESTION:` and ask for `godot-tech-lead`. Exception: a new
+  project has no context file yet. Use the engine version and the main scene
+  that the brief names, and say so in your `DONE:` (`godot-build-verify`,
+  "Inputs").
 - The engine path and the `gd` helper from `godot-build-verify`,
   `references/commands.md` ("Find the engine", "Common setup"). Every Godot
   call is headless, with `HOME="$PWD/.godot/horch-home"`.
@@ -78,7 +81,8 @@ shape = SubResource("RectangleShape2D_jirdo")
    or `.uid` sidecars. To change a binary resource, convert it in the editor
    (a human step in `DONE:`) or rebuild it by script as `.tres`.
 7. **Commit the `.uid` sidecars.** `--import` writes `<script>.gd.uid` next to
-   each new script. Commit it with the script, by path.
+   each new script. Commit it with the script, by path. A git-ignored scratch
+   project has nothing to commit.
 8. **Close the scene in the operator's editor first.** The editor rewrites an
    open scene on save. If the editor has the project open, report `BLOCKED:`
    (`godot-build-verify`, step 1).
@@ -94,8 +98,13 @@ shape = SubResource("RectangleShape2D_jirdo")
 1. Write a `SceneTree` script that builds the tree, sets `owner` on every
    node, then calls `PackedScene.pack()` and `ResourceSaver.save()`. Put it in
    `.godot/horch-home/`, not in the project, unless the task asks to keep it.
-2. Run it: `gd -s "$PWD/.godot/horch-home/build_level.gd"`. It must print its
-   own success line and exit 0. Check the result of `pack()` and `save()`.
+   Do the work in `_initialize()`, not `_init()`: the autoloads do not exist
+   in `_init()`. The `-s` script itself cannot name an autoload; use
+   `root.get_node("<Name>")` (`godot-build-verify`, "Rules").
+2. Set each script through a check that fails the build: a script that does
+   not compile leaves the node with no script, and Godot goes on. Run it:
+   `gd -s "$PWD/.godot/horch-home/build_level.gd"`. It must print its own
+   success line and exit 0. Check the result of `pack()` and `save()`.
 3. Run `gd --import` when the script added new scripts or assets, then commit
    the new `.uid` files.
 4. Run the scene check on the file.
@@ -121,6 +130,7 @@ What each wrong edit does on 4.7.2:
 | `parent=` names a missing node | **loads** | `WARNING: Parent path './X' for node 'Y' has vanished` |
 | `[connection]` names a missing method | **loads, runs, prints nothing** | only the check: `SCENE_CHECK FAIL ... connection Timer.timeout -> _on_timer_typo` |
 | a misspelled property (`positon = ...`) | **loads, prints nothing** | read the value back: it stays at the default (worked example) |
+| a build script in `_init()` sets a script that names an autoload | the scene **saves without that script** and the build prints its success line | `SCRIPT ERROR: Compile Error: Identifier not found`; the builder's check prints `BUILD_FAIL` and exits 1 (worked example, 1b) |
 
 A property edit is proven when the value reads back: the worked example prints
 `Spawn.position` from the instantiated scene.

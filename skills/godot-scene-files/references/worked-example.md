@@ -1,7 +1,9 @@
 # Worked example: one scene, built by script and edited as text
 
-Every file and command here was run on Godot 4.7.2 (macOS, 2026-10-04) in a
-scratch project. `gd` and `$LOGS` come from `godot-build-verify`,
+Every file and command here was run on Godot 4.7.2 (macOS, 2026-10-04; re-run
+with `_initialize()` on 2026-10-07) in a scratch project. Each `SceneTree`
+script does its work in `_initialize()`: in `_init()` the autoloads do not
+exist yet. `gd` and `$LOGS` come from `godot-build-verify`,
 `references/commands.md`, "Common setup":
 
 ```bash
@@ -27,13 +29,16 @@ Save as `.godot/horch-home/build_level.gd`:
 
 ```gdscript
 # Builds res://levels/level_1.tscn. Every node below the root gets owner = root.
+# The work runs in _initialize(): in _init() the autoloads do not exist yet.
 extends SceneTree
 
+var _failed := false
 
-func _init() -> void:
+
+func _initialize() -> void:
 	var root := Node2D.new()
 	root.name = "Level1"
-	root.set_script(load("res://levels/level.gd"))
+	_set_script_or_fail(root, "res://levels/level.gd")
 
 	var spawn := Marker2D.new()
 	spawn.name = "Spawn"
@@ -53,17 +58,35 @@ func _init() -> void:
 	wall.add_child(shape)
 	shape.owner = root
 
-	var scene := PackedScene.new()
-	var err := scene.pack(root)
-	if err == OK:
-		err = ResourceSaver.save(scene, "res://levels/level_1.tscn")
+	var err := OK
+	if not _failed:
+		var scene := PackedScene.new()
+		err = scene.pack(root)
+		if err == OK:
+			err = ResourceSaver.save(scene, "res://levels/level_1.tscn")
+		if err != OK:
+			printerr("BUILD_FAIL ", error_string(err))
 	root.free()
-	if err != OK:
-		printerr("BUILD_FAIL ", error_string(err))
+	if _failed or err != OK:
 		quit(1)
 		return
 	print("BUILD_OK res://levels/level_1.tscn")
 	quit(0)
+
+
+# A script that does not compile leaves the node with no script, and the
+# saved scene then has no script on that node. Godot prints SCRIPT ERROR and
+# goes on, so the build must check.
+func _set_script_or_fail(node: Node, path: String) -> void:
+	var script := load(path) as Script
+	if script == null or not script.can_instantiate():
+		printerr("BUILD_FAIL ", node.name, ": script does not compile: ", path)
+		_failed = true
+		return
+	node.set_script(script)
+	if node.get_script() != script:
+		printerr("BUILD_FAIL ", node.name, ": script not set: ", path)
+		_failed = true
 ```
 
 ```bash
@@ -98,6 +121,45 @@ Measured:
   `levels/level.gd.uid` exists. `--import` afterwards leaves the file as it is.
 - A node added without `owner = root` is not in the file. No error is printed.
 - Running the builder again writes new `unique_id` values on every node.
+
+## 1b. A script that names an autoload
+
+The project has an autoload `Score="*res://score.gd"` and
+`levels/coin.gd`, which names it. This block and the next need the project
+(the autoload, the builder's helper), so the skill's GDScript check skips
+them; both ran as shown:
+
+<!-- gdscript-check: skip -->
+```gdscript
+extends Area2D
+
+
+func _ready() -> void:
+	Score.points += 1
+```
+
+Add a `Coin` node to the builder's `_initialize()`, before the `Wall`:
+
+<!-- gdscript-check: skip -->
+```gdscript
+var coin := Area2D.new()
+coin.name = "Coin"
+_set_script_or_fail(coin, "res://levels/coin.gd")
+root.add_child(coin)
+coin.owner = root
+```
+
+Measured:
+
+- In `_initialize()`: `BUILD_OK`, exit 0, and the saved `Coin` node has
+  `script = ExtResource(...)`.
+- The same builder with `func _init()`: `SCRIPT ERROR: Compile Error:
+  Identifier not found: Score`, then
+  `BUILD_FAIL Coin: script does not compile: res://levels/coin.gd`, exit 1,
+  and no file is saved.
+- An older builder in `_init()` without `_set_script_or_fail()` (a plain
+  `coin.set_script(load(...))`): the same `SCRIPT ERROR`, then `BUILD_OK` and
+  exit 0. The saved `Coin` node has no `script` line.
 
 ## 2. Edit it as text
 
@@ -167,7 +229,7 @@ Save as `.godot/horch-home/scene_check.gd`:
 extends SceneTree
 
 
-func _init() -> void:
+func _initialize() -> void:
 	var failed := false
 	for path in OS.get_cmdline_user_args():
 		var scene := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene
@@ -225,7 +287,7 @@ back. Save as `.godot/horch-home/read_back.gd`:
 extends SceneTree
 
 
-func _init() -> void:
+func _initialize() -> void:
 	var root := (load("res://levels/level_1.tscn") as PackedScene).instantiate()
 	print("READ Spawn.position=", root.get_node("Spawn").position)
 	var floor_shape := root.get_node("Floor/Shape") as CollisionShape2D
@@ -258,7 +320,7 @@ Save as `.godot/horch-home/set_uid.gd`:
 extends SceneTree
 
 
-func _init() -> void:
+func _initialize() -> void:
 	var path := OS.get_cmdline_user_args()[0]
 	if ResourceLoader.get_resource_uid(path) != ResourceUID.INVALID_ID:
 		print("UID_KEEP ", path)
