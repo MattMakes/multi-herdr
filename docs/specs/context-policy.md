@@ -195,6 +195,21 @@ orchestrator checkpoint is the only watch for Codex workers. The worker
 briefing tells a worker to go on to `COMPACT-READY` when `horch note`
 fails.
 
+B2 result (2026-10-07, Codex 0.160.0, `-s workspace-write`): an execpolicy
+`allow` lifts the sandbox only for a command that matches its prefix. A plain
+`horch note "x"` matches and writes. A compound command such as
+`horch note "x" 2>&1; echo $?` runs in the sandbox, and the ledger lock in the
+state root fails with "Operation not permitted". The fix: every Codex pane,
+worker and orchestrator, gets `--add-dir <state root>` from the Codex
+`prepare`. That is the only extra writable root. The ledger, its lock and
+temp files, the context cache and the compact job dirs are all under it.
+`horch tell` writes under the temp dir, which the sandbox already allows.
+`horch` only reads the data dir. A `codex exec` run with the fleet's private
+`CODEX_HOME` and `--add-dir` records the compound `horch note`. A B2 re-run
+in a fleet Codex worker pane is still to do. Until it passes, the rule above
+stands. A `read-only` Codex pane (`permission_mode: plan`) ignores
+`--add-dir`, so its `horch note` can still fail.
+
 ### 4.2 Fresh-session route (OpenCode, pi, Prime in slice 1; the fallback for all)
 
 On `COMPACT-READY <path>` when `horch compact` refuses with "fresh route",

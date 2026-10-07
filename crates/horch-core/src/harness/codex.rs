@@ -449,6 +449,13 @@ impl Harness for Codex {
 
     /// A private `CODEX_HOME` holding only this pane's rules, with the
     /// skills bundle linked in. Finished once the CLI has exited.
+    ///
+    /// The state root is the pane's one extra writable root (`--add-dir`):
+    /// `horch note` and `horch done` lock and replace the ledger directly in
+    /// it. An execpolicy `allow` lifts the sandbox only for a command that
+    /// matches its prefix, so `horch note x 2>&1; echo $?` ran sandboxed and
+    /// failed on the lock (live check B2). `horch tell` writes under the
+    /// temp dir, which the sandbox already allows; the data dir is only read.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
         let rules = Rules::install(
             &ctx.paths.home,
@@ -460,7 +467,13 @@ impl Harness for Codex {
         if let Some(skills) = req.skills {
             rules.attach_skills(&skills.skills_dir())?;
         }
-        let mut prepared = Prepared::default();
+        let mut prepared = Prepared {
+            extra_args: vec![
+                "--add-dir".into(),
+                ctx.paths.state_root.to_string_lossy().into_owned(),
+            ],
+            ..Prepared::default()
+        };
         if let Rules::Private { dir } = &rules {
             // On the child only. This process keeps the real CODEX_HOME, so the
             // session discovery still reads the real sessions directory.
@@ -1049,6 +1062,85 @@ mod tests {
             dir.join("brand_new.sqlite").is_file(),
             "stranded state must survive"
         );
+    }
+
+    /// Prepare one codex pane under a state root in `tmp`, for `teammate`.
+    #[cfg(unix)]
+    fn prepare_in(tmp: &Path, teammate: &Teammate) -> (RuntimeContext, Prepared) {
+        let home = tmp.join("home");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        let env = crate::runtime::MapEnv::new(tmp)
+            .with("HOME", &home.to_string_lossy())
+            .with("HORCH_STATE_DIR", &tmp.join("state").to_string_lossy());
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let prepared = Codex
+            .prepare(
+                &ctx,
+                &PrepareRequest {
+                    role: "codex-1",
+                    exec_rules: &[],
+                    skills: None,
+                    compact_window: None,
+                    teammate,
+                    model: "gpt-5.6-sol",
+                    workdir: tmp,
+                },
+            )
+            .unwrap();
+        (ctx, prepared)
+    }
+
+    /// Live check B2: an execpolicy `allow` does not lift the sandbox for a
+    /// compound command, so the ledger lock under the state root failed. The
+    /// state root is the one writable root a pane gets, and nothing else.
+    #[cfg(unix)]
+    #[test]
+    fn a_pane_gets_exactly_the_state_root_as_a_writable_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let teammate = Teammate::default();
+        let (ctx, prepared) = prepare_in(tmp.path(), &teammate);
+        assert_eq!(ctx.paths.state_root, tmp.path().join("state"));
+        assert_eq!(
+            prepared.extra_args,
+            vec![
+                "--add-dir".to_string(),
+                tmp.path().join("state").to_string_lossy().into_owned()
+            ]
+        );
+    }
+
+    /// A teammate's own `--add-dir` still reaches the argv, beside the fleet's.
+    #[cfg(unix)]
+    #[test]
+    fn a_teammates_own_add_dir_still_applies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut teammate = Teammate {
+            model: Some("gpt-5.6-sol".into()),
+            args: vec!["--add-dir".into(), "/teammate/own".into()],
+            ..Default::default()
+        };
+        let (ctx, prepared) = prepare_in(tmp.path(), &teammate);
+        teammate.args.extend(prepared.extra_args.iter().cloned());
+        let cmd = codex_command(
+            &super::super::LaunchEnv::for_test(),
+            &teammate,
+            Session::Unmanaged,
+            "P",
+            None,
+        )
+        .unwrap();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let dirs: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "--add-dir")
+            .map(|w| w[1].as_str())
+            .collect();
+        let state = ctx.paths.state_root.to_string_lossy().into_owned();
+        assert_eq!(dirs, vec!["/teammate/own", state.as_str()]);
+        assert_eq!(args.last().map(String::as_str), Some("P"));
     }
 
     /// A machine that has never run codex has no home to mirror. That is not an
