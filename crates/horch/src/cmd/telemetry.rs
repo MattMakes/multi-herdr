@@ -865,8 +865,8 @@ fn ensure_current(
             // must not fail because an old collector is live.
             if let Err(e) = lock::stop(&root, &info, Duration::from_secs(5)) {
                 eprintln!(
-                    "horch: telemetry collector pid {} runs another binary, but horch did not stop it: {e:#}. To replace it, stop it by hand (kill {}) and run `horch telemetry ensure` again.",
-                    info.pid, info.pid
+                    "horch: telemetry collector pid {} runs another binary, but horch did not stop it: {e:#}. To replace it, first check that pid {} runs `horch telemetry collect` (`ps -p {} -o command=`), then stop it, and run `horch telemetry ensure` again.",
+                    info.pid, info.pid, info.pid
                 );
                 report_live(&info, quiet);
                 return Ok(());

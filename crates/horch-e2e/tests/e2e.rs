@@ -713,7 +713,11 @@ fn spc_03_ensure_warns_and_succeeds_for_a_collector_it_cannot_stop() {
     let err = stderr(&out);
     assert_eq!(err.matches("did not stop it").count(), 1, "{err}");
     assert!(err.contains(&format!("pid {pid}")), "{err}");
-    assert!(err.contains(&format!("kill {pid}")), "{err}");
+    assert!(
+        err.contains(&format!("`ps -p {pid} -o command=`")),
+        "the hint names the check: {err}"
+    );
+    assert!(err.contains("runs `horch telemetry collect`"), "{err}");
     // This test process is the recorded pid: reaching here means no signal
     // ended it.
     assert!(h.calls_of("herdr").is_empty(), "no herdr call at all");

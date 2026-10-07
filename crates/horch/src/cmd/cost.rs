@@ -124,8 +124,8 @@ pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
     }
     let prices = usage::load_prices(args.pricing.as_deref().map(std::path::Path::new))?;
     let reprice = match &args.reprice {
-        Some(model) => match usage::price_for(&prices, model) {
-            Some(p) => Some((model.clone(), p)),
+        Some(model) => match usage::cost_of(&prices, model, &Tokens::default()) {
+            Some(_) => Some(model.as_str()),
             None => bail!(
                 "--reprice: no price for '{model}' (known: {})",
                 known(&prices)
@@ -139,7 +139,7 @@ pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
         roster.as_ref(),
         &Locations::from_context(ctx),
         &prices,
-        reprice.as_ref().map(|(m, p)| (m.as_str(), p)),
+        reprice,
     );
     if args.json {
         output::println(&serde_json::to_string_pretty(&report)?);
@@ -189,11 +189,11 @@ pub fn build(
     roster: Option<&Roster>,
     loc: &Locations,
     prices: &BTreeMap<String, Price>,
-    reprice: Option<(&str, &Price)>,
+    reprice: Option<&str>,
 ) -> Report {
     let mut report = Report {
         prices_as_of: "2026-09-24",
-        reprice: reprice.map(|(m, _)| m.to_string()),
+        reprice: reprice.map(str::to_string),
         rows: Vec::new(),
         not_priced: Vec::new(),
         by_teammate: BTreeMap::new(),
@@ -220,8 +220,8 @@ pub fn build(
             // A transcript that never names its model is priced as the
             // model the ledger launched.
             let model = if model.is_empty() { &r.model } else { model };
-            match usage::price_for(prices, model) {
-                Some(p) => cost += p.cost(tokens),
+            match usage::cost_of(prices, model, tokens) {
+                Some(c) => cost += c,
                 None => unpriced.push(model.clone()),
             }
         }
@@ -257,7 +257,7 @@ pub fn build(
             calls: used.calls,
             tokens,
             cost,
-            reprice_cost: reprice.map(|(_, p)| p.cost(&tokens)),
+            reprice_cost: reprice.and_then(|m| usage::cost_of(prices, m, &tokens)),
             unpriced_models: unpriced,
             transcript: Some(path),
             skills_used,
@@ -535,13 +535,12 @@ mod tests {
         ];
         let roster = Roster::builtin().unwrap();
         let prices = usage::builtin_prices();
-        let opus = prices["claude-opus-5-5"];
         let report = build(
             &records,
             Some(&roster),
             &loc,
             &prices,
-            Some(("claude-opus-5-5", &opus)),
+            Some("claude-opus-5-5"),
         );
 
         assert_eq!(report.rows.len(), 2);
