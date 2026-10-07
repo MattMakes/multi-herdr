@@ -148,6 +148,119 @@ MST (wall clock of the worker host).
    `godot-save-load` and others, and `godot-scene-files` points to
    `godot-scene-organization`. None of these is in this seat's bundle.
 
-## qa-engineer
+## qa-engineer, 2026-10-07
 
-pending
+Seat: `godot-qa-engineer` (worker `godot-qa-engineer-1`, Claude). Engine:
+Godot 4.7.2.stable.official.ed1daf0bf, macOS, headless only.
+
+### Task
+
+Write automated tests for Coin Dash from `feature-spec.md` (the contract,
+not the game code), run them headless, and report each failure as a bug.
+The gameplay seat built the game at the same time. The QA seat set up the
+tests first and ran them when the build was ready.
+
+### Framework
+
+GUT 9.7.1 (the release the skill names for Godot 4.7.x). Source:
+`https://github.com/bitwes/Gut/archive/refs/tags/v9.7.1.tar.gz`. The seat
+copied `addons/gut/` from the tarball into
+`.worktrees/_scratch/godot-trial/addons/`. The plugin is not enabled in
+`project.godot`: the command line runner does not need it, so the QA seat
+changed nothing in `project.godot`.
+
+### Files (in `.worktrees/_scratch/godot-trial/`, git-ignored)
+
+- `.gutconfig.json`: test directories, no colours, exit when done.
+- `tests/run.sh`: the 1 command. It imports, runs GUT, then fails (exit 3)
+  when the log has `SCRIPT ERROR`, `Parse Error` or `Nothing was run`,
+  because GUT exits 0 in those cases.
+- `tests/unit/test_game_state.gd` (8 tests), `test_player.gd` (24),
+  `test_coin.gd` (12).
+- `tests/integration/test_main_scene.gd` (15).
+
+The tests name the autoload and the scripts through `get_node_or_null`
+and `load()`, so a missing piece gives a clear failed assert and not a parse
+error.
+
+### Command
+
+```bash
+.worktrees/_scratch/godot-trial/tests/run.sh
+```
+
+It uses `GODOT_PATH`, or `/Applications/Godot.app/Contents/MacOS/Godot`.
+It runs `godot --headless --path . -s addons/gut/gut_cmdln.gd -gconfig=res://.gutconfig.json`.
+
+### Result
+
+| Run | Exit | Scripts | Tests | Passing | Failing | Asserts |
+|-----|------|---------|-------|---------|---------|---------|
+| real game, run 1 | 0 | 4 | 59 | 59 | 0 | 181 |
+| real game, run 2 | 0 | 4 | 59 | 59 | 0 | 181 |
+| stub game with no once-only guard in `Coin` | 1 | 4 | 59 | 57 | 2 | 181 |
+
+Spec coverage: `GameState.add_score` (positive, zero, negative, signal
+count), `reset`; `Player.apply_input` (straight and diagonal speed, zero
+input, unnormalized input, dash multiplier, dash duration, cooldown from the
+dash start, `can_dash()`, `is_dashing()`, the `dashed` signal, a dash press
+in the cooldown, custom exports); `Coin` (Player body adds the value once and
+frees the coin, `collected` signal, non-player bodies, once only); `main.tscn`
+(main scene setting, 5 input actions, 1 `Player`, 5 `Coin`, collision shapes,
+visible placeholder, `HUD/ScoreLabel`, label text follows `score_changed`
+and `reset`, 1 real physics collision).
+
+The seat checked that the tests can fail. Before the real build existed, it
+ran the suite against a throw-away stub game in `/tmp`. The stub had no
+once-only guard in `Coin`. The suite reported 2 failures
+(`test_coin_collected_only_once`, `test_second_player_cannot_collect_same_coin`)
+and exited 1. With the guard added, the suite passed 59 of 59.
+
+### Bugs found
+
+None in the real game: 0 game bugs, 0 test bugs left. The test files passed
+`godot --headless --check-only --script` before the first run on the real game.
+
+### Skills loaded
+
+- `godot-testing` (with `references/running-tests.md` and `gut-reference.md`)
+
+Not loaded: `godot-build-verify` (the gameplay seat ran the import, parse
+and smoke proofs and reported them), `godot-debugging` (no failure to debug).
+
+### Problems found in the skill texts
+
+1. **`godot-testing` has no headless install step.** `gut-reference.md`
+   gives AssetLib or `git submodule` and then "enable in Project Settings >
+   Plugins". A headless seat has no editor. What worked: download the tag
+   tarball and copy `addons/gut/`. The plugin does not need to be enabled for
+   `gut_cmdln.gd`. The text does not say either fact.
+2. **`wait_frames` is deprecated in GUT 9.7.1.** `gut-reference.md` line 207
+   and `references/testing-patterns.md` line 157 use `await wait_frames(...)`.
+   GUT prints `[DEPRECATED]: wait_frames has been replaced with
+   wait_physics_frames ... wait_process_frames`. The text must say
+   `wait_physics_frames` (for physics) or `wait_process_frames`.
+3. **The CI snippet uses `${PIPESTATUS[0]}`.** `references/running-tests.md`
+   uses it in the GUT job. It is bash only. In the default macOS shell (zsh)
+   it is empty (zsh uses `pipestatus`). The skill gives no portable form. The
+   seat redirected the log to a file and read `$?` instead, in `tests/run.sh`.
+4. **No full exit-code recipe for a local run.** The skill says "also check
+   the log" but gives the check only inside a CI YAML. A ready script like
+   `tests/run.sh` (run, save the log, test the exit code, grep for
+   `SCRIPT ERROR|Parse Error|Nothing was run`) belongs in the skill.
+5. **No config file example.** `SKILL.md` lists `tests/gut_config.json` as
+   optional. GUT reads `-gconfig=res://<file>` and the default
+   `res://.gutconfig.json`. The skill shows no keys. The seat used `dirs`,
+   `include_subdirs`, `should_exit`, `log_level`, `disable_colors`.
+6. **Dead skill links.** `godot-testing` `SKILL.md` line 10 points to
+   `godot-code-review` (the bundle has `code-review`) and `godot-export-pipeline`
+   (not in the bundle).
+7. **Autoloads in tests.** The skill does not say how a test reaches an
+   autoload. The seat used `get_node_or_null("/root/GameState")`, which also
+   avoids a parse error when the autoload is missing. The gameplay seat found
+   the same autoload limit for `-s` scripts in its problem 1 and 3.
+
+### Time
+
+Start 05:33 MST (wall clock of the worker host). The suite takes 0.6 s on
+the real game, plus the import in `tests/run.sh`.
