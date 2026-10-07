@@ -21,7 +21,9 @@ use horch_marketplace::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{BUNDLED_COPIED, BUNDLED_SKILL_DIGESTS, BUNDLED_SKILL_FILES};
+use super::{
+    BUNDLED_COPIED, BUNDLED_SKILL_DIGESTS, BUNDLED_SKILL_EXECUTABLES, BUNDLED_SKILL_FILES,
+};
 use crate::ids::SkillId;
 use crate::measure::digest::Digest;
 use crate::roster::Teammate;
@@ -89,6 +91,8 @@ pub struct CatalogEntry {
     /// `(path relative to the skill dir, bytes)`; empty for a marketplace
     /// entry, whose files live in the marketplace store.
     pub(crate) files: Vec<(&'static str, &'static [u8])>,
+    /// The paths of `files` that have an execute bit in `skills/`.
+    pub(crate) executable: Vec<&'static str>,
 }
 
 impl CatalogEntry {
@@ -241,7 +245,11 @@ impl SkillCatalog {
                 .iter()
                 .filter_map(|(p, b)| p.strip_prefix(&prefix).map(|rel| (rel, *b)))
                 .collect();
-            // `build.rs` digested the same bytes at build time.
+            let executable: Vec<&'static str> = BUNDLED_SKILL_EXECUTABLES
+                .iter()
+                .filter_map(|p| p.strip_prefix(&prefix))
+                .collect();
+            // `build.rs` digested the same bytes and execute bits at build time.
             let digest = BUNDLED_SKILL_DIGESTS
                 .iter()
                 .find(|(n, _)| *n == name)
@@ -267,6 +275,7 @@ impl SkillCatalog {
                     copied,
                     skill_file_bytes: bytes.len(),
                     files,
+                    executable,
                 },
             );
         }
@@ -377,6 +386,7 @@ impl SkillCatalog {
                     copied: None,
                     skill_file_bytes: 0,
                     files: Vec::new(),
+                    executable: Vec::new(),
                 },
             );
         }
@@ -459,6 +469,7 @@ impl SkillCatalog {
                     copied: None,
                     skill_file_bytes: named.skill_file_bytes,
                     files: Vec::new(),
+                    executable: Vec::new(),
                 },
             );
         }
@@ -557,6 +568,7 @@ impl SkillCatalog {
                     copied: None,
                     skill_file_bytes: bytes.len(),
                     files: Vec::new(),
+                    executable: Vec::new(),
                 },
             );
         }
@@ -711,21 +723,32 @@ fn validate_skill_md(path: &str, name: &str, bytes: &[u8]) -> Result<Metadata> {
 
 /// The marketplace tree-digest rule (`horch_marketplace::integrity::tree_digest`)
 /// over in-memory files: sha256 over the sorted lines
-/// `<relative path>\0<hex sha256 of the bytes>\n`. `build.rs` applies it to
-/// the bundled skills; the test checks that both agree.
+/// `<relative path>\0<hex sha256 of the bytes>\n`, where the line of a path
+/// in `executable` ends `\0x\n`. `build.rs` applies it to the bundled
+/// skills; the test checks that both agree. A skill without an executable
+/// file has its marketplace digest.
 #[cfg(test)]
-fn tree_digest(files: &[(&str, &[u8])]) -> Digest {
+fn tree_digest(files: &[(&str, &[u8])], executable: &[&str]) -> Digest {
     use sha2::{Digest as _, Sha256};
-    let mut lines: Vec<(&str, String)> = files
+    let mut lines: Vec<(&str, String, bool)> = files
         .iter()
-        .map(|(rel, bytes)| (*rel, crate::measure::digest::sha256_bytes(bytes).hex()))
+        .map(|(rel, bytes)| {
+            (
+                *rel,
+                crate::measure::digest::sha256_bytes(bytes).hex(),
+                executable.contains(rel),
+            )
+        })
         .collect();
     lines.sort();
     let mut tree = Sha256::new();
-    for (rel, hash) in &lines {
+    for (rel, hash, exec) in &lines {
         tree.update(rel.as_bytes());
         tree.update([0u8]);
         tree.update(hash.as_bytes());
+        if *exec {
+            tree.update(b"\0x");
+        }
         tree.update(b"\n");
     }
     Digest(tree.finalize().into())
@@ -748,8 +771,44 @@ mod tests {
                 .filter_map(|(p, b)| p.strip_prefix(&prefix).map(|rel| (rel, *b)))
                 .collect();
             assert!(!files.is_empty(), "{name}");
-            assert_eq!(tree_digest(&files), Digest(*built), "{name}");
+            let executable = &catalog.entries[*name].executable;
+            assert_eq!(tree_digest(&files, executable), Digest(*built), "{name}");
             assert_eq!(catalog.entries[*name].digest, Digest(*built), "{name}");
         }
+    }
+
+    /// A fixture skill whose only change is the execute bit of 1 file gets
+    /// a new digest. A skill without an executable file keeps the
+    /// marketplace digest of its tree on disk.
+    #[test]
+    fn skl_11_digest_covers_the_execute_bit() {
+        let files: [(&str, &[u8]); 2] = [
+            ("SKILL.md", b"---\nname: demo\n---\n"),
+            ("scripts/run.sh", b"#!/bin/sh\necho ok\n"),
+        ];
+        let plain = tree_digest(&files, &[]);
+        let exec = tree_digest(&files, &["scripts/run.sh"]);
+        assert_ne!(plain, exec);
+        assert_ne!(exec, tree_digest(&files, &["SKILL.md"]));
+
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, bytes) in files {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let on_disk = horch_marketplace::integrity::tree_digest(dir.path()).unwrap();
+        assert_eq!(plain.to_string(), on_disk);
+    }
+
+    /// The bundled table names the 755 script of `godot-build-verify` and
+    /// not its SKILL.md.
+    #[cfg(unix)]
+    #[test]
+    fn skl_11_bundled_entry_lists_its_executable_files() {
+        let catalog = SkillCatalog::bundled().unwrap();
+        let entry = &catalog.entries["godot-build-verify"];
+        assert!(entry.executable.contains(&"scripts/godot-run.sh"));
+        assert!(!entry.executable.contains(&"SKILL.md"));
     }
 }

@@ -1,5 +1,5 @@
 //! A9: the versioned skill catalog and the activation plan (SKL-01, SKL-02,
-//! SKL-03, SKL-07, SKL-08).
+//! SKL-03, SKL-07, SKL-08, SKL-11).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use horch_core::roster::{Phase, Roster, Teammate};
 use horch_core::skills::catalog::parse_copied;
 use horch_core::skills::{
     self, briefing, plan_activation, BriefingContext, CatalogSource, InvocationPolicy,
-    MaterializedSkills, SkillCatalog, BUNDLED_SKILL_FILES,
+    MaterializedSkills, SkillCatalog, BUNDLED_SKILL_EXECUTABLES, BUNDLED_SKILL_FILES,
 };
 use horch_marketplace::LockEntry;
 
@@ -157,7 +157,14 @@ fn skl_01_bundled_catalog_versions_and_digests() {
         assert_eq!(entry.source_label(), "bundled");
         assert!(!entry.description.trim().is_empty(), "{id}");
 
-        // The digest is the marketplace tree digest of the skill directory.
+        // The digest is the marketplace tree digest of the skill directory
+        // when no file is executable; an execute bit changes it (SKL-11).
+        if BUNDLED_SKILL_EXECUTABLES
+            .iter()
+            .any(|p| p.starts_with(&format!("{id}/")))
+        {
+            continue;
+        }
         let dir = tmp.path().join(id);
         for (path, bytes) in BUNDLED_SKILL_FILES {
             if let Some(rel) = path.strip_prefix(&format!("{id}/")) {
@@ -860,6 +867,36 @@ fn skl_08_materialize_rejects_path_like_execution_ids() {
         MaterializedSkills::materialize(&plan, &catalog, tmp.path(), "x").is_err(),
         "two executions never share a directory"
     );
+}
+
+/// A materialized bundle writes an executable skill file with mode 755
+/// and any other file without an execute bit.
+#[cfg(unix)]
+#[test]
+fn skl_11_materialized_bundle_keeps_the_execute_bit() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let catalog = SkillCatalog::bundled().unwrap();
+    let t = Teammate {
+        name: "exec".into(),
+        available_skills: vec!["godot-build-verify".into()],
+        phase: Some(Phase::Implementation),
+        ..Teammate::default()
+    };
+    let plan = plan_activation(&t, t.phase, &catalog).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let files = MaterializedSkills::materialize(&plan, &catalog, tmp.path(), "exec")
+        .unwrap()
+        .unwrap();
+    let dir = files.skills_dir().join("godot-build-verify");
+    let mode = |rel: &str| {
+        std::fs::metadata(dir.join(rel))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode("scripts/godot-run.sh"), 0o755);
+    assert_eq!(mode("SKILL.md") & 0o111, 0);
 }
 
 // ─── available_skills and operator_skills ──────────────────────────────────

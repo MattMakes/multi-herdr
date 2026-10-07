@@ -116,7 +116,13 @@ impl MaterializedSkills {
             for (rel, bytes) in &entry.files {
                 let target = target.join(rel);
                 std::fs::create_dir_all(target.parent().expect("skill path has parent"))?;
-                std::fs::write(target, bytes)?;
+                std::fs::write(&target, bytes)?;
+                // The digest covers the execute bit, so the bundle keeps it.
+                #[cfg(unix)]
+                if entry.executable.contains(rel) {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
+                }
             }
         }
         Ok(Some(out))
