@@ -26,6 +26,10 @@ collector** and restarts it with `horch telemetry ensure`, so it runs only with
 
 How the steps run (they refine the wording of the design's table):
 
+- L1 checks the Codex rate limits apart from the record paths: it takes the
+  newest rollout whose `rate_limits` holds at least 1 window (matched by
+  `window_minutes`, never by slot name), skips rollouts with `rate_limits: null`,
+  and prints the windows it found. Codex 0.160 has only a weekly `primary`.
 - L2 compares per record and per token class (usage `records[]` against cost
   `rows[]`), skips records whose transcript changed in the last 5 minutes, and
   runs twice: on a fresh private store (readers agree) and on the live store.

@@ -102,9 +102,20 @@ if [ -n "$codex_real" ]; then
     'token_usage_record: payload.response_id' 'token_usage_record: payload.usage.input_tokens' \
     'token_usage_record: payload.usage.cached_input_tokens' 'token_usage_record: payload.usage.cache_write_input_tokens' \
     'token_usage_record: payload.usage.output_tokens' 'token_usage_record: payload.usage.reasoning_output_tokens' \
-    'session_meta: payload.cli_version' 'turn_context: payload.model' 'turn_context: payload.effort' \
-    'event_msg: payload.rate_limits.primary.used_percent' 'event_msg: payload.rate_limits.primary.window_minutes' \
-    'event_msg: payload.rate_limits.primary.resets_at'
+    'session_meta: payload.cli_version' 'turn_context: payload.model' 'turn_context: payload.effort'
+  # Rate limits are checked apart: windows are matched by window_minutes, never by slot (QUO-04).
+  # Codex 0.160 has only a weekly `primary`, a null `secondary` and no 5-hour window, and a
+  # rollout may hold `rate_limits: null`. Any snapshot with at least 1 window passes.
+  rl_file=""; rl_windows=""
+  for f in $(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -type f | xargs ls -t 2>/dev/null | head -40); do
+    rl_windows=$(tail -n 3000 "$f" | jq -R -r 'fromjson? | select(.type == "event_msg" and .payload.type == "token_count")
+      | .payload.rate_limits | objects | [to_entries[] | select(.value | type == "object" and has("window_minutes"))
+      | "\(.key)=\(.value.window_minutes)min used_percent=\(.value.used_percent // "MISSING") resets_at=\(.value.resets_at // "MISSING")"] | select(length > 0) | join("; ")' | tail -1)
+    [ -n "$rl_windows" ] && { rl_file=$f; break; }
+  done
+  if [ -z "$rl_file" ]; then skip "L1 codex rate_limits" "no rollout in the newest 40 holds a rate_limits window"
+  elif printf '%s' "$rl_windows" | grep -q MISSING; then fail "L1 codex rate_limits" "a window lacks used_percent or resets_at in $(basename "$rl_file"): $rl_windows"
+  else pass "L1 codex rate_limits" "$(printf "%s" "$rl_windows" | grep -o "min used_percent" | wc -l | tr -d " ") window(s) in $(basename "$rl_file"): $rl_windows"; fi
 else skip "L1 codex" "no Codex rollout"; fi
 pi_real=$(ls -t "$HOME"/.pi/agent/sessions/*/*.jsonl 2>/dev/null | head -1 || true)
 PI_PATHS='select(.type == "message" and .message.role == "assistant" and .message.usage?) | [paths(scalars) | map(select(type == "string")) | join(".")] | .[]'

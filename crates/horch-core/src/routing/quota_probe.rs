@@ -356,7 +356,11 @@ pub(crate) fn newest_rollout_snapshot(sessions: &Path) -> Option<(String, Vec<Wi
     collect_rollouts(sessions, &mut files);
     files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
     for (_, path) in files.into_iter().take(20) {
-        let text = std::fs::read_to_string(&path).ok()?;
+        // An unreadable file, or a cut multi-byte tail, skips that file only.
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
         let found = text.lines().rev().find_map(|line| {
             let v: Value = serde_json::from_str(line).ok()?;
             let rl = v
@@ -578,6 +582,63 @@ mod tests {
         let (at, windows) = newest_rollout_snapshot(&tmp.path().join("sessions")).unwrap();
         assert!(!at.is_empty());
         assert!(windows.iter().any(|w| w.name == "7d"));
+    }
+
+    /// Writes a rollout whose mtime is `age_secs` in the past.
+    fn rollout(dir: &Path, name: &str, body: &[u8], age_secs: u64) {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        let at = std::time::SystemTime::now() - StdDuration::from_secs(age_secs);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    }
+
+    /// Codex 0.160: `primary` is the weekly window, `secondary` is null, and
+    /// there is no 5-hour window. A newer rollout from a `codex exec` probe
+    /// holds `rate_limits: null`, and the newest one is cut mid-character.
+    /// The snapshot comes from the next newest rollout that has a window.
+    #[test]
+    fn quo_03_rollout_snapshot_skips_null_rate_limits_on_codex_0_160() {
+        let tmp = tempfile::tempdir().unwrap();
+        let day = tmp.path().join("sessions/2026/10/06");
+        let weekly = concat!(
+            r#"{"timestamp":"2026-10-07T03:51:41.160Z","type":"event_msg","payload":{"type":"token_count","info":null,"#,
+            r#""rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":43.0,"window_minutes":10080,"resets_at":1791595230},"#,
+            r#""secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-10-07T03:51:42.000Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":null}}"#,
+            "\n"
+        );
+        let null_only = r#"{"timestamp":"2026-10-07T03:52:00.000Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":null}}"#;
+        rollout(&day, "rollout-a-weekly.jsonl", weekly.as_bytes(), 300);
+        rollout(&day, "rollout-b-probe.jsonl", null_only.as_bytes(), 200);
+        let mut cut = null_only.as_bytes().to_vec();
+        cut.extend_from_slice(&[b'\n', 0xE2, 0x82]);
+        rollout(&day, "rollout-c-cut.jsonl", &cut, 100);
+        let (at, windows) = newest_rollout_snapshot(&tmp.path().join("sessions")).unwrap();
+        assert_eq!(at, "2026-10-07T03:51:41Z");
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].name, "7d");
+        assert!((windows[0].used - 0.43).abs() < 1e-9);
+    }
+
+    /// Only null snapshots: no answer, not an error.
+    #[test]
+    fn quo_03_rollout_snapshot_is_none_when_every_rollout_is_null() {
+        let tmp = tempfile::tempdir().unwrap();
+        let null_only = r#"{"timestamp":"2026-10-07T03:52:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":null}}"#;
+        rollout(
+            &tmp.path().join("sessions"),
+            "rollout-x.jsonl",
+            null_only.as_bytes(),
+            10,
+        );
+        assert!(newest_rollout_snapshot(&tmp.path().join("sessions")).is_none());
     }
 
     fn copy(from: &Path, to: &Path) {

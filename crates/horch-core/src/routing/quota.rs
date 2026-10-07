@@ -865,6 +865,20 @@ mod tests {
         let w = crate::telemetry::readers::codex_rollout_windows(&rl);
         assert_eq!((w[0].name.as_str(), w[1].name.as_str()), ("5h", "7d"));
         assert_eq!(window_name(60), "60m");
+        // Codex 0.160: primary is the weekly window and secondary is null.
+        let rl: Value = serde_json::json!({"limit_id":"codex","limit_name":null,
+            "primary":{"used_percent":0.0,"window_minutes":10080,"resets_at":1791949554},
+            "secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"}});
+        let w = crate::telemetry::readers::codex_rollout_windows(&rl);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].name, "7d");
+        // The same shape from the app-server probe.
+        let p = parse_codex_limits(&serde_json::json!({"result":{"rateLimits":{
+            "primary":{"usedPercent":43.0,"windowDurationMins":10080,"resetsAt":1791595230},
+            "secondary":null}}}))
+        .unwrap();
+        assert_eq!(p.windows.len(), 1);
+        assert_eq!(p.windows[0].name, "7d");
     }
 
     #[test]
