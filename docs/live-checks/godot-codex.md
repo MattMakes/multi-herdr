@@ -174,4 +174,20 @@ The `seatbelt` runs only simulate the sandbox: they prove that the script
 writes both files and that Godot accepts them. The copy was deleted after the
 runs.
 
-Pending: a run of `godot-run.sh` inside a real Codex pane.
+Pending proof completed: see [Codex pane run (2026-10-07)](#codex-pane-run-2026-10-07).
+
+## Codex pane run (2026-10-07)
+
+Host: macOS 26.5.1 (arm64), Codex CLI 0.160.0 with
+`CODEX_SANDBOX=seatbelt`, Godot 4.7.2.stable.official.ed1daf0bf.
+
+| Step | Mode | Exit | ERROR lines | Result | Evidence |
+|------|------|------|-------------|--------|----------|
+| `--version` | wrapper | 0 | 0 | PASS | Printed `4.7.2.stable.official.ed1daf0bf`. |
+| `--path . --import` | wrapper | 0 | 0 | PASS | Import completed; `override.cfg`, imported project state, and the editor TLS setting exist. |
+| parse check | wrapper | 0 | 0 | PASS | `PARSE_CHECK checked=4 failed=0`. |
+| `test_health.gd` | wrapper | 0 | 0 | PASS | `HEALTH_TEST passed=7 failed=0`. |
+| `--path . --quit-after 60` | wrapper | 0 | 0 | PASS | `GODOT_CODEX_MAIN_READY`. |
+| `--path . --import` | wrapper with `CODEX_SANDBOX` unset | 3 | 1 | PASS | Printed E3 and `godot-run: SANDBOX: 1 line(s)`; the wrapper detected the sandbox error. |
+
+Verdict: `godot-run.sh` makes all 5 Godot commands pass in a real Codex pane and rejects the control import with exit 3.
