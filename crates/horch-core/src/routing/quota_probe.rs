@@ -506,6 +506,10 @@ pub(crate) fn probe_all(
         zen.source = Some("none".into());
     }
 
+    // The google pool (agy) has no probe (U-61): agy 1.2.17 writes no local
+    // quota or usage signal and has no usage subcommand, so the pool stays
+    // `unknown`. Seen live: docs/live-checks/harnesses.md.
+
     let local = file.pools.entry(POOL_LOCAL.into()).or_default();
     local.probed_at = Some(stamp.clone());
     local.observed_at = Some(stamp);

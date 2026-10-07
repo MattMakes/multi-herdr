@@ -133,6 +133,11 @@ pub fn poll_record(
             polled.files.push(loc.opencode_db.clone());
         }
         "none" => return Err(Unreadable::NotRead("agent none is not read".into())),
+        // "antigravity" lands here: agy 1.2.17 keeps no local usage that
+        // horch can read (U-60). Its state files are binary protobuf, and the
+        // conversation_summaries.db table has no token columns. Only `-p
+        // --output-format json` prints per-run tokens, and horch runs the TUI.
+        // Seen live: docs/live-checks/harnesses.md.
         other => return Err(Unreadable::NotRead(format!("unknown agent '{other}'"))),
     }
     Ok(polled)
