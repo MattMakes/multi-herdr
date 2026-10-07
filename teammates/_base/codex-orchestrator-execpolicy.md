@@ -27,6 +27,8 @@ rules:
     justification: report the context size of every session
   - pattern: '"horch", "compact"'
     justification: compact a session at a stopping point
+  - pattern: '"horch", "mode"'
+    justification: switch a read-only Codex worker to write and back
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a
 private `CODEX_HOME` that lives only as long as the pane, as:

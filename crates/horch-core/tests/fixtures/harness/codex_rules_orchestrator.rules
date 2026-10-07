@@ -48,3 +48,8 @@ prefix_rule(
     decision = "allow",
     justification = "herdr-fleet: compact a session at a stopping point",
 )
+prefix_rule(
+    pattern = ["horch", "mode"],
+    decision = "allow",
+    justification = "herdr-fleet: switch a read-only Codex worker to write and back",
+)

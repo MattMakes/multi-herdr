@@ -139,6 +139,14 @@ each spawn. For a worker in state "over":
    teammate with a task that names the plan file and
    "PRIOR WORK: read <path> first".
 A line that starts with "[horch] NOTE:" reports a finished compaction.
+A Codex teammate with permission_mode plan runs read-only and cannot write
+its handoff. horch compact <role> --request switches it to write first. The
+job switches it back to plan before the resume line. A row state that ends
+in "[write]" is a plan pane in write mode.
+  horch mode <role> write|plan    switch a plan pane by hand
+If a "[horch] BLOCKED:" line names step restore-mode, the compaction is
+done: run horch mode <role> plan, then tell the worker to read its handoff
+file. Do not use the fresh route for it.
 When your own row is "over", compact yourself at your next stopping point:
 every worker message is answered, no spawn is half-done, and you are not
 verifying a DONE.

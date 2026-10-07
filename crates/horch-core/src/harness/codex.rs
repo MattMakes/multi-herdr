@@ -32,7 +32,7 @@ use super::{
 };
 use crate::compaction::window::OperatorWindow;
 use crate::prompts;
-use crate::roster::{ExecRule, HarnessDefault, Teammate};
+use crate::roster::{ExecRule, HarnessDefault, PermissionMode, Teammate};
 use crate::runtime::RuntimeContext;
 
 /// Path to codex's shared rules file: `~/.codex/rules/default.rules`.
@@ -488,9 +488,22 @@ impl Harness for Codex {
             None | Some(WORKSPACE_WRITE) => {
                 prepared.extra_args = vec!["--add-dir".into(), state_root];
             }
-            // Named as a workspace-write root instead: codex reads it only
-            // after a run-time switch to workspace-write (`horch mode <role>
-            // write`), and starts normally with it (X6 repro 2).
+            // A plan pane: the fleet write profile holds the root, and
+            // `horch mode <role> write` selects it (X6 repro 5).
+            Some(READ_ONLY) if plan_profile_form(req.teammate) => {
+                prepared.extra_args = vec![
+                    "-c".into(),
+                    format!("permissions.{FLEET_WRITE_PROFILE}.extends=\":workspace\""),
+                    "-c".into(),
+                    format!(
+                        "permissions.{FLEET_WRITE_PROFILE}.workspace_roots={{{}=true}}",
+                        toml_string(&state_root)
+                    ),
+                ];
+            }
+            // Another read-only launch names it as a workspace-write root:
+            // codex reads it only after a switch to workspace-write, and
+            // starts normally with it (X6 repro 2).
             Some(READ_ONLY)
                 if !HarnessDefault::config_keys(&req.teammate.args)
                     .contains(&WRITABLE_ROOTS_KEY) =>
@@ -704,10 +717,7 @@ fn toml_string(s: &str) -> String {
 /// wins over `config` (the inherited `config.toml`, read only when needed).
 /// Among flags, the teammate's args come after `permission_mode`'s and win.
 fn launch_sandbox(teammate: &Teammate, config: impl FnOnce() -> Option<String>) -> Option<String> {
-    let mode_args = teammate
-        .permission_mode
-        .and_then(|m| m.codex_args())
-        .unwrap_or_default();
+    let mode_args = permission_args(teammate).unwrap_or_default();
     let mut flag: Option<String> = None;
     let mut pair: Option<String> = None;
     let mut it = mode_args.iter().chain(&teammate.args);
@@ -722,8 +732,10 @@ fn launch_sandbox(teammate: &Teammate, config: impl FnOnce() -> Option<String>) 
                 let Some((key, value)) = it.next().and_then(|p| p.split_once('=')) else {
                     continue;
                 };
-                if key.trim() == "sandbox_mode" {
-                    pair = Some(toml_scalar(value));
+                match key.trim() {
+                    "sandbox_mode" => pair = Some(toml_scalar(value)),
+                    "default_permissions" => pair = Some(profile_sandbox(&toml_scalar(value))),
+                    _ => {}
                 }
             }
             other => {
@@ -733,8 +745,70 @@ fn launch_sandbox(teammate: &Teammate, config: impl FnOnce() -> Option<String>) 
             }
         }
     }
-    flag.or(pair)
-        .or_else(|| codex_config_value(&config()?, args_profile(&teammate.args), "sandbox_mode"))
+    flag.or(pair).or_else(|| {
+        let text = config()?;
+        let profile = args_profile(&teammate.args);
+        codex_config_value(&text, profile, "sandbox_mode").or_else(|| {
+            codex_config_value(&text, profile, "default_permissions").map(|p| profile_sandbox(&p))
+        })
+    })
+}
+
+/// The sandbox of a `default_permissions` profile: the built-in ones by
+/// name; a named profile as itself (no `--add-dir`: its roots are its own).
+fn profile_sandbox(profile: &str) -> String {
+    match profile {
+        ":read-only" => READ_ONLY.into(),
+        ":workspace" => WORKSPACE_WRITE.into(),
+        ":danger-full-access" => "danger-full-access".into(),
+        other => other.into(),
+    }
+}
+
+/// The fleet's write profile of a plan pane: `:workspace` plus the state
+/// root. `horch mode <role> write` selects it in `/permissions` (X6 repro 5).
+pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
+
+/// Whether a plan teammate launches in the profile form: its own args set
+/// no sandbox and no profile (Codex refuses `sandbox_mode` and
+/// `default_permissions` together).
+fn plan_profile_form(teammate: &Teammate) -> bool {
+    if teammate.permission_mode != Some(PermissionMode::Plan) {
+        return false;
+    }
+    let keys = HarnessDefault::config_keys(&teammate.args);
+    let flags = [
+        "-s",
+        "--sandbox",
+        "--full-auto",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--yolo",
+    ];
+    !keys
+        .iter()
+        .any(|k| matches!(*k, "sandbox_mode" | "default_permissions"))
+        && !teammate
+            .args
+            .iter()
+            .any(|a| flags.contains(&a.as_str()) || a.starts_with("--sandbox="))
+}
+
+/// The sandbox and approval args of `permission_mode`. A plan pane in the
+/// profile form gets `default_permissions=":read-only"`, not `-s
+/// read-only`: only then does `/permissions` list Read Only, so `horch mode
+/// <role> plan` can switch back (X6 repro 3). `None`: no mode, or no codex
+/// equivalent.
+fn permission_args(teammate: &Teammate) -> Option<Vec<String>> {
+    if plan_profile_form(teammate) {
+        let args = [
+            "-c",
+            "default_permissions=\":read-only\"",
+            "-a",
+            "on-request",
+        ];
+        return Some(args.iter().map(|s| s.to_string()).collect());
+    }
+    teammate.permission_mode?.codex_args()
 }
 
 /// The profile a codex launch runs: the value after `-p` or `--profile` in
@@ -824,7 +898,7 @@ pub(super) fn codex_command(
     }
 
     if let Some(mode) = teammate.permission_mode {
-        match mode.codex_args() {
+        match permission_args(teammate) {
             Some(args) => {
                 cmd.args(args);
             }
@@ -859,6 +933,130 @@ pub(super) fn codex_command(
     }
     cmd.arg(prompt);
     Ok(cmd)
+}
+
+// ─── run-time permission switch (`horch mode`, X6) ─────────────────────────
+
+/// The sandbox mode `horch mode` puts a `permission_mode: plan` pane in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneMode {
+    /// Read-only, as the teammate launches.
+    Plan,
+    /// Workspace-write with the state root, for a handoff and the ledger.
+    Write,
+}
+
+impl PaneMode {
+    /// `plan` or `write`: the CLI argument and the `mode-changed` text.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PaneMode::Plan => "plan",
+            PaneMode::Write => "write",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<PaneMode> {
+        match s {
+            "plan" => Some(PaneMode::Plan),
+            "write" => Some(PaneMode::Write),
+            _ => None,
+        }
+    }
+
+    /// The `/permissions` item that selects this mode (Codex 0.160.0).
+    pub fn menu_label(self) -> &'static str {
+        match self {
+            PaneMode::Plan => "Read Only",
+            PaneMode::Write => FLEET_WRITE_PROFILE,
+        }
+    }
+}
+
+/// The title line of Codex's `/permissions` menu.
+pub const PERMISSIONS_MENU_TITLE: &str = "Update Model Permissions";
+
+/// The `/permissions` menu as a screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionsMenu {
+    /// The item labels in order, without a ` (current)` mark.
+    pub items: Vec<String>,
+    /// The index of the item under the `›` cursor.
+    pub cursor: usize,
+}
+
+impl PermissionsMenu {
+    pub fn cursor_label(&self) -> Option<&str> {
+        self.items.get(self.cursor).map(String::as_str)
+    }
+
+    /// The `down` presses from the cursor to `label`. The menu wraps.
+    pub fn downs_to(&self, label: &str) -> Option<usize> {
+        let target = self.items.iter().position(|i| i == label)?;
+        let n = self.items.len();
+        Some((target + n - self.cursor) % n)
+    }
+}
+
+/// The newest `/permissions` menu on `screen`: the item lines after the
+/// last title. `None` without a title, items or a cursor.
+pub fn parse_permissions_menu(screen: &str) -> Option<PermissionsMenu> {
+    let start = screen.rfind(PERMISSIONS_MENU_TITLE)?;
+    let mut items = Vec::new();
+    let mut cursor = None;
+    for line in screen[start..].lines().skip(1) {
+        let mut rest = line.trim_start();
+        let here = rest.starts_with('›');
+        if here {
+            rest = rest.trim_start_matches('›').trim_start();
+        }
+        let Some((num, label)) = rest.split_once(". ") else {
+            continue;
+        };
+        if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let label = label.split("  ").next().unwrap_or("").trim();
+        let label = label.strip_suffix("(current)").unwrap_or(label).trim();
+        if here {
+            cursor = Some(items.len());
+        }
+        items.push(label.to_string());
+    }
+    Some(PermissionsMenu {
+        cursor: cursor?,
+        items,
+    })
+    .filter(|m| !m.items.is_empty())
+}
+
+/// The value of the newest `Permissions:` line of a `/status` block, with
+/// its wrapped parts joined (Codex wraps it at narrow widths, mid-path).
+pub fn status_permissions(screen: &str) -> Option<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let at = lines.iter().rposition(|l| l.contains("Permissions:"))?;
+    let first = lines[at].split_once("Permissions:")?.1.trim();
+    let mut value = first.to_string();
+    // A wrapped part is indented under the value; the next key is not.
+    for line in &lines[at + 1..] {
+        let indent = line.len() - line.trim_start().len();
+        if indent <= 6 || line.trim().is_empty() {
+            break;
+        }
+        value.push_str(line.trim());
+    }
+    Some(value)
+}
+
+/// Whether a `/status` Permissions value shows `mode`: `Read Only ...` for
+/// `Plan`, `Profile fleet_write` for `Write` (X6 repro 5; `/status` does not
+/// list a profile's roots). Whitespace is ignored, as a wrap can split any
+/// word.
+pub fn status_shows(mode: PaneMode, permissions: &str) -> bool {
+    let value: String = permissions.split_whitespace().collect();
+    match mode {
+        PaneMode::Plan => value.starts_with("ReadOnly"),
+        PaneMode::Write => value == format!("Profile{FLEET_WRITE_PROFILE}"),
+    }
 }
 
 #[cfg(test)]
@@ -1305,53 +1503,144 @@ mod tests {
         }
     }
 
-    /// A read-only launch cannot take `--add-dir`, so it names the state root
-    /// as a workspace-write root by config instead. Codex reads that only
-    /// after a run-time switch to workspace-write (`horch mode <role> write`),
-    /// and it starts normally with it (X6 repro 2). No other sandbox gets it,
-    /// and a teammate's own pair is kept.
+    /// The `-c` pairs a prepared launch for `teammate` passes, and its state
+    /// root.
+    #[cfg(unix)]
+    fn config_pairs(teammate: &Teammate) -> (String, Vec<String>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, prepared) = prepare_in(tmp.path(), teammate);
+        let pairs = prepared
+            .extra_args
+            .windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| w[1].clone())
+            .collect();
+        (ctx.paths.state_root.to_string_lossy().into_owned(), pairs)
+    }
+
+    /// A plan pane cannot take `--add-dir`, so it gets the fleet write
+    /// profile: `:workspace` plus the state root. `horch mode <role> write`
+    /// selects it; writes worked under it and failed again under Read Only
+    /// (X6 repro 5c, 5d). No other mode gets it.
     #[cfg(unix)]
     #[test]
-    fn a_read_only_launch_names_the_state_root_for_a_later_switch() {
+    fn a_plan_launch_defines_the_fleet_write_profile_with_the_state_root() {
         use crate::roster::PermissionMode::*;
-        let pairs = |teammate: &Teammate| {
-            let tmp = tempfile::tempdir().unwrap();
-            let (ctx, prepared) = prepare_in(tmp.path(), teammate);
-            let pairs: Vec<String> = prepared
-                .extra_args
-                .windows(2)
-                .filter(|w| w[0] == "-c" && w[1].starts_with(WRITABLE_ROOTS_KEY))
-                .map(|w| w[1].clone())
-                .collect();
-            (ctx.paths.state_root.to_string_lossy().into_owned(), pairs)
-        };
         let plan = Teammate {
             permission_mode: Some(Plan),
             ..Default::default()
         };
-        let (state, got) = pairs(&plan);
+        let (state, got) = config_pairs(&plan);
         assert_eq!(
             got,
-            vec![format!(
-                "sandbox_workspace_write.writable_roots=[\"{state}\"]"
-            )]
+            vec![
+                "permissions.fleet_write.extends=\":workspace\"".to_string(),
+                format!("permissions.fleet_write.workspace_roots={{\"{state}\"=true}}"),
+            ]
         );
         for mode in [Some(AcceptEdits), Some(Auto), Some(BypassPermissions), None] {
             let teammate = Teammate {
                 permission_mode: mode,
                 ..Default::default()
             };
-            assert!(pairs(&teammate).1.is_empty(), "permission_mode {mode:?}");
+            assert!(
+                config_pairs(&teammate).1.is_empty(),
+                "permission_mode {mode:?}"
+            );
         }
+    }
+
+    /// A read-only launch outside the profile form (the teammate sets its
+    /// own sandbox) names the state root as a workspace-write root instead:
+    /// codex starts with it and reads it after a switch (X6 repro 2). A
+    /// teammate's own pair is kept.
+    #[cfg(unix)]
+    #[test]
+    fn a_legacy_read_only_launch_names_the_state_root_for_a_later_switch() {
+        let legacy = Teammate {
+            args: vec!["-s".into(), "read-only".into()],
+            ..Default::default()
+        };
+        let (state, got) = config_pairs(&legacy);
+        assert_eq!(
+            got,
+            vec![format!(
+                "sandbox_workspace_write.writable_roots=[\"{state}\"]"
+            )]
+        );
         let own = Teammate {
-            permission_mode: Some(Plan),
             args: vec![
+                "-s".into(),
+                "read-only".into(),
                 "-c".into(),
                 "sandbox_workspace_write.writable_roots=[\"/own\"]".into(),
             ],
             ..Default::default()
         };
-        assert!(pairs(&own).1.is_empty());
+        assert!(config_pairs(&own).1.is_empty());
+    }
+
+    /// The plan argv: `default_permissions=":read-only"` and no `-s`, so
+    /// `/permissions` lists Read Only (X6 repro 3). With the teammate's own
+    /// sandbox, the legacy pair stays (codex refuses both together).
+    #[test]
+    fn a_plan_pane_launches_with_the_read_only_profile() {
+        use crate::roster::PermissionMode::Plan;
+        let argv = |args: Vec<&str>| -> Vec<String> {
+            let teammate = Teammate {
+                model: Some("gpt-5.6-sol".into()),
+                permission_mode: Some(Plan),
+                args: args.into_iter().map(String::from).collect(),
+                ..Default::default()
+            };
+            codex_command(
+                &super::super::LaunchEnv::for_test(),
+                &teammate,
+                Session::Unmanaged,
+                "P",
+                None,
+            )
+            .unwrap()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+        };
+        let plain = argv(vec![]);
+        let at = plain
+            .iter()
+            .position(|a| a == "default_permissions=\":read-only\"");
+        let at = at.expect("the read-only profile");
+        assert_eq!(plain[at - 1], "-c");
+        assert_eq!(plain[at + 1..at + 3], ["-a", "on-request"]);
+        assert!(!plain.iter().any(|a| a == "-s" || a == "read-only"));
+        let own = argv(vec!["--sandbox", "workspace-write"]);
+        assert!(own.windows(2).any(|w| w == ["-s", "read-only"]));
+        assert!(!own.iter().any(|a| a.starts_with("default_permissions")));
+    }
+
+    /// `launch_sandbox` reads a `default_permissions` profile, in the argv
+    /// and in `config.toml`.
+    #[test]
+    fn a_default_permissions_profile_gives_its_sandbox() {
+        let with = |args: Vec<&str>, config: Option<&str>| {
+            let t = Teammate {
+                args: args.into_iter().map(String::from).collect(),
+                ..Default::default()
+            };
+            launch_sandbox(&t, || config.map(String::from))
+        };
+        assert_eq!(
+            with(vec!["-c", "default_permissions=\":read-only\""], None).as_deref(),
+            Some("read-only")
+        );
+        assert_eq!(
+            with(vec![], Some("default_permissions = \":workspace\"\n")).as_deref(),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            with(vec![], Some("default_permissions = \"mine\"\n")).as_deref(),
+            Some("mine")
+        );
     }
 
     /// A path with a quote or a backslash stays 1 TOML string.
@@ -1419,6 +1708,102 @@ mod tests {
             fleet_dirs(&plan_over_config, Some("sandbox_mode = \"read-only\"\n")).len(),
             1
         );
+    }
+
+    /// The `/permissions` menu of a legacy read-only launch, after a switch,
+    /// as the research pane showed it (Codex 0.160.0, X6).
+    const MENU_3: &str = "  rc=0\n\n  Update Model Permissions\n\n\n\
+        › 1. Ask for approval (current)  Read and edit workspace files and run commands, with approval required for internet access\n\
+        \x20                                or edits outside the workspace\n\
+        \x20 2. Approve for me              Only ask for actions detected as potentially unsafe\n\
+        \x20 3. Full Access                 Use with caution: Codex can edit files outside this workspace and access the internet\n\
+        \x20                                without approval\n\n  enter select · esc back\n";
+
+    /// The menu of the profile launch (X6 repro 5b): 5 items, the cursor on
+    /// item 2, narrow wrapping.
+    const MENU_5: &str = "  Update Model Permissions\n\n\
+        \x20 1. Ask for approval  Read and edit workspace files and run\n\
+        \x20                      commands\n\
+        › 2. Approve for me    Only ask for actions detected as\n\
+        \x20                      potentially unsafe\n\
+        \x20 3. Full Access       Use with caution\n\
+        \x20 4. Read Only         Read workspace files\n\
+        \x20 5. fleet_write (current)\n\n  enter select · esc back\n";
+
+    #[test]
+    fn the_permissions_menu_parses_its_items_and_cursor() {
+        let m = parse_permissions_menu(MENU_3).unwrap();
+        assert_eq!(
+            m.items,
+            ["Ask for approval", "Approve for me", "Full Access"]
+        );
+        assert_eq!(m.cursor, 0);
+        let m = parse_permissions_menu(MENU_5).unwrap();
+        assert_eq!(
+            m.items,
+            [
+                "Ask for approval",
+                "Approve for me",
+                "Full Access",
+                "Read Only",
+                "fleet_write"
+            ]
+        );
+        assert_eq!(m.cursor_label(), Some("Approve for me"));
+        assert!(parse_permissions_menu("› Ask Codex to do anything\n").is_none());
+    }
+
+    /// Down moves wrap (seen live), so the count is (target - cursor) mod n.
+    #[test]
+    fn the_downs_to_a_label_wrap_around_the_menu() {
+        let m = parse_permissions_menu(MENU_5).unwrap();
+        assert_eq!(m.downs_to(PaneMode::Plan.menu_label()), Some(2));
+        assert_eq!(m.downs_to(PaneMode::Write.menu_label()), Some(3));
+        assert_eq!(m.downs_to("Ask for approval"), Some(4));
+        assert_eq!(m.downs_to("Approve for me"), Some(0));
+        let m3 = parse_permissions_menu(MENU_3).unwrap();
+        assert_eq!(m3.downs_to(PaneMode::Plan.menu_label()), None);
+    }
+
+    /// Only the menu after the last title counts: an older menu in the
+    /// scrollback does not.
+    #[test]
+    fn only_the_newest_menu_counts() {
+        let screen = format!("{MENU_5}\n• Permission selection requested: Read Only\n{MENU_3}");
+        let m = parse_permissions_menu(&screen).unwrap();
+        assert_eq!(m.items.len(), 3);
+    }
+
+    /// `/status` wraps the Permissions value at narrow widths (seen live:
+    /// the state root broke after `.local/`). The newest block counts.
+    #[test]
+    fn the_status_permissions_line_joins_its_wrapped_parts() {
+        let screen = "  Permissions:         Read Only\n  Agents.md:           <none>\n\
+            ...\n  Directory:           ~/projects/multi-herdr\n\
+            \x20 Permissions:         Workspace [/Users/mascott/.local/\n\
+            \x20                      state/horch] (Ask for approval)\n\
+            \x20 Agents.md:           <none>\n";
+        let got = status_permissions(screen).unwrap();
+        assert_eq!(
+            got,
+            "Workspace [/Users/mascott/.local/state/horch] (Ask for approval)"
+        );
+        assert!(!status_shows(PaneMode::Write, &got));
+        assert!(!status_shows(PaneMode::Plan, &got));
+        assert!(status_shows(PaneMode::Write, "Profile fleet_write"));
+        assert!(status_shows(PaneMode::Write, "Profile fleet_\n write"));
+        assert!(!status_shows(PaneMode::Write, "Profile fleet_plan"));
+        assert!(status_shows(PaneMode::Plan, "Read Only (Ask for approval)"));
+        assert!(!status_shows(PaneMode::Plan, "Profile fleet_write"));
+        assert!(status_permissions("no status here").is_none());
+    }
+
+    #[test]
+    fn a_pane_mode_parses_its_own_names_only() {
+        assert_eq!(PaneMode::parse("write"), Some(PaneMode::Write));
+        assert_eq!(PaneMode::parse("plan"), Some(PaneMode::Plan));
+        assert_eq!(PaneMode::parse("read-only"), None);
+        assert_eq!(PaneMode::Write.as_str(), "write");
     }
 
     /// A machine that has never run codex has no home to mirror. That is not an

@@ -18,6 +18,7 @@ use horch_core::compaction::policy::{self, JobLiveness, RowInputs, RowState, EVE
 use horch_core::compaction::window::{self, WindowDecision, WindowSource, HEADROOM_FLOOR};
 use horch_core::execution::legacy::Record;
 use horch_core::execution::records::Ledger;
+use horch_core::harness::codex::PaneMode;
 use horch_core::harness::{launch, HarnessKind};
 use horch_core::roster::{Roster, Teammate};
 use horch_core::routing::decision::merge;
@@ -66,6 +67,9 @@ pub(crate) struct Row {
     pub job: JobLiveness,
     pub job_dir: PathBuf,
     pub state: RowState,
+    /// The mode of a Codex pane with `permission_mode: plan` (X6); None for
+    /// every other row.
+    pub mode: Option<PaneMode>,
 }
 
 impl Row {
@@ -214,7 +218,10 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
         }
     }
 
+    let mode = super::mode::is_plan_pane(src.roster, &record)
+        .then(|| super::mode::current_mode(&record.history));
     let mut row = Row {
+        mode,
         record,
         kind,
         model,
@@ -399,6 +406,8 @@ pub(crate) struct JsonRow {
     pub route: &'static str,
     /// The handoff file, resolved against the record's workdir.
     pub handoff: PathBuf,
+    /// `plan` or `write` for a Codex pane with `permission_mode: plan`.
+    pub mode: Option<&'static str>,
 }
 
 /// `last_compaction` of a [`JsonRow`]: every key, `null` when unknown.
@@ -474,6 +483,16 @@ fn json_row(src: &Sources, row: &Row, pane: Option<&Pane>) -> JsonRow {
             "fresh"
         },
         handoff: record_workdir(src.ctx, &row.record).join(policy::handoff_path(&row.record.role)),
+        mode: row.mode.map(PaneMode::as_str),
+    }
+}
+
+/// STATE of the text table: a plan pane left in write mode gets ` [write]`,
+/// so the orchestrator sees a pane to switch back (X6).
+fn state_text(row: &Row) -> String {
+    match row.mode {
+        Some(PaneMode::Write) => format!("{} [write]", row.state.as_str()),
+        _ => row.state.as_str().into(),
     }
 }
 
@@ -519,7 +538,7 @@ fn rows_table(rows: &[Row]) -> String {
             grouped(row.threshold),
             last,
             compactions,
-            row.state.as_str().into(),
+            state_text(row),
         ]);
     }
     let mut out = t.render();
@@ -956,6 +975,48 @@ mod tests {
         for l in &lines[1..] {
             assert!(l.split_whitespace().count() >= 10, "{l}");
         }
+    }
+
+    /// X6: a Codex pane with `permission_mode: plan` shows its mode: STATE
+    /// gets ` [write]` while it is in write mode, and `--json` has `mode`
+    /// (`plan`, `write`, or `null` for every other row).
+    #[test]
+    fn x6_a_plan_pane_shows_its_mode() {
+        let mut w = World::new();
+        w.roster.insert_for_test(Teammate {
+            name: "codex-plan".into(),
+            agent: HarnessKind::Codex,
+            permission_mode: Some(horch_core::roster::PermissionMode::Plan),
+            ..Default::default()
+        });
+        w.worker("r-p", "codex-plan-1", "codex", "codex-plan", Some(CODEX));
+        w.worker("r-s", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        let mode_of = |w: &World| -> Vec<serde_json::Value> {
+            let ws = horch_core::workspace::testing::FakeWorkspace::new();
+            let rows: Vec<serde_json::Value> =
+                serde_json::from_str(&context_json(&w.sources(), &ws).unwrap()).unwrap();
+            rows.iter().map(|r| r["mode"].clone()).collect()
+        };
+        assert_eq!(
+            mode_of(&w),
+            [serde_json::json!("plan"), serde_json::Value::Null]
+        );
+        let out = text(&w, false);
+        assert!(!out.contains("[write]"), "{out}");
+
+        w.ledger
+            .record_event("r-p", super::super::mode::EVENT_MODE_CHANGED, "write")
+            .unwrap();
+        assert_eq!(
+            mode_of(&w),
+            [serde_json::json!("write"), serde_json::Value::Null]
+        );
+        let out = text(&w, false);
+        let line = out.lines().find(|l| l.starts_with("codex-plan-1")).unwrap();
+        assert!(line.ends_with(" [write]"), "{out}");
+        assert!(!out
+            .lines()
+            .any(|l| l.starts_with("sonnet-1") && l.contains("[write]")));
     }
 
     /// CTX-01: a done worker has no row.

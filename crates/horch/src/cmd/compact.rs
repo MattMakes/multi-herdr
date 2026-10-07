@@ -30,10 +30,11 @@ use chrono::{DateTime, Utc};
 use horch_core::compaction::job::{self, JobPlan, JobPorts, Step};
 use horch_core::compaction::jobfile::{self, JobRecord, Started, JOB_FILE, LOG_FILE};
 use horch_core::compaction::policy::{
-    self, HandoffProblem, JobLiveness, EVENT_FAILED, EVENT_REQUESTED,
+    self, HandoffProblem, JobLiveness, EVENT_FAILED, EVENT_REQUESTED, EVENT_WARNED,
 };
 use horch_core::execution::legacy::Record;
 use horch_core::execution::records::Ledger;
+use horch_core::harness::codex::PaneMode;
 use horch_core::harness::HarnessKind;
 use horch_core::messaging::delivery::{self, Readiness, Timing};
 use horch_core::messaging::mailbox::Mailbox;
@@ -47,6 +48,7 @@ use horch_core::workspace::client::WorkspaceClient;
 use horch_core::workspace::herdr::Herdr;
 
 use super::context::{self, build_row, record_kind, record_workdir, Row, Sources};
+use super::mode;
 
 /// The start handshake: the child must write `job.json` at step
 /// `wait-idle` within this (design §6.8a). The wait ends as soon as the job
@@ -123,6 +125,8 @@ pub(crate) struct Env<'a> {
     /// The `horch` that runs the detached child.
     pub exe: PathBuf,
     pub start_timeout: Duration,
+    /// The waits of a `horch mode` switch of a plan pane (X6).
+    pub mode_timing: mode::Timing,
 }
 
 impl Env<'_> {
@@ -179,6 +183,7 @@ pub fn compact(ctx: &RuntimeContext, args: &CompactArgs) -> Result<ExitCode> {
         mailbox: &mailbox,
         exe: ctx.bins.exe()?,
         start_timeout: START_TIMEOUT,
+        mode_timing: mode::Timing::DEFAULT,
     };
     Ok(print(run(&env, args)))
 }
@@ -303,7 +308,18 @@ fn request(env: &Env, role: &str) -> Outcome {
         .as_ref()
         .ok()
         .and_then(|r| r.last_compaction.as_ref());
-    if policy::already_asked(&record.history, last) {
+    // A Codex pane with `permission_mode: plan` in read-only cannot write
+    // its handoff (X6). It is switched to write below; a warning in this
+    // cycle does not stop that, as the warned pane could not act on it.
+    let read_only = mode::is_plan_pane(env.src.roster, record)
+        && mode::current_mode(&record.history) == PaneMode::Plan;
+    let warned_only = record
+        .history
+        .iter()
+        .rev()
+        .find(|e| e.event == EVENT_REQUESTED || e.event == EVENT_WARNED)
+        .is_some_and(|e| e.event == EVENT_WARNED);
+    if policy::already_asked(&record.history, last) && !(read_only && warned_only) {
         let at = policy::asked_at(&record.history)
             .map(|s| horch_core::clock::stamp(DateTime::<Utc>::from(s)))
             .unwrap_or_else(|| "an earlier time".into());
@@ -327,6 +343,18 @@ fn request(env: &Env, role: &str) -> Outcome {
         Ok(l) => l,
         Err(e) => return Outcome::refused(format!("{e:#}")),
     };
+    if read_only {
+        if let Err(e) = mode::switch_record(
+            env.src.ledger,
+            env.ws,
+            record,
+            &t.pane,
+            PaneMode::Write,
+            &env.mode_timing,
+        ) {
+            return Outcome::refused(format!("switching {role} to write: {e}"));
+        }
+    }
     if let Err(e) = delivery::send_line_when_ready(
         env.ws,
         &t.pane,
@@ -780,6 +808,28 @@ impl JobPorts for Ports<'_> {
         report(self.env, line)
     }
 
+    /// A plan pane that `--request` switched to write goes back to plan
+    /// (X6). The record is read again: a manual `horch mode` counts too.
+    fn restore_mode(&self) -> Option<Result<()>> {
+        let record = self.env.src.ledger.get(&self.record.record_id).ok()?;
+        if !mode::is_plan_pane(self.env.src.roster, &record)
+            || mode::current_mode(&record.history) != PaneMode::Write
+        {
+            return None;
+        }
+        Some(
+            mode::switch_record(
+                self.env.src.ledger,
+                self.env.ws,
+                &record,
+                self.pane,
+                PaneMode::Plan,
+                &self.env.mode_timing,
+            )
+            .map_err(|e| anyhow::anyhow!("switching back to plan: {e}")),
+        )
+    }
+
     /// 1 log line; a new job step is written to `job.json` too.
     fn log(&self, step: Step, text: &str) {
         append_log(self.log, step, text);
@@ -802,7 +852,9 @@ impl JobPorts for Ports<'_> {
 #[cfg(test)]
 mod tests {
     use super::super::context::testkit::*;
+    use super::super::mode::sim::SimCodex;
     use super::*;
+    use horch_core::roster::{PermissionMode, Teammate};
     use horch_core::workspace::testing::FakeWorkspace;
 
     /// A world with a fake herdr workspace and a mailbox in `w1`.
@@ -842,13 +894,58 @@ mod tests {
         }
 
         fn env(&self) -> Env<'_> {
+            self.env_on(&self.ws)
+        }
+
+        /// [`Fleet::env`] over another workspace, for example a simulated
+        /// Codex pane.
+        fn env_on<'a>(&'a self, ws: &'a dyn WorkspaceClient) -> Env<'a> {
             Env {
                 src: self.w.sources(),
-                ws: &self.ws,
+                ws,
                 mailbox: &self.mailbox,
                 exe: self.exe.clone(),
                 start_timeout: self.start_timeout,
+                mode_timing: MODE_FAST,
             }
+        }
+
+        /// A Codex teammate `codex-plan` with `permission_mode: plan`, and
+        /// its live record `r-1` as role `codex-plan-1` on pane `p1`.
+        fn plan_pane(&mut self) {
+            self.w.roster.insert_for_test(Teammate {
+                name: "codex-plan".into(),
+                agent: HarnessKind::Codex,
+                permission_mode: Some(PermissionMode::Plan),
+                ..Default::default()
+            });
+            self.w
+                .worker("r-1", "codex-plan-1", "codex", "codex-plan", None);
+            std::fs::write(self.mailbox.dir().join("codex-plan-1.id"), "p1").unwrap();
+        }
+
+        fn request_on(&self, ws: &dyn WorkspaceClient) -> Outcome {
+            let args = CompactArgs {
+                role: "codex-plan-1".into(),
+                request: true,
+                force: false,
+                foreground: false,
+                timeout: None,
+            };
+            run(&self.env_on(ws), &args)
+        }
+
+        /// The names of the record's mode and request events, in order.
+        fn mode_events(&self, id: &str) -> Vec<String> {
+            self.w
+                .ledger
+                .get(id)
+                .unwrap()
+                .history
+                .into_iter()
+                .map(|e| e.event)
+                .filter(|e| e.starts_with("mode-") || e == EVENT_REQUESTED)
+                .collect()
         }
 
         fn run(&self, role: &str, f: impl FnOnce(&mut CompactArgs)) -> Outcome {
@@ -883,6 +980,143 @@ mod tests {
         fn message(&self, key: &str, vars: &[(&str, &str)]) -> String {
             self.env().message(key, vars).unwrap()
         }
+    }
+
+    const MODE_FAST: mode::Timing = mode::Timing {
+        poll: Duration::ZERO,
+        idle_polls: 6,
+        screen_polls: 3,
+    };
+
+    /// X6: a Codex pane with `permission_mode: plan` is read-only and cannot
+    /// write its handoff. `--request` switches it to the fleet write profile
+    /// first, then types the request.
+    #[test]
+    fn x6_request_on_a_plan_pane_switches_to_write_first() {
+        let mut f = Fleet::new();
+        f.plan_pane();
+        let sim = SimCodex::new(PaneMode::Plan);
+        let o = f.request_on(&sim);
+        assert_eq!(o.code, 0, "{o:?}");
+        let typed = sim.typed();
+        assert_eq!(
+            typed[..4],
+            [
+                "prompt /permissions",
+                "key down",
+                "key enter",
+                "prompt /status"
+            ]
+        );
+        assert_eq!(typed.len(), 5);
+        assert!(typed[4].starts_with("prompt ") && typed[4].contains("codex-plan-1-whats-next.md"));
+        assert_eq!(f.mode_events("r-1"), ["mode-changed", EVENT_REQUESTED]);
+    }
+
+    /// A failed switch refuses the request: no request line, no event.
+    #[test]
+    fn x6_a_failed_switch_types_no_request() {
+        let mut f = Fleet::new();
+        f.plan_pane();
+        let sim = SimCodex::new(PaneMode::Plan);
+        sim.state.borrow_mut().write_status = "Workspace (Ask for approval)".into();
+        let o = f.request_on(&sim);
+        assert_eq!(o.code, 1, "{o:?}");
+        assert!(o.err[0].contains("/status shows Permissions"), "{o:?}");
+        assert_eq!(sim.typed().len(), 4, "the switch keys only");
+        assert_eq!(f.mode_events("r-1"), ["mode-failed"]);
+    }
+
+    /// Rule A exception: a warning counts as asked, but a pane still in
+    /// plan mode could not write its handoff. So `--request` switches and
+    /// asks; a second `--request` (now in write mode) is already asked.
+    #[test]
+    fn x6_a_warned_plan_pane_is_switched_and_asked() {
+        let mut f = Fleet::new();
+        f.plan_pane();
+        f.w.ledger
+            .record_event("r-1", policy::EVENT_WARNED, "tokens 1 threshold 1")
+            .unwrap();
+        let sim = SimCodex::new(PaneMode::Plan);
+        let o = f.request_on(&sim);
+        assert_eq!(o.code, 0, "{o:?}");
+        assert_eq!(f.mode_events("r-1"), ["mode-changed", EVENT_REQUESTED]);
+        let again = f.request_on(&sim);
+        assert!(again.out[0].starts_with("already asked"), "{again:?}");
+        assert_eq!(sim.typed().len(), 5, "nothing more typed");
+    }
+
+    /// A plan pane already in write mode gets the request without a switch.
+    #[test]
+    fn x6_a_plan_pane_in_write_mode_is_not_switched_again() {
+        let mut f = Fleet::new();
+        f.plan_pane();
+        f.w.ledger
+            .record_event("r-1", mode::EVENT_MODE_CHANGED, "write")
+            .unwrap();
+        let sim = SimCodex::new(PaneMode::Write);
+        let o = f.request_on(&sim);
+        assert_eq!(o.code, 0, "{o:?}");
+        let typed = sim.typed();
+        assert_eq!(typed.len(), 1);
+        assert!(typed[0].contains("codex-plan-1-whats-next.md"));
+    }
+
+    /// The job's port of a plan pane, on `ws`.
+    fn ports_on<'a>(env: &'a Env<'a>, record: &'a Record, dir: &'a Path) -> Ports<'a> {
+        Ports {
+            env,
+            record,
+            pane: "p1",
+            log: dir,
+            dir,
+            job: RefCell::new(JobRecord {
+                v: 1,
+                role: record.role.clone(),
+                record_id: record.record_id.clone(),
+                started_at: String::new(),
+                step: Step::WaitIdleAfter.as_str().into(),
+            }),
+            begin: Instant::now(),
+        }
+    }
+
+    /// X6: after a `--request` switched a plan pane to write, the job's
+    /// port switches it back to plan (`Read Only`) and records the event.
+    #[test]
+    fn x6_the_job_port_restores_a_switched_plan_pane() {
+        let mut f = Fleet::new();
+        f.plan_pane();
+        let sim = SimCodex::new(PaneMode::Plan);
+        assert_eq!(f.request_on(&sim).code, 0);
+        let env = f.env_on(&sim);
+        let record = f.w.ledger.get("r-1").unwrap();
+        let dir = f.w.tmp.path().join("job");
+        let ports = ports_on(&env, &record, &dir);
+        assert!(ports.restore_mode().unwrap().is_ok());
+        assert_eq!(sim.state.borrow().mode, PaneMode::Plan);
+        assert_eq!(
+            f.mode_events("r-1"),
+            ["mode-changed", EVENT_REQUESTED, "mode-changed"]
+        );
+        assert_eq!(
+            mode::current_mode(&f.w.ledger.get("r-1").unwrap().history),
+            PaneMode::Plan
+        );
+    }
+
+    /// A pane that was not switched (or not a plan pane) has nothing to
+    /// restore: no key.
+    #[test]
+    fn x6_the_job_port_restores_nothing_for_an_unswitched_pane() {
+        let mut f = Fleet::new();
+        f.plan_pane();
+        let sim = SimCodex::new(PaneMode::Plan);
+        let env = f.env_on(&sim);
+        let record = f.w.ledger.get("r-1").unwrap();
+        let dir = f.w.tmp.path().join("job");
+        assert!(ports_on(&env, &record, &dir).restore_mode().is_none());
+        assert!(sim.typed().is_empty());
     }
 
     fn set_mtime(path: &Path, ago: Duration) {

@@ -116,6 +116,21 @@ enum Command {
         timeout: Option<u64>,
     },
 
+    /// Switch a read-only Codex pane (teammate permission_mode plan) to the
+    /// fleet write profile and back. The orchestrator runs it. horch compact
+    /// --request switches to write by itself, and the job switches back.
+    Mode {
+        /// The registered role of the Codex pane.
+        role: String,
+        /// write: the fleet_write profile (the state root and the project
+        /// are writable). plan: Read Only, as the pane launched.
+        #[arg(value_parser = ["write", "plan"])]
+        mode: String,
+        /// The maximum wait, in seconds, for the pane to be at its prompt.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
+    },
+
     /// Finish this worker: record a summary, report DONE, and close its pane.
     Done {
         #[arg(required = true, trailing_var_arg = true)]
@@ -504,6 +519,22 @@ fn run() -> Result<std::process::ExitCode> {
                     timeout,
                 },
             )
+        }
+        Command::Mode {
+            role,
+            mode,
+            timeout,
+        } => {
+            let mode = horch_core::harness::codex::PaneMode::parse(&mode)
+                .ok_or_else(|| anyhow::anyhow!("mode is write or plan"))?;
+            return cmd::mode::mode(
+                ctx,
+                &cmd::mode::ModeArgs {
+                    role,
+                    mode,
+                    timeout,
+                },
+            );
         }
         Command::Done { summary } => cmd::messaging::done(ctx, &joined(&summary))?,
         Command::Sessions { json, all } => cmd::ledgercmd::sessions(ctx, json, all)?,

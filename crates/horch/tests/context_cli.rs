@@ -553,6 +553,7 @@ fn ctx_24_json_has_every_key_and_nulls() {
         "reason",
         "route",
         "handoff",
+        "mode",
     ];
     let roles: Vec<&str> = rows.iter().map(|r| r["role"].as_str().unwrap()).collect();
     assert_eq!(
