@@ -38,6 +38,10 @@ pub fn processes() -> Vec<Process> {
 }
 
 /// Send `signal` (`TERM`, `KILL`) to each process group.
+///
+/// No `--` before the groups: dash, `/bin/sh` on Debian and Ubuntu, rejects
+/// it ("Illegal number"), and then nothing is signalled. After the signal
+/// option every shell reads `-<pgid>` as a group.
 #[cfg(unix)]
 pub fn signal_groups(groups: &[u32], signal: &str) {
     if groups.is_empty() {
@@ -46,9 +50,6 @@ pub fn signal_groups(groups: &[u32], signal: &str) {
     let targets: Vec<String> = groups.iter().map(|g| format!("-{g}")).collect();
     let _ = std::process::Command::new("/bin/sh")
         .arg("-c")
-        .arg(format!(
-            "kill -{signal} -- {} 2>/dev/null",
-            targets.join(" ")
-        ))
+        .arg(format!("kill -{signal} {} 2>/dev/null", targets.join(" ")))
         .status();
 }
