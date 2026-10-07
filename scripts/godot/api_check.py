@@ -135,6 +135,7 @@ class Api:
         self.classes = classes
         # deprecated[Class][member] = message; member "" is the class itself.
         self.deprecated = deprecated or {}
+        self._everywhere: dict[str, tuple[str, str]] | None = None
 
     @classmethod
     def load(cls, doctool: Path, sidecar: bool = True) -> "Api":
@@ -190,6 +191,7 @@ class Api:
         if path.is_file():
             for cname, members in json.loads(path.read_text()).items():
                 self.deprecated.setdefault(cname, {}).update(members)
+            self._everywhere = None
 
     def deprecation(self, cls_name: str, member: str) -> str | None:
         """The message when `member` is deprecated where `cls_name` gets it."""
@@ -203,7 +205,13 @@ class Api:
         return None
 
     def deprecated_everywhere(self) -> dict[str, tuple[str, str]]:
-        """member -> (Class, message) for members deprecated in every class that has them."""
+        """member -> (Class, message) for members deprecated in every class that has them.
+
+        Built once: check_file asks for it for each file, and a build walks every
+        name of every class (most of the run time when it was built for each file).
+        """
+        if self._everywhere is not None:
+            return self._everywhere
         owners: dict[str, list[str]] = {}
         for c in self.classes.values():
             for n in c.names:
@@ -213,6 +221,7 @@ class Api:
             for m, msg in members.items():
                 if m and all(m in self.deprecated.get(o, {}) for o in owners.get(m, [cname])):
                     out[m] = (cname, msg)
+        self._everywhere = out
         return out
 
     def knows_cs_enum(self, cls_name: str, member: str) -> bool:

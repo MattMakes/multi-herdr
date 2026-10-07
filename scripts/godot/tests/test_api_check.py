@@ -130,6 +130,18 @@ class ApiCheckTest(unittest.TestCase):
             self.assertEqual(api.deprecation("Node", "old_make_things"), "Use [method add_child] instead.")
             self.assertIsNone(api.deprecation("Node", "is_inside_tree"))
 
+    def test_deprecated_everywhere_is_built_once_and_follows_new_marks(self):
+        # C5: check_file asks for it for each file; it was rebuilt for each of 389 files.
+        api = api_check.Api.load(DOCTOOL)
+        first = api.deprecated_everywhere()
+        self.assertIs(api.deprecated_everywhere(), first)
+        self.assertNotIn("is_inside_tree", first)
+        with tempfile.TemporaryDirectory() as tmp:
+            marks = Path(tmp) / "deprecated.json"
+            marks.write_text(json.dumps({"Node": {"is_inside_tree": "Gone."}}))
+            api.add_deprecations(marks)
+        self.assertEqual(api.deprecated_everywhere()["is_inside_tree"], ("Node", "Gone."))
+
     def test_auto_mode_uses_the_pinned_deprecations_of_the_version(self):
         # U-59: the marks come from deprecated-<version>.json, not from a host cache.
         with tempfile.TemporaryDirectory() as tmp:
