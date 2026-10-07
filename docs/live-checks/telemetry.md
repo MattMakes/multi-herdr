@@ -82,5 +82,29 @@ run twice: the first run's check was wrong, see L8).
 | L10 perf, synthetic 1 GB | cold start under 30 s, steady tick under 200 ms | not run | `just verify-perf` did not compile: another worker's edit in `crates/horch-core/src/harness/opencode.rs:220` calls `Session::is_resume`, which does not exist. Re-run after W3d. |
 | L10 collector RSS | under 150 MB | PASS | live collector 141.2 MiB (148.1 MB) after 2 days 9 hours on a 58 MB store. 1.9 MB under the limit in decimal MB, and a one-shot `collect --once` on the same store peaks at 190 MiB. |
 
-Open: L3 and L5 need the operator; L2 (live store), L6, L7 and L10 re-run after W9
-and W3d (the script and this file get a new dated table then).
+Open after this pass: L3 and L5 need the operator; L2 (live store), L6, L7 and L10 re-run
+after W9 and W3d (next table).
+
+## Run 2026-10-06 (UTC 2026-10-07), after W9, W10 and W3d
+
+Tools: horch 0.1.0 at `b322192` or later (`just install` ran; collector pid 55750
+on the new binary, `exe` recorded in `collector.json`), claude 2.1.292,
+codex-cli 0.160.0, herdr 0.8.2, repo HEAD `1b58733`. Paid: L6 (1 `sonnet-3`
+worker), L8 (1 `researcher-*` worker run as `codex-sol`), both 1-line tasks. L7
+ran with `LIVE_TELEMETRY_KILL_COLLECTOR=1`.
+
+| step | claim it proves | result | evidence |
+|---|---|---|---|
+| L1 fixture drift | the key paths each reader uses exist in real files | PASS | claude 11 of 11, codex 12 of 12, pi 4 of 4, opencode 6 of 6. Prime: SKIP. |
+| L2 cost parity, fresh store | `usage` equals `cost` per record and class (TEL-10) | PASS | 130 settled records equal on 5 token classes and cost within 1e-6 USD; 3 live records skipped |
+| L2 cost parity, live store | the same on the collector's own store | PASS | 130 of 130 settled records equal. The first pass found 18 differing records (null `cost_usd` read as 0.0); W9's read-time pricing removed them. |
+| L3 probe truth | the pool windows equal `/usage` and `/status` | SKIP (operator) | `horch quota --refresh` read: claude 5h 17%, 7d 53% (resets 2026-10-09T14:00Z), 7d fable 0%; codex 7d 43% (resets 2026-10-10T01:20Z). Compare with `/usage` and `/status` as above. |
+| L4 probe hygiene | the probes write no transcript | PASS | 3 refreshes, both probes read; 0 new probe transcripts |
+| L5 singleton in herdr | 1 collector workspace, focus unchanged, same pid | SKIP (operator) | needs 2 new fleets; procedure above |
+| L6 live latency | a worker's row appears within 5 s of its first response | **FAIL** | first store event for `sonnet-3` seen 7.7 s after the first assistant line; the first pass gave 7.7 s too. The delay is stable, so it comes from the design: spec §7.1 holds a Claude message until a different `message.id` arrives or the file is quiet for 2 ticks (2 x 2 s), plus the next tick. Either the L6 limit or the hold rule must change; a decision for the operator. |
+| L6 totals | store totals equal the transcript totals | PASS | `{"input":2,"cache_write_1h":10116,"cache_read":12267,"output":87}` on both sides |
+| L7 crash recovery | no loss, no duplicates after `kill -9` | PASS | `kill -9` on pid 55750, then `horch telemetry ensure`: new collector pid 71519; totals of the L6 record unchanged; duplicate event keys 0 before and 0 after; events 111406 to 111435 (no loss). Observation: `herdr workspace list` then held 2 workspaces labelled `horch telemetry` (w34 and w3M). w34 is the original one: its pane is a shell at a prompt after `horch telemetry`, whose collector was replaced earlier; nothing closes it. L5 expects 1. |
+| L8 gate drill | the gate substitutes `codex-sol` and the record shows it | PASS | `SUBSTITUTED: researcher runs on codex-sol`; the record has agent `codex`, teammate `researcher`, `routing.resolved: codex-sol`; store events carry `via: codex-sol`. `REFUSED` with 2 reset times on the shifted all-exhausted fixture. |
+| L9 real gate | the gate follows the real pools | PASS | both pools `ok`: `SPAWN: opus runs as itself` |
+| L10 perf, synthetic 1 GB | cold start under 30 s, steady tick under 200 ms | PASS | cold 16.2 s, steady 198.1 ms: 1.9 ms under the limit, so a slower host fails it |
+| L10 collector RSS | under 150 MB | **FAIL** | the new collector (pid 71519) holds 153.9 MiB (161.4 MB) 3 minutes after the start and grows to 157.6 MiB after 4 minutes, on a 60 MB store of 111 571 events. The old binary held 141.2 MiB after 2 days on a 58 MB store. Reported as a product defect (NFR-02 RSS); not fixed here. |

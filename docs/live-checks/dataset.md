@@ -74,6 +74,15 @@ rule never fires. The candidate holds its slot until the deadline, which is the
 failure F5 was meant to remove (the LA run: a Codex candidate that could not
 commit waited 900 s).
 
-Status: reported to the orchestrator as a product defect on 2026-10-06. This
-file keeps the FAIL until the rule counts `done` after a nudge; then re-run
-`scripts/live/dataset.sh` and append the new table here.
+Status: reported to the orchestrator as a product defect on 2026-10-06; unit W10 fixed it
+(next table).
+
+## Run 2026-10-06 (UTC 2026-10-07), after W10
+
+Tools as above, repo HEAD `1b58733` (W10 `745b548` installed). Cost: 1 `codex-luna`
+session with a 1-line task.
+
+| step | result | evidence |
+|---|---|---|
+| D2 one nudge | PASS | stderr names the nudge once; the rollout holds the nudge line once. The candidate went idle at 01:56:51 and the nudge arrived at 01:57:35 (44 s). |
+| D3 idle_without_done | PASS | `candidate.failed {"kind":"cancelled","reason":"idle_without_done"}` at 01:58:18, 43 s after the nudge (end period 40 s); the round ended `REJECTED: no_eligible`, 2 minutes after the spawn, not at the 300 s deadline. `panes.log`: `idle`, `working`, `done` (14 samples), the nudge turn `working`, `done` (13 samples). The pane still reports `done` after the nudge turn; the fix counts it as at the prompt. |
