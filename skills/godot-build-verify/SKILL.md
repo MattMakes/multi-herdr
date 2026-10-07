@@ -49,8 +49,10 @@ parse all exit 0. Read the output, not only the exit code.
    `HOME="$PWD/.godot/horch-home"` for each Godot command. That keeps two
    instances, and the operator's editor, out of each other's files. `.godot/` is
    git-ignored and never scanned for resources. On Linux, Godot reads
-   `XDG_DATA_HOME` and `XDG_CONFIG_HOME`; set them to the same directory
-   (proof: not run (needs Linux); `scripts/live/linux.sh` checks it).
+   `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` instead; set all 3
+   under the same directory (proof: run on 2026-10-06, Godot 4.7.2 on aarch64
+   Linux: `--import` and a headless script wrote only under those 3 and
+   nothing under `HOME`; `docs/live-checks/linux.md`).
    Check: `.godot/horch-home/` exists after the first call.
 
 4. **Import when `.godot/` is missing or files were added.**
