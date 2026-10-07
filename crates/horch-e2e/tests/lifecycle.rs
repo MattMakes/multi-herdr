@@ -250,7 +250,7 @@ fn pane_command_removes_a_forbidden_key_before_horch_starts() {
         .find_map(|c| c["ran"].as_str().map(str::to_owned))
         .expect("horch spawn ran a pane command");
     assert!(
-        ran.starts_with("/usr/bin/env -u ANTHROPIC_API_KEY '"),
+        ran.starts_with("exec /usr/bin/env -u ANTHROPIC_API_KEY '"),
         "{pane}: {ran}"
     );
 
