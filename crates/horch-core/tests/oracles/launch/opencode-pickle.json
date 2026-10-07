@@ -61,9 +61,7 @@
         "--auto",
         "--pure",
         "--session",
-        "00000000-0000-4000-8000-000000000002",
-        "--prompt",
-        "\n\nFleet skill phase: implementation. Available native skills: check, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+        "00000000-0000-4000-8000-000000000002"
       ],
       "current_dir": null,
       "env": {
