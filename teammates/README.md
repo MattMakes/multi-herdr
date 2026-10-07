@@ -411,6 +411,41 @@ the orchestrator deciding who gets the task, and the decision needs both ends.
 Leave it off for paid, local and self-hosted models: a warning that appears
 everywhere stops being read anywhere.
 
+## Background calls switched off
+
+Some CLIs make model calls that the worker did not ask for. Nobody reads
+their output in a fleet pane, so these switches turn them off. Each switch
+was checked on the installed CLI on 2026-10-06.
+
+| harness | switch | where | what it stops |
+|---|---|---|---|
+| claude (64 files) | `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"` | `env:` | a fork of the full conversation after each turn, to suggest the next prompt (2.1.292) |
+| claude (64 files) | `DISABLE_AUTOUPDATER: "1"` | `env:` | a mid-fleet update, so all panes in a fleet run 1 build |
+| codex (8 files) | `-c tui.auto_recap=false` | `args:` | a hidden recap thread on the pane's model when the pane loses focus (0.160.0) |
+| codex (7 workers) | `-c notify=[]` | `args:` | the operator's `notify` command after every worker turn. `orchestrator-codex` keeps it |
+| opencode (3 files) | `{"agent":{"title":{"disable":true}}}` in `OPENCODE_CONFIG_CONTENT` | `env:` | a title call that sends the briefing to the operator's paid `small_model` (1.18.34) |
+| opencode (3 files) | `OPENCODE_DISABLE_EXTERNAL_SKILLS: "1"` | `env:` | the operator's personal skills from `~/.claude/` and `~/.agents/` going to a provider that trains on input. The phase skills still load |
+| prime | `RLM_MAX_DEPTH: "1"` | `env:` | recursive child sessions, each a fresh Opus context (default depth 2) |
+
+No `_base/` file carries `env:` or `args:`, so each teammate file carries its
+own lines. `_template.md` has the Claude lines, so `horch teammates --new`
+copies them. Put the lines in every new teammate of these harnesses.
+
+To turn a switch back on, delete its line from the teammate file, or set the
+opposite value (`CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true"`,
+`-c tui.auto_recap=true`). The launch oracles in
+`crates/horch-core/tests/oracles/launch/` freeze the Codex args and the
+OpenCode config: bless them after the change.
+
+Not switched off:
+- `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` stops the Claude session-title call,
+  but it also stops the terminal title. herdr reads that title to see if a
+  Claude pane is working or idle. Do not set it.
+- Prime auto-refine has no env var or flag. It needs `autoRefine.enabled:
+  false` in a fleet-owned Prime agent dir; workstream W1 designs that dir.
+- The Codex automatic thread title had no switch in 0.154.0 (checked
+  2026-09-18, not re-checked on 0.160.0).
+
 ## Running `pi` on local models
 
 `pi` needs an Ollama provider before `ollama/qwen3.8` resolves. Add
