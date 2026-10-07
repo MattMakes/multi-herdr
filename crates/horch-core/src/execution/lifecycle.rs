@@ -514,6 +514,8 @@ impl WorkerSteps for PaneWorker<'_> {
                     record_id: &brief.record_id,
                     workdir: brief.workdir_or_project(),
                 }),
+                fleet_window: roster
+                    .fleet_window(&teammate, teammate.model.as_deref().unwrap_or_default()),
             },
         )
     }

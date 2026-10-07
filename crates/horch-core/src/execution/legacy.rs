@@ -136,6 +136,44 @@ pub struct LedgerRecordV1 {
     /// The exact skill versions the execution was briefed with (SKL-04).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<ResolvedSkillRef>,
+    /// The launch's native-window decision (CTX-05), as the ledger stores
+    /// it. Absent before W1. Not on `Execution`: any write through
+    /// `from_execution` (a resume rewrite) sets it to `None`, and the
+    /// relaunch writes it again. An older binary ignores the key on read and
+    /// drops it on rewrite; `horch context` then resolves the window now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_window: Option<LedgerWindow>,
+}
+
+/// A launch's native auto-compact window decision, in the ledger's own
+/// shape (review finding 4). `compaction::window` converts to and from it;
+/// this module does not import `compaction`. The serde names are the wire
+/// format: renaming a Rust item must not change them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerWindow {
+    #[serde(rename = "tokens", default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    #[serde(rename = "source")]
+    pub source: LedgerWindowSource,
+    #[serde(rename = "detail")]
+    pub detail: String,
+    #[serde(rename = "applied")]
+    pub applied: bool,
+}
+
+/// Where a recorded window came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LedgerWindowSource {
+    #[serde(rename = "operator")]
+    Operator,
+    #[serde(rename = "fleet")]
+    Fleet,
+    #[serde(rename = "harness")]
+    Harness,
+    /// A value this binary does not know (a newer binary wrote it). The
+    /// record still loads; the reader resolves now and shows `(now)`.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for LedgerRecordV1 {
@@ -171,6 +209,7 @@ impl Default for LedgerRecordV1 {
             exit_code: None,
             finished_at: None,
             skills: Vec::new(),
+            compact_window: None,
         }
     }
 }

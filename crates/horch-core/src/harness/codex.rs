@@ -28,8 +28,9 @@ use anyhow::{bail, Context, Result};
 use super::launch::model_for;
 use super::{
     generic_validate, CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared,
-    Session, Workdir,
+    Session, WindowInputs, Workdir,
 };
+use crate::compaction::window::OperatorWindow;
 use crate::prompts;
 use crate::roster::{ExecRule, HarnessDefault, Teammate};
 use crate::runtime::RuntimeContext;
@@ -471,6 +472,30 @@ impl Harness for Codex {
         Ok(prepared)
     }
 
+    /// The operator's `model_auto_compact_token_limit` in the inherited
+    /// `config.toml`: the active profile, then the top level (design §6.4).
+    fn operator_window(&self, inputs: &WindowInputs<'_>) -> Option<OperatorWindow> {
+        let path = inputs.codex_home.join("config.toml");
+        let text = std::fs::read_to_string(&path).ok();
+        codex_operator_limit(
+            text.as_deref(),
+            args_profile(&inputs.teammate.args),
+            &path.to_string_lossy(),
+        )
+    }
+
+    /// The value of the last `-c model_auto_compact_token_limit=<n>` pair.
+    fn window_in_command(&self, cmd: &Command) -> Option<u64> {
+        let args: Vec<_> = cmd.get_args().filter_map(|a| a.to_str()).collect();
+        args.windows(2)
+            .rev()
+            .filter(|w| w[0] == "-c")
+            .find_map(|w| w[1].strip_prefix(LIMIT_KEY)?.strip_prefix('='))?
+            .trim()
+            .parse()
+            .ok()
+    }
+
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
         codex_command(
             env,
@@ -521,6 +546,30 @@ pub fn codex_config_value(text: &str, profile: Option<&str>, key: &str) -> Optio
         }
     }
     lookup(key)
+}
+
+/// Codex's auto-compact limit key in `config.toml` and in a `-c` pair.
+const LIMIT_KEY: &str = "model_auto_compact_token_limit";
+
+/// The operator's Codex limit over a `config.toml` text at `path`, for the
+/// launch's `profile` (design §6.4). A value that is not a number gives
+/// `tokens: None`.
+pub(crate) fn codex_operator_limit(
+    config_toml: Option<&str>,
+    profile: Option<&str>,
+    path: &str,
+) -> Option<OperatorWindow> {
+    let value = codex_config_value(config_toml?, profile, LIMIT_KEY)?;
+    Some(match value.parse() {
+        Ok(n) => OperatorWindow {
+            tokens: Some(n),
+            detail: path.to_string(),
+        },
+        Err(_) => OperatorWindow {
+            tokens: None,
+            detail: format!("{path} (not a number)"),
+        },
+    })
 }
 
 /// Every `key = value` line of a TOML text, as (full dotted key, raw value).
@@ -701,6 +750,14 @@ pub(super) fn codex_command(
         let dir = codex_home(home, env.codex_home.as_deref());
         std::fs::read_to_string(dir.join("config.toml")).ok()
     }));
+    // The fleet window, with the defaults: only when the decision applies
+    // it, and not over the teammate's own pair.
+    let window = env.compact_window.as_ref().filter(|d| d.applied);
+    if let Some(n) = window.and_then(|d| d.tokens) {
+        if !HarnessDefault::config_keys(&teammate.args).contains(&LIMIT_KEY) {
+            cmd.arg("-c").arg(format!("{LIMIT_KEY}={n}"));
+        }
+    }
     cmd.args(&teammate.args);
     if let Session::Resume(id) = session {
         cmd.arg(id);

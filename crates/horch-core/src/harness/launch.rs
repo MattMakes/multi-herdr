@@ -16,6 +16,8 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
 
+use crate::compaction::window::{self, WindowDecision, WindowSource};
+use crate::execution::legacy::LedgerWindow;
 use crate::execution::records::Ledger;
 use crate::execution::SessionMode;
 use crate::messaging::delivery::{self, Readiness, Timing};
@@ -29,7 +31,7 @@ use crate::runtime::{HarnessBins, RuntimeContext};
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::herdr::Herdr;
 
-use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest};
+use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest, WindowInputs};
 
 /// What a launch reads from its environment: the programs to run, the home
 /// the operator's Claude settings live under, the inherited OpenCode config,
@@ -66,6 +68,10 @@ pub struct LaunchEnv {
     /// The directory the agent starts in (the bootstrap cwd), whose
     /// `.claude/` project settings a Claude settings default yields to.
     pub workdir: Option<PathBuf>,
+    /// The launch's native-window decision (CTX-05). A builder applies the
+    /// window only when it is `applied`. Only `run_flow_code` sets it, so a
+    /// command built from [`LaunchEnv::from_context`] alone carries none.
+    pub compact_window: Option<WindowDecision>,
 }
 
 impl LaunchEnv {
@@ -86,6 +92,7 @@ impl LaunchEnv {
             claude_config_dir: ctx.inherited.claude_config_dir.clone(),
             claude_managed_settings: Some(ctx.paths.claude_managed_settings.clone()),
             workdir: ctx.paths.cwd.clone(),
+            compact_window: None,
         }
     }
 
@@ -106,6 +113,7 @@ impl LaunchEnv {
             claude_config_dir: None,
             claude_managed_settings: None,
             workdir: None,
+            compact_window: None,
         }
     }
 
@@ -245,14 +253,26 @@ pub fn command_with_skills_in(
     bundle: Option<&crate::skills::Bundle>,
 ) -> Result<Command> {
     let Some(bundle) = bundle else {
-        return command_in(env, teammate, session, prompt, model_override);
+        return command_in(
+            &plain_env(env, teammate),
+            teammate,
+            session,
+            prompt,
+            model_override,
+        );
     };
     let adapter = teammate.agent.adapter();
     let prompt = format!("{}\n{prompt}", bundle.briefing_in(teammate, env.home()));
     // A bundle with an empty plan carries only the briefing's `Skipped:`
     // notes: there is no skill directory to expose.
     if bundle.plan().activated.is_empty() {
-        return command_in(env, teammate, session, &prompt, model_override);
+        return command_in(
+            &plain_env(env, teammate),
+            teammate,
+            session,
+            &prompt,
+            model_override,
+        );
     }
     let adjusted = adapter.expose_skills(teammate, bundle, env.home())?;
     let mut cmd = command_in(env, &adjusted, session, &prompt, model_override)?;
@@ -263,6 +283,91 @@ pub fn command_with_skills_in(
         env.opencode_config_content.as_deref(),
     )?;
     Ok(cmd)
+}
+
+/// The launch env of a launch without exposed skills. A teammate's own
+/// `settings:` (Claude) then owns the whole `--settings` overlay, so horch
+/// adds no window to it; the skills overlay is horch's, and gets one.
+fn plain_env<'a>(env: &'a LaunchEnv, teammate: &Teammate) -> std::borrow::Cow<'a, LaunchEnv> {
+    if teammate.settings.is_some() && env.compact_window.is_some() {
+        std::borrow::Cow::Owned(LaunchEnv {
+            compact_window: None,
+            ..env.clone()
+        })
+    } else {
+        std::borrow::Cow::Borrowed(env)
+    }
+}
+
+/// What this launch does about the harness's native auto-compact window
+/// (CTX-05, design §6.5): the operator's value, else the fleet default
+/// (applied), else the harness's own. A Claude teammate that names a
+/// settings file cannot take a merged key, so a fleet window is not
+/// applied. Used by `run_flow_code`, and by `horch context` for a record
+/// without a recorded decision.
+pub fn window_decision(
+    ctx: &RuntimeContext,
+    teammate: &Teammate,
+    model: &str,
+    workdir: &Path,
+    fleet: Option<(u64, String)>,
+) -> WindowDecision {
+    let home = &ctx.paths.home;
+    let codex_home = super::codex::codex_home(home, ctx.inherited.codex_home.as_deref());
+    let prime_agent_dir = ctx
+        .inherited
+        .prime_agent_dir
+        .clone()
+        .unwrap_or_else(|| home.join(".prime").join("agent"));
+    let inputs = WindowInputs {
+        home,
+        claude_config_dir: ctx.inherited.claude_config_dir.as_deref(),
+        claude_managed_settings: &ctx.paths.claude_managed_settings,
+        codex_home: &codex_home,
+        prime_agent_dir: &prime_agent_dir,
+        workdir,
+        process_window: ctx.inherited.claude_code_auto_compact_window.as_deref(),
+        teammate,
+        model,
+    };
+    let mut decision = window::decide(teammate.agent.adapter().operator_window(&inputs), fleet);
+    if decision.source == WindowSource::Fleet && settings_file(teammate) {
+        decision.applied = false;
+        decision.detail = "not applied: teammate settings file".into();
+    }
+    decision
+}
+
+/// Whether a Claude teammate names a settings file (not inline JSON).
+fn settings_file(teammate: &Teammate) -> bool {
+    teammate.agent == HarnessKind::Claude
+        && teammate
+            .settings
+            .as_deref()
+            .is_some_and(|s| !s.trim_start().starts_with('{'))
+}
+
+/// The decision as the built command carries it (review finding 12): an
+/// applied decision stays applied only when the command passes its value.
+/// Otherwise the detail names the first reason that holds.
+pub fn window_in_effect(
+    mut decision: WindowDecision,
+    teammate: &Teammate,
+    cmd: &Command,
+) -> WindowDecision {
+    if !decision.applied || teammate.agent.adapter().window_in_command(cmd) == decision.tokens {
+        return decision;
+    }
+    decision.applied = false;
+    let reason = if settings_file(teammate) {
+        "teammate settings file"
+    } else if teammate.agent == HarnessKind::Claude && teammate.settings.is_some() {
+        "teammate inline settings own the overlay"
+    } else {
+        "not in the command"
+    };
+    decision.detail = format!("not applied: {reason}");
+    decision
 }
 
 pub(super) fn model_for<'a>(teammate: &'a Teammate, override_: Option<&'a str>) -> Result<&'a str> {
@@ -296,6 +401,9 @@ pub struct LaunchRequest<'a> {
     /// The ledger record a discovered session id is written to. `None`:
     /// nothing is recorded, so nothing is discovered.
     pub record: Option<DiscoveryTarget<'a>>,
+    /// The fleet's native window for this teammate and model, with its
+    /// source (`Roster::fleet_window`). None: no fleet default.
+    pub fleet_window: Option<(u64, String)>,
 }
 
 /// Where a discovered session id goes, and which sessions are candidates.
@@ -334,6 +442,16 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     let caps = adapter.capabilities();
     // Held across the launch, so lazy reads of the bundle remain valid.
     let skills = install_skills(ctx, &req)?;
+    // The intended window decision, before `prepare` (Prime's reads it).
+    let model = req
+        .model_override
+        .or(req.teammate.model.as_deref())
+        .unwrap_or_default();
+    let workdir = match &req.record {
+        Some(target) => PathBuf::from(target.workdir),
+        None => ctx.paths.cwd.clone().unwrap_or_default(),
+    };
+    let decision = window_decision(ctx, req.teammate, model, &workdir, req.fleet_window.clone());
     let prepared = adapter.prepare(
         ctx,
         &PrepareRequest {
@@ -341,6 +459,7 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
             exec_rules: req.exec_rules,
             // An empty-plan bundle has no directory for the adapter to link.
             skills: skills.as_ref().filter(|b| !b.plan().activated.is_empty()),
+            compact_window: Some(&decision),
         },
     )?;
 
@@ -352,14 +471,26 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     }
     teammate.args.extend(prepared.extra_args.iter().cloned());
     let session = session_for(caps, req.session);
-    let mut cmd = agent_command(
-        ctx,
+    let mut env = LaunchEnv::from_context(ctx);
+    env.compact_window = Some(decision.clone());
+    let mut cmd = agent_command_in(
+        &env,
         &teammate,
         session,
         req.prompt,
         skills.as_ref(),
         req.child_env,
     )?;
+    // What the command really carries is what the record says.
+    let decision = window_in_effect(decision, &teammate, &cmd);
+    if let Some(target) = &req.record {
+        let recorded = crate::execution::store::ExecutionStore::open_in(ctx).and_then(|store| {
+            store.set_compact_window(target.record_id, &LedgerWindow::from(&decision))
+        });
+        if let Err(e) = recorded {
+            eprintln!("horch[{}]: window decision not recorded: {e:#}", req.role);
+        }
+    }
     // Last, so a value the harness prepared (codex's private home) wins.
     for (key, value) in &prepared.env {
         cmd.env(key, value);
@@ -495,9 +626,9 @@ fn bundle_name(record_id: Option<&str>, bundles: &Path) -> String {
         .unwrap_or_else(|| crate::ids::ExecutionId::mint(crate::clock::now()).to_string())
 }
 
-/// The agent's command: the teammate's launch line, its own environment, then
-/// `child_env`. Nothing here touches this process's environment, and
-/// `FORBIDDEN_ENV` and the git repository variables stay removed.
+/// [`agent_command_in`] in the context's launch environment, with no
+/// window decision.
+#[cfg(test)]
 pub(crate) fn agent_command(
     ctx: &RuntimeContext,
     teammate: &Teammate,
@@ -506,9 +637,29 @@ pub(crate) fn agent_command(
     skills: Option<&crate::skills::Bundle>,
     child_env: Vec<(String, String)>,
 ) -> Result<Command> {
-    let env = LaunchEnv::from_context(ctx);
-    let mut cmd = command_with_skills_in(&env, teammate, session, prompt, None, skills)?;
-    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, &env));
+    agent_command_in(
+        &LaunchEnv::from_context(ctx),
+        teammate,
+        session,
+        prompt,
+        skills,
+        child_env,
+    )
+}
+
+/// The agent's command: the teammate's launch line, its own environment, then
+/// `child_env`. Nothing here touches this process's environment, and
+/// `FORBIDDEN_ENV` and the git repository variables stay removed.
+fn agent_command_in(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    skills: Option<&crate::skills::Bundle>,
+    child_env: Vec<(String, String)>,
+) -> Result<Command> {
+    let mut cmd = command_with_skills_in(env, teammate, session, prompt, None, skills)?;
+    crate::runtime::process::inherit_env(&mut cmd, teammate_env(teammate, env));
     crate::runtime::process::inherit_env(&mut cmd, child_env);
     crate::runtime::process::scrub_child_env(&mut cmd);
     Ok(cmd)

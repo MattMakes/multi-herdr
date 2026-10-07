@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 
 use crate::execution::legacy::{
-    HistoryEntry, LedgerRecordV1, KIND_ORCHESTRATOR, KIND_WORKER, STATUS_WORKING,
+    HistoryEntry, LedgerRecordV1, LedgerWindow, KIND_ORCHESTRATOR, KIND_WORKER, STATUS_WORKING,
 };
 use crate::execution::model::{
     Execution, ExecutionKind, ExecutionStatus, FailureKind, LaunchStage, SessionState, Task,
@@ -270,6 +270,7 @@ pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
         exit_code: e.exit_code,
         finished_at: e.finished_at.clone(),
         skills: e.skills.clone(),
+        compact_window: None,
     }
 }
 
@@ -430,6 +431,11 @@ impl ExecutionStore {
     /// Record the exact skills the execution was briefed with (SKL-04).
     pub fn set_skills(&self, key: &str, skills: Vec<ResolvedSkillRef>) -> Result<()> {
         self.update_key(key, |r| r.skills = skills.clone())
+    }
+
+    /// Record the launch's native-window decision (CTX-05).
+    pub fn set_compact_window(&self, key: &str, window: &LedgerWindow) -> Result<()> {
+        self.update_key(key, |r| r.compact_window = Some(window.clone()))
     }
 
     /// Every record as an [`Execution`].

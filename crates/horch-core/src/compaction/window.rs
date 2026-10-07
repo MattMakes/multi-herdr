@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::execution::legacy::{LedgerWindow, LedgerWindowSource};
 use crate::harness::capabilities::TriggerRule;
 
 /// The watch base when nothing lowers it (CTX-07).
@@ -178,4 +179,40 @@ pub fn headroom(native: u64, threshold: u64) -> u64 {
 
 fn lookup(table: &[(&str, u64)], model: &str) -> Option<u64> {
     table.iter().find(|(m, _)| *m == model).map(|(_, n)| *n)
+}
+
+// The store boundary (review finding 4): the ledger owns its shape, so
+// `execution` never imports `compaction`.
+impl From<&WindowDecision> for LedgerWindow {
+    fn from(d: &WindowDecision) -> LedgerWindow {
+        LedgerWindow {
+            tokens: d.tokens,
+            source: match d.source {
+                WindowSource::Operator => LedgerWindowSource::Operator,
+                WindowSource::Fleet => LedgerWindowSource::Fleet,
+                WindowSource::Harness => LedgerWindowSource::Harness,
+            },
+            detail: d.detail.clone(),
+            applied: d.applied,
+        }
+    }
+}
+
+impl WindowDecision {
+    /// The recorded decision. `None` when the stored source is `Unknown` (a
+    /// newer binary's value): the reader then resolves now and shows `(now)`.
+    pub fn from_ledger(w: &LedgerWindow) -> Option<WindowDecision> {
+        let source = match w.source {
+            LedgerWindowSource::Operator => WindowSource::Operator,
+            LedgerWindowSource::Fleet => WindowSource::Fleet,
+            LedgerWindowSource::Harness => WindowSource::Harness,
+            LedgerWindowSource::Unknown => return None,
+        };
+        Some(WindowDecision {
+            tokens: w.tokens,
+            source,
+            detail: w.detail.clone(),
+            applied: w.applied,
+        })
+    }
 }

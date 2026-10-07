@@ -60,6 +60,7 @@ fn harness_codex_rules_snapshot() {
                     role: "codex-1",
                     exec_rules: rules,
                     skills: None,
+                    compact_window: None,
                 },
             )
             .unwrap();
@@ -96,6 +97,7 @@ fn harness_prime_daemon_args_snapshot() {
                     role: "prime-1",
                     exec_rules: &[],
                     skills: None,
+                    compact_window: None,
                 },
             )
             .unwrap();

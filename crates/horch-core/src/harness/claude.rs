@@ -12,7 +12,8 @@ use anyhow::{Context, Result};
 use super::launch::model_for;
 use serde_json::{json, Value};
 
-use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session};
+use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, WindowInputs};
+use crate::compaction::window::OperatorWindow;
 use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
 use crate::roster::{HarnessDefault, Teammate};
 use crate::skills::Bundle;
@@ -68,6 +69,31 @@ impl Harness for Claude {
             .push(skills.root().to_string_lossy().into_owned());
         adjusted.settings = Some(skills_settings(teammate, home)?.to_string());
         Ok(adjusted)
+    }
+
+    /// The operator's `CLAUDE_CODE_AUTO_COMPACT_WINDOW`: the settings chain,
+    /// then the inherited process env (design §6.4).
+    fn operator_window(&self, inputs: &WindowInputs<'_>) -> Option<OperatorWindow> {
+        let texts = read_claude_settings(
+            Some(inputs.claude_managed_settings),
+            Some(inputs.home),
+            inputs.claude_config_dir,
+            Some(inputs.workdir),
+        );
+        claude_operator_window(
+            &texts,
+            inputs.teammate.setting_sources.as_deref(),
+            inputs.process_window,
+        )
+    }
+
+    /// The `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` of the inline `--settings`
+    /// JSON. A settings file is not read.
+    fn window_in_command(&self, cmd: &Command) -> Option<u64> {
+        let args: Vec<_> = cmd.get_args().collect();
+        let i = args.iter().position(|a| *a == "--settings")?;
+        let doc: Value = serde_json::from_str(args.get(i + 1)?.to_str()?).ok()?;
+        window_tokens(doc.get("env")?.get(WINDOW_ENV)?)
     }
 
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
@@ -186,16 +212,22 @@ pub(super) fn claude_command(
         let has_defaults =
             HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
                 .any(|d| d.settings.is_some());
-        if has_defaults && settings.trim_start().starts_with('{') {
+        let window = applied_window(env);
+        if (has_defaults || window.is_some()) && settings.trim_start().starts_with('{') {
             // Inline JSON (the teammate's own, or the skills overlay): the
-            // harness defaults merge under it. Unchanged text when none adds
-            // a key.
+            // harness defaults and the fleet window merge under it.
+            // Unchanged text when none adds a key.
             let mut value: Value =
                 serde_json::from_str(settings).context("invalid teammate settings JSON")?;
             let obj = value
                 .as_object_mut()
                 .context("teammate settings must be a JSON object")?;
-            if merge_settings_defaults(teammate, obj, || operator_settings(env))? {
+            let mut changed = false;
+            if has_defaults {
+                changed |= merge_settings_defaults(teammate, obj, || operator_settings(env))?;
+            }
+            changed |= overlay_window(window, obj);
+            if changed {
                 cmd.arg("--settings").arg(value.to_string());
             } else {
                 cmd.arg("--settings").arg(settings);
@@ -232,6 +264,7 @@ pub(super) fn claude_command(
         }
         overlay_sandbox(teammate, &mut overlay)?;
         merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
+        overlay_window(applied_window(env), &mut overlay);
         if !overlay.is_empty() {
             cmd.arg("--settings")
                 .arg(serde_json::Value::Object(overlay).to_string());
@@ -351,6 +384,15 @@ pub(crate) fn claude_operator_value(
     sources: Option<&[String]>,
     path: &str,
 ) -> Option<(Value, String)> {
+    operator_docs(t, sources).find_map(|(doc, detail)| Some((json_at(&doc, path)?.clone(), detail)))
+}
+
+/// The parsed files of the operator chain that count, in order, each with
+/// its detail. A file that is not valid JSON is skipped.
+fn operator_docs<'a>(
+    t: &'a ClaudeSettingsTexts,
+    sources: Option<&'a [String]>,
+) -> impl Iterator<Item = (Value, String)> + 'a {
     let named = |name: &str| sources.is_none_or(|s| s.iter().any(|x| x == name));
     let chain = [
         (t.managed.as_deref(), true, "managed settings".to_string()),
@@ -366,10 +408,95 @@ pub(crate) fn claude_operator_value(
         ),
         (t.user.as_deref(), named("user"), t.user_path.clone()),
     ];
-    chain.into_iter().find_map(|(text, on, detail)| {
+    chain.into_iter().filter_map(|(text, on, detail)| {
         let doc: Value = serde_json::from_str(text.filter(|_| on)?).ok()?;
-        Some((json_at(&doc, path)?.clone(), detail))
+        Some((doc, detail))
     })
+}
+
+/// The env key of Claude's auto-compact window.
+const WINDOW_ENV: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+/// The env key that makes the window a percentage: the trigger is unknown.
+const PCT_OVERRIDE_ENV: &str = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
+
+/// The window the launch applies: the decision's tokens when it is applied.
+fn applied_window(env: &LaunchEnv) -> Option<u64> {
+    env.compact_window
+        .as_ref()
+        .filter(|d| d.applied)
+        .and_then(|d| d.tokens)
+}
+
+/// Put the fleet window into a `--settings` overlay as
+/// `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW`, at the harness-default level: an
+/// overlay that sets the key (or a non-object `env`) keeps its value, and
+/// the other `env` keys stay. Returns whether the overlay changed.
+fn overlay_window(window: Option<u64>, overlay: &mut serde_json::Map<String, Value>) -> bool {
+    let Some(n) = window else {
+        return false;
+    };
+    let Some(env) = overlay
+        .entry("env")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+    else {
+        return false;
+    };
+    if env.contains_key(WINDOW_ENV) {
+        return false;
+    }
+    env.insert(WINDOW_ENV.into(), Value::String(n.to_string()));
+    true
+}
+
+/// A window value as tokens: a number, or a string that holds one.
+fn window_tokens(v: &Value) -> Option<u64> {
+    match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// The operator's Claude window over the settings texts (design §6.4): the
+/// first source of the chain whose `env` sets the window, else the process
+/// env. A file whose `env` also sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, or
+/// a value that is not a number, gives `tokens: None`.
+pub(crate) fn claude_operator_window(
+    t: &ClaudeSettingsTexts,
+    sources: Option<&[String]>,
+    process_window: Option<&str>,
+) -> Option<OperatorWindow> {
+    let parsed = |v: &Value, detail: String| match window_tokens(v) {
+        Some(n) => OperatorWindow {
+            tokens: Some(n),
+            detail,
+        },
+        None => OperatorWindow {
+            tokens: None,
+            detail: format!("{detail} (not a number)"),
+        },
+    };
+    for (doc, detail) in operator_docs(t, sources) {
+        let Some(env) = doc.get("env") else {
+            continue;
+        };
+        let Some(value) = env.get(WINDOW_ENV) else {
+            continue;
+        };
+        if env.get(PCT_OVERRIDE_ENV).is_some() {
+            return Some(OperatorWindow {
+                tokens: None,
+                detail: format!("{detail} ({PCT_OVERRIDE_ENV} set; trigger unknown)"),
+            });
+        }
+        return Some(parsed(value, detail));
+    }
+    let process = process_window?;
+    Some(parsed(
+        &Value::String(process.to_string()),
+        format!("process env {WINDOW_ENV}"),
+    ))
 }
 
 /// The value at a dotted key path in a JSON document.

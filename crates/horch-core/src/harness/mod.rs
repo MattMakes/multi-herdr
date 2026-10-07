@@ -28,6 +28,7 @@ use std::time::SystemTime;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::compaction::window::{OperatorWindow, WindowDecision};
 use crate::roster::{ExecRule, Teammate};
 use crate::runtime::{HarnessBins, RuntimeContext};
 use crate::skills::Bundle;
@@ -43,6 +44,29 @@ pub struct PrepareRequest<'a> {
     pub exec_rules: &'a [ExecRule],
     /// The skills bundle the launch exposes, when the teammate has one.
     pub skills: Option<&'a Bundle>,
+    /// The launch's native-window decision (CTX-05). Prime's `prepare`
+    /// reads it (slice 2); no adapter reads it yet.
+    pub compact_window: Option<&'a WindowDecision>,
+}
+
+/// What an operator window resolver reads for one launch (design §6.4).
+pub struct WindowInputs<'a> {
+    /// `RuntimeContext.paths.home`.
+    pub home: &'a Path,
+    /// `$CLAUDE_CONFIG_DIR`.
+    pub claude_config_dir: Option<&'a Path>,
+    /// `RuntimeContext.paths.claude_managed_settings` (review finding 5).
+    pub claude_managed_settings: &'a Path,
+    /// The inherited codex home (`codex::codex_home`).
+    pub codex_home: &'a Path,
+    /// `$PRIME_AGENT_CODING_AGENT_DIR`, else `~/.prime/agent`.
+    pub prime_agent_dir: &'a Path,
+    /// The directory the agent starts in.
+    pub workdir: &'a Path,
+    /// The inherited `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
+    pub process_window: Option<&'a str>,
+    pub teammate: &'a Teammate,
+    pub model: &'a str,
 }
 
 /// What [`Harness::prepare`] set up for one launch. Hold it until the CLI
@@ -116,6 +140,18 @@ pub trait Harness: Sync {
     /// [`Harness::expose_skills_env`] around the build.
     fn prepare(&self, _ctx: &RuntimeContext, _req: &PrepareRequest<'_>) -> Result<Prepared> {
         Ok(Prepared::default())
+    }
+
+    /// The native auto-compact setting the operator's own files set for
+    /// this launch, if any (CTX-05). Default: none (no known lever).
+    fn operator_window(&self, _inputs: &WindowInputs<'_>) -> Option<OperatorWindow> {
+        None
+    }
+
+    /// The window value the built command really passes to the harness,
+    /// read back from the command (review finding 12). Default: none.
+    fn window_in_command(&self, _cmd: &Command) -> Option<u64> {
+        None
     }
 
     /// The CLI drops a prompt given on the command line of a resumed

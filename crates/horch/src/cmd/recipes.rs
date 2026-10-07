@@ -667,6 +667,10 @@ pub fn pane_launch(
                     workdir,
                 },
             ),
+            fleet_window: roster.fleet_window(
+                &teammate,
+                model.or(teammate.model.as_deref()).unwrap_or_default(),
+            ),
         },
     )
 }
