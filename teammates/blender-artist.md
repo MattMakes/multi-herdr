@@ -38,8 +38,12 @@ available_skills: [ue-editor-scripting]
 # (macOS: /Applications/Blender.app/Contents/MacOS/Blender). The live tools
 # need Blender 5.1+ with the Blender Lab MCP add-on on localhost:9876
 # (BLENDER_MCP_HOST, BLENDER_MCP_PORT).
+# Its Python dependencies are pinned too: Python 3.12, the 3 direct
+# dependencies at exact versions, and --exclude-newer for the rest, so uv
+# resolves the same set on every launch. The resolved set is in
+# docs/live-checks/blender.md.
 mcp_servers:
-  blender: {"type":"stdio","command":"uvx","args":["--from","git+https://projects.blender.org/lab/blender_mcp.git@2cea8d566dde07fbac28a61d698909d69724e853#subdirectory=mcp","blender-mcp"]}
+  blender: {"type":"stdio","command":"uvx","args":["--python","3.12","--exclude-newer","2026-10-07T00:00:00Z","--with","mcp[cli]==1.30.0","--with","docutils==0.23","--with","pyyaml==6.0.3","--from","git+https://projects.blender.org/lab/blender_mcp.git@2cea8d566dde07fbac28a61d698909d69724e853#subdirectory=mcp","blender-mcp"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
