@@ -142,7 +142,13 @@ impl Daemon {
                     false
                 }
                 Err(why) => {
-                    eprintln!("horch: left Prime daemon pid {pid} running: {why}");
+                    // Not `eprintln!`: after a hangup stderr is gone, and
+                    // a failed write must not end the cleanup.
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "horch: left Prime daemon pid {pid} running: {why}"
+                    );
                     true
                 }
             }
@@ -307,30 +313,60 @@ fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Remove the agent dirs and status hooks of earlier launches under
-/// `prime_root` that are over: no daemon socket and no live launcher. For
-/// panes killed before [`Daemon::finish`] ran. Best effort: an error leaves
-/// the entry.
-fn sweep_agent_dirs(prime_root: &Path) {
+/// Clean up earlier launches under `prime_root` whose launcher is gone: for
+/// panes killed before [`Daemon::finish`] ran. A launch with a daemon
+/// socket gets [`Daemon::finish`] with its launcher file's time as the
+/// install time, so only a daemon that launch started is stopped; a launch
+/// with no launcher file keeps its daemon. Without a socket, its agent dir
+/// and status hook are removed. `bin` answers `status`. Best effort: an
+/// error leaves the entry.
+fn sweep_agent_dirs(prime_root: &Path, bin: &Path) {
     let Ok(entries) = std::fs::read_dir(prime_root) else {
         return;
     };
     for entry in entries.flatten() {
         let launch = entry.path();
-        let agent = launch.join(AGENT_DIR);
-        let hook = launch.join(STATUS_HOOK);
-        let leftover =
-            std::fs::symlink_metadata(&agent).is_ok() || std::fs::symlink_metadata(&hook).is_ok();
-        if !leftover
-            || std::fs::symlink_metadata(launch.join("d.sock")).is_ok()
-            || launcher_alive(&launch)
-        {
+        if launcher_alive(&launch) {
             continue;
         }
-        let _ = std::fs::remove_dir_all(&agent);
-        let _ = std::fs::remove_file(&hook);
+        let socket = launch.join("d.sock");
+        if std::fs::symlink_metadata(&socket).is_ok() {
+            let installed = std::fs::metadata(launch.join(LAUNCHER)).and_then(|m| m.modified());
+            if let Ok(installed) = installed {
+                Daemon {
+                    socket,
+                    sessions: launch.join("sessions"),
+                    bin: bin.to_path_buf(),
+                    installed,
+                }
+                .finish();
+            }
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(launch.join(AGENT_DIR));
+        let _ = std::fs::remove_file(launch.join(STATUS_HOOK));
     }
 }
+
+/// Keep this launcher alive when its pane closes. Closing a pane hangs up
+/// its terminal: SIGHUP goes to the pane's foreground process group, which
+/// is horch and the Prime CLI. Prime's daemon runs in its own group, so it
+/// does not get it. Before this, the default action ended horch before
+/// [`Prepared::finish`], and the daemon ran on (a C5 daemon ran 6 h 44 min
+/// after `horch done`). A handler, not SIG_IGN: an exec resets it, so the
+/// Prime CLI still ends on the hangup, and then horch stops the daemon.
+#[cfg(unix)]
+fn outlive_hangup() {
+    extern "C" fn on_hangup(_: libc::c_int) {}
+    // SAFETY: the handler does nothing, so it is async-signal-safe.
+    unsafe {
+        let handler = on_hangup as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        libc::signal(libc::SIGHUP, handler);
+    }
+}
+
+#[cfg(not(unix))]
+fn outlive_hangup() {}
 
 /// The Prime extension that reports this pane's agent state to herdr (X2,
 /// `ai_docs/plans/wave3/x2-design.md`), in the launch dir beside the socket.
@@ -736,7 +772,8 @@ impl Harness for Prime {
     /// otherwise `horch done` would leave its daemon running and the fleet
     /// would accumulate one per spawn.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
-        sweep_agent_dirs(&ctx.paths.state_root.join("prime"));
+        sweep_agent_dirs(&ctx.paths.state_root.join("prime"), &ctx.bins.harness.prime);
+        outlive_hangup();
         let daemon = Daemon::install(&ctx.paths.state_root, req.role, &ctx.bins.harness.prime)?;
         let mut prepared = Prepared {
             // pi-family builders append `--` before the prompt. These go into
@@ -985,6 +1022,22 @@ mod tests {
             !daemon.socket().exists(),
             "a stopped daemon kept its socket"
         );
+    }
+
+    /// A pane closing hangs up the launcher: it lives on to stop the
+    /// daemon, and a program it runs after still ends on a hangup.
+    #[cfg(unix)]
+    #[test]
+    fn the_launcher_outlives_a_hangup_and_its_child_does_not() {
+        use std::os::unix::process::ExitStatusExt;
+        outlive_hangup();
+        // SAFETY: raising a signal that has a handler.
+        assert_eq!(unsafe { libc::raise(libc::SIGHUP) }, 0);
+        let status = std::process::Command::new("sh")
+            .args(["-c", "kill -HUP $$; exit 0"])
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGHUP), "{status:?}");
     }
 
     #[test]

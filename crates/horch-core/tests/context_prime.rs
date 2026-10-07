@@ -941,3 +941,71 @@ console.log("ok");
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A pane closed before `finish` ran leaves its daemon running (a C5 Prime
+/// daemon ran 6 h 44 min after `horch done`). The next launch stops a daemon
+/// whose launcher is gone, if that launch started it, and cleans its dir.
+/// A daemon older than its launch's launcher file is not that launch's.
+#[cfg(unix)]
+#[test]
+fn x2_prime_sweep_stops_an_orphan_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    let prime = w.state().join("prime");
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let dead_pid = gone.id();
+    gone.wait().unwrap();
+    let launch = |name: &str| {
+        let dir = prime.join(name);
+        std::fs::create_dir_all(dir.join("agent")).unwrap();
+        write(&dir.join("herdr-status.mjs"), "// old");
+        write(&dir.join("d.sock"), "");
+        dir
+    };
+    // Started before its launch's launcher file: not this launch's daemon.
+    let mut foreign = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    let older = launch("prime-1-older");
+    write(&older.join("launcher"), &format!("{dead_pid} \n"));
+    let orphan = launch("prime-1-orphan");
+    write(&orphan.join("launcher"), &format!("{dead_pid} \n"));
+    let mut daemon = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+
+    let status = format!(
+        r#"[{{"socketPath":"{}","pid":{}}},{{"socketPath":"{}","pid":{}}}]"#,
+        orphan.join("d.sock").display(),
+        daemon.id(),
+        older.join("d.sock").display(),
+        foreign.id()
+    );
+    write(&w.fake_prime(), &format!("#!/bin/sh\necho '{status}'\n"));
+    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::process::Command::new(w.fake_prime()).output().unwrap();
+
+    let ctx = w.ctx(&[]);
+    let (t, decision) = decide(&w, &ctx);
+    let _prepared = prepare(&w, &ctx, &t, &decision);
+
+    let ended = daemon.wait().unwrap();
+    assert!(!ended.success(), "the orphan daemon was not stopped");
+    assert!(!orphan.join("d.sock").exists());
+    assert!(!orphan.join("agent").exists());
+    assert!(!orphan.join("herdr-status.mjs").exists());
+    assert_eq!(
+        foreign.try_wait().unwrap(),
+        None,
+        "a foreign daemon was stopped"
+    );
+    assert!(
+        older.join("d.sock").exists(),
+        "a running daemon lost its socket"
+    );
+    foreign.kill().unwrap();
+    foreign.wait().unwrap();
+}
