@@ -285,6 +285,21 @@ impl Roster {
                     ));
                 }
             }
+            // agy 1.3.0 refuses a bare model id without --effort ("requires
+            // --effort"), so the worker would die at launch. An id with the
+            // level in it (gemini-3.8-flash-low) runs without one.
+            if let Some(model) = &t.model {
+                if t.effort.is_none()
+                    && !crate::harness::antigravity::EFFORT_SUFFIXES
+                        .iter()
+                        .any(|s| model.ends_with(s))
+                {
+                    problems.push(format!(
+                        "{who}: antigravity model '{model}' needs an effort; agy refuses a \
+                         bare model id without --effort (set effort: low, medium or high)"
+                    ));
+                }
+            }
         }
         // Network access and "never ask" do not go together: a codex
         // worker with both can send code out, or pull code in and run it,
@@ -1064,6 +1079,37 @@ mod spawnable_tests {
                 "{key}: {problems:?}"
             );
         }
+    }
+
+    /// agy refuses a bare model id without --effort, so the roster check
+    /// stops it before a launch fails. An id that names the level runs.
+    #[test]
+    fn an_antigravity_model_needs_an_effort() {
+        let mut r = Roster::builtin().unwrap();
+        let t = r.teammates.get_mut("sonnet").unwrap();
+        t.agent = HarnessKind::Antigravity;
+        t.model = Some("gemini-3.8-flash".into());
+        t.effort = None;
+        t.permission_mode = None;
+        let needs = |r: &Roster| r.check().iter().any(|p| p.contains("needs an effort"));
+        assert!(
+            r.check().iter().any(|p| p
+                == "sonnet: antigravity model 'gemini-3.8-flash' needs an effort; agy refuses \
+                    a bare model id without --effort (set effort: low, medium or high)"),
+            "{:?}",
+            r.check()
+        );
+        r.teammates.get_mut("sonnet").unwrap().effort = Some("low".into());
+        assert!(!needs(&r), "{:?}", r.check());
+        let t = r.teammates.get_mut("sonnet").unwrap();
+        t.effort = None;
+        t.model = Some("gemini-3.8-flash-low".into());
+        assert!(!needs(&r), "{:?}", r.check());
+        // Another agent picks its own default effort.
+        let t = r.teammates.get_mut("sonnet").unwrap();
+        t.agent = HarnessKind::Claude;
+        t.model = Some("sonnet".into());
+        assert!(!needs(&r), "{:?}", r.check());
     }
 
     /// skill-creator, orchestrate and Remote Control are the orchestrator's.

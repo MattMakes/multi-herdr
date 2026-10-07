@@ -26,6 +26,10 @@ use crate::runtime::RuntimeContext;
 pub const ANTIGRAVITY_FORBIDDEN_ENV: [&str; 3] =
     ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"];
 
+/// The levels `agy models` appends to a model id (`gemini-3.8-flash-low`).
+/// An id with one runs without `--effort`; a bare id needs `--effort`.
+pub const EFFORT_SUFFIXES: [&str; 3] = ["-low", "-medium", "-high"];
+
 /// The session cache under `home`.
 pub(crate) fn conversations_cache(home: &Path) -> PathBuf {
     home.join(".gemini/antigravity-cli/cache/last_conversations.json")
