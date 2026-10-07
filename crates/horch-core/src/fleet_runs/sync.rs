@@ -4,7 +4,10 @@
 //! It covers the records that ended without `horch done` (pane closed,
 //! launch failed, abandoned) and those whose `horch done` could not write.
 //! A transcript is read only for a record that gets a new row, so a sync
-//! with nothing to do reads the ledger and `runs.jsonl` only.
+//! with nothing to do reads the ledger and `runs.jsonl` only. `max_new`
+//! bounds the rows of one sync: a backfill of a long ledger reads hundreds
+//! of transcripts (240 took 31 s in a debug build), and `horch spawn` must
+//! stay quick. The oldest records go first: their transcripts expire first.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -29,6 +32,8 @@ pub struct SyncReport {
     pub unpriced: usize,
     /// Records that already had a row.
     pub already: usize,
+    /// Records that need a row and wait for a later sync (`max_new`).
+    pub deferred: usize,
     /// Records that get no row, by reason.
     pub skipped: BTreeMap<&'static str, usize>,
 }
@@ -41,13 +46,15 @@ impl SyncReport {
 }
 
 /// Write a `sync` run row for every finished record of `records` that has
-/// none. Candidate, judge and unfinished records are skipped and counted.
+/// none, at most `max_new` of them, oldest first. Candidate, judge and
+/// unfinished records are skipped and counted.
 pub fn sync_project(
     paths: &DatasetPaths,
     project: &Path,
     records: &[LedgerRecordV1],
     sources: &RunSources,
     now: DateTime<Utc>,
+    max_new: usize,
 ) -> Result<SyncReport> {
     let mut report = SyncReport::default();
     let have = run_ids(paths)?;
@@ -61,6 +68,9 @@ pub fn sync_project(
             pending.push(record);
         }
     }
+    pending.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    report.deferred = pending.len().saturating_sub(max_new);
+    pending.truncate(max_new);
     if pending.is_empty() {
         return Ok(report);
     }

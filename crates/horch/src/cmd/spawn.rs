@@ -269,6 +269,10 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     Ok(out.pane)
 }
 
+/// The most run rows one `horch spawn` writes. Each reads a transcript;
+/// a backfill of a long ledger spreads over many spawns.
+const SPAWN_SYNC_ROWS: usize = 8;
+
 /// The fleet run facts of a spawn (fleet-dataset §4.1, §4.2): the start row
 /// of `execution`, then a run row for every finished record of this project
 /// that has none. Each failure is 1 NOTE line on stderr; the spawn goes on.
@@ -293,9 +297,9 @@ fn fleet_facts(
         meter: &UsageMeter::default(),
         git: &git,
     };
-    let synced = store
-        .read()
-        .and_then(|records| sync_project(&paths, project, &records, &sources, now));
+    let synced = store.read().and_then(|records| {
+        sync_project(&paths, project, &records, &sources, now, SPAWN_SYNC_ROWS)
+    });
     if let Err(e) = synced {
         eprintln!("horch: NOTE: fleet run rows not synced: {e:#}");
     }

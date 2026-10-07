@@ -569,7 +569,15 @@ fn fds_05_run_row_idempotent() {
     .unwrap();
     assert_eq!(again, RunWrite::AlreadyRecorded);
     // Sync finds it recorded too.
-    let report = sync_project(&w.paths, &w.project, &[record], &w.sources(), now()).unwrap();
+    let report = sync_project(
+        &w.paths,
+        &w.project,
+        &[record],
+        &w.sources(),
+        now(),
+        usize::MAX,
+    )
+    .unwrap();
     assert_eq!((report.written, report.already), (0, 1));
     let runs = w.runs();
     assert_eq!(runs.len(), 1);
@@ -636,6 +644,7 @@ fn fds_06_sync_finished_only() {
     launch["state"] = json!({"state": "launch_failed", "stage": "split", "reason": "abandoned"});
     let mut orch = finished("r-orch", "orchestrator");
     orch["kind"] = json!("orchestrator");
+    orch["created_at"] = json!("2026-10-07T09:00:00Z");
     let records: Vec<LedgerRecordV1> = [
         finished("r-done", "d"),
         working,
@@ -648,22 +657,43 @@ fn fds_06_sync_finished_only() {
     .into_iter()
     .map(rec)
     .collect();
-    let report = sync_project(&w.paths, &w.project, &records, &w.sources(), now()).unwrap();
-    assert_eq!(report.written, 5, "{report:?}");
-    assert_eq!(report.with_tokens, 5);
+    // A sync writes at most `max_new` rows, oldest record first.
+    let first = sync_project(&w.paths, &w.project, &records, &w.sources(), now(), 1).unwrap();
+    assert_eq!((first.written, first.deferred), (1, 4), "{first:?}");
+    assert_eq!(w.runs()[0].record_id, "r-orch");
+    let report = sync_project(
+        &w.paths,
+        &w.project,
+        &records,
+        &w.sources(),
+        now(),
+        usize::MAX,
+    )
+    .unwrap();
+    assert_eq!(report.written, 4, "{report:?}");
+    assert_eq!((report.already, report.deferred), (1, 0));
+    assert_eq!(report.with_tokens, 4);
     assert_eq!(report.unpriced, 0);
     assert_eq!(report.skipped.get("not finished"), Some(&2));
     let ids: Vec<String> = w.runs().into_iter().map(|r| r.record_id).collect();
-    assert_eq!(ids, ["r-done", "r-old", "r-gone", "r-launch", "r-orch"]);
+    assert_eq!(ids, ["r-orch", "r-done", "r-old", "r-gone", "r-launch"]);
     assert!(w.runs().iter().all(|r| r.written_by == WrittenBy::Sync));
-    assert_eq!(w.runs()[4].kind, "orchestrator");
+    assert_eq!(w.runs()[0].kind, "orchestrator");
     assert_eq!(
-        w.runs()[2].end.state,
+        w.runs()[3].end.state,
         Some(json!({"state": "failed", "failure": {"kind": "pane_vanished"}}))
     );
 
     // A second sync has nothing to do.
-    let again = sync_project(&w.paths, &w.project, &records, &w.sources(), now()).unwrap();
+    let again = sync_project(
+        &w.paths,
+        &w.project,
+        &records,
+        &w.sources(),
+        now(),
+        usize::MAX,
+    )
+    .unwrap();
     assert_eq!((again.written, again.already), (0, 5));
     assert_eq!(w.runs().len(), 5);
 }
@@ -687,7 +717,15 @@ fn fds_06_sync_skips_candidates_and_judges() {
     for r in &records[..2] {
         assert_eq!(r.kind, "worker", "the legacy kind does not tell them apart");
     }
-    let report = sync_project(&w.paths, &w.project, &records, &w.sources(), now()).unwrap();
+    let report = sync_project(
+        &w.paths,
+        &w.project,
+        &records,
+        &w.sources(),
+        now(),
+        usize::MAX,
+    )
+    .unwrap();
     assert_eq!(report.written, 1);
     assert_eq!(report.skipped.get("candidate or judge record"), Some(&2));
     assert_eq!(w.runs()[0].record_id, "r-w");
@@ -841,7 +879,7 @@ fn fds_22_routing_ignores_fleet_store() {
             .names()
             .into_iter()
             .flat_map(|name| {
-                let t = roster.require(&name).unwrap();
+                let t = roster.require(name).unwrap();
                 [BalanceMode::Off, BalanceMode::Auto].map(|mode| {
                     format!(
                         "{name}|{mode:?}: {:?}",
@@ -896,4 +934,58 @@ fn fds_22_routing_ignores_fleet_store() {
             f.display()
         );
     }
+}
+
+/// FDS-06 on real data: sync a copy of a real ledger. `HORCH_F1_LEDGER`
+/// names the ledger copy, `HORCH_F1_STATE` the scratch state dir that gets
+/// the fleet store. The transcripts are read from this machine's home.
+#[test]
+#[ignore = "reads a real ledger copy and this machine's transcripts"]
+fn fds_06_live_sync_real_ledger() {
+    let ledger = PathBuf::from(std::env::var("HORCH_F1_LEDGER").expect("HORCH_F1_LEDGER"));
+    let state = PathBuf::from(std::env::var("HORCH_F1_STATE").expect("HORCH_F1_STATE"));
+    let records: Vec<LedgerRecordV1> =
+        serde_json::from_str(&std::fs::read_to_string(&ledger).unwrap()).unwrap();
+    let project = records
+        .iter()
+        .find_map(|r| r.project.clone())
+        .map(PathBuf::from)
+        .expect("a record names its project");
+    let home = PathBuf::from(std::env::var("HOME").unwrap());
+    let usage = TelemetryUsage {
+        locations: Locations::under_home(&home, &Inherited::default()),
+    };
+    let meter = UsageMeter::default();
+    let git = GitCli::new(PathBuf::from("git"));
+    let sources = RunSources {
+        usage: &usage,
+        meter: &meter,
+        git: &git,
+    };
+    let paths = DatasetPaths::new(&state, &project);
+    let started = std::time::Instant::now();
+    let report =
+        sync_project(&paths, &project, &records, &sources, Utc::now(), usize::MAX).unwrap();
+    println!("records: {}", records.len());
+    println!("sync took: {} ms", started.elapsed().as_millis());
+    println!("{report:#?}");
+    let started = std::time::Instant::now();
+    let again = sync_project(&paths, &project, &records, &sources, Utc::now(), usize::MAX).unwrap();
+    println!(
+        "second sync took: {} ms, written {}",
+        started.elapsed().as_millis(),
+        again.written
+    );
+    assert_eq!(again.written, 0);
+    let runs = read_rows::<RunRow>(&paths, FleetFile::Runs).unwrap();
+    assert_eq!(runs.torn_lines, 0);
+    let mut by_harness = std::collections::BTreeMap::<String, (u32, u32)>::new();
+    for r in &runs.rows {
+        let e = by_harness
+            .entry(r.harness.clone().unwrap_or_default())
+            .or_default();
+        e.0 += 1;
+        e.1 += u32::from(r.tokens.is_some());
+    }
+    println!("rows by harness (rows, with tokens): {by_harness:?}");
 }
