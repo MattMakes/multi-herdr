@@ -257,6 +257,28 @@ fn deliver_when_idle_waits_for_idle() {
     );
 }
 
+/// herdr `done` is at the prompt too: a resumed agent whose last turn
+/// finished can read `done`, not `idle` (live check W3e, 2026-10-07).
+/// `working` and `blocked` are not at the prompt.
+#[test]
+fn deliver_when_idle_types_into_an_agent_that_reads_done() {
+    let (ws, pane) = one_pane();
+    ws.set_agent_states(
+        &pane,
+        &[
+            (Some("opencode"), Some("unknown")),
+            (Some("opencode"), Some("working")),
+            (Some("opencode"), Some("blocked")),
+            (Some("opencode"), Some("done")),
+        ],
+    );
+    delivery::deliver_when_idle(&ws, &pane, "task", &READY_FAST, &FAST).unwrap();
+    let calls = trace(&ws);
+    assert_eq!(calls.last().unwrap(), &format!("agent_prompt {pane} task"));
+    let gets = calls.iter().filter(|c| c.starts_with("pane_get ")).count();
+    assert_eq!(gets, 4, "typed only at `done`: {calls:?}");
+}
+
 #[test]
 fn deliver_when_idle_times_out_without_typing() {
     let (ws, pane) = one_pane();

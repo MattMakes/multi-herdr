@@ -590,8 +590,12 @@ impl<G: GitClient> Coordinator<'_, G> {
                         .pane_get(pane.as_str())
                         .ok()
                         .and_then(|p| p.agent_status);
-                    let waiting = status.as_deref() == Some("idle");
-                    match idle.look(waiting, now, caps.idle_nudge_after_s, caps.idle_end_after_s) {
+                    match idle.look(
+                        status.as_deref(),
+                        now,
+                        caps.idle_nudge_after_s,
+                        caps.idle_end_after_s,
+                    ) {
                         IdleAction::Wait => {}
                         IdleAction::Nudge => {
                             eprintln!(

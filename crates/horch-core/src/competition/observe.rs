@@ -9,7 +9,7 @@
 //! | the pane is gone while the record is live | Failed(PaneVanished) |
 //! | the agent exited (`Failed(AgentExited)`) | Failed(AgentExited) |
 //! | the pane shows a trust dialog (first 300 s) | close the pane → Failed(Cancelled{trust_dialog}) |
-//! | idle without `horch done` (herdr `agent_status`) | one nudge; still idle after the end period → close the pane → Failed(Cancelled{idle_without_done}) |
+//! | idle without `horch done` (herdr `agent_status` `idle` or `done`) | one nudge; still idle after the end period → close the pane → Failed(Cancelled{idle_without_done}) |
 //! | the deadline passed | close the pane → Failed(TimedOut) |
 //! | the budget ran out | close the pane → Failed(Cancelled{budget}) |
 //!
@@ -34,6 +34,7 @@ use crate::measure::digest::{sha256_bytes, Digest};
 use crate::measure::paths::DatasetPaths;
 use crate::usage::money::MicroUsd;
 use crate::usage::{read_session, Locations, Tokens, Usage};
+use crate::workspace::model::at_prompt;
 
 /// The reason a budget cancel records.
 pub(crate) const CANCELLED_BUDGET: &str = "budget";
@@ -67,14 +68,15 @@ pub(crate) enum IdleAction {
 }
 
 impl IdleWatch {
-    /// Take one look: `idle` is herdr's `agent_status == "idle"`. A
+    /// Take one look at herdr's `agent_status`. The candidate is idle when
+    /// it waits at its prompt ([`at_prompt`]: `idle` or `done`). A
     /// candidate idle for `nudge_after_s` gets the nudge; once nudged, an
     /// idle stretch of `end_after_s` ends it. Work in between restarts the
     /// stretch, but never earns a second nudge. `nudge_after_s == 0` turns
     /// the rule off.
     pub(crate) fn look(
         &mut self,
-        idle: bool,
+        agent_status: Option<&str>,
         now: DateTime<Utc>,
         nudge_after_s: u64,
         end_after_s: u64,
@@ -82,7 +84,7 @@ impl IdleWatch {
         if nudge_after_s == 0 {
             return IdleAction::Wait;
         }
-        if !idle {
+        if !at_prompt(agent_status) {
             self.since = None;
             return IdleAction::Wait;
         }
@@ -447,24 +449,60 @@ mod tests {
     fn idle_watch_nudges_once_then_ends() {
         let t0 = crate::clock::parse("2026-10-04T12:00:00Z").unwrap();
         let at = |s: i64| t0 + chrono::Duration::seconds(s);
+        let (idle, working) = (Some("idle"), Some("working"));
         let mut w = IdleWatch::default();
-        assert_eq!(w.look(true, at(0), 120, 180), IdleAction::Wait);
-        assert_eq!(w.look(true, at(119), 120, 180), IdleAction::Wait);
-        assert_eq!(w.look(true, at(120), 120, 180), IdleAction::Nudge);
+        assert_eq!(w.look(idle, at(0), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(idle, at(119), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(idle, at(120), 120, 180), IdleAction::Nudge);
         // It works for a while, then waits at the prompt again.
-        assert_eq!(w.look(false, at(150), 120, 180), IdleAction::Wait);
-        assert_eq!(w.look(true, at(200), 120, 180), IdleAction::Wait);
-        assert_eq!(w.look(true, at(379), 120, 180), IdleAction::Wait);
-        assert_eq!(w.look(true, at(380), 120, 180), IdleAction::End);
+        assert_eq!(w.look(working, at(150), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(idle, at(200), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(idle, at(379), 120, 180), IdleAction::Wait);
+        assert_eq!(w.look(idle, at(380), 120, 180), IdleAction::End);
 
         // A working agent is never nudged.
         let mut busy = IdleWatch::default();
         for s in (0..1000).step_by(60) {
-            assert_eq!(busy.look(false, at(s), 120, 180), IdleAction::Wait);
+            assert_eq!(busy.look(working, at(s), 120, 180), IdleAction::Wait);
         }
         // Off.
         let mut off = IdleWatch::default();
-        assert_eq!(off.look(true, at(0), 0, 180), IdleAction::Wait);
-        assert_eq!(off.look(true, at(10_000), 0, 180), IdleAction::Wait);
+        assert_eq!(off.look(idle, at(0), 0, 180), IdleAction::Wait);
+        assert_eq!(off.look(idle, at(10_000), 0, 180), IdleAction::Wait);
+    }
+
+    /// herdr `done` is at the prompt too (live check W3e, 2026-10-07): a
+    /// Codex candidate answered its nudge and then read `done`, never
+    /// `idle`. Idle, nudge, `done` for the end period ends it; `working`
+    /// restarts the stretch; `blocked`, `unknown` and no status never count.
+    #[test]
+    fn idle_watch_counts_done_as_at_the_prompt() {
+        let t0 = crate::clock::parse("2026-10-07T12:00:00Z").unwrap();
+        let at = |s: i64| t0 + chrono::Duration::seconds(s);
+        let (idle, done, working) = (Some("idle"), Some("done"), Some("working"));
+        let mut w = IdleWatch::default();
+        assert_eq!(w.look(idle, at(0), 40, 40), IdleAction::Wait);
+        assert_eq!(w.look(idle, at(44), 40, 40), IdleAction::Nudge);
+        assert_eq!(w.look(done, at(46), 40, 40), IdleAction::Wait);
+        assert_eq!(w.look(done, at(83), 40, 40), IdleAction::Wait);
+        assert_eq!(w.look(done, at(84), 40, 40), IdleAction::End);
+
+        // Work between the `done` looks restarts the stretch.
+        let mut w = IdleWatch::default();
+        assert_eq!(w.look(done, at(0), 40, 40), IdleAction::Wait);
+        assert_eq!(w.look(done, at(40), 40, 40), IdleAction::Nudge);
+        assert_eq!(w.look(done, at(70), 40, 40), IdleAction::Wait);
+        assert_eq!(w.look(working, at(75), 40, 40), IdleAction::Wait);
+        assert_eq!(w.look(done, at(80), 40, 40), IdleAction::Wait);
+        assert_eq!(w.look(done, at(119), 40, 40), IdleAction::Wait);
+        assert_eq!(w.look(done, at(120), 40, 40), IdleAction::End);
+
+        // Not at the prompt: never nudged.
+        for status in [Some("blocked"), Some("unknown"), None] {
+            let mut w = IdleWatch::default();
+            for s in (0..1000).step_by(60) {
+                assert_eq!(w.look(status, at(s), 40, 40), IdleAction::Wait);
+            }
+        }
     }
 }

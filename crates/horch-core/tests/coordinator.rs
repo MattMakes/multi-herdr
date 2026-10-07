@@ -180,6 +180,9 @@ enum Agent {
     /// Writes its work and waits at its prompt (herdr `idle`) without
     /// `horch done`; the round's clock moves 60 s per tick.
     Idle,
+    /// Like `Idle`, but after its first look herdr reads `done` for good:
+    /// the live Codex case (W3e, 2026-10-07), at the prompt and never `idle`.
+    IdleThenDone,
     /// Runs, and runs `horch done` while the coordinator looks at its pane:
     /// after the coordinator read the record, before it writes its own end
     /// (see [`Racing`]). The round's clock moves 60 s per tick.
@@ -353,7 +356,10 @@ fn round_cfg(
     let sleep = |_: Duration| {
         ticks.set(ticks.get() + 1);
         assert!(ticks.get() < 50, "the round never ended");
-        if matches!(agent, Agent::Idle | Agent::DoneAtTheLook) {
+        if matches!(
+            agent,
+            Agent::Idle | Agent::IdleThenDone | Agent::DoneAtTheLook
+        ) {
             offset.set(offset.get() + chrono::Duration::seconds(60));
         }
         for r in store.read().unwrap() {
@@ -372,6 +378,10 @@ fn round_cfg(
                     Agent::Idle => fake.set_agent_states(
                         r.pane_id.as_deref().unwrap(),
                         &[(Some("claude"), Some("idle"))],
+                    ),
+                    Agent::IdleThenDone => fake.set_agent_states(
+                        r.pane_id.as_deref().unwrap(),
+                        &[(Some("codex"), Some("idle")), (Some("codex"), Some("done"))],
                     ),
                     Agent::DoneAtTheLook => {}
                 }
@@ -645,6 +655,45 @@ fn idle_candidate_is_nudged_once_then_ends() {
         // The work is frozen all the same.
         let frozen = c.frozen.as_ref().unwrap();
         assert!(frozen.numstat.iter().any(|n| n.path == "work.txt"));
+    }
+}
+
+/// herdr `done` counts as waiting at the prompt: a candidate read `idle`
+/// once, then `done` for good (live check W3e, 2026-10-07). It gets 1
+/// nudge and ends `idle_without_done`, not `timed_out` at the deadline.
+#[test]
+fn candidate_that_reads_done_is_nudged_once_then_ends() {
+    let Some(w) = world() else { return };
+    let roster = roster();
+    let (CrashRound { store, .. }, calls) = round_cfg(
+        &w,
+        &roster,
+        |_| {},
+        Agent::IdleThenDone,
+        |c| {
+            c.caps.idle_nudge_after_s = 120;
+            c.caps.idle_end_after_s = 180;
+            c.caps.candidate_deadline_s = 3600;
+        },
+    );
+    let records = store.read().unwrap();
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        let e = to_execution(record).unwrap();
+        assert_eq!(
+            e.status,
+            ExecutionStatus::Failed {
+                failure: FailureKind::Cancelled {
+                    reason: "idle_without_done".into()
+                }
+            }
+        );
+        let pane = e.pane.as_ref().unwrap().as_str().to_string();
+        let nudges = calls
+            .iter()
+            .filter(|c| c.method == "agent_prompt" && c.args[0] == pane)
+            .count();
+        assert_eq!(nudges, 1, "one nudge per candidate: {calls:?}");
     }
 }
 

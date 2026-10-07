@@ -38,7 +38,25 @@ pub struct Pane {
     pub agent_status: Option<String>,
 }
 
+/// True when herdr's `agent_status` says the agent waits at its prompt for
+/// input: `idle` or `done`.
+///
+/// herdr reports `done` when the agent finished its turn and nothing has
+/// typed into the pane since; it reads `idle` again only after a new
+/// prompt. For horch both mean "at the prompt". A Codex candidate that
+/// answered its nudge read `done` for 230 s and never `idle` (live check
+/// W3e, 2026-10-07), so a check for `idle` alone never saw it wait.
+/// `working`, `blocked`, `unknown` and no status are not at the prompt.
+pub fn at_prompt(agent_status: Option<&str>) -> bool {
+    matches!(agent_status, Some("idle" | "done"))
+}
+
 impl Pane {
+    /// [`at_prompt`] for this pane's agent.
+    pub fn at_prompt(&self) -> bool {
+        at_prompt(self.agent_status.as_deref())
+    }
+
     /// The agent session id herdr reports for this pane, if any.
     ///
     /// Mirrors the jq fallback chain `.session_id // .id // .ref` used by the

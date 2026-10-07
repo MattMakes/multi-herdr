@@ -131,7 +131,8 @@ fn wait_for(
 }
 
 /// Type the first prompt of a launch into its pane once the agent there is
-/// idle, then submit it with [`send_line_with`].
+/// at its prompt ([`Pane::at_prompt`]: `idle` or `done`), then submit it
+/// with [`send_line_with`].
 ///
 /// For a harness that drops a prompt given on its command line, such as an
 /// opencode resume. An error when the agent is not idle within
@@ -143,9 +144,7 @@ pub fn deliver_when_idle(
     wait: &Readiness,
     timing: &Timing,
 ) -> Result<()> {
-    if !wait_for(ws, pane, wait, |p| {
-        p.agent_status.as_deref() == Some("idle")
-    }) {
+    if !wait_for(ws, pane, wait, Pane::at_prompt) {
         bail!(
             "the agent in pane {pane} was not idle after {} s, so its task was not typed",
             wait.timeout.as_secs()
