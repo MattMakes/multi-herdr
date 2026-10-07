@@ -8,9 +8,14 @@ Godot wave step 5 (status item 18).
 
 ## How to run
 
-The task is the plan `ai_docs/plans/godot-gaps/g2-gameplay-trial.md`, with
-the API contract in `ai_docs/plans/godot-gaps/feature-spec.md`. An
-orchestrator assigns it to a `godot-gameplay-programmer` worker. The worker
+The task is "build Coin Dash to the contract in
+[Appendix: the Coin Dash contract](#appendix-the-coin-dash-contract), and
+prove it with the commands in your expected skills". An orchestrator assigns
+it to a `godot-gameplay-programmer` worker, and the same contract to a
+`godot-qa-engineer` worker, which tests the project from the contract, not
+from the code. (The 2026-10-07 run used the plans
+`ai_docs/plans/godot-gaps/g2-gameplay-trial.md` and `g3-qa-trial.md`; `ai_docs/`
+is local scratch and not in git.) The worker
 writes the project to `.worktrees/_scratch/godot-trial/` (git-ignored).
 
 To re-run only the proofs on an existing project, from the project root:
@@ -264,3 +269,56 @@ and smoke proofs and reported them), `godot-debugging` (no failure to debug).
 
 Start 05:33 MST (wall clock of the worker host). The suite takes 0.6 s on
 the real game, plus the import in `tests/run.sh`.
+
+## Appendix: the Coin Dash contract
+
+A tiny Godot 4.7.2 GDScript 2D project at `.worktrees/_scratch/godot-trial/`.
+g2 (gameplay) builds it. g3 (QA) tests it from this spec, not from g2's code.
+The API below is the contract between them. Do not change a name.
+
+### Input actions (in project.godot)
+
+`move_left`, `move_right`, `move_up`, `move_down` (arrow keys and WASD),
+`dash` (Space).
+
+### Autoload `GameState` — `res://scripts/game_state.gd`
+
+- `var score: int = 0`
+- `signal score_changed(new_score: int)`
+- `func add_score(n: int) -> void`: adds `n` and emits `score_changed`
+  when `n > 0`. Does nothing (no signal) when `n <= 0`.
+- `func reset() -> void`: sets `score` to 0 and emits `score_changed(0)`.
+
+### `Player` — `res://scripts/player.gd`, `class_name Player`, extends `CharacterBody2D`
+
+- `@export var speed: float = 200.0` (px/s)
+- `@export var dash_multiplier: float = 3.0`
+- `@export var dash_duration: float = 0.15` (s)
+- `@export var dash_cooldown: float = 1.0` (s, counted from the dash start)
+- `signal dashed`
+- `func apply_input(direction: Vector2, dash_pressed: bool, delta: float) -> void`:
+  - normalizes `direction` (a diagonal is not faster than a straight move;
+    a zero vector gives zero velocity);
+  - sets `velocity = direction.normalized() * speed`, times
+    `dash_multiplier` while a dash is active;
+  - starts a dash when `dash_pressed` and `can_dash()`; emits `dashed`;
+  - advances the dash and cooldown timers by `delta`.
+- `func can_dash() -> bool`: true when no cooldown is left.
+- `func is_dashing() -> bool`
+- `_physics_process(delta)` reads the input actions, calls `apply_input`,
+  then `move_and_slide()`.
+
+### `Coin` — `res://scripts/coin.gd`, `class_name Coin`, extends `Area2D`
+
+- `@export var value: int = 1`
+- `signal collected(value: int)`
+- When a `Player` body enters: call `GameState.add_score(value)`, emit
+  `collected(value)`, then `queue_free()`. Any other body: nothing happens.
+- A coin can be collected only once.
+
+### `res://scenes/main.tscn` (the main scene)
+
+- 1 `Player` with a `CollisionShape2D` and a visible placeholder shape.
+- 5 `Coin` nodes, each with a `CollisionShape2D`.
+- A `Label` named `ScoreLabel` (under a `CanvasLayer` named `HUD`) that
+  shows `Score: <n>` and updates on `GameState.score_changed`.
