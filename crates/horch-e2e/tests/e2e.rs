@@ -224,7 +224,8 @@ fn tel_10_usage_equals_cost() {
     for project in ["/work/alpha", "/work/beta"] {
         h.set("HORCH_PROJECT_DIR", project);
         let usage = json(&h.run(&["usage", "--json", "--project", project]));
-        let cost = json(&h.run(&["cost", "--json"]));
+        // A filter makes 1 report on stdout; this one covers every call.
+        let cost = json(&h.run(&["cost", "--json", "--since", "2000-01-01"]));
         let rows = cost["rows"].as_array().unwrap();
         assert!(!rows.is_empty(), "{project}");
         for row in rows {

@@ -298,13 +298,18 @@ fn find_file(dir: &Path, matches: &dyn Fn(&str) -> bool) -> Option<PathBuf> {
 }
 
 // ─── readers ────────────────────────────────────────────────────────────────
+//
+// Only tests call the whole-file token readers below: `read_session_events`
+// takes its tokens from the telemetry readers. The skill scan is live code.
 
+#[cfg(test)]
 fn u(v: &Value, keys: &[&str]) -> u64 {
     keys.iter()
         .find_map(|k| v.get(*k).and_then(Value::as_u64))
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 /// A Claude Code transcript.
 ///
 /// Streaming writes several records for one API response, each carrying the
@@ -313,7 +318,6 @@ fn u(v: &Value, keys: &[&str]) -> u64 {
 /// Skill loads are `Skill` tool calls, counted once per `tool_use` id.
 pub(crate) fn read_claude(text: &str) -> Usage {
     let mut last: BTreeMap<String, (String, Tokens)> = BTreeMap::new();
-    let mut tool_uses: BTreeMap<String, String> = BTreeMap::new();
     for line in text.lines() {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -325,18 +329,6 @@ pub(crate) fn read_claude(text: &str) -> Usage {
             continue;
         };
         let model = message.get("model").and_then(Value::as_str).unwrap_or("");
-        if let Some(content) = message.get("content").and_then(Value::as_array) {
-            for block in content {
-                if block.get("type").and_then(Value::as_str) == Some("tool_use")
-                    && block.get("name").and_then(Value::as_str) == Some("Skill")
-                {
-                    let id = block.get("id").and_then(Value::as_str).unwrap_or_default();
-                    if let Some(skill) = block.pointer("/input/skill").and_then(Value::as_str) {
-                        tool_uses.insert(id.to_string(), skill.to_string());
-                    }
-                }
-            }
-        }
         if model == "<synthetic>" {
             continue;
         }
@@ -368,10 +360,98 @@ pub(crate) fn read_claude(text: &str) -> Usage {
     for (model, tokens) in last.into_values() {
         usage.by_model.entry(model).or_default().add(&tokens);
     }
-    for skill in tool_uses.into_values() {
-        *usage.skills.entry(skill).or_default() += 1;
-    }
+    usage.skills = count_skills("claude", text);
     usage
+}
+
+#[cfg(test)]
+/// Skill loads per skill name, over the whole text.
+fn count_skills(agent: &str, text: &str) -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    for load in skill_loads_in(agent, text) {
+        *out.entry(load.skill).or_default() += 1;
+    }
+    out
+}
+
+/// The time a transcript line was written, as a ledger stamp: its
+/// `timestamp` string, or pi's `message.timestamp` in epoch milliseconds.
+/// Empty when the line has neither.
+fn line_ts(record: &Value) -> String {
+    match record.get("timestamp").and_then(Value::as_str) {
+        Some(t) => crate::telemetry::readers::ts(Some(t)),
+        None => record
+            .pointer("/message/timestamp")
+            .and_then(Value::as_i64)
+            .and_then(crate::clock::from_epoch_ms)
+            .map(crate::clock::stamp)
+            .unwrap_or_default(),
+    }
+}
+
+/// Every skill load in one transcript of `agent`, with the time of its line.
+///
+/// Claude: `Skill` tool calls, once per `tool_use` id. Codex: shell or tool
+/// calls that read a `skills/<name>/SKILL.md`. pi and Prime: assistant
+/// messages that read one.
+pub(crate) fn skill_loads_in(agent: &str, text: &str) -> Vec<SkillLoad> {
+    let mut out = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for line in text.lines() {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let ts = line_ts(&record);
+        let mut push = |skill: String| {
+            out.push(SkillLoad {
+                ts: ts.clone(),
+                skill,
+            })
+        };
+        match agent {
+            "claude" => {
+                if record.get("type").and_then(Value::as_str) != Some("assistant") {
+                    continue;
+                }
+                let Some(content) = record.pointer("/message/content").and_then(Value::as_array)
+                else {
+                    continue;
+                };
+                for block in content {
+                    if block.get("type").and_then(Value::as_str) == Some("tool_use")
+                        && block.get("name").and_then(Value::as_str) == Some("Skill")
+                    {
+                        let id = block.get("id").and_then(Value::as_str).unwrap_or_default();
+                        if let Some(skill) = block.pointer("/input/skill").and_then(Value::as_str) {
+                            if seen.insert(id.to_string()) {
+                                push(skill.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            "codex" => {
+                let kind = record
+                    .pointer("/payload/type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if matches!(
+                    kind,
+                    "function_call" | "local_shell_call" | "custom_tool_call"
+                ) {
+                    skill_reads(line).into_iter().for_each(&mut push);
+                }
+            }
+            "pi" | "prime" => {
+                let message = record.get("message").unwrap_or(&record);
+                if message.get("role").and_then(Value::as_str) == Some("assistant") {
+                    skill_reads(line).into_iter().for_each(&mut push);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Skill names in text that reads a `skills/<name>/SKILL.md` file.
@@ -396,6 +476,7 @@ fn skill_reads(text: &str) -> Vec<String> {
     out
 }
 
+#[cfg(test)]
 /// The first value under `key`, searched depth-first through `v`. A record
 /// carries at most one running total, so first and last are the same.
 fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
@@ -408,6 +489,7 @@ fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     }
 }
 
+#[cfg(test)]
 /// A Codex rollout.
 ///
 /// `token_count` events carry a running `total_token_usage` and are written
@@ -439,19 +521,8 @@ pub(crate) fn read_codex(text: &str) -> Usage {
             turns.insert(u(t, &["total_tokens"]));
             total = Some(t.clone());
         }
-        let kind = record
-            .pointer("/payload/type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if matches!(
-            kind,
-            "function_call" | "local_shell_call" | "custom_tool_call"
-        ) {
-            for skill in skill_reads(line) {
-                *usage.skills.entry(skill).or_default() += 1;
-            }
-        }
     }
+    usage.skills = count_skills("codex", text);
     if let Some(t) = total {
         let input = u(&t, &["input_tokens"]);
         let cached = u(&t, &["cached_input_tokens"]).min(input);
@@ -470,6 +541,7 @@ pub(crate) fn read_codex(text: &str) -> Usage {
     usage
 }
 
+#[cfg(test)]
 /// A pi or Prime Agent session file: one JSON record per line, assistant
 /// messages carrying `usage`. The field names are pi's (`input`, `output`,
 /// `cacheRead`, `cacheWrite`), with the Anthropic spellings accepted too,
@@ -481,11 +553,6 @@ pub(crate) fn read_pi(text: &str) -> Usage {
             continue;
         };
         let message = record.get("message").unwrap_or(&record);
-        if message.get("role").and_then(Value::as_str) == Some("assistant") {
-            for skill in skill_reads(line) {
-                *usage.skills.entry(skill).or_default() += 1;
-            }
-        }
         let Some(u_) = message.get("usage").filter(|v| v.is_object()) else {
             continue;
         };
@@ -517,6 +584,7 @@ pub(crate) fn read_pi(text: &str) -> Usage {
         usage.calls += 1;
         usage.by_model.entry(model).or_default().add(&tokens);
     }
+    usage.skills = count_skills("pi", text);
     usage
 }
 
@@ -590,18 +658,87 @@ pub enum Missing {
     Failed(String),
 }
 
-/// Find and read one session's usage for `agent`.
+/// A half-open time range of ledger stamps (`2026-10-07T09:00:00Z`): calls
+/// at or after `since` and before `until`. `None` leaves that side open, so
+/// the default span is everything.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Span {
+    pub since: Option<String>,
+    pub until: Option<String>,
+}
+
+impl Span {
+    pub fn new(since: Option<&str>, until: Option<&str>) -> Self {
+        Span {
+            since: since.map(str::to_string),
+            until: until.map(str::to_string),
+        }
+    }
+
+    /// Whether a call at `ts` is in the span. Stamps compare as strings, as
+    /// `horch usage --since` compares them, so the 2 commands agree (TEL-10).
+    pub fn contains(&self, ts: &str) -> bool {
+        self.since.as_deref().is_none_or(|s| ts >= s)
+            && self.until.as_deref().is_none_or(|u| ts < u)
+    }
+
+    pub fn is_all(&self) -> bool {
+        self.since.is_none() && self.until.is_none()
+    }
+}
+
+/// One skill load and when the transcript says it happened ("" when the
+/// line has no time).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillLoad {
+    pub ts: String,
+    pub skill: String,
+}
+
+/// One session read once: every usage event and every skill load, each with
+/// its own time, so one read serves any number of spans.
+#[derive(Debug, Clone)]
+pub struct Session {
+    /// The main transcript.
+    pub path: PathBuf,
+    pub events: Vec<crate::telemetry::RawUsage>,
+    pub skill_loads: Vec<SkillLoad>,
+}
+
+impl Session {
+    /// The usage of the calls and skill loads in `span`. A session with no
+    /// call in the span has an empty `by_model`.
+    pub fn usage(&self, span: &Span) -> Usage {
+        let mut usage = Usage::default();
+        for e in self.events.iter().filter(|e| span.contains(&e.ts)) {
+            usage
+                .by_model
+                .entry(e.model.clone())
+                .or_default()
+                .add(&e.tokens.priced());
+            if !e.delta {
+                usage.calls += 1;
+            }
+        }
+        for load in self.skill_loads.iter().filter(|l| span.contains(&l.ts)) {
+            *usage.skills.entry(load.skill.clone()).or_default() += 1;
+        }
+        usage
+    }
+}
+
+/// Find and read one session for `agent`: its usage events and skill loads.
 ///
 /// Tokens come from the telemetry readers, from offset 0 with throwaway
 /// cursors, so `horch cost` and `horch usage` count the same events
 /// (TEL-10): Codex's final response (`token_usage_record`) and Claude
-/// subagent transcripts included. Skill loads are still found by scanning
-/// the transcript text.
-pub fn read_session(
+/// subagent transcripts included. Skill loads are found by scanning the
+/// transcript text.
+pub fn read_session_events(
     loc: &Locations,
     agent: &str,
     session_id: Option<&str>,
-) -> std::result::Result<(PathBuf, Usage), Missing> {
+) -> std::result::Result<Session, Missing> {
     use crate::telemetry::readers::{read_whole, Unreadable};
     let (events, files) = read_whole(loc, agent, session_id).map_err(|e| match e {
         Unreadable::NoSessionId => Missing::NoSessionId,
@@ -609,34 +746,30 @@ pub fn read_session(
         Unreadable::NotRead(_) => Missing::NotRead,
         Unreadable::Failed(why) => Missing::Failed(why),
     })?;
-    let mut usage = Usage::default();
-    for e in &events {
-        usage
-            .by_model
-            .entry(e.model.clone())
-            .or_default()
-            .add(&e.tokens.priced());
-        if !e.delta {
-            usage.calls += 1;
-        }
-    }
-    let scan: Option<fn(&str) -> Usage> = match agent {
-        "claude" => Some(read_claude),
-        "codex" => Some(read_codex),
-        "pi" | "prime" => Some(read_pi),
-        _ => None,
-    };
-    if let Some(scan) = scan {
-        for file in &files {
-            if let Ok(text) = std::fs::read_to_string(file) {
-                for (skill, n) in scan(&text).skills {
-                    *usage.skills.entry(skill).or_default() += n;
-                }
-            }
+    let mut skill_loads = Vec::new();
+    for file in &files {
+        if let Ok(text) = std::fs::read_to_string(file) {
+            skill_loads.extend(skill_loads_in(agent, &text));
         }
     }
     let path = files.into_iter().next().ok_or(Missing::NoTranscript)?;
-    Ok((path, usage))
+    Ok(Session {
+        path,
+        events,
+        skill_loads,
+    })
+}
+
+/// Find and read one session's whole usage for `agent`:
+/// [`read_session_events`] over the unbounded span.
+pub fn read_session(
+    loc: &Locations,
+    agent: &str,
+    session_id: Option<&str>,
+) -> std::result::Result<(PathBuf, Usage), Missing> {
+    let session = read_session_events(loc, agent, session_id)?;
+    let usage = session.usage(&Span::default());
+    Ok((session.path, usage))
 }
 
 #[cfg(test)]
@@ -842,5 +975,63 @@ mod tests {
         assert_eq!(prices["gpt-5.6-sol"].output, 30.0);
         assert_eq!(prices["claude-opus-5-5"].input, 4.0);
         assert!(load_prices(Some(&tmp.path().join("missing.json"))).is_err());
+    }
+    /// A Claude line at `at` with one call and, optionally, one skill load.
+    fn claude_line(at: &str, id: &str, out: u64, skill: Option<&str>) -> String {
+        let content = match skill {
+            Some(s) => format!(
+                r#"[{{"type":"tool_use","id":"tu-{id}","name":"Skill","input":{{"skill":"{s}"}}}}]"#
+            ),
+            None => r#"[{"type":"text","text":"ok"}]"#.to_string(),
+        };
+        format!(
+            r#"{{"type":"assistant","timestamp":"{at}","message":{{"id":"{id}","model":"claude-opus-5-5","role":"assistant","content":{content},"usage":{{"input_tokens":1,"cache_read_input_tokens":10,"output_tokens":{out}}}}}}}"#
+        )
+    }
+
+    /// A span counts each call and each skill load by its own time: a
+    /// session that started 40 days ago shows only its last day in a 24h
+    /// span, and all of it with no span.
+    #[test]
+    fn tel_13_a_span_counts_calls_and_skill_loads_by_their_own_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let dir = home.join(".claude/projects/-proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = [
+            claude_line("2026-08-28T10:00:00Z", "m1", 100, Some("horch:tdd")),
+            claude_line("2026-09-20T10:00:00Z", "m2", 200, None),
+            claude_line("2026-10-06T12:00:00Z", "m3", 300, Some("horch:check")),
+            claude_line("2026-10-07T09:00:00Z", "m4", 400, None),
+        ]
+        .join("\n");
+        // The reader leaves a last line without a newline for the next poll.
+        std::fs::write(dir.join("sid-old.jsonl"), text + "\n").unwrap();
+        let loc = Locations::under_home(home, &crate::runtime::Inherited::default());
+        let session = read_session_events(&loc, "claude", Some("sid-old")).unwrap();
+
+        let day = Span::new(Some("2026-10-06T10:00:00Z"), Some("2026-10-07T10:00:00Z"));
+        let u = session.usage(&day);
+        assert_eq!(u.calls, 2);
+        assert_eq!(u.tokens().output, 700);
+        assert_eq!(u.skills.keys().collect::<Vec<_>>(), ["horch:check"]);
+
+        let week = Span::new(Some("2026-09-30T10:00:00Z"), Some("2026-10-07T10:00:00Z"));
+        assert_eq!(session.usage(&week).calls, 2);
+        let month = Span::new(Some("2026-09-07T10:00:00Z"), Some("2026-10-07T10:00:00Z"));
+        assert_eq!(session.usage(&month).calls, 3);
+
+        // Before the span's end only: a call at the end itself is out.
+        let until = Span::new(None, Some("2026-10-07T09:00:00Z"));
+        assert_eq!(session.usage(&until).tokens().output, 600);
+
+        let all = session.usage(&Span::default());
+        assert_eq!(all.calls, 4);
+        assert_eq!(all.skills.len(), 2);
+        let (_, whole) = read_session(&loc, "claude", Some("sid-old")).unwrap();
+        assert_eq!(whole, all, "read_session is the unbounded span");
+
+        let none = Span::new(Some("2026-10-08T00:00:00Z"), None);
+        assert!(session.usage(&none).by_model.is_empty());
     }
 }

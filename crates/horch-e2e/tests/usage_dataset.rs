@@ -136,7 +136,8 @@ fn exp_07_candidate_and_judge_in_usage() {
     let out = cmd.output().unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
 
-    let out = h.run(&["cost", "--json"]);
+    // A filter makes 1 report on stdout; this one covers every call.
+    let out = h.run(&["cost", "--json", "--since", "2000-01-01"]);
     assert!(out.status.success(), "{}", text(&out));
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["not_priced"], json!([]), "{report:#}");

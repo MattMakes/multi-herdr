@@ -259,7 +259,10 @@ fn the_hermetic_story() {
         let usage: Value =
             serde_json::from_slice(&h.run(&["usage", "--json", "--project", project]).stdout)
                 .unwrap();
-        let cost: Value = serde_json::from_slice(&h.run(&["cost", "--json"]).stdout).unwrap();
+        // A filter makes 1 report on stdout; this one covers every call.
+        let cost: Value =
+            serde_json::from_slice(&h.run(&["cost", "--json", "--since", "2000-01-01"]).stdout)
+                .unwrap();
         for row in cost["rows"].as_array().unwrap() {
             let rec = usage["records"]
                 .as_array()
