@@ -150,12 +150,12 @@ fn ctx_01_cli_table_from_fixture_home() {
     let w = World::new();
     let table = w.stdout(&["context"], &[]);
     let want = "\
-ROLE          HARNESS  MODEL             CONTEXT     WINDOW   NATIVE  SOURCE          THRESHOLD  LAST COMPACT              STATE
-orchestrator  claude   claude-opus-5-5   33,352   1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  ok
-codex-sol-1   codex    gpt-5.6-sol      227,306     258,400  200,000  fleet             160,000  -                         over
-opus-1        claude   claude-opus-5-5   10,486*  1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  pending
-sonnet-1      claude   claude-opus-5-5  311,225   1,000,000  467,000  operator (now)    300,000  -                         over
-sonnet-2      claude   sonnet                 -   1,000,000  467,000  operator (now)    300,000  -                         no-transcript
+ROLE          HARNESS  MODEL             CONTEXT     WINDOW   NATIVE  SOURCE          THRESHOLD  LAST COMPACT              COMPACTIONS  STATE
+orchestrator  claude   claude-opus-5-5   33,352   1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  1n/0h        ok
+codex-sol-1   codex    gpt-5.6-sol      227,306     258,400  200,000  fleet             160,000  -                         0n/0h        over
+opus-1        claude   claude-opus-5-5   10,486*  1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  1n/0h        pending
+sonnet-1      claude   claude-opus-5-5  311,225   1,000,000  467,000  operator (now)    300,000  -                         0n/0h        over
+sonnet-2      claude   sonnet                 -   1,000,000  467,000  operator (now)    300,000  -                         -            no-transcript
 reasons:
   sonnet-2: no-transcript: no transcript found
 ";
@@ -547,6 +547,8 @@ fn ctx_24_json_has_every_key_and_nulls() {
         "native_detail",
         "threshold",
         "last_compaction",
+        "native_compactions",
+        "horch_compactions",
         "state",
         "reason",
         "route",
@@ -643,5 +645,154 @@ fn ctx_24_json_has_every_key_and_nulls() {
     assert_eq!(
         codex["native_detail"],
         "context-policy windows codex/gpt-5.6-sol"
+    );
+}
+
+impl World {
+    /// Add `rec` to the ledger.
+    fn add_record(&self, rec: serde_json::Value) {
+        let ledger =
+            horch_core::execution::records::Ledger::for_project(self.root.join("state"), PROJECT);
+        let mut records: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(ledger.path()).unwrap()).unwrap();
+        records.push(rec);
+        std::fs::write(ledger.path(), serde_json::to_string(&records).unwrap()).unwrap();
+    }
+
+    /// The `--json` object of `role`.
+    fn json_row(&self, role: &str) -> serde_json::Value {
+        let out = self.stdout(&["context", "--json"], &[]);
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        rows.into_iter()
+            .find(|r| r["role"] == role)
+            .unwrap_or_else(|| panic!("no row {role}: {out}"))
+    }
+}
+
+/// The text table cell of `column` in the row of `role`. Columns are apart
+/// by 2 spaces or more; a cell holds 1 space at most (`operator (now)`).
+fn cell(table: &str, role: &str, column: &str) -> String {
+    let split = |line: &str| -> Vec<String> {
+        line.split("  ")
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    let mut lines = table.lines();
+    let head = split(lines.next().unwrap());
+    let at = head.iter().position(|h| h == column).unwrap();
+    let row = lines
+        .find(|l| l.starts_with(&format!("{role} ")))
+        .unwrap_or_else(|| panic!("no row {role}:\n{table}"));
+    split(row)[at].clone()
+}
+
+/// CTX-21: a teammate's `compact_at` is its watch base. On a native trigger
+/// of 467,000 a base of 60,000 gives the threshold 60,000 in `horch
+/// context`, in `--json` and in the `horch note` check, which all build the
+/// row with 1 function.
+#[test]
+fn ctx_21_compact_at_sets_base() {
+    let w = World::new();
+    let dir = w.root.join("home/.config/horch/teammates");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("low-base.md"),
+        "---\nname: low-base\nbrief_description: a teammate with its own watch base\n\
+         hidden: true\nbase: fleet-worker\nagent: claude\nmodel: opus\ncompact_at: 60000\n---\nbody\n",
+    )
+    .unwrap();
+    // SMALL holds 33,352 tokens: under 60,000.
+    w.add_record(record("rec-low", "low-1", "claude", "low-base", SMALL));
+    let mut big = record("rec-big", "low-2", "claude", "low-base", OVER);
+    big["updated_at"] = "2026-10-06T09:01:00Z".into();
+    w.add_record(big);
+
+    let table = w.stdout(&["context"], &[]);
+    assert_eq!(cell(&table, "low-1", "NATIVE"), "467,000", "\n{table}");
+    assert_eq!(cell(&table, "low-1", "THRESHOLD"), "60,000", "\n{table}");
+    assert_eq!(cell(&table, "low-1", "STATE"), "ok", "\n{table}");
+    assert_eq!(cell(&table, "low-2", "THRESHOLD"), "60,000", "\n{table}");
+    assert_eq!(cell(&table, "low-2", "STATE"), "over", "\n{table}");
+    // A teammate with no `compact_at` keeps the fleet base.
+    assert_eq!(
+        cell(&table, "sonnet-1", "THRESHOLD"),
+        "300,000",
+        "\n{table}"
+    );
+
+    let row = w.json_row("low-2");
+    assert_eq!(row["native_trigger"], 467_000);
+    assert_eq!(row["threshold"], 60_000);
+
+    let me = [("HORCH_RECORD_ID", "rec-big")];
+    let warning = w.stdout(&["note", "step 1 done"], &me);
+    assert!(
+        warning.contains("Your context is 311225 tokens. Your threshold is 60000 tokens."),
+        "{warning}"
+    );
+    let me = [("HORCH_RECORD_ID", "rec-low")];
+    assert_eq!(
+        w.stdout(&["note", "step 1 done"], &me),
+        "",
+        "33,352 is under 60,000"
+    );
+
+    let windows = w.stdout(&["context", "--windows"], &[]);
+    assert_eq!(
+        cell(&windows, "low-base", "THRESHOLD"),
+        "60,000",
+        "\n{windows}"
+    );
+}
+
+/// CTX-25: `horch context` counts the compactions of a session as native
+/// and horch-driven. opus-1's transcript has 1 marker at 10:05:00; a
+/// `compacted` event at 10:06:00 makes it horch-driven. The orchestrator's
+/// marker has no event: native.
+#[test]
+fn ctx_25_cli_counts_native_and_horch_compactions() {
+    let w = World::new();
+    let ledger = horch_core::execution::records::Ledger::for_project(w.root.join("state"), PROJECT);
+    let mut records: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(ledger.path()).unwrap()).unwrap();
+    let opus = records.iter_mut().find(|r| r["role"] == "opus-1").unwrap();
+    opus["history"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!(
+            {"at": "2026-09-20T10:06:00Z", "event": "compacted", "text": "marker at 10:05"}
+        ));
+    std::fs::write(ledger.path(), serde_json::to_string(&records).unwrap()).unwrap();
+
+    let table = w.stdout(&["context"], &[]);
+    assert_eq!(cell(&table, "opus-1", "COMPACTIONS"), "0n/1h", "\n{table}");
+    assert_eq!(
+        cell(&table, "orchestrator", "COMPACTIONS"),
+        "1n/0h",
+        "\n{table}"
+    );
+    assert_eq!(
+        cell(&table, "sonnet-1", "COMPACTIONS"),
+        "0n/0h",
+        "\n{table}"
+    );
+    assert_eq!(cell(&table, "sonnet-2", "COMPACTIONS"), "-", "\n{table}");
+
+    let out = w.stdout(&["context", "--json"], &[]);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    let row = |role: &str| rows.iter().find(|r| r["role"] == role).unwrap().clone();
+    assert_eq!(row("opus-1")["native_compactions"], 0);
+    assert_eq!(row("opus-1")["horch_compactions"], 1);
+    assert_eq!(row("orchestrator")["native_compactions"], 1);
+    assert_eq!(row("orchestrator")["horch_compactions"], 0);
+    assert_eq!(
+        row("sonnet-2")["native_compactions"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        row("sonnet-2")["horch_compactions"],
+        serde_json::Value::Null
     );
 }

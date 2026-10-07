@@ -115,6 +115,16 @@ impl Row {
     pub fn tokens(&self) -> Option<u64> {
         self.reading.as_ref().ok().and_then(|r| r.tokens)
     }
+
+    /// `(native, horch)` compactions of the transcript (CTX-25), when it
+    /// reads.
+    pub fn compactions(&self) -> Option<(usize, usize)> {
+        let reading = self.reading.as_ref().ok()?;
+        Some(policy::count_compactions(
+            &reading.marks_at,
+            &self.record.history,
+        ))
+    }
 }
 
 /// The directory a record's agent runs in: its `workdir`, else the project.
@@ -183,8 +193,10 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
         decision.tokens,
         transcript_window,
     );
-    // Slice 1: no teammate sets `compact_at` yet (u11 adds it).
-    let threshold = window::threshold(policy::watch_base(None), native);
+    // CTX-21: the teammate's `compact_at`. `horch context`, `horch compact`
+    // and the `horch note` check all build the row here.
+    let compact_at = src.roster.get(&record.tier).and_then(|t| t.compact_at);
+    let threshold = window::threshold(policy::watch_base(compact_at), native);
 
     let job_dir = record_job_dir(src.ctx, &record, workspace);
     let job = jobfile::liveness(&job_dir, Utc::now());
@@ -355,6 +367,11 @@ pub(crate) struct JsonRow {
     pub native_detail: String,
     pub threshold: u64,
     pub last_compaction: Option<JsonCompaction>,
+    /// Markers no `compacted` event matches (CTX-25); None when the
+    /// transcript does not read.
+    pub native_compactions: Option<usize>,
+    /// Markers a `compacted` event matches within 15 minutes (CTX-25).
+    pub horch_compactions: Option<usize>,
     pub state: &'static str,
     /// The text of the row's `reasons:` line, without the role and state.
     pub reason: Option<String>,
@@ -427,6 +444,8 @@ fn json_row(src: &Sources, row: &Row, pane: Option<&Pane>) -> JsonRow {
                 pre_tokens: m.pre_tokens,
                 post_tokens: m.post_tokens,
             }),
+        native_compactions: row.compactions().map(|c| c.0),
+        horch_compactions: row.compactions().map(|c| c.1),
         state: row.state.as_str(),
         reason: row.reason_text(),
         route: if src.roster.compacts_in_place(row.kind) {
@@ -450,6 +469,7 @@ fn rows_table(rows: &[Row]) -> String {
         ("SOURCE", Align::Left),
         ("THRESHOLD", Align::Right),
         ("LAST COMPACT", Align::Left),
+        ("COMPACTIONS", Align::Left),
         ("STATE", Align::Left),
     ]);
     for row in rows {
@@ -465,6 +485,9 @@ fn rows_table(rows: &[Row]) -> String {
             .ok()
             .and_then(|r| r.last_compaction.as_ref())
             .map_or_else(|| "-".to_string(), |m| m.at.clone());
+        let compactions = row
+            .compactions()
+            .map_or_else(|| "-".to_string(), |(n, h)| format!("{n}n/{h}h"));
         t.push(vec![
             row.record.role.clone(),
             row.kind.as_str().into(),
@@ -475,6 +498,7 @@ fn rows_table(rows: &[Row]) -> String {
             source_text(row.decision.source, row.decided_now),
             grouped(row.threshold),
             last,
+            compactions,
             row.state.as_str().into(),
         ]);
     }
@@ -523,7 +547,7 @@ pub(crate) fn windows_table(ctx: &RuntimeContext, roster: &Roster, workdir: &Pat
             roster.fleet_window(teammate, &model),
         );
         let native = window::native_trigger(trigger, kind.as_str(), &model, decision.tokens, None);
-        let threshold = window::threshold(policy::watch_base(None), native);
+        let threshold = window::threshold(policy::watch_base(teammate.compact_at), native);
         let headroom = native.map_or_else(
             || "-".to_string(),
             |n| {
@@ -888,6 +912,7 @@ mod tests {
                 "SOURCE",
                 "THRESHOLD",
                 "LAST COMPACT",
+                "COMPACTIONS",
                 "STATE"
             ],
             "{out}"
