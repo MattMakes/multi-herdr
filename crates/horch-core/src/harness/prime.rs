@@ -90,6 +90,15 @@ impl Daemon {
     /// not start, such as the operator's own. Otherwise the daemon is left
     /// running, and the reason is logged. A daemon left running keeps its
     /// socket.
+    ///
+    /// Residual risk (U-63, checked on prime-agent 0.9.4,
+    /// docs/live-checks/harnesses.md): Prime reports no start time of its
+    /// own. `status --json` gives `pid`, `socketPath` and `uptimeSeconds`,
+    /// and the uptime is `ps -o etimes` of that same pid, so it adds nothing
+    /// to [`crate::procid`]. Prime takes the pid from `ss -lxp` or `lsof`:
+    /// a `prime-agent` process that holds the socket. So a wrong SIGTERM
+    /// needs a `prime-agent` process that started after this launch, got the
+    /// dead daemon's pid and holds this launch's private socket.
     pub fn finish(&self) {
         let left_running = daemon_pid(&self.bin, &self.socket).is_some_and(|pid| {
             let first = pid_start(pid);
