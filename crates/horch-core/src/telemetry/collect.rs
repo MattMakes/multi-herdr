@@ -289,17 +289,17 @@ impl Collector {
             .collect()
     }
 
-    /// Read the ledgers whose length or modification time changed since
-    /// the last tick (NFR-02: parsing every ledger took most of a tick). A
-    /// ledger that does not parse keeps its last good copy and is read again
-    /// next tick; a deleted one is dropped.
+    /// Read the ledgers whose length, inode or modification time changed
+    /// since the last tick (NFR-02: parsing every ledger took most of a
+    /// tick). The inode catches a rewrite by rename to the same length
+    /// within one modification-time tick. A ledger that does not parse keeps
+    /// its last good copy and is read again next tick; a deleted one is
+    /// dropped.
     fn refresh_ledgers(&mut self) {
         let paths = execution_store::ledger_paths(&self.state_root);
         self.last_good.retain(|p, _| paths.contains(p));
         for path in paths {
-            let stamp = std::fs::metadata(&path)
-                .ok()
-                .map(|m| (m.len(), m.modified().ok()));
+            let stamp = stamp(&path);
             if stamp.is_some() && self.last_good.get(&path).map(|l| l.stamp) == Some(stamp) {
                 continue;
             }
@@ -484,10 +484,10 @@ impl Collector {
     }
 }
 
-/// One ledger file's last good records, and the file's `(length, mtime)`
-/// when they were read.
+/// One ledger file's last good records, and the file's stamp when they
+/// were read.
 struct Ledger {
-    stamp: Option<(u64, Option<std::time::SystemTime>)>,
+    stamp: Option<Stamp>,
     records: Vec<Record>,
 }
 
@@ -956,6 +956,53 @@ mod tests {
         let quota = QuotaView::new(QuotaFile::default(), now(), policy, false);
         let info = CollectorInfo::default();
         build_indexed(&records, index, quota, Vec::new(), now(), info)
+    }
+
+    /// NFR-02: a ledger rewritten by rename to the same length, with the
+    /// same modification time, is read again (W16 audit: the cache keyed a
+    /// ledger by length and modification time only).
+    #[test]
+    fn nfr_02_a_same_length_ledger_rewrite_by_rename_is_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let home = tmp.path().join("home");
+        let loc = Locations {
+            home: home.clone(),
+            claude_projects: home.join(".claude/projects"),
+            codex_sessions: home.join(".codex/sessions"),
+            pi_sessions: home.join(".pi/agent/sessions"),
+            opencode_db: home.join(".local/share/opencode/opencode.db"),
+            sqlite3: PathBuf::from("sqlite3"),
+        };
+        let ledger = |role: &str| {
+            let mut rows = serde_json::to_value(records()).unwrap();
+            rows[0]["role"] = role.into();
+            serde_json::to_vec(&rows).unwrap()
+        };
+        let path = state.join("-work.json");
+        std::fs::write(&path, ledger("aaaa")).unwrap();
+        let mut c = Collector::open_at(&state, loc, Probing::Never, now()).unwrap();
+        let roles = |c: &mut Collector| -> Vec<String> {
+            c.ledgers().into_iter().map(|r| r.role).collect()
+        };
+        assert!(roles(&mut c).contains(&"aaaa".to_string()));
+
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let next = state.join("-work.json.tmp");
+        std::fs::write(&next, ledger("bbbb")).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&next)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        std::fs::rename(&next, &path).unwrap();
+        let (old, new) = (ledger("aaaa").len(), std::fs::metadata(&path).unwrap());
+        assert_eq!((new.len() as usize, new.modified().unwrap()), (old, mtime));
+        let roles = roles(&mut c);
+        assert!(roles.contains(&"bbbb".to_string()), "{roles:?}");
+        assert!(!roles.contains(&"aaaa".to_string()), "{roles:?}");
     }
 
     /// NFR-02: an empty write-ahead log stamps as no log. On Linux the
