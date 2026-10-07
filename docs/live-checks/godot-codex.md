@@ -136,3 +136,42 @@ files outside the workspace.
 A `fallbacks:` entry for a Godot builder therefore needs a Codex harness plus
 this environment-and-certificate wrapper. The fallback instructions must
 also require log scanning because the failing Godot commands return exit 0.
+
+## Adopted (2026-10-07)
+
+The operator approved the Codex fallback on 2026-10-07. The wrapper is
+`skills/godot-build-verify/scripts/godot-run.sh`. It applies the 3 settings of
+the verdict above: private user dirs under `.godot/horch-home/` on every run,
+and, when `CODEX_SANDBOX` is set on macOS, the project `override.cfg` and the
+editor setting `network/tls/editor_tls_certificates`. It adds `--headless`,
+logs to `.godot/horch-home/logs/`, and exits 3 when the log has a sandbox line
+(E3, or an E1 to E9 line that names a path outside the project).
+
+These 17 seats now have `fallbacks: [codex-sol]`, the same as
+`godot-tech-lead` and `godot-code-reviewer`:
+`godot-ai-programmer`, `godot-animator`, `godot-csharp-engineer`,
+`godot-gameplay-programmer`, `godot-narrative-programmer`,
+`godot-native-engineer`, `godot-network-engineer`,
+`godot-performance-engineer`, `godot-porting-engineer`, `godot-qa-engineer`,
+`godot-release-engineer`, `godot-systems-programmer`,
+`godot-technical-artist`, `godot-tools-engineer`, `godot-world-builder`,
+`godot-xr-developer` and `godot-ui-developer`.
+
+Live runs: Godot 4.7.2.stable.official.ed1daf0bf, macOS, a Claude pane (no
+sandbox), a copy of `.worktrees/_scratch/godot-trial/` with no `.godot/`.
+
+| Step | `CODEX_SANDBOX` | Exit | Result | Evidence |
+|------|-----------------|------|--------|----------|
+| `--version` | unset | 0 | PASS | Printed `4.7.2.stable.official.ed1daf0bf`. |
+| `--path . --import` | unset | 0 | PASS | 0 `ERROR:` lines. |
+| parse check (`-s .godot/horch-home/parse_check.gd`) | unset | 0 | PASS | `PARSE_CHECK checked=120 failed=0`; no `override.cfg` and no editor TLS line were written. |
+| `--version` | `seatbelt` | 0 | PASS | Wrote `override.cfg` and a 4-line `editor_settings-4.7.tres` with the TLS key. |
+| `--path . --import` | `seatbelt` | 0 | PASS | 0 `ERROR:` lines. Godot rewrote the settings file (337 lines) and kept `network/tls/editor_tls_certificates = "/etc/ssl/cert.pem"`. |
+| parse check | `seatbelt` | 0 | PASS | `PARSE_CHECK checked=120 failed=0`. |
+| second `--import` | `seatbelt` | 0 | PASS | The settings file still holds 1 TLS key line. |
+
+The `seatbelt` runs only simulate the sandbox: they prove that the script
+writes both files and that Godot accepts them. The copy was deleted after the
+runs.
+
+Pending: a run of `godot-run.sh` inside a real Codex pane.

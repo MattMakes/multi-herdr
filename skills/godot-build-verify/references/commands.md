@@ -7,13 +7,14 @@ Quote paths: project paths often contain spaces.
 ## Find the engine
 
 ```bash
+RUN="<skill dir>/scripts/godot-run.sh"   # see "Common setup"
 GODOT="${GODOT_PATH:-}"
 if [ -z "$GODOT" ]; then GODOT="$(command -v godot || true)"; fi
 if [ -z "$GODOT" ] && [ -x /Applications/Godot.app/Contents/MacOS/Godot ]; then
   GODOT=/Applications/Godot.app/Contents/MacOS/Godot
 fi
 [ -n "$GODOT" ] && [ -x "$GODOT" ] || { echo "NO_ENGINE: ${GODOT:-not found}"; exit 2; }
-have="$("$GODOT" --version | cut -d. -f1-2)"
+have="$(bash "$RUN" --version | tail -1 | cut -d. -f1-2)"
 want="$(grep '^config/features=' project.godot | grep -oE '"[0-9]+\.[0-9]+"' | head -1 | tr -d '"')"
 echo "engine=$GODOT have=$have want=${want:-none}"
 if [ -n "$want" ] && [ "$(printf '%s\n%s\n' "$want" "$have" | sort -t. -k1,1n -k2,2n | tail -1)" != "$have" ]; then
@@ -32,12 +33,59 @@ fi
 
 ## Common setup
 
+Every Godot call goes through `scripts/godot-run.sh` of this skill. Set
+`RUN` to its absolute path (the `scripts/` directory next to `SKILL.md`), and
+start it with `bash`: a skill bundle can drop the file's execute bit.
+
 ```bash
+RUN="<skill dir>/scripts/godot-run.sh"
 GH="$PWD/.godot/horch-home"
 LOGS="$GH/logs"
 mkdir -p "$LOGS"
-gd() { HOME="$GH" "$GODOT" --headless --path "$PWD" "$@"; }
+gd() { bash "$RUN" --path "$PWD" "$@"; }
 ```
+
+What `godot-run.sh <godot arguments...>` does, in order:
+
+1. Exits 2 when `./project.godot` does not exist. Run it from the project root.
+2. Finds the engine as in "Find the engine" above (function `find_engine`).
+   Exits 2 when none runs.
+3. Exports `HOME="$GH"`, and `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and
+   `XDG_CACHE_HOME` under `$GH/xdg/`, and creates the directories.
+4. Only when `CODEX_SANDBOX` is set on macOS: writes `override.cfg` (below) when
+   the project has none, and sets
+   `network/tls/editor_tls_certificates = "/etc/ssl/cert.pem"` in
+   `$GH/Library/Application Support/Godot/editor_settings-<M.m>.tres`. Every
+   other line of that file stays. An `override.cfg` that exists without
+   `tls/certificate_bundle_override` is not edited: the script exits 2.
+5. Adds `--headless` when the arguments do not have it.
+6. Runs the engine. Its output goes to the terminal and to
+   `$GH/logs/godot-run-<UTC stamp>-<pid>.log`.
+7. Scans that log for the sandbox lines E1 to E9 of
+   `docs/live-checks/godot-codex.md`: `Condition "ret != noErr" is true`, or a
+   user-directory `ERROR:` line that names a path outside the project. On 1 or
+   more, it prints `godot-run: SANDBOX: <n> line(s); log: <path>` and exits 3. <!-- xref-check: allow godot-run -->
+8. Otherwise, exits with the engine's exit code.
+
+| exit | meaning |
+|---|---|
+| engine's code | the command ran; read the output, Godot exits 0 after most failures |
+| 2 | no `project.godot`, no engine, or an `override.cfg` without the TLS key |
+| 3 | a sandbox line: report `BLOCKED:` with the log path |
+
+The `override.cfg` that a Codex pane gets:
+
+```ini
+; horch godot-run.sh: Codex sandbox TLS override. See docs/live-checks/godot-codex.md.
+[network]
+
+tls/certificate_bundle_override="/etc/ssl/cert.pem"
+```
+
+Do not commit it. Measured on 2026-10-07 (Godot 4.7.2, macOS): with
+`CODEX_SANDBOX=seatbelt`, `--version`, `--import` and the parse check through
+the script exited 0 with 0 `ERROR:` lines, and Godot kept the editor setting
+when it rewrote the settings file on import.
 
 Measured on macOS: Godot ignores `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and
 `XDG_CACHE_HOME`, and writes under `$HOME/Library/Application Support/Godot/`
@@ -48,7 +96,7 @@ run (not covered here) needs them.
 
 ### Linux
 
-Measured on Linux (Godot 4.7.2.stable.official, aarch64, Debian bookworm
+The script sets the 3 XDG variables on every system. Measured on Linux (Godot 4.7.2.stable.official, aarch64, Debian bookworm
 container, 2026-10-06; `docs/live-checks/linux.md`): Godot reads
 `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and `XDG_CACHE_HOME`, and `HOME` stays
 empty. Set all 3 under one directory:
@@ -57,10 +105,9 @@ empty. Set all 3 under one directory:
 GH="$PWD/.godot/horch-home"
 LOGS="$GH/logs"
 mkdir -p "$LOGS" "$GH/xdg/data" "$GH/xdg/config" "$GH/xdg/cache"
-gd() {
-  HOME="$GH" XDG_DATA_HOME="$GH/xdg/data" XDG_CONFIG_HOME="$GH/xdg/config" \
-    XDG_CACHE_HOME="$GH/xdg/cache" "$GODOT" --headless --path "$PWD" "$@"
-}
+# what godot-run.sh does for you:
+HOME="$GH" XDG_DATA_HOME="$GH/xdg/data" XDG_CONFIG_HOME="$GH/xdg/config" \
+  XDG_CACHE_HOME="$GH/xdg/cache" "$GODOT" --headless --path "$PWD" "$@"
 ```
 
 Under the 3 directories, the run wrote only these files, and nothing under

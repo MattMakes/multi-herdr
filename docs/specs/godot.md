@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Implemented: 64 `godot-*` skills, 19 `godot-*` seats, `Requirement::Godot`, `skills_when` and 4 Godot checks in `just gate`. The real-project seat runs and the Codex trial are live checks (§4). |
+| Status | Implemented: 64 `godot-*` skills, 19 `godot-*` seats with a `codex-sol` fallback, `Requirement::Godot`, `skills_when`, the `godot-run.sh` wrapper and 4 Godot checks in `just gate`. The real-project seat runs and the Codex trial are live checks (§4). A run of `godot-run.sh` inside a real Codex pane is pending. |
 | Date | 2026-10-07 |
 | Authors | opus-2 (this spec). The wave: units GW1 to GW13, U-22, U-25, U-49. |
 | Evidence | The wave report (`ai_docs/reports/godot-wave.md`, committed text at `c6b1a48`) and its status check (`ai_docs/reports/godot-wave-status.md`, items 1 to 21, checked at `32639cd`). |
@@ -48,6 +48,7 @@ a `gdw_<nn>_` test in `crates/horch-core/tests/godot_wave.rs`.
 | GDW-07 | The bundled catalog holds 64 `godot-*` skills. It holds none of the excluded upstream skills (`using-godot-prompter`, `godot-mentor`, `godot-master`, `godot-agent-vision`, `godot-monte-carlo-balancer`, `godot-theme-easter`). No `godot-*` file is a licence or notice file, and no text has a licence line or an upstream credit. | - | gdw_07_the_catalog_has_64_godot_skills_and_no_excluded_one, gdw_07_godot_skills_carry_no_licence_or_credit_line, skills_bundled_no_licence_files |
 | GDW-08 | The roster has 19 `godot-*` seats. Each seat expects 5 to 10 skills, and every skill a seat names is bundled. Every `godot-*` skill is expected or available in at least 1 seat. | - | gdw_08_every_godot_seat_expects_5_to_10_skills_from_the_catalog, gdw_08_every_godot_skill_has_a_seat |
 | GDW-09 | Every `godot-*` seat runs on Claude with `base: fleet-worker` and `mcp_servers: {}` (no Godot MCP server in wave 1). `godot-code-reviewer` denies `Edit`, `Write` and `NotebookEdit`. | - | gdw_09_godot_seats_are_claude_fleet_workers_without_mcp_servers |
+| GDW-10 | Every `godot-*` seat falls back to `codex-sol`. `godot-build-verify` ships `scripts/godot-run.sh`: private user dirs, the 2 TLS overrides under `CODEX_SANDBOX` on macOS, `--headless`, and exit 3 on a sandbox line. | - | gdw_10_every_godot_seat_falls_back_to_codex_sol, gdw_10_godot_build_verify_ships_an_executable_godot_run_script; Python: test_no_project_exits_2, test_user_dirs_are_private, test_headless_is_added_once, test_exit_code_passes_through, test_output_is_logged, test_e3_line_exits_3, test_error_path_outside_project_exits_3, test_error_path_inside_project_is_not_sandbox, test_without_sandbox_writes_no_tls_files, test_sandbox_writes_override_and_editor_setting, test_sandbox_keeps_other_editor_settings, test_sandbox_keeps_override_with_key, test_sandbox_refuses_override_without_key |
 
 ## 3. Decisions
 
@@ -58,6 +59,7 @@ a `gdw_<nn>_` test in `crates/horch-core/tests/godot_wave.rs`.
 | Version migration: the latest only. The skills target Godot 4.7 (4.7.2); no per-version tables for old engines. | 2026-10-04 | The wave report, operator decision 3 (`c6b1a48`). |
 | Re-vendoring: frozen at GodotPrompter v1.14.0. `scripts/godot/rename.py` stays, so the rename is reviewable and repeatable; no re-vendor process is planned. | 2026-10-04 | The wave report, operator decision 4 (`c6b1a48`). |
 | C#: open: the operator has not named GDScript, C# or both; `skills_when` supports both, so nothing waits on it. | 2026-10-07 | The status check, item 19 (`ai_docs/reports/godot-wave-status.md`). |
+| Codex fallback: every `godot-*` seat falls back to `codex-sol`, and every Godot command runs through `godot-build-verify`'s `scripts/godot-run.sh`. | 2026-10-07 | Operator: "Codex fallback is good"; `docs/live-checks/godot-codex.md`. |
 
 ## 4. Live checks
 
@@ -68,4 +70,5 @@ a `gdw_<nn>_` test in `crates/horch-core/tests/godot_wave.rs`.
 - [`docs/live-checks/godot-seats.md`](../live-checks/godot-seats.md): 1 real
   task each for `godot-gameplay-programmer` and `godot-qa-engineer`.
 - [`docs/live-checks/godot-codex.md`](../live-checks/godot-codex.md): 1 Codex
-  pane on a Godot project under `workspace-write`.
+  pane on a Godot project under `workspace-write`, and the `godot-run.sh`
+  runs that adopt its settings (GDW-10).

@@ -44,26 +44,42 @@ parse all exit 0. Read the output, not only the exit code.
    live editor): no fleet run may open the editor GUI.)
    Check: no editor process for this project, or you reported `BLOCKED:`.
 
-2. **Find the engine and check its version.** Use `GODOT_PATH`, then `godot` on
-   `PATH`, then `/Applications/Godot.app/Contents/MacOS/Godot`. Read the version
-   in `config/features` of `project.godot` (for example `"4.7"`). If the project
-   version is newer than the engine (`--version`), stop and report `BLOCKED:`
-   with both versions. Do not open a newer project with an older engine.
-   Script: `references/commands.md`, "Find the engine".
+2. **Find the engine and check its version.** Run every Godot command, in this
+   skill and in every other Godot skill, through `scripts/godot-run.sh` next to
+   this file: `bash <skill dir>/scripts/godot-run.sh <godot arguments>`, from
+   the project root. It finds the engine in this order:
+   `GODOT_PATH`, then `godot` on `PATH`, then
+   `/Applications/Godot.app/Contents/MacOS/Godot`, and exits 2 when none runs.
+   Read the version in `config/features` of `project.godot` (for example
+   `"4.7"`). If the project version is newer than the engine (`--version`),
+   stop and report `BLOCKED:` with both versions. Do not open a newer project
+   with an older engine. Script: `references/commands.md`, "Find the engine".
    Check: you can write the engine path and both versions in one line.
 
-3. **Set a private HOME for every Godot call.** On macOS, Godot ignores
+3. **Use a private HOME for every Godot call.** On macOS, Godot ignores
    `XDG_DATA_HOME` and `XDG_CONFIG_HOME`. It writes
    `~/Library/Application Support/Godot/editor_settings-4.7.tres` on every
-   `--import`, and `app_userdata/<project name>/` on every run. Set
-   `HOME="$PWD/.godot/horch-home"` for each Godot command. That keeps two
-   instances, and the operator's editor, out of each other's files. `.godot/` is
-   git-ignored and never scanned for resources. On Linux, Godot reads
-   `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` instead; set all 3
-   under the same directory (proof: run on 2026-10-06, Godot 4.7.2 on aarch64
+   `--import`, and `app_userdata/<project name>/` on every run. Run every Godot
+   command, in this skill and in every other Godot skill, through
+   `scripts/godot-run.sh` next to this file: it sets
+   `HOME="$PWD/.godot/horch-home"`, adds `--headless`, and writes a log to
+   `.godot/horch-home/logs/`. That keeps two instances, and the operator's
+   editor, out of each other's files. `.godot/` is git-ignored and never
+   scanned for resources. On Linux, Godot reads `XDG_DATA_HOME`,
+   `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` instead; the script sets all 3 under
+   the same directory (proof: run on 2026-10-06, Godot 4.7.2 on aarch64
    Linux: `--import` and a headless script wrote only under those 3 and
-   nothing under `HOME`; `docs/live-checks/linux.md`).
+   nothing under `HOME`; `docs/live-checks/linux.md`). Command lines and exit
+   codes: `references/commands.md`, "Common setup".
    Check: `.godot/horch-home/` exists after the first call.
+
+   **In a Codex pane** (`CODEX_SANDBOX` is set, macOS), the script also writes
+   the 2 TLS certificate overrides that the sandbox needs: `override.cfg` in
+   the project root, and 1 line in the private editor settings. Do not commit
+   `override.cfg`; name it in the report. Exit 3
+   (a `SANDBOX: <n> line(s)` line) means Godot met the sandbox even when
+   it exited 0: report `BLOCKED:` with the log path. Proof:
+   `docs/live-checks/godot-codex.md`.
 
 4. **Import when `.godot/` is missing or files were added.**
    `--headless --path . --import` exits 0 and writes a `.uid` sidecar next to
@@ -146,7 +162,8 @@ parse all exit 0. Read the output, not only the exit code.
   `_initialize()` can name autoloads.
 - One Godot import at a time per working copy. Parse checks, tests and smoke
   runs may run after the import finishes.
-- Set `HOME="$PWD/.godot/horch-home"` for every Godot call.
+- Run every Godot call through `scripts/godot-run.sh` (private `HOME`,
+  `--headless`, a log, exit 3 on a sandbox line).
 - The operator's editor has the project open: `BLOCKED:`. Do not close it.
 - Never edit `.godot/` contents (except `.godot/horch-home/`), `.import` files,
   or binary `.res` and `.scn` files. Never delete `.godot/` unless the
@@ -167,7 +184,7 @@ parse all exit 0. Read the output, not only the exit code.
 
 - [ ] No open editor for this project, or I reported `BLOCKED:`.
 - [ ] The engine is at least the project's `config/features` version.
-- [ ] Every Godot call had `--headless` and the private `HOME`.
+- [ ] Every Godot call ran through `scripts/godot-run.sh`; none exited 3.
 - [ ] Import exit 0; new `.uid` files are in my commit (none for a
       git-ignored scratch project).
 - [ ] Parse check exit 0 with `failed=0`. I did not rely on `--check-only`.

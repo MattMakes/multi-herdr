@@ -12,11 +12,11 @@ offer_when: ["project.godot"]
 # the macOS app bundle) and its `--version` (4.3 or later) when this
 # teammate is offered.
 requires: [godot]
-# No fallback: this teammate runs headless Godot, and a Codex pane is untried
-# there (Godot import writes outside the project, to the user data directory,
-# and Codex runs with the network off and workspace-write). When the Claude
-# pool is out, `horch route` refuses and the orchestrator waits. Add a Codex
-# fallback only after a trial on a real project.
+# codex-sol: proven on Godot 4.7.2 by docs/live-checks/godot-codex.md
+# (2026-10-07). godot-build-verify's scripts/godot-run.sh applies the
+# sandbox settings. A Codex pane cannot write .git; the orchestrator
+# commits its files.
+fallbacks: [codex-sol]
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high
 compact_window: 150000

@@ -1,4 +1,4 @@
-//! The Godot wave (GDW-01 to GDW-09, `docs/specs/godot.md`): the Godot
+//! The Godot wave (GDW-01 to GDW-10, `docs/specs/godot.md`): the Godot
 //! requirement, the 19 `godot-*` seats, the 64 `godot-*` skills and the
 //! gate's Godot checks.
 //!
@@ -479,4 +479,31 @@ fn gdw_09_godot_seats_are_claude_fleet_workers_without_mcp_servers() {
             "godot-code-reviewer may use {tool}"
         );
     }
+}
+
+#[test]
+fn gdw_10_every_godot_seat_falls_back_to_codex_sol() {
+    let roster = Roster::builtin().unwrap();
+    let seats = seats(&roster);
+    assert_eq!(seats.len(), 19);
+    for t in seats {
+        assert_eq!(t.fallbacks, ["codex-sol"], "{}", t.name);
+    }
+}
+
+#[test]
+fn gdw_10_godot_build_verify_ships_an_executable_godot_run_script() {
+    use std::os::unix::fs::PermissionsExt;
+    let script = repo().join("skills/godot-build-verify/scripts/godot-run.sh");
+    let mode = std::fs::metadata(&script)
+        .unwrap_or_else(|e| panic!("{}: {e}", script.display()))
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o111, 0o111, "{} is not executable", script.display());
+    assert!(
+        BUNDLED_SKILL_FILES
+            .iter()
+            .any(|(path, _)| *path == "godot-build-verify/scripts/godot-run.sh"),
+        "godot-run.sh is not bundled"
+    );
 }
