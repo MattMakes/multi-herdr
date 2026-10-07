@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use horch_e2e::harness::Harness;
+use horch_e2e::harness::{Harness, DEADLINE};
 use horch_e2e::{bin_dir, violations};
 use serde_json::Value;
 
@@ -1066,15 +1066,20 @@ fn cmp_10_configured_estimate_keeps_a_later_wave_running() {
 /// As in [`cmp_10_configured_estimate_keeps_a_later_wave_running`], B
 /// hangs while C waits for a slot: at $1.50 the default projection of B
 /// ($1.60 or more) would stop C.
+///
+/// The earlier rounds run with the harness [`DEADLINE`], and only the round
+/// under test with B's 20 s: under load a worker can take more than 20 s to
+/// launch its agent, and a seed candidate that times out writes no usage.
 #[test]
 fn cmp_10_resume_projects_with_the_recorded_estimate() {
-    let yaml = "caps:\n  max_parallel: 2\n  candidate_deadline_s: 20\n";
+    let seed_deadline = format!("candidate_deadline_s: {}\n", DEADLINE.as_secs());
+    let yaml = format!("caps:\n  max_parallel: 2\n  {seed_deadline}");
     let seed = serde_json::json!({"exit": "crash",
         "usage": {"model": "claude-sonnet-5-5", "input": 1000, "output": 1000}});
     let Some(h) = round_harness(
         "cmp10resume",
         &["sonnet", "opus", "design-system-engineer"],
-        yaml,
+        &yaml,
         serde_json::json!({"A": seed, "B": seed, "C": seed}),
     ) else {
         return;
@@ -1082,6 +1087,38 @@ fn cmp_10_resume_projects_with_the_recorded_estimate() {
     for _ in 0..3 {
         let out = run_round(&h, 3, &[]);
         assert_eq!(out.status.code(), Some(6), "{}", text(&out));
+    }
+    // Every seed agent ran and wrote its usage: none timed out.
+    let ended: Vec<Value> = records(&h)
+        .iter()
+        .map(|r| r["state"]["failure"]["kind"].clone())
+        .collect();
+    assert_eq!(ended, vec![Value::from("agent_exited"); 9]);
+
+    let config = h.project.join(".multi-herdr/dataset.yaml");
+    let seeded = std::fs::read_to_string(&config).unwrap();
+    assert!(seeded.contains(&seed_deadline), "{seeded}");
+    std::fs::write(
+        &config,
+        seeded.replace(&seed_deadline, "candidate_deadline_s: 20\n"),
+    )
+    .unwrap();
+    for args in [
+        &["add", "-A"][..],
+        &[
+            "commit",
+            "--quiet",
+            "--no-gpg-sign",
+            "-m",
+            "B hangs for 20 s",
+        ],
+    ] {
+        let out = h.git_cmd(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     let mut file = h.log.clone().into_os_string();
     file.push(".candidates.json");
