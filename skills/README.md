@@ -164,7 +164,7 @@ Skills for the 19 `godot-*` teammates (see [`teammates/README.md`](../teammates/
 **Proof levels.** A note `proof: <level>` next to a claim says how far this repository proved it on Godot 4.7.2:
 
 - `proof: headless-run`: a headless Godot run executed the code and checked the result.
-- `proof: parse-checked only`: the code parses (GDScript) or compiles (C#, with `dotnet` and `Godot.NET.Sdk`), and nothing ran it. Every GDScript or C# block without a note is at this level. All C# is at this level: the test host has no Godot .NET, so no C# scene or test ran.
+- `proof: parse-checked only`: the code parses (GDScript) or compiles (C#, with `dotnet` and `Godot.NET.Sdk`), and nothing ran it. Every GDScript or C# block without a note is at this level. All C# is at this level: the test host has no Godot .NET, so no C# scene or test ran. On a host with Godot .NET 4.7, the live check `scripts/godot/live_csharp.sh` runs a C# scene and a C# signal headless.
 - `proof: not run (needs <hardware>)`: nothing here ran it, because it needs something a headless run on the test host does not have: a GPU renderer (shaders, GPU particles, MSAA), an XR headset, a store SDK or console kit, a router (UPnP), certificates or a service (TLS, a matchmaker), a release export template, Linux, Godot .NET, or a human play test (game feel). No shader block is compiled: headless Godot compiles no shader.
 
 The notes are in own text. A copied file keeps its upstream text and has a note only where the fleet already edited it; another claim in a copied file has no note and stays at the level its source gives it.
