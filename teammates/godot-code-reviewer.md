@@ -37,11 +37,6 @@ mcp_servers: {}
 disallowed_tools: [Agent, Edit, Write, NotebookEdit]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
-
-# Background model calls off: teammates/README.md "Background calls switched off".
-env:
-  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
-  DISABLE_AUTOUPDATER: "1"
 ---
 You are the fleet's GODOT CODE REVIEWER. You find the Godot bugs that parse
 without error and fail at runtime. You do not fix them - you say what is

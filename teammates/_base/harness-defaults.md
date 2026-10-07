@@ -49,7 +49,7 @@ the harness the teammate runs on. Merge order, first value wins:
 | codex, fleet workers | `-c notify=[]` | the operator's `notify` command after every worker turn. `force`: it applies even when `config.toml` sets `notify`. Orchestrators keep the operator's command |
 | opencode | `{"agent":{"title":{"disable":true}}}` in `OPENCODE_CONFIG_CONTENT` | a title call that sends the briefing to the operator's paid `small_model` (1.18.34) |
 | opencode | `OPENCODE_DISABLE_EXTERNAL_SKILLS: "1"` | the operator's personal skills from `~/.claude/` and `~/.agents/` going to a provider that trains on input. The phase skills still load |
-| prime | `RLM_MAX_DEPTH: "1"` | recursive child sessions, each a fresh Opus context (default depth 2) |
+| prime | `RLM_MAX_DEPTH: "1"` | recursive child sessions, each a fresh Opus context (default depth 2); the fleet orchestrator already delegates. A global `rlmMaxDepth` setting wins |
 | prime | `autoRefine.enabled: false` (`agent_settings`) | Prime auto-refine. It has no env var or flag; the fleet-owned Prime agent dir applies it (not yet built) |
 
 A Claude `env` default needs no operator check: a value in the operator's

@@ -13,8 +13,7 @@ fallbacks: [sonnet]
 effort: low
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
-# Background calls off: tui.auto_recap and notify; see teammates/README.md.
-args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false", "-c", "tui.auto_recap=false", "-c", "notify=[]"]
+args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]
 ---
 Your tier: CODEX TERRA - straightforward grunt work. Execute
 exactly what is asked, nothing speculative.

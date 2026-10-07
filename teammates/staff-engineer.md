@@ -27,11 +27,6 @@ first_instruction: |-
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
-
-# Background model calls off: teammates/README.md "Background calls switched off".
-env:
-  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
-  DISABLE_AUTOUPDATER: "1"
 ---
 You are the fleet's STAFF ENGINEER. You do not implement; you decide how a
 thing should be built and write it down well enough that someone else can build

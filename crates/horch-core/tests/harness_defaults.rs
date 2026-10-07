@@ -550,6 +550,62 @@ fn problems_with(roster: &Roster, needle: &str) -> Vec<String> {
         .collect()
 }
 
+/// HDF-03: a teammate line that only repeats a default of its own harness
+/// fails the check; a different value is the override.
+#[test]
+fn hdf_03_repeat_of_a_default_fails_the_check() {
+    let dir = roster_dir(
+        DEFAULTS,
+        &[
+            (
+                "t-same",
+                teammate_file(
+                    "t-same",
+                    "claude",
+                    None,
+                    "env:\n  DISABLE_AUTOUPDATER: \"1\"\n",
+                ),
+            ),
+            (
+                "t-other",
+                teammate_file(
+                    "t-other",
+                    "claude",
+                    None,
+                    "env:\n  DISABLE_AUTOUPDATER: \"0\"\n",
+                ),
+            ),
+            (
+                "t-args",
+                teammate_file(
+                    "t-args",
+                    "codex",
+                    None,
+                    "args: [\"-c\", \"tui.auto_recap=false\"]\n",
+                ),
+            ),
+        ],
+    );
+    let roster = load(dir.path());
+    let found = problems_with(&roster, "repeats");
+    let mine: Vec<&String> = found.iter().filter(|p| p.starts_with("t-")).collect();
+    assert_eq!(mine.len(), 2, "{found:?}");
+    assert!(mine.iter().any(|p| p.starts_with("t-same:")
+        && p.contains("DISABLE_AUTOUPDATER")
+        && p.contains("claude harness default")));
+    assert!(mine
+        .iter()
+        .any(|p| p.starts_with("t-args:") && p.contains("tui.auto_recap=false")));
+}
+
+/// HDF-03: no built-in teammate repeats a default (W2's lines moved).
+#[test]
+fn hdf_03_builtin_roster_has_no_repeats() {
+    let roster = Roster::builtin().unwrap();
+    let found = problems_with(&roster, "repeats");
+    assert!(found.is_empty(), "{found:?}");
+}
+
 /// HDF-03: a malformed entry, and a teammate file that sets
 /// `harness_defaults`, each fail the check once.
 #[test]

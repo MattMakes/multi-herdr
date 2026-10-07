@@ -2,6 +2,8 @@
 //! anything: one teammate's fields, the roster as a whole, and the static
 //! fallback rules (design section 13.3).
 
+use std::collections::BTreeMap;
+
 use anyhow::{bail, Result};
 
 use super::operator::expand_home;
@@ -593,6 +595,9 @@ impl Roster {
                 )
             })
             .collect();
+        for t in self.teammates.values() {
+            problems.extend(repeated_defaults(t));
+        }
         let Some(base) = self.bases.get(HARNESS_DEFAULTS_BASE) else {
             return problems;
         };
@@ -609,6 +614,110 @@ impl Roster {
             );
         }
         problems
+    }
+}
+
+/// Check rule 1: the teammate's lines that only repeat a harness default of
+/// its own harness: an `env` value, an `args` `-c` pair or flag, a
+/// `settings` key path, an `OPENCODE_CONFIG_CONTENT` key path. A value that
+/// differs from the default is the override, and is allowed.
+fn repeated_defaults(t: &Teammate) -> Vec<String> {
+    let mut env = BTreeMap::new();
+    let mut args = Vec::new();
+    let mut settings = serde_json::Map::new();
+    let mut config = serde_json::Map::new();
+    for entry in HarnessDefault::for_harness(&t.harness_defaults, t.agent) {
+        env.extend(entry.env.iter());
+        args.extend(entry.args.iter().map(String::as_str));
+        for (from, into) in [
+            (&entry.settings, &mut settings),
+            (&entry.config, &mut config),
+        ] {
+            if let Some(from) = from {
+                into.extend(from.clone());
+            }
+        }
+    }
+    let kind = t.agent;
+    let who = &t.name;
+    let mut out = Vec::new();
+    for (key, value) in &t.env {
+        if env.get(key) == Some(&value) {
+            out.push(format!(
+                "{who}: env {key} repeats the {kind} harness default; delete the line"
+            ));
+        }
+    }
+    let mut own = t.args.iter();
+    while let Some(arg) = own.next() {
+        if arg == "-c" {
+            let Some(pair) = own.next() else { break };
+            if args.windows(2).any(|w| w[0] == "-c" && w[1] == pair) {
+                out.push(format!(
+                    "{who}: args -c {pair} repeats the {kind} harness default; delete the pair"
+                ));
+            }
+        } else if args.contains(&arg.as_str()) {
+            out.push(format!(
+                "{who}: args {arg} repeats the {kind} harness default; delete it"
+            ));
+        }
+    }
+    let inline = |text: Option<&String>| {
+        text.filter(|s| s.trim_start().starts_with('{'))
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+    };
+    for (what, own, defaults) in [
+        ("settings", inline(t.settings.as_ref()), &settings),
+        (
+            "OPENCODE_CONFIG_CONTENT",
+            inline(t.env.get("OPENCODE_CONFIG_CONTENT")),
+            &config,
+        ),
+    ] {
+        let Some(serde_json::Value::Object(own)) = own else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        json_leaves(defaults, "", &mut paths);
+        for (path, value) in paths {
+            let mut node = Some(&own);
+            let mut found = None;
+            let parts: Vec<&str> = path.split('.').collect();
+            for (i, part) in parts.iter().enumerate() {
+                let next = node.and_then(|n| n.get(*part));
+                if i + 1 == parts.len() {
+                    found = next;
+                } else {
+                    node = next.and_then(|v| v.as_object());
+                }
+            }
+            if found == Some(&value) {
+                out.push(format!(
+                    "{who}: {what} {path} repeats the {kind} harness default; delete it"
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Every leaf of a JSON object as (dotted path, value).
+fn json_leaves(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    prefix: &str,
+    out: &mut Vec<(String, serde_json::Value)>,
+) {
+    for (key, value) in obj {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match value {
+            serde_json::Value::Object(inner) if !inner.is_empty() => json_leaves(inner, &path, out),
+            _ => out.push((path, value.clone())),
+        }
     }
 }
 

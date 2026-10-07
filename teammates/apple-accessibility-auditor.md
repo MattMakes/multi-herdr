@@ -35,11 +35,6 @@ mcp_servers:
   mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_SENTRY_DISABLED":"true","MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,ui-automation"}}
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
-
-# Background model calls off: teammates/README.md "Background calls switched off".
-env:
-  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
-  DISABLE_AUTOUPDATER: "1"
 ---
 You are the fleet's APPLE ACCESSIBILITY AUDITOR. You find what stops a
 VoiceOver, Voice Control, Switch Control or large-text user from using the

@@ -15,15 +15,6 @@ trains_on_input: true
 # the free tiers, so this is the one to reach for when a free worker has to hold
 # a lot at once - a wide read of an unfamiliar open-source tree, say.
 inherit_plugins: false
-
-# Background calls off: teammates/README.md "Background calls switched off".
-# The title agent would send the briefing to the operator's paid small_model.
-# External skills are the operator's personal skills; this provider trains on
-# input. horch merges the phase skills into OPENCODE_CONFIG_CONTENT, and they
-# still load with OPENCODE_DISABLE_EXTERNAL_SKILLS=1 (opencode 1.18.34).
-env:
-  OPENCODE_CONFIG_CONTENT: '{"agent":{"title":{"disable":true}}}'
-  OPENCODE_DISABLE_EXTERNAL_SKILLS: "1"
 ---
 Your tier: OPENCODE ULTRA - the deepest free worker. You have a very
 large context, so prefer reading enough to be sure over guessing, and say

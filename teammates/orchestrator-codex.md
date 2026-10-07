@@ -16,8 +16,7 @@ permission_mode: auto
 # which `_base/codex-orchestrator-execpolicy.md` installs before this pane
 # starts - without them this orchestrator launches unable to spawn or assign.
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
-# Background calls off: tui.auto_recap; see teammates/README.md.
-args: ["-c", "features.multi_agent=false", "-c", "tui.auto_recap=false"]
+args: ["-c", "features.multi_agent=false"]
 ---
 == You are the fleet's only orchestrator ==
 You run on whichever model `horch fleet` was started with (fable, opus,

@@ -22,17 +22,12 @@ permission_mode: acceptEdits
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 # `sandbox_workspace_write.network_access=true` opens the network inside the
 # workspace-write sandbox (verified: `codex sandbox` curl, 000 off, 200 on).
-# Background calls off: tui.auto_recap and notify; see teammates/README.md.
 args:
   - "--dangerously-bypass-hook-trust"
   - "-c"
   - "features.multi_agent=false"
   - "-c"
   - "sandbox_workspace_write.network_access=true"
-  - "-c"
-  - "tui.auto_recap=false"
-  - "-c"
-  - "notify=[]"
 ---
 Your tier: CODEX NETWORK - implementation work that needs the network.
 You are the only Codex worker whose sandbox allows network access. Use it

@@ -411,38 +411,50 @@ the orchestrator deciding who gets the task, and the decision needs both ends.
 Leave it off for paid, local and self-hosted models: a warning that appears
 everywhere stops being read anywhere.
 
-## Background calls switched off
+## Harness defaults
 
-Some CLIs make model calls that the worker did not ask for. Nobody reads
-their output in a fleet pane, so these switches turn them off. Each switch
-was checked on the installed CLI on 2026-10-06.
+`_base/harness-defaults.md` holds the launch defaults of each harness: `env`
+values, Codex `args`, Claude `settings`, OpenCode `config` and Prime
+`agent_settings`. Most of them switch off model calls that the worker did not
+ask for (each switch checked on the installed CLI on 2026-10-06). The roster
+gives every teammate the entries whose `base` matches its own; the launch
+uses the entries of the harness the teammate runs on.
 
-| harness | switch | where | what it stops |
-|---|---|---|---|
-| claude (64 files) | `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"` | `env:` | a fork of the full conversation after each turn, to suggest the next prompt (2.1.292) |
-| claude (64 files) | `DISABLE_AUTOUPDATER: "1"` | `env:` | a mid-fleet update, so all panes in a fleet run 1 build |
-| codex (8 files) | `-c tui.auto_recap=false` | `args:` | a hidden recap thread on the pane's model when the pane loses focus (0.160.0) |
-| codex (7 workers) | `-c notify=[]` | `args:` | the operator's `notify` command after every worker turn. `orchestrator-codex` keeps it |
-| opencode (3 files) | `{"agent":{"title":{"disable":true}}}` in `OPENCODE_CONFIG_CONTENT` | `env:` | a title call that sends the briefing to the operator's paid `small_model` (1.18.34) |
-| opencode (3 files) | `OPENCODE_DISABLE_EXTERNAL_SKILLS: "1"` | `env:` | the operator's personal skills from `~/.claude/` and `~/.agents/` going to a provider that trains on input. The phase skills still load |
-| prime | `RLM_MAX_DEPTH: "1"` | `env:` | recursive child sessions, each a fresh Opus context (default depth 2) |
+For each key, the first value of this list wins:
 
-No `_base/` file carries `env:` or `args:`, so each teammate file carries its
-own lines. `_template.md` has the Claude lines, so `horch teammates --new`
-copies them. Put the lines in every new teammate of these harnesses.
+1. The operator's own config (Claude settings files, Codex `config.toml`, the operator's env), unless the entry has `force`.
+2. The teammate's own value (`env:`, `args:`, `settings:`, `OPENCODE_CONFIG_CONTENT`).
+3. horch's fixed switches (plugins, skills, Remote Control, sandbox).
+4. The harness default; a later entry wins over an earlier one.
 
-To turn a switch back on, delete its line from the teammate file, or set the
-opposite value (`CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true"`,
-`-c tui.auto_recap=true`). The launch oracles in
-`crates/horch-core/tests/oracles/launch/` freeze the Codex args and the
-OpenCode config: bless them after the change.
+| harness | switch | what it stops |
+|---|---|---|
+| claude | `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"` | a fork of the conversation after each turn |
+| claude | `DISABLE_AUTOUPDATER: "1"` | a mid-fleet update |
+| codex | `-c tui.auto_recap=false` | a hidden recap thread when the pane loses focus |
+| codex (fleet workers) | `-c notify=[]` (`force`) | the operator's `notify` command after every worker turn |
+| opencode | `{"agent":{"title":{"disable":true}}}` (`config`) | a title call to the operator's paid `small_model` |
+| opencode | `OPENCODE_DISABLE_EXTERNAL_SKILLS: "1"` | the operator's personal skills going to a provider that trains on input |
+| prime | `RLM_MAX_DEPTH: "1"` | recursive child sessions |
+
+The reasons and versions are in the body of `_base/harness-defaults.md`.
+A teammate file does not repeat these lines: `--check` fails a line that
+only repeats a default.
+
+To turn a switch off for 1 teammate, set the opposite value in its file
+(`CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "true"`, `-c tui.auto_recap=true`).
+To change it for all teammates, edit `_base/harness-defaults.md`, or overlay
+it in `~/.config/horch/teammates/_base/harness-defaults.md`. The launch
+oracles in `crates/horch-core/tests/oracles/launch/` freeze the Codex args
+and the OpenCode config: bless them after the change.
 
 Not switched off:
 - `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` stops the Claude session-title call,
   but it also stops the terminal title. herdr reads that title to see if a
   Claude pane is working or idle. Do not set it.
-- Prime auto-refine has no env var or flag. It needs `autoRefine.enabled:
-  false` in a fleet-owned Prime agent dir; workstream W1 designs that dir.
+- Prime auto-refine has no env var or flag. The `agent_settings` entry
+  holds `autoRefine.enabled: false` for the fleet-owned Prime agent dir,
+  which is not built yet.
 - The Codex automatic thread title had no switch in 0.154.0 (checked
   2026-09-18, not re-checked on 0.160.0).
 

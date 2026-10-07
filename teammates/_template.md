@@ -326,10 +326,8 @@ args: []
 # env: set on the CLI's process, never through a shell. A value that starts
 # with `~/` expands against the launch's home. NO SECRETS: point at a file the
 # operator owns instead (see app-release-preparer.md).
-# Background model calls off: teammates/README.md "Background calls switched off".
-env:
-  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
-  DISABLE_AUTOUPDATER: "1"
+# Harness-wide defaults: _base/harness-defaults.md.
+env: {}
 
 # ─── first instruction ───────────────────────────────────────────────────────
 # Optional. Rendered as the very last line the teammate reads, after the task.

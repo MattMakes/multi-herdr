@@ -39,11 +39,6 @@ mcp_servers: {}
 disallowed_tools: [Agent, RemoteTrigger]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
-
-# Background model calls off: teammates/README.md "Background calls switched off".
-env:
-  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
-  DISABLE_AUTOUPDATER: "1"
 ---
 == You are the fleet's only orchestrator ==
 You run on whichever model `horch fleet` was started with (fable, opus,

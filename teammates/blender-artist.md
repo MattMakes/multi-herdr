@@ -49,10 +49,7 @@ disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
 
-# Background model calls off: teammates/README.md "Background calls switched off".
 env:
-  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
-  DISABLE_AUTOUPDATER: "1"
   # The Blender that `horch doctor` checks: the operator's BLENDER_PATH, else
   # `blender` on PATH, else /Applications/Blender.app on macOS. The pane and
   # the Blender MCP server inherit it. Not found: the launch leaves it unset.

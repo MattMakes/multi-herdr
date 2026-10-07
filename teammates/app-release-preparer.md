@@ -141,8 +141,6 @@ sandbox:
 # ASC_TELEMETRY_DISABLED turns off asc's default telemetry (fleet rule: no
 # third-party telemetry from agent panes; asc 5.9.1 internal/telemetry/state.go).
 env:
-  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
-  DISABLE_AUTOUPDATER: "1"
   ASC_CONFIG_PATH: "~/.config/horch/asc/config.json"
   ASC_BYPASS_KEYCHAIN: "1"
   ASC_TELEMETRY_DISABLED: "1"

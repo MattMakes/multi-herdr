@@ -6,11 +6,6 @@ agent: claude
 phase: implementation
 permission_mode: auto
 effort: xhigh
-
-# Background model calls off: teammates/README.md "Background calls switched off".
-env:
-  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
-  DISABLE_AUTOUPDATER: "1"
 ---
 You are worker '{role}' in a herdr multi-agent coding workspace. An
 orchestrator (a separate Claude session, running Fable) runs beside you in
