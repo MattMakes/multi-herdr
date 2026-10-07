@@ -1074,3 +1074,57 @@ fn x2_prime_finish_pane_stops_only_that_panes_daemon() {
     // No Prime launch dir at all: nothing to do, no error.
     horch_core::harness::prime::finish_pane(&w.tmp.path().join("none"), &w.fake_prime(), "w3F:p42");
 }
+
+/// The `horch done` path with Prime's own stop (a fake Prime install whose
+/// `daemon-launch.js` answers "stopped"): no agent/, no hook, no socket
+/// after it; sessions/ and the link targets stay (live check X2: prime-6
+/// kept agent/ and the hook).
+#[cfg(unix)]
+#[test]
+fn x2_prime_finish_pane_with_primes_stop_leaves_no_files() {
+    use std::os::unix::fs::PermissionsExt;
+    if std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: node is not on PATH");
+        return;
+    }
+    let w = World::new();
+    let dist = w.tmp.path().join("lib/dist");
+    write(
+        &dist.join("cli/daemon-launch.js"),
+        "export async function shutdownDaemonAndWait() { return true; }\n",
+    );
+    let cli = dist.join("bundle/cli.js");
+    write(&cli, "#!/bin/sh\necho '[]'\n");
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = w.tmp.path().join("prime-agent");
+    std::os::unix::fs::symlink(&cli, &bin).unwrap();
+
+    let launch = w.state().join("prime").join("prime-6-done");
+    let agent = launch.join("agent");
+    std::fs::create_dir_all(agent.join("daemon-workers")).unwrap();
+    std::os::unix::fs::symlink(w.source().join("auth.json"), agent.join("auth.json")).unwrap();
+    std::fs::create_dir_all(launch.join("sessions")).unwrap();
+    write(&launch.join("sessions/s.jsonl"), "{}");
+    write(&launch.join("herdr-status.mjs"), "// hook");
+    write(&launch.join("d.sock"), "");
+    write(&launch.join("pane"), "w3F:p4F\n");
+    write(
+        &launch.join("launcher"),
+        &format!("{} \n", std::process::id()),
+    );
+
+    horch_core::harness::prime::finish_pane(&w.state(), &bin, "w3F:p4F");
+
+    assert!(!agent.exists(), "agent/ stayed");
+    assert!(!launch.join("herdr-status.mjs").exists(), "the hook stayed");
+    assert!(!launch.join("d.sock").exists());
+    assert!(
+        launch.join("sessions/s.jsonl").is_file(),
+        "sessions/ was removed"
+    );
+    assert!(w.source().join("auth.json").is_file());
+}

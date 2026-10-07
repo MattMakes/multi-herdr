@@ -139,16 +139,20 @@ impl Daemon {
     /// needs a `prime-agent` process that started after this launch, got the
     /// dead daemon's pid and holds this launch's private socket.
     pub fn finish(&self) {
-        let left_running = !prime_shutdown(&self.bin, &self.socket) && self.terminate_supervisor();
+        let hook = self
+            .socket
+            .parent()
+            .map(|launch| launch.join(STATUS_HOOK))
+            .unwrap_or_default();
+        let left_running = !prime_shutdown(&self.bin, &self.socket, &hook, &self.agent_dir())
+            && self.terminate_supervisor();
         if !left_running {
             let _ = std::fs::remove_file(&self.socket);
             // The agent dir links the operator's live `auth.json`; it is
             // not needed after the pane. `remove_dir_all` does not follow
             // links. The sessions stay for a resume.
             let _ = std::fs::remove_dir_all(self.agent_dir());
-            if let Some(launch) = self.socket.parent() {
-                let _ = std::fs::remove_file(launch.join(STATUS_HOOK));
-            }
+            let _ = std::fs::remove_file(&hook);
         }
     }
 
@@ -182,20 +186,33 @@ impl Daemon {
 /// The script [`prime_shutdown`] runs: Prime's exported
 /// `shutdownDaemonAndWait(socket, 5000)` (0.9.4 `dist/cli/daemon-launch.js`),
 /// the stop `prime-agent shutdown` runs for each daemon. It sends
-/// `shutdown` on that socket and waits until the daemon is gone. Exit 0:
-/// stopped, or no daemon was there.
-const PRIME_SHUTDOWN_JS: &str = r#"const [module, socket] = process.argv.slice(1);
+/// `shutdown` on that socket and waits until the daemon is gone. Then it
+/// removes the socket, the status hook and the agent dir (`rmSync` removes
+/// a link, it does not follow it). It ignores SIGHUP, SIGTERM and SIGINT.
+/// Exit 0: stopped (or no daemon was there) and removed.
+const PRIME_SHUTDOWN_JS: &str = r#"const [module, socket, hook, agent] = process.argv.slice(1);
+for (const signal of ["SIGHUP", "SIGTERM", "SIGINT"]) process.on(signal, () => {});
+const { rmSync } = await import("node:fs");
 const { pathToFileURL } = await import("node:url");
 const { shutdownDaemonAndWait } = await import(pathToFileURL(module).href);
-process.exit((await shutdownDaemonAndWait(socket, 5000)) ? 0 : 1);
+if (!(await shutdownDaemonAndWait(socket, 5000))) process.exit(1);
+rmSync(socket, { force: true });
+rmSync(hook, { force: true });
+rmSync(agent, { recursive: true, force: true });
 "#;
 
-/// Stop the daemon on `socket` with Prime's own code: `node` (what the
-/// `prime-agent` script runs on) imports the module beside the program
-/// `bin` resolves to. The public `prime-agent shutdown` cannot be scoped to
-/// 1 socket; it stops every daemon. Whether the daemon is gone. False when
-/// the module is not there or `node` fails: the caller falls back.
-fn prime_shutdown(bin: &Path, socket: &Path) -> bool {
+/// Stop the daemon on `socket` with Prime's own code, then remove the
+/// launch's socket, `hook` and `agent` dir: `node` (what the `prime-agent`
+/// script runs on) imports the module beside the program `bin` resolves
+/// to. The public `prime-agent shutdown` cannot be scoped to 1 socket; it
+/// stops every daemon.
+///
+/// 1 process does both, in its own session: `horch done` in a Prime pane
+/// runs under the daemon's worker, and the stop ends that worker's
+/// processes, `horch done` too, before it could remove anything (live check
+/// X2: prime-6). Whether the daemon is gone. False when the module is not
+/// there or `node` fails: the caller falls back.
+fn prime_shutdown(bin: &Path, socket: &Path, hook: &Path, agent: &Path) -> bool {
     let Some(module) = prime_dist(bin).map(|d| d.join("cli").join("daemon-launch.js")) else {
         return false;
     };
@@ -206,10 +223,23 @@ fn prime_shutdown(bin: &Path, socket: &Path) -> bool {
     cmd.args(["--input-type=module", "-e", PRIME_SHUTDOWN_JS])
         .arg(&module)
         .arg(socket)
+        .arg(hook)
+        .arg(agent)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     crate::runtime::process::scrub_child_env(&mut cmd);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        // SAFETY: `setsid` is async-signal-safe; nothing else runs here.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
     cmd.status().is_ok_and(|s| s.success())
 }
 
@@ -1240,6 +1270,65 @@ mod tests {
             assert!(!daemon.socket().exists(), "{stopped}");
             assert!(daemon.sessions_dir().is_dir());
         }
+    }
+
+    /// Prime's stop also ends the processes of the worker that `horch done`
+    /// runs under (live check X2: prime-6 kept agent/ and the hook). So the
+    /// stop process removes the files itself and lives through SIGTERM; a
+    /// link in the agent dir goes, its target stays.
+    #[cfg(unix)]
+    #[test]
+    fn prime_shutdown_removes_the_files_through_a_sigterm() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipped: node is not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = fake_prime_install(tmp.path(), true);
+        // The stop signals its own process, as Prime's stop does to the
+        // processes under the worker, then finishes.
+        let module = tmp.path().join("lib/dist/cli/daemon-launch.js");
+        std::fs::write(
+            &module,
+            "import fs from \"node:fs\";\n\
+             export async function shutdownDaemonAndWait(socket) {\n\
+             process.kill(process.pid, \"SIGTERM\");\n\
+             await new Promise((r) => setTimeout(r, 200));\n\
+             fs.writeFileSync(socket + \".stopped\", \"\");\n\
+             return true;\n}\n",
+        )
+        .unwrap();
+        let launch = tmp.path().join("launch");
+        let agent = launch.join("agent");
+        std::fs::create_dir_all(agent.join("daemon-workers/w1")).unwrap();
+        let operator = tmp.path().join("auth.json");
+        std::fs::write(&operator, "{}").unwrap();
+        std::os::unix::fs::symlink(&operator, agent.join("auth.json")).unwrap();
+        let socket = launch.join("d.sock");
+        let hook = launch.join(STATUS_HOOK);
+        std::fs::write(&socket, "").unwrap();
+        std::fs::write(&hook, "// hook").unwrap();
+
+        assert!(prime_shutdown(&bin, &socket, &hook, &agent));
+        assert!(
+            launch.join("d.sock.stopped").exists(),
+            "the stop did not finish"
+        );
+        assert!(!socket.exists());
+        assert!(!hook.exists());
+        assert!(!agent.exists());
+        assert!(operator.is_file(), "a link target was removed");
+
+        // Prime's stop fails: nothing is removed, the caller falls back.
+        let bin = fake_prime_install(&tmp.path().join("failing"), false);
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(&hook, "// hook").unwrap();
+        assert!(!prime_shutdown(&bin, &socket, &hook, &agent));
+        assert!(agent.is_dir() && hook.exists());
     }
 
     #[test]
