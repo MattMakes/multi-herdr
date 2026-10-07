@@ -338,6 +338,11 @@ pub(crate) struct LostKill {
 /// member's start time is checked again just before its signal. A pid that
 /// another program has now is never signalled. Windows lists no members:
 /// only [`kill_job`] applies there.
+///
+/// Known gap, accepted: a process that the judge CLI moves into another
+/// process group is not found, because the search walks only the dead job's
+/// group. It can outlive a lost judge job. macOS has no cgroups to contain
+/// it, and a CLI that leaves its group is outside horch's control.
 pub(crate) fn kill_lost_job(job_dir: &Path) -> LostKill {
     let path = job_dir.join(HEARTBEAT_FILE);
     let Some(hb) = std::fs::read(&path)
