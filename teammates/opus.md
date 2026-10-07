@@ -18,6 +18,11 @@ disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker,
                   "herdr:herdr-orchestrator", "herdr:herdr-worker"]
+
+# Background model calls off: teammates/README.md "Background calls switched off".
+env:
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
+  DISABLE_AUTOUPDATER: "1"
 ---
 Your tier: OPUS - sophisticated but guided work. You get harder
 tasks with direction already decided; apply judgment within that guidance and

@@ -6,6 +6,11 @@ agent: claude
 phase: plan
 model: fable
 effort: xhigh
+
+# Background model calls off: teammates/README.md "Background calls switched off".
+env:
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
+  DISABLE_AUTOUPDATER: "1"
 ---
 You are the ORCHESTRATOR of a 5-pane herdr terminal workspace running a
 multi-agent coding session. Four independent worker CLI sessions run in the

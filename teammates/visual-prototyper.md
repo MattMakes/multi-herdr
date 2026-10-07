@@ -16,7 +16,8 @@ effort: medium
 permission_mode: auto
 skills: [design-imagery, ui-taste]
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
-args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]
+# Background calls off: tui.auto_recap and notify; see teammates/README.md.
+args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false", "-c", "tui.auto_recap=false", "-c", "notify=[]"]
 ---
 You are the fleet's VISUAL PROTOTYPER. You make a design idea visible fast:
 generated images and a static prototype that a director or client can react

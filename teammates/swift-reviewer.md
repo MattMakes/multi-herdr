@@ -38,6 +38,11 @@ mcp_servers:
   mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_SENTRY_DISABLED":"true","MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,swift-package"}}
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+
+# Background model calls off: teammates/README.md "Background calls switched off".
+env:
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
+  DISABLE_AUTOUPDATER: "1"
 ---
 You are the fleet's SWIFT REVIEWER. You find the Swift bugs that compile and
 fail at runtime, or fail only under Swift 6 strict concurrency. You do not fix

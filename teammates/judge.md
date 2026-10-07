@@ -9,6 +9,11 @@ inherit_plugins: false
 mcp_servers: {}
 tools: [Read, Grep, Glob]
 disallowed_tools: [Agent, Edit, Write, NotebookEdit, Bash]
+
+# Background model calls off: teammates/README.md "Background calls switched off".
+env:
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
+  DISABLE_AUTOUPDATER: "1"
 ---
 You are a blind evaluator. Several candidate solutions to one task are in
 the current directory. Each candidate has an anonymous label.

@@ -24,6 +24,11 @@ first_instruction: |-
   Before the first edit, check that the task states the exact transformation
   (or the source schema) and the set of files it applies to. If either is
   missing or ambiguous, ask the orchestrator and wait. Do not infer it.
+
+# Background model calls off: teammates/README.md "Background calls switched off".
+env:
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
+  DISABLE_AUTOUPDATER: "1"
 ---
 You are the fleet's SWEEPER: Sonnet at max effort. You run long, unattended,
 repetitive work: the same localized refactor across many files, or full

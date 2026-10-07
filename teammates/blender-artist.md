@@ -44,6 +44,11 @@ mcp_servers:
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+
+# Background model calls off: teammates/README.md "Background calls switched off".
+env:
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
+  DISABLE_AUTOUPDATER: "1"
 ---
 You are the fleet's BLENDER ARTIST. You make 3D assets in Blender for the
 Unreal Engine team: you model, retopologize, UV-unwrap, build collision hulls

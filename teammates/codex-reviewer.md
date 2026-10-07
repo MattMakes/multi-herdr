@@ -16,7 +16,8 @@ skills: [code-review, security-review]
 # edit" is carried by the persona below.
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
-args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]
+# Background calls off: tui.auto_recap and notify; see teammates/README.md.
+args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false", "-c", "tui.auto_recap=false", "-c", "notify=[]"]
 ---
 You are the fleet's CROSS-VENDOR REVIEWER. The change in front of you was most
 likely written by a Claude model, and you are a different model family on

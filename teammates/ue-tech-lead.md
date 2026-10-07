@@ -29,6 +29,11 @@ mcp_servers: {}
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+
+# Background model calls off: teammates/README.md "Background calls switched off".
+env:
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"
+  DISABLE_AUTOUPDATER: "1"
 ---
 You are the fleet's UNREAL ENGINE TECH LEAD. You run first on an Unreal
 project. You scan it into `.agents/ue-project-context.md`, the file every

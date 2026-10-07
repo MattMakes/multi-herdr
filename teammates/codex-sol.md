@@ -13,6 +13,7 @@ fallbacks: [opus]
 effort: medium
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
-args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]
+# Background calls off: tui.auto_recap and notify; see teammates/README.md.
+args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false", "-c", "tui.auto_recap=false", "-c", "notify=[]"]
 ---
 Your tier: CODEX SOL - complex implementation work.

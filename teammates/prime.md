@@ -24,6 +24,12 @@ effort: medium
 # each Prime pane its own --daemon-socket and --session-dir, so closing the pane
 # stops that worker's daemon and nothing else - see crates/horch-core/src/prime.rs.
 inherit_plugins: false
+
+# Background calls off: teammates/README.md "Background calls switched off".
+# Depth 1 stops recursive child sessions, each a fresh Opus context; the fleet
+# orchestrator already delegates. A global rlmMaxDepth setting would win.
+env:
+  RLM_MAX_DEPTH: "1"
 ---
 Your tier: PRIME - a persistent Python kernel is your only tool, and your
 harness state is yours to modify. Use that for work that benefits from it:
