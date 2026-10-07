@@ -167,7 +167,18 @@ where
 /// 0.7.4: closing a pane tears down its whole session, so a child that only
 /// left the process group is killed along with it, while one that called
 /// `setsid` survives.
+///
+/// The child's environment is scrubbed here ([`scrub_child_env`]), right
+/// before the spawn: no detached child (the judge job, the compaction job,
+/// the grid tidy) can carry a forbidden key, whatever its caller set.
 pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child> {
+    detach(cmd);
+    cmd.spawn()
+}
+
+/// What [`spawn_detached`] does to `cmd` before the spawn.
+fn detach(cmd: &mut Command) {
+    scrub_child_env(cmd);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -180,12 +191,33 @@ pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child> {
             });
         }
     }
-    cmd.spawn()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A detached child never carries a forbidden key: `spawn_detached`
+    /// removes every one itself, after the caller's `env` calls.
+    #[test]
+    fn spawn_detached_scrubs_every_forbidden_key() {
+        let mut cmd = Command::new("true");
+        cmd.env("HORCH_TEST_KEEP", "1");
+        detach(&mut cmd);
+        let envs: Vec<(OsString, Option<OsString>)> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_os_string(), v.map(OsStr::to_os_string)))
+            .collect();
+        for key in crate::harness::launch::FORBIDDEN_ENV {
+            assert!(
+                envs.iter().any(|(k, v)| k == key && v.is_none()),
+                "{key} is not removed"
+            );
+        }
+        assert!(envs
+            .iter()
+            .any(|(k, v)| k == "HORCH_TEST_KEEP" && v.as_deref() == Some(OsStr::new("1"))));
+    }
 
     fn path_list(dirs: &[&Path]) -> OsString {
         std::env::join_paths(dirs).unwrap()

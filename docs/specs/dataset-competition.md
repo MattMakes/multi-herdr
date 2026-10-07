@@ -220,7 +220,7 @@ or that another row defines.
 | CMP-13 | Crash/restart without duplicates | B3 to B5 | cmp_13_crash_every_boundary, cmp_13_rebuild_after_power_loss |
 | CMP-14 | All fail → reject, keep data | B3 | cmp_14_all_candidates_fail_round_rejected |
 | CMP-15 | Rules via template; goldens unchanged | B3 | cmp_15_candidate_task_carries_rules, golden_prompts |
-| CMP-16 | Single authority; judge is the only background job | B4 | cmp_16_only_judge_detached |
+| CMP-16 | Single authority; the judge job and the compaction job are the only background jobs, both on the shared heartbeat | B4 | cmp_16_only_judge_and_compaction_jobs_detached |
 
 ### 3.4 JDG: judge
 

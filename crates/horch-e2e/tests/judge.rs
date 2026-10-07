@@ -810,19 +810,21 @@ fn sec_08_e2e_no_api_key_in_judge_job() {
     assert!(w.h.violations().is_empty(), "{:?}", w.h.violations());
 }
 
-/// CMP-16: the judge job is the only detached process. The source holds a
-/// detached spawn (`setsid`, `process_group`, `spawn_detached`) in exactly
-/// these files, each for a stated reason:
+/// CMP-16: the judge job and the compaction job are the only background
+/// jobs. The source holds a detached spawn (`setsid`, `process_group`,
+/// `spawn_detached`) in exactly these files, each for a stated reason:
 /// - `runtime/process.rs` defines `spawn_detached`;
 /// - `workspace/arrange.rs` detaches the grid tidy a closing pane leaves;
 /// - `evaluation/validator.rs` puts each gate in its own process group to
 ///   kill it at its timeout, and waits for it (not detached);
 /// - `horch-e2e/src/bin/fake-herdr.rs` is a test fake;
-/// - `evaluation/scheduler.rs` starts the judge job.
+/// - `evaluation/scheduler.rs` starts the judge job;
+/// - `cmd/compact.rs` starts the compaction job; both jobs use
+///   `crate::heartbeat`.
 ///
 /// No competition, measure or dataset command code detaches anything.
 #[test]
-fn cmp_16_only_judge_detached() {
+fn cmp_16_only_judge_and_compaction_jobs_detached() {
     let root = repo_root();
     let allowed = [
         "crates/horch-core/src/runtime/process.rs",
@@ -830,6 +832,7 @@ fn cmp_16_only_judge_detached() {
         "crates/horch-core/src/evaluation/validator.rs",
         "crates/horch-e2e/src/bin/fake-herdr.rs",
         "crates/horch-core/src/evaluation/scheduler.rs",
+        "crates/horch/src/cmd/compact.rs",
     ];
     let mut found = Vec::new();
     let mut stack = vec![root.join("crates")];

@@ -251,20 +251,30 @@ impl Ledger {
         })
     }
 
+    /// The live (starting or running) record of `role` with the newest
+    /// `updated_at`. With `Some(ws)`, only records whose `workspace_id` is
+    /// `ws` or absent count (review finding 13): 2 fleets of 1 project can
+    /// both have a `sonnet-1`. The 1 selection rule of [`Ledger::assign_in`],
+    /// `horch compact` and the note check.
+    pub fn live_for_role(&self, role: &str, workspace: Option<&str>) -> Result<Option<Record>> {
+        Ok(pick_live(&self.read()?, role, workspace).cloned())
+    }
+
     /// Point a live worker at a new task.
     ///
     /// Targets the most recently updated live (starting or running) record
     /// for the role, so assigning updates what that worker is doing without
     /// minting a new session. A planned record has no agent yet.
     pub fn assign(&self, role: &str, task: &str) -> Result<()> {
+        self.assign_in(role, None, task)
+    }
+
+    /// [`Ledger::assign`] to the record [`Ledger::live_for_role`] selects in
+    /// `workspace`.
+    pub fn assign_in(&self, role: &str, workspace: Option<&str>, task: &str) -> Result<()> {
         let at = now();
         self.store.update(|records| {
-            let key = records
-                .iter()
-                .filter(|r| r.role == role && r.execution_status().is_live())
-                .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
-                .map(|r| r.record_id.clone());
-            let Some(key) = key else {
+            let Some(key) = pick_live(records, role, workspace).map(|r| r.record_id.clone()) else {
                 bail!("no working session for role '{role}'")
             };
             for r in records.iter_mut().filter(|r| r.record_id == key) {
@@ -299,6 +309,13 @@ impl Ledger {
         })
     }
 
+    /// Append 1 history entry `event` with `text` to the record `key`: the
+    /// context-policy events (`compact-requested`, `context-warned`,
+    /// `compacted`, `compact-failed`).
+    pub fn record_event(&self, key: &str, event: &str, text: &str) -> Result<()> {
+        self.append_event(key, event, text)
+    }
+
     fn append_event(&self, key: &str, event: &str, text: &str) -> Result<()> {
         let at = now();
         self.store.update_key(key, |r| {
@@ -324,6 +341,18 @@ impl Ledger {
     pub fn render(&self) -> Result<String> {
         Ok(ExecutionStore::render_text(&self.read()?))
     }
+}
+
+/// The selection of [`Ledger::live_for_role`].
+fn pick_live<'a>(records: &'a [Record], role: &str, workspace: Option<&str>) -> Option<&'a Record> {
+    records
+        .iter()
+        .filter(|r| r.role == role && r.execution_status().is_live())
+        .filter(|r| match (workspace, r.workspace_id.as_deref()) {
+            (Some(ws), Some(own)) => own == ws,
+            _ => true,
+        })
+        .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
 }
 
 #[cfg(test)]
@@ -651,6 +680,61 @@ mod tests {
             l.get("w1").unwrap().status,
             STATUS_WORKING,
             "workers untouched"
+        );
+    }
+
+    /// CTX-11 (review finding 13): the live record of a role, in 1 workspace
+    /// when the caller names it. A record with no workspace matches any.
+    #[test]
+    fn ctx_11_live_for_role_filters_by_workspace() {
+        let (_t, l) = ledger();
+        let rec = |id: &str, ws: Option<&str>| Record {
+            record_id: id.into(),
+            agent: "claude".into(),
+            role: "sonnet-1".into(),
+            task: "t".into(),
+            workspace_id: ws.map(Into::into),
+            ..Record::default()
+        };
+        l.insert(rec("in-w1", Some("w1"))).unwrap();
+        l.insert(rec("in-w2", Some("w2"))).unwrap();
+        let stamp = |id: &str, at: &str| {
+            l.store()
+                .update_key(id, |r| r.updated_at = at.to_string())
+                .unwrap()
+        };
+        stamp("in-w1", "2026-10-06T10:00:00Z");
+        stamp("in-w2", "2026-10-06T11:00:00Z");
+
+        let id = |ws| {
+            l.live_for_role("sonnet-1", ws)
+                .unwrap()
+                .map(|r| r.record_id)
+        };
+        assert_eq!(id(Some("w1")).as_deref(), Some("in-w1"), "w2 is newer");
+        assert_eq!(id(None).as_deref(), Some("in-w2"), "no filter: newest");
+        assert_eq!(id(Some("w3")), None);
+        assert_eq!(
+            l.live_for_role("ghost", None).unwrap().map(|r| r.record_id),
+            None
+        );
+
+        l.insert(rec("anywhere", None)).unwrap();
+        stamp("anywhere", "2026-10-06T12:00:00Z");
+        assert_eq!(id(Some("w1")).as_deref(), Some("anywhere"));
+        assert_eq!(id(Some("w3")).as_deref(), Some("anywhere"));
+
+        l.done("anywhere", "finished").unwrap();
+        l.assign_in("sonnet-1", Some("w1"), "next").unwrap();
+        assert_eq!(l.get("in-w1").unwrap().task, "next");
+        assert_eq!(l.get("in-w2").unwrap().task, "t");
+
+        l.record_event("in-w2", "compact-requested", "tokens 1 threshold 2")
+            .unwrap();
+        let last = l.get("in-w2").unwrap().history.pop().unwrap();
+        assert_eq!(
+            (last.event.as_str(), last.text.as_str()),
+            ("compact-requested", "tokens 1 threshold 2")
         );
     }
 }

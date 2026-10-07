@@ -80,6 +80,41 @@ enum Command {
         text: Vec<String>,
     },
 
+    /// Show the context of each live session of this project, with its
+    /// threshold and its state. The orchestrator is first.
+    Context {
+        /// Show only the sessions over their threshold, asked to prepare, or
+        /// with a lost compaction job.
+        #[arg(long)]
+        over: bool,
+        /// Show the native window that each teammate gets when it starts here.
+        #[arg(long)]
+        windows: bool,
+        /// Print JSON. This lands in slice 2.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Compact the context of a session in place. First ask it to write its
+    /// handoff with --request. When it reports COMPACT-READY, run this
+    /// command without --request.
+    Compact {
+        /// The registered role, for example sonnet-1 or orchestrator.
+        role: String,
+        /// Ask the session to write its handoff file. Nothing is compacted.
+        #[arg(long, conflicts_with_all = ["force", "foreground", "timeout"])]
+        request: bool,
+        /// Skip the route check and the handoff check.
+        #[arg(long)]
+        force: bool,
+        /// Run the compaction job in this process. horch compact starts it so.
+        #[arg(long, hide = true)]
+        foreground: bool,
+        /// The maximum wait, in seconds, for the session to become idle.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
+    },
+
     /// Finish this worker: record a summary, report DONE, and close its pane.
     Done {
         #[arg(required = true, trailing_var_arg = true)]
@@ -431,6 +466,29 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Inbox => cmd::messaging::inbox(ctx)?,
         Command::Assign { role, task } => cmd::messaging::assign(ctx, &role, &joined(&task))?,
         Command::Note { text } => cmd::messaging::note(ctx, &joined(&text))?,
+        Command::Context {
+            over,
+            windows,
+            json,
+        } => return cmd::context::context(ctx, over, windows, json),
+        Command::Compact {
+            role,
+            request,
+            force,
+            foreground,
+            timeout,
+        } => {
+            return cmd::compact::compact(
+                ctx,
+                &cmd::compact::CompactArgs {
+                    role,
+                    request,
+                    force,
+                    foreground,
+                    timeout,
+                },
+            )
+        }
         Command::Done { summary } => cmd::messaging::done(ctx, &joined(&summary))?,
         Command::Sessions { json, all } => cmd::ledgercmd::sessions(ctx, json, all)?,
         Command::Skills {
