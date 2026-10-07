@@ -115,7 +115,7 @@ impl Daemon {
 
     /// Stop this launch's daemon, and only this one.
     ///
-    /// First through Prime's own stop for 1 socket ([`prime_shutdown`]): it
+    /// First through Prime's own stop for 1 socket (`prime_shutdown`): it
     /// stops the supervisor, its workers and its catalog. A SIGTERM stops
     /// the supervisor only: Prime's workers outlive a supervisor, and a
     /// worker starts a new one (live check X2: prime-5). So the agent dir,
