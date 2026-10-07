@@ -91,6 +91,135 @@ cat > main.tscn <<'EOF'
 script = ExtResource("1")
 EOF
 
+# Mixed GDScript and C# project: the code blocks of step 5 of
+# skills/godot-language-choice/SKILL.md, character for character. Only the
+# marker prints are extra lines.
+cat > PathService.cs <<'EOF'
+using Godot;
+
+[GlobalClass]
+public partial class PathService : Node
+{
+    [Signal]
+    public delegate void PathReadyEventHandler(Vector2[] points);
+
+    public Vector2[] FindPath(Vector2 from, Vector2 to)
+    {
+        // The heavy search runs here, inside C#.
+        var points = new[] { from, to };
+        EmitSignal(SignalName.PathReady, points);
+        return points;
+    }
+}
+EOF
+cat > paths_user.gd <<'EOF'
+extends Node
+
+@onready var paths: Node = $PathService
+
+
+func _ready() -> void:
+	paths.PathReady.connect(_on_path_ready)
+	var points: PackedVector2Array = paths.FindPath(Vector2.ZERO, Vector2(64, 0))
+	print(points.size())
+	print("LIVE_MIX_GD_CALLS_CS ", points.size())
+
+
+func _on_path_ready(points: PackedVector2Array) -> void:
+	print("path with ", points.size(), " points")
+	print("LIVE_MIX_CS_SIGNAL_TO_GD ", points.size())
+EOF
+cat > inventory.gd <<'EOF'
+extends Node
+
+signal item_added(id: String)
+
+
+func _ready() -> void:
+	item_added.emit.call_deferred("sword")
+
+
+func count_items() -> int:
+	return 3
+
+
+func update(items: Array) -> void:
+	print("LIVE_MIX_UNTYPED_ARRAY ", items.size())
+EOF
+cat > Hud.cs <<'EOF'
+using Godot;
+
+public partial class Hud : Control
+{
+    public override void _Ready()
+    {
+        Node inventory = GetNode("../Inventory"); // a GDScript node
+        inventory.Connect("item_added", Callable.From<string>(OnItemAdded));
+        int count = inventory.Call("count_items").AsInt32();
+        GD.Print(count);
+        GD.Print($"LIVE_MIX_CS_CALLS_GD {count}");
+        inventory.Connect("item_added", Callable.From<string>(id => GD.Print($"LIVE_MIX_GD_SIGNAL_TO_CS {id}")));
+        inventory.Call("update", new Godot.Collections.Array { 1, 2 });
+    }
+
+    private void OnItemAdded(string id) => GD.Print(id);
+}
+EOF
+cat > mixed.tscn <<'EOF'
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://paths_user.gd" id="1"]
+[ext_resource type="Script" path="res://PathService.cs" id="2"]
+[ext_resource type="Script" path="res://inventory.gd" id="3"]
+[ext_resource type="Script" path="res://Hud.cs" id="4"]
+
+[node name="Mixed" type="Node"]
+script = ExtResource("1")
+
+[node name="PathService" type="Node" parent="."]
+script = ExtResource("2")
+
+[node name="Inventory" type="Node" parent="."]
+script = ExtResource("3")
+
+[node name="Hud" type="Control" parent="."]
+script = ExtResource("4")
+EOF
+
+# A typed GDScript parameter rejects a plain Godot.Collections.Array from C#.
+cat > typed_sink.gd <<'EOF'
+extends Node
+
+
+func take(items: Array[int]) -> void:
+	print("LIVE_MIX_TYPED_TAKEN ", items.size())
+EOF
+cat > TypedCaller.cs <<'EOF'
+using Godot;
+
+public partial class TypedCaller : Node
+{
+    public override void _Ready()
+    {
+        GetNode("../TypedSink").Call("take", new Godot.Collections.Array { 1, 2 });
+    }
+}
+EOF
+cat > typed.tscn <<'EOF'
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://typed_sink.gd" id="1"]
+[ext_resource type="Script" path="res://TypedCaller.cs" id="2"]
+
+[node name="Typed" type="Node"]
+
+[node name="TypedSink" type="Node" parent="."]
+script = ExtResource("1")
+
+[node name="TypedCaller" type="Node" parent="."]
+script = ExtResource("2")
+EOF
+
 export HOME="$work/home" NUGET_PACKAGES="$work/nuget"
 if bounded 600 dotnet build > "$work/build.log" 2>&1; then
   pass "dotnet-build"
@@ -111,5 +240,36 @@ else
   pass "csharp-errors"
 fi
 
-rm -rf "$work/project/.godot" "$work/project/bin" "$work/project/obj"
+# Mixed scene: GDScript and C# call each other and connect each other's signals.
+if bounded 120 "$godot" --headless --path . --quit-after 10 res://mixed.tscn > "$work/mixed.log" 2>&1; then
+  grep -q '^LIVE_MIX_GD_CALLS_CS 2$' "$work/mixed.log" && pass "mixed-gd-calls-cs" || fail "mixed-gd-calls-cs" "no LIVE_MIX_GD_CALLS_CS 2 line"
+  grep -q '^LIVE_MIX_CS_SIGNAL_TO_GD 2$' "$work/mixed.log" && pass "mixed-cs-signal-to-gd" || fail "mixed-cs-signal-to-gd" "no LIVE_MIX_CS_SIGNAL_TO_GD 2 line"
+  grep -q '^LIVE_MIX_CS_CALLS_GD 3$' "$work/mixed.log" && pass "mixed-cs-calls-gd" || fail "mixed-cs-calls-gd" "no LIVE_MIX_CS_CALLS_GD 3 line"
+  # Both the Hud.OnItemAdded handler of the skill (prints the bare id) and the marker handler must run.
+  if grep -q '^LIVE_MIX_GD_SIGNAL_TO_CS sword$' "$work/mixed.log" && grep -q '^sword$' "$work/mixed.log"; then
+    pass "mixed-gd-signal-to-cs"
+  else
+    fail "mixed-gd-signal-to-cs" "no LIVE_MIX_GD_SIGNAL_TO_CS sword line or no bare sword line"
+  fi
+  grep -q '^LIVE_MIX_UNTYPED_ARRAY 2$' "$work/mixed.log" && pass "mixed-untyped-array" || fail "mixed-untyped-array" "no LIVE_MIX_UNTYPED_ARRAY 2 line"
+else
+  fail "mixed-gd-calls-cs" "exit $? (see $work/mixed.log)"
+fi
+if grep -q 'SCRIPT ERROR\|ERROR:' "$work/mixed.log"; then
+  fail "mixed-errors" "error lines in $work/mixed.log"
+else
+  pass "mixed-errors"
+fi
+
+# Typed array: the expected error goes to its own log, not to mixed.log.
+bounded 120 "$godot" --headless --path . --quit-after 10 res://typed.tscn > "$work/typed.log" 2>&1 || true
+typed_err=$(grep -i 'element type\|typed array' "$work/typed.log" | head -1 || true)
+if [ -n "$typed_err" ] && ! grep -q '^LIVE_MIX_TYPED_TAKEN' "$work/typed.log"; then
+  pass "mixed-typed-array-rejected"
+  echo "  $typed_err"
+else
+  fail "mixed-typed-array-rejected" "no element type error in $work/typed.log"
+fi
+
+rm -rf "$work/project/.godot""$work/project/bin" "$work/project/obj"
 exit "$failed"

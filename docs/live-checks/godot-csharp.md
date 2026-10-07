@@ -19,7 +19,10 @@ runs `dotnet build`, imports the project, runs it headless, and removes the
 build output at the end. It sets `HOME` and `NUGET_PACKAGES` to that folder.
 
 Steps: `godot-dotnet`, `dotnet-build`, `csharp-scene`, `csharp-signal`,
-`csharp-errors`.
+`csharp-errors`, `mixed-gd-calls-cs`, `mixed-cs-signal-to-gd`,
+`mixed-cs-calls-gd`, `mixed-gd-signal-to-cs`, `mixed-untyped-array`,
+`mixed-errors`, `mixed-typed-array-rejected`. The `mixed-*` steps use the 3
+code blocks of step 5 of `skills/godot-language-choice/SKILL.md` unchanged.
 
 ## 2026-10-06
 
@@ -45,3 +48,28 @@ dotnet SDK 10.0.101. SHA-512 of `Godot_v4.7.2-stable_mono_macos.universal.zip`
 matched its line in `SHA512-SUMS.txt`. `codesign --verify --deep --strict`
 passed, and `spctl --assess --type execute` accepted the app (Notarized
 Developer ID, Prehensile Tales B.V.).
+
+## 2026-10-07 (mixed GDScript and C#)
+
+The script ran twice and exited 0 both times with the same result. The scene
+`mixed.tscn` runs with `--quit-after 10` and its own log. The scene
+`typed.tscn` has its own log, so its expected error does not fail
+`mixed-errors`.
+
+| Step | Claim it proves | Tool version | Result | Evidence |
+|------|-----------------|--------------|--------|----------|
+| mixed-gd-calls-cs | GDScript calls a C# method by its C# name (`FindPath`), and a C# `Vector2[]` arrives as a `PackedVector2Array`. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | `LIVE_MIX_GD_CALLS_CS 2` |
+| mixed-cs-signal-to-gd | A GDScript handler connected to a C# signal (`paths.PathReady.connect`) runs. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | `LIVE_MIX_CS_SIGNAL_TO_GD 2` |
+| mixed-cs-calls-gd | C# calls a GDScript method by its snake_case name (`Call("count_items")`). | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | `LIVE_MIX_CS_CALLS_GD 3` |
+| mixed-gd-signal-to-cs | C# connects to a GDScript signal by name (`Connect("item_added", Callable.From<string>(...))`), and the handler runs. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | `LIVE_MIX_GD_SIGNAL_TO_CS sword` and the bare `sword` line of `Hud.OnItemAdded`. |
+| mixed-untyped-array | A plain `Godot.Collections.Array` from C# reaches an untyped `Array` GDScript parameter. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | `LIVE_MIX_UNTYPED_ARRAY 2` |
+| mixed-errors | The mixed run log has no script error. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | No `SCRIPT ERROR` or `ERROR:` line in `mixed.log`. |
+| mixed-typed-array-rejected | A typed GDScript parameter `Array[int]` rejects a plain `Godot.Collections.Array` from C#. | Godot 4.7.2.stable.mono.official.ed1daf0bf | PASS | `ERROR: Invalid type in function 'take' in base 'Godot.Node'. The array of argument 2 (Array) does not have the same element type as the expected typed array argument.` |
+
+Not proved by this run: `Array[Item]` with a custom class (only `Array[int]`
+ran); the type name `PathService` in GDScript (the block types the variable
+`Node`); the `MethodName`, `PropertyName` and `SignalName` constants; the
+rule that no class extends across languages; and the speed figures (third
+party, Godot 4.2). The `Hud.cs` marker for the signal is a lambda, because the
+block's `OnItemAdded` is one line that the proof does not change; the bare
+`sword` line proves that `OnItemAdded` ran.
