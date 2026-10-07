@@ -10,6 +10,7 @@ model: ollama/qwen3.8
 # low, and a local
 # model pays for every thinking token in wall-clock time.
 effort: low
+compact_at: 196608
 
 # The opposite trade to the opencode tiers: slower and smaller than anything
 # hosted, but the prompt never leaves this machine. That makes it the right

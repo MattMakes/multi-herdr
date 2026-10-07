@@ -6,6 +6,7 @@ base: fleet-worker
 agent: opencode
 phase: implementation
 model: opencode/nemotron-3.5-lightning-free
+compact_at: 184115
 # No effort: the free models report `variants: {}`, so --variant is a no-op
 # and `--check` refuses the field.
 permission_mode: acceptEdits

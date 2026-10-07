@@ -10,6 +10,8 @@ fallbacks: [codex-sol]
 # high: plans and product calls are where a wrong turn is expensive, but
 # the orchestrator above already runs at xhigh.
 effort: high
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [brainstorm, product-requirements]

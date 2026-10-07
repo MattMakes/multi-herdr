@@ -19,6 +19,8 @@ requires: [godot]
 # fallback only after a trial on a real project.
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high
+compact_window: 150000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills:

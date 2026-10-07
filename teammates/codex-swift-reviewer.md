@@ -13,6 +13,8 @@ fallbacks: [opus]
 # high, like the claude reviewers: a missed finding costs a review round
 # (cezaar#40). Not xhigh or max: diminishing returns above high.
 effort: high
+compact_window: 200000
+compact_at: 160000
 # Its own file because `horch spawn` has no --skill flag, so codex-reviewer
 # cannot pick up the Swift skills per spawn.
 skills: [swiftui-pro, swift-concurrency-pro]

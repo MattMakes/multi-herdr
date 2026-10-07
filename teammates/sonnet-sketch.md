@@ -11,6 +11,8 @@ fallbacks: [codex-terra]
 # else refines, so thinking tokens spent here are spent on ideas that will be
 # replaced.
 effort: low
+compact_window: 150000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [brainstorm]

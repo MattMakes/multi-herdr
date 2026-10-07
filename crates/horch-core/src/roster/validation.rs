@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Result};
 
 use super::operator::expand_home;
-use super::parser::parse_base;
-use super::repository::BUILTIN_BASES;
+use super::parser::{parse_base, parse_teammate};
+use super::repository::{BUILTIN_BASES, BUILTIN_TEAMMATES};
 use super::teammate::{
     HarnessDefault, CONTEXT_MESSAGES_BASE, CONTEXT_MESSAGE_KEYS, CONTEXT_MESSAGE_PLACEHOLDERS,
     CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE, HEADLESS_ONLY,
@@ -32,6 +32,31 @@ use crate::skills::SkillCatalog;
 
 /// The tokens a teammate's `compact_at` may hold (CTX-21).
 const COMPACT_AT_RANGE: std::ops::RangeInclusive<u64> = 50_000..=1_000_000;
+
+/// The line for a teammate on a watched harness without `compact_at`.
+fn compact_at_missing(name: &str) -> String {
+    format!(
+        "{name}: compact_at is missing (the token count where horch asks it to hand off; see teammates/README.md)"
+    )
+}
+
+/// Whether horch watches the context of a teammate on this harness: it has
+/// a compact command to type (not antigravity, not none).
+fn watched(t: &Teammate) -> bool {
+    t.agent.capabilities().compaction.has_command()
+}
+
+/// Rule 6 (X1): every built-in teammate on a watched harness states its
+/// `compact_at`. Judged on the compiled-in files, so an overlay cannot hide
+/// a gap in the shipped roster.
+fn builtin_compact_at_problems(builtins: &[(&str, &str)]) -> Vec<String> {
+    builtins
+        .iter()
+        .filter_map(|(name, text)| parse_teammate(name, text).ok())
+        .filter(|t| watched(t) && t.compact_at.is_none())
+        .map(|t| compact_at_missing(&t.name))
+        .collect()
+}
 
 impl Roster {
     /// Whether this teammate may be started by `horch spawn`. Orchestrators
@@ -660,7 +685,8 @@ impl Roster {
     /// The context-policy rules of `horch teammates --check` (design 6.3):
     /// 1 the headroom floor (CTX-08), 2 no window outside `compact_window`,
     /// 3 no `compact_window` without a lever, 4 the 2 context bases, 5 the
-    /// `compact_at` range (CTX-21).
+    /// `compact_at` range (CTX-21), 6 every built-in teammate on a watched
+    /// harness states `compact_at` (X1).
     fn context_policy_problems(&self) -> Vec<String> {
         let mut problems = Vec::new();
         for t in self.teammates.values() {
@@ -687,6 +713,7 @@ impl Roster {
         }
         problems.extend(self.windows_key_problems());
         problems.extend(self.context_base_problems());
+        problems.extend(builtin_compact_at_problems(BUILTIN_TEAMMATES));
         problems
     }
 
@@ -851,9 +878,27 @@ impl Roster {
 /// - a `context-messages` base whose content differs from the built-in one
 ///   (the briefings name its prefixes);
 /// - a `windows` key whose name is no teammate and no model of a teammate on
-///   its harness (an operator can add a model before its teammate).
+///   its harness (an operator can add a model before its teammate);
+/// - an overlay teammate on a watched harness without `compact_at`: the
+///   fleet base applies. A built-in file without it is a check problem.
 pub fn context_policy_warnings(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();
+    for t in roster.teammates.values() {
+        if !watched(t) || t.compact_at.is_some() {
+            continue;
+        }
+        let builtin_lacks_it = BUILTIN_TEAMMATES
+            .iter()
+            .find(|(name, _)| *name == t.name)
+            .and_then(|(name, text)| parse_teammate(name, text).ok())
+            .is_some_and(|b| b.compact_at.is_none());
+        if !builtin_lacks_it {
+            out.push(format!(
+                "{}; the fleet base {BASE_THRESHOLD} applies",
+                compact_at_missing(&t.name)
+            ));
+        }
+    }
     if let Some(windows) = roster.context_windows().and_then(|b| b.windows.as_ref()) {
         for key in windows.keys() {
             let Some((kind, name)) = split_window_key(key) else {
@@ -2005,5 +2050,40 @@ mod spawnable_tests {
                 "{name} must not be spawnable"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod compact_at_tests {
+    use super::*;
+
+    fn file(name: &str, agent: &str, extra: &str) -> String {
+        format!(
+            "---\nname: {name}\nbrief_description: test teammate\nbase: fleet-worker\nagent: {agent}\nmodel: m\n{extra}---\nbody\n"
+        )
+    }
+
+    /// X1: a built-in teammate on a watched harness without `compact_at`
+    /// fails the check; one with it, and one on antigravity or none, pass.
+    #[test]
+    fn builtin_without_compact_at_fails() {
+        let bare = file("bare", "claude", "");
+        let set = file("set", "codex", "compact_at: 160000\n");
+        let agy = file("agy", "antigravity", "");
+        let none = file("fake", "none", "");
+        let builtins = [
+            ("bare", bare.as_str()),
+            ("set", set.as_str()),
+            ("agy", agy.as_str()),
+            ("fake", none.as_str()),
+        ];
+        assert_eq!(
+            builtin_compact_at_problems(&builtins),
+            vec![
+                "bare: compact_at is missing (the token count where horch asks it to hand off; \
+                 see teammates/README.md)"
+                    .to_string()
+            ]
+        );
     }
 }

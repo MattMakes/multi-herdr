@@ -12,6 +12,8 @@ fallbacks: [codex-terra]
 # wrote it. cezaar#40 runs builders low; medium because our briefs are not
 # always complete specs. Raise one spawn with --effort.
 effort: medium
+compact_window: 150000
+compact_at: 300000
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]

@@ -10,6 +10,8 @@ fallbacks: [opus]
 # high, like the claude reviewers: a missed finding costs a review round
 # (cezaar#40). Not xhigh or max: diminishing returns above high.
 effort: high
+compact_window: 200000
+compact_at: 160000
 skills: [code-review, security-review]
 # auto, not plan: plan maps to `-s read-only -a on-request`, and an approval
 # prompt stalls a pane nobody watches. codex has no per-tool deny, so "never

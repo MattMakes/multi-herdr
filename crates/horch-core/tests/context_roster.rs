@@ -80,7 +80,7 @@ fn messages_base(keys: &[&str], extra: &str) -> String {
 fn ctx_08_roster_check_fails_headroom_below_floor() {
     let dir = roster_dir(&[(
         "sonnet.md",
-        shipped_with("sonnet.md", "compact_window: 100000\n"),
+        shipped("sonnet.md").replace("compact_window: 150000\n", "compact_window: 100000\n"),
     )]);
     let roster = load(dir.path());
     let errors = problems_with(&roster, &["headroom"]);
@@ -94,11 +94,7 @@ fn ctx_08_roster_check_fails_headroom_below_floor() {
          (native trigger 67000, threshold 53600)"
     );
 
-    let dir = roster_dir(&[(
-        "sonnet.md",
-        shipped_with("sonnet.md", "compact_window: 150000\n"),
-    )]);
-    let errors = problems_with(&load(dir.path()), &["headroom"]);
+    let errors = problems_with(&builtin(), &["headroom"]);
     assert!(errors.is_empty(), "{errors:?}");
 }
 
@@ -157,7 +153,12 @@ fn ctx_17_in_place_only_for_listed_harnesses() {
 #[test]
 fn fleet_window_takes_teammate_then_model_key() {
     let roster = builtin();
-    let window = |name: &str, model: &str| roster.fleet_window(roster.get(name).unwrap(), model);
+    // The keys alone: the built-in files state the same values (below).
+    let window = |name: &str, model: &str| {
+        let mut t = roster.get(name).unwrap().clone();
+        t.compact_window = None;
+        roster.fleet_window(&t, model)
+    };
     assert_eq!(
         window("orchestrator", "opus"),
         Some((300_000, "context-policy windows claude/orchestrator".into()))
@@ -176,6 +177,21 @@ fn fleet_window_takes_teammate_then_model_key() {
     );
     assert_eq!(window("codex-luna", "gpt-5.6-luna"), None);
 
+    // X1: a built-in file's `compact_window` equals the key it replaces, so
+    // the launch is the same.
+    for (name, model) in [
+        ("orchestrator", "fable"),
+        ("opus", "opus"),
+        ("sonnet-bugfix", "sonnet"),
+        ("codex-sol", "gpt-5.6-sol"),
+        ("codex-terra", "gpt-5.6-terra"),
+    ] {
+        let own = roster
+            .fleet_window(roster.get(name).unwrap(), model)
+            .map(|(n, _)| n);
+        assert_eq!(own, window(name, model).map(|(n, _)| n), "{name}");
+    }
+
     let own = Teammate {
         name: "wide".into(),
         compact_window: Some(180_000),
@@ -189,15 +205,12 @@ fn fleet_window_takes_teammate_then_model_key() {
 
 #[test]
 fn compact_window_parses_and_defaults_to_none() {
-    let dir = roster_dir(&[(
-        "sonnet.md",
-        shipped_with("sonnet.md", "compact_window: 150000\n"),
-    )]);
+    let dir = roster_dir(&[("plain.md", teammate_file("plain", "claude", ""))]);
+    assert_eq!(load(dir.path()).get("plain").unwrap().compact_window, None);
     assert_eq!(
-        load(dir.path()).get("sonnet").unwrap().compact_window,
+        builtin().get("sonnet").unwrap().compact_window,
         Some(150_000)
     );
-    assert_eq!(builtin().get("sonnet").unwrap().compact_window, None);
 }
 
 #[test]
@@ -719,12 +732,11 @@ fn check_refuses_every_window_key_in_env_and_a_settings_file() {
 /// Nit 9 (R14): after a substitution the detail names the fallback's file.
 #[test]
 fn fleet_window_names_the_fallback_after_a_substitution() {
-    let opus =
-        shipped("opus.md").replace("\nmodel: opus\n", "\nmodel: opus\ncompact_window: 180000\n");
+    let opus = shipped("opus.md").replace("compact_window: 200000\n", "compact_window: 180000\n");
     let dir = roster_dir(&[("opus.md", opus)]);
     let roster = load(dir.path());
     let original = roster.get("codex-sol").unwrap();
-    assert_eq!(original.compact_window, None);
+    assert_eq!(original.compact_window, Some(200_000));
     let merged = horch_core::routing::decision::merge(original, roster.get("opus").unwrap());
     assert_eq!(
         roster.fleet_window(&merged, "opus"),
@@ -835,4 +847,76 @@ fn ctx_21_compact_at_range_checked() {
         let errors = problems_with(&roster, &["compact_at"]);
         assert!(errors.is_empty(), "{ok}: {errors:?}");
     }
+}
+
+/// X1: every built-in teammate on a harness horch watches states its
+/// `compact_at`; a harness horch does not watch (antigravity, none) has none.
+#[test]
+fn ctx_21_every_watched_builtin_teammate_sets_compact_at() {
+    let roster = builtin();
+    for name in roster.names() {
+        let t = roster.get(name).unwrap();
+        let watched = t.agent.capabilities().compaction.has_command();
+        assert_eq!(
+            t.compact_at.is_some(),
+            watched,
+            "{name} on {}: compact_at {:?}",
+            t.agent,
+            t.compact_at
+        );
+    }
+    assert!(problems_with(&roster, &["compact_at is missing"]).is_empty());
+    assert!(warnings(&roster)
+        .iter()
+        .all(|w| !w.contains("compact_at is missing")));
+}
+
+/// X1: an overlay teammate on a watched harness without `compact_at` gets a
+/// warning, not a check problem; one with it, or on antigravity, gets none.
+#[test]
+fn ctx_21_overlay_without_compact_at_warns() {
+    let dir = roster_dir(&[
+        ("bare.md", teammate_file("bare", "claude", "")),
+        (
+            "set.md",
+            teammate_file("set", "codex", "compact_at: 160000\n"),
+        ),
+        ("agy.md", teammate_file("agy", "antigravity", "")),
+    ]);
+    let roster = load(dir.path());
+    assert!(problems_with(&roster, &["compact_at is missing"]).is_empty());
+    let missing: Vec<String> = warnings(&roster)
+        .into_iter()
+        .filter(|w| w.contains("compact_at is missing"))
+        .collect();
+    assert_eq!(
+        missing,
+        vec![
+            "bare: compact_at is missing (the token count where horch asks it to hand off; \
+             see teammates/README.md); the fleet base 300000 applies"
+                .to_string()
+        ]
+    );
+}
+
+/// X1: an overlay copy of a built-in teammate that drops `compact_at` warns;
+/// the built-in file still has it, so the check passes.
+#[test]
+fn ctx_21_overlay_copy_without_compact_at_warns() {
+    let text: String = shipped("sonnet.md")
+        .lines()
+        .filter(|l| !l.starts_with("compact_at:"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let dir = roster_dir(&[("sonnet.md", text)]);
+    let roster = load(dir.path());
+    assert_eq!(roster.get("sonnet").unwrap().compact_at, None);
+    assert!(problems_with(&roster, &["compact_at is missing"]).is_empty());
+    assert!(
+        warnings(&roster)
+            .iter()
+            .any(|w| w.starts_with("sonnet: compact_at is missing")),
+        "{:?}",
+        warnings(&roster)
+    );
 }

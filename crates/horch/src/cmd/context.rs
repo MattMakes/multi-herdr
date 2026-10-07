@@ -514,7 +514,8 @@ fn rows_table(rows: &[Row]) -> String {
 }
 
 /// `--windows`: 1 row per roster teammate on a harness with a known trigger
-/// rule, as a launch from `workdir` would decide now (CTX-06).
+/// rule, as a launch from `workdir` would decide now (CTX-06), with the
+/// watch base and its source: the teammate's `compact_at` or the fleet base.
 pub(crate) fn windows_table(ctx: &RuntimeContext, roster: &Roster, workdir: &Path) -> String {
     let mut t = Table::new(&[
         ("TEAMMATE", Align::Left),
@@ -523,6 +524,8 @@ pub(crate) fn windows_table(ctx: &RuntimeContext, roster: &Roster, workdir: &Pat
         ("SETTING", Align::Right),
         ("SOURCE", Align::Left),
         ("NATIVE", Align::Right),
+        ("COMPACT_AT", Align::Right),
+        ("FROM", Align::Left),
         ("THRESHOLD", Align::Right),
         ("HEADROOM", Align::Right),
         ("DETAIL", Align::Left),
@@ -566,6 +569,13 @@ pub(crate) fn windows_table(ctx: &RuntimeContext, roster: &Roster, workdir: &Pat
             number(decision.tokens),
             source_text(decision.source, false),
             number(native),
+            grouped(policy::watch_base(teammate.compact_at)),
+            if teammate.compact_at.is_some() {
+                "teammate"
+            } else {
+                "fleet base"
+            }
+            .into(),
             grouped(threshold),
             headroom,
             home_relative(&decision.detail, &ctx.paths.home),

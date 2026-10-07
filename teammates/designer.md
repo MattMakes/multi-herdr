@@ -11,6 +11,8 @@ fallbacks: [codex-sol]
 # wrote it. cezaar#40 runs builders low; medium because our briefs are not
 # always complete specs. Raise one spawn with --effort.
 effort: medium
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 skills: [ui-taste, art-direction]
 

@@ -245,13 +245,28 @@ fn ctx_05_claude_settings_chain_precedence() {
 #[test]
 fn ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value() {
     let roster = Roster::builtin().unwrap();
-    let opus = roster.require("opus").unwrap().clone();
+    let builtin_opus = roster.require("opus").unwrap().clone();
+    // The `windows` key alone: opus.md states the same window (X1).
+    let mut opus = builtin_opus.clone();
+    opus.compact_window = None;
     let mut skilled = opus.clone();
     skilled.phase = Some(Phase::Research);
 
     // Empty home: the fleet window, in the plain path and the skills path.
     let w = World::new();
     let ctx = w.ctx(&[]);
+    // X1: the built-in file's own compact_window gives the same launch.
+    let (d, args) = launch_with(&ctx, &roster, &builtin_opus, Session::Fresh("sid"), None);
+    assert_eq!(window_in_settings(&args), Some(json!("200000")), "{args:?}");
+    assert_eq!(
+        d,
+        WindowDecision {
+            tokens: Some(200_000),
+            source: WindowSource::Fleet,
+            detail: "teammate opus compact_window".into(),
+            applied: true,
+        }
+    );
     let (d, args) = launch_with(&ctx, &roster, &opus, Session::Fresh("sid"), None);
     assert_eq!(window_in_settings(&args), Some(json!("200000")), "{args:?}");
     assert_eq!(

@@ -5,6 +5,8 @@ hidden: true
 agent: claude
 model: opus
 effort: high
+compact_window: 200000
+compact_at: 300000
 inherit_plugins: false
 mcp_servers: {}
 tools: [Read, Grep, Glob]

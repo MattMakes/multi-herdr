@@ -10,6 +10,8 @@ fallbacks: [codex-terra]
 # high: targeted bug hunting in one known place. A wrong fix costs a second
 # round, so this seat gets the depth to confirm the cause before it edits.
 effort: high
+compact_window: 150000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [debug, tdd]

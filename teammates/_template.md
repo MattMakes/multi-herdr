@@ -101,6 +101,25 @@ fallbacks: []
 # claude.
 effort: xhigh
 
+# ─── compaction amounts per teammate ────────────────────────────────────────
+# compact_at: horch's watch base. horch watches the lower of it and 80% of the
+#   native trigger, and at that token count asks the teammate to hand off and
+#   compact (`horch context`, `horch compact`, the `horch note` warning).
+#   50000 to 1000000. REQUIRED on a harness horch watches (not antigravity):
+#   `horch teammates --check` fails a built-in file without it.
+# compact_window: the harness's own auto-compact setting, when the operator's
+#   files set none: Claude CLAUDE_CODE_AUTO_COMPACT_WINDOW, Codex
+#   model_auto_compact_token_limit, Prime contextWindow. Not for opencode or
+#   antigravity (no lever). Never in `env:`, `settings:` or `args:`.
+# Native window, first match wins: the operator's own setting, this
+#   compact_window, `windows` of _base/context-windows.md, the harness default.
+# `--check` fails a window that leaves under 20000 tokens between the
+#   threshold and the native trigger. `horch context --windows` shows each value
+#   and its source. An operator overlay in ~/.config/horch/teammates/<name>.md
+#   replaces this whole entry, so copy these 2 lines into it.
+compact_window: 200000  # the fleet window for claude/opus
+compact_at: 300000
+
 # claude only. Sets CLAUDE_CODE_SUBAGENT_MODEL, i.e. the model this teammate's
 # OWN subagents run on. Only worth setting when the teammate delegates heavily
 # (see staff-engineer.md). Ignored for codex.
@@ -331,26 +350,6 @@ args: []
 # is not found, the variable is left out and the launch goes on.
 # Harness-wide defaults: _base/harness-defaults.md.
 env: {}
-
-# compact_window -> the native auto-compact setting this teammate gets when the
-#   operator's own files set none: for Claude the window
-#   (CLAUDE_CODE_AUTO_COMPACT_WINDOW, in the --settings overlay), for Codex
-#   `-c model_auto_compact_token_limit=<n>`, for Prime the contextWindow.
-#   Tokens, a number. It overrides `windows` of _base/context-windows.md for
-#   this teammate. An operator value always wins. Do not set the window in
-#   `env:`, `settings:` or `args:`: `horch teammates --check` refuses that, and
-#   it refuses a window whose watch headroom is under 20000 tokens or one on a
-#   harness with no lever (opencode, antigravity).
-#compact_window: 150000
-
-# compact_at -> horch's own watch base for this teammate, in tokens, in place
-#   of the fleet base (300000). The watch threshold is the lower of the base
-#   and 80% of the native trigger. `horch context`, `horch compact` and the
-#   `horch note` warning all use it. It does not change the native setting:
-#   that is `compact_window`. 50000 to 1000000; `horch teammates --check`
-#   refuses a value outside that range. Set it here only: there is no env
-#   variable, because a pane does not inherit the spawner's env.
-#compact_at: 100000
 
 # ─── first instruction ───────────────────────────────────────────────────────
 # Optional. Rendered as the very last line the teammate reads, after the task.

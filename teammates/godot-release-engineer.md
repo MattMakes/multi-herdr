@@ -20,6 +20,8 @@ requires: [godot]
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. Same as backend-developer.
 effort: medium
+compact_window: 150000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills:

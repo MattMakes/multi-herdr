@@ -11,6 +11,8 @@ fallbacks: [codex-sol]
 # at high often matches or beats a smaller model at max on fewer tokens.
 # Not for first drafts: reasoning tokens spent on preliminary ideas are waste.
 effort: high
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [debug, security-review, tdd]

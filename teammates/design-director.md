@@ -10,6 +10,8 @@ fallbacks: [codex-sol]
 # high, like the planners: every builder works from this contract, so a weak
 # direction costs a build round per builder.
 effort: high
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 skills: [art-direction, ui-taste, brand-identity]
 

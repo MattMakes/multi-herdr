@@ -11,6 +11,8 @@ fallbacks: [codex-terra]
 # review itself in cezaar#40's baseline (reviewers+judges were 71% of worker
 # spend at xhigh). high, not xhigh: diminishing returns above it.
 effort: high
+compact_window: 150000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [check, debug, tdd]

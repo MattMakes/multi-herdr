@@ -11,6 +11,8 @@ fallbacks: [codex-sol]
 # the effort stays low so the answer comes back fast. Deep verification is a
 # different seat (opus-hardening, opus-verify).
 effort: low
+compact_window: 200000
+compact_at: 300000
 
 # Steering, not implementation. Edit is denied so the only file it can change
 # is the one it writes. Not plan mode: ExitPlanMode asks a human to approve,

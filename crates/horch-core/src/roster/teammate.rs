@@ -237,7 +237,8 @@ pub struct Teammate {
     /// The watch base of this teammate (CTX-21): `horch context`, `horch
     /// compact` and the `horch note` check use it in place of the fleet base.
     /// Tokens, 50,000 to 1,000,000. Frontmatter only, no env variable: a pane
-    /// does not inherit the spawner's env.
+    /// does not inherit the spawner's env. Every built-in teammate on a
+    /// harness horch watches states it (X1); `None` in an overlay warns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_at: Option<u64>,
     /// The file body. Its meaning depends on `base`: a persona when `base` is

@@ -12,6 +12,7 @@ model: gpt-5.6-luna
 # When this model's usage pool cannot serve a spawn (horch route codex-luna).
 fallbacks: [sonnet, pi]
 effort: low
+compact_at: 300000
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]

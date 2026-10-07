@@ -747,6 +747,54 @@ fn ctx_21_compact_at_sets_base() {
     );
 }
 
+/// X1: `horch context --windows` shows each teammate's `compact_at` and
+/// where it comes from beside the threshold: `teammate` for a file that
+/// sets it, `fleet base` (300,000) for one that does not.
+#[test]
+fn ctx_21_windows_table_names_the_compact_at_source() {
+    let w = World::new();
+    let dir = w.root.join("home/.config/horch/teammates");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("no-base.md"),
+        "---\nname: no-base\nbrief_description: a teammate without a watch base\n\
+         hidden: true\nbase: fleet-worker\nagent: claude\nmodel: opus\n---\nbody\n",
+    )
+    .unwrap();
+    let windows = w.stdout(&["context", "--windows"], &[]);
+    assert_eq!(
+        cell(&windows, "no-base", "COMPACT_AT"),
+        "300,000",
+        "\n{windows}"
+    );
+    assert_eq!(
+        cell(&windows, "no-base", "FROM"),
+        "fleet base",
+        "\n{windows}"
+    );
+    assert_eq!(
+        cell(&windows, "codex-sol", "COMPACT_AT"),
+        "160,000",
+        "\n{windows}"
+    );
+    assert_eq!(
+        cell(&windows, "codex-sol", "FROM"),
+        "teammate",
+        "\n{windows}"
+    );
+    assert_eq!(
+        cell(&windows, "codex-sol", "THRESHOLD"),
+        "160,000",
+        "\n{windows}"
+    );
+    // The first 5 columns stay where scripts/live/context.sh reads them.
+    let head: Vec<&str> = windows.lines().next().unwrap().split_whitespace().collect();
+    assert_eq!(
+        head[..5],
+        ["TEAMMATE", "HARNESS", "MODEL", "SETTING", "SOURCE"]
+    );
+}
+
 /// CTX-25: `horch context` counts the compactions of a session as native
 /// and horch-driven. opus-1's transcript has 1 marker at 10:05:00; a
 /// `compacted` event at 10:06:00 makes it horch-driven. The orchestrator's

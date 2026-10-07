@@ -10,6 +10,8 @@ fallbacks: [codex-sol]
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. Raise one spawn with --effort.
 effort: medium
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 skills: [landing-page, ui-taste, art-direction, motion-gsap]
 inherit_plugins: false

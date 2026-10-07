@@ -12,6 +12,8 @@ fallbacks: [codex-terra]
 # compounds a wrong assumption over every file it touches. For deep reasoning,
 # Opus at high costs fewer tokens than this seat.
 effort: max
+compact_window: 150000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [execute, check]

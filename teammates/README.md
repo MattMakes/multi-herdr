@@ -463,17 +463,53 @@ Not switched off:
 - The Codex automatic thread title had no switch in 0.154.0 (checked
   2026-09-18, not re-checked on 0.160.0).
 
-## Context: `compact_window` and `compact_at`
+## Compaction amounts per teammate
 
-2 optional fields tune the context watch of 1 teammate:
+Every teammate file states where horch asks it to hand off and compact, so
+the operator can read and tune the number in 1 place:
 
-- `compact_window` is the native auto-compact setting horch gives the
-  harness when the operator set none (see `_base/context-windows.md`).
-- `compact_at` is horch's watch base, in place of the fleet base of 300000
-  tokens. The threshold is the lower of the base and 80% of the native
-  trigger. `horch context`, `horch compact` and the `horch note` warning use
-  it. `--check` refuses a value outside 50000 to 1000000. There is no env
-  variable for it: a pane does not inherit the spawner's env.
+- `compact_at` is horch's watch base, in tokens. horch watches
+  `threshold = min(compact_at, floor(0.8 x native trigger))`; with an unknown
+  native trigger the threshold is `compact_at`. `horch context`, `horch
+  compact` and the `horch note` warning use it. `--check` refuses a value
+  outside 50000 to 1000000. There is no env variable for it: a pane does not
+  inherit the spawner's env.
+- `compact_window` is the harness's own auto-compact setting (Claude
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, Codex `model_auto_compact_token_limit`,
+  Prime `contextWindow`). A file sets it where a fleet window of
+  `_base/context-windows.md` applies, with the same value. Where the launch
+  uses the harness default (opencode, pi, `codex-luna`, `orchestrator-codex`),
+  the file sets only `compact_at`: a new window would change the launch.
+
+The native window, first match wins:
+
+1. The operator's own harness setting (then horch applies nothing).
+2. The teammate's `compact_window`.
+3. `windows` of `_base/context-windows.md` (`<harness>/<teammate>`, then
+   `<harness>/<model>`): the fallback for overlays and substitutions.
+4. The harness default.
+
+The values in the files are the thresholds of 2026-10-07 on the operator's
+machine: 300000 for Claude (the operator's 500000 window), 160000 for Codex
+`gpt-5.6-sol`, 120000 for `gpt-5.6-terra`, and the computed value for pi,
+Prime and opencode. `horch context --windows` shows each teammate's
+`compact_at` and its source (`teammate` or `fleet base`) beside the
+threshold.
+
+`horch teammates --check` fails:
+
+- a built-in teammate on a watched harness without `compact_at`. An
+  overlay file without it gets a warning, and the fleet base 300000
+  applies;
+- a window that leaves less than 20000 tokens (the headroom floor) between
+  the threshold and the native trigger.
+
+`antigravity` sets no `compact_at`: horch has no compact command for it and
+does not read its context (`horch context` shows `not-read`).
+
+To change a value, edit the teammate file. An operator overlay in
+`~/.config/horch/teammates/<name>.md` replaces the whole entry, so copy the
+whole file and keep both lines.
 
 `horch context` counts the compactions of each session in 2 groups: native
 (the harness compacted by itself) and horch (a `compacted` ledger event is at

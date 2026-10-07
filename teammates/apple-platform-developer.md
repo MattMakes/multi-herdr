@@ -15,6 +15,8 @@ requires: [xcode]
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. Raise one spawn with --effort.
 effort: medium
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills:

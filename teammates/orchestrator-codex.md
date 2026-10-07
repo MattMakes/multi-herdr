@@ -8,6 +8,7 @@ phase: plan
 skills: [orchestrate]
 model: gpt-6-astra
 effort: xhigh
+compact_at: 300000
 permission_mode: auto
 
 # No inherit_plugins, mcp_servers or setting_sources here: those are claude-only

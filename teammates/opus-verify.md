@@ -11,6 +11,8 @@ fallbacks: [codex-sol]
 # per task on the roster, so only for a precise spec: at max, a flawed premise
 # is pursued at full depth for a long time.
 effort: max
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [check, security-review]

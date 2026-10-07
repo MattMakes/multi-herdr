@@ -13,6 +13,8 @@ fallbacks: [codex-terra]
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. Raise one spawn with --effort.
 effort: medium
+compact_window: 150000
+compact_at: 300000
 permission_mode: auto
 skills: [design-system, ui-taste, brand-identity]
 inherit_plugins: false

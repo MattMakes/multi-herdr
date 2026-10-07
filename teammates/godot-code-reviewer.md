@@ -16,6 +16,8 @@ requires: [godot]
 fallbacks: [codex-sol]
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high
+compact_window: 200000
+compact_at: 300000
 
 # Review is read-only, enforced by denying the editing tools, the same as
 # ue-code-reviewer.
