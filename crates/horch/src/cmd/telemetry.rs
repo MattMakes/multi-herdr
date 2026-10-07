@@ -848,7 +848,8 @@ pub fn restart_if_stale(ctx: &RuntimeContext, herdr: &Herdr, installed: &Path) -
 
 /// The one check behind [`ensure`] and [`restart_if_stale`]: a live
 /// collector whose recorded binary is not `exe` is stopped (by pid and start
-/// time, [`lock::stop`]) and a new one runs `exe`.
+/// time, [`lock::stop`]) and a new one runs `exe`. A collector that cannot
+/// be stopped safely is reported live, with a warning, and left running.
 fn ensure_current(
     ctx: &RuntimeContext,
     herdr: &Herdr,
@@ -859,8 +860,17 @@ fn ensure_current(
     let root = ctx.paths.state_root.clone();
     match lock::holder(&root) {
         Holder::Live(info) if lock::runs_other_binary(&info, lock::exe_identity(exe).as_ref()) => {
-            lock::stop(&root, &info, Duration::from_secs(5))
-                .context("stopping the collector that runs an older binary")?;
+            // A collector horch cannot prove it owns (no recorded start time,
+            // a reused pid) is left running: `ensure` runs on fleet start and
+            // must not fail because an old collector is live.
+            if let Err(e) = lock::stop(&root, &info, Duration::from_secs(5)) {
+                eprintln!(
+                    "horch: telemetry collector pid {} runs another binary, but horch did not stop it: {e:#}. To replace it, stop it by hand (kill {}) and run `horch telemetry ensure` again.",
+                    info.pid, info.pid
+                );
+                report_live(&info, quiet);
+                return Ok(());
+            }
             output::println(&format!(
                 "stopped telemetry collector pid {}: it ran {}, not the build at {}",
                 info.pid,
@@ -1122,6 +1132,39 @@ mod tests {
                 .expect("the stale collector was stopped");
             std::fs::remove_dir_all(horch_core::telemetry::dir(&state)).unwrap();
         }
+    }
+
+    /// W12: a live collector that horch cannot stop safely (no recorded start
+    /// time) is warned about and reported live. `ensure` returns `Ok`, signals
+    /// nothing and starts nothing.
+    #[cfg(unix)]
+    #[test]
+    fn spc_03_ensure_leaves_a_collector_it_cannot_stop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let bin = tmp.path().join("horch");
+        std::fs::write(&bin, b"new build").unwrap();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe(&bin)
+                .with("HORCH_STATE_DIR", &state.to_string_lossy()),
+        )
+        .unwrap();
+        // No herdr: a start would fail, so a pass proves none was tried.
+        let herdr = Herdr::with_bin(tmp.path().join("no-herdr"));
+        let (pid, ended) = fake_collector(&state, None);
+        let tel = horch_core::telemetry::dir(&state);
+        let path = tel.join("collector.json");
+        let mut info: lock::LockInfo =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        info.pid_start = None;
+        std::fs::write(&path, serde_json::to_string(&info).unwrap()).unwrap();
+        ensure(&ctx, &herdr, true).expect("a collector that cannot be stopped is not an error");
+        restart_if_stale(&ctx, &herdr, &bin).expect("the install check is no error either");
+        assert!(ended.recv_timeout(Duration::from_millis(200)).is_err());
+        // SAFETY: our own child, still unreaped by its waiter.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        ended.recv_timeout(Duration::from_secs(5)).unwrap();
     }
 
     /// A change in layout is a change to these files.

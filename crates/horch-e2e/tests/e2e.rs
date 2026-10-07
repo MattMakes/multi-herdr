@@ -134,18 +134,43 @@ impl Drop for CollectorGuard {
     }
 }
 
-/// Hold the collector lock as if a live collector (this test process) ran.
+/// Hold the collector lock as if a live collector (this test process) ran
+/// the horch binary under test: it records that binary and its own start
+/// time, as a current collector does.
 fn hold_lock(h: &Harness) {
-    let dir = h.state.join("telemetry/collector.lock");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        h.state.join("telemetry/collector.json"),
-        format!(
+    let identity = horch_core::telemetry::lock::exe_identity(&Harness::horch_bin())
+        .expect("the horch binary under test has an identity");
+    let mut record = serde_json::json!({
+        "pid": std::process::id(),
+        "started_at": NOW,
+        "host": "test",
+        "exe": {
+            "path": identity.path,
+            "len": identity.len,
+            "mtime_ns": identity.mtime_ns,
+        },
+    });
+    if let Some(start) = horch_core::procid::start_time(std::process::id()) {
+        record["pid_start"] = start.into();
+    }
+    write_lock(h, &record.to_string());
+}
+
+/// Hold the collector lock as a collector from an older horch left it: a
+/// live pid, and no recorded binary and no start time.
+fn hold_old_lock(h: &Harness) {
+    write_lock(
+        h,
+        &format!(
             r#"{{"pid":{},"started_at":"{NOW}","host":"test"}}"#,
             std::process::id()
         ),
-    )
-    .unwrap();
+    );
+}
+
+fn write_lock(h: &Harness, record: &str) {
+    std::fs::create_dir_all(h.state.join("telemetry/collector.lock")).unwrap();
+    std::fs::write(h.state.join("telemetry/collector.json"), record).unwrap();
 }
 
 fn probes_of(h: &Harness, fake: &str, marker: &str) -> Vec<Value> {
@@ -667,6 +692,30 @@ fn spc_03_ensure_noop_when_live() {
         "{}",
         stdout(&out)
     );
+    assert!(h.calls_of("herdr").is_empty(), "no herdr call at all");
+}
+
+/// W12: a live collector that horch cannot prove it owns (no recorded
+/// binary, no start time) is never an error for `ensure`. It warns, reports
+/// the collector live, signals nothing and calls herdr never.
+#[test]
+fn spc_03_ensure_warns_and_succeeds_for_a_collector_it_cannot_stop() {
+    let h = corpus("spc03c");
+    hold_old_lock(&h);
+    let out = h.run(&["telemetry", "ensure"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("telemetry collector is live"),
+        "{}",
+        stdout(&out)
+    );
+    let pid = std::process::id().to_string();
+    let err = stderr(&out);
+    assert_eq!(err.matches("did not stop it").count(), 1, "{err}");
+    assert!(err.contains(&format!("pid {pid}")), "{err}");
+    assert!(err.contains(&format!("kill {pid}")), "{err}");
+    // This test process is the recorded pid: reaching here means no signal
+    // ended it.
     assert!(h.calls_of("herdr").is_empty(), "no herdr call at all");
 }
 

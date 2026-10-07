@@ -80,7 +80,7 @@ Every requirement has an ID. Tests carry the ID in their name (section 16.4), an
 |---|---|
 | SPC-01 | At most 1 collector runs per state root. A stale lock (its pid is dead) is broken and reported. |
 | SPC-02 | `horch telemetry` becomes a read-only viewer when the lock is held. Any number of viewers can run. |
-| SPC-03 | `horch telemetry ensure` opens the collector in its own herdr workspace with `--no-focus`. It never focuses, moves, splits or tiles any existing pane, and it does nothing when a live collector runs the current binary. A live collector on another binary is stopped (by pid and start time) and replaced. |
+| SPC-03 | `horch telemetry ensure` opens the collector in its own herdr workspace with `--no-focus`. It never focuses, moves, splits or tiles any existing pane, and it does nothing when a live collector runs the current binary. A live collector on another binary is stopped (by pid and start time) and replaced. A live collector that horch cannot stop safely (it recorded no start time) is left running: `ensure` warns on stderr with the pid and the way to stop it by hand, reports it live and exits 0. |
 | SPC-04 | The screen shows pools, live panes, rollups and insights, with keys `g`, `w`, `p`, `q` (section 12.4). |
 | SPC-05 | `horch usage` and `horch quota` print the same data as the screen, as text or `--json`. |
 | SPC-06 | `horch fleet` calls `ensure`. If `ensure` fails, the fleet still starts and prints 1 warning line. |
@@ -721,7 +721,7 @@ Test names start with the requirement ID. U = unit test in the module; I = integ
 | QUO-07 | `quo_07_cli_does_not_probe_when_collector_live`, `quo_07_probe_cadence` (with `HORCH_NOW` stepped) | E |
 | SPC-01 | `spc_01_second_collector_is_refused`, `spc_01_stale_lock_is_broken` (a lock with a dead pid) | I |
 | SPC-02 | `spc_02_viewer_when_locked` | I |
-| SPC-03 | `spc_03_ensure_argv` (fake-herdr log: `workspace create ... --no-focus`, `pane run`, nothing else), `spc_03_ensure_noop_when_live` (E). `spc_03_ensure_restarts_a_collector_on_an_older_binary`, `a_collector_on_another_binary_is_found`, `stop_ends_the_recorded_collector`, `stop_never_signals_a_process_that_is_not_the_recorded_collector` (U, with a fake collector record) | E, U |
+| SPC-03 | `spc_03_ensure_argv` (fake-herdr log: `workspace create ... --no-focus`, `pane run`, nothing else), `spc_03_ensure_noop_when_live` (E: a live collector that records the binary under test), `spc_03_ensure_warns_and_succeeds_for_a_collector_it_cannot_stop` (E). `spc_03_ensure_leaves_a_collector_it_cannot_stop` (U). `spc_03_ensure_restarts_a_collector_on_an_older_binary`, `a_collector_on_another_binary_is_found`, `stop_ends_the_recorded_collector`, `stop_never_signals_a_process_that_is_not_the_recorded_collector` (U, with a fake collector record) | E, U |
 | SPC-04 | `spc_04_render_*` goldens at 120x40 and 80x24, for every `g` and `w` value, from `snapshot-fixture.json` | G |
 | SPC-05 | `spc_05_usage_json_schema`, `spc_05_quota_json_schema` (every field in sections 9 and 11.3 present, with its type) | E |
 | SPC-06 | `spc_06_fleet_survives_ensure_failure` (fake-herdr fails `workspace create` for the label) | E |
