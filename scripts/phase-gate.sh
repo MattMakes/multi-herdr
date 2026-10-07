@@ -26,11 +26,19 @@ step() {
   "$@"
 }
 
-# No unresolved spec marker may remain. The token is built from two parts so
-# that this file does not match itself.
+# No unresolved spec marker may remain: the spec-todo token (upper case) in
+# any tracked file, or a Markdown line that starts with a pending placeholder
+# (upper case, then a colon). U-07: 2 such appendices escaped a scan for the
+# spec-todo token only. Prose that names the
+# marker inside a line does not match. Each token is built from two parts
+# so that this file does not match itself. nfr.rs runs this function on a
+# scratch repository (nfr_08_marker_scan_*).
 no_spec_todo() {
-  local hits token="SPEC-""TODO"
-  hits=$(git grep -n "$token" -- . || true)
+  local hits token="SPEC-""TODO" pending="^[[:space:]]*PEND""ING:"
+  hits=$({
+    git grep -n "$token" -- .
+    git grep -nE "$pending" -- '*.md'
+  } || true)
   if [ -n "$hits" ]; then
     echo "unresolved spec markers found (close them):" >&2
     echo "$hits" >&2

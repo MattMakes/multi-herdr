@@ -235,6 +235,93 @@ fn nfr_08_phase_gate_runs_every_check() {
     assert!(gate.contains("set -euo pipefail"));
 }
 
+/// Run the gate's `no_spec_todo` function, copied out of
+/// scripts/phase-gate.sh, in a scratch repository that tracks `files`.
+/// `None` when git is not on PATH (unless `HORCH_REQUIRE_GIT=1`).
+fn marker_scan(files: &[(&str, &str)]) -> Option<(bool, String)> {
+    let found = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|d| d.join("git"))
+            .find(|p| p.is_absolute() && p.is_file())
+    });
+    if found.is_none() {
+        assert!(
+            std::env::var_os("HORCH_REQUIRE_GIT").is_none_or(|v| v != "1"),
+            "HORCH_REQUIRE_GIT=1 is set but git is not on PATH"
+        );
+        return None;
+    }
+    let gate = std::fs::read_to_string(repo().join("scripts/phase-gate.sh")).unwrap();
+    let start = gate
+        .find("no_spec_todo() {")
+        .expect("no_spec_todo in phase-gate.sh");
+    let end = start + gate[start..].find("\n}\n").unwrap() + 3;
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+        let path = tmp.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let git = |args: &[&str]| {
+        let mut cmd = std::process::Command::new("git");
+        horch_marketplace::git::scrub_repo_env(&mut cmd);
+        let st = cmd
+            .args(args)
+            .current_dir(tmp.path())
+            .env("GIT_CONFIG_GLOBAL", tmp.path().join(".gitconfig"))
+            .status()
+            .unwrap();
+        assert!(st.success(), "git {args:?}");
+    };
+    git(&["init", "--quiet"]);
+    git(&["add", "."]);
+    let mut cmd = std::process::Command::new("bash");
+    horch_marketplace::git::scrub_repo_env(&mut cmd);
+    let out = cmd
+        .args(["-c", &format!("{}no_spec_todo", &gate[start..end])])
+        .current_dir(tmp.path())
+        .env("GIT_CONFIG_GLOBAL", tmp.path().join(".gitconfig"))
+        .output()
+        .unwrap();
+    Some((
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// U-07, NFR-08: the marker scan fails on a Markdown line that starts with
+/// a pending placeholder and on the spec-todo token in any tracked file.
+#[test]
+fn nfr_08_marker_scan_fails_on_each_marker() {
+    let pending = concat!("PEND", "ING:");
+    let todo = concat!("SPEC-", "TODO");
+    let doc = format!("# Spec\n\n{pending} the operator inserts the text here.\n");
+    let Some((ok, err)) = marker_scan(&[("docs/a.md", &doc)]) else {
+        return;
+    };
+    assert!(!ok && err.contains("docs/a.md:3:"), "{err}");
+    let indented = format!("- item\n  {pending} later\n");
+    let (ok, err) = marker_scan(&[("b.md", &indented)]).unwrap();
+    assert!(!ok && err.contains("b.md:2:"), "{err}");
+    let code = format!("// {todo}: close this\n");
+    let (ok, err) = marker_scan(&[("src/lib.rs", &code)]).unwrap();
+    assert!(!ok && err.contains("src/lib.rs:1:"), "{err}");
+}
+
+/// U-07: prose that names the pending marker inside a line, lower-case
+/// "pending", and the token at a line start outside Markdown pass the scan.
+#[test]
+fn nfr_08_marker_scan_passes_legit_prose() {
+    let pending = concat!("PEND", "ING:");
+    let doc =
+        format!("The gate fails on a `{pending}` placeholder.\nThe rule is pending review.\n");
+    let script = format!("{pending} not a doc\n");
+    let Some((ok, err)) = marker_scan(&[("docs/a.md", &doc), ("notes.txt", &script)]) else {
+        return;
+    };
+    assert!(ok, "{err}");
+}
+
 /// The NFR-02 corpus: `sessions` live Claude sessions of about
 /// `bytes_per_file` bytes each, and one ledger that names them all.
 fn perf_corpus(w: &World, sessions: usize, bytes_per_file: u64) {

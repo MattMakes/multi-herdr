@@ -10,10 +10,12 @@
 
 Requirement tables in section 3 are machine-read by
 `scripts/check-req-coverage.sh`. Do not change their header row. Do not
-define an ID in any other table. The original Spec A text is not
-available. The finish run (2026-10-04) closed every spec placeholder
+define an ID in any other table. The operator's original Spec A prose is
+not kept (Appendix A). The finish run (2026-10-04) closed every spec-todo
 marker: each such place now states the implemented, tested behaviour as the
-spec and cites its code and test.
+spec and cites its code and test. Wave 2 (2026-10-06) replaced the last 2
+`PENDING:` appendix placeholders. The gate step `no_spec_todo` fails on
+either marker in a tracked doc.
 
 ---
 
@@ -1758,6 +1760,10 @@ The dataset fault points are in the dataset design §7.
 
 ---
 
-## Appendix A: Spec A (verbatim)
+## Appendix A: Spec A source text
 
-PENDING: the orchestrator inserts the operator's Spec A text here.
+This design, with the other documents in `docs/specs/`, is the
+authoritative Spec A. The operator's original prose request is not kept.
+Where this document quotes it (for example the §17 acceptance criteria in
+§3.4), the quote came from the master plan, and the requirement tables
+and their tests are the binding form.

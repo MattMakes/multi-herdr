@@ -1719,8 +1719,8 @@ truncates the last event line and checks rule 4.
 
 ### 7.3 Final audit
 
-After B6, the final audit walks both verbatim specs section by section
-against `SPEC-COVERAGE.md`. It must list zero unmapped items.
+After B6, the final audit walks both specs (this design and
+`architecture.md`) section by section against `SPEC-COVERAGE.md`. It must list zero unmapped items.
 
 ---
 
@@ -1745,6 +1745,9 @@ The hermetic suite cannot prove these. They use real herdr, claude and codex.
 
 ---
 
-## Appendix B: Spec B (verbatim)
+## Appendix B: Spec B source text
 
-PENDING: the orchestrator inserts the operator's Spec B text here.
+This design, with the other documents in `docs/specs/`, is the
+authoritative Spec B. The operator's original prose request is not kept.
+The requirement tables in section 3 and their tests are the binding form
+of every requirement it made.
