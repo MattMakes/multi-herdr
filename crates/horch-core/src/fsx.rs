@@ -464,6 +464,19 @@ impl BreakerGuard {
     }
 }
 
+impl Drop for BreakerGuard {
+    /// Unlock before the close. A child forked by another thread shares the
+    /// open file until it execs, and a close alone leaves the `flock` held
+    /// while any copy is open.
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(dir) = &self._dir {
+            use std::os::unix::io::AsRawFd;
+            unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
+}
+
 /// Remove a stale lock, and say so. Returns whether this call removed it.
 ///
 /// Two processes can both see the same stale lock. Without coordination the
@@ -825,6 +838,34 @@ mod tests {
         assert!(!breaker.exists());
         assert!(break_lock(&lock, stale), "then the dead lock is broken");
         assert!(!lock.exists());
+    }
+
+    /// A process forked by another thread while a breaker holds the guard
+    /// shares the guard's open file until it execs. Dropping the guard still
+    /// frees it at once, so the next breaker is not held off by that child.
+    #[cfg(unix)]
+    #[test]
+    fn dirlock_guard_is_free_while_a_forked_child_shares_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join("events.lock");
+        let held = BreakerGuard::take(&lock).expect("the guard is free");
+        // SAFETY: the child only calls `pause` and `_exit`, which are
+        // async-signal-safe; it stands for a child between fork and exec.
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork failed");
+        if child == 0 {
+            unsafe {
+                libc::pause();
+                libc::_exit(0);
+            }
+        }
+        drop(held);
+        let free = BreakerGuard::take(&lock).is_some();
+        unsafe {
+            libc::kill(child, libc::SIGKILL);
+            libc::waitpid(child, std::ptr::null_mut(), 0);
+        }
+        assert!(free, "the dropped guard is free while the child lives");
     }
 
     #[test]
