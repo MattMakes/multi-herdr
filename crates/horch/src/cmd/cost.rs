@@ -23,7 +23,11 @@ use serde::Serialize;
 use crate::output;
 
 pub struct CostArgs {
-    pub json: bool,
+    /// Human tables instead of JSON.
+    pub text: bool,
+    /// Where report files go.
+    #[allow(dead_code)]
+    pub dir: Option<String>,
     pub reprice: Option<String>,
     pub pricing: Option<String>,
     /// Only records created at or after this UTC timestamp (ledger format,
@@ -141,7 +145,7 @@ pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
         &prices,
         reprice,
     );
-    if args.json {
+    if !args.text {
         output::println(&serde_json::to_string_pretty(&report)?);
     } else {
         output::print(&render(

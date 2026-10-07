@@ -153,15 +153,29 @@ enum Command {
         dir: Option<String>,
     },
 
-    /// What this project's fleet cost, per worker, read from each harness's
-    /// transcripts; plus which expected skills each worker never loaded.
+    /// Spend telemetry: what this project's fleet cost, per worker, read
+    /// from each harness's transcripts; plus which expected skills each
+    /// worker never loaded.
     ///
-    /// Prices every ledger session (claude, codex, pi, prime) at the built-in
-    /// per-MTok table. Sessions that cannot be priced are listed, never zeroed.
+    /// Informational: spend telemetry to see where tokens go; not an input to
+    /// routing, model or teammate choice.
+    ///
+    /// With no filter, writes 3 reports for the windows that end now (30d,
+    /// 7d, 24h) to `<dir>/<YYYY_MM_DD_HHMMSS>_30d.json`, `_7d.json` and
+    /// `_24h.json`, and prints a JSON summary. A window counts each call by
+    /// its own time, not by when its session started. With --since, --record
+    /// or --session: 1 report on stdout, and a file only with --dir. Sessions
+    /// that cannot be priced are listed, never zeroed.
     Cost {
-        /// Machine-readable report.
-        #[arg(long)]
+        /// Accepted for old callers; JSON is the default.
+        #[arg(long, conflicts_with = "text")]
         json: bool,
+        /// Print the human tables instead of JSON. The files are still written.
+        #[arg(long)]
+        text: bool,
+        /// Where the report files go. Default: <project>/ai_docs/reports/cost.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<String>,
         /// Add a what-if column: the same tokens at this model's prices.
         #[arg(long, value_name = "MODEL")]
         reprice: Option<String>,
@@ -169,7 +183,8 @@ enum Command {
         /// {"<model>": {"input": 4, "output": 20, "cache_read": 0.2}}.
         #[arg(long, value_name = "FILE")]
         pricing: Option<String>,
-        /// Only sessions created at or after this UTC time (e.g. 2026-09-24).
+        /// Only calls at or after this time (RFC 3339 or a date such as
+        /// 2026-09-24, UTC), as `horch usage --since` counts them.
         #[arg(long, value_name = "TIMESTAMP")]
         since: Option<String>,
         /// Only this record or session id. Repeatable.
@@ -584,7 +599,9 @@ fn run() -> Result<std::process::ExitCode> {
             return cmd::telemetry::run(ctx, command);
         }
         Command::Cost {
-            json,
+            json: _,
+            text,
+            dir,
             reprice,
             pricing,
             since,
@@ -593,7 +610,8 @@ fn run() -> Result<std::process::ExitCode> {
         } => cmd::cost::cost(
             ctx,
             cmd::cost::CostArgs {
-                json,
+                text,
+                dir,
                 reprice,
                 pricing,
                 since,
