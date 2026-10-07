@@ -37,7 +37,7 @@ of defence. Do not depend on it.
 | 9 | `scripts/check-req-coverage.sh` | a requirement ID has no test | the ID's requirement table in `docs/specs/` |
 | 10 | `scripts/check-deps.sh` | a crate has a dependency that is not allowed | the `Cargo.toml` you changed |
 | 11 | `scripts/verify-telemetry-e2e.sh` | the hermetic telemetry story changed | `crates/horch-e2e/tests/scenario.rs` |
-| 12 | `godot_skills` (the Python checks in `scripts/godot/`) | a Godot skill names an unknown engine API, a code block does not parse, or a cross-reference does not resolve; the Godot and dotnet checks skip when those tools are absent | the first failing script in the output, then the named file in `skills/godot-*/` |
+| 12 | `godot_skills` (the Python checks in `scripts/godot/` and their unit tests; the tests also run the 4 GW9 gameplay scenarios headless) | a Godot skill names an unknown engine API, a code block does not parse or compile, a cross-reference does not resolve, a gameplay scenario fails, or a copied file has more failing blocks or deprecated names than `scripts/godot/copied-baseline.json` allows; the Godot and dotnet checks skip when those tools are absent | the first failing script in the output, then the named file in `skills/godot-*/` |
 
 `HORCH_REQUIRE_GIT=1` and `HORCH_REQUIRE_SQLITE=1` turn a skip into a
 failure. Without them, a test that cannot find `git` (for example in

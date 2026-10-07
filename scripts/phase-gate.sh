@@ -48,14 +48,18 @@ no_spec_todo() {
 
 # Godot skills: every engine API name in
 # skills/godot-* must exist in Godot 4.7.2, and every gdscript block must
-# parse. A failing block in a copied file (a `copied_files` path in
-# skills/copied.json) is reported, not failed; so is a deprecated
-# API name in such a file (GW13). Both Godot checks print "skipped: no Godot"
+# parse. A failing block or a deprecated API name (GW13) in a copied file (a
+# `copied_files` path in skills/copied.json) does not fail by itself: the
+# checks count them per skill, and a count above its baseline in
+# scripts/godot/copied-baseline.json fails the step (U-22, copied_ratchet.py).
+# Both Godot checks print "skipped: no Godot"
 # and pass when Godot is not installed. xref_check needs no Godot: every
 # godot-<name> mention names a skill and every relative link resolves.
 # csharp_blocks_check compiles every csharp block with dotnet and
 # Godot.NET.Sdk (same --strict-own rule; "skipped: no dotnet" without dotnet;
 # 24 s on the 64 skills with a warm NuGet cache in .worktrees/_scratch).
+# The unit tests also run the 4 GW9 gameplay scenarios headless (U-25,
+# gameplay_scenarios.py).
 godot_skills() {
   python3 -m unittest discover -s scripts/godot/tests
   local dirs=(skills/godot-*/)
