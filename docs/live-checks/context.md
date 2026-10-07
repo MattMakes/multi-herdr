@@ -213,3 +213,25 @@ its own).
 | B4 codex orchestrator self-compaction | CTX-18: orchestrator self-compaction | codex-cli 0.160.0 | SKIP | operator step: the Codex orchestrator (`horch fleet` on the Codex flavor) |
 | B5 horch note timing | CTX-26: `horch note` under 0.5 s in a pane | horch 0.1.0 | PASS | `time horch note timing` in a worker pane: real 0.060 s |
 | B6 pi fresh route | CTX-16.1: the fresh route for a pi worker | horch 0.1.0 | PASS | pi-1: `horch compact` refused in place; pi-1 ran `horch done` with its handoff; pi-2 started with `PRIOR WORK` and resumed |
+
+## 2026-10-07, part C
+
+The headless steps, on the installed horch at `bd7afdd` (u9 `5db062d`), with
+`LIVE_CONTEXT_PRIME_MODEL=ollama/qwen3.8`: Prime has no Anthropic login on
+this Mac, and Prime with that login is an operator step. Result file
+`.worktrees/_scratch/live-context/results/2026-10-07T05-40-32Z.md`. No step
+was paid: pi and Prime ran on the local Ollama model, and OpenCode on its
+free tier. The C4 and C5 pane steps follow in the next table.
+
+| step | claim it proves | tool version | result | evidence |
+|---|---|---|---|---|
+| C1 versions | the versions and models part C ran on | horch 0.1.0 | PASS | pi 0.99.1, prime-agent 0.9.4, opencode 1.18.35, herdr 0.8.2, sqlite3 3.51.0; models pi ollama/qwen3.8, prime ollama/qwen3.8, opencode opencode/big-pickle |
+| C2 pi reader | CTX-02, CTX-17: the slice-2 readers give the harness own number (`telemetry/context.rs`) | pi 0.99.1 | PASS | horch 657, the session's newest totalTokens 657 |
+| C2 prime reader | CTX-02, CTX-17: the slice-2 readers give the harness own number (`telemetry/context.rs`) | prime-agent 0.9.4 | PASS | horch 1539, the session's newest totalTokens 1539 |
+| C2 opencode reader | CTX-02, CTX-17: the slice-2 readers give the harness own number (`telemetry/context.rs`) | opencode 1.18.35 | PASS | horch 21379, opencode run's newest step_finish total 21379 |
+| C3 pi canary | CTX-20: the compact-instructions block survives a pi or Prime compaction (`teammates/_base/fleet-worker.md`) | pi 0.99.1 | PASS | ignored (a result: the keep-list argument of horch compact covers pi and Prime): the summary has no KEEP-CANARY-1d745e8a: - The assistant should respond with only the word "OK."  |
+| C3 prime canary | CTX-20: the compact-instructions block survives a pi or Prime compaction (`teammates/_base/fleet-worker.md`) | prime-agent 0.9.4 | SKIP | not verifiable: no compaction line after the RPC compact ({"success": false, "error": "Timed out after 30000ms waiting for the Prime Agent daemon response to \"compact\". Socket: /Users/mascott/projects/multi-herdr/.worktrees/_scratch/live-context/c/d.sock. Daemon log: /Users/mascott/projects/multi-herdr/.worktrees/_scratch/live-context/c/prime-agent/logs/d.sock.26fa19ff.log."}); part C5 compacts a pane |
+| C4 prime agent dir | CTX-05: the Prime pane agent dir turns autoRefine off and sets the fleet window (`harness/prime.rs`) | prime-agent 0.9.4 | SKIP | no pane agent dir; spawn prime (C5), then set LIVE_CONTEXT_C5_PRIME_ROLE or LIVE_CONTEXT_C4_AGENT_DIR |
+| C5 opencode-pickle pane | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | opencode 1.18.35 | SKIP | operator step; set LIVE_CONTEXT_C5_OPENCODE_ROLE to check the ledger and the pane |
+| C5 pi pane | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | pi 0.99.1 | SKIP | operator step; set LIVE_CONTEXT_C5_PI_ROLE to check the ledger and the pane |
+| C5 prime pane | CTX-10, CTX-13, CTX-17: a slice-2 worker pane: horch note, herdr agent_status, the compaction round trip | prime-agent 0.9.4 | SKIP | operator step; set LIVE_CONTEXT_C5_PRIME_ROLE to check the ledger and the pane |
