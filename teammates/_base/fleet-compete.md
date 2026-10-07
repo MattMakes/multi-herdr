@@ -41,6 +41,8 @@ Land the result:
 - If the cherry-pick stops on a conflict, run `git cherry-pick --abort`. Then spawn a Claude worker with a plan that applies the diff of compete/<slug> by hand.
 - If your sandbox refuses a git write, spawn a Claude worker to run the git step.
 - If the line names "Winner: none", spawn the unit as usual with the baseline teammate. The round stays in the dataset.
+- If the line names a winner and "Promoted: none", spawn the unit as usual with the baseline teammate. Tell the operator the round id and the Reason.
+- If the line says the round is STOPPED, the round stopped on an error. Spawn the unit as usual. Tell the operator the resume command that the Reason names. Do not run that command yourself: it does not return until the round ends.
 
 Records:
 - The judge labels the candidates. Do not run `horch verdict` on a candidate record.
