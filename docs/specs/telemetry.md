@@ -104,7 +104,7 @@ Every requirement has an ID. Tests carry the ID in their name (section 16.4), an
 | ID | Requirement |
 |---|---|
 | NFR-01 | `cargo test --workspace` is hermetic: no network, no real harness binary, no herdr server, no file outside a temp dir. |
-| NFR-02 | Budgets: a steady-state tick with 50 live sessions takes under 200 ms. A cold start over 1 GB of transcripts takes under 30 s. Collector RSS stays under 150 MB. |
+| NFR-02 | Budgets: a steady-state tick with 50 live sessions takes under 200 ms. A cold start over 1 GB of transcripts takes under 30 s. Collector RSS stays under 150 MB. The collector keeps at most 320 B in memory per stored event (a test guard), and a steady tick reads only the ledgers and transcripts that changed. |
 | NFR-03 | Existing tests, `horch teammates --check` and the prompt goldens stay green. Every touched `.rs` file is rustfmt-clean. |
 | NFR-04 | Linux and macOS both pass (the cloud VM is Linux; the operator runs macOS). No Unix-only call without a Windows `cfg` path. |
 | NFR-05 | New runtime crates: only `ratatui` and `crossterm`, in the `horch` crate only. SQLite is reached through the `sqlite3` CLI. |
@@ -166,7 +166,7 @@ New code:
 |---|---|
 | `crates/horch-core/src/telemetry/mod.rs` | types: `Event`, `TokenClasses`, `Snapshot`, `Rollup` |
 | `crates/horch-core/src/telemetry/readers.rs` | incremental readers, one per harness |
-| `crates/horch-core/src/telemetry/cursor.rs` | cursor state, file identity, pending buffers |
+| `crates/horch-core/src/telemetry/cursor.rs` | cursor state, file identity, recent message ids |
 | `crates/horch-core/src/telemetry/store.rs` | event append, dedupe index, retention, rollups |
 | `crates/horch-core/src/telemetry/collect.rs` | the tick |
 | `crates/horch-core/src/quota.rs` | pools, probes, normalization, states, `quota.json` |
@@ -227,7 +227,7 @@ pub enum Observation { Usage(Event), QuotaSignal(QuotaSignal) }
 
 | agent | files | event id (dedupe key) | token mapping | notes |
 |---|---|---|---|---|
-| claude | `<home>/.claude/projects/*/<sid>.jsonl`, then `<sid>/subagents/*.jsonl` | `message.id` | `input_tokens` -> input; `cache_creation.ephemeral_5m_input_tokens` -> cw5m; `cache_creation.ephemeral_1h_input_tokens` -> cw1h (if `cache_creation` is absent, `cache_creation_input_tokens` -> cw5m); `cache_read_input_tokens` -> cache_read; `output_tokens` -> output; `output_tokens_details.thinking_tokens` -> reasoning | Records for 1 `message.id` repeat once per content block [S]. The reader keeps a pending entry per session and emits it when a different `message.id` appears, or when the file has not grown for 2 ticks. Subagent events carry `subagent: true`. A synthetic `"error":"rate_limit"` line is a `QuotaSignal::Refusal{pool: claude, text}` [Q]. |
+| claude | `<home>/.claude/projects/*/<sid>.jsonl`, then `<sid>/subagents/*.jsonl` | `message.id` | `input_tokens` -> input; `cache_creation.ephemeral_5m_input_tokens` -> cw5m; `cache_creation.ephemeral_1h_input_tokens` -> cw1h (if `cache_creation` is absent, `cache_creation_input_tokens` -> cw5m); `cache_read_input_tokens` -> cache_read; `output_tokens` -> output; `output_tokens_details.thinking_tokens` -> reasoning | Records for 1 `message.id` repeat once per content block [S]. The reader emits a message the first time it sees its `message.id`, and holds nothing. A later record of the same id with more tokens emits a correction `<id>+<n>` (`delta: true`) for the growth only, so no token counts twice (section 20, row B1). Claude Code 2.1.292 writes each record after the message completes, with the final usage and `stop_reason` on every record. Subagent events carry `subagent: true`. A synthetic `"error":"rate_limit"` line is a `QuotaSignal::Refusal{pool: claude, text}` [Q]. |
 | codex | rollout `rollout-*-<sid>.jsonl` under `<codex home>/sessions` | `payload.response_id` | `usage.input_tokens - usage.cached_input_tokens` -> input; `cached_input_tokens` -> cache_read; `cache_write_input_tokens` -> cw5m; `output_tokens` -> output; `reasoning_output_tokens` -> reasoning | `model` and `effort` come from the latest `turn_context`. Each `token_count.rate_limits` is a `QuotaSignal::Snapshot`. `task_complete.error.codex_error_info == "usage_limit_exceeded"` is a `QuotaSignal::Refusal`. Fallback when there is no `token_usage_record`: difference of consecutive `total_token_usage` values. |
 | pi | `~/.pi/agent/sessions/**/*<sid>*.jsonl` (or `PI_CODING_AGENT_SESSION_DIR`) | `<sid>:<byte offset of the line>` | `usage.input` -> input; `cacheWrite` -> cw5m; `cacheRead` -> cache_read; `output` -> output | Only `type == "message"` with `message.role == "assistant"`. `ToolResultMessage.usage` also counts, with `tool_nested: true`. |
 | prime | the session file path stored in the ledger | same as pi | same as pi | |
@@ -251,7 +251,7 @@ A record is listed in `snapshot.unread` with 1 reason when it has: no session id
 
 ```json
 { "path": "...", "dev": 16777232, "ino": 9123301, "offset": 482113,
-  "pending": { "message_id": "msg_01", "event": { ... } }, "quiet_ticks": 0 }
+  "recent": [ { "id": "msg_01", "tokens": { ... }, "corrections": 0 } ], "quiet_ticks": 0 }
 ```
 
 - Only complete lines (ending in `\n`) are consumed. A trailing partial line stays for the next tick.
@@ -263,6 +263,7 @@ A record is listed in `snapshot.unread` with 1 reason when it has: no session id
 
 - `events-YYYY-MM-DD.jsonl` (UTC date of the event). Append-only.
 - Dedupe key: `(agent, session_id, event_id)`. The collector keeps an in-memory set of keys for the retention window, rebuilt from the event files at start. Before appending, it drops duplicate keys.
+- Memory: the collector keeps each stored event for as long as it runs, so it keeps only what the snapshot folds: the time, the tokens, the cost, the model and the record with its 6 group keys, as interned ids (about 200 B per event). The full events stay on disk. At start it reads each event file line by line.
 - Crash safety: append the events, `fsync`, then write the cursor (temp file + rename). A crash between the 2 steps re-reads some input, and the dedupe index drops the repeats. This is what TEL-07 tests.
 - Retention: 35 days (setting `retention_days`). Files older than that are deleted at collector start.
 - Pricing: `cost_usd` is the list price when the event was collected, or `null` when the price table did not know the model then. Every reader of the event files (`Store::open`, `store::read_all`) prices a `null` cost from the current table at read time, so a price added later reaches events already stored. A set cost is kept: it is the price at the time. A model the table still does not know stays `null`, and every sum lists it as unpriced, never as $0.
@@ -281,10 +282,10 @@ Event line:
 
 Every `tick_ms` (default 2000):
 
-1. Read every `state_root/*.json` ledger. On a parse error, keep the last good copy of that ledger and retry next tick (a ledger write may be in flight).
+1. Read every `state_root/*.json` ledger whose length or modification time changed. On a parse error, keep the last good copy of that ledger and retry next tick (a ledger write may be in flight).
 2. Select records whose `updated_at` is inside the retention window.
-3. Resolve each record to its reader and files. Poll.
-4. Append events, then save cursors (8.2 order).
+3. Resolve each record to its reader and files. A found transcript stays found while it is a file. A record with no transcript is searched for on every tick while its `updated_at` is under 10 minutes old (a new spawn), else every 30 s: a search walks the transcript trees. Claude subagent files are listed again when a directory of the last listing changed. Poll a record only when one of its files changed its length, inode or modification time (OpenCode: the database or its `-wal` file).
+4. Append events, then save cursors (8.2 order). A tick that polled nothing saves no cursor.
 5. Hand `QuotaSignal`s to the quota module. Run a probe if one is due (section 11.2).
 6. Recompute the snapshot and write it with temp file + rename.
 
@@ -807,7 +808,7 @@ The cloud proves the logic against fixtures. These steps prove the fixtures matc
 | L3 probe truth | `horch quota --refresh`, then open `/usage` in an interactive Claude session and `/status` in Codex | every window within 1 percentage point, same reset times |
 | L4 probe hygiene | Run `horch quota --refresh` 3 times. List files in `~/.claude/projects/*/` and `~/.codex/sessions/` newer than the first run. | no new transcript contains a user message; no new rollout contains a turn |
 | L5 singleton in herdr | `horch fleet` in 2 scratch projects | 1 `horch telemetry` workspace in `herdr workspace list`; the operator's focused pane does not change; the `collector.json` pid is the same after the second fleet |
-| L6 live latency | Spawn 1 `sonnet` worker with a 1-line task | its row appears within 5 s of its first response, and its totals match its transcript |
+| L6 live latency | Spawn 1 `sonnet` worker with a 1-line task | its first event is in the store within 5 s after its first usage line is on disk (the script polls the transcript and the store every 0.2 s), and its totals match its transcript. The origin is the disk, not the line's `timestamp`: Claude Code writes a line only after its message completes, seconds after that timestamp, and that lag is outside horch. The limit: 1 tick (2 s) + the tick (under 0.2 s) + 2 polls (0.4 s) is 2.6 s at worst. The script prints the lag from the timestamp as INFO, never as PASS or FAIL |
 | L7 crash recovery | `kill -9` the collector during L6, then `horch telemetry ensure` | totals unchanged; no duplicate event keys (`jq` check in the script) |
 | L8 gate drill | `HORCH_QUOTA_FILE=<fixture: claude exhausted, codex ok, dates shifted to now> horch route researcher`, then `horch spawn researcher "Reply with DONE"` in a scratch fleet | `SUBSTITUTED` line; the record has `via: codex-sol`; the pane runs codex with the researcher briefing |
 | L9 real gate | `horch route opus` on the real pools | the answer follows the pools: `REFUSED` with both reset times when both are exhausted, else `SPAWN` or `SUBSTITUTED`. The script also drills `REFUSED` on the shifted all-exhausted fixture |
@@ -844,7 +845,7 @@ Local fleet mapping, if the operator builds with the fleet rather than the cloud
 | R6 | The OpenCode free window is undocumented [Q] | The cooldown is a setting |
 | R7 | Claude extra usage is enabled (7.5% of the monthly limit used) [Q]. An exhausted pool may still serve requests on paid credits. | `exhausted` stays exhausted. `--force` is the explicit way to spend credits. |
 | R8 | pi cannot start on this machine (Node 22.9 < 22.19) [S] | `local` shows `broken` with the reason, which is the correct state today |
-| R9 | Claude `message.usage` repeats were identical on 2.1.283, but older versions grew them [S] | The pending buffer keeps the last record, which is correct for both |
+| R9 | Claude `message.usage` repeats were identical on 2.1.283, but older versions grew them [S] | A record that grew emits a correction for the growth (section 20, B1), which is correct for both |
 
 ---
 

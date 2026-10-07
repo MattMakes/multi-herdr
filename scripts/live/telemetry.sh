@@ -201,19 +201,36 @@ l6() {
   rec=""; for _ in 1 2 3 4 5 6 7 8 9 10; do rec=$(record_of_pane "$pane"); [ -n "$rec" ] && break; sleep 1; done
   sid=$(horch sessions --json | jq -r --arg r "$rec" '.[] | select(.record_id == $r) | .session_id // empty')
   echo "$rec" > "$S/l6-record"
-  transcript=""; for _ in $(seq 1 90); do transcript=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1 || true)
-    [ -n "$transcript" ] && grep -q '"usage"' "$transcript" 2>/dev/null && break; sleep 1; done
-  first_ts=$(jq -r 'select(.message.usage? and .type == "assistant") | .timestamp' "$transcript" 2>/dev/null | head -1)
-  t0=$(iso_epoch "$first_ts"); seen=""
-  for _ in $(seq 1 60); do
-    if cat "$TEL"/events-*.jsonl | grep -q "\"record_id\":\"$rec\""; then seen=$(now); break; fi
-    sleep 0.5
+  # The origin is the time the first usage line is on disk (polled every
+  # 0.2 s). Claude Code writes a line only after its message completes, so
+  # the line's own timestamp is seconds older; that lag is outside horch and
+  # is printed as INFO only.
+  transcript=""; on_disk=""
+  for _ in $(seq 1 450); do
+    [ -n "$transcript" ] || transcript=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1 || true)
+    if [ -n "$transcript" ] && grep -q '"usage"' "$transcript" 2>/dev/null; then on_disk=$(now); break; fi
+    sleep 0.2
   done
-  if [ -z "$seen" ]; then fail "L6 live latency" "no event for $rec in the store 30 s after the first response ($first_ts)"
+  first_ts=$(jq -r 'select(.message.usage? and .type == "assistant") | .timestamp' "$transcript" 2>/dev/null | head -1)
+  seen=""
+  if [ -n "$on_disk" ]; then
+    # Only the 2 newest event files: the event is dated today (UTC).
+    for _ in $(seq 1 150); do
+      if ls "$TEL"/events-*.jsonl | tail -2 | xargs grep -q "\"record_id\":\"$rec\""; then seen=$(now); break; fi
+      sleep 0.2
+    done
+  fi
+  if [ -z "$on_disk" ]; then fail "L6 live latency" "no usage line in the transcript of $rec within 90 s"
+  elif [ -z "$seen" ]; then fail "L6 live latency" "no event for $rec in the store 30 s after its first usage line was on disk"
   else
-    lat=$(perl -e "printf '%.1f', $seen - $t0")
-    if perl -e "exit(($seen - $t0) <= 5.5 ? 0 : 1)"; then pass "L6 live latency" "first event seen ${lat} s after the first response (limit 5 s plus 0.5 s poll step)"
-    else fail "L6 live latency" "first event seen ${lat} s after the first response; limit is 5 s"; fi
+    lat=$(perl -e "printf '%.1f', $seen - $on_disk")
+    # Limit 5 s: 1 tick (2 s) + the tick (under 0.2 s) + 2 polls of 0.2 s = 2.6 s at worst, with margin.
+    if perl -e "exit(($seen - $on_disk) <= 5.0 ? 0 : 1)"; then pass "L6 live latency" "first event in the store ${lat} s after the first usage line was on disk (limit 5 s)"
+    else fail "L6 live latency" "first event in the store ${lat} s after the first usage line was on disk; limit is 5 s"; fi
+    t0=$(iso_epoch "$first_ts" 2>/dev/null || true)
+    if [ -n "$t0" ]; then
+      info "INFO L6: the store event came $(perl -e "printf '%.1f', $seen - $t0") s after the line's timestamp $first_ts; the line reached the disk $(perl -e "printf '%.1f', $on_disk - $t0") s after it (Claude Code write lag)"
+    fi
   fi
   if wait_done "$rec" 240; then
     sleep 12

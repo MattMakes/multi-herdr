@@ -108,3 +108,59 @@ ran with `LIVE_TELEMETRY_KILL_COLLECTOR=1`.
 | L9 real gate | the gate follows the real pools | PASS | both pools `ok`: `SPAWN: opus runs as itself` |
 | L10 perf, synthetic 1 GB | cold start under 30 s, steady tick under 200 ms | PASS | cold 16.2 s, steady 198.1 ms: 1.9 ms under the limit, so a slower host fails it |
 | L10 collector RSS | under 150 MB | **FAIL** | the new collector (pid 71519) holds 153.9 MiB (161.4 MB) 3 minutes after the start and grows to 157.6 MiB after 4 minutes, on a 60 MB store of 111 571 events. The old binary held 141.2 MiB after 2 days on a 58 MB store. Reported as a product defect (NFR-02 RSS); not fixed here. |
+
+## Run 2026-10-06 (UTC 2026-10-07), after W15
+
+Tools: horch 0.1.0 at `a5d8d83` or later (`touch crates/horch-core/build.rs`
+and `just install` ran; `horch install` replaced collector pid 71519 with pid
+46445 on the new binary), claude 2.1.292, codex-cli 0.160.0, herdr 0.8.2, repo
+HEAD `65bbcca`. Paid: L6 (1 `sonnet` worker), L8 (1 `researcher` worker run as
+`codex-sol`), both 1-line tasks. L7 ran with `LIVE_TELEMETRY_KILL_COLLECTOR=1`.
+Host load average 50 to 110 on 18 cores during the run (other workers' builds).
+
+What changed (W15, commit `a5d8d83`):
+
+- **L6 cause.** The Claude reader holds nothing: it emits a message on first
+  sight and adds a correction for growth (spec section 20, row B1). Spec 7.1
+  said otherwise; it is corrected. Claude Code 2.1.292 writes each transcript
+  line after its message completes, with the final usage and `stop_reason` on
+  every line, so the line reaches the disk seconds after its own `timestamp`.
+  The old L6 measured from that timestamp. The old collector's tick also took
+  1.4 to 2.7 s on this store, so it read each record about every 4 s.
+- **L6 now** measures from the time the first usage line is on disk to the
+  first store event, both polled every 0.2 s, limit 5 s (spec section 17). The
+  lag from the line's timestamp is printed as INFO.
+- **L10 RSS and the tick.** The collector kept every `Event` (872 B each) and
+  re-read every ledger, every transcript and the 2 MB cursor file on each tick.
+  It now keeps about 200 B per event and reads only what changed.
+
+| step | claim it proves | result | evidence |
+|---|---|---|---|
+| L1 fixture drift | the key paths each reader uses exist in real files | PASS | claude 11 of 11, codex 12 of 12, pi 4 of 4, opencode 6 of 6. Prime: SKIP. |
+| L2 cost parity, fresh store | `usage` equals `cost` per record and class (TEL-10) | PASS | 143 settled records equal; 5 live records skipped |
+| L2 cost parity, live store | the same on the collector's own store | PASS | 143 of 143 settled records equal |
+| L3 probe truth | the pool windows equal `/usage` and `/status` | SKIP (operator) | procedure above |
+| L4 probe hygiene | the probes write no transcript | PASS | 3 refreshes, both probes read; 0 new probe transcripts |
+| L5 singleton in herdr | 1 collector workspace, focus unchanged, same pid | SKIP (operator) | procedure above |
+| L6 live latency | the first event is in the store within 5 s after the first usage line is on disk | PASS | 1.1 s from disk to store. INFO: 2.2 s from the line's timestamp `2026-10-07T03:06:33.291Z` to the store; the line reached the disk 1.1 s after its timestamp. The 2 runs before W15 gave 7.7 s from the timestamp. |
+| L6 totals | store totals equal the transcript totals | PASS | `{"input":2,"cache_write_5m":0,"cache_write_1h":10172,"cache_read":12267,"output":82}` on both sides |
+| L7 crash recovery | no loss, no duplicates after `kill -9` | PASS | new collector pid 55577; totals of the L6 record unchanged; duplicate keys 0 before and 0 after; events 112525 to 112528. `herdr workspace list` again held 2 `horch telemetry` workspaces (see the run before). |
+| L8 gate drill | the gate substitutes `codex-sol` and the record shows it | PASS | `SUBSTITUTED: researcher runs on codex-sol` (claude 7d 100%, resets 2026-10-10T23:12Z); the record has agent `codex`, `routing.resolved: codex-sol`; store events carry `via: codex-sol`; `REFUSED` with 2 reset times on the all-exhausted fixture |
+| L9 real gate | the gate follows the real pools | PASS | `SPAWN: opus runs as itself` |
+| L10 perf, synthetic 1 GB | cold start under 30 s, steady tick under 200 ms | PASS | cold 15.3 s (12.5 s CPU), steady 180.5 ms wall (102.3 ms CPU) at load average 110, 1,541,871 events. At load average 48: steady 100.9 ms wall (89.5 ms CPU). The code before W15, same host and load: steady 364.9 ms wall (160.4 ms CPU). |
+| L10 collector RSS | under 150 MB | PASS | 54.0 MiB (56.6 MB) after 1 min 49 s on a 61 MB store of 112,528 events. Before W15: 153.9 MiB after 3 min and 157.6 MiB after 4 min (pid 71519). |
+
+The live-store tick, measured with `nfr_02_live_store_rss` on a copy of the
+state root (111,840 events, 36 ledgers, 1,490 records in the window, 1,534
+cursors), 8 ticks, same host:
+
+| | before W15 | after W15 |
+|---|---|---|
+| held per stored event | 872 B (93.1 MiB) | 198 B (21.2 MiB) |
+| RSS after the open | 184.6 MiB | 56.2 MiB |
+| RSS after 8 ticks | 155.7 to 207.8 MiB | 83.9 MiB |
+| steady tick | 2.6 to 7.1 s wall, 1.0 to 1.5 s CPU | 39 to 86 ms wall, 20 to 22 ms CPU |
+
+Run it with `HORCH_PERF_STATE=<copy of a state root> cargo test --release -p
+horch-core --test nfr -- --ignored --nocapture nfr_02_live_store_rss`. The
+ticks write into the copy, so never point it at the live state root.
