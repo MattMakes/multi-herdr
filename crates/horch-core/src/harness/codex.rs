@@ -463,8 +463,9 @@ impl Harness for Codex {
     /// failed on the lock (live check B2). `horch tell` writes under the
     /// temp dir, which the sandbox already allows; the data dir is only read.
     /// Only a `workspace-write` launch (or codex's default) gets the root:
-    /// a `read-only` one exits at launch on `--add-dir`, and full access
-    /// needs none.
+    /// a `read-only` one exits at launch on `--add-dir`, so it gets the root
+    /// as a `sandbox_workspace_write.writable_roots` pair for a later
+    /// switch; full access needs none.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
         let home = codex_home(&ctx.paths.home, ctx.inherited.codex_home.as_deref());
         let rules = Rules::install(
@@ -482,11 +483,24 @@ impl Harness for Codex {
         // Codex 0.160.0 exits 1 when `--add-dir` meets a read-only sandbox
         // ("the effective permissions do not allow additional writable
         // roots"), and full access needs no extra root.
-        if sandbox.as_deref().is_none_or(|s| s == WORKSPACE_WRITE) {
-            prepared.extra_args = vec![
-                "--add-dir".into(),
-                ctx.paths.state_root.to_string_lossy().into_owned(),
-            ];
+        let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
+        match sandbox.as_deref() {
+            None | Some(WORKSPACE_WRITE) => {
+                prepared.extra_args = vec!["--add-dir".into(), state_root];
+            }
+            // Named as a workspace-write root instead: codex reads it only
+            // after a run-time switch to workspace-write (`horch mode <role>
+            // write`), and starts normally with it (X6 repro 2).
+            Some(READ_ONLY)
+                if !HarnessDefault::config_keys(&req.teammate.args)
+                    .contains(&WRITABLE_ROOTS_KEY) =>
+            {
+                prepared.extra_args = vec![
+                    "-c".into(),
+                    format!("{WRITABLE_ROOTS_KEY}=[{}]", toml_string(&state_root)),
+                ];
+            }
+            _ => {}
         }
         if let Rules::Private { dir } = &rules {
             // On the child only. This process keeps the real CODEX_HOME, so the
@@ -671,6 +685,17 @@ fn toml_scalar(raw: &str) -> String {
 
 /// Codex's sandbox name that allows extra writable roots.
 const WORKSPACE_WRITE: &str = "workspace-write";
+
+/// Codex's read-only sandbox name (`permission_mode: plan`).
+const READ_ONLY: &str = "read-only";
+
+/// The config key of the workspace-write sandbox's extra writable roots.
+const WRITABLE_ROOTS_KEY: &str = "sandbox_workspace_write.writable_roots";
+
+/// `s` as 1 TOML basic string.
+fn toml_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
 
 /// The sandbox a codex launch of `teammate` runs: `read-only`,
 /// `workspace-write` or `danger-full-access`. `None`: codex's own default.
@@ -1278,6 +1303,62 @@ mod tests {
                 "permission_mode {mode:?}"
             );
         }
+    }
+
+    /// A read-only launch cannot take `--add-dir`, so it names the state root
+    /// as a workspace-write root by config instead. Codex reads that only
+    /// after a run-time switch to workspace-write (`horch mode <role> write`),
+    /// and it starts normally with it (X6 repro 2). No other sandbox gets it,
+    /// and a teammate's own pair is kept.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_launch_names_the_state_root_for_a_later_switch() {
+        use crate::roster::PermissionMode::*;
+        let pairs = |teammate: &Teammate| {
+            let tmp = tempfile::tempdir().unwrap();
+            let (ctx, prepared) = prepare_in(tmp.path(), teammate);
+            let pairs: Vec<String> = prepared
+                .extra_args
+                .windows(2)
+                .filter(|w| w[0] == "-c" && w[1].starts_with(WRITABLE_ROOTS_KEY))
+                .map(|w| w[1].clone())
+                .collect();
+            (ctx.paths.state_root.to_string_lossy().into_owned(), pairs)
+        };
+        let plan = Teammate {
+            permission_mode: Some(Plan),
+            ..Default::default()
+        };
+        let (state, got) = pairs(&plan);
+        assert_eq!(
+            got,
+            vec![format!(
+                "sandbox_workspace_write.writable_roots=[\"{state}\"]"
+            )]
+        );
+        for mode in [Some(AcceptEdits), Some(Auto), Some(BypassPermissions), None] {
+            let teammate = Teammate {
+                permission_mode: mode,
+                ..Default::default()
+            };
+            assert!(pairs(&teammate).1.is_empty(), "permission_mode {mode:?}");
+        }
+        let own = Teammate {
+            permission_mode: Some(Plan),
+            args: vec![
+                "-c".into(),
+                "sandbox_workspace_write.writable_roots=[\"/own\"]".into(),
+            ],
+            ..Default::default()
+        };
+        assert!(pairs(&own).1.is_empty());
+    }
+
+    /// A path with a quote or a backslash stays 1 TOML string.
+    #[test]
+    fn a_writable_root_is_quoted_as_a_toml_string() {
+        assert_eq!(toml_string("/a/b"), "\"/a/b\"");
+        assert_eq!(toml_string("/a\"b\\c"), "\"/a\\\"b\\\\c\"");
     }
 
     /// The teammate's own sandbox args come after `permission_mode` and win,

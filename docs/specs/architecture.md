@@ -116,6 +116,11 @@ phase 8 (training Laya).
 | RoutingProvenance | eligible set / teacher | `via`, `substitution_reason` | `routing::{RoutingProvenance, EligibleEntry}`, `teacher::*` |
 | worktree isolation | WorktreeManager | — | `vcs::worktree`, as execution infrastructure (`SpawnRequest.workdir`) |
 
+Roster types added after this refactor: `roster::Requirement` (a host tool
+such as `godot`), `Teammate.requires` (the requirements `horch doctor`
+checks) and `Teammate.skills_when` (skills a project file pattern adds). See
+[`godot.md`](godot.md) (GDW-01 to GDW-03).
+
 ### 2.2 Target layout
 
 ```
