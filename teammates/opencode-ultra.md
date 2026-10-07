@@ -15,6 +15,12 @@ trains_on_input: true
 # the free tiers, so this is the one to reach for when a free worker has to hold
 # a lot at once - a wide read of an unfamiliar open-source tree, say.
 inherit_plugins: false
+
+# Prune old tool outputs before a compaction (plans_to_improve §2.3): this
+# tier reads wide and holds 1M tokens. A teammate value, not a window. The
+# harness defaults merge under this JSON.
+env:
+  OPENCODE_CONFIG_CONTENT: '{"compaction":{"prune":true}}'
 ---
 Your tier: OPENCODE ULTRA - the deepest free worker. You have a very
 large context, so prefer reading enough to be sure over guessing, and say

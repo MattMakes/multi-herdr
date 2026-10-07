@@ -45,8 +45,14 @@ pub struct PrepareRequest<'a> {
     /// The skills bundle the launch exposes, when the teammate has one.
     pub skills: Option<&'a Bundle>,
     /// The launch's native-window decision (CTX-05). Prime's `prepare`
-    /// reads it (slice 2); no adapter reads it yet.
+    /// reads it (slice 2).
     pub compact_window: Option<&'a WindowDecision>,
+    /// The teammate the launch runs, as loaded (its harness defaults).
+    pub teammate: &'a Teammate,
+    /// The pane's model: the override, else the teammate's.
+    pub model: &'a str,
+    /// The directory the agent starts in.
+    pub workdir: &'a Path,
 }
 
 /// What an operator window resolver reads for one launch (design §6.4).
@@ -59,7 +65,9 @@ pub struct WindowInputs<'a> {
     pub claude_managed_settings: &'a Path,
     /// The inherited codex home (`codex::codex_home`).
     pub codex_home: &'a Path,
-    /// `$PRIME_AGENT_CODING_AGENT_DIR`, else `~/.prime/agent`.
+    /// The Prime agent dir the launch links from: the teammate's
+    /// `PRIME_AGENT_CODING_AGENT_DIR`, else the inherited one, else
+    /// `~/.prime/agent` (`prime::source_agent_dir`).
     pub prime_agent_dir: &'a Path,
     /// The directory the agent starts in.
     pub workdir: &'a Path,
@@ -149,7 +157,8 @@ pub trait Harness: Sync {
     }
 
     /// The window value the built command really passes to the harness,
-    /// read back from the command (review finding 12). Default: none.
+    /// read back from the command, with the environment `prepare` set
+    /// (review finding 12). Default: none.
     fn window_in_command(&self, _cmd: &Command) -> Option<u64> {
         None
     }

@@ -19,6 +19,15 @@
 //! `--session-dir` pointing somewhere only this launch writes, the session file
 //! that appears there IS this worker's, with no timestamps or project paths to
 //! disambiguate.
+//!
+//! The third part is the agent dir (design `ai_docs/plans/wave2/w1/design.md`
+//! §6.9). Prime reads its settings and `models.json` from
+//! `$PRIME_AGENT_CODING_AGENT_DIR`, so each launch gets its own: every entry
+//! of the operator's dir is a link (`auth.json` included: Prime writes a
+//! refreshed token through the link onto the operator's file), and only
+//! `settings.json` and `models.json` are generated. The fleet window goes in a
+//! `models.json` that holds the override and nothing else, and only when the
+//! operator's own files set no window for the model's provider.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -26,8 +35,11 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 
-use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared};
-use crate::roster::Teammate;
+use serde_json::{json, Value};
+
+use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared, WindowInputs};
+use crate::compaction::window::{OperatorWindow, WindowDecision};
+use crate::roster::{HarnessDefault, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 
@@ -61,8 +73,20 @@ impl Daemon {
             .join("prime")
             .join(format!("{slug}-{}", crate::mint_uuid()));
         let sessions = base.join("sessions");
-        std::fs::create_dir_all(&sessions)
-            .with_context(|| format!("creating {}", sessions.display()))?;
+        // Owner only: the session files hold the whole conversation.
+        crate::fsx::ensure_private_dir(&base)?;
+        crate::fsx::ensure_private_dir(&sessions)?;
+        // Who runs this launch, so a later launch's sweep leaves its agent
+        // dir alone while it runs.
+        let pid = std::process::id();
+        let started = crate::procid::start_time(pid)
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        crate::fsx::write_atomic(
+            &base.join(LAUNCHER),
+            format!("{pid} {started}\n").as_bytes(),
+            crate::fsx::PRIVATE_FILE,
+        )?;
         Ok(Daemon {
             // Unix sockets have a path length limit (~104 bytes on macOS), so
             // this stays a short name in an already-short state directory.
@@ -79,6 +103,14 @@ impl Daemon {
 
     pub fn sessions_dir(&self) -> &Path {
         &self.sessions
+    }
+
+    /// This launch's agent dir, beside the socket and the sessions.
+    fn agent_dir(&self) -> PathBuf {
+        self.socket
+            .parent()
+            .unwrap_or(&self.sessions)
+            .join(AGENT_DIR)
     }
 
     /// Stop this launch's daemon, and only this one.
@@ -117,6 +149,10 @@ impl Daemon {
         });
         if !left_running {
             let _ = std::fs::remove_file(&self.socket);
+            // The agent dir links the operator's live `auth.json`; it is
+            // not needed after the pane. `remove_dir_all` does not follow
+            // links. The sessions stay for a resume.
+            let _ = std::fs::remove_dir_all(self.agent_dir());
         }
     }
 }
@@ -223,6 +259,370 @@ pub fn find_session(sessions_dir: &Path) -> Option<PathBuf> {
     newest.map(|(_, p)| p)
 }
 
+/// The variable Prime reads its agent dir from (0.9.4 `dist/config.js`).
+pub const AGENT_DIR_ENV: &str = "PRIME_AGENT_CODING_AGENT_DIR";
+/// The 2 agent-dir files a launch generates; every other entry is a link.
+const SETTINGS: &str = "settings.json";
+const MODELS: &str = "models.json";
+/// Always linked, also when the source has none: a login in the pane then
+/// lands in the operator's file, not in a dir that is removed.
+const AUTH: &str = "auth.json";
+/// Prime's global harness state dir (0.9.4 `core/refinement/refinement.js`).
+const HARNESS_STATE: &str = "harness";
+/// The launch's agent dir and the file that names its launcher.
+const AGENT_DIR: &str = "agent";
+const LAUNCHER: &str = "launcher";
+
+/// The agent dir a launch links from: the teammate's own
+/// `PRIME_AGENT_CODING_AGENT_DIR`, else the inherited one, else
+/// `~/.prime/agent`. A leading `~/` is expanded against home, as Prime does.
+/// An inherited value inside `<state_root>/prime/` is another launch's agent
+/// dir (a pane started from a Prime pane) and is ignored. Absolute, so a
+/// link to an entry resolves from the launch's agent dir too.
+pub(crate) fn source_agent_dir(ctx: &RuntimeContext, teammate: &Teammate) -> PathBuf {
+    let home = &ctx.paths.home;
+    let expand = |p: &str| crate::roster::expand_home(p, Some(home));
+    let own = teammate
+        .env
+        .get(AGENT_DIR_ENV)
+        .filter(|v| !v.is_empty())
+        .map(|v| expand(v));
+    let launches = absolute(&ctx.paths.state_root.join("prime"));
+    let inherited = ctx
+        .inherited
+        .prime_agent_dir
+        .as_deref()
+        .map(|p| p.to_str().map(expand).unwrap_or_else(|| p.to_path_buf()))
+        .filter(|p| !absolute(p).starts_with(&launches));
+    absolute(
+        &own.or(inherited)
+            .unwrap_or_else(|| home.join(".prime").join("agent")),
+    )
+}
+
+fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Remove the agent dirs of earlier launches under `prime_root` that are
+/// over: no daemon socket and no live launcher. For panes killed before
+/// [`Daemon::finish`] ran. Best effort: an error leaves the dir.
+fn sweep_agent_dirs(prime_root: &Path) {
+    let Ok(entries) = std::fs::read_dir(prime_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let launch = entry.path();
+        let agent = launch.join(AGENT_DIR);
+        if std::fs::symlink_metadata(&agent).is_err()
+            || std::fs::symlink_metadata(launch.join("d.sock")).is_ok()
+            || launcher_alive(&launch)
+        {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(&agent);
+    }
+}
+
+/// Whether the horch process that wrote `<launch>/launcher` still runs.
+fn launcher_alive(launch: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(launch.join(LAUNCHER)) else {
+        return false;
+    };
+    let mut fields = text.split_whitespace();
+    let Some(pid) = fields.next().and_then(|p| p.parse::<u32>().ok()) else {
+        return false;
+    };
+    let started = fields.next().and_then(|t| t.parse().ok());
+    crate::procid::alive(pid, started)
+}
+
+/// `<workdir>/.prime/agent/settings.json`: Prime's project settings.
+fn project_settings(workdir: &Path) -> PathBuf {
+    workdir.join(".prime").join("agent").join(SETTINGS)
+}
+
+/// The window the operator's Prime files set for `model` (design §6.4,
+/// review finding 10): `models` is the agent dir's `models.json`;
+/// `settings` are the agent dir's and the project's `settings.json`. A
+/// `models.json` that defines the model's provider at all is the
+/// operator's, with or without a window for this model; so is one horch
+/// cannot parse or read. A `compaction` setting moves Prime's trigger by an
+/// amount horch does not model.
+fn prime_operator_window(
+    models: &Path,
+    settings: &[PathBuf],
+    model: &str,
+) -> Option<OperatorWindow> {
+    // A file horch refuses to read (a FIFO, over 1 MiB) is the operator's,
+    // trigger unknown.
+    let read = |path: &Path| {
+        crate::fsx::read_regular_bounded(path).map_err(|why| OperatorWindow {
+            tokens: None,
+            detail: format!("{} ({})", path.display(), why.reason()),
+        })
+    };
+    match read(models) {
+        Err(window) => return Some(window),
+        Ok(Some(text)) => {
+            if let Some(window) = models_window(&models.to_string_lossy(), &text, model) {
+                return Some(window);
+            }
+        }
+        Ok(None) => {}
+    }
+    for path in settings {
+        match read(path) {
+            Err(window) => return Some(window),
+            Ok(Some(text)) if compaction_set(&text) => {
+                return Some(OperatorWindow {
+                    tokens: None,
+                    detail: format!("{} (compaction set; trigger unknown)", path.display()),
+                })
+            }
+            Ok(_) => {}
+        }
+    }
+    None
+}
+
+/// What a `models.json` says about `<p>/<m>`: None when it does not define
+/// provider `<p>`. The tokens are the override for `<m>`, else the
+/// `contextWindow` of the custom model `<m>`.
+fn models_window(path: &str, text: &str, model: &str) -> Option<OperatorWindow> {
+    let (provider, id) = model.split_once('/')?;
+    let Ok(doc) = serde_json::from_str::<Value>(text) else {
+        return Some(OperatorWindow {
+            tokens: None,
+            detail: format!("{path} (not valid JSON)"),
+        });
+    };
+    let defined = doc.get("providers")?.get(provider)?;
+    let custom = || {
+        defined
+            .get("models")?
+            .as_array()?
+            .iter()
+            .find(|m| m.get("id").and_then(Value::as_str) == Some(id))?
+            .get("contextWindow")?
+            .as_u64()
+    };
+    let tokens = defined
+        .get("modelOverrides")
+        .and_then(|o| o.get(id))
+        .and_then(|o| o.get("contextWindow"))
+        .and_then(Value::as_u64)
+        .or_else(custom);
+    Some(OperatorWindow {
+        tokens,
+        detail: format!("{path} (provider {provider} defined)"),
+    })
+}
+
+/// Whether a `settings.json` sets `compaction.reserveTokens` or
+/// `compaction.enabled`.
+fn compaction_set(text: &str) -> bool {
+    serde_json::from_str::<Value>(text).is_ok_and(|doc| {
+        doc.get("compaction")
+            .is_some_and(|c| c.get("reserveTokens").is_some() || c.get("enabled").is_some())
+    })
+}
+
+/// The fleet `models.json` for an applied decision: the override for the
+/// launch's model and nothing else. None: the operator's file is linked.
+fn fleet_models(decision: Option<&WindowDecision>, model: &str) -> Option<Value> {
+    let decision = decision.filter(|d| d.applied)?;
+    let tokens = decision.tokens?;
+    let (provider, id) = model.split_once('/')?;
+    Some(json!({"providers": {provider: {"modelOverrides": {id: {"contextWindow": tokens}}}}}))
+}
+
+/// The agent dir's `settings.json`: the operator's object, without the
+/// legacy `apiKeys` (Prime 0.9.4 reads it only in a migration), plus each
+/// `agent_settings` key path of the teammate's Prime harness defaults that
+/// neither the operator's file nor the project's sets (a `force` entry sets
+/// it over the operator's file; a later entry wins). None: no key to add,
+/// or the operator's file is not a JSON object; the operator's file is then
+/// linked as it is, so no copy of it exists.
+fn fleet_settings(
+    operator: Option<&str>,
+    project: Option<&str>,
+    teammate: &Teammate,
+) -> Option<serde_json::Map<String, Value>> {
+    let mut settings = match operator {
+        Some(text) => match serde_json::from_str::<Value>(text) {
+            Ok(Value::Object(map)) => map,
+            _ => return None,
+        },
+        None => serde_json::Map::new(),
+    };
+    let project: Option<Value> = project.and_then(|t| serde_json::from_str(t).ok());
+    let mut leaves: Vec<(String, Value, bool)> = Vec::new();
+    for entry in HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Prime) {
+        let Some(defaults) = &entry.agent_settings else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        leaf_paths(defaults, "", &mut paths);
+        for (path, value) in paths {
+            leaves.retain(|(p, _, _)| *p != path);
+            leaves.push((path, value, entry.force.is_some()));
+        }
+    }
+    let mut inserted = false;
+    for (path, value, forced) in leaves {
+        let set_by = |doc: &Value| {
+            let mut node = doc;
+            for key in path.split('.') {
+                match node.get(key) {
+                    Some(next) => node = next,
+                    // A parent that is not an object blocks the key too.
+                    None => return !node.is_object(),
+                }
+            }
+            true
+        };
+        let operator_sets = set_by(&Value::Object(settings.clone()));
+        if !forced && (operator_sets || project.as_ref().is_some_and(set_by)) {
+            continue;
+        }
+        inserted |= insert_at(&mut settings, &path, value);
+    }
+    if !inserted {
+        return None;
+    }
+    settings.remove("apiKeys");
+    Some(settings)
+}
+
+/// Every leaf key path of an object, dotted: a nested object is walked, any
+/// other value (or an empty object) is a leaf.
+fn leaf_paths(obj: &serde_json::Map<String, Value>, prefix: &str, out: &mut Vec<(String, Value)>) {
+    for (key, value) in obj {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match value {
+            Value::Object(inner) if !inner.is_empty() => leaf_paths(inner, &path, out),
+            _ => out.push((path, value.clone())),
+        }
+    }
+}
+
+/// Set `value` at the dotted `path`; whether it was set. A parent that is
+/// not an object is left alone, and so is the value.
+fn insert_at(obj: &mut serde_json::Map<String, Value>, path: &str, value: Value) -> bool {
+    let mut parts: Vec<&str> = path.split('.').collect();
+    let Some(key) = parts.pop() else {
+        return false;
+    };
+    let mut node = obj;
+    for parent in parts {
+        match node
+            .entry(parent)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+        {
+            Some(next) => node = next,
+            None => return false,
+        }
+    }
+    node.insert(key.to_string(), value);
+    true
+}
+
+#[cfg(unix)]
+fn link(target: &Path, at: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, at)
+}
+
+#[cfg(windows)]
+fn link(target: &Path, at: &Path) -> std::io::Result<()> {
+    if target.is_dir() {
+        std::os::windows::fs::symlink_dir(target, at)
+    } else {
+        std::os::windows::fs::symlink_file(target, at)
+    }
+}
+
+/// Build this launch's agent dir at `dir` from the operator's `src`
+/// (design §6.9). Nothing is copied from `src` but a settings object with a
+/// fleet key added; nothing is written into the workdir. In `src`, only a
+/// missing `harness/` dir is created (empty), so the pane's global harness
+/// state persists there as it does without horch.
+fn build_agent_dir(src: &Path, dir: &Path, req: &PrepareRequest<'_>) -> Result<()> {
+    crate::fsx::ensure_private_dir(dir)?;
+    if std::fs::symlink_metadata(src.join(HARNESS_STATE)).is_err() {
+        let _ = crate::fsx::ensure_private_dir(&src.join(HARNESS_STATE));
+    }
+    let entries = std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))?;
+    for entry in entries {
+        let name = entry
+            .with_context(|| format!("reading {}", src.display()))?
+            .file_name();
+        let text = name.to_string_lossy();
+        // A linked lock dir is one this pane can never take, and a temp
+        // file is another process's write in progress.
+        if name == SETTINGS || name == MODELS || text.ends_with(".lock") || text.ends_with(".tmp") {
+            continue;
+        }
+        let at = dir.join(&name);
+        link(&src.join(&name), &at).with_context(|| format!("linking {}", at.display()))?;
+    }
+    let auth = dir.join(AUTH);
+    if std::fs::symlink_metadata(&auth).is_err() {
+        // Dangling when the operator has no `auth.json` yet: Prime then
+        // creates nothing here and writes a login through the link.
+        link(&src.join(AUTH), &auth).with_context(|| format!("linking {}", auth.display()))?;
+    }
+
+    let operator = src.join(SETTINGS);
+    let settings_at = dir.join(SETTINGS);
+    let operator_text = crate::fsx::read_regular_bounded(&operator);
+    let project_text = crate::fsx::read_regular_bounded(&project_settings(req.workdir));
+    // A file horch refuses to read sets everything as far as horch knows.
+    let settings = match (&operator_text, &project_text) {
+        (Ok(operator), Ok(project)) => {
+            fleet_settings(operator.as_deref(), project.as_deref(), req.teammate)
+        }
+        _ => None,
+    };
+    match settings {
+        Some(settings) => {
+            let text = serde_json::to_string_pretty(&Value::Object(settings))? + "\n";
+            crate::fsx::write_atomic(&settings_at, text.as_bytes(), 0o600)?;
+        }
+        None if std::fs::symlink_metadata(&operator).is_ok() => link(&operator, &settings_at)
+            .with_context(|| format!("linking {}", settings_at.display()))?,
+        None => {}
+    }
+
+    let models_at = dir.join(MODELS);
+    let operator_models = src.join(MODELS);
+    match fleet_models(req.compact_window, req.model) {
+        Some(models) => {
+            let text = serde_json::to_string_pretty(&models)? + "\n";
+            crate::fsx::write_atomic(&models_at, text.as_bytes(), 0o600)?;
+        }
+        None if std::fs::symlink_metadata(&operator_models).is_ok() => {
+            link(&operator_models, &models_at)
+                .with_context(|| format!("linking {}", models_at.display()))?
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// The value after `--model` in a built command.
+fn command_model(cmd: &Command) -> Option<String> {
+    let args: Vec<_> = cmd.get_args().filter_map(|a| a.to_str()).collect();
+    args.windows(2)
+        .find(|w| w[0] == "--model")
+        .map(|w| w[1].to_string())
+}
+
 /// The Prime Agent adapter.
 pub struct Prime;
 
@@ -235,6 +635,7 @@ impl Harness for Prime {
     /// otherwise `horch done` would leave its daemon running and the fleet
     /// would accumulate one per spawn.
     fn prepare(&self, ctx: &RuntimeContext, req: &PrepareRequest<'_>) -> Result<Prepared> {
+        sweep_agent_dirs(&ctx.paths.state_root.join("prime"));
         let daemon = Daemon::install(&ctx.paths.state_root, req.role, &ctx.bins.harness.prime)?;
         let mut prepared = Prepared {
             // pi-family builders append `--` before the prompt. These go into
@@ -249,10 +650,53 @@ impl Harness for Prime {
             sessions_dir: Some(daemon.sessions_dir().to_path_buf()),
             ..Prepared::default()
         };
+        // Without the operator's agent dir there is nothing to link, and a
+        // login would land in a directory nobody keeps: Prime runs on its
+        // own default dir, without a fleet window.
+        let src = source_agent_dir(ctx, req.teammate);
+        if src.is_dir() {
+            let dir = daemon.agent_dir();
+            match build_agent_dir(&src, &dir, req) {
+                Ok(()) => prepared
+                    .env
+                    .push((AGENT_DIR_ENV.into(), dir.into_os_string())),
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    eprintln!(
+                        "horch[{}]: Prime agent dir not built, the pane uses {}: {e:#}",
+                        req.role,
+                        src.display()
+                    )
+                }
+            }
+        }
         // After the CLI has exited, not before: stopping the daemon early would
         // take the session it is still writing with it.
         prepared.on_finish(move || daemon.finish());
         Ok(prepared)
+    }
+
+    /// The provider of the model in the operator's `models.json`, or a
+    /// `compaction` setting in the agent dir's or the project's
+    /// `settings.json` (design §6.4).
+    fn operator_window(&self, inputs: &WindowInputs<'_>) -> Option<OperatorWindow> {
+        prime_operator_window(
+            &inputs.prime_agent_dir.join(MODELS),
+            &[
+                inputs.prime_agent_dir.join(SETTINGS),
+                project_settings(inputs.workdir),
+            ],
+            inputs.model,
+        )
+    }
+
+    /// The `contextWindow` for the command's `--model` in `models.json` of
+    /// the command's `$PRIME_AGENT_CODING_AGENT_DIR`.
+    fn window_in_command(&self, cmd: &Command) -> Option<u64> {
+        let (_, dir) = cmd.get_envs().find(|(k, _)| *k == AGENT_DIR_ENV)?;
+        let models = Path::new(dir?).join(MODELS);
+        let text = crate::fsx::read_regular_bounded(&models).ok()??;
+        models_window(&models.to_string_lossy(), &text, &command_model(cmd)?)?.tokens
     }
 
     fn expose_skills(

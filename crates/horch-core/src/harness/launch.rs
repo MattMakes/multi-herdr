@@ -314,11 +314,7 @@ pub fn window_decision(
 ) -> WindowDecision {
     let home = &ctx.paths.home;
     let codex_home = super::codex::codex_home(home, ctx.inherited.codex_home.as_deref());
-    let prime_agent_dir = ctx
-        .inherited
-        .prime_agent_dir
-        .clone()
-        .unwrap_or_else(|| home.join(".prime").join("agent"));
+    let prime_agent_dir = super::prime::source_agent_dir(ctx, teammate);
     let inputs = WindowInputs {
         home,
         claude_config_dir: ctx.inherited.claude_config_dir.as_deref(),
@@ -460,6 +456,9 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
             // An empty-plan bundle has no directory for the adapter to link.
             skills: skills.as_ref().filter(|b| !b.plan().activated.is_empty()),
             compact_window: Some(&decision),
+            teammate: req.teammate,
+            model,
+            workdir: &workdir,
         },
     )?;
 
@@ -481,6 +480,12 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
         skills.as_ref(),
         req.child_env,
     )?;
+    // Last, so a value the harness prepared (codex's private home) wins.
+    // Before the read-back: Prime's window is in the agent dir its
+    // `prepare` names in the environment.
+    for (key, value) in &prepared.env {
+        cmd.env(key, value);
+    }
     // What the command really carries is what the record says.
     let decision = window_in_effect(decision, &teammate, &cmd);
     if let Some(target) = &req.record {
@@ -490,10 +495,6 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
         if let Err(e) = recorded {
             eprintln!("horch[{}]: window decision not recorded: {e:#}", req.role);
         }
-    }
-    // Last, so a value the harness prepared (codex's private home) wins.
-    for (key, value) in &prepared.env {
-        cmd.env(key, value);
     }
     crate::runtime::process::scrub_child_env(&mut cmd);
     let name = format!("{:?}", cmd.get_program());

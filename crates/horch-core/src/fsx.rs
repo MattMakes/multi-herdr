@@ -142,6 +142,61 @@ fn sync_dir(dir: &Path) -> Result<()> {
     }
 }
 
+/// The most [`read_regular_bounded`] reads: 1 MiB.
+pub(crate) const READ_LIMIT: u64 = 1024 * 1024;
+
+/// Why [`read_regular_bounded`] did not read a file that exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// A FIFO, a device, a directory: anything but a regular file.
+    NotRegular,
+    /// Over [`READ_LIMIT`] bytes.
+    TooLarge,
+}
+
+impl Refused {
+    /// The reason as a window detail shows it.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Refused::NotRegular => "not a regular file",
+            Refused::TooLarge => "over 1 MiB",
+        }
+    }
+}
+
+/// Read a settings file that a repository or the operator controls, without
+/// blocking and without unbounded memory: open it non-blocking (unix),
+/// require a regular file, read at most [`READ_LIMIT`] bytes. A link is
+/// followed. `Ok(None)`: nothing to read there (no file, no access, or not
+/// UTF-8 text).
+pub(crate) fn read_regular_bounded(path: &Path) -> std::result::Result<Option<String>, Refused> {
+    use std::io::Read;
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A FIFO opens at once instead of waiting for a writer.
+        o.custom_flags(libc::O_NONBLOCK);
+    }
+    let Ok(file) = o.open(path) else {
+        return Ok(None);
+    };
+    match file.metadata() {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => return Err(Refused::NotRegular),
+        Err(_) => return Ok(None),
+    }
+    let mut bytes = Vec::new();
+    if file.take(READ_LIMIT + 1).read_to_end(&mut bytes).is_err() {
+        return Ok(None);
+    }
+    if bytes.len() as u64 > READ_LIMIT {
+        return Err(Refused::TooLarge);
+    }
+    Ok(String::from_utf8(bytes).ok())
+}
+
 /// Replace `path` with `bytes` atomically and durably, with file mode `mode`.
 /// This is the "replace" discipline of
 /// `docs/specs/dataset-competition.md` §2.3 (MEA-09).

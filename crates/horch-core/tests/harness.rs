@@ -61,6 +61,9 @@ fn harness_codex_rules_snapshot() {
                     exec_rules: rules,
                     skills: None,
                     compact_window: None,
+                    teammate: roster.require("codex-sol").unwrap(),
+                    model: "gpt-5.6-sol",
+                    workdir: tmp.path(),
                 },
             )
             .unwrap();
@@ -98,6 +101,9 @@ fn harness_prime_daemon_args_snapshot() {
                     exec_rules: &[],
                     skills: None,
                     compact_window: None,
+                    teammate: &teammate,
+                    model: "anthropic/claude-opus-5-5",
+                    workdir: tmp.path(),
                 },
             )
             .unwrap();
