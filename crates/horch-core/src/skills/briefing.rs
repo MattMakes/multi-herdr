@@ -97,6 +97,23 @@ pub fn render(plan: &SkillActivationPlan, catalog: &SkillCatalog, ctx: &Briefing
             ctx.skills_dir.display()
         ));
     }
+    // The skill texts name skills the bundle does not hold; say how to read
+    // one instead of putting them all in the bundle.
+    let activated: Vec<&str> = plan.activated.iter().map(|r| r.id.as_str()).collect();
+    let outside = super::reading::outside_bundle(catalog, &activated);
+    if !outside.is_empty() {
+        let examples: Vec<&str> = outside.iter().take(3).map(|(id, _)| id.as_str()).collect();
+        let (noun, verb) = if outside.len() == 1 {
+            ("skill", "is")
+        } else {
+            ("skills", "are")
+        };
+        out.push_str(&format!(
+            " Your skills name {} {noun} that {verb} not in this bundle, for example {}. Read one with horch skills read <id> only when your step needs it.",
+            outside.len(),
+            examples.join(", ")
+        ));
+    }
     out.push_str(" Report unresolved dependencies through horch tell orchestrator.\n");
     out
 }

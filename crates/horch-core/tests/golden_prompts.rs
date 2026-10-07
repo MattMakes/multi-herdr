@@ -98,6 +98,14 @@ const ORCHESTRATOR_CONTEXT_WATCH: &str = "== Context watch ==\n\
     \x20  teammate with a task that names the plan file and\n\
     \x20  \"PRIOR WORK: read <path> first\".\n\
     A line that starts with \"[horch] NOTE:\" reports a finished compaction.\n\
+    A Codex teammate with permission_mode plan runs read-only and cannot write\n\
+    its handoff. horch compact <role> --request switches it to write first. The\n\
+    job switches it back to plan before the resume line. A row state that ends\n\
+    in \"[write]\" is a plan pane in write mode.\n\
+    \x20 horch mode <role> write|plan    switch a plan pane by hand\n\
+    If a \"[horch] BLOCKED:\" line names step restore-mode, the compaction is\n\
+    done: run horch mode <role> plan, then tell the worker to read its handoff\n\
+    file. Do not use the fresh route for it.\n\
     When your own row is \"over\", compact yourself at your next stopping point:\n\
     every worker message is answered, no spawn is half-done, and you are not\n\
     verifying a DONE.\n\
@@ -205,6 +213,12 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
     // (`== Context compaction ==` and `== Compact instructions ==`), inserted
     // whole between the scope block and the STE section (CTX-11, CTX-19).
     let context_compaction = worker_context_compaction("r-1");
+    // Seventh: the `horch skills read` bullet after the `horch note` bullet
+    // (SKL-09). A bundle holds only the teammate's skills, and its texts name
+    // others; the codex execpolicy allows only commands this list names.
+    let note_end = "  doing and has done.\n";
+    let skills_read =
+        "- horch skills read <id> [<file>] - print a skill that is not in your bundle.\n";
     // No `fable` here: the generic Fable worker was removed when Fable became
     // the orchestrator's reserved model. Its goldens went with it.
     for name in ["sonnet", "opus", "codex-sol", "codex-terra", "smoke"] {
@@ -234,14 +248,21 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
                 "worker-{name}-{label} should end its lifecycle block exactly once"
             );
             assert_eq!(
-                was.replace(old_agent, new_agent).replace(
-                    lifecycle_end,
-                    &format!(
+                was.matches(note_end).count(),
+                1,
+                "worker-{name}-{label} should end its horch note bullet exactly once"
+            );
+            assert_eq!(
+                was.replace(old_agent, new_agent)
+                    .replace(note_end, &format!("{note_end}{skills_read}"))
+                    .replace(
+                        lifecycle_end,
+                        &format!(
                         "gotchas, current state.\n{done_summary}\n{scope}{context_compaction}{ste}"
                     )
-                ),
+                    ),
                 got,
-                "worker-{name}-{label} drifted outside the six sanctioned blocks"
+                "worker-{name}-{label} drifted outside the seven sanctioned blocks"
             );
             checked += 1;
         }
@@ -520,11 +541,23 @@ fn bal_07_usage_limits_block_sanctioned() {
 }
 
 /// Execpolicy rules render exactly as they did, so an existing
-/// `~/.codex/execpolicy` is not duplicated on upgrade.
+/// `~/.codex/execpolicy` is not duplicated on upgrade. The
+/// `horch skills read` rule (SKL-09) is a sanctioned addition: it has no
+/// golden, its block is pinned here, and the 3 old blocks stay unchanged.
 #[test]
 fn execpolicy_blocks_are_unchanged() {
+    const SKILLS_READ: &str = "read a catalog skill that the bundle does not hold";
     let r = roster();
     for rule in r.exec_rules() {
+        if rule.justification == SKILLS_READ {
+            assert_eq!(
+                prompts::codex_rule_block(rule),
+                "prefix_rule(\n    pattern = [\"horch\", \"skills\", \"read\"],\n    \
+                 decision = \"allow\",\n    justification = \"herdr-fleet: {SKILLS_READ}\",\n)\n"
+                    .replace("{SKILLS_READ}", SKILLS_READ)
+            );
+            continue;
+        }
         let name = format!("execpolicy-{}", rule.justification.replace(' ', "-"));
         assert_eq!(
             prompts::codex_rule_block(rule),
@@ -532,7 +565,7 @@ fn execpolicy_blocks_are_unchanged() {
             "{name} drifted"
         );
     }
-    assert_eq!(r.exec_rules().len(), 3);
+    assert_eq!(r.exec_rules().len(), 4);
 }
 
 /// The Codex flavor shares the whole orchestrator briefing and differs only in

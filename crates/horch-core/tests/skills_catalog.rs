@@ -755,6 +755,25 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
     assert!(err.contains("plugin 'code' is neither"), "{err}");
 }
 
+/// `text` without the SKL-10 sentence that names skills outside the
+/// bundle: a sanctioned change after the baselines were frozen.
+fn without_outside_sentence(text: &str) -> String {
+    const START: &str = " Your skills name ";
+    const END: &str = " only when your step needs it.";
+    match text.find(START) {
+        None => text.to_string(),
+        Some(i) => {
+            let end = i + text[i..].find(END).expect("the sentence ends") + END.len();
+            format!("{}{}", &text[..i], &text[end..])
+        }
+    }
+}
+
+/// The briefing equals the frozen baseline with the bundle path replaced,
+/// and with the SKL-10 sentence (skills named outside the bundle) removed
+/// from both sides: that sentence is a sanctioned change. The baselines
+/// share `tests/oracles/skills/` with `oracle_skills_match`, whose bless
+/// writes the sentence in; every other byte stays frozen.
 #[test]
 fn skl_08_briefing_matches_baseline_modulo_path() {
     let catalog = SkillCatalog::bundled().unwrap();
@@ -803,7 +822,9 @@ fn skl_08_briefing_matches_baseline_modulo_path() {
                             let root = files.root.clone();
                             drop(files);
                             assert!(!root.exists(), "dropped bundle is removed");
-                            text.replace(&*root.to_string_lossy(), "<BUNDLE>")
+                            without_outside_sentence(
+                                &text.replace(&*root.to_string_lossy(), "<BUNDLE>"),
+                            )
                         }
                     }
                 }
@@ -811,7 +832,7 @@ fn skl_08_briefing_matches_baseline_modulo_path() {
             let path = oracles().join(format!("{name}-{phase}.txt"));
             let want = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            assert_eq!(text, want, "{name}-{phase}");
+            assert_eq!(text, without_outside_sentence(&want), "{name}-{phase}");
             compared += 1;
         }
     }
@@ -1273,4 +1294,121 @@ fn operator_skills_materialize_with_a_digest_and_an_expected_line() {
     // decides, so `plan_launch` needs no filesystem.
     let plain = plan_activation(&t, None, &SkillCatalog::bundled().unwrap()).unwrap();
     assert_eq!(plain.activated_ids(), ["tdd"]);
+}
+
+// ─── skills named outside the bundle (SKL-10) ──────────────────────────────
+
+/// The briefing of a teammate whose only skill is `skill`, with no phase.
+fn briefing_of(skill: &str) -> String {
+    let catalog = SkillCatalog::bundled().unwrap();
+    let t = Teammate {
+        name: "named".into(),
+        skills: vec![skill.into()],
+        ..Teammate::default()
+    };
+    let plan = plan_activation(&t, None, &catalog).unwrap();
+    briefing::render(
+        &plan,
+        &catalog,
+        &BriefingContext {
+            phase: None,
+            declared: &t.skills,
+            namespace: None,
+            plugin_lines: &[],
+            skills_dir: Path::new("/bundle/skills"),
+        },
+    )
+}
+
+/// SKL-10: a skill text that names catalog skills outside the bundle gets 1
+/// sentence: the distinct count, and the 3 most-named ids, ties in name
+/// order. `godot-save-load` names 4, once each.
+#[test]
+fn skl_10_briefing_names_skills_outside_the_bundle() {
+    let text = briefing_of("godot-save-load");
+    let want = " Your skills name 4 skills that are not in this bundle, for example \
+                godot-inventory-system, godot-popochiu, godot-project-setup. Read one with \
+                horch skills read <id> only when your step needs it. Report unresolved \
+                dependencies through horch tell orchestrator.\n";
+    assert!(text.ends_with(want), "{text}");
+    let catalog = SkillCatalog::bundled().unwrap();
+    assert_eq!(
+        skills::reading::outside_bundle(&catalog, &["godot-save-load"]),
+        [
+            ("godot-inventory-system".to_string(), 1),
+            ("godot-popochiu".to_string(), 1),
+            ("godot-project-setup".to_string(), 1),
+            ("godot-resource-pattern".to_string(), 1),
+        ]
+    );
+}
+
+/// SKL-10: `tdd` names no other catalog skill, so its briefing has no
+/// sentence.
+#[test]
+fn skl_10_briefing_has_no_sentence_without_outside_names() {
+    let text = briefing_of("tdd");
+    assert!(!text.contains("not in this bundle"), "{text}");
+    assert!(!text.contains("horch skills read"), "{text}");
+}
+
+fn mention_counts(text: &str, ids: &[&str]) -> BTreeMap<String, usize> {
+    let ids: BTreeSet<&str> = ids.iter().copied().collect();
+    skills::reading::mentions([text.as_bytes()], &ids)
+}
+
+/// SKL-10: an id matches a whole word only: `code-review` is not named in
+/// `godot-code-review`, nor `godot-ui` in `godot-ui-theming`.
+#[test]
+fn skl_10_whole_word_match_only() {
+    let ids = ["code-review", "godot-code-review", "godot-ui"];
+    let got = mention_counts(
+        "Run godot-code-review, then godot-ui-theming and Xgodot-ui. See godot-ui.",
+        &ids,
+    );
+    assert_eq!(
+        got,
+        BTreeMap::from([("godot-code-review".into(), 1), ("godot-ui".into(), 1)])
+    );
+    assert_eq!(
+        mention_counts("code-review (see ../code-review/SKILL.md)", &ids),
+        BTreeMap::from([("code-review".into(), 2)])
+    );
+}
+
+/// SKL-10: an id without a hyphen counts in backticks.
+#[test]
+fn skl_10_plain_id_counts_in_backticks() {
+    assert_eq!(
+        mention_counts("Use `tdd` first.", &["tdd"]),
+        BTreeMap::from([("tdd".into(), 1)])
+    );
+}
+
+/// SKL-10: an id without a hyphen counts in a link path.
+#[test]
+fn skl_10_plain_id_counts_in_a_link_path() {
+    assert_eq!(
+        mention_counts("See [it](../tdd/SKILL.md).", &["tdd"]),
+        BTreeMap::from([("tdd".into(), 1)])
+    );
+}
+
+/// SKL-10: an id without a hyphen counts when a namespace qualifies it.
+#[test]
+fn skl_10_plain_id_counts_qualified() {
+    assert_eq!(
+        mention_counts("Load horch:tdd now.", &["tdd"]),
+        BTreeMap::from([("tdd".into(), 1)])
+    );
+}
+
+/// SKL-10: an id without a hyphen does not count in plain prose.
+#[test]
+fn skl_10_plain_id_in_prose_does_not_count() {
+    assert!(mention_counts(
+        "check the build, then check: it passes. A check/ path, `check it`.",
+        &["check"]
+    )
+    .is_empty());
 }

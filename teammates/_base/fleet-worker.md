@@ -47,6 +47,7 @@ the ONLY channel - your output is not otherwise watched):
 - horch note "<short update>" - record milestones in the shared session
   ledger while you work, so the orchestrator can see what this session is
   doing and has done.
+- horch skills read <id> [<file>] - print a skill that is not in your bundle.
 - If you are blocked or need clarification, ask via `horch tell` and WAIT for
   the reply. Never shut down while your question is unanswered.
 - When your assigned work is TRULY complete - results reported, nothing
