@@ -98,12 +98,12 @@ public partial class HealthComponentTest
     [BeforeTest]
     public void Setup()
     {
-        _audioStub = new StubAudio();
-        _health = new HealthComponent
+        _audioStub = AutoFree(new StubAudio());   // freed at test end: no orphan nodes
+        _health = AutoFree(new HealthComponent
         {
             Audio = _audioStub,   // inject the stub — no real AudioManager needed
             MaxHealth = 100
-        };
+        });
     }
 
     [TestCase]
