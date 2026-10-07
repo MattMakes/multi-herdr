@@ -2,3 +2,6 @@
 
 # Fleet worker checkouts (git worktrees), one per unit; see docs/fleet-workflow.md
 .worktrees/
+
+# Local scratch: plans, reports and explainers; never committed
+ai_docs/
