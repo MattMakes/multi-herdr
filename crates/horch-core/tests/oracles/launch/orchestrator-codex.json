@@ -37,6 +37,8 @@
         "model_reasoning_effort=\"xhigh\"",
         "-c",
         "features.multi_agent=false",
+        "-c",
+        "tui.auto_recap=false",
         "\n\nFleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n- orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.\nAlso available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
       ],
       "current_dir": null,
@@ -81,6 +83,8 @@
         "model_reasoning_effort=\"xhigh\"",
         "-c",
         "features.multi_agent=false",
+        "-c",
+        "tui.auto_recap=false",
         "00000000-0000-4000-8000-000000000002",
         "\n\nFleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n- orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.\nAlso available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
       ],
@@ -125,6 +129,8 @@
         "model_reasoning_effort=\"xhigh\"",
         "-c",
         "features.multi_agent=false",
+        "-c",
+        "tui.auto_recap=false",
         "\n\nFleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n- orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.\nAlso available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
       ],
       "current_dir": null,
