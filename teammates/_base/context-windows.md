@@ -35,13 +35,13 @@ other harness takes the fresh-session route.
 
 ## Route per harness
 
-| harness | command typed | keep-list as argument | busy behaviour | sends | route in slice 1 |
+| harness | command typed | keep-list as argument | busy behaviour | sends | route |
 |---|---|---|---|---|---|
 | claude | `/compact <instructions>` | yes | queued | 1 | in place |
 | codex | `/compact` | no | rejected | up to 3 | in place |
 | pi | `/compact <instructions>` | yes | aborts turn | 1 | fresh |
 | prime | `/compact <instructions>` | yes | queued | 1 | fresh |
-| opencode | `/compact` | no | ends turn | up to 3 | fresh |
+| opencode | `/compact` | no | ends turn | up to 3 | in place (slice 2) |
 | antigravity | - | - | - | 0 | not watched (`not-read`) |
 
 ## Threshold

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2: the OpenCode, pi and Prime readers (u8), `--json` (u10a) and Prime's agent dir (u9) are implemented; the slice-2 live check is in progress. Slice 3 (`compact_at`, the native count; u11a) is implemented. |
+| Status | Slice 1 implemented (Claude and Codex end to end; workstream W1, units u0 to u7). Slice 2: the OpenCode, pi and Prime readers (u8), `--json` (u10a) and Prime's agent dir (u9) are implemented; the slice-2 live check (part C) has run: OpenCode compacts in place; pi and Prime stay on the fresh route. Slice 3 (`compact_at`, the native count; u11a) is implemented. |
 | Date | 2026-10-06 |
 | Authors | product-lead-1 (requirements), staff-engineer-1 and staff-engineer-2 (design), architect-reviewer-1 (review), backend-developer units u0 to u7 (build). |
 | Evidence | The W1 requirements and design (`ai_docs/plans/wave2/w1/requirements.md`, `design.md`), the 14 review decisions (`review-decisions.md`), and the live check `scripts/live/context.sh` with its result in [`docs/live-checks/context.md`](../live-checks/context.md). [SEEN] marks a fact read on the operator's Mac on 2026-10-06. |
@@ -278,7 +278,17 @@ that pane. Follow-up, not in this branch: move `codex-home` and
 `skill-bundles` out of the state root, then narrow `--add-dir` to the
 ledger and the dirs that `horch` writes.
 
-### 4.2 Fresh-session route (OpenCode, pi, Prime in slice 1; the fallback for all)
+### 4.2 Fresh-session route (pi and Prime; the fallback for all)
+
+OpenCode moves to the in-place route in slice 2 (live check C5 PASS). pi
+and Prime stay on this route:
+
+- pi: the in-place round trip is not verifiable yet. In a short session pi
+  answers `/compact` with "Nothing to compact (session too small)".
+- Prime: herdr does not detect `prime-agent` (agent `null`), so the
+  compaction job cannot see idle. A forced job failed at `wait-idle` after
+  120 s and typed nothing. Follow-up: horch reports the Prime pane state
+  with `herdr pane report-agent`, or herdr detects `prime-agent`.
 
 On `COMPACT-READY <path>` when `horch compact` refuses with "fresh route",
 on a `[horch] BLOCKED:` line, or on a row in state `compact-lost`: the
@@ -309,13 +319,13 @@ with an overlay copy of that file at
 `~/.config/horch/teammates/_base/context-windows.md`, with no rebuild; the
 messages stay in `_base/context-messages.md`.
 
-| harness | command typed | keep-list as argument | busy behaviour | sends | route in slice 1 |
+| harness | command typed | keep-list as argument | busy behaviour | sends | route |
 |---|---|---|---|---|---|
 | claude | `/compact <instructions>` | yes | queued | 1 | in place |
 | codex | `/compact` | no | rejected | up to 3 | in place |
 | pi | `/compact <instructions>` | yes | aborts the turn | 1 | fresh |
 | prime | `/compact <instructions>` | yes | queued | 1 | fresh |
-| opencode | `/compact` | no | ends the turn | up to 3 | fresh |
+| opencode | `/compact` | no | ends the turn | up to 3 | in place (slice 2) |
 | antigravity | - | - | - | 0 | not watched (`not-read`) |
 
 ### 4.5 The compaction-instructions block (CTX-19, CTX-20)
@@ -513,7 +523,7 @@ job, and deletes `job.json`, `heartbeat` and `spawned` on every exit
 
 ### 6.1 `teammates/_base/context-windows.md` (operator-tunable)
 
-`windows` (the fleet values of §3.2) and `in_place` (`[claude, codex]`). An
+`windows` (the fleet values of §3.2) and `in_place` (`[claude, codex, opencode]`). An
 operator may copy the whole file to
 `~/.config/horch/teammates/_base/context-windows.md`; that changes no message.
 
@@ -678,7 +688,9 @@ a job that runs in its own herdr pane.
 | handoff missing or stale | refused; nothing typed | 1 stderr line |
 | the worker ignores the request or the warning | the row stays `requested`; the native trigger compacts later; the block keeps the state | `horch context` |
 | the handoff costs more than the headroom | a native compaction during the handoff; the block keeps the state | LAST COMPACT |
-| herdr reports `unknown` (pi, OpenCode, Prime) | never compacted in place; the fresh route types nothing | none |
+| herdr does not detect the agent (Prime: agent `null`) | the job never sees idle and fails `wait-idle`; it types nothing. Prime stays on the fresh route, which types nothing | `[horch] BLOCKED:` line on a forced job |
+| pi answers `/compact` with "Nothing to compact (session too small)" | the in-place round trip is not verified; pi stays on the fresh route | live check C5 |
+| a pi or Prime summary drops the compact-instructions block (C3: pi ignored the canary; Prime not verifiable, its RPC compact timed out after 30 s) | the keep-list argument of `horch compact` still carries the state | live check C3 |
 
 ## 10. Requirements
 
@@ -708,7 +720,7 @@ slice 3 adds CTX-21 and CTX-25.
 | CTX-14 | horch refuses a compaction whose handoff, resolved against the record's workdir, is missing, or older than the newest request or warning of the record, or (with neither) older than 60 minutes, unless forced. | W1 | ctx_14_handoff_freshness_rule, ctx_14_compact_refuses_missing_or_stale_handoff, ctx_14_handoff_resolves_against_the_record_workdir |
 | CTX-15 | Any job failure, a job that does not start, and a child that refuses each end in 1 `[horch] BLOCKED:` line with step, reason and log, and 1 `compact-failed` event. A lost job is row state `compact-lost` with 1 `compact-failed` event. The detached job survives the end of the tool call and of the turn (live check). | W1 | ctx_15_idle_timeout_fails_with_step_and_reason, ctx_15_failure_reports_blocked_line_and_event, ctx_15_lost_job_classifies_compact_lost, ctx_15_compact_start_handshake_fails_without_job_file, ctx_15_foreground_refusal_records_failed_and_reports, ctx_15_first_reader_of_a_lost_job_records_one_event, ctx_15_live_check_proves_detached_survival |
 | CTX-16 | Fresh-session route for any harness not in `in_place`, and as the fallback. | W1 | ctx_16_compact_refuses_fresh_route_harness, ctx_16_orchestrator_briefing_names_the_fresh_route |
-| CTX-17 | Each harness's reader and command have a re-runnable live check; a harness is compacted in place only when listed in `in_place`. | W1 | ctx_17_in_place_only_for_listed_harnesses, ctx_17_live_check_covers_claude_and_codex |
+| CTX-17 | Each harness's reader and command have a re-runnable live check; a harness is compacted in place only when listed in `in_place`. Slice 2 (part C, 2026-10-07): the pi, Prime and OpenCode readers match the harness number (C2); OpenCode passes `horch note`, `agent_status` and the round trip (C5), so `in_place` is `[claude, codex, opencode]`; pi passes `horch note` and `agent_status`, but its round trip is not verifiable; Prime passes `horch note`, but herdr gives no `agent_status`. pi and Prime stay fresh. | W1 | ctx_17_in_place_only_for_listed_harnesses, ctx_17_live_check_covers_claude_and_codex, ctx_17_live_check_covers_slice_two_harnesses |
 | CTX-18 | The orchestrator compacts itself by the same protocol, on both flavors. | W1 | ctx_18_compact_targets_the_orchestrator_pane_and_record, ctx_18_orchestrator_briefing_has_self_compaction |
 | CTX-19 | Every fleet briefing carries exactly 1 compaction-instructions block; the orchestrator's names the roster and the ownership map. | W1 | ctx_19_every_fleet_briefing_has_one_keep_list_block |
 | CTX-20 | The live check proves per harness whether a summary honours the block (canary); horch-driven compaction passes the keep-list as the argument where accepted. | W1 | ctx_20_compact_line_has_keep_list_only_where_accepted, ctx_20_live_check_plants_a_canary |
@@ -748,5 +760,5 @@ Live-only criteria (CTX-02.4, CTX-05, CTX-06, CTX-11.1, CTX-13.1 to
 CTX-13.3, CTX-15 survival, CTX-16.1, CTX-17.1, CTX-18, CTX-20, CTX-22.1,
 CTX-23.1, CTX-26) are steps of `scripts/live/context.sh`; their results are
 in [`docs/live-checks/context.md`](../live-checks/context.md). If part B
-FAILs at the compaction step of a harness, that harness leaves `in_place`
+or part C FAILs at the compaction step of a harness, that harness leaves `in_place`
 until its check passes.
