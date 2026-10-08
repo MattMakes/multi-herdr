@@ -741,14 +741,14 @@ struct Ledger {
 const FRESH_MIN: i64 = 10;
 
 /// An input unchanged this many hours has its cursor tidied
-/// ([`Collector::tidy_cursors`]).
+/// (`Collector::tidy_cursors`).
 pub const QUIET_H: i64 = 24;
 
 /// How often a tick tidies the cursors, in minutes (the first tick always).
 pub const TIDY_EVERY_MIN: i64 = 60;
 
 /// How many of its newest Claude message ids a quiet done cursor keeps
-/// ([`Collector::tidy_cursors`]).
+/// (`Collector::tidy_cursors`).
 pub const QUIET_RECENT_IDS: usize = 4;
 
 /// How long an older record with no transcript waits between 2 searches.

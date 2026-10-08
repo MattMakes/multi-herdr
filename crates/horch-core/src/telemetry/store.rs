@@ -400,9 +400,7 @@ pub(crate) fn cursors_path(dir: &Path) -> PathBuf {
 }
 
 /// The saved cursors. A cursor saved before it named its agent and session
-/// gets them from its key ([`Cursor::fill_from_key`]).
-///
-/// [`Cursor::fill_from_key`]: super::cursor::Cursor::fill_from_key
+/// gets them from its key (`Cursor::fill_from_key`).
 pub fn load_cursors(dir: &Path) -> Cursors {
     let mut cursors: Cursors = std::fs::read_to_string(cursors_path(dir))
         .ok()
