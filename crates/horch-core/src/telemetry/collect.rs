@@ -550,7 +550,12 @@ impl Collector {
             let file = QuotaFile::load(&self.state_root, Some(p))?;
             return Ok(QuotaView::new(file, now, self.policy.clone(), true));
         }
-        let mut file = QuotaFile::load(&self.state_root, None).unwrap_or_default();
+        let path = quota::quota_path(&self.state_root);
+        let on_disk = path
+            .is_file()
+            .then(|| QuotaFile::load(&self.state_root, None).ok())
+            .flatten();
+        let mut file = on_disk.clone().unwrap_or_default();
         file.apply_signals(signals, &self.policy);
         let due = match self.probing {
             Probing::Never => false,
@@ -566,12 +571,29 @@ impl Collector {
                 &self.quota_env.temp_root,
             );
         }
+        // NFR-02: write only when the content, all but `written_at`, changed.
+        let next = refreshed(&file, now, &self.policy);
+        if on_disk.is_some_and(|old| old == next) {
+            return Ok(QuotaView::new(file, now, self.policy.clone(), false));
+        }
         file.write(&self.state_root, now, &self.policy)?;
-        let path = crate::routing::quota::quota_path(&self.state_root);
-        let bytes = std::fs::metadata(path).map_or(0, |m| m.len());
+        let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
         self.timing.wrote("quota", bytes);
         Ok(QuotaView::new(file, now, self.policy.clone(), false))
     }
+}
+
+/// `file` as [`QuotaFile::write`] would write it, each pool's display state
+/// refreshed at `now`, with `written_at` kept as it is.
+fn refreshed(file: &QuotaFile, now: DateTime<Utc>, policy: &Policy) -> QuotaFile {
+    let mut next = file.clone();
+    let view = QuotaView::new(file.clone(), now, policy.clone(), false);
+    for (name, reading) in next.pools.iter_mut() {
+        let a = view.assess_pool(name, None, None);
+        reading.state = a.state.as_str().to_string();
+        reading.reason = Some(a.reason);
+    }
+    next
 }
 
 /// The hash of `snapshot`'s compact JSON with `generated_at` empty: 2

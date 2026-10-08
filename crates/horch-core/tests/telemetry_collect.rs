@@ -441,3 +441,41 @@ fn nfr_02_an_unchanged_snapshot_is_not_rewritten() {
         grown.generated_at
     );
 }
+
+/// NFR-02: a steady tick with no new event writes 0 bytes: no snapshot, no
+/// cursors, no events and no `quota.json` (whose content, all but
+/// `written_at`, did not change). A quota signal still writes `quota.json`.
+#[cfg(unix)]
+#[test]
+fn nfr_02_a_quiet_tick_writes_nothing() {
+    let w = world(Part::Whole);
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    c.tick(now()).unwrap();
+    let quota = horch_core::telemetry::dir(&w.state).join("quota.json");
+    assert!(quota.is_file(), "the first tick writes quota.json");
+    let ino = |p: &std::path::Path| {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(p).unwrap().ino()
+    };
+    let before = ino(&quota);
+    c.tick(at(-1)).unwrap();
+    assert_eq!(c.timing.written_total(), 0, "{}", c.timing.line());
+    assert_eq!(ino(&quota), before, "a quiet tick keeps quota.json");
+
+    // A Claude rate-limit refusal is a quota signal: quota.json changes.
+    let refusal = serde_json::json!({
+        "type": "assistant", "timestamp": "2026-09-28T17:59:30Z", "error": "rate_limit",
+        "message": {"model": "<synthetic>", "id": "msg_nfr02_quota", "content": []}
+    });
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(
+            w.home
+                .join(format!(".claude/projects/-work-alpha/{A2}.jsonl")),
+        )
+        .unwrap();
+    std::io::Write::write_all(&mut f, format!("{refusal}\n").as_bytes()).unwrap();
+    c.tick(at(-1)).unwrap();
+    assert!(c.timing.written("quota") > 0, "{}", c.timing.line());
+    assert_ne!(ino(&quota), before, "a refusal rewrites quota.json");
+}
