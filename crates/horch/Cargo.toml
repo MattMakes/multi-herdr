@@ -24,6 +24,7 @@ tempfile = "3"
 # The telemetry screen's raw-mode terminal and key events (NFR-05: the only
 # new runtime crate). The frame itself is plain text, rendered by horch.
 crossterm = "0.28"
+ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
 # `git::scrub_repo_env` and `git::repo_state` for the test git helpers.

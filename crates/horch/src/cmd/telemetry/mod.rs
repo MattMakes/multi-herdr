@@ -5,9 +5,10 @@
 //! SPC-02). `ensure` opens the collector in its own herdr workspace without
 //! touching anything the operator can see (SPC-03).
 //!
-//! The screen is plain text: [`render`] turns a snapshot into lines, which
-//! is what the goldens compare and what `horch telemetry render` prints.
-//! `crossterm` only puts those lines on a terminal and reads keys.
+//! The screen is drawn with `ratatui` (`view`); a worker thread does every
+//! tick and file read (`screen`). [`render`] draws 1 frame into a
+//! `TestBackend`, which is what the goldens compare and what `horch
+//! telemetry render` prints.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -20,17 +21,19 @@ use chrono::{DateTime, Utc};
 use horch_core::clock;
 use horch_core::routing::quota::{self, PoolReading, POOLS};
 use horch_core::runtime::RuntimeContext;
-use horch_core::telemetry::collect::{self, Collector, LiveRow, Probing, Snapshot};
+use horch_core::telemetry::collect::{self, Collector, Probing, Snapshot};
 use horch_core::telemetry::lock::{self, Holder};
-use horch_core::telemetry::store::{self, RollupRow, GROUPS};
+use horch_core::telemetry::store;
 use horch_core::usage::Locations;
 use horch_core::workspace::herdr::Herdr;
 
 use crate::output;
 
 mod screen;
+mod view;
 
 use screen::{Feed, LiveFeed, Source};
+pub use view::{render, ViewState};
 
 /// The label of the telemetry workspace. `horch tile` never touches it.
 pub const WORKSPACE_LABEL: &str = "horch telemetry";
@@ -55,47 +58,7 @@ fn install_signal_handlers() {
     }
 }
 
-// ─── view state and text ────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ViewState {
-    /// Index into [`GROUPS`].
-    pub group: usize,
-    /// Index into [`VIEW_WINDOWS`].
-    pub window: usize,
-    /// Only this project's rows, when set.
-    pub project: Option<String>,
-    /// One line of status (an error from the last tick).
-    pub status: Option<String>,
-    /// `collector` or `viewer`, on a live screen.
-    pub mode: Option<&'static str>,
-}
-
-impl ViewState {
-    pub fn group_name(&self) -> &'static str {
-        GROUPS[self.group % GROUPS.len()]
-    }
-
-    pub fn window_name(&self) -> &'static str {
-        VIEW_WINDOWS[self.window % VIEW_WINDOWS.len()]
-    }
-
-    pub fn with(group: &str, window: &str) -> Result<ViewState> {
-        let g = GROUPS
-            .iter()
-            .position(|x| *x == group)
-            .with_context(|| format!("--group takes one of: {}", GROUPS.join(", ")))?;
-        let w = VIEW_WINDOWS
-            .iter()
-            .position(|x| *x == window)
-            .with_context(|| format!("--window takes one of: {}", VIEW_WINDOWS.join(", ")))?;
-        Ok(ViewState {
-            group: g,
-            window: w,
-            ..ViewState::default()
-        })
-    }
-}
+// ─── text ───────────────────────────────────────────────────────────────────
 
 /// `412k`, `9.8M`, `88M`: a token count in at most 5 characters.
 pub fn human(n: u64) -> String {
@@ -311,71 +274,6 @@ fn project_name(p: Option<&str>) -> String {
     .unwrap_or_else(|| "-".into())
 }
 
-fn live_lines(rows: &[&LiveRow], width: usize, max: usize) -> Vec<String> {
-    let mut out = vec![clip(
-        &format!(
-            "{}{}{}{}{}{}{}{}{}{}",
-            pad("LIVE", 14),
-            pad("", 17),
-            pad("model", 11),
-            pad("phase", 7),
-            pad("plan", 21),
-            pad("fresh", 8),
-            pad("c.read", 9),
-            pad("out", 7),
-            pad("$", 8),
-            "tok/min"
-        ),
-        width,
-    )];
-    let mut last_project: Option<String> = None;
-    for (i, r) in rows.iter().enumerate() {
-        if i >= max {
-            out.push(format!("… {} more", rows.len() - i));
-            break;
-        }
-        let project = project_name(r.project.as_deref());
-        let shown = if last_project.as_deref() == Some(project.as_str()) {
-            String::new()
-        } else {
-            project.clone()
-        };
-        last_project = Some(project);
-        let mut role = r.role.clone();
-        if let Some(via) = &r.via {
-            role = format!("{role}>{via}");
-        }
-        let mut flags = String::new();
-        if r.idle {
-            flags.push_str(" idle");
-        }
-        if matches!(
-            r.pool_state.as_str(),
-            "tight" | "exhausted" | "broken" | "cooling"
-        ) {
-            flags.push_str(&format!(" {}:{}", r.pool, r.pool_state));
-        }
-        out.push(clip(
-            &format!(
-                "{}{}{}{}{}{}{}{}{}{}{}",
-                pad(&shown, 14),
-                pad(&role, 17),
-                pad(&short_model(&r.model), 11),
-                pad(short_phase(r.phase.as_deref()), 7),
-                pad(r.plan.as_deref().unwrap_or("-"), 21),
-                pad(&human(r.tokens.fresh()), 8),
-                pad(&human(r.tokens.cache_read), 9),
-                pad(&human(r.tokens.output), 7),
-                pad(&money(r.cost_usd, r.unpriced_events), 8),
-                human(r.rate_tokens_per_min.round() as u64),
-                flags
-            ),
-            width,
-        ));
-    }
-    out
-}
-
 /// Dollars, with a `*` when some events have no price: their cost is not
 /// in the figure, and the `UNPRICED` line lists them (never $0).
 fn money(cost: f64, unpriced: u64) -> String {
@@ -405,159 +303,6 @@ fn unpriced_line(rows: &[store::UnpricedRow], width: usize) -> Option<String> {
         ),
         width,
     ))
-}
-
-fn rollup_lines(title: &str, rows: &[RollupRow], width: usize, max: usize) -> Vec<String> {
-    let total: f64 = rows.iter().map(|r| r.cost_usd).sum();
-    let mut out = vec![clip(
-        &format!(
-            "{}{}{}{}{}{}",
-            pad(&title.to_uppercase(), 31),
-            pad("tokens", 9),
-            pad("$", 9),
-            pad("share", 8),
-            pad("cache hit", 12),
-            "$/DONE"
-        ),
-        width,
-    )];
-    for (i, r) in rows.iter().enumerate() {
-        if i >= max {
-            out.push(format!("… {} more", rows.len() - i));
-            break;
-        }
-        out.push(clip(
-            format!(
-                "{}{}{}{}{}{}",
-                pad(&r.key, 31),
-                pad(&human(r.tokens.total()), 9),
-                pad(&money(r.cost_usd, r.unpriced_events), 9),
-                pad(
-                    &if total > 0.0 {
-                        pct(r.cost_usd / total)
-                    } else {
-                        "-".into()
-                    },
-                    8
-                ),
-                pad(&r.cache_hit.map(pct).unwrap_or_else(|| "-".into()), 12),
-                r.cost_per_done
-                    .map(|c| format!("{c:.2}"))
-                    .unwrap_or_else(|| "-".into())
-            )
-            .trim_end(),
-            width,
-        ));
-    }
-    out
-}
-
-/// One frame of the screen, as lines of at most `width` characters, at most
-/// `height` of them (SPC-04). Pure.
-pub fn render(snap: &Snapshot, view: &ViewState, width: u16, height: u16) -> Vec<String> {
-    let (width, height) = (width.max(20) as usize, height.max(6) as usize);
-    let now = clock::parse(&snap.generated_at).unwrap_or_else(clock::now);
-    let live: Vec<&LiveRow> = snap
-        .live
-        .iter()
-        .filter(|r| view.project.is_none() || r.project == view.project)
-        .collect();
-    let fleets = live
-        .iter()
-        .filter(|r| r.kind == horch_core::execution::legacy::KIND_ORCHESTRATOR)
-        .count();
-    let left = format!(
-        "horch telemetry · {fleets} fleet{} · {} live pane{} · {}",
-        if fleets == 1 { "" } else { "s" },
-        live.len(),
-        if live.len() == 1 { "" } else { "s" },
-        now.format("%H:%MZ")
-    );
-    let mut right = format!(
-        "group: {}   window: {}",
-        view.group_name(),
-        view.window_name()
-    );
-    if let Some(p) = &view.project {
-        right = format!("project: {}   {right}", project_name(Some(p)));
-    }
-    if let Some(m) = view.mode {
-        right = format!("[{m}]  {right}");
-    }
-    // The left part gives way first: the view's group and window must show.
-    let left = clip(&left, width.saturating_sub(right.chars().count() + 2));
-    let gap = width
-        .saturating_sub(left.chars().count() + right.chars().count())
-        .max(2);
-    let mut lines = vec![clip(&format!("{left}{}{right}", " ".repeat(gap)), width)];
-    // No probe reads the Google pool yet, so the screen shows it only when
-    // a reading exists; `horch quota` always lists it.
-    lines.extend(pool_table(&snap.pools, now, width, &[quota::POOL_GOOGLE]));
-    lines.push(String::new());
-
-    // What is left is shared by the live rows and the rollup.
-    let mut tail: Vec<String> = Vec::new();
-    if !snap.unread.is_empty() {
-        let items: Vec<String> = snap
-            .unread
-            .iter()
-            .map(|u| format!("{}: {}", u.role, u.reason))
-            .collect();
-        tail.push(clip(&format!("UNREAD  {}", items.join("; ")), width));
-    }
-    let i = &snap.insights;
-    let mut facts = Vec::new();
-    if let Some(s) = i.orchestrator_share {
-        facts.push(format!("orchestrators {} of spend", pct(s)));
-    }
-    if let Some(h) = i.cache_hit {
-        facts.push(format!("cache hit {}", pct(h)));
-    }
-    if let Some(s) = i.idle_spend_share {
-        facts.push(format!("{} of spend while idle", pct(s)));
-    }
-    if let Some(p) = &i.top_plan {
-        facts.push(format!("top plan {p}"));
-    }
-    if !facts.is_empty() {
-        tail.push(clip(&facts.join(" · "), width));
-    }
-    if let Some(s) = &view.status {
-        tail.push(clip(&format!("! {s}"), width));
-    }
-    let window = view.window_name();
-    // The live view counts the last 5 hours' unpriced events.
-    let priced_window = if window == "live" { "5h" } else { window };
-    if let Some(line) = snap
-        .rollups
-        .get(priced_window)
-        .and_then(|r| unpriced_line(&r.unpriced, width))
-    {
-        tail.push(line);
-    }
-
-    let room = height.saturating_sub(lines.len() + tail.len());
-    if window == "live" {
-        lines.extend(live_lines(&live, width, room.saturating_sub(1)));
-    } else {
-        let live_room = (room / 2).max(2);
-        let shown = live_lines(&live, width, live_room.saturating_sub(1));
-        let used = shown.len();
-        lines.extend(shown);
-        lines.push(String::new());
-        let rows = snap
-            .rollups
-            .get(window)
-            .and_then(|r| r.group(view.group_name()))
-            .unwrap_or(&[]);
-        let title = format!("{window} by {}", view.group_name());
-        let rest = room.saturating_sub(used + 2);
-        lines.extend(rollup_lines(&title, rows, width, rest));
-    }
-    lines.truncate(height.saturating_sub(tail.len()));
-    lines.extend(tail);
-    lines.truncate(height);
-    lines
 }
 
 // ─── commands ───────────────────────────────────────────────────────────────
@@ -682,26 +427,6 @@ fn sleep_until_shutdown(d: Duration) {
     let until = Instant::now() + d;
     while Instant::now() < until && !SHUTDOWN.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// The projects the `p` key cycles through: none (all), then each one.
-fn next_project(snap: &Snapshot, current: Option<String>) -> Option<String> {
-    let mut projects: Vec<String> = snap.live.iter().filter_map(|l| l.project.clone()).collect();
-    for rollup in snap.rollups.values() {
-        projects.extend(
-            rollup
-                .by_project
-                .iter()
-                .map(|r| r.key.clone())
-                .filter(|k| k != "-"),
-        );
-    }
-    projects.sort();
-    projects.dedup();
-    match current {
-        None => projects.into_iter().next(),
-        Some(c) => projects.into_iter().skip_while(|p| *p != c).nth(1),
     }
 }
 
@@ -938,6 +663,7 @@ fn collector_command(ctx: &RuntimeContext, exe: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horch_core::telemetry::store::GROUPS;
 
     /// A tiny negative share rounds to zero and prints `0%`, never `-0%`.
     #[test]

@@ -1,19 +1,40 @@
-horch telemetry · 1 fleet · 2 live panes · 18:00Z                                           group: teammate   window: 7d
+horch telemetry · 1 fleet · 2 live panes · 18:00Z                              group: teammate  window: 7d  project: all
 POOL          5h      7d     scoped        state       resets         headroom/h
 claude        3%      100%   fable 3%      EXHAUSTED   Fri 14:00Z     0.0%
 codex         -       99%    -             EXHAUSTED   Sat 19:16Z     0.0%
 opencode-zen  no signal                    ok*         -              -          * public work only
 local         -       -      -             ok          pi and ollama answer
-
+ live panes  rows 1-2 of 2 ─────────────────────────────────────────────────────────────────────────────────────────────
 LIVE                           model      phase  plan                 fresh   c.read   out    $       tok/min
 alpha         orchestrator     opus-5.5   plan   -                    4.1k    156k     695    0.07    0 idle claude:exh…
               sonnet-2         sonnet     impl   -                    0       0        0      0.00    0 idle claude:exh…
-
+ 7d by teammate  rows 1-5 of 5 ─────────────────────────────────────────────────────────────────────────────────────────
 7D BY TEAMMATE                 tokens   $        share   cache hit   $/DONE
 orchestrator                   161k     0.07     46%     97%         -
 sonnet                         189k     0.06     44%     99%         0.06
 codex-sol                      1.8k     0.01     5%      80%         0.01
 pi                             4.0k     0.00     2%      52%         0.00
 prime                          2.5k     0.00     2%      89%         0.00
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 UNREAD  sonnet-2: no session id yet; opencode-ultra-1: no transcript found; smoke-1: agent none is not read
 orchestrators 46% of spend · cache hit 97% · 0% of spend while idle · top plan golden-prompts-whitespace
+Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  p project  r refresh  ? help  q quit
