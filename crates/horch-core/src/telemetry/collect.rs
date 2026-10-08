@@ -432,7 +432,10 @@ impl Collector {
             .get_or_insert_with(|| file_hash(&path).unwrap_or(!hash));
         let at = self.timing.lap("serialize", at);
         if known != hash {
+            // The output's serialization counts as `serialize` too; `write`
+            // is the file replace alone.
             let json = serde_json::to_vec(&snapshot)?;
+            let at = self.timing.lap("serialize", at);
             store::replace_private(&path, &json)?;
             self.snapshot_hash = Some(hash);
             self.timing.lap("write", at);
