@@ -203,23 +203,38 @@ impl Store {
             ..Store::default()
         };
         let prices = usage::builtin_prices();
-        for (date, path) in event_files(dir) {
-            if date.as_str() < oldest.as_str() && date != "undated" {
-                let _ = std::fs::remove_file(&path);
-                continue;
+        let mut files = event_files(dir);
+        files.retain(|(date, path)| {
+            let keep = date.as_str() >= oldest.as_str() || date == "undated";
+            if !keep {
+                let _ = std::fs::remove_file(path);
             }
-            for_each_event(&path, &prices, |event| {
+            keep
+        });
+        // NFR-02 peak RSS: size the table and the key index once, from the
+        // line count, with room for the events of the next hours. Grown by
+        // doubling, they left each old block in the allocator's cache of
+        // freed large blocks, still resident.
+        let lines: usize = files.iter().map(|(_, path)| count_lines(path)).sum();
+        store.reserve(lines + lines / 8);
+        for (_, path) in &files {
+            for_each_event(path, &prices, |event| {
                 if store.insert_key(&event) {
                     store.table.push(&event);
                 }
             });
         }
-        store.table.kept.shrink_to_fit();
         Ok(store)
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Room for `n` events in the key index and the table.
+    fn reserve(&mut self, n: usize) {
+        self.keys.reserve(n);
+        self.table.kept.reserve_exact(n);
     }
 
     /// How many events the store holds.
@@ -291,6 +306,22 @@ pub(crate) fn read_file(path: &Path, prices: &BTreeMap<String, Price>) -> Vec<Ev
     let mut out = Vec::new();
     for_each_event(path, prices, |e| out.push(e));
     out
+}
+
+/// How many lines `path` holds (its `\n` bytes), 0 when it does not open.
+fn count_lines(path: &Path) -> usize {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return 0;
+    };
+    let mut buf = vec![0u8; 64 << 10];
+    let mut n = 0;
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) | Err(_) => return n,
+            Ok(got) => n += buf[..got].iter().filter(|b| **b == b'\n').count(),
+        }
+    }
 }
 
 /// [`read_file`], one event at a time: the file is never in memory whole.
@@ -596,10 +627,79 @@ mod tests {
         assert!(tmp.path().join("events-2026-09-28.jsonl").is_file());
     }
 
+    /// NFR-02 peak RSS: the open sizes the table and the key index once,
+    /// from the line count, with room for an eighth more: the next events
+    /// go in without a new block. The table and the keys are what the files
+    /// hold, a repeat and a torn line dropped.
+    #[test]
+    fn nfr_02_open_sizes_the_table_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Store::open(tmp.path(), now(), 35).unwrap();
+        let events: Vec<Event> = (0..80)
+            .map(|i| {
+                let day = if i % 3 == 0 { 27 } else { 28 };
+                let ts = format!("2026-09-{day}T17:{:02}:00Z", i % 60);
+                ev(&format!("m{i}"), &ts, &format!("r{}", i % 7), i, 0.1)
+            })
+            .collect();
+        s.append(events.clone()).unwrap();
+        // A repeat in another file, and a torn last line.
+        let line = serde_json::to_string(&events[1]).unwrap();
+        let path = tmp.path().join("events-2026-09-27.jsonl");
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        write!(f, "{line}\n{}", &line[..20]).unwrap();
+        drop((s, f));
+
+        let mut s = Store::open(tmp.path(), now(), 35).unwrap();
+        let all = read_all(tmp.path());
+        assert_eq!(all.len(), 80);
+        // Each kept event with its names resolved (the store interns the
+        // agent first, so the ids differ).
+        let resolved = |t: &Table| -> Vec<String> {
+            let name = |id: u32| t.names.names[id as usize].to_string();
+            (t.kept.iter())
+                .map(|k| {
+                    let row = t.rows[k.row as usize];
+                    let groups = row.groups.map(name);
+                    let (record, model) = (name(row.record), name(k.model));
+                    format!(
+                        "{} {:?} {:?} {record} {groups:?} {model} {}",
+                        k.ts, k.tokens, k.cost, k.idle
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(resolved(&s.table), resolved(&Table::from_events(&all)));
+        assert!(all.iter().all(|e| s.contains(&e.key())));
+        assert_eq!(s.keys.len(), 80);
+
+        // 80 events and the repeat; the torn line has no `\n`.
+        let lines = 81;
+        let (cap, at) = (s.table.kept.capacity(), s.table.kept.as_ptr());
+        assert_eq!(cap, lines + lines / 8);
+        let more: Vec<Event> = (80..80 + lines / 8)
+            .map(|i| {
+                ev(
+                    &format!("m{i}"),
+                    "2026-09-28T17:59:00Z",
+                    "r1",
+                    i as u64,
+                    0.1,
+                )
+            })
+            .collect();
+        assert_eq!(s.append(more).unwrap(), lines / 8);
+        assert_eq!(s.table.kept.as_ptr(), at, "the table moved to a new block");
+    }
+
     #[test]
     fn retention_deletes_old_files_at_open() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut s = Store::open(tmp.path(), now(), 35).unwrap();
+        let earlier = now() - Duration::days(60);
+        let mut s = Store::open(tmp.path(), earlier, 35).unwrap();
         s.append(vec![
             ev("old", "2026-08-01T00:00:00Z", "r1", 1, 0.0),
             ev("new", "2026-09-27T00:00:00Z", "r1", 1, 0.0),
