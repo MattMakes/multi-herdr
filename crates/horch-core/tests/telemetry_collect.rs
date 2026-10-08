@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use common::*;
 use horch_core::clock;
-use horch_core::telemetry::collect::{Collector, Probing, Snapshot};
+use horch_core::telemetry::collect::{Collector, Probing, Snapshot, QUIET_RECENT_IDS};
 use horch_core::telemetry::store;
 use horch_core::telemetry::Event;
 
@@ -568,25 +568,40 @@ fn session_events(w: &World, sid: &str) -> Vec<Event> {
 }
 
 /// NFR-02: the cursor of a done record whose transcript has not changed for
-/// a day forgets its recent message ids (they were 72% of a 2.3 MB
-/// `cursors.json`). When the transcript grows again, the new message is
-/// counted once and a repeated old line adds nothing.
+/// a day keeps only its newest message ids (the recent ids were 72% of a
+/// 2.3 MB `cursors.json`). When the transcript grows again, the new message
+/// is counted once and a repeated old line adds nothing.
 #[test]
-fn nfr_02_a_quiet_done_cursor_forgets_its_recent_ids() {
+fn nfr_02_a_quiet_done_cursor_forgets_its_older_ids() {
     const SID: &str = "44444444-4444-4444-8444-444444444444";
     let w = world(Part::Whole);
     let path = copied_session(&w, "t2c", SID, "done", "2026-09-28T17:00:00Z");
+    let more: Vec<String> = (0..6)
+        .map(|i| assistant_line(&w, &format!("msg_old_{i}")))
+        .collect();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    std::io::Write::write_all(&mut f, more.concat().as_bytes()).unwrap();
     let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
     c.tick(now()).unwrap();
     let stored = session_events(&w, SID).len();
     assert!(stored > 0);
-    assert!(cursor_json(&w, SID).unwrap().get("recent").is_some());
+    let recent = |w: &World| -> Vec<String> {
+        let cursor = cursor_json(w, SID).expect("kept: its record is in the window");
+        (cursor["recent"].as_array().into_iter().flatten())
+            .map(|s| s["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(recent(&w).len() > QUIET_RECENT_IDS, "{:?}", recent(&w));
 
     age(&path, now() - chrono::Duration::hours(25));
     let later = at(60 * horch_core::telemetry::collect::TIDY_EVERY_MIN);
     c.tick(later).unwrap();
-    let cursor = cursor_json(&w, SID).expect("kept: its record is in the window");
-    assert!(cursor.get("recent").is_none(), "{cursor}");
+    let newest: Vec<String> = (2..6).map(|i| format!("msg_old_{i}")).collect();
+    assert_eq!(recent(&w), newest);
+    let cursor = cursor_json(&w, SID).unwrap();
     assert!(
         cursor["offset"].as_u64().unwrap() > 0,
         "still where it stopped"
@@ -611,6 +626,49 @@ fn nfr_02_a_quiet_done_cursor_forgets_its_recent_ids() {
         .collect();
     assert_eq!(ids.len(), stored + 1, "{ids:?}");
     assert_eq!(ids.iter().filter(|i| *i == "msg_nfr02_tidy").count(), 1);
+}
+
+/// The review's scenario (R2): a done Claude session's transcript is quiet
+/// for a day, the tidy runs, then Claude writes its last message again with
+/// more tokens. The difference is stored as a correction, not lost as a
+/// repeat of the stored id.
+#[test]
+fn r2_a_correction_after_recent_ids_are_forgotten_is_not_lost() {
+    const SID: &str = "77777777-7777-4777-8777-777777777777";
+    let w = world(Part::Whole);
+    let path = copied_session(&w, "r2-correction", SID, "done", "2026-09-28T17:00:00Z");
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    c.tick(now()).unwrap();
+    let total = |w: &World| -> u64 {
+        session_events(w, SID)
+            .iter()
+            .map(|e| e.tokens.total())
+            .sum()
+    };
+    let before = total(&w);
+
+    age(&path, now() - chrono::Duration::hours(25));
+    let later = at(60 * horch_core::telemetry::collect::TIDY_EVERY_MIN);
+    c.tick(later).unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    let last = text
+        .lines()
+        .rfind(|l| l.contains("\"assistant\"") && l.contains("\"usage\""))
+        .unwrap();
+    let mut corrected: serde_json::Value = serde_json::from_str(last).unwrap();
+    let output = corrected["message"]["usage"]["output_tokens"]
+        .as_u64()
+        .unwrap();
+    assert!(output < 600);
+    corrected["message"]["usage"]["output_tokens"] = 600.into();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    std::io::Write::write_all(&mut f, format!("{corrected}\n").as_bytes()).unwrap();
+    c.tick(later + chrono::Duration::seconds(2)).unwrap();
+    assert_eq!(total(&w), before + 600 - output, "the correction is stored");
 }
 
 /// NFR-02: the cursor of a session with no record in the retention window,

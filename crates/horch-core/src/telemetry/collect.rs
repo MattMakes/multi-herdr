@@ -565,11 +565,13 @@ impl Collector {
     ///   and whose input has not changed for [`QUIET_H`] hours, is dropped:
     ///   no tick polls it.
     /// - A cursor whose records are all done, and whose input has not
-    ///   changed for [`QUIET_H`] hours, forgets its recent Claude message
-    ///   ids, which were most of the file.
+    ///   changed for [`QUIET_H`] hours, keeps only its newest
+    ///   [`QUIET_RECENT_IDS`] Claude message ids: the recent ids were most
+    ///   of the file. Claude repeats a line only for the message in flight,
+    ///   so a later line can correct only the newest ids.
     ///
     /// An input that grows again is read again: a dropped cursor from the
-    /// start, a forgetful one from its offset. The store drops the events
+    /// start, a tidied one from its offset. The store drops the events
     /// it already holds (section 8.2).
     fn tidy_cursors(&mut self, records: &[&Record], oldest: &str, now: DateTime<Utc>) -> bool {
         // (agent, session) -> whether every record of it in the window is done.
@@ -605,8 +607,9 @@ impl Collector {
                     changed = true;
                     false
                 }
-                Some(true) if !c.recent.is_empty() => {
-                    c.recent.clear();
+                Some(true) if c.recent.len() > QUIET_RECENT_IDS => {
+                    let extra = c.recent.len() - QUIET_RECENT_IDS;
+                    c.recent.drain(..extra);
                     changed = true;
                     true
                 }
@@ -718,6 +721,10 @@ pub const QUIET_H: i64 = 24;
 
 /// How often a tick tidies the cursors, in minutes (the first tick always).
 pub const TIDY_EVERY_MIN: i64 = 60;
+
+/// How many of its newest Claude message ids a quiet done cursor keeps
+/// ([`Collector::tidy_cursors`]).
+pub const QUIET_RECENT_IDS: usize = 4;
 
 /// How long an older record with no transcript waits between 2 searches.
 pub const SEARCH_AGAIN_S: i64 = 30;
