@@ -16,5 +16,6 @@ compact_at: 160000
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]
+available_skills: [codebase-design]
 ---
 Your tier: CODEX SOL - complex implementation work.

@@ -2414,6 +2414,7 @@ mod tests {
         let mut t = Roster::builtin().unwrap().require("opus").unwrap().clone();
         t.phase = None;
         t.skills.clear();
+        t.available_skills.clear();
         t.plugin_skills.clear();
         t.operator_skills = Some(crate::roster::OperatorSkills {
             dir: tmp.path().join("exported").to_string_lossy().into_owned(),

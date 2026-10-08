@@ -247,6 +247,15 @@ fn err(kind: &str) -> Row {
 fn arc_15_plan_table() {
     let research = ["brainstorm", "handoff", "research-codebase", "trace"];
     let implementation = ["check", "debug", "execute", "handoff", "tdd"];
+    // opus and codex-sol also name codebase-design under available_skills.
+    let builder = [
+        "check",
+        "codebase-design",
+        "debug",
+        "execute",
+        "handoff",
+        "tdd",
+    ];
     let sonnet = || record("sonnet", "claude", "sonnet");
     let mut working = sonnet();
     working.status = "working".into();
@@ -304,7 +313,7 @@ fn arc_15_plan_table() {
                 Some("medium"),
                 "fresh",
                 RoutingMode::Auto,
-                &implementation,
+                &builder,
             ),
         ),
         (
@@ -348,7 +357,7 @@ fn arc_15_plan_table() {
                 Some("medium"),
                 "fresh:sess-1",
                 RoutingMode::Force,
-                &implementation,
+                &builder,
             ),
         ),
         (
@@ -363,7 +372,7 @@ fn arc_15_plan_table() {
                 Some("medium"),
                 "fresh:sess-1",
                 RoutingMode::Pinned,
-                &implementation,
+                &builder,
             ),
         ),
         (

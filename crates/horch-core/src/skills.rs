@@ -389,9 +389,11 @@ mod tests {
             selected(roster.require("staff-engineer").unwrap()).unwrap(),
             [
                 "api-contracts",
+                "codebase-design",
                 "create-plan",
                 "data-migrations",
                 "handoff",
+                "improve-codebase-architecture",
                 "pre-flight",
                 "system-design"
             ]

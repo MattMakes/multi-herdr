@@ -20,7 +20,7 @@ permission_mode: auto
 inherit_plugins: false
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent, Edit, Write, NotebookEdit]
-skills: [code-review, code-analysis, architecture-review]
+skills: [code-review, code-analysis, architecture-review, codebase-design]
 mcp_servers: {}
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]

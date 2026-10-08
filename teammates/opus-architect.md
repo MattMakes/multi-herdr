@@ -19,7 +19,7 @@ compact_at: 300000
 # and there is no human at this pane.
 permission_mode: auto
 inherit_plugins: false
-skills: [trace]
+skills: [trace, codebase-design, improve-codebase-architecture]
 mcp_servers: {}
 first_instruction: |-
   Write your critique, design or triage to a file under ai_docs/ and reply

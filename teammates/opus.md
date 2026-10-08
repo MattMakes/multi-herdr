@@ -17,6 +17,7 @@ compact_at: 300000
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
+available_skills: [codebase-design]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker,
                   "herdr:herdr-orchestrator", "herdr:herdr-worker"]

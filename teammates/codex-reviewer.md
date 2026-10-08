@@ -13,6 +13,7 @@ effort: high
 compact_window: 200000
 compact_at: 160000
 skills: [code-review, security-review]
+available_skills: [codebase-design]
 # auto, not plan: plan maps to `-s read-only -a on-request`, and an approval
 # prompt stalls a pane nobody watches. codex has no per-tool deny, so "never
 # edit" is carried by the persona below.

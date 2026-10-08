@@ -221,15 +221,18 @@ each team.
 
 ### Core specialists
 
-The core specialists carry own-text skills for the part of their work that the
-phase catalog does not cover. Each attaches by name and belongs to no phase.
+The core specialists carry own-text and adapted skills for the part of their
+work that the phase catalog does not cover. Each attaches by name and belongs
+to no phase.
 
 | teammate | skills it adds |
 |---|---|
 | `product-lead` | `product-requirements`: problem, scope lists, acceptance criteria, first slice |
-| `staff-engineer` | `system-design`: forces, options, failure modes, rollout order; names `api-contracts` and `data-migrations` |
-| `architect-reviewer` | `architecture-review`: boundaries, contracts, coupling, reversibility, ranked by consequence |
-| `backend-developer` | `api-contracts` (validation, error model, idempotency, evolution) and `data-migrations` (expand/contract, online DDL, backfills) |
+| `staff-engineer` | `system-design`: forces, options, failure modes, rollout order; names `api-contracts` and `data-migrations`. `codebase-design`: module depth, interfaces, seams, design-it-twice; names `improve-codebase-architecture` |
+| `architect-reviewer` | `architecture-review`: boundaries, contracts, coupling, reversibility, ranked by consequence. `codebase-design`: module depth, interfaces, seams |
+| `backend-developer` | `api-contracts` (validation, error model, idempotency, evolution) and `data-migrations` (expand/contract, online DDL, backfills); names `codebase-design` |
+| `opus-architect` | `codebase-design`; `improve-codebase-architecture`: deepening candidates in an HTML report under `ai_docs/reports/` (it has Write and no Edit, so it writes the report and edits no code) |
+| `frontend-developer`, `opus-domain`, `opus`, `codex-sol`, `codex-reviewer` | name `codebase-design` under `available_skills` |
 
 ### Blender and the Unreal team
 

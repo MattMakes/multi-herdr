@@ -48,7 +48,7 @@
         "--dangerously-bypass-hook-trust",
         "-c",
         "features.multi_agent=false",
-        "\n\nFleet skill phase: implementation. Available native skills: check, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+        "\n\nFleet skill phase: implementation. Available native skills: check, codebase-design, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
       ],
       "current_dir": null,
       "env": {
@@ -97,7 +97,7 @@
         "-c",
         "features.multi_agent=false",
         "00000000-0000-4000-8000-000000000002",
-        "\n\nFleet skill phase: implementation. Available native skills: check, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+        "\n\nFleet skill phase: implementation. Available native skills: check, codebase-design, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
       ],
       "current_dir": null,
       "env": {
@@ -144,7 +144,7 @@
         "--dangerously-bypass-hook-trust",
         "-c",
         "features.multi_agent=false",
-        "\n\nFleet skill phase: implementation. Available native skills: check, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
+        "\n\nFleet skill phase: implementation. Available native skills: check, codebase-design, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.\n\n<PROMPT>"
       ],
       "current_dir": null,
       "env": {

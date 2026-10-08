@@ -15,6 +15,7 @@ compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [trace, tdd]
+available_skills: [codebase-design]
 # context7 for current library and framework documentation.
 mcp_servers:
   context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp@4.1.1"]}
