@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use super::readers::{self, Cursors, Located, Polled, Unreadable};
 use super::store::{self, GroupSums, Kept, Rollup, Store, Table, UnpricedRow};
+use super::timing::TickTiming;
 use super::{Event, Observation, QuotaSignal, TokenClasses, Unread};
 use crate::clock;
 use crate::execution::legacy::{Record, KIND_ORCHESTRATOR};
@@ -186,6 +188,11 @@ pub struct Collector {
     pub fail_after_append: bool,
     /// Test hook: die there instead, leaving a stale lock (a `kill -9`).
     pub abort_after_append: bool,
+    /// The last tick's time per phase and bytes written (NFR-02).
+    pub timing: TickTiming,
+    /// Print [`Collector::timing`] to stderr after each tick
+    /// (`HORCH_TELEMETRY_TIMING=1`).
+    pub print_timing: bool,
 }
 
 impl Collector {
@@ -236,7 +243,11 @@ impl Collector {
             ctx.settings.balance_override.as_deref(),
             QuotaEnv::from_context(ctx),
         )?;
-        Ok(c.with_faults(&ctx.settings.faults))
+        let mut c = c.with_faults(&ctx.settings.faults);
+        use crate::runtime::EnvSource;
+        c.print_timing =
+            crate::runtime::ProcessEnv.var("HORCH_TELEMETRY_TIMING").as_deref() == Some("1");
+        Ok(c)
     }
 
     fn open_with(
@@ -277,6 +288,8 @@ impl Collector {
             peak_pending: 0,
             fail_after_append: false,
             abort_after_append: false,
+            timing: TickTiming::default(),
+            print_timing: false,
         })
     }
 
@@ -318,11 +331,18 @@ impl Collector {
 
     /// Run one tick at `now` and write the snapshot.
     pub fn tick(&mut self, now: DateTime<Utc>) -> Result<Snapshot> {
+        self.timing = TickTiming::default();
+        let start = Instant::now();
         self.refresh_ledgers();
         let ledgers = std::mem::take(&mut self.last_good);
         let records: Vec<&Record> = ledgers.values().flat_map(|l| &l.records).collect();
+        self.timing.lap("ledgers", start);
         let snapshot = self.tick_on(&records, now);
         self.last_good = ledgers;
+        self.timing.total = start.elapsed();
+        if self.print_timing {
+            eprintln!("{}", self.timing.line());
+        }
         snapshot
     }
 
@@ -371,7 +391,9 @@ impl Collector {
         // A cursor moves only when its input is polled.
         self.store_batch(pending, moved.then_some(true))?;
 
+        let at = Instant::now();
         let quota = self.update_quota(now, &signals)?;
+        let at = self.timing.lap("quota", at);
         let snapshot = build_indexed(
             records,
             &self.store.table,
@@ -380,8 +402,12 @@ impl Collector {
             now,
             self.info.clone(),
         );
+        let at = self.timing.lap("build", at);
         let json = serde_json::to_vec_pretty(&snapshot)?;
+        let at = self.timing.lap("serialize", at);
         store::replace_private(&snapshot_path(&self.state_root), &json)?;
+        self.timing.lap("write", at);
+        self.timing.wrote("snapshot", json.len() as u64);
         Ok(snapshot)
     }
 
@@ -391,7 +417,11 @@ impl Collector {
     /// store drops the repeats. A batch inside a read leaves its cursors
     /// unsynced ([`store::save_cursors`]); the tick's last save syncs.
     fn store_batch(&mut self, events: Vec<Event>, save: Option<bool>) -> Result<()> {
+        let at = Instant::now();
+        let bytes = self.store.bytes_written;
         self.store.append(events)?;
+        let at = self.timing.lap("append", at);
+        self.timing.wrote("events", self.store.bytes_written - bytes);
         if self.abort_after_append {
             eprintln!("HORCH_FAULT=abort-after-append: dying before the cursor save");
             std::process::abort();
@@ -400,7 +430,9 @@ impl Collector {
             anyhow::bail!("HORCH_FAULT=after-append: stopping before the cursor save");
         }
         if let Some(sync) = save {
-            store::save_cursors(self.store.dir(), &self.cursors, sync)?;
+            let bytes = store::save_cursors(self.store.dir(), &self.cursors, sync)?;
+            self.timing.lap("cursor_save", at);
+            self.timing.wrote("cursors", bytes as u64);
         }
         Ok(())
     }
@@ -418,19 +450,27 @@ impl Collector {
         now: DateTime<Utc>,
         limit: usize,
     ) -> Result<Option<Polled>, Unreadable> {
-        let located = self.locate(r, sid, now)?;
+        // "resolve": find the inputs and stamp them.
+        let at = Instant::now();
+        let located = self.locate(r, sid, now);
+        let located = located.inspect_err(|_| {
+            self.timing.lap("resolve", at);
+        })?;
         let stamps: Vec<Option<Stamp>> = match &located {
             Located::Files(files) => files.iter().map(|f| stamp(f)).collect(),
             // SQLite writes to the database or to its write-ahead log.
             Located::OpenCode(db) => vec![stamp(db), wal_stamp(db)],
         };
         let key = (r.agent.clone(), sid.to_string());
+        let at = self.timing.lap("resolve", at);
         if self.polled.get(&key) == Some(&stamps) {
             return Ok(None);
         }
         self.polled.remove(&key);
         let polled =
-            readers::poll_located(&self.loc, &r.agent, sid, located, &mut self.cursors, limit)?;
+            readers::poll_located(&self.loc, &r.agent, sid, located, &mut self.cursors, limit);
+        self.timing.lap("read", at);
+        let polled = polled?;
         if !polled.more {
             self.polled.insert(key, stamps);
         }
@@ -511,6 +551,9 @@ impl Collector {
             );
         }
         file.write(&self.state_root, now, &self.policy)?;
+        let path = crate::routing::quota::quota_path(&self.state_root);
+        let bytes = std::fs::metadata(path).map_or(0, |m| m.len());
+        self.timing.wrote("quota", bytes);
         Ok(QuotaView::new(file, now, self.policy.clone(), false))
     }
 }

@@ -32,6 +32,8 @@ pub struct Store {
     keys: HashSet<(u32, u32, Box<str>)>,
     sessions: Interner,
     pub(crate) table: Table,
+    /// The bytes appended to the event files since open (NFR-02 timing).
+    pub bytes_written: u64,
 }
 
 /// Strings stored once, each with a dense id.
@@ -272,6 +274,7 @@ impl Store {
                 .with_context(|| format!("opening {}", path.display()))?;
             f.write_all(text.as_bytes())?;
             f.sync_all()?;
+            self.bytes_written += text.len() as u64;
             n += batch.len();
             for e in &batch {
                 self.table.push(e);
@@ -340,10 +343,12 @@ pub fn load_cursors(dir: &Path) -> Cursors {
 /// cache. That is safe after the events are synced: a power loss can only
 /// keep the old cursors, or a torn file that loads as none, and both re-read
 /// input the store already holds, whose repeats it drops (section 8.2).
-pub(crate) fn save_cursors(dir: &Path, cursors: &Cursors, sync: bool) -> Result<()> {
+/// Returns the bytes written.
+pub(crate) fn save_cursors(dir: &Path, cursors: &Cursors, sync: bool) -> Result<usize> {
     let json = serde_json::to_vec(cursors)?;
     replace_private_with(&cursors_path(dir), &json, sync)
-        .with_context(|| format!("saving {}", cursors_path(dir).display()))
+        .with_context(|| format!("saving {}", cursors_path(dir).display()))?;
+    Ok(json.len())
 }
 
 // ─── rollups ────────────────────────────────────────────────────────────────

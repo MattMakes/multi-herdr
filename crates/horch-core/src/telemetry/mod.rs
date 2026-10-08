@@ -13,6 +13,7 @@
 //! | [`store`] | the event files, the dedupe index, rollups |
 //! | [`collect`] | one tick: ledgers -> readers -> store -> snapshot |
 //! | [`lock`] | one collector per state root |
+//! | [`timing`] | one tick's time per phase and bytes written |
 
 pub mod collect;
 pub mod context;
@@ -20,6 +21,7 @@ pub(crate) mod cursor;
 pub mod lock;
 pub mod readers;
 pub mod store;
+pub mod timing;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

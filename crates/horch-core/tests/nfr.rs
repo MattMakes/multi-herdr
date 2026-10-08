@@ -610,6 +610,7 @@ fn nfr_02_live_store_rss() {
         rss_mib()
     );
     let mut worst = std::time::Duration::ZERO;
+    let mut steady = Vec::new();
     for n in 1..=perf_ticks() {
         let (t, cpu) = (Instant::now(), thread_cpu());
         c.tick(horch_core::clock::now()).unwrap();
@@ -622,6 +623,28 @@ fn nfr_02_live_store_rss() {
             (live() - before) as f64 / 1048576.0,
             rss_mib()
         );
+        eprintln!("  {}", c.timing.line());
+        if n > 1 {
+            steady.push(c.timing.clone());
+        }
     }
     eprintln!("steady tick, worst after the first: {worst:?}");
+    // The median of each phase over the steady ticks, and the bytes they wrote.
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    };
+    let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+    for p in horch_core::telemetry::timing::PHASES {
+        let m = median(steady.iter().map(|t| ms(t.phase(p))).collect());
+        eprintln!("median {p}: {m:.2} ms");
+    }
+    eprintln!(
+        "median total: {:.2} ms",
+        median(steady.iter().map(|t| ms(t.total)).collect())
+    );
+    for f in horch_core::telemetry::timing::FILES {
+        let sum: u64 = steady.iter().map(|t| t.written(f)).sum();
+        eprintln!("steady bytes {f}: {sum} B in {} ticks", steady.len());
+    }
 }
