@@ -25,23 +25,18 @@ pub(crate) fn phase_skills(phase: Phase) -> &'static [&'static str] {
     }
 }
 
-/// The names a teammate selects, checked against the compiled-in catalog.
+/// The legacy per-teammate selection, checked against the compiled-in
+/// catalog. A test oracle only (SKL-02): no production path calls it; the
+/// launch, the spawn plan and `--check` resolve skills through
+/// [`super::SkillResolution`].
 pub fn selected(teammate: &Teammate) -> Result<Vec<String>> {
-    selected_in(teammate, &SkillCatalog::bundled()?)
-}
-
-/// [`selected`], checked against `catalog`, which may include installed
-/// marketplace skills.
-pub(crate) fn selected_in(teammate: &Teammate, catalog: &SkillCatalog) -> Result<Vec<String>> {
+    let catalog = SkillCatalog::bundled()?;
     let mut names: BTreeSet<String> = teammate.skills.iter().cloned().collect();
     if let Some(phase) = teammate.phase {
         names.extend(phase_skills(phase).iter().map(|s| (*s).to_owned()));
     }
     names.extend(teammate.available_skills.iter().cloned());
-    check(teammate, &names, catalog)?;
-    if teammate.operator_skills.is_some() {
-        check_loadable(teammate, true)?;
-    }
+    check(teammate, &names, &catalog)?;
     Ok(names.into_iter().collect())
 }
 
@@ -54,7 +49,7 @@ pub(crate) fn operator_names(teammate: &Teammate) -> impl Iterator<Item = &str> 
 }
 
 /// Every selected name is in the catalog, and a teammate that selects any
-/// skill can load one.
+/// skill, or names operator skills, can load one.
 pub(crate) fn check(
     teammate: &Teammate,
     names: &BTreeSet<String>,
@@ -68,7 +63,10 @@ pub(crate) fn check(
             );
         }
     }
-    check_loadable(teammate, !names.is_empty())
+    check_loadable(
+        teammate,
+        !names.is_empty() || teammate.operator_skills.is_some(),
+    )
 }
 
 /// A teammate that selects any skill (`any`) can load one.

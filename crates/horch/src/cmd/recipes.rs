@@ -23,6 +23,7 @@ use horch_core::prompts;
 use horch_core::roster::{Roster, Teammate};
 use horch_core::routing::quota::{self, QuotaView, State};
 use horch_core::runtime::RuntimeContext;
+use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
 use horch_core::workspace::paneshell::PaneShell;
@@ -398,8 +399,13 @@ pub fn fleet_with(
     // The record lists the skills the launch will activate, as a worker's
     // does (SKL-04): the launch fails on a record whose skills differ.
     let home = ctx.inherited.home_var.as_deref().map(Path::new);
-    let catalog = roster.skill_catalog()?.with_host_skills(teammate, home)?;
-    let skills = horch_core::skills::plan_activation(teammate, teammate.phase, &catalog)?;
+    let skills = SkillResolution::read(
+        roster.skill_catalog()?,
+        Some(teammate),
+        home,
+        harness_support,
+    )?
+    .plan(teammate)?;
     ledger.insert(Record {
         record_id: record_id.clone(),
         session_id: session_id.clone(),

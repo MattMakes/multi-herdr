@@ -21,12 +21,12 @@ use horch_core::ids::{ExecutionId, RoleName, SessionId, WorkspaceId};
 use horch_core::messaging::brief::Brief;
 use horch_core::messaging::brief::SCHEMA;
 use horch_core::messaging::mailbox::Mailbox;
-use horch_core::roster::{Phase, Roster};
+use horch_core::roster::{OperatorSkills, Phase, Roster};
 use horch_core::routing::decision::{GateFlags, RoutingMode};
 use horch_core::routing::policy::{BalanceMode, Policy};
 use horch_core::routing::quota::{QuotaFile, QuotaView};
 use horch_core::runtime::{MapEnv, RuntimeContext};
-use horch_core::skills::SkillCatalog;
+use horch_core::skills::{harness_support, SkillCatalog, SkillResolution, SupportCheck};
 use horch_core::workspace::client::WorkspaceClient;
 use horch_core::workspace::model::{Direction, NewWorkspace, Pane};
 use horch_core::workspace::testing::FakeWorkspace;
@@ -93,6 +93,18 @@ fn record(tier: &str, agent: &str, model: &str) -> LedgerRecordV1 {
     }
 }
 
+/// The bundled catalog, no host skills read: what planning sees for a
+/// teammate without operator or plugin skills.
+fn bundled_skills() -> SkillResolution {
+    SkillResolution::read(
+        SkillCatalog::bundled().unwrap(),
+        None,
+        None,
+        harness_support,
+    )
+    .unwrap()
+}
+
 /// Plan `req` against a quota fixture, reading the gate inputs only when the
 /// shell would.
 fn plan(
@@ -101,12 +113,12 @@ fn plan(
     existing: Option<&LedgerRecordV1>,
 ) -> Result<ExecutionPlan, PlanError> {
     let roster = roster();
-    let catalog = SkillCatalog::bundled().unwrap();
+    let skills = bundled_skills();
     let view = view(fixture);
     let ids = ids();
     let inputs = PlanInputs {
         roster: &roster,
-        catalog: &catalog,
+        skills: &skills,
         gate: needs_gate(req, &roster).then_some(GateInputs {
             view: &view,
             balance: BalanceMode::Auto,
@@ -546,12 +558,12 @@ fn invalid_selection_is_refused_before_spawn_side_effects() {
     let mut t = roster.require("opus").unwrap().clone();
     t.skills = vec!["missing-bundle".into()];
     roster.insert_for_test(t);
-    let catalog = SkillCatalog::bundled().unwrap();
+    let skills = bundled_skills();
     let view = view("all-ok");
     let ids = ids();
     let inputs = PlanInputs {
         roster: &roster,
-        catalog: &catalog,
+        skills: &skills,
         gate: Some(GateInputs {
             view: &view,
             balance: BalanceMode::Auto,
@@ -564,6 +576,91 @@ fn invalid_selection_is_refused_before_spawn_side_effects() {
     let e = plan_launch(&req("opus", "x"), &inputs).unwrap_err();
     assert!(matches!(e, PlanError::SkillUnsupported(_)), "{e}");
     assert!(e.to_string().contains("missing-bundle"), "{e}");
+}
+
+/// `roster()` with `name` changed to a teammate whose only skill is the
+/// operator skill `mine` under `ops`: no phase, no `skills:`, no
+/// `available_skills:`.
+fn operator_only(name: &str, ops: &Path) -> Roster {
+    let dir = ops.join("mine");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: mine\ndescription: An operator skill.\n---\nbody\n",
+    )
+    .unwrap();
+    let mut roster = roster();
+    let mut t = roster.require(name).unwrap().clone();
+    t.phase = None;
+    t.skills.clear();
+    t.available_skills.clear();
+    t.skills_when.clear();
+    t.plugin_skills.clear();
+    t.operator_skills = Some(OperatorSkills {
+        dir: ops.to_string_lossy().into_owned(),
+        names: vec!["mine".into()],
+    });
+    roster.insert_for_test(t);
+    roster
+}
+
+/// Plan a spawn of `name` from `roster`, its skills resolved with `supported`.
+fn plan_skills_of(
+    roster: &Roster,
+    name: &str,
+    supported: SupportCheck,
+) -> Result<ExecutionPlan, PlanError> {
+    let skills = SkillResolution::read(
+        SkillCatalog::bundled().unwrap(),
+        roster.get(name),
+        None,
+        supported,
+    )
+    .unwrap();
+    let view = view("all-ok");
+    let ids = ids();
+    let inputs = PlanInputs {
+        roster,
+        skills: &skills,
+        gate: Some(GateInputs {
+            view: &view,
+            balance: BalanceMode::Auto,
+        }),
+        existing: None,
+        now: horch_core::clock::parse(NOW).unwrap(),
+        ids: &ids,
+        project: Path::new("/p"),
+    };
+    plan_launch(&req(name, "x"), &inputs)
+}
+
+/// SKL-12: the spawn plan applies the launch's support rule. An operator
+/// skill alone activates a skill, so an agent that cannot load skills fails
+/// the plan, before a record exists, as the launch would fail.
+#[test]
+fn skl_12_spawn_plan_rejects_an_operator_only_teammate_the_launch_rejects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roster = operator_only("sonnet", tmp.path());
+    let unsupported: SupportCheck = |t| bail!("{}: this agent cannot load skills here", t.name);
+    let e = plan_skills_of(&roster, "sonnet", unsupported).unwrap_err();
+    assert!(matches!(e, PlanError::SkillUnsupported(_)), "{e}");
+    assert!(e.to_string().contains("cannot load skills here"), "{e}");
+
+    // An agent that loads skills plans the operator skill.
+    let plan = plan_skills_of(&roster, "sonnet", harness_support).unwrap();
+    assert_eq!(plan.skills.activated_ids(), ["mine"]);
+}
+
+/// SKL-12 with the real adapter: Codex on Windows cannot load skills, so
+/// an operator-only Codex teammate fails the plan, not the launch.
+#[cfg(windows)]
+#[test]
+fn skl_12_codex_on_windows_rejects_an_operator_only_teammate_at_the_plan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roster = operator_only("codex-sol", tmp.path());
+    let e = plan_skills_of(&roster, "codex-sol", harness_support).unwrap_err();
+    assert!(matches!(e, PlanError::SkillUnsupported(_)), "{e}");
+    assert!(e.to_string().contains("CODEX_HOME"), "{e}");
 }
 
 // ─── ARC-17 (conversion) ────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ use crate::routing::decision::merge;
 use crate::routing::eligible::trains_on_input;
 use crate::routing::quota;
 use crate::runtime::context::DEFAULT_ENV_YIELD;
-use crate::skills::SkillCatalog;
+use crate::skills::{harness_support, SkillCatalog, SkillResolution};
 
 /// The tokens a teammate's `compact_at` may hold (CTX-21).
 const COMPACT_AT_RANGE: std::ops::RangeInclusive<u64> = 50_000..=1_000_000;
@@ -177,11 +177,13 @@ impl Roster {
     pub(crate) fn check_teammate(&self, t: &Teammate) -> Vec<String> {
         let mut problems = Vec::new();
         let who = &t.name;
-        let selected = match &self.skill_catalog {
-            Some(catalog) => crate::skills::selected_in(t, catalog),
-            None => crate::skills::selected(t),
-        };
-        if let Err(error) = selected {
+        // Operator and plugin skills are read from the operator's machine, so
+        // `--check` reads the same directories the launch will. It judges the
+        // roster, not this host, so the agent's skill support is not checked.
+        let resolved = self.skill_catalog().and_then(|c| {
+            SkillResolution::read(c, Some(t), self.home.as_deref(), |_| Ok(()))?.plan(t)
+        });
+        if let Err(error) = resolved {
             problems.push(format!("{error:#}"));
         }
         for name in &t.available_skills {
@@ -189,16 +191,6 @@ impl Roster {
                 problems.push(format!(
                     "{who}: '{name}' is both in skills and in available_skills"
                 ));
-            }
-        }
-        // Operator skills are read from the operator's machine, so `--check`
-        // reads the same directory the launch will.
-        if t.operator_skills.is_some() {
-            let extended = self
-                .skill_catalog()
-                .and_then(|c| c.with_host_skills(t, self.home.as_deref()));
-            if let Err(error) = extended {
-                problems.push(format!("{error:#}"));
             }
         }
         if t.brief_description.trim().is_empty() {
@@ -1306,13 +1298,12 @@ pub fn operator_skill_warnings(roster: &Roster) -> Vec<String> {
         if t.operator_skills.is_none() {
             continue;
         }
-        let Ok(catalog) = roster
-            .skill_catalog()
-            .and_then(|c| c.with_host_skills(t, roster.home.as_deref()))
-        else {
+        let Ok(skills) = roster.skill_catalog().and_then(|c| {
+            SkillResolution::read(c, Some(t), roster.home.as_deref(), harness_support)
+        }) else {
             continue;
         };
-        for skipped in catalog.skipped_operator() {
+        for skipped in skills.catalog().skipped_operator() {
             out.push(format!("{name}: {}", skipped.note()));
         }
     }
@@ -1384,10 +1375,12 @@ mod spawnable_tests {
         assert!(r.skill_catalog().unwrap().lookup("demo").is_some());
         assert!(r.check().is_empty(), "{:?}", r.check());
         let sonnet = r.require("sonnet").unwrap();
-        assert!(
-            crate::skills::ensure_supported_in(sonnet, &SkillCatalog::bundled().unwrap()).is_err()
-        );
-        crate::skills::ensure_supported_in(sonnet, &r.skill_catalog().unwrap()).unwrap();
+        let plan = |catalog: SkillCatalog| {
+            SkillResolution::read(catalog, Some(sonnet), None, harness_support)?.plan(sonnet)
+        };
+        assert!(plan(SkillCatalog::bundled().unwrap()).is_err());
+        let activated = plan(r.skill_catalog().unwrap()).unwrap();
+        assert!(activated.activated_ids().contains(&"demo"));
     }
 
     #[test]

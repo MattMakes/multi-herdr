@@ -16,14 +16,16 @@ pub mod briefing;
 pub mod catalog;
 pub(crate) mod materialize;
 pub mod reading;
+pub mod resolution;
 pub(crate) mod selection;
 
 pub use activation::{plan_activation, InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};
 pub use briefing::BriefingContext;
 pub use catalog::{CatalogSource, SkillCatalog};
 pub use materialize::MaterializedSkills;
+pub use resolution::{harness_support, SkillResolution, SupportCheck};
+pub(crate) use selection::phase_skills;
 pub use selection::selected;
-pub(crate) use selection::{phase_skills, selected_in};
 
 include!(concat!(env!("OUT_DIR"), "/bundled_skills.rs"));
 
@@ -45,16 +47,6 @@ fn catalog() -> Result<BTreeMap<String, (Metadata, usize)>> {
             (e.id.to_string(), (meta, e.skill_file_bytes))
         })
         .collect())
-}
-
-/// Check platform support before allocating a pane or writing shared rules.
-/// Names are checked against `catalog`, which may include installed
-/// marketplace skills.
-pub fn ensure_supported_in(teammate: &Teammate, catalog: &SkillCatalog) -> Result<()> {
-    if !selected_in(teammate, catalog)?.is_empty() {
-        teammate.agent.adapter().ensure_skills_supported()?;
-    }
-    Ok(())
 }
 
 /// Inspect costs without launching a harness. Bytes/4 is an estimate, not a tokenizer.
@@ -122,11 +114,9 @@ impl Bundle {
         execution_id: &str,
         home: Option<&Path>,
     ) -> Result<Option<Self>> {
-        let catalog = catalog.with_host_skills(teammate, home)?;
-        let plan = plan_activation(teammate, teammate.phase, &catalog)?;
-        if !plan.activated.is_empty() {
-            teammate.agent.adapter().ensure_skills_supported()?;
-        }
+        let resolution = SkillResolution::read(catalog, Some(teammate), home, harness_support)?;
+        let plan = resolution.plan(teammate)?;
+        let catalog = resolution.into_catalog();
         let Some(files) =
             MaterializedSkills::materialize(&plan, &catalog, state_root, execution_id)?
         else {
@@ -207,6 +197,18 @@ impl Bundle {
 mod tests {
     use super::*;
 
+    /// The ids of the skills `t` activates on the bundled catalog.
+    fn activated(t: &Teammate) -> Result<Vec<String>> {
+        let resolution =
+            SkillResolution::read(SkillCatalog::bundled()?, Some(t), None, |_| Ok(()))?;
+        let plan = resolution.plan(t)?;
+        Ok(plan
+            .activated_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect())
+    }
+
     #[test]
     fn skills_catalog_is_portable_and_every_phase_resolves() {
         let catalog = catalog().unwrap();
@@ -244,7 +246,7 @@ mod tests {
                 phase: Some(phase),
                 ..Teammate::default()
             };
-            assert!(!selected(&t).unwrap().is_empty());
+            assert!(!activated(&t).unwrap().is_empty());
         }
         for (path, body) in BUNDLED_SKILL_FILES {
             assert!(!Path::new(path).is_absolute());
@@ -264,19 +266,19 @@ mod tests {
             skills: vec!["create-plan".into(), "trace".into()],
             ..Teammate::default()
         };
-        let names = selected(&t).unwrap();
+        let names = activated(&t).unwrap();
         assert_eq!(names, ["create-plan", "handoff", "pre-flight", "trace"]);
         assert!(!names.contains(&"execute".into()));
         let bad = Teammate {
             skills: vec!["../escape".into()],
             ..Teammate::default()
         };
-        assert!(selected(&bad).is_err());
+        assert!(activated(&bad).is_err());
         let disabled = Teammate {
             disable_skills: true,
             ..t
         };
-        assert!(selected(&disabled).is_err());
+        assert!(activated(&disabled).is_err());
     }
 
     #[test]
@@ -372,7 +374,7 @@ mod tests {
     fn skills_orchestrate_is_attached_by_name_to_the_orchestrator_only() {
         let roster = crate::roster::Roster::builtin().unwrap();
         assert_eq!(
-            selected(roster.require("orchestrator").unwrap()).unwrap(),
+            activated(roster.require("orchestrator").unwrap()).unwrap(),
             [
                 "create-plan",
                 "handoff",
@@ -382,11 +384,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            selected(roster.require("orchestrator-codex").unwrap()).unwrap(),
+            activated(roster.require("orchestrator-codex").unwrap()).unwrap(),
             ["create-plan", "handoff", "orchestrate", "pre-flight"]
         );
         assert_eq!(
-            selected(roster.require("staff-engineer").unwrap()).unwrap(),
+            activated(roster.require("staff-engineer").unwrap()).unwrap(),
             [
                 "api-contracts",
                 "codebase-design",

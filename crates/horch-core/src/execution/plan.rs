@@ -26,7 +26,7 @@ use crate::roster::{effort_problem, Phase, Roster, Teammate};
 use crate::routing::decision::{self, Decision, RoutingDecision, RoutingMode, RoutingProvenance};
 use crate::routing::policy::BalanceMode;
 use crate::routing::quota::QuotaView;
-use crate::skills::{plan_activation, SkillCatalog};
+use crate::skills::SkillResolution;
 
 /// The task a worker spawned without one records. The same text as the
 /// placeholder in `execution::records`.
@@ -52,11 +52,12 @@ pub struct MintedIds {
 #[derive(Debug, Clone, Copy)]
 pub struct PlanInputs<'a> {
     pub roster: &'a Roster,
-    /// The roster's catalog (`Roster::skill_catalog`): bundled skills plus
-    /// the installed marketplace lock. The shell adds the launching
-    /// teammate's `operator_skills` (`SkillCatalog::with_host_skills`),
-    /// so the record lists them; planning itself reads no files.
-    pub catalog: &'a SkillCatalog,
+    /// The launching teammate's skills: the roster's catalog
+    /// (`Roster::skill_catalog`, bundled skills plus the installed
+    /// marketplace lock) with its operator and plugin skills, which the
+    /// shell read (`SkillResolution::read`), so the record lists them;
+    /// planning itself reads no files.
+    pub skills: &'a SkillResolution,
     /// `Some` when [`needs_gate`] said so.
     pub gate: Option<GateInputs<'a>>,
     /// The newest record the resume key matches, if any.
@@ -357,10 +358,11 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
     // `skills_when` skills of this project join `skills:` here, so the
     // record, the brief's resolved teammate and the launch bundle agree.
     draft.teammate = inputs.roster.for_launch(draft.teammate);
-    // Unusable catalogs fail before a role or a record exists.
-    crate::skills::ensure_supported_in(&draft.teammate, inputs.catalog)
-        .map_err(|e| PlanError::SkillUnsupported(format!("{e:#}")))?;
-    let skills = plan_activation(&draft.teammate, draft.teammate.phase, inputs.catalog)
+    // Unusable catalogs fail before a role or a record exists, by the rule
+    // the launch applies (SKL-12).
+    let skills = inputs
+        .skills
+        .plan(&draft.teammate)
         .map_err(|e| PlanError::SkillUnsupported(format!("{e:#}")))?;
 
     let now = crate::clock::stamp(inputs.now);
@@ -484,6 +486,18 @@ pub fn finish_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::{harness_support, SkillCatalog};
+
+    /// The bundled catalog, no host skills read.
+    fn bundled_skills() -> SkillResolution {
+        SkillResolution::read(
+            SkillCatalog::bundled().unwrap(),
+            None,
+            None,
+            harness_support,
+        )
+        .unwrap()
+    }
 
     #[test]
     fn phase_override_wins_and_resume_keeps_recorded_selection() {
@@ -511,7 +525,7 @@ mod tests {
     #[test]
     fn working_refusal_names_the_fix() {
         let roster = Roster::builtin().unwrap();
-        let catalog = SkillCatalog::bundled().unwrap();
+        let skills = bundled_skills();
         let ids = MintedIds {
             execution: ExecutionId::new("e1").unwrap(),
             session: SessionId::new("s9").unwrap(),
@@ -528,7 +542,7 @@ mod tests {
         };
         let inputs = PlanInputs {
             roster: &roster,
-            catalog: &catalog,
+            skills: &skills,
             gate: None,
             existing: Some(&record),
             now: crate::clock::parse("2026-10-04T00:00:00Z").unwrap(),
@@ -562,7 +576,7 @@ mod tests {
         )]
         .into();
         roster.insert_for_test(sonnet);
-        let catalog = SkillCatalog::bundled().unwrap();
+        let skills = bundled_skills();
         let ids = MintedIds {
             execution: ExecutionId::new("e1").unwrap(),
             session: SessionId::new("s1").unwrap(),
@@ -574,7 +588,7 @@ mod tests {
                 &req,
                 &PlanInputs {
                     roster,
-                    catalog: &catalog,
+                    skills: &skills,
                     gate: None,
                     existing: None,
                     now: crate::clock::parse("2026-10-04T00:00:00Z").unwrap(),

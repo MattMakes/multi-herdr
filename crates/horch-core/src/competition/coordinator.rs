@@ -84,6 +84,7 @@ use crate::prompts::render;
 use crate::roster::Roster;
 use crate::runtime::fault::Faults;
 use crate::runtime::RuntimeContext;
+use crate::skills::{harness_support, SkillResolution};
 use crate::usage::money::MicroUsd;
 use crate::vcs::git::{GitClient, GitIdentity};
 use crate::vcs::worktree::{
@@ -981,12 +982,13 @@ impl<G: GitClient> Coordinator<'_, G> {
         req.from_pane = Some(ws.root_pane.clone());
         req.tiling = TilingMode::Disabled;
         // As in `horch spawn`: planning reads no files, so the candidate's
-        // operator skills are read here, and its record lists them.
-        let mut catalog = self.roster.skill_catalog()?;
-        if let Some(t) = self.roster.get(planned.teammate.as_str()) {
-            let home = self.ctx.inherited.home_var.as_deref().map(Path::new);
-            catalog = catalog.with_host_skills(t, home)?;
-        }
+        // operator and plugin skills are read here, and its record lists them.
+        let skills = SkillResolution::read(
+            self.roster.skill_catalog()?,
+            self.roster.get(planned.teammate.as_str()),
+            self.ctx.inherited.home_var.as_deref().map(Path::new),
+            harness_support,
+        )?;
         let now = (self.clock)();
         let ids = MintedIds {
             execution: execution.clone(),
@@ -1002,7 +1004,7 @@ impl<G: GitClient> Coordinator<'_, G> {
             &req,
             &PlanInputs {
                 roster: self.roster,
-                catalog: &catalog,
+                skills: &skills,
                 gate: None,
                 existing: None,
                 now,

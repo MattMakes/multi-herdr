@@ -29,6 +29,7 @@ use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::Phase;
 use horch_core::routing::decision::GateFlags;
 use horch_core::runtime::RuntimeContext;
+use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::usage::Locations;
 use horch_core::vcs::git::GitCli;
 use horch_core::workspace::arrange;
@@ -155,22 +156,23 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         execution: ExecutionId::new(horch_core::mint_uuid())?,
         session: SessionId::new(horch_core::mint_uuid())?,
     };
-    // Planning reads no files, so the operator skills of the teammate that
-    // will launch are read here. Then the record lists them, as the launch
-    // bundle does.
-    let mut catalog = roster.skill_catalog()?;
+    // Planning reads no files, so the operator and plugin skills of the
+    // teammate that will launch are read here. Then the record lists them,
+    // as the launch bundle does.
     let launching = req
         .teammate
         .as_ref()
         .map(|t| t.as_str())
         .or(existing.as_ref().map(|r| r.tier.as_str()));
-    if let Some(t) = launching.and_then(|name| roster.get(name)) {
-        let home = ctx.inherited.home_var.as_deref().map(std::path::Path::new);
-        catalog = catalog.with_host_skills(t, home)?;
-    }
+    let skills = SkillResolution::read(
+        roster.skill_catalog()?,
+        launching.and_then(|name| roster.get(name)),
+        ctx.inherited.home_var.as_deref().map(std::path::Path::new),
+        harness_support,
+    )?;
     let inputs = PlanInputs {
         roster: &roster,
-        catalog: &catalog,
+        skills: &skills,
         gate: gated.as_ref().map(|(view, balance)| GateInputs {
             view,
             balance: *balance,
