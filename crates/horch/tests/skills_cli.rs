@@ -10,7 +10,7 @@ use std::process::{Command, Output};
 
 use horch_core::harness::HarnessKind;
 use horch_core::roster::Teammate;
-use horch_core::skills::{plan_activation, MaterializedSkills, SkillCatalog};
+use horch_core::skills::{MaterializedSkills, SkillCatalog, SkillResolution};
 use serde_json::Value;
 
 const PHASES: [&str; 4] = ["research", "plan", "implementation", "validation"];
@@ -386,7 +386,10 @@ fn mkt_08_runtime_needs_no_network() {
         skills: vec!["demo".into()],
         ..Teammate::default()
     };
-    let plan = plan_activation(&teammate, None, &catalog).unwrap();
+    let plan = SkillResolution::read(catalog.clone(), Some(&teammate), None, |_| Ok(()))
+        .unwrap()
+        .plan(&teammate)
+        .unwrap();
     assert_eq!(plan.activated.len(), 1);
     assert!(plan.activated[0]
         .source

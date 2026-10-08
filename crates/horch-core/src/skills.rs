@@ -19,7 +19,7 @@ pub mod reading;
 pub mod resolution;
 pub(crate) mod selection;
 
-pub use activation::{plan_activation, InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};
+pub use activation::{InvocationPolicy, ResolvedSkillRef, SkillActivationPlan};
 pub use briefing::BriefingContext;
 pub use catalog::{CatalogSource, SkillCatalog};
 pub use materialize::MaterializedSkills;

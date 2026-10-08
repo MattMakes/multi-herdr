@@ -279,6 +279,7 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | SKL-09 | `horch skills read` prints a catalog skill's file, read-only; refuses an unknown id or file and an absolute or `..` path | A9 | skl_09_read_prints_skill_md, skl_09_read_prints_a_named_file, skl_09_read_lists_files, skl_09_read_rejects_unknown_and_dotdot |
 | SKL-10 | The briefing names the catalog skills that the bundle's texts name but do not hold: count, 3 most-named, deterministic; a hyphenless id counts only in backticks, a link path or qualified | A9 | skl_10_briefing_names_skills_outside_the_bundle, skl_10_briefing_has_no_sentence_without_outside_names, skl_10_whole_word_match_only, skl_10_plain_id_counts_in_backticks, skl_10_plain_id_counts_in_a_link_path, skl_10_plain_id_counts_qualified, skl_10_plain_id_in_prose_does_not_count |
 | SKL-11 | A materialized bundle keeps the execute bit of every executable skill file; the skill digest covers it. A marketplace install of a `bundled:<id>` skill also writes each executable file with mode 755. The marketplace `tree_digest` stays mode-blind, because every lock entry pins it and a mode-aware digest would mark each installed skill with an executable file `Tampered` | A9 | skl_11_materialized_bundle_keeps_the_execute_bit, skl_11_digest_covers_the_execute_bit, skl_11_bundled_entry_lists_its_executable_files, skl_11_marketplace_install_keeps_the_execute_bit |
+| SKL-12 | The spawn plan and the launch apply 1 support rule: `SkillResolution::plan` checks the agent's skill support when the plan activates any skill, operator and plugin skills included, so the spawn plan rejects what the launch rejects, before a record exists | A9 | skl_12_spawn_plan_rejects_an_operator_only_teammate_the_launch_rejects, skl_12_codex_on_windows_rejects_an_operator_only_teammate_at_the_plan |
 
 ### 3.4 Spec A §17 acceptance criteria → IDs
 
@@ -1407,8 +1408,12 @@ ledger still records them, so the launch's skill check (SKL-04) covers them:
 - `SkillCatalog::with_host_skills` also calls
   `SkillCatalog::with_plugin_skills`. Every caller that records or launches
   (spawn, `horch fleet`, the competition coordinator, the worker launch)
-  extends the catalog through this one call, so all of them see the same
-  plugin skills. `execution/plan.rs` did not change.
+  and `--check` resolve a teammate's skills through 1 module,
+  `skills/resolution.rs` (U7, 2026-10-08): `SkillResolution::read` extends
+  the caller's base catalog with this one call, so all of them see the same
+  plugin skills. `SkillResolution::plan` plans the activation and applies 1
+  support rule: the agent must load skills when the plan activates any
+  (SKL-12). `execution/plan.rs` stays pure: the shell reads, the plan plans.
 - Id: `<plugin>:<skill>`, the name Claude Code lists the skill under. A
   catalog id has no `:`, so a plugin entry never clashes with one.
 - Source: `CatalogSource::Plugin`, labelled `plugin:<plugin>@<marketplace>`

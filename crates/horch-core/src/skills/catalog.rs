@@ -397,10 +397,10 @@ impl SkillCatalog {
     /// This catalog plus the skills `teammate` brings from the operator's
     /// machine, read from disk: its `operator_skills:` and its
     /// `plugin_skills:` ([`SkillCatalog::with_plugin_skills`]). `~/`
-    /// expands against `home`, the launch's home. The spawn, `horch fleet`,
-    /// the competition coordinator and the launch all extend the catalog
-    /// through this call, so the ledger record and the launch's skill check
-    /// (SKL-04) see the same skills.
+    /// expands against `home`, the launch's home. Only
+    /// `SkillResolution::read` calls it, for the spawn, `horch fleet`, the
+    /// competition coordinator, the launch and `--check`, so the ledger
+    /// record and the launch's skill check (SKL-04) see the same skills.
     ///
     /// A skill this host does not have (no directory, or no `<dir>/<name>/`)
     /// is skipped and recorded in [`SkillCatalog::skipped_operator`]: the
@@ -411,7 +411,7 @@ impl SkillCatalog {
     /// SKILL.md, or a tree the marketplace digest rules refuse (a symlink,
     /// say). The name rules apply on every host, so a clash fails even where
     /// the skill is missing. A teammate without the field changes nothing.
-    pub fn with_host_skills(
+    pub(crate) fn with_host_skills(
         self,
         teammate: &Teammate,
         home: Option<&Path>,
@@ -429,7 +429,7 @@ impl SkillCatalog {
     /// without the field, with `disable_skills`, or on an agent that does
     /// not load skills as plugins. Fails on a plugin or skill that does not
     /// resolve, as the launch would.
-    pub fn with_plugin_skills(
+    pub(crate) fn with_plugin_skills(
         mut self,
         teammate: &Teammate,
         home: Option<&Path>,

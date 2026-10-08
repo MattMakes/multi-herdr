@@ -9,10 +9,25 @@ use horch_core::ids::SkillId;
 use horch_core::roster::{Phase, Roster, Teammate};
 use horch_core::skills::catalog::parse_copied;
 use horch_core::skills::{
-    self, briefing, plan_activation, BriefingContext, CatalogSource, InvocationPolicy,
-    MaterializedSkills, SkillCatalog, BUNDLED_SKILL_EXECUTABLES, BUNDLED_SKILL_FILES,
+    self, briefing, BriefingContext, CatalogSource, InvocationPolicy, MaterializedSkills,
+    SkillActivationPlan, SkillCatalog, SkillResolution, SupportCheck, BUNDLED_SKILL_EXECUTABLES,
+    BUNDLED_SKILL_FILES,
 };
 use horch_marketplace::LockEntry;
+
+/// Every agent loads skills: these tests judge the plan, not this host.
+const ANY_AGENT: SupportCheck = |_| Ok(());
+
+/// `t`'s skills on `base`, resolved as the launch resolves them, with no
+/// home.
+fn resolve(base: &SkillCatalog, t: &Teammate) -> anyhow::Result<SkillResolution> {
+    SkillResolution::read(base.clone(), Some(t), None, ANY_AGENT)
+}
+
+/// The activation plan of `t` on `base`, as [`resolve`] gives it.
+fn plan_for(t: &Teammate, base: &SkillCatalog) -> anyhow::Result<SkillActivationPlan> {
+    resolve(base, t)?.plan(t)
+}
 
 /// Skills written in this repository: their `copied.json` entry lists no
 /// copied files.
@@ -522,7 +537,7 @@ fn skl_02_activation_matches_legacy_selection() {
             let mut t = roster.get(name).unwrap().clone();
             t.phase = phase;
             let legacy = skills::selected(&t);
-            let plan = plan_activation(&t, phase, &catalog);
+            let plan = plan_for(&t, &catalog);
             match (legacy, plan) {
                 (Ok(legacy), Ok(plan)) => {
                     assert_eq!(plan.activated_ids(), legacy, "{name} {phase:?}");
@@ -555,7 +570,7 @@ fn skl_03_policy_mapping() {
         phase: Some(Phase::Implementation),
         ..Teammate::default()
     };
-    let plan = plan_activation(&t, t.phase, &catalog).unwrap();
+    let plan = plan_for(&t, &catalog).unwrap();
     let policy: BTreeMap<&str, InvocationPolicy> = plan
         .activated
         .iter()
@@ -593,7 +608,11 @@ fn skl_03_policy_mapping() {
     }
 
     // No phase: only the teammate's own skills activate.
-    let plan = plan_activation(&t, None, &catalog).unwrap();
+    let unphased = Teammate {
+        phase: None,
+        ..t.clone()
+    };
+    let plan = plan_for(&unphased, &catalog).unwrap();
     assert_eq!(plan.activated_ids(), ["tdd", "trace"]);
 
     // The plan is data: it round-trips through JSON.
@@ -622,7 +641,10 @@ fn skl_07_plugin_skills_separate() {
         plugin_skills: plugin_skills.clone(),
         ..Teammate::default()
     };
-    let plan = plan_activation(&t, t.phase, &catalog).unwrap();
+    // No host skills read: these plugins exist on no host. A catalog without
+    // the plugin entries still keeps the plugin skills apart.
+    let unread = SkillResolution::read(catalog.clone(), None, None, ANY_AGENT).unwrap();
+    let plan = unread.plan(&t).unwrap();
     assert_eq!(plan.plugin_skills, plugin_skills);
     assert!(catalog.lookup("brainstorming").is_none());
     let ids: Vec<&str> = plan
@@ -644,7 +666,7 @@ fn skl_07_plugin_skills_separate() {
         plugin_skills: BTreeMap::new(),
         ..t.clone()
     };
-    let plain = plan_activation(&without, t.phase, &catalog).unwrap();
+    let plain = unread.plan(&without).unwrap();
     assert_eq!(
         (&plain.activated, &plain.available),
         (&plan.activated, &plan.available)
@@ -698,7 +720,8 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
         ..Teammate::default()
     };
     let bundled = SkillCatalog::bundled().unwrap();
-    let catalog = bundled.clone().with_host_skills(&t, None).unwrap();
+    let resolved = resolve(&bundled, &t).unwrap();
+    let catalog = resolved.catalog();
     assert_eq!(catalog.len(), bundled.len() + 2);
     let entry = catalog.lookup("code:review").unwrap();
     assert!(entry.is_plugin());
@@ -711,7 +734,7 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
         format!("plugin+{}", &digest["sha256:".len()..][..12])
     );
 
-    let plan = plan_activation(&t, t.phase, &catalog).unwrap();
+    let plan = resolved.plan(&t).unwrap();
     let review = plan
         .activated
         .iter()
@@ -751,21 +774,15 @@ fn skl_07_named_plugin_skills_enter_the_plan_as_plugin_refs() {
             ..t.clone()
         },
     ] {
-        let c = bundled.clone().with_host_skills(&other, None).unwrap();
-        assert_eq!(c.len(), bundled.len());
+        let c = resolve(&bundled, &other).unwrap();
+        assert_eq!(c.catalog().len(), bundled.len());
     }
     // A plugin that does not resolve fails the extension, as the launch would.
     let missing = Teammate {
         plugin_dirs: Vec::new(),
         ..t.clone()
     };
-    let err = format!(
-        "{:#}",
-        bundled
-            .clone()
-            .with_host_skills(&missing, None)
-            .unwrap_err()
-    );
+    let err = format!("{:#}", resolve(&bundled, &missing).unwrap_err());
     assert!(err.contains("plugin 'code' is neither"), "{err}");
 }
 
@@ -804,7 +821,7 @@ fn skl_08_briefing_matches_baseline_modulo_path() {
             let mut t = roster.get(name).unwrap().clone();
             t.phase = Some(phase);
             let execution = format!("{name}-{phase}");
-            let text = match plan_activation(&t, t.phase, &catalog) {
+            let text = match plan_for(&t, &catalog) {
                 Err(e) => format!("ERROR: {e:#}\n"),
                 Ok(plan) => {
                     // The A0 roster has no plugin_skills; their lines need
@@ -860,7 +877,7 @@ fn skl_08_materialize_rejects_path_like_execution_ids() {
         phase: Some(Phase::Plan),
         ..Teammate::default()
     };
-    let plan = plan_activation(&t, t.phase, &catalog).unwrap();
+    let plan = plan_for(&t, &catalog).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     for bad in ["", ".", "..", "../x", "a/b", "a\\b"] {
         assert!(
@@ -889,7 +906,7 @@ fn skl_11_materialized_bundle_keeps_the_execute_bit() {
         phase: Some(Phase::Implementation),
         ..Teammate::default()
     };
-    let plan = plan_activation(&t, t.phase, &catalog).unwrap();
+    let plan = plan_for(&t, &catalog).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let files = MaterializedSkills::materialize(&plan, &catalog, tmp.path(), "exec")
         .unwrap()
@@ -943,7 +960,7 @@ fn available_skills_are_materialized_and_named_without_description() {
         phase: Some(Phase::Implementation),
         ..Teammate::default()
     };
-    let plan = plan_activation(&t, t.phase, &catalog).unwrap();
+    let plan = plan_for(&t, &catalog).unwrap();
     let policy: BTreeMap<&str, InvocationPolicy> = plan
         .activated
         .iter()
@@ -994,7 +1011,7 @@ fn available_skills_are_materialized_and_named_without_description() {
         available_skills: vec!["trace".into()],
         ..Teammate::default()
     };
-    let plan = plan_activation(&only, None, &catalog).unwrap();
+    let plan = plan_for(&only, &catalog).unwrap();
     assert_eq!(plan.activated_ids(), ["trace"]);
     let text = briefing::render(
         &plan,
@@ -1322,13 +1339,11 @@ fn operator_skills_materialize_with_a_digest_and_an_expected_line() {
     assert!(dir.join("test-modernizer/SKILL.md").is_file());
 
     // The plan pins the digest; a source edited after planning fails.
-    let catalog = SkillCatalog::bundled()
-        .unwrap()
-        .with_host_skills(&t, None)
-        .unwrap();
-    let plan = plan_activation(&t, None, &catalog).unwrap();
+    let resolved = resolve(&SkillCatalog::bundled().unwrap(), &t).unwrap();
+    let catalog = resolved.catalog();
+    let plan = resolved.plan(&t).unwrap();
     std::fs::write(dir.join("test-modernizer/references/notes.md"), "changed\n").unwrap();
-    let err = MaterializedSkills::materialize(&plan, &catalog, &state, "changed").unwrap_err();
+    let err = MaterializedSkills::materialize(&plan, catalog, &state, "changed").unwrap_err();
     assert!(
         format!("{err:#}").contains("the operator directory changed"),
         "{err:#}"
@@ -1336,7 +1351,10 @@ fn operator_skills_materialize_with_a_digest_and_an_expected_line() {
 
     // Without the extension, the field activates nothing: the catalog
     // decides, so `plan_launch` needs no filesystem.
-    let plain = plan_activation(&t, None, &SkillCatalog::bundled().unwrap()).unwrap();
+    let plain = SkillResolution::read(SkillCatalog::bundled().unwrap(), None, None, ANY_AGENT)
+        .unwrap()
+        .plan(&t)
+        .unwrap();
     assert_eq!(plain.activated_ids(), ["tdd"]);
 }
 
@@ -1350,7 +1368,7 @@ fn briefing_of(skill: &str) -> String {
         skills: vec![skill.into()],
         ..Teammate::default()
     };
-    let plan = plan_activation(&t, None, &catalog).unwrap();
+    let plan = plan_for(&t, &catalog).unwrap();
     briefing::render(
         &plan,
         &catalog,
