@@ -13,7 +13,7 @@ The architectural review is rendered as a single self-contained HTML file at `ai
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
       import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "strict" });
     </script>
     <style>
       /* small custom layer for things Tailwind doesn't cover cleanly:
@@ -21,6 +21,10 @@ The architectural review is rendered as a single self-contained HTML file at `ai
       .seam { stroke-dasharray: 4 4; }
       .leak { stroke: #dc2626; }
       .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+      /* fallback when the CDN is absent */
+      main { max-width: 64rem; margin: 0 auto; padding: 3rem 1.5rem; }
+      article { margin-bottom: 2.5rem; }
+      .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
     </style>
   </head>
   <body class="bg-stone-50 text-slate-900 font-sans">
@@ -49,8 +53,10 @@ Each candidate is one `<article>`:
 - **Before / After diagram**: the centrepiece. Two columns, side by side. See patterns below.
 - **Problem**: one sentence. What hurts.
 - **Solution**: one sentence. What changes.
-- **Wins**: bullets, ≤6 words each. e.g. "Tests hit one interface", "Pricing logic stops leaking", "Delete 4 shallow wrappers".
+- **Benefits**: bullets, at most 6 words each. e.g. "Tests hit one interface", "Pricing logic stops leaking", "Delete 4 shallow wrappers".
 - **ADR callout** (if applicable): one line in an amber-tinted box.
+
+Title, dependency tag and ADR callout are extra; the 6 parts of SKILL.md are required.
 
 No paragraphs of explanation. If the diagram needs a paragraph to be understood, redraw the diagram.
 
@@ -81,7 +87,7 @@ Modules as `<div>`s with borders and labels. Arrows as inline SVG `<line>` or `<
 
 ### Cross-section (good for layered shallowness)
 
-Stack horizontal bands (`h-12 border-l-4`) to show layers a call passes through. Before: 6 thin layers each doing nothing. After: 1 thick band labelled with the consolidated responsibility.
+Stack horizontal bands (`h-12 border-l-4`) to show the modules a call passes through. Before: 6 thin bands, 1 per module, each doing nothing. After: 1 thick band labelled with the consolidated responsibility.
 
 ### Mass diagram (good for "interface as wide as implementation")
 
@@ -97,7 +103,7 @@ Before: a tree of function calls rendered as nested boxes. After: the same tree 
 - Colour sparingly: one accent (emerald or indigo) plus red for leakage and amber for warnings.
 - Keep diagrams ~320px tall so before/after sits comfortably side by side without scrolling.
 - Use `text-xs uppercase tracking-wider` for module labels inside diagrams, so they read as schematic, not as UI.
-- The page must also be readable without the CDN: the text of every card is plain HTML, and Mermaid only adds diagrams.
+- The page must also be readable without the CDN: the text of every card is plain HTML, and Mermaid only adds diagrams. Under each diagram, put a `<p class="fallback">` with 1 or 2 sentences that say what the diagram shows.
 - The only scripts are the Tailwind CDN and the Mermaid ESM import. The report is otherwise static: no app code, no interactivity beyond Mermaid's own rendering.
 
 ## Top recommendation section
@@ -110,7 +116,7 @@ Plain English, concise, but the architectural nouns and verbs come straight from
 
 **Use exactly:** module, interface, implementation, depth, deep, shallow, seam, adapter, leverage, locality.
 
-**Never substitute:** component, service, unit (for module) · API, signature (for interface) · boundary (for seam) · layer, wrapper (for module, when you mean module).
+**Never substitute:** component, service, unit (when you mean module) · API, signature (for interface) · boundary (for seam) · layer, wrapper (for module, when you mean module).
 
 **Phrasings that fit the style:**
 
@@ -119,6 +125,6 @@ Plain English, concise, but the architectural nouns and verbs come straight from
 - "Deepen: one interface, one place to test."
 - "Two adapters justify the seam: HTTP in prod, in-memory in tests."
 
-**Wins bullets** name the gain in glossary terms: *"locality: bugs concentrate in one module"*, *"leverage: one interface, N call sites"*, *"interface shrinks; implementation absorbs the wrappers"*. Don't write *"easier to maintain"* or *"cleaner code"*, because those terms aren't in the glossary and don't earn their place.
+**Benefits bullets** name the gain in glossary terms: *"locality: bugs concentrate in one module"*, *"leverage: one interface, N call sites"*, *"interface shrinks; implementation absorbs the wrappers"*. Don't write *"easier to maintain"* or *"cleaner code"*, because those terms aren't in the glossary and don't earn their place.
 
 No hedging, no throat-clearing, no "it's worth noting that…". If a sentence could be a bullet, make it a bullet. If a bullet could be cut, cut it. If a term isn't in the `codebase-design` glossary, reach for one that is before inventing a new one.

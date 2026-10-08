@@ -17,7 +17,7 @@ Use these terms exactly: don't substitute "component," "service," "API," or "bou
 
 **Implementation**: what's inside a module, its body of code. Distinct from **Adapter**: a thing can be a small adapter with a large implementation (a Postgres repo) or a large adapter with a small implementation (an in-memory fake). Reach for "adapter" when the seam is the topic; "implementation" otherwise.
 
-**Depth**: leverage at the interface. The amount of behaviour a caller (or test) can exercise per unit of interface they have to learn. A module is **deep** when a large amount of behaviour sits behind a small interface, **shallow** when the interface is nearly as complex as the implementation.
+**Depth**: leverage at the interface. The amount of behaviour a caller (or test) can exercise per amount of interface they have to learn. A module is **deep** when a large amount of behaviour sits behind a small interface, **shallow** when the interface is nearly as complex as the implementation.
 
 **Seam** _(Michael Feathers)_: a place where you can alter behaviour without editing in that place; the *location* at which a module's interface lives. Where to put the seam is its own design decision, distinct from what goes behind it. _Avoid_: boundary (overloaded with DDD's bounded context).
 
@@ -66,7 +66,7 @@ When designing an interface, ask:
 
 ## Designing for testability
 
-Good interfaces make testing natural:
+Good interfaces make testing natural. The examples are TypeScript; the rules apply to any language.
 
 1. **Accept dependencies, don't create them.**
 
