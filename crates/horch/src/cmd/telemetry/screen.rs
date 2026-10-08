@@ -264,8 +264,17 @@ impl Feed for LiveFeed<'_> {
         }
     }
 
+    /// A collector folds its in-memory events and reads no file; a viewer
+    /// reads the event files (on this worker thread, cached per minute).
     fn filter(&mut self, snap: &Snapshot, project: &str, now: DateTime<Utc>) -> Snapshot {
-        filtered(snap, project, &self.root, now)
+        match &self.source {
+            Source::Collector { collector, .. } => {
+                let mut out = snap.clone();
+                out.rollups = collector.project_rollups(project, now);
+                out
+            }
+            Source::Viewer => filtered(snap, project, &self.root, now),
+        }
     }
 
     fn mode(&self) -> &'static str {
@@ -277,7 +286,8 @@ impl Feed for LiveFeed<'_> {
 }
 
 /// The snapshot with its rollups recomputed for one project, from the event
-/// files, for the windows at `now`. Runs on the worker thread only.
+/// files, for the windows at `now`: a viewer's filter. Runs on the worker
+/// thread only.
 fn filtered(snap: &Snapshot, project: &str, root: &Path, now: DateTime<Utc>) -> Snapshot {
     let events: Vec<_> = store::read_all(&horch_core::telemetry::dir(root))
         .into_iter()
@@ -1088,6 +1098,83 @@ mod tests {
             ..u
         };
         assert_eq!(shown(&none, &view(Some("/a"))), (&*global, true));
+    }
+
+    /// SPC-09: in collector mode a project change reads no event file: the
+    /// filter folds the collector's memory. The event files are gone before
+    /// the filter runs, and the project's rollup still holds its event.
+    #[test]
+    fn spc_09_a_collector_filters_a_project_without_reading_event_files() {
+        use horch_core::telemetry::{Event, TokenClasses};
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with("HORCH_STATE_DIR", &state.to_string_lossy()),
+        )
+        .unwrap();
+        let now = clock::now();
+        let tel = horch_core::telemetry::dir(&state);
+        std::fs::create_dir_all(&tel).unwrap();
+        let event = |project: &str, id: &str| Event {
+            ts: clock::stamp(now - chrono::Duration::minutes(30)),
+            project: Some(project.into()),
+            record_id: format!("r-{id}"),
+            session_id: format!("s-{id}"),
+            event_id: id.into(),
+            role: "opus-1".into(),
+            teammate: "opus".into(),
+            via: None,
+            kind: "worker".into(),
+            agent: "claude".into(),
+            model: "claude-opus-5-5".into(),
+            effort: None,
+            phase: None,
+            plan: None,
+            subagent: false,
+            delta: false,
+            tool_nested: false,
+            idle: false,
+            tokens: TokenClasses {
+                input: 1000,
+                ..TokenClasses::default()
+            },
+            cost_usd: Some(1.0),
+            harness_cost: None,
+        };
+        let lines: Vec<String> = [event("/p", "e1"), event("/q", "e2")]
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        let file = tel.join(format!("events-{}.jsonl", &clock::stamp(now)[..10]));
+        std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+        let home = tmp.path().join("home");
+        let loc = Locations {
+            home: home.clone(),
+            claude_projects: home.join(".claude/projects"),
+            codex_sessions: home.join(".codex/sessions"),
+            pi_sessions: home.join(".pi/agent/sessions"),
+            opencode_db: home.join("opencode.db"),
+            sqlite3: PathBuf::from("sqlite3"),
+        };
+        let collector = Collector::open_at(&state, loc, Probing::Never, now).unwrap();
+        let held = lock::acquire(&state, &lock::this_process(&clock::now_stamp(), &ctx))
+            .unwrap()
+            .unwrap();
+        let mut feed = LiveFeed::new(
+            &ctx,
+            &state,
+            Source::Collector {
+                collector: Box::new(collector),
+                _lock: held,
+            },
+        );
+        std::fs::remove_file(&file).unwrap();
+        let out = feed.filter(&Snapshot::default(), "/p", now);
+        let rows = &out.rollups["5h"].by_project;
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["/p"]);
+        assert_eq!(rows[0].tokens.input, 1000);
     }
 
     /// SPC-09: a viewer reads `snapshot.json` only when its modification
