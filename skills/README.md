@@ -103,13 +103,15 @@ These skills attach by name to the Swift teammates and belong to no phase. The A
 
 ## Engineering and product skills
 
-These skills are own text. They belong to no phase; each attaches by name to the specialist whose work it covers. `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, and `api-contracts` and `data-migrations` for `backend-developer` (`staff-engineer` names both under `available_skills`). They are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
+These skills belong to no phase; each attaches by name to the specialist whose work it covers. 5 are own text: `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, and `api-contracts` and `data-migrations` for `backend-developer` (`staff-engineer` names both under `available_skills`). 2 are adapted: `codebase-design` is the shared vocabulary for module design (deep modules, interfaces, seams) and is carried by `architect-reviewer`, `staff-engineer` and `opus-architect`; `backend-developer`, `frontend-developer`, `opus-domain`, `opus`, `codex-sol` and `codex-reviewer` name it under `available_skills`. `improve-codebase-architecture` is a review procedure that finds deepening candidates and writes an HTML report. `opus-architect` carries it because it has Write and no Edit: it writes the report and edits no code. `staff-engineer` names it under `available_skills`. `architect-reviewer` does not carry it, because that seat is read-only on purpose. The own-text skills are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
 
 | Skill | Kind |
 | --- | --- |
 | [api-contracts](api-contracts/SKILL.md) | own text |
 | [architecture-review](architecture-review/SKILL.md) | own text |
+| [codebase-design](codebase-design/SKILL.md) | adapted |
 | [data-migrations](data-migrations/SKILL.md) | own text |
+| [improve-codebase-architecture](improve-codebase-architecture/SKILL.md) | adapted |
 | [product-requirements](product-requirements/SKILL.md) | own text |
 | [system-design](system-design/SKILL.md) | own text |
 

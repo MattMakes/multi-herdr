@@ -181,6 +181,15 @@
       "verbatim": false
     },
     {
+      "name": "codebase-design",
+      "copied_files": [
+        "DEEPENING.md",
+        "DESIGN-IT-TWICE.md",
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
       "name": "create-plan",
       "copied_files": [
         "SKILL.md"
@@ -889,6 +898,14 @@
     {
       "name": "handoff",
       "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "improve-codebase-architecture",
+      "copied_files": [
+        "HTML-REPORT.md",
         "SKILL.md"
       ],
       "verbatim": false
