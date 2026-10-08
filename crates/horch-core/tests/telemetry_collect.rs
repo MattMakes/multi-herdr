@@ -4,6 +4,7 @@
 mod common;
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use common::*;
 use horch_core::clock;
@@ -512,4 +513,149 @@ fn nfr_02_a_moving_window_drops_old_events_without_new_input() {
     };
     assert_eq!(total(&on_disk), total(&moved));
     assert!(total(&moved) < total(&first));
+}
+
+/// A Claude session copied from the A2 fixture, with its own ledger.
+/// Returns the transcript path.
+fn copied_session(w: &World, name: &str, sid: &str, status: &str, updated: &str) -> PathBuf {
+    let from = w
+        .home
+        .join(format!(".claude/projects/-work-alpha/{A2}.jsonl"));
+    let to = w
+        .home
+        .join(format!(".claude/projects/-work-alpha/{sid}.jsonl"));
+    std::fs::copy(from, &to).unwrap();
+    session_ledger(w, name, sid, status, updated);
+    to
+}
+
+fn session_ledger(w: &World, name: &str, sid: &str, status: &str, updated: &str) {
+    let ledger = serde_json::json!([{
+        "record_id": format!("rec-{name}"), "session_id": sid, "agent": "claude", "tier": "sonnet",
+        "model": "claude-sonnet-5", "role": name, "status": status, "task": "t", "history": [],
+        "created_at": "2026-09-01T00:00:00Z", "updated_at": updated
+    }]);
+    std::fs::write(w.state.join(format!("-{name}.json")), ledger.to_string()).unwrap();
+}
+
+/// Set the modification time of `path` to `when`.
+fn age(path: &std::path::Path, when: chrono::DateTime<chrono::Utc>) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(when.into())
+        .unwrap();
+}
+
+fn cursor_json(w: &World, sid: &str) -> Option<serde_json::Value> {
+    let path = horch_core::telemetry::dir(&w.state).join("cursors.json");
+    let all: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let (_, c) = all
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(k, _)| k.starts_with(&format!("claude|{sid}|")))?;
+    Some(c.clone())
+}
+
+fn session_events(w: &World, sid: &str) -> Vec<Event> {
+    events(w)
+        .into_iter()
+        .filter(|e| e.session_id == sid)
+        .collect()
+}
+
+/// NFR-02: the cursor of a done record whose transcript has not changed for
+/// a day forgets its recent message ids (they were 72% of a 2.3 MB
+/// `cursors.json`). When the transcript grows again, the new message is
+/// counted once and a repeated old line adds nothing.
+#[test]
+fn nfr_02_a_quiet_done_cursor_forgets_its_recent_ids() {
+    const SID: &str = "44444444-4444-4444-8444-444444444444";
+    let w = world(Part::Whole);
+    let path = copied_session(&w, "t2c", SID, "done", "2026-09-28T17:00:00Z");
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    c.tick(now()).unwrap();
+    let stored = session_events(&w, SID).len();
+    assert!(stored > 0);
+    assert!(cursor_json(&w, SID).unwrap().get("recent").is_some());
+
+    age(&path, now() - chrono::Duration::hours(25));
+    let later = at(60 * horch_core::telemetry::collect::TIDY_EVERY_MIN);
+    c.tick(later).unwrap();
+    let cursor = cursor_json(&w, SID).expect("kept: its record is in the window");
+    assert!(cursor.get("recent").is_none(), "{cursor}");
+    assert!(
+        cursor["offset"].as_u64().unwrap() > 0,
+        "still where it stopped"
+    );
+
+    // The last old line again, then 1 new message.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let last = text
+        .lines()
+        .rfind(|l| l.contains("\"assistant\"") && l.contains("\"usage\""))
+        .unwrap();
+    let grown = format!("{last}\n{}", assistant_line(&w, "msg_nfr02_tidy"));
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    std::io::Write::write_all(&mut f, grown.as_bytes()).unwrap();
+    c.tick(later + chrono::Duration::seconds(2)).unwrap();
+    let ids: Vec<String> = session_events(&w, SID)
+        .into_iter()
+        .map(|e| e.event_id)
+        .collect();
+    assert_eq!(ids.len(), stored + 1, "{ids:?}");
+    assert_eq!(ids.iter().filter(|i| *i == "msg_nfr02_tidy").count(), 1);
+}
+
+/// NFR-02: the cursor of a session with no record in the retention window,
+/// whose transcript has not changed for a day, is dropped; so is the cursor
+/// of a file that is gone. When the session comes back and its transcript
+/// grows, it is read again from the start, and the store drops every event
+/// it already holds: only the new message is added.
+#[test]
+fn nfr_02_a_pruned_cursor_reads_again_from_the_start_without_double_counting() {
+    const SID: &str = "55555555-5555-4555-8555-555555555555";
+    const GONE: &str = "66666666-6666-4666-8666-666666666666";
+    let w = world(Part::Whole);
+    let path = copied_session(&w, "t2p", SID, "done", "2026-09-28T17:00:00Z");
+    let gone = copied_session(&w, "t2g", GONE, "working", "2026-09-28T17:00:00Z");
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    c.tick(now()).unwrap();
+    let stored = session_events(&w, SID).len();
+    assert!(stored > 0);
+    assert!(cursor_json(&w, SID).is_some() && cursor_json(&w, GONE).is_some());
+
+    // The record leaves the retention window; its transcript is quiet.
+    session_ledger(&w, "t2p", SID, "done", "2026-08-01T00:00:00Z");
+    age(&path, now() - chrono::Duration::days(2));
+    std::fs::remove_file(&gone).unwrap();
+    let later = at(60 * horch_core::telemetry::collect::TIDY_EVERY_MIN);
+    c.tick(later).unwrap();
+    assert!(cursor_json(&w, SID).is_none(), "pruned");
+    assert!(cursor_json(&w, GONE).is_none(), "its file is gone");
+
+    // It comes back with 1 new message.
+    session_ledger(&w, "t2p", SID, "done", "2026-09-28T19:00:00Z");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    std::io::Write::write_all(&mut f, assistant_line(&w, "msg_nfr02_back").as_bytes()).unwrap();
+    c.tick(later + chrono::Duration::seconds(2)).unwrap();
+    let cursor = cursor_json(&w, SID).expect("read again");
+    let len = std::fs::metadata(&path).unwrap().len();
+    assert_eq!(cursor["offset"].as_u64(), Some(len), "read to the end");
+    let ids: Vec<String> = session_events(&w, SID)
+        .into_iter()
+        .map(|e| e.event_id)
+        .collect();
+    assert_eq!(ids.len(), stored + 1, "{ids:?}");
+    let unique: BTreeSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "no event twice");
 }

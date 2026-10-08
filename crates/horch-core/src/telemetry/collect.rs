@@ -196,6 +196,8 @@ pub struct Collector {
     /// The content hash of `snapshot.json` as last written or read
     /// ([`content_hash`]); `None` before the first tick.
     snapshot_hash: Option<u64>,
+    /// When [`Collector::tidy_cursors`] last ran.
+    tidied_at: Option<DateTime<Utc>>,
 }
 
 impl Collector {
@@ -296,6 +298,7 @@ impl Collector {
             timing: TickTiming::default(),
             print_timing: false,
             snapshot_hash: None,
+            tidied_at: None,
         })
     }
 
@@ -396,6 +399,19 @@ impl Collector {
         }
         // A cursor moves only when its input is polled.
         self.store_batch(pending, moved.then_some(true))?;
+        // After the events are stored: a tidy drops no cursor a crash needs.
+        if self
+            .tidied_at
+            .is_none_or(|t| now - t >= Duration::minutes(TIDY_EVERY_MIN))
+        {
+            self.tidied_at = Some(now);
+            let at = Instant::now();
+            if self.tidy_cursors(records, &oldest, now) {
+                let bytes = store::save_cursors(self.store.dir(), &self.cursors, true)?;
+                self.timing.wrote("cursors", bytes as u64);
+            }
+            self.timing.lap("cursor_save", at);
+        }
 
         let at = Instant::now();
         let quota = self.update_quota(now, &signals)?;
@@ -543,6 +559,65 @@ impl Collector {
         found
     }
 
+    /// Keep `cursors.json` small (NFR-02): it is rewritten whole whenever an
+    /// input moves. Returns whether a cursor changed.
+    ///
+    /// - A cursor whose input file is gone is dropped.
+    /// - A cursor whose session has no record inside the retention window,
+    ///   and whose input has not changed for [`QUIET_H`] hours, is dropped:
+    ///   no tick polls it.
+    /// - A cursor whose records are all done, and whose input has not
+    ///   changed for [`QUIET_H`] hours, forgets its recent Claude message
+    ///   ids, which were most of the file.
+    ///
+    /// An input that grows again is read again: a dropped cursor from the
+    /// start, a forgetful one from its offset. The store drops the events
+    /// it already holds (section 8.2).
+    fn tidy_cursors(&mut self, records: &[&Record], oldest: &str, now: DateTime<Utc>) -> bool {
+        // (agent, session) -> whether every record of it in the window is done.
+        let mut owners: HashMap<(&str, &str), bool> = HashMap::new();
+        for r in records.iter().filter(|r| r.updated_at.as_str() >= oldest) {
+            let Some(sid) = r.session_id.as_deref().filter(|s| !s.is_empty()) else {
+                continue;
+            };
+            let done = r.execution_status().is_terminal();
+            *owners.entry((&r.agent, sid)).or_insert(true) &= done;
+        }
+        let quiet_since = std::time::SystemTime::from(now - Duration::hours(QUIET_H));
+        let mut changed = false;
+        self.cursors.retain(|key, c| {
+            let mut parts = key.splitn(3, '|');
+            let (agent, sid, path) = (parts.next(), parts.next(), parts.next());
+            let (Some(agent), Some(sid), Some(path)) = (agent, sid, path) else {
+                return true;
+            };
+            let modified = match std::fs::metadata(path).and_then(|m| m.modified()) {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    changed = true;
+                    return false;
+                }
+                Err(_) => return true,
+            };
+            if modified >= quiet_since {
+                return true;
+            }
+            match owners.get(&(agent, sid)) {
+                None => {
+                    changed = true;
+                    false
+                }
+                Some(true) if !c.recent.is_empty() => {
+                    c.recent.clear();
+                    changed = true;
+                    true
+                }
+                Some(_) => true,
+            }
+        });
+        changed
+    }
+
     /// Fold signals into `quota.json`, probing when due. A file override
     /// is read, never written.
     fn update_quota(&mut self, now: DateTime<Utc>, signals: &[QuotaSignal]) -> Result<QuotaView> {
@@ -638,6 +713,13 @@ struct Ledger {
 /// A record updated this many minutes ago or less is searched for its
 /// transcript on every tick: a new spawn's transcript appears within seconds.
 const FRESH_MIN: i64 = 10;
+
+/// An input unchanged this many hours has its cursor tidied
+/// ([`Collector::tidy_cursors`]).
+pub const QUIET_H: i64 = 24;
+
+/// How often a tick tidies the cursors, in minutes (the first tick always).
+pub const TIDY_EVERY_MIN: i64 = 60;
 
 /// How long an older record with no transcript waits between 2 searches.
 pub const SEARCH_AGAIN_S: i64 = 30;
