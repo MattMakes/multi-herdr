@@ -50,6 +50,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-project-context",
     "godot-quest-system",
     "godot-scene-files",
+    "godot-sound-design",
     "godot-version-migration",
     "orchestrate",
     "product-requirements",
