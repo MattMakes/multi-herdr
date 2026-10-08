@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use common::*;
 use horch_core::clock;
-use horch_core::telemetry::collect::{Collector, Probing, Snapshot, QUIET_RECENT_IDS};
+use horch_core::telemetry::collect::{self, Collector, Probing, Snapshot, QUIET_RECENT_IDS};
 use horch_core::telemetry::store;
 use horch_core::telemetry::Event;
 
@@ -817,4 +817,89 @@ fn r2_a_prime_cursor_survives_when_its_session_path_contains_a_pipe() {
         "the tidy kept the live Prime cursor: {:?}",
         all.as_object().unwrap().keys().collect::<Vec<_>>()
     );
+}
+
+/// The screen's project filter on real data: `Collector::project_rollups`
+/// for the project with the most events, against the old path (every event
+/// file read, then `store::rollup`). 3 runs of each; prints the median.
+/// Run on a COPY of a state directory, never the live one:
+/// `HORCH_PERF_STATE=<copy> cargo test --release -p horch-core --test
+/// telemetry_collect -- --ignored --nocapture project_rollups_timing`.
+#[test]
+#[ignore]
+fn project_rollups_timing() {
+    use std::time::{Duration, Instant};
+    let Some(state) = std::env::var_os("HORCH_PERF_STATE") else {
+        eprintln!("HORCH_PERF_STATE is not set: nothing to measure");
+        return;
+    };
+    let state = PathBuf::from(state);
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let loc = horch_core::usage::Locations {
+        home: home.to_path_buf(),
+        claude_projects: home.join(".claude/projects"),
+        codex_sessions: home.join(".codex/sessions"),
+        pi_sessions: home.join(".pi/agent/sessions"),
+        opencode_db: home.join("opencode.db"),
+        sqlite3: PathBuf::from("sqlite3"),
+    };
+    // At the newest event, so the windows hold the copy's latest days.
+    let dir = horch_core::telemetry::dir(&state);
+    let all = store::read_all(&dir);
+    let now = clock::parse(all.iter().map(|e| &e.ts).max().unwrap()).unwrap();
+    let mut per_project = std::collections::BTreeMap::<String, usize>::new();
+    for project in all.into_iter().filter_map(|e| e.project) {
+        *per_project.entry(project).or_default() += 1;
+    }
+    let mut c = Collector::open_at(&state, loc, Probing::Never, now).unwrap();
+    c.ledgers();
+    let (project, n) = per_project.into_iter().max_by_key(|(_, n)| *n).unwrap();
+    let median = |f: &mut dyn FnMut()| -> Duration {
+        let mut runs: Vec<Duration> = (0..3)
+            .map(|_| {
+                let at = Instant::now();
+                f();
+                at.elapsed()
+            })
+            .collect();
+        runs.sort();
+        eprintln!("  runs {runs:?}");
+        runs[1]
+    };
+    let mut fast = Default::default();
+    let new = median(&mut || fast = c.project_rollups(&project, now));
+    let mut old = Default::default();
+    let files = median(&mut || {
+        let events: Vec<_> = store::read_all(&dir)
+            .into_iter()
+            .filter(|e| e.project.as_deref() == Some(project.as_str()))
+            .collect();
+        let done = collect::done_record_ids(&collect::read_ledgers(&state));
+        old = (collect::WINDOWS.iter())
+            .map(|w| {
+                let since = collect::window_start(w, now);
+                (
+                    w.to_string(),
+                    store::rollup(&events, since.as_deref(), &done),
+                )
+            })
+            .collect();
+    });
+    eprintln!(
+        "{project}: {n} of {} stored events; project_rollups {new:?}, read_all path {files:?}",
+        c.store.len()
+    );
+    let tokens = |r: &std::collections::BTreeMap<String, store::Rollup>| {
+        (r.iter())
+            .map(|(w, r)| {
+                let rows = r.by_project.iter();
+                (
+                    w.clone(),
+                    rows.map(|x| (x.tokens, x.records)).collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(tokens(&fast), tokens(&old));
 }

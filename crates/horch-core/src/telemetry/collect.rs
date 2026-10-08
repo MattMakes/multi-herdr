@@ -318,6 +318,26 @@ impl Collector {
             .collect()
     }
 
+    /// The rollups of 1 project, 1 per window of [`WINDOWS`], keyed like
+    /// [`Snapshot::rollups`], from the in-memory table: what
+    /// [`store::rollup`] gives over the stored events of `project`, without
+    /// reading the event files. The done records are the last tick's
+    /// ledgers. An event with no project is under the key `-`, so `-`
+    /// matches it too.
+    pub fn project_rollups(&self, project: &str, now: DateTime<Utc>) -> BTreeMap<String, Rollup> {
+        let index = &self.store.table;
+        let records = self.last_good.values().flat_map(|l| &l.records);
+        let mut fold = RollupFold::new(index, &done_ids(records), now);
+        if let Some(id) = index.names.get(project) {
+            // Per row: whether its project key (group 3) is `project`.
+            let mine: Vec<bool> = index.rows.iter().map(|r| r.groups[3] == id).collect();
+            for e in index.kept.iter().filter(|e| mine[e.row as usize]) {
+                fold.add(e);
+            }
+        }
+        fold.finish()
+    }
+
     /// Read the ledgers whose length, inode or modification time changed
     /// since the last tick (NFR-02: parsing every ledger took most of a
     /// tick). The inode catches a rewrite by rename to the same length
@@ -894,6 +914,129 @@ pub fn build_snapshot(
     build_indexed(&records, &table, quota, unread, now, collector)
 }
 
+/// The rollups of [`WINDOWS`] folded over the table's events: [`add`] each
+/// event in store order, as [`store::rollup`] does, so the costs are the
+/// same to the last bit.
+///
+/// [`add`]: RollupFold::add
+struct RollupFold<'t> {
+    index: &'t Table,
+    /// Per name id: whether it is a done record.
+    is_done: Vec<bool>,
+    /// The start of each window.
+    since: [String; WINDOWS.len()],
+    /// Per window and row: tokens, and whether it has an event.
+    row_tokens: Vec<TokenClasses>,
+    row_seen: Vec<bool>,
+    /// Per window, group and key: cost and done cost, and the unpriced events.
+    costs: Vec<(f64, f64)>,
+    unpriced: Vec<u64>,
+    /// Per window: the unpriced events per model.
+    unpriced_models: [BTreeMap<&'t str, UnpricedRow>; WINDOWS.len()],
+}
+
+impl<'t> RollupFold<'t> {
+    fn new(index: &'t Table, done: &BTreeSet<String>, now: DateTime<Utc>) -> Self {
+        let (names, rows) = (index.names.len(), index.rows.len());
+        let keys = WINDOWS.len() * store::GROUPS.len() * names;
+        RollupFold {
+            index,
+            is_done: (index.names.names.iter())
+                .map(|n| done.contains(&**n))
+                .collect(),
+            since: WINDOWS.map(|w| window_start(w, now).unwrap_or_default()),
+            row_tokens: vec![TokenClasses::default(); WINDOWS.len() * rows],
+            row_seen: vec![false; WINDOWS.len() * rows],
+            costs: vec![(0.0, 0.0); keys],
+            unpriced: vec![0; keys],
+            unpriced_models: Default::default(),
+        }
+    }
+
+    fn add(&mut self, e: &'t Kept) {
+        let (names, rows) = (self.index.names.len(), self.index.rows.len());
+        let row = e.row as usize;
+        let r = self.index.rows[row];
+        let ts = &*e.ts;
+        let cost = e.cost.unwrap_or(0.0);
+        let no_price = e.cost.is_none();
+        for (w, start) in self.since.iter().enumerate() {
+            if ts < start.as_str() {
+                continue;
+            }
+            self.row_tokens[w * rows + row].add(&e.tokens);
+            self.row_seen[w * rows + row] = true;
+            for (g, key) in r.groups.iter().enumerate() {
+                let at = (w * store::GROUPS.len() + g) * names + *key as usize;
+                let c = &mut self.costs[at];
+                c.0 += cost;
+                if self.is_done[r.record as usize] {
+                    c.1 += cost;
+                }
+                self.unpriced[at] += u64::from(no_price);
+            }
+            if no_price {
+                add_unpriced(&mut self.unpriced_models[w], self.index, e);
+            }
+        }
+    }
+
+    /// One rollup per window, keyed by its name.
+    fn finish(mut self) -> BTreeMap<String, Rollup> {
+        let index = self.index;
+        let (names, rows) = (index.names.len(), index.rows.len());
+        let mut rollups = BTreeMap::new();
+        for (w, window) in WINDOWS.iter().enumerate() {
+            // Per group: key -> (tokens, records), from the rows in the window.
+            let mut groups: [BTreeMap<u32, (TokenClasses, BTreeSet<u32>)>; 6] = Default::default();
+            for (row, r) in index.rows.iter().enumerate() {
+                if !self.row_seen[w * rows + row] {
+                    continue;
+                }
+                for (g, key) in r.groups.iter().enumerate() {
+                    let (tokens, recs) = groups[g].entry(*key).or_default();
+                    tokens.add(&self.row_tokens[w * rows + row]);
+                    recs.insert(r.record);
+                }
+            }
+            let [by_teammate, by_phase, by_agent, by_project, by_plan, by_kind] =
+                std::array::from_fn(|g| {
+                    store::rows_from(std::mem::take(&mut groups[g]).into_iter().map(
+                        |(key, (tokens, recs))| {
+                            let at = (w * store::GROUPS.len() + g) * names + key as usize;
+                            let (cost, done_cost) = self.costs[at];
+                            let done = recs.iter().filter(|r| self.is_done[**r as usize]);
+                            let sums = GroupSums {
+                                tokens,
+                                cost,
+                                records: recs.len() as u64,
+                                done: done.count() as u64,
+                                done_cost,
+                                unpriced_events: self.unpriced[at],
+                            };
+                            (index.names.names[key as usize].to_string(), sums)
+                        },
+                    ))
+                });
+            rollups.insert(
+                window.to_string(),
+                Rollup {
+                    by_teammate,
+                    by_phase,
+                    by_agent,
+                    by_project,
+                    by_plan,
+                    by_kind,
+                    unpriced: std::mem::take(&mut self.unpriced_models[w])
+                        .into_values()
+                        .collect(),
+                },
+            );
+        }
+        rollups
+    }
+}
+
 /// [`build_snapshot`] from the store's [`Table`]. Each sum adds its events
 /// in store order, as [`store::rollup`] does, so the costs are the same to
 /// the last bit.
@@ -905,13 +1048,8 @@ fn build_indexed(
     now: DateTime<Utc>,
     collector: CollectorInfo,
 ) -> Snapshot {
-    let done = done_ids(records.iter().copied());
     let names = index.names.len();
-    let rows = index.rows.len();
-    let is_done: Vec<bool> = (index.names.names.iter())
-        .map(|n| done.contains(&**n))
-        .collect();
-    let since = WINDOWS.map(|w| window_start(w, now).unwrap_or_default());
+    let mut fold = RollupFold::new(index, &done_ids(records.iter().copied()), now);
     let recent = clock::stamp(now - Duration::minutes(5));
 
     // Per record: totals, last event, and the last 5 minutes for the rate.
@@ -926,14 +1064,6 @@ fn build_indexed(
         recent_cost: f64,
     }
     let mut per: Vec<Acc> = (0..names).map(|_| Acc::default()).collect();
-    // Per window and row: tokens, and whether it has an event. Per window,
-    // group and key: cost and done cost.
-    let mut row_tokens = vec![TokenClasses::default(); WINDOWS.len() * rows];
-    let mut row_seen = vec![false; WINDOWS.len() * rows];
-    let mut costs = vec![(0.0f64, 0.0f64); WINDOWS.len() * store::GROUPS.len() * names];
-    // Per window, group and key: the unpriced events. Per window: per model.
-    let mut unpriced = vec![0u64; WINDOWS.len() * store::GROUPS.len() * names];
-    let mut unpriced_models: [BTreeMap<&str, UnpricedRow>; WINDOWS.len()] = Default::default();
     // Insights over the 7-day window.
     let (mut total, mut orch, mut idle) = (0.0f64, 0.0f64, 0.0f64);
     let mut week_tokens = TokenClasses::default();
@@ -962,26 +1092,8 @@ fn build_indexed(
             a.recent_tokens += e.tokens.total();
             a.recent_cost += cost;
         }
-        for (w, start) in since.iter().enumerate() {
-            if ts < start.as_str() {
-                continue;
-            }
-            row_tokens[w * rows + row].add(&e.tokens);
-            row_seen[w * rows + row] = true;
-            for (g, key) in r.groups.iter().enumerate() {
-                let at = (w * store::GROUPS.len() + g) * names + *key as usize;
-                let c = &mut costs[at];
-                c.0 += cost;
-                if is_done[record] {
-                    c.1 += cost;
-                }
-                unpriced[at] += u64::from(no_price);
-            }
-            if no_price {
-                add_unpriced(&mut unpriced_models[w], index, e);
-            }
-        }
-        if ts >= since[2].as_str() {
+        fold.add(e);
+        if ts >= fold.since[2].as_str() {
             total += cost;
             if is_orch[row] {
                 orch += cost;
@@ -993,53 +1105,7 @@ fn build_indexed(
         }
     }
 
-    let mut rollups = BTreeMap::new();
-    for (w, window) in WINDOWS.iter().enumerate() {
-        // Per group: key -> (tokens, records), from the rows in the window.
-        let mut groups: [BTreeMap<u32, (TokenClasses, BTreeSet<u32>)>; 6] = Default::default();
-        for (row, r) in index.rows.iter().enumerate() {
-            if !row_seen[w * rows + row] {
-                continue;
-            }
-            for (g, key) in r.groups.iter().enumerate() {
-                let (tokens, recs) = groups[g].entry(*key).or_default();
-                tokens.add(&row_tokens[w * rows + row]);
-                recs.insert(r.record);
-            }
-        }
-        let [by_teammate, by_phase, by_agent, by_project, by_plan, by_kind] =
-            std::array::from_fn(|g| {
-                store::rows_from(std::mem::take(&mut groups[g]).into_iter().map(
-                    |(key, (tokens, recs))| {
-                        let at = (w * store::GROUPS.len() + g) * names + key as usize;
-                        let (cost, done_cost) = costs[at];
-                        let sums = GroupSums {
-                            tokens,
-                            cost,
-                            records: recs.len() as u64,
-                            done: recs.iter().filter(|r| is_done[**r as usize]).count() as u64,
-                            done_cost,
-                            unpriced_events: unpriced[at],
-                        };
-                        (index.names.names[key as usize].to_string(), sums)
-                    },
-                ))
-            });
-        rollups.insert(
-            window.to_string(),
-            Rollup {
-                by_teammate,
-                by_phase,
-                by_agent,
-                by_project,
-                by_plan,
-                by_kind,
-                unpriced: std::mem::take(&mut unpriced_models[w])
-                    .into_values()
-                    .collect(),
-            },
-        );
-    }
+    let rollups = fold.finish();
 
     let ten_min_ago = clock::stamp(now - Duration::minutes(10));
     let mut live = Vec::new();
@@ -1333,5 +1399,97 @@ mod tests {
             let on_disk = store::read_all(tmp.path());
             assert_eq!(snapshot(&records, &reopened.table), fresh(&on_disk));
         });
+    }
+
+    /// A collector on `state`, with the ledger of [`records`], its ledgers
+    /// read as a tick reads them.
+    fn collector_on(state: &Path) -> Collector {
+        let home = state.join("home");
+        let loc = Locations {
+            home: home.clone(),
+            claude_projects: home.join(".claude/projects"),
+            codex_sessions: home.join(".codex/sessions"),
+            pi_sessions: home.join(".pi/agent/sessions"),
+            opencode_db: home.join(".local/share/opencode/opencode.db"),
+            sqlite3: PathBuf::from("sqlite3"),
+        };
+        let ledger = serde_json::to_vec(&records()).unwrap();
+        std::fs::write(state.join("-work.json"), ledger).unwrap();
+        let mut c = Collector::open_at(state, loc, Probing::Never, now()).unwrap();
+        c.refresh_ledgers();
+        c
+    }
+
+    /// The rollups of `project` the old way: every event file read, the
+    /// project's events kept, folded by [`store::rollup`].
+    fn rollups_from_files(state: &Path, project: &str) -> BTreeMap<String, Rollup> {
+        let events: Vec<Event> = store::read_all(&super::super::dir(state))
+            .into_iter()
+            .filter(|e| e.project.as_deref() == Some(project))
+            .collect();
+        let done = done_record_ids(&read_ledgers(state));
+        (WINDOWS.iter())
+            .map(|w| {
+                let since = window_start(w, now());
+                (
+                    w.to_string(),
+                    store::rollup(&events, since.as_deref(), &done),
+                )
+            })
+            .collect()
+    }
+
+    /// Equal JSON, each number within 1e-9 of the other.
+    fn near(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+        use serde_json::Value;
+        match (a, b) {
+            (Value::Number(x), Value::Number(y)) => {
+                (x.as_f64().unwrap() - y.as_f64().unwrap()).abs() <= 1e-9
+            }
+            (Value::Array(x), Value::Array(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(x, y)| near(x, y))
+            }
+            (Value::Object(x), Value::Object(y)) => {
+                x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| near(v, w)))
+            }
+            _ => a == b,
+        }
+    }
+
+    /// The screen's project filter: the rollups of 1 project from the
+    /// collector's table equal, per window, those from the event files. A
+    /// collector opened on the files folds the costs it read, to the last
+    /// bit. The collector that stored the events keeps their costs exact;
+    /// serde_json reads some of them back 1 ulp off, so those agree to
+    /// 1e-9 (the tokens and counts exactly).
+    #[test]
+    fn project_rollups_match_the_rollups_from_the_event_files() {
+        property(0x5435_6300_0000_0001, 40, |rng| {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut c = collector_on(tmp.path());
+            c.store.append(events(rng)).unwrap();
+            let reopened = collector_on(tmp.path());
+            for project in ["/a", "/b"] {
+                let want = rollups_from_files(tmp.path(), project);
+                assert_eq!(reopened.project_rollups(project, now()), want, "{project}");
+                let got = serde_json::to_value(c.project_rollups(project, now())).unwrap();
+                let want = serde_json::to_value(&want).unwrap();
+                assert!(near(&got, &want), "{project}: {got:#}\n{want:#}");
+            }
+        });
+    }
+
+    /// A project with no events has 1 empty rollup per window.
+    #[test]
+    fn project_rollups_of_a_project_with_no_events_are_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut c = collector_on(tmp.path());
+        c.store.append(events(&mut SplitMix64::new(7))).unwrap();
+        assert!(!c.store.is_empty());
+        let got = c.project_rollups("/none", now());
+        let windows: BTreeSet<&str> = got.keys().map(String::as_str).collect();
+        assert_eq!(windows, BTreeSet::from(WINDOWS));
+        assert!(got.values().all(|r| *r == Rollup::default()), "{got:?}");
+        assert_eq!(got, rollups_from_files(tmp.path(), "/none"));
     }
 }
