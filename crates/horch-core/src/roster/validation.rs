@@ -181,6 +181,13 @@ impl Roster {
         // `--check` reads the same directories the launch will. It judges the
         // roster, not this host, so the agent's skill support is not checked.
         let resolved = self.skill_catalog().and_then(|c| {
+            // The plan drops an unknown offered skill so a spawn goes on;
+            // `--check` is the gate, so it still reports one (SKL-12).
+            for name in &t.available_skills {
+                if c.lookup(name).is_none() {
+                    problems.push(format!("teammate '{who}': unknown bundled skill '{name}'"));
+                }
+            }
             SkillResolution::read(c, Some(t), self.home.as_deref(), |_| Ok(()))?.plan(t)
         });
         if let Err(error) = resolved {
