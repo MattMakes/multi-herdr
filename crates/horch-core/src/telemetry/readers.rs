@@ -15,9 +15,11 @@
 //! | pi, prime | the session `.jsonl` | the line's `id`, else `@<byte offset>` |
 //! | opencode | `opencode.db` via `sqlite3 -readonly -json` | `message.id`; a changed message adds `<id>+<n>` |
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
 use serde_json::Value;
 
 use super::cursor::{poll_lines_until, Cursor, Seen};
@@ -294,6 +296,26 @@ fn emit_or_correct(
     }
 }
 
+/// The top-level `type` of a JSON line, read without building the line's
+/// other values (NFR-02: one transcript line can hold megabytes of tool
+/// output, and a whole parse copied all of it). `None` when the line does
+/// not skim (not JSON, a `type` that is not a string, a repeated key): the
+/// reader then parses it whole, as it always did.
+fn skim_type(line: &str) -> Option<Option<Cow<'_, str>>> {
+    #[derive(Deserialize)]
+    struct Head<'a> {
+        #[serde(rename = "type", borrow, default)]
+        kind: Option<Cow<'a, str>>,
+    }
+    serde_json::from_str::<Head>(line).ok().map(|h| h.kind)
+}
+
+/// Whether [`skim_type`] shows that `line` is none of `kinds`: the reader
+/// can skip it without a whole parse.
+fn skims_as_other(line: &str, kinds: &[&str]) -> bool {
+    skim_type(line).is_some_and(|t| !t.is_some_and(|t| kinds.contains(&&*t)))
+}
+
 // ─── claude ─────────────────────────────────────────────────────────────────
 
 /// Which window a Claude 429 text names ([Q] 1c), as a short label. The text
@@ -319,14 +341,21 @@ fn claude_refusal_label(line: &Value) -> String {
     "unknown".to_string()
 }
 
-/// One Claude transcript line (TEL-04).
+/// One Claude transcript line (TEL-04). Only `assistant` lines count.
 pub(crate) fn claude_line(
     c: &mut Cursor,
-    _at: u64,
+    at: u64,
     line: &str,
     subagent: bool,
     out: &mut Vec<Observation>,
 ) {
+    if !skims_as_other(line, &["assistant"]) {
+        claude_whole(c, at, line, subagent, out);
+    }
+}
+
+/// [`claude_line`] from the whole parse.
+fn claude_whole(c: &mut Cursor, _at: u64, line: &str, subagent: bool, out: &mut Vec<Observation>) {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return;
     };
@@ -458,8 +487,23 @@ pub(crate) fn codex_rollout_windows(rl: &Value) -> Vec<Window> {
     out
 }
 
+/// The line types [`codex_line`] reads; it skips every other one.
+const CODEX_KINDS: &[&str] = &[
+    "session_meta",
+    "turn_context",
+    "token_usage_record",
+    "event_msg",
+];
+
 /// One Codex rollout line (TEL-05).
 pub(crate) fn codex_line(c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observation>) {
+    if !skims_as_other(line, CODEX_KINDS) {
+        codex_whole(c, at, line, out);
+    }
+}
+
+/// [`codex_line`] from the whole parse.
+fn codex_whole(c: &mut Cursor, at: u64, line: &str, out: &mut Vec<Observation>) {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return;
     };
@@ -818,4 +862,97 @@ pub fn read_whole(
         })
         .collect();
     Ok((usage, polled.files))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every line of the Claude and Codex fixtures, and lines that test the
+    /// skim's edges.
+    fn lines() -> Vec<String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/telemetry");
+        let mut files = Vec::new();
+        let mut dirs = vec![root.join("claude"), root.join("codex")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "jsonl") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        let mut out: Vec<String> = files
+            .iter()
+            .flat_map(|f| {
+                std::fs::read_to_string(f)
+                    .unwrap()
+                    .lines()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(out.len() > 20, "{} fixture lines", out.len());
+        let assistant = out
+            .iter()
+            .find(|l| l.contains("\"assistant\""))
+            .unwrap()
+            .clone();
+        let token_count = out
+            .iter()
+            .find(|l| l.contains("\"token_count\""))
+            .unwrap()
+            .clone();
+        out.extend(
+            [
+                // A repeated key: the whole parse keeps the last one.
+                assistant.replacen("{", "{\"type\":\"user\",", 1),
+                token_count.replacen("{", "{\"type\":\"response_item\",", 1),
+                // An escaped type; a type that is not a string; no type.
+                assistant.replace("\"assistant\"", "\"assist\\u0061nt\""),
+                r#"{"type":7,"message":{"id":"m","usage":{"output_tokens":1}}}"#.into(),
+                r#"{"message":{"id":"m","usage":{"output_tokens":1}}}"#.into(),
+                r#"["assistant"]"#.into(),
+                "not json".into(),
+                r#"{"type":"user","message":{"content":"#.into(),
+                format!(
+                    r#"{{"type":"user","message":{{"content":"{}"}}}}"#,
+                    "x".repeat(1 << 16)
+                ),
+            ]
+            .map(String::from),
+        );
+        out
+    }
+
+    /// NFR-02: the skim drops only lines the whole parse reads nothing
+    /// from: same observations, same cursor, line by line.
+    #[test]
+    fn nfr_02_the_skim_reads_what_the_whole_parse_reads() {
+        let mut skipped = 0;
+        for subagent in [false, true] {
+            let (mut fast, mut whole) = (Cursor::default(), Cursor::default());
+            for (at, line) in lines().iter().enumerate() {
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                claude_line(&mut fast, at as u64, line, subagent, &mut a);
+                claude_whole(&mut whole, at as u64, line, subagent, &mut b);
+                assert_eq!(a, b, "{line}");
+                assert_eq!(fast, whole, "{line}");
+                skipped += usize::from(skims_as_other(line, &["assistant"]));
+            }
+        }
+        let (mut fast, mut whole) = (Cursor::default(), Cursor::default());
+        for (at, line) in lines().iter().enumerate() {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            codex_line(&mut fast, at as u64, line, &mut a);
+            codex_whole(&mut whole, at as u64, line, &mut b);
+            assert_eq!(a, b, "{line}");
+            assert_eq!(fast, whole, "{line}");
+            skipped += usize::from(skims_as_other(line, CODEX_KINDS));
+        }
+        assert!(skipped > 10, "the skim skipped {skipped} lines");
+    }
 }
