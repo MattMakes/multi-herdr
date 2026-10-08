@@ -1,0 +1,24 @@
+horch telemetry · 17:42Z                group: project  window: 5h  project: all
+claude        5h 3%    7d 100%  EXHAUSTED
+codex         5h -     7d 99%   EXHAUSTED
+opencode-zen  5h -     7d -     ok*
+local         5h -     7d -     BROKEN
+ live panes  rows 1-6 of 10 ────────────────────────────────────────────────────
+LIVE                           model      out $        tok/min state
+games/lawn-m… orchestrator     opus-5.5   61k 38.76    0       idle
+              steward          sonnet-5   61k 9.02     1.2k
+work/lawn-mo… orchestrator     opus-5.5   61k 216.53   47k     claude:tight
+              architect-revie… opus-5.5   61k 28.38    0       idle claude:tight
+prophecy-con… orchestrator     opus-5.5   61k 1234.56* 94k
+              swift-developer… opus-5.5   61k 1.85     24k
+ 5h by project  rows 1-5 of 5 ──────────────────────────────────────────────────
+5H BY PROJECT             tokens $       share cache hit $/DONE
+games/lawn-mower-manor    130M   412.00  21%   95%       9.00
+work/lawn-mower-manor     130M   1349.72 68%   95%       9.00
+prophecy-content-pipeline 130M   152.50  8%    95%       9.00
+multi-herdr               130M   60.00   3%    95%       9.00
+-                         130M   3.10    0%    95%       9.00
+
+
+UNREAD  opencode-ultra-1: sqlite3 not found  ·  orchestrators 27% of spend · ca…
+? help  q quit  Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  …

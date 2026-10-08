@@ -48,13 +48,15 @@ extern "C" fn on_signal(_: libc::c_int) {
     SHUTDOWN.store(true, Ordering::SeqCst);
 }
 
-/// SIGINT and SIGTERM end the loop, so the lock is released on the way out.
+/// SIGINT, SIGTERM and SIGHUP end the loop, so the terminal is restored and
+/// the lock is released on the way out.
 fn install_signal_handlers() {
     #[cfg(unix)]
     unsafe {
         let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
         libc::signal(libc::SIGTERM, handler);
         libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGHUP, handler);
     }
 }
 
@@ -132,16 +134,7 @@ pub fn pool_table(
             out.push(clip(&format!("{}no reading", pad(name, 14)), width));
             continue;
         };
-        let state = if r.state.is_empty() {
-            "unknown"
-        } else {
-            r.state.as_str()
-        };
-        let shown = if state == "ok" {
-            "ok".to_string()
-        } else {
-            state.to_ascii_uppercase()
-        };
+        let (state, shown) = pool_state(r);
         let line = if name == quota::POOL_ZEN && r.windows.is_empty() {
             let (s, note) = if state == "ok" {
                 ("ok*".to_string(), "* public work only")
@@ -178,13 +171,7 @@ pub fn pool_table(
                 why
             )
         } else {
-            let unscoped = |mins: u64| {
-                r.windows
-                    .iter()
-                    .find(|w| w.minutes == mins && w.scope_model.is_none())
-                    .map(|w| pct(w.used_at(now)))
-                    .unwrap_or_else(|| "-".into())
-            };
+            let unscoped = |mins: u64| unscoped_pct(r, mins, now);
             let scoped = r
                 .windows
                 .iter()
@@ -240,6 +227,96 @@ pub fn pool_table(
         out.push(clip(line.trim_end(), width));
     }
     out
+}
+
+/// A pool's state, and how the table shows it: `ok`, else in capitals.
+fn pool_state(r: &PoolReading) -> (&str, String) {
+    let state = if r.state.is_empty() {
+        "unknown"
+    } else {
+        r.state.as_str()
+    };
+    let shown = if state == "ok" {
+        "ok".to_string()
+    } else {
+        state.to_ascii_uppercase()
+    };
+    (state, shown)
+}
+
+/// The used share of a pool's unscoped window of `mins` minutes, or `-`.
+fn unscoped_pct(r: &PoolReading, mins: u64, now: DateTime<Utc>) -> String {
+    r.windows
+        .iter()
+        .find(|w| w.minutes == mins && w.scope_model.is_none())
+        .map(|w| pct(w.used_at(now)))
+        .unwrap_or_else(|| "-".into())
+}
+
+/// Where the state starts on a [`pool_compact`] line.
+pub const COMPACT_STATE: usize = 32;
+
+/// The pools on a short terminal: 1 line per pool with only the pool, 5h,
+/// 7d and the state (`claude        5h 17%   7d 77%   ok`), no header line.
+pub fn pool_compact(
+    pools: &std::collections::BTreeMap<String, PoolReading>,
+    now: DateTime<Utc>,
+    width: usize,
+    only_with_reading: &[&str],
+) -> Vec<String> {
+    let mut names: Vec<&str> = POOLS
+        .into_iter()
+        .filter(|p| !only_with_reading.contains(p) || pools.contains_key(*p))
+        .collect();
+    for extra in pools.keys() {
+        if !names.contains(&extra.as_str()) {
+            names.push(extra);
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let line = match pools.get(name) {
+                None => format!("{} no reading", pad(name, 13)),
+                Some(r) => {
+                    let (state, shown) = pool_state(r);
+                    let shown = if name == quota::POOL_ZEN && r.windows.is_empty() && state == "ok"
+                    {
+                        "ok*".to_string()
+                    } else {
+                        shown
+                    };
+                    format!(
+                        "{} 5h {} 7d {} {}",
+                        pad(name, 13),
+                        pad(&unscoped_pct(r, 300, now), 5),
+                        pad(&unscoped_pct(r, 10_080, now), 5),
+                        shown
+                    )
+                }
+            };
+            clip(&line, width)
+        })
+        .collect()
+}
+
+/// The smallest `--size` that `horch telemetry render` draws.
+pub const MIN_SIZE: (u16, u16) = (20, 6);
+
+/// `WIDTHxHEIGHT`, at least [`MIN_SIZE`].
+fn parse_size(size: &str) -> Result<(u16, u16)> {
+    let (w, h) = size
+        .split_once('x')
+        .and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?)))
+        .with_context(|| format!("--size takes WIDTHxHEIGHT, e.g. 120x40, not '{size}'"))?;
+    if w < MIN_SIZE.0 || h < MIN_SIZE.1 {
+        bail!(
+            "--size {size} is too small: the minimum is {}x{}",
+            MIN_SIZE.0,
+            MIN_SIZE.1
+        );
+    }
+    Ok((w, h))
 }
 
 fn short_model(model: &str) -> String {
@@ -337,10 +414,7 @@ pub fn run(ctx: &RuntimeContext, command: TelemetryCommand) -> Result<ExitCode> 
                 .map(PathBuf::from)
                 .unwrap_or_else(|| collect::snapshot_path(&ctx.paths.state_root));
             let snap = Snapshot::read(&path)?;
-            let (w, h) = size
-                .split_once('x')
-                .and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?)))
-                .with_context(|| format!("--size takes WIDTHxHEIGHT, e.g. 120x40, not '{size}'"))?;
+            let (w, h) = parse_size(&size)?;
             let view = ViewState::with(&group, &window)?;
             output::println(&render(&snap, &view, w, h).join("\n"));
             Ok(ExitCode::SUCCESS)
@@ -932,6 +1006,201 @@ mod tests {
             let view = ViewState::with(group, window).unwrap();
             let frame = render(&snap, &view, size.0, size.1).join("\n") + "\n";
             check_golden(file, &frame);
+        }
+    }
+
+    /// Q1: the layout goldens at 80x24, 100x20, 120x40 and 200x50, over a
+    /// fixture with long project paths, 2 projects with the same base name
+    /// and long roles.
+    #[test]
+    fn spc_04_render_layout_goldens() {
+        let snap = layout_snapshot();
+        for (w, h, group, window) in [
+            (80, 24, "project", "5h"),
+            (100, 20, "teammate", "live"),
+            (120, 40, "project", "7d"),
+            (200, 50, "teammate", "5h"),
+        ] {
+            let view = ViewState::with(group, window).unwrap();
+            let frame = render(&snap, &view, w, h).join("\n") + "\n";
+            check_golden(&format!("telemetry-layout-{w}x{h}.txt"), &frame);
+        }
+    }
+
+    fn layout_snapshot() -> Snapshot {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden/telemetry-layout-fixture.json");
+        Snapshot::read(&path).unwrap()
+    }
+
+    /// The table under the title line that starts with `title`: its column
+    /// header and its rows.
+    fn table<'a>(frame: &'a [String], title: &str) -> (&'a str, Vec<&'a str>) {
+        let at = frame
+            .iter()
+            .position(|l| l.starts_with(&format!(" {title}")))
+            .unwrap_or_else(|| panic!("no table {title}:\n{}", frame.join("\n")));
+        // The title says `rows A-B of N`, or `rows 0 of 0`.
+        let shown = frame[at]
+            .split_once("rows ")
+            .and_then(|(_, r)| r.split_once(" of"))
+            .and_then(|(r, _)| r.split_once('-'))
+            .map(|(a, b)| b.parse::<usize>().unwrap() + 1 - a.parse::<usize>().unwrap())
+            .unwrap_or(0);
+        let rows = frame[at + 2..at + 2 + shown]
+            .iter()
+            .map(|l| l.as_str())
+            .collect();
+        (frame[at + 1].as_str(), rows)
+    }
+
+    /// The character column where `head` starts in a column header.
+    fn column(head: &str, name: &str) -> Option<usize> {
+        let mut at = 0;
+        for word in head.split(' ') {
+            if word == name {
+                return Some(at);
+            }
+            at += word.chars().count() + 1;
+        }
+        None
+    }
+
+    /// Q1 checks 31 to 47 on the render: at 80x24, 100x20, 120x40 and
+    /// 200x50, in every window and group, every kept column header shows
+    /// whole, money and the state flags always show and are never cut, every
+    /// column starts after a space, and the footer keeps `? help  q quit`.
+    #[test]
+    fn spc_04_the_layout_keeps_money_flags_and_gutters() {
+        let snap = layout_snapshot();
+        let money = |s: &str| {
+            let s = s.trim_end_matches('*');
+            s.split_once('.')
+                .is_some_and(|(a, b)| b.len() == 2 && a.chars().all(|c| c.is_ascii_digit()))
+        };
+        for (w, h) in [(80u16, 24u16), (100, 20), (120, 40), (200, 50)] {
+            for g in GROUPS {
+                for win in VIEW_WINDOWS {
+                    let view = ViewState::with(g, win).unwrap();
+                    let frame = render(&snap, &view, w, h);
+                    let at = format!("{w}x{h} {g} {win}");
+                    assert!(frame.last().unwrap().starts_with("? help  q quit"), "{at}");
+                    let (head, rows) = table(&frame, "live panes");
+                    assert!(!head.contains('…'), "{at}: {head}");
+                    for name in ["LIVE", "out", "$", "tok/min", "state"] {
+                        assert!(column(head, name).is_some(), "{at}: {name} in {head}");
+                    }
+                    // The state flags show whole.
+                    let state = column(head, "state").unwrap();
+                    for row in &rows {
+                        let flags: String = row.chars().skip(state).collect();
+                        assert!(!flags.contains('…'), "{at}: {row:?}");
+                    }
+                    let mut tables = vec![(head, rows, column(head, "$").unwrap())];
+                    if win != "live" {
+                        let (head, rows) = table(&frame, &format!("{win} by {g}"));
+                        assert!(!head.contains('…'), "{at}: {head}");
+                        for name in ["tokens", "$", "share"] {
+                            assert!(column(head, name).is_some(), "{at}: {name} in {head}");
+                        }
+                        tables.push((head, rows, column(head, "$").unwrap()));
+                    }
+                    for (head, rows, cost) in tables {
+                        // The role column has no head: `table_line` tests
+                        // its gutter.
+                        let starts: Vec<usize> = [
+                            "model", "phase", "plan", "fresh", "c.read", "out", "$", "tok/min",
+                            "state", "tokens", "share", "cache", "$/DONE",
+                        ]
+                        .iter()
+                        .filter_map(|name| column(head, name))
+                        .collect();
+                        for row in rows {
+                            let chars: Vec<char> = row.chars().collect();
+                            for &c in &starts {
+                                if c < chars.len() {
+                                    assert_eq!(chars[c - 1], ' ', "{at}: column {c} in {row:?}");
+                                }
+                            }
+                            let cell: String =
+                                chars[cost..].iter().take_while(|c| **c != ' ').collect();
+                            assert!(money(&cell), "{at}: $ {cell:?} in {row:?}");
+                        }
+                    }
+                    let text = frame.join("\n");
+                    assert!(
+                        text.contains(" idle") && text.contains(" claude:tight"),
+                        "{at}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Q1: 2 projects with the same base name show their parent folder;
+    /// the others show the base name. On a wide terminal a long role shows
+    /// whole.
+    #[test]
+    fn spc_04_project_names_and_wide_roles() {
+        let snap = layout_snapshot();
+        let text = render(&snap, &ViewState::with("project", "7d").unwrap(), 120, 40).join("\n");
+        for name in [
+            "games/lawn-mower-manor",
+            "work/lawn-mower-manor",
+            "multi-herdr ",
+        ] {
+            assert!(text.contains(name), "{name}\n{text}");
+        }
+        assert!(!text.contains("/Users/x"), "{text}");
+        let text = render(&snap, &ViewState::with("teammate", "5h").unwrap(), 200, 50).join("\n");
+        assert!(text.contains("architect-reviewer-1 "), "{text}");
+        assert!(text.contains("timeline-integration-wave7"), "{text}");
+    }
+
+    /// Q1: at 24 rows the pools take 1 line each with no header, the facts
+    /// 1 line, and the live table shows at least 8 rows.
+    #[test]
+    fn spc_04_a_short_terminal_gives_the_rows_to_the_tables() {
+        let snap = layout_snapshot();
+        let frame = render(&snap, &ViewState::with("teammate", "live").unwrap(), 80, 24);
+        let text = frame.join("\n");
+        assert!(!text.contains("POOL"), "{text}");
+        assert!(frame[1].starts_with("claude        5h "), "{text}");
+        let (_, rows) = table(&frame, "live panes");
+        assert!(rows.len() >= 8, "{} rows\n{text}", rows.len());
+        let facts = frame.iter().filter(|l| l.contains("UNREAD")).count();
+        assert_eq!(facts, 1, "{text}");
+        assert!(
+            frame[22].contains("UNREAD") && frame[22].contains("orchestrators"),
+            "{text}"
+        );
+        // The header keeps the clock and drops the counts first.
+        assert!(frame[0].starts_with("horch telemetry · 17:42Z"), "{text}");
+    }
+
+    /// R1: `render --size` below 20x6 is an error that names the minimum.
+    #[test]
+    fn spc_04_render_rejects_a_size_below_the_minimum() {
+        assert_eq!(parse_size("120x40").unwrap(), (120, 40));
+        assert_eq!(parse_size("20x6").unwrap(), (20, 6));
+        for bad in ["10x3", "19x40", "120x5"] {
+            let err = format!("{:#}", parse_size(bad).unwrap_err());
+            assert!(err.contains("minimum is 20x6"), "{err}");
+        }
+        assert!(parse_size("wide").is_err());
+    }
+
+    /// R1: SIGHUP takes the same path as SIGINT and SIGTERM.
+    #[cfg(unix)]
+    #[test]
+    fn spc_04_sighup_ends_the_screen_like_sigterm() {
+        install_signal_handlers();
+        let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        for sig in [libc::SIGHUP, libc::SIGTERM, libc::SIGINT] {
+            // SAFETY: reads the action; a null new action changes nothing.
+            let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+            unsafe { libc::sigaction(sig, std::ptr::null(), &mut old) };
+            assert_eq!(old.sa_sigaction, handler, "signal {sig}");
         }
     }
 

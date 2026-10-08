@@ -21,8 +21,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use super::{
-    clip, human, money, pad, pct, pool_table, project_name, short_model, short_phase,
-    unpriced_line, VIEW_WINDOWS,
+    clip, human, money, pad, pct, pool_compact, pool_table, project_name, short_model, short_phase,
+    unpriced_line, COMPACT_STATE, MIN_SIZE, VIEW_WINDOWS,
 };
 
 /// The live panes table.
@@ -33,29 +33,40 @@ pub const ROLLUP: usize = 1;
 /// The rows the mouse wheel scrolls per step.
 const WHEEL_ROWS: usize = 3;
 
-const FOOTER: &str = "Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  p project  r refresh  ? help  q quit";
+/// `? help  q quit` come first: a narrow footer cuts the rest.
+const FOOTER: &str = "? help  q quit  Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  p project  r refresh";
 
-const HELP: &[&str] = &[
-    "Tab  Shift-Tab    focus the next or previous table",
-    "↓ j  ↑ k          move the selection 1 row",
-    "PgDn  PgUp        move 1 page",
-    "Home  End         the first or the last row",
-    "mouse wheel       scroll the table under the pointer",
-    "g                 cycle the grouping:",
-    "                  teammate, phase, agent, project, plan, kind",
-    "w                 cycle the window",
-    "p                 cycle the project filter",
-    "Esc               close this help, else clear the project filter",
-    "r                 refresh now",
-    "?                 show or hide this help",
-    "q  Ctrl-C         quit",
+/// The help popup's keys: they fit a 60x12 terminal.
+const HELP_KEYS: &[&str] = &[
+    "Tab  Shift-Tab   focus the other table",
+    "↓ j  ↑ k         move the selection 1 row",
+    "PgDn  PgUp       move 1 page",
+    "Home  End        the first or the last row",
+    "mouse wheel      scroll the table under the pointer",
+    "g  w  p          cycle the group, window, project",
+    "r                refresh now",
+    "Esc              close help, else clear the project",
+    "?                show or hide this help",
+    "q  Ctrl-C        quit",
+];
+
+/// The rest of the help, shown when the terminal has room for it.
+const HELP_MORE: &[&str] = &[
     "",
+    "groups:  teammate, phase, agent, project, plan, kind",
     "windows:",
     "live    the live panes only ($* counts the last 5h's unpriced)",
     "5h      the live panes, and the rollup of the last 5 hours",
     "today   the live panes, and the rollup since 00:00 UTC",
     "7d      the live panes, and the rollup of the last 7 days",
 ];
+
+/// The status line after `r`, until the next update.
+pub const REFRESHING: &str = "refreshing…";
+
+/// A terminal of this many rows or fewer is short: 1 line per pool, and 1
+/// line of facts.
+const SHORT_ROWS: u16 = 24;
 
 /// The scroll and selection of 1 table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -120,8 +131,12 @@ pub struct ViewState {
     pub focus: usize,
     /// The scroll and selection of [`LIVE`] and [`ROLLUP`].
     pub tables: [TableState; 2],
-    /// The help popup shows.
+    /// The help popup shows. It is modal: only `?`, `Esc`, `q` and Ctrl-C
+    /// act while it is open.
     pub help: bool,
+    /// A project is set, and its filtered snapshot is not there yet: the
+    /// rollup shows `loading <project>…`, never the global rollup.
+    pub loading: bool,
     /// Draw colors (not when `NO_COLOR` is set).
     pub color: bool,
 }
@@ -222,7 +237,32 @@ fn page(r: Rect) -> usize {
 
 /// A key on the screen. Pure.
 pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Action) {
-    if key.kind != KeyEventKind::Press {
+    let ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+    let motion = matches!(
+        key.code,
+        KeyCode::Down
+            | KeyCode::Up
+            | KeyCode::Char('j')
+            | KeyCode::Char('k')
+            | KeyCode::PageDown
+            | KeyCode::PageUp
+            | KeyCode::Home
+            | KeyCode::End
+    );
+    // A held motion key repeats; an action key acts once per press.
+    let pressed = match key.kind {
+        KeyEventKind::Press => true,
+        KeyEventKind::Repeat => motion,
+        KeyEventKind::Release => false,
+    };
+    // The help is modal.
+    let allowed = !s.help
+        || ctrl_c
+        || matches!(
+            key.code,
+            KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc
+        );
+    if !pressed || !allowed {
         return (s, Action::None);
     }
     let before = s.clone();
@@ -230,7 +270,7 @@ pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Actio
     let (n, pg) = (rows.count(t), rows.page[t]);
     let action = match key.code {
         KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
+        KeyCode::Char('c') if ctrl_c => Action::Quit,
         KeyCode::Char('?') => {
             s.help = !s.help;
             Action::Redraw
@@ -294,7 +334,10 @@ pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Actio
             s.project = next_project(&rows.projects, s.project.take());
             Action::SetProject(s.project.clone())
         }
-        KeyCode::Char('r') => Action::Refresh,
+        KeyCode::Char('r') => {
+            s.status = Some(REFRESHING.into());
+            Action::Refresh
+        }
         _ => Action::None,
     };
     if action == Action::Redraw && s == before {
@@ -303,9 +346,14 @@ pub fn on_key(mut s: ViewState, key: KeyEvent, rows: &Rows) -> (ViewState, Actio
     (s, action)
 }
 
-/// A mouse wheel step over table `t`: scroll it, and keep the selection on
-/// the screen. Pure.
+/// A mouse wheel step over table `t`: scroll it. The selection stays on its
+/// row while that row is visible, and is clamped to the view when it is
+/// not. Pure.
 pub fn on_wheel(mut s: ViewState, t: usize, down: bool, rows: &Rows) -> (ViewState, Action) {
+    // The help is modal: the wheel does nothing behind it.
+    if s.help {
+        return (s, Action::None);
+    }
     let before = s.clone();
     let (n, pg) = (rows.count(t), rows.page[t].max(1));
     let table = &mut s.tables[t];
@@ -383,7 +431,7 @@ fn live_rows<'a>(snap: &'a Snapshot, view: &ViewState) -> Vec<&'a LiveRow> {
 }
 
 fn rollup_rows<'a>(snap: &'a Snapshot, view: &ViewState) -> &'a [RollupRow] {
-    if !view.has_rollup() {
+    if !view.has_rollup() || view.loading {
         return &[];
     }
     snap.rollups
@@ -403,12 +451,17 @@ struct Areas {
     footer: Rect,
 }
 
+/// A terminal of [`SHORT_ROWS`] rows or fewer.
+fn short(area: Rect) -> bool {
+    area.height <= SHORT_ROWS
+}
+
 fn areas(snap: &Snapshot, view: &ViewState, area: Rect) -> Areas {
     let row = |y: u16, h: u16| Rect::new(area.x, area.y + y, area.width, h);
     let h = area.height;
     // The pool table has as many lines at any time.
-    let pools_want = pool_lines(snap, area.width, snapshot_time(snap)).len() as u16;
-    let facts_want = facts(snap, view, area.width).len() as u16;
+    let pools_want = pool_lines(snap, area, snapshot_time(snap)).len() as u16;
+    let facts_want = fact_lines(snap, view, area).len() as u16;
     // The header and the footer take 1 line each; then the pools, then the
     // facts give way to the tables' minimum of 3 lines each.
     let tables_min = if view.has_rollup() { 6 } else { 3 };
@@ -422,7 +475,7 @@ fn areas(snap: &Snapshot, view: &ViewState, area: Rect) -> Areas {
     let tables_y = 1 + pools_h;
     let (live, rollup) = if view.has_rollup() {
         let live_want = live_rows(snap, view).len() as u16 + 2;
-        let rollup_want = rollup_rows(snap, view).len() as u16 + 2;
+        let rollup_want = (rollup_rows(snap, view).len() as u16).max(1) + 2;
         let live_h = if live_want + rollup_want <= rest {
             live_want
         } else {
@@ -446,10 +499,18 @@ fn areas(snap: &Snapshot, view: &ViewState, area: Rect) -> Areas {
     }
 }
 
-fn pool_lines(snap: &Snapshot, width: u16, now: DateTime<Utc>) -> Vec<String> {
+/// The pool lines: the `horch quota` table, or on a short terminal 1 line
+/// per pool.
+fn pool_lines(snap: &Snapshot, area: Rect, now: DateTime<Utc>) -> Vec<String> {
     // No probe reads the Google pool yet, so the screen shows it only when
     // a reading exists; `horch quota` always lists it.
-    pool_table(&snap.pools, now, width as usize, &[quota::POOL_GOOGLE])
+    let only = &[quota::POOL_GOOGLE];
+    let width = area.width as usize;
+    if short(area) {
+        pool_compact(&snap.pools, now, width, only)
+    } else {
+        pool_table(&snap.pools, now, width, only)
+    }
 }
 
 /// The time the snapshot names. On disk that is its last content change,
@@ -458,17 +519,32 @@ pub fn snapshot_time(snap: &Snapshot) -> DateTime<Utc> {
     clock::parse(&snap.generated_at).unwrap_or_else(clock::now)
 }
 
-/// The lines under the tables: UNREAD, insights, unpriced, status.
-fn facts(snap: &Snapshot, view: &ViewState, width: u16) -> Vec<String> {
-    let width = width as usize;
+/// The facts under the tables, not clipped: status, UNPRICED, UNREAD,
+/// insights.
+fn facts(snap: &Snapshot, view: &ViewState) -> Vec<String> {
     let mut out = Vec::new();
+    if let Some(s) = &view.status {
+        out.push(format!("! {s}"));
+    }
+    let window = view.window_name();
+    // The live view counts the last 5 hours' unpriced events. While a
+    // project loads, the snapshot's rollups are the global ones: no line.
+    let priced_window = if window == "live" { "5h" } else { window };
+    if let Some(line) = snap
+        .rollups
+        .get(priced_window)
+        .filter(|_| !view.loading)
+        .and_then(|r| unpriced_line(&r.unpriced, usize::MAX))
+    {
+        out.push(line);
+    }
     if !snap.unread.is_empty() {
         let items: Vec<String> = snap
             .unread
             .iter()
             .map(|u| format!("{}: {}", u.role, u.reason))
             .collect();
-        out.push(clip(&format!("UNREAD  {}", items.join("; ")), width));
+        out.push(format!("UNREAD  {}", items.join("; ")));
     }
     let i = &snap.insights;
     let mut facts = Vec::new();
@@ -485,22 +561,57 @@ fn facts(snap: &Snapshot, view: &ViewState, width: u16) -> Vec<String> {
         facts.push(format!("top plan {p}"));
     }
     if !facts.is_empty() {
-        out.push(clip(&facts.join(" · "), width));
-    }
-    let window = view.window_name();
-    // The live view counts the last 5 hours' unpriced events.
-    let priced_window = if window == "live" { "5h" } else { window };
-    if let Some(line) = snap
-        .rollups
-        .get(priced_window)
-        .and_then(|r| unpriced_line(&r.unpriced, width))
-    {
-        out.push(line);
-    }
-    if let Some(s) = &view.status {
-        out.push(clip(&format!("! {s}"), width));
+        out.push(facts.join(" · "));
     }
     out
+}
+
+/// The fact lines: 1 per fact, or on a short terminal all of them on 1
+/// line. Each is clipped to the width.
+fn fact_lines(snap: &Snapshot, view: &ViewState, area: Rect) -> Vec<String> {
+    let width = area.width as usize;
+    let facts = facts(snap, view);
+    if short(area) && !facts.is_empty() {
+        return vec![clip(&facts.join("  ·  "), width)];
+    }
+    facts.iter().map(|f| clip(f, width)).collect()
+}
+
+/// The text each project shows: its base name, or, when 2 projects share
+/// a base name, its parent folder and its base name.
+fn project_labels(snap: &Snapshot) -> std::collections::BTreeMap<String, String> {
+    let projects = projects(snap);
+    let tail = |p: &str, n: usize| {
+        let parts: Vec<&str> = p.split('/').filter(|x| !x.is_empty()).collect();
+        parts[parts.len().saturating_sub(n)..].join("/")
+    };
+    let mut out = std::collections::BTreeMap::new();
+    for p in &projects {
+        let base = project_name(Some(p));
+        let twins = projects
+            .iter()
+            .filter(|q| project_name(Some(q)) == base)
+            .count();
+        let label = if twins < 2 {
+            base
+        } else {
+            let two = tail(p, 2);
+            let same = projects.iter().filter(|q| tail(q, 2) == two).count();
+            if same < 2 {
+                two
+            } else {
+                p.clone()
+            }
+        };
+        out.insert(p.clone(), label);
+    }
+    out
+}
+
+/// A project's label, or its base name when the snapshot does not name it.
+fn label(labels: &std::collections::BTreeMap<String, String>, p: Option<&str>) -> String {
+    p.and_then(|p| labels.get(p).cloned())
+        .unwrap_or_else(|| project_name(p))
 }
 
 fn header(snap: &Snapshot, view: &ViewState, width: usize, now: DateTime<Utc>) -> String {
@@ -509,13 +620,6 @@ fn header(snap: &Snapshot, view: &ViewState, width: usize, now: DateTime<Utc>) -
         .iter()
         .filter(|r| r.kind == horch_core::execution::legacy::KIND_ORCHESTRATOR)
         .count();
-    let left = format!(
-        "horch telemetry · {fleets} fleet{} · {} live pane{} · {}",
-        if fleets == 1 { "" } else { "s" },
-        live.len(),
-        if live.len() == 1 { "" } else { "s" },
-        now.format("%H:%MZ")
-    );
     let mut right = String::new();
     if let Some(m) = view.mode {
         right.push_str(&format!("[{m}]  "));
@@ -526,108 +630,239 @@ fn header(snap: &Snapshot, view: &ViewState, width: usize, now: DateTime<Utc>) -
         view.window_name(),
         view.project
             .as_deref()
-            .map(|p| project_name(Some(p)))
+            .map(|p| label(&project_labels(snap), Some(p)))
             .unwrap_or_else(|| "all".into())
     ));
     // The left part gives way first: the view's group and window must show.
-    let left = clip(&left, width.saturating_sub(right.chars().count() + 2));
+    // It drops the fleets, then the panes, and keeps the clock.
+    let clock = now.format("%H:%MZ");
+    let panes = format!(
+        "{} live pane{}",
+        live.len(),
+        if live.len() == 1 { "" } else { "s" }
+    );
+    let fleets = format!("{fleets} fleet{}", if fleets == 1 { "" } else { "s" });
+    let room = width.saturating_sub(right.chars().count() + 2);
+    let short = format!("horch telemetry · {clock}");
+    let left = [
+        format!("horch telemetry · {fleets} · {panes} · {clock}"),
+        format!("horch telemetry · {panes} · {clock}"),
+    ]
+    .into_iter()
+    .find(|l| l.chars().count() <= room)
+    .unwrap_or_else(|| clip(&short, room));
     let gap = width
         .saturating_sub(left.chars().count() + right.chars().count())
         .max(2);
     clip(&format!("{left}{}{right}", " ".repeat(gap)), width)
 }
 
-fn live_header(width: usize) -> String {
-    clip(
-        &format!(
-            "{}{}{}{}{}{}{}{}{}{}",
-            pad("LIVE", 14),
-            pad("", 17),
-            pad("model", 11),
-            pad("phase", 7),
-            pad("plan", 21),
-            pad("fresh", 8),
-            pad("c.read", 9),
-            pad("out", 7),
-            pad("$", 8),
-            "tok/min"
-        ),
-        width,
-    )
+// ─── columns ────────────────────────────────────────────────────────────────
+
+/// How a column gives way on a narrow terminal and takes room on a wide
+/// one.
+#[derive(Debug, Clone, Copy)]
+struct Col {
+    head: &'static str,
+    /// The width before any growth; a column whose longest value is shorter
+    /// takes that.
+    cap: usize,
+    /// Dropped in this order (0 first) when the width is short.
+    drop: Option<u8>,
+    /// After every drop, shortened in this order down to `.1` characters.
+    shrink: Option<(u8, usize)>,
+    /// Takes the spare width in this order, up to its longest value.
+    grow: Option<u8>,
 }
 
-fn live_line(r: &LiveRow, project: &str, width: usize) -> String {
+const fn col(head: &'static str, cap: usize) -> Col {
+    Col {
+        head,
+        cap,
+        drop: None,
+        shrink: None,
+        grow: None,
+    }
+}
+
+/// The live table. Money (`$`) and the state flags never go; the rest go in
+/// the order plan, c.read, phase, fresh, model, then the role and the
+/// project shorten.
+const LIVE_COLS: [Col; 11] = [
+    Col {
+        shrink: Some((1, 6)),
+        grow: Some(1),
+        ..col("LIVE", 13)
+    },
+    Col {
+        shrink: Some((0, 8)),
+        grow: Some(0),
+        ..col("", 16)
+    },
+    Col {
+        drop: Some(4),
+        ..col("model", 10)
+    },
+    Col {
+        drop: Some(2),
+        ..col("phase", 5)
+    },
+    Col {
+        drop: Some(0),
+        grow: Some(2),
+        ..col("plan", 20)
+    },
+    Col {
+        drop: Some(3),
+        ..col("fresh", usize::MAX)
+    },
+    Col {
+        drop: Some(1),
+        ..col("c.read", usize::MAX)
+    },
+    col("out", usize::MAX),
+    col("$", usize::MAX),
+    col("tok/min", usize::MAX),
+    col("state", usize::MAX),
+];
+
+/// The rollup table: `$/DONE`, then `cache hit` go first; then the key
+/// shortens. Its head is the table title.
+const ROLLUP_COLS: [Col; 6] = [
+    Col {
+        shrink: Some((0, 10)),
+        grow: Some(0),
+        ..col("", 30)
+    },
+    col("tokens", usize::MAX),
+    col("$", usize::MAX),
+    col("share", usize::MAX),
+    Col {
+        drop: Some(1),
+        ..col("cache hit", usize::MAX)
+    },
+    Col {
+        drop: Some(0),
+        ..col("$/DONE", usize::MAX)
+    },
+];
+
+/// The width of each column, or `None` for a dropped one, with 1 space
+/// between every 2 columns: drop, then shrink, until the columns fit
+/// `width`; then grow into the spare width. A column whose cells are all
+/// empty takes no room.
+fn fit_columns(
+    cols: &[Col],
+    heads: &[String],
+    rows: &[Vec<String>],
+    width: usize,
+) -> Vec<Option<usize>> {
+    let natural: Vec<usize> = (0..cols.len())
+        .map(|i| {
+            let cells = rows.iter().map(|r| r[i].chars().count());
+            let longest = cells.max().unwrap_or(0);
+            if longest == 0 {
+                0
+            } else {
+                longest.max(heads[i].chars().count())
+            }
+        })
+        .collect();
+    let mut w: Vec<Option<usize>> = cols
+        .iter()
+        .zip(&natural)
+        .map(|(c, &n)| (n > 0).then(|| n.min(c.cap)))
+        .collect();
+    let total = |w: &[Option<usize>]| {
+        let kept: Vec<usize> = w.iter().flatten().copied().collect();
+        kept.iter().sum::<usize>() + kept.len().saturating_sub(1)
+    };
+    let ordered = |key: &dyn Fn(&Col) -> Option<u8>| {
+        let mut o: Vec<(u8, usize)> = cols
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| key(c).map(|k| (k, i)))
+            .collect();
+        o.sort();
+        o.into_iter().map(|(_, i)| i).collect::<Vec<_>>()
+    };
+    for i in ordered(&|c| c.drop) {
+        if total(&w) <= width {
+            break;
+        }
+        w[i] = None;
+    }
+    for i in ordered(&|c| c.shrink.map(|s| s.0)) {
+        let over = total(&w).saturating_sub(width);
+        if let (Some(c), Some((_, min))) = (w[i], cols[i].shrink) {
+            w[i] = Some(c - over.min(c.saturating_sub(min)));
+        }
+    }
+    for i in ordered(&|c| c.grow) {
+        let spare = width.saturating_sub(total(&w));
+        if let Some(c) = w[i] {
+            w[i] = Some(c + spare.min(natural[i].saturating_sub(c)));
+        }
+    }
+    w
+}
+
+/// 1 line of cells in their columns: each cut with `…` to its width, 1
+/// space between every 2.
+fn table_line(cells: &[String], widths: &[Option<usize>], width: usize) -> String {
+    let parts: Vec<String> = cells
+        .iter()
+        .zip(widths)
+        .filter_map(|(c, w)| w.map(|w| pad(c, w)))
+        .collect();
+    clip(parts.join(" ").trim_end(), width)
+}
+
+fn live_cells(r: &LiveRow, project: String) -> Vec<String> {
     let mut role = r.role.clone();
     if let Some(via) = &r.via {
         role = format!("{role}>{via}");
     }
-    let mut flags = String::new();
+    let mut flags = Vec::new();
     if r.idle {
-        flags.push_str(" idle");
+        flags.push("idle".to_string());
     }
     if matches!(
         r.pool_state.as_str(),
         "tight" | "exhausted" | "broken" | "cooling"
     ) {
-        flags.push_str(&format!(" {}:{}", r.pool, r.pool_state));
+        flags.push(format!("{}:{}", r.pool, r.pool_state));
     }
-    clip(
-        &format!(
-            "{}{}{}{}{}{}{}{}{}{}{}",
-            pad(project, 14),
-            pad(&role, 17),
-            pad(&short_model(&r.model), 11),
-            pad(short_phase(r.phase.as_deref()), 7),
-            pad(r.plan.as_deref().unwrap_or("-"), 21),
-            pad(&human(r.tokens.fresh()), 8),
-            pad(&human(r.tokens.cache_read), 9),
-            pad(&human(r.tokens.output), 7),
-            pad(&money(r.cost_usd, r.unpriced_events), 8),
-            human(r.rate_tokens_per_min.round() as u64),
-            flags
-        ),
-        width,
-    )
+    vec![
+        project,
+        role,
+        short_model(&r.model),
+        short_phase(r.phase.as_deref()).into(),
+        r.plan.clone().unwrap_or_else(|| "-".into()),
+        human(r.tokens.fresh()),
+        human(r.tokens.cache_read),
+        human(r.tokens.output),
+        money(r.cost_usd, r.unpriced_events),
+        human(r.rate_tokens_per_min.round() as u64),
+        flags.join(" "),
+    ]
 }
 
-fn rollup_header(title: &str, width: usize) -> String {
-    clip(
-        &format!(
-            "{}{}{}{}{}{}",
-            pad(&title.to_uppercase(), 31),
-            pad("tokens", 9),
-            pad("$", 9),
-            pad("share", 8),
-            pad("cache hit", 12),
-            "$/DONE"
-        ),
-        width,
-    )
-}
-
-fn rollup_line(r: &RollupRow, total: f64, width: usize) -> String {
-    clip(
-        format!(
-            "{}{}{}{}{}{}",
-            pad(&r.key, 31),
-            pad(&human(r.tokens.total()), 9),
-            pad(&money(r.cost_usd, r.unpriced_events), 9),
-            pad(
-                &if total > 0.0 {
-                    pct(r.cost_usd / total)
-                } else {
-                    "-".into()
-                },
-                8
-            ),
-            pad(&r.cache_hit.map(pct).unwrap_or_else(|| "-".into()), 12),
-            r.cost_per_done
-                .map(|c| format!("{c:.2}"))
-                .unwrap_or_else(|| "-".into())
-        )
-        .trim_end(),
-        width,
-    )
+fn rollup_cells(r: &RollupRow, total: f64, key: String) -> Vec<String> {
+    vec![
+        key,
+        human(r.tokens.total()),
+        money(r.cost_usd, r.unpriced_events),
+        if total > 0.0 {
+            pct(r.cost_usd / total)
+        } else {
+            "-".into()
+        },
+        r.cache_hit.map(pct).unwrap_or_else(|| "-".into()),
+        r.cost_per_done
+            .map(|c| format!("{c:.2}"))
+            .unwrap_or_else(|| "-".into()),
+    ]
 }
 
 /// `rows A-B of N` for a table scrolled to `offset` with `shown` rows.
@@ -640,13 +875,16 @@ fn range(offset: usize, shown: usize, n: usize) -> String {
 }
 
 /// 1 scrollable table: a title line, a column header, and the rows from
-/// `table.offset`. `lines` holds each row's text and its own style.
+/// `table.offset`. `lines` holds each row's text and its own style; `note`
+/// shows under the header when there is no row.
+#[allow(clippy::too_many_arguments)]
 fn draw_table(
     buf: &mut Buffer,
     area: Rect,
     title: &str,
     head: String,
     lines: Vec<(String, Style)>,
+    note: Option<String>,
     table: &TableState,
     focused: bool,
 ) {
@@ -675,15 +913,22 @@ fn draw_table(
         }
         text.push(Line::styled(line, style));
     }
+    if n == 0 {
+        if let Some(note) = note {
+            text.push(Line::styled(
+                note,
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+        }
+    }
     ratatui::widgets::Widget::render(Paragraph::new(text), inner, buf);
 }
 
-/// A pool line, with its state colored: ok green, tight yellow, exhausted
-/// red. The text is the same with or without color.
-fn pool_line(line: String, color: bool) -> Line<'static> {
-    // Every pool row form puts the state at characters 43..55.
-    const STATE: (usize, usize) = (43, 55);
-    let state: String = line.chars().skip(STATE.0).take(STATE.1 - STATE.0).collect();
+/// A pool line, with its state (the characters from `at`) colored: ok
+/// green, tight yellow, exhausted red. The text is the same with or without
+/// color.
+fn pool_line(line: String, color: bool, at: (usize, usize)) -> Line<'static> {
+    let state: String = line.chars().skip(at.0).take(at.1 - at.0).collect();
     let fg = match state
         .trim()
         .trim_end_matches('*')
@@ -697,8 +942,8 @@ fn pool_line(line: String, color: bool) -> Line<'static> {
     };
     match fg {
         Some(fg) if color => {
-            let head: String = line.chars().take(STATE.0).collect();
-            let tail: String = line.chars().skip(STATE.1).collect();
+            let head: String = line.chars().take(at.0).collect();
+            let tail: String = line.chars().skip(at.1).collect();
             Line::from(vec![
                 Span::raw(head),
                 Span::styled(state, Style::default().fg(fg)),
@@ -726,6 +971,7 @@ pub fn draw_buf(
 ) {
     let width = area.width as usize;
     let a = areas(snap, view, area);
+    let labels = project_labels(snap);
     let para = |buf: &mut Buffer, lines: Vec<Line<'static>>, r: Rect| {
         ratatui::widgets::Widget::render(Paragraph::new(lines), r, buf);
     };
@@ -734,49 +980,61 @@ pub fn draw_buf(
         vec![Line::from(header(snap, view, width, now))],
         a.header,
     );
-    let pools = pool_lines(snap, area.width, now)
+    // Every pool line form puts the state at these characters.
+    let (state_at, first) = if short(area) {
+        ((COMPACT_STATE, COMPACT_STATE + 12), 0)
+    } else {
+        ((43, 55), 1)
+    };
+    let pools = pool_lines(snap, area, now)
         .into_iter()
         .enumerate()
         .map(|(i, l)| {
-            if i == 0 {
+            if i < first {
                 Line::from(l)
             } else {
-                pool_line(l, view.color)
+                pool_line(l, view.color, state_at)
             }
         })
         .collect();
     para(buf, pools, a.pools);
 
     let live = live_rows(snap, view);
+    let cells: Vec<Vec<String>> = live
+        .iter()
+        .map(|r| live_cells(r, label(&labels, r.project.as_deref())))
+        .collect();
+    let heads: Vec<String> = LIVE_COLS.iter().map(|c| c.head.to_string()).collect();
+    let widths = fit_columns(&LIVE_COLS, &heads, &cells, width);
     let offset = view.tables[LIVE].offset;
     let mut last_project: Option<String> = None;
     let lines: Vec<(String, Style)> = live
         .iter()
+        .zip(cells)
         .enumerate()
-        .map(|(i, r)| {
-            let project = project_name(r.project.as_deref());
+        .map(|(i, (r, mut cells))| {
             // A project shows once per run of rows, and on the first row
             // on the screen.
-            let shown = if i != offset && last_project.as_deref() == Some(project.as_str()) {
-                String::new()
-            } else {
-                project.clone()
-            };
+            let project = std::mem::take(&mut cells[0]);
+            if i == offset || last_project.as_deref() != Some(project.as_str()) {
+                cells[0] = project.clone();
+            }
             last_project = Some(project);
             let style = if r.idle {
                 Style::default().add_modifier(Modifier::DIM)
             } else {
                 Style::default()
             };
-            (live_line(r, &shown, width), style)
+            (table_line(&cells, &widths, width), style)
         })
         .collect();
     draw_table(
         buf,
         a.live,
         "live panes",
-        live_header(width),
+        table_line(&heads, &widths, width),
         lines,
+        None,
         &view.tables[LIVE],
         view.focus == LIVE,
     );
@@ -785,16 +1043,35 @@ pub fn draw_buf(
         let rows = rollup_rows(snap, view);
         let total: f64 = rows.iter().map(|r| r.cost_usd).sum();
         let title = format!("{} by {}", view.window_name(), view.group_name());
-        let lines = rows
+        let by_project = view.group_name() == "project";
+        let cells: Vec<Vec<String>> = rows
             .iter()
-            .map(|row| (rollup_line(row, total, width), Style::default()))
+            .map(|row| {
+                let key = if by_project && row.key != "-" {
+                    label(&labels, Some(&row.key))
+                } else {
+                    row.key.clone()
+                };
+                rollup_cells(row, total, key)
+            })
             .collect();
+        let mut heads: Vec<String> = ROLLUP_COLS.iter().map(|c| c.head.to_string()).collect();
+        heads[0] = title.to_uppercase();
+        let widths = fit_columns(&ROLLUP_COLS, &heads, &cells, width);
+        let lines = cells
+            .iter()
+            .map(|c| (table_line(c, &widths, width), Style::default()))
+            .collect();
+        let note = view
+            .loading
+            .then(|| format!("loading {}…", label(&labels, view.project.as_deref())));
         draw_table(
             buf,
             r,
             &title,
-            rollup_header(&title, width),
+            table_line(&heads, &widths, width),
             lines,
+            note,
             &view.tables[ROLLUP],
             view.focus == ROLLUP,
         );
@@ -802,7 +1079,7 @@ pub fn draw_buf(
 
     para(
         buf,
-        facts(snap, view, area.width)
+        fact_lines(snap, view, area)
             .into_iter()
             .map(Line::from)
             .collect(),
@@ -819,23 +1096,40 @@ pub fn draw_buf(
     );
 
     if view.help {
-        let w =
-            (HELP.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16 + 4).min(area.width);
-        let h = (HELP.len() as u16 + 2).min(area.height);
-        let r = Rect::new(
-            area.x + (area.width - w) / 2,
-            area.y + (area.height - h) / 2,
-            w,
-            h,
-        );
-        ratatui::widgets::Widget::render(Clear, r, buf);
-        let text: Vec<Line> = HELP.iter().map(|l| Line::from(format!(" {l}"))).collect();
-        ratatui::widgets::Widget::render(
-            Paragraph::new(text).block(Block::bordered().title(" help ")),
-            r,
-            buf,
-        );
+        draw_help(buf, area);
     }
+}
+
+/// The help popup, centered: the keys, and the groups and windows when the
+/// terminal has room for them. Every line is clipped to the popup.
+fn draw_help(buf: &mut Buffer, area: Rect) {
+    let wide = |lines: &[&str]| lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) + 4;
+    let more: Vec<&str> = HELP_KEYS.iter().chain(HELP_MORE).copied().collect();
+    let lines: &[&str] =
+        if more.len() + 2 <= area.height as usize && wide(&more) <= area.width as usize {
+            &more
+        } else {
+            HELP_KEYS
+        };
+    let w = (wide(lines) as u16).min(area.width);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let r = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    );
+    ratatui::widgets::Widget::render(Clear, r, buf);
+    let inner = (w as usize).saturating_sub(3);
+    let text: Vec<Line> = lines
+        .iter()
+        .map(|l| Line::from(format!(" {}", clip(l, inner))))
+        .collect();
+    ratatui::widgets::Widget::render(
+        Paragraph::new(text).block(Block::bordered().title(" help ")),
+        r,
+        buf,
+    );
 }
 
 /// The text of a buffer: 1 line per row, trailing spaces trimmed.
@@ -856,7 +1150,7 @@ pub fn buffer_text(buf: &Buffer) -> Vec<String> {
 /// (SPC-04). The snapshot's `generated_at` is the frame's time, so a
 /// golden stays fixed.
 pub fn render(snap: &Snapshot, view: &ViewState, width: u16, height: u16) -> Vec<String> {
-    let backend = TestBackend::new(width.max(20), height.max(6));
+    let backend = TestBackend::new(width.max(MIN_SIZE.0), height.max(MIN_SIZE.1));
     let mut terminal = Terminal::new(backend).expect("a TestBackend never fails");
     terminal
         .draw(|f| draw(f, snap, view, snapshot_time(snap)))
@@ -1037,5 +1331,228 @@ mod tests {
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(on_key(s.clone(), ctrl_c, &r).1, Action::Quit);
         assert_eq!(on_key(s, key(KeyCode::Char('r')), &r).1, Action::Refresh);
+    }
+
+    fn kind(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)
+    }
+
+    /// SPC-07 (R1): a held motion key repeats; a held action key acts once;
+    /// a release does nothing.
+    #[test]
+    fn spc_07_motion_keys_repeat_and_action_keys_do_not() {
+        let r = rows(30, 0, 10);
+        let mut s = ViewState::default();
+        s = on_key(s, kind(KeyCode::Down, KeyEventKind::Press), &r).0;
+        for _ in 0..3 {
+            s = on_key(s, kind(KeyCode::Char('j'), KeyEventKind::Repeat), &r).0;
+        }
+        assert_eq!(s.tables[LIVE].sel, 4);
+        let s = on_key(s, kind(KeyCode::PageDown, KeyEventKind::Repeat), &r).0;
+        assert_eq!(s.tables[LIVE].sel, 14);
+        let (s, a) = on_key(s, kind(KeyCode::Down, KeyEventKind::Release), &r);
+        assert_eq!((s.tables[LIVE].sel, a), (14, Action::None));
+        for code in ['p', 'w', 'g', '?', 'r', 'q'] {
+            let (n, a) = on_key(
+                s.clone(),
+                kind(KeyCode::Char(code), KeyEventKind::Repeat),
+                &r,
+            );
+            assert_eq!((&n, a), (&s, Action::None), "{code}");
+        }
+    }
+
+    /// SPC-04 (R1, Q1): the help is modal. Only `?`, `Esc`, `q` and Ctrl-C
+    /// act while it is open; a motion key, `g`, `w`, `p`, `r` and the wheel
+    /// change nothing behind it.
+    #[test]
+    fn spc_04_the_help_is_modal() {
+        let r = rows(30, 30, 10);
+        let open = press(
+            ViewState::with("teammate", "7d").unwrap(),
+            KeyCode::Char('?'),
+            &r,
+        );
+        assert!(open.help);
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::End,
+            KeyCode::PageDown,
+            KeyCode::Tab,
+            KeyCode::Char('g'),
+            KeyCode::Char('w'),
+            KeyCode::Char('p'),
+            KeyCode::Char('r'),
+        ] {
+            let (s, a) = on_key(open.clone(), key(code), &r);
+            assert_eq!((&s, a), (&open, Action::None), "{code:?}");
+        }
+        let (s, a) = on_wheel(open.clone(), LIVE, true, &r);
+        assert_eq!((&s, a), (&open, Action::None));
+        assert_eq!(
+            on_key(open.clone(), key(KeyCode::Char('q')), &r).1,
+            Action::Quit
+        );
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(on_key(open.clone(), ctrl_c, &r).1, Action::Quit);
+        assert!(!press(open.clone(), KeyCode::Esc, &r).help);
+        assert!(!press(open, KeyCode::Char('?'), &r).help);
+    }
+
+    /// SPC-04 (Q1): `r` shows `refreshing…` until the next update replaces
+    /// the status.
+    #[test]
+    fn spc_04_r_shows_refreshing() {
+        let r = rows(1, 0, 20);
+        let (s, a) = on_key(ViewState::default(), key(KeyCode::Char('r')), &r);
+        assert_eq!(
+            (s.status.as_deref(), a),
+            (Some(REFRESHING), Action::Refresh)
+        );
+        let snap = fixture("snapshot-fixture.json");
+        let text = draw_text(&snap, &s, 120, 40);
+        assert!(text.contains("! refreshing…"), "{text}");
+    }
+
+    /// SPC-07 (Q1): the wheel scrolls the view; the selection stays on its
+    /// row while that row shows, and is clamped to the view when it does
+    /// not.
+    #[test]
+    fn spc_07_the_wheel_keeps_a_visible_selection() {
+        let r = rows(30, 0, 10);
+        let mut s = ViewState::default();
+        s.tables[LIVE].select(5, 30, 10);
+        let s = on_wheel(s, LIVE, true, &r).0;
+        assert_eq!((s.tables[LIVE].offset, s.tables[LIVE].sel), (3, 5));
+        let s = on_wheel(s, LIVE, true, &r).0;
+        assert_eq!((s.tables[LIVE].offset, s.tables[LIVE].sel), (6, 6));
+        let s = on_wheel(s, LIVE, false, &r).0;
+        assert_eq!((s.tables[LIVE].offset, s.tables[LIVE].sel), (3, 6));
+    }
+
+    fn fixture(name: &str) -> Snapshot {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden")
+            .join(name);
+        Snapshot::read(&path).unwrap()
+    }
+
+    fn draw_text(snap: &Snapshot, view: &ViewState, w: u16, h: u16) -> String {
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        draw_buf(&mut buf, area, snap, view, snapshot_time(snap));
+        buffer_text(&buf).join("\n")
+    }
+
+    /// SPC-04 (Q1): the help fits a 60x12 terminal: every key line shows
+    /// whole, inside the popup's border.
+    #[test]
+    fn spc_04_the_help_fits_60x12() {
+        let snap = fixture("snapshot-fixture.json");
+        let view = ViewState {
+            help: true,
+            ..ViewState::default()
+        };
+        let text = draw_text(&snap, &view, 60, 12);
+        for line in HELP_KEYS {
+            assert!(text.contains(line), "{line}\n{text}");
+        }
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[0].contains("help") && lines[11].contains('┘'),
+            "{text}"
+        );
+        // A big terminal shows the groups and the windows too.
+        let text = draw_text(&snap, &view, 120, 40);
+        assert!(
+            text.contains("windows:") && text.contains("groups:"),
+            "{text}"
+        );
+    }
+
+    /// SPC-04 (R1): while a project loads, the rollup shows `loading
+    /// <project>…` and no global row, and the header names the project.
+    #[test]
+    fn spc_04_a_loading_project_shows_no_global_rollup() {
+        let snap = fixture("snapshot-fixture.json");
+        let view = ViewState {
+            project: Some("/Users/x/other".into()),
+            loading: true,
+            ..ViewState::with("teammate", "7d").unwrap()
+        };
+        let text = draw_text(&snap, &view, 120, 40);
+        assert!(text.contains("loading other…"), "{text}");
+        assert!(text.contains("project: other"), "{text}");
+        assert!(text.contains("7d by teammate  rows 0 of 0"), "{text}");
+        assert!(!text.contains("412.00"), "{text}");
+    }
+
+    /// Q1: 1 space between every 2 columns, also when a cell fills its
+    /// column or is cut.
+    #[test]
+    fn spc_04_columns_have_a_gutter() {
+        let cells = vec!["lawn-mower-man".to_string(), "orchestrator".into()];
+        let widths = [Some(14), Some(12)];
+        assert_eq!(
+            table_line(&cells, &widths, 80),
+            "lawn-mower-man orchestrator"
+        );
+        let widths = [Some(10), Some(12)];
+        assert_eq!(table_line(&cells, &widths, 80), "lawn-mowe… orchestrator");
+    }
+
+    /// Q1: drops go plan, c.read, phase, fresh, model; then the role and
+    /// the project shorten; spare width goes to the role, the project, then
+    /// the plan, up to their longest value.
+    #[test]
+    fn spc_04_the_column_rule() {
+        let heads: Vec<String> = LIVE_COLS.iter().map(|c| c.head.to_string()).collect();
+        let row: Vec<String> = [
+            "lawn-mower-manor-x",
+            "architect-reviewer-12",
+            "opus-5.5",
+            "impl",
+            "timeline-integration-wave7",
+            "1.0M",
+            "117M",
+            "359k",
+            "1234.56*",
+            "47k",
+            "idle claude:tight",
+        ]
+        .map(String::from)
+        .to_vec();
+        let rows = vec![row];
+        let kept = |w: usize| {
+            let widths = fit_columns(&LIVE_COLS, &heads, &rows, w);
+            let names: Vec<&str> = widths
+                .iter()
+                .zip(&LIVE_COLS)
+                .filter(|(w, _)| w.is_some())
+                .map(|(_, c)| c.head)
+                .collect();
+            let total: usize = widths.iter().flatten().sum::<usize>() + names.len() - 1;
+            (names, widths, total)
+        };
+        let (names, _, total) = kept(200);
+        assert_eq!(names.len(), 11);
+        // Every value whole at 200: 18+21+8+5+26+5+6+4+8+7+17 + 10 gutters.
+        assert_eq!(total, 135);
+        // 120: all fit at their caps; the 1 spare column goes to the role.
+        let (names, w, total) = kept(120);
+        assert_eq!((names.len(), w[1], total), (11, Some(17), 120));
+        let (names, w, total) = kept(100);
+        assert!(
+            !names.contains(&"plan") && names.contains(&"c.read"),
+            "{names:?}"
+        );
+        assert_eq!((w[1], total), (Some(18), 100));
+        let (names, _, total) = kept(80);
+        assert_eq!(names, ["LIVE", "", "model", "out", "$", "tok/min", "state"]);
+        assert_eq!(total, 80);
+        let (names, w, total) = kept(60);
+        assert_eq!(names, ["LIVE", "", "out", "$", "tok/min", "state"]);
+        assert_eq!((w[0], w[1], total), (Some(11), Some(8), 60));
     }
 }

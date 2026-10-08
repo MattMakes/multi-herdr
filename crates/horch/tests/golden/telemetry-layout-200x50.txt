@@ -1,0 +1,50 @@
+horch telemetry · 3 fleets · 10 live panes · 17:42Z                                                                                                            group: teammate  window: 5h  project: all
+POOL          5h      7d     scoped        state       resets         headroom/h
+claude        3%      100%   fable 3%      EXHAUSTED   Fri 14:00Z     0.0%
+codex         -       99%    -             EXHAUSTED   Sat 19:16Z     0.0%
+opencode-zen  no signal                    ok*         -              -          * public work only
+local         -       -      -             BROKEN      pi --version exited 1
+ live panes  rows 1-10 of 10 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+LIVE                                             model      phase plan                       fresh c.read out $        tok/min state
+games/lawn-mower-manor    orchestrator           opus-5.5   plan  -                          412k  9.8M   61k 38.76    0       idle
+                          steward                sonnet-5   impl  steward                    412k  9.8M   61k 9.02     1.2k
+work/lawn-mower-manor     orchestrator           opus-5.5   plan  -                          412k  9.8M   61k 216.53   47k     claude:tight
+                          architect-reviewer-1   opus-5.5   -     -                          412k  9.8M   61k 28.38    0       idle claude:tight
+prophecy-content-pipeline orchestrator           opus-5.5   plan  -                          412k  9.8M   61k 1234.56* 94k
+                          swift-developer-12     opus-5.5   impl  timeline-integration-wave7 412k  9.8M   61k 1.85     24k
+                          researcher-77          opus-5.5   res   port-content-journeys      412k  9.8M   61k 5.23     0       idle
+                          codex-reviewer-2       5.6-sol    val   -                          412k  9.8M   61k 3.26     126k    codex:exhausted
+multi-herdr               opencode-pickle-2      big-pickle impl  -                          412k  9.8M   61k 0.00     0       idle
+                          researcher-1>codex-sol 5.6-terra  res   -                          412k  9.8M   61k 0.46     0       codex:exhausted
+ 5h by teammate  rows 1-5 of 5 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+5H BY TEAMMATE                           tokens $     share cache hit $/DONE
+opus                                     88M    20.60 37%   93%       9.20
+orchestrator                             41M    11.50 21%   96%       -
+sonnet                                   21M    3.00  5%    95%       2.10
+codex-sol                                8.2M   7.50  14%   89%       14.00
+architect-reviewer-with-a-very-long-name 88M    12.50 23%   93%       9.20
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+UNREAD  opencode-ultra-1: sqlite3 not found
+orchestrators 27% of spend · cache hit 91% · 6% of spend while idle · top plan golden-prompts-whitespace
+? help  q quit  Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  p project  r refresh

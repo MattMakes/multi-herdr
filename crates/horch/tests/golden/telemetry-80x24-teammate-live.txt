@@ -1,15 +1,14 @@
-horch telemetry · 2 fleets · 4 liv…  group: teammate  window: live  project: all
-POOL          5h      7d     scoped        state       resets         headroom/h
-claude        3%      100%   fable 3%      EXHAUSTED   Fri 14:00Z     0.0%
-codex         -       99%    -             EXHAUSTED   Sat 19:16Z     0.0%
-opencode-zen  no signal                    ok*         -              -        …
-local         -       -      -             BROKEN      pi --version exited 1
+horch telemetry · 17:42Z             group: teammate  window: live  project: all
+claude        5h 3%    7d 100%  EXHAUSTED
+codex         5h -     7d 99%   EXHAUSTED
+opencode-zen  5h -     7d -     ok*
+local         5h -     7d -     BROKEN
  live panes  rows 1-4 of 4 ─────────────────────────────────────────────────────
-LIVE                           model      phase  plan                 fresh   c…
-multi-herdr   orchestrator     opus-5.5   plan   -                    412k    9…
-              sonnet-3         sonnet-5   impl   golden-prompts-white…98k     1…
-other         orchestrator     5.6-sol    plan   -                    90k     7…
-              researcher-1>cod…5.6-sol    res    -                    30k     2…
+LIVE                            model    out  $     tok/min state
+multi-herdr orchestrator        opus-5.5 61k  21.40 4.1k    claude:exhausted
+            sonnet-3            sonnet-5 22k  1.10  2.3k    claude:exhausted
+other       orchestrator        5.6-sol  15k  3.20  900     codex:exhausted
+            researcher-1>codex… 5.6-sol  4.0k 0.90  0       idle codex:exhausted
 
 
 
@@ -19,6 +18,7 @@ other         orchestrator     5.6-sol    plan   -                    90k     7�
 
 
 
-UNREAD  opencode-ultra-1: sqlite3 not found
-orchestrators 27% of spend · cache hit 91% · 6% of spend while idle · top plan …
-Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  p project  r ref…
+
+
+UNREAD  opencode-ultra-1: sqlite3 not found  ·  orchestrators 27% of spend · ca…
+? help  q quit  Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  …
