@@ -129,7 +129,7 @@ pub(crate) fn poll_lines(
 pub(crate) fn poll_lines_until(
     path: &Path,
     cursor: &mut Cursor,
-    mut f: impl FnMut(&mut Cursor, u64, &str) -> bool,
+    f: impl FnMut(&mut Cursor, u64, &str) -> bool,
 ) -> std::io::Result<bool> {
     let file = std::fs::File::open(path)?;
     let meta = file.metadata()?;
@@ -149,11 +149,37 @@ pub(crate) fn poll_lines_until(
     }
     let mut reader = BufReader::with_capacity(1 << 20, file);
     reader.seek(SeekFrom::Start(cursor.offset))?;
-    let mut buf: Vec<u8> = Vec::new();
+    let mut buf = LINE.take();
+    let read = read_lines(&mut reader, &mut buf, cursor, f);
+    LINE.set(buf);
+    let consumed_any = read?;
+    if consumed_any {
+        cursor.quiet_ticks = 0;
+    } else {
+        cursor.quiet_ticks = cursor.quiet_ticks.saturating_add(1);
+    }
+    Ok(consumed_any)
+}
+
+thread_local! {
+    /// The line buffer of [`poll_lines_until`], kept from call to call
+    /// (NFR-02 peak RSS). A transcript line can be megabytes long; a new
+    /// buffer per call grew by doubling each time, and macOS kept every
+    /// freed block of more than 1 MB resident in its cache.
+    static LINE: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// The loop of [`poll_lines_until`]; whether a line was consumed.
+fn read_lines(
+    reader: &mut impl BufRead,
+    buf: &mut Vec<u8>,
+    cursor: &mut Cursor,
+    mut f: impl FnMut(&mut Cursor, u64, &str) -> bool,
+) -> std::io::Result<bool> {
     let mut consumed_any = false;
     loop {
         buf.clear();
-        let n = reader.read_until(b'\n', &mut buf)?;
+        let n = reader.read_until(b'\n', buf)?;
         if n == 0 || buf.last() != Some(&b'\n') {
             // End of file, or a partial line still being written.
             break;
@@ -166,11 +192,6 @@ pub(crate) fn poll_lines_until(
         if !line.trim().is_empty() && !f(cursor, at, line) {
             break;
         }
-    }
-    if consumed_any {
-        cursor.quiet_ticks = 0;
-    } else {
-        cursor.quiet_ticks = cursor.quiet_ticks.saturating_add(1);
     }
     Ok(consumed_any)
 }
@@ -281,5 +302,34 @@ mod tests {
         assert_eq!(c.recent.len(), RECENT_IDS);
         assert!(c.recalled("m19").is_some());
         assert!(c.recalled("m0").is_none());
+    }
+
+    /// NFR-02 peak RSS: the line buffer is kept from call to call, so a
+    /// long line grows it once; the lines and offsets of the next files are
+    /// the same as from a fresh buffer.
+    #[test]
+    fn nfr_02_the_line_buffer_is_kept_and_reads_the_same() {
+        let tmp = tempfile::tempdir().unwrap();
+        let long = "x".repeat(3 << 20);
+        let a = tmp.path().join("a.jsonl");
+        std::fs::write(&a, format!("{long}\nshort\npartial")).unwrap();
+        let b = tmp.path().join("b.jsonl");
+        std::fs::write(&b, "b1\r\n\n  \nb2\n").unwrap();
+        let mut c = Cursor::default();
+        let got = lines_of(&a, &mut c);
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].0, got[0].1.len()), (0, long.len()));
+        assert_eq!(got[1], (long.len() as u64 + 1, "short".into()));
+        assert_eq!(c.offset, long.len() as u64 + 7);
+        let kept = LINE.take();
+        assert!(kept.capacity() > long.len(), "the buffer is kept");
+        let at = kept.as_ptr();
+        LINE.set(kept);
+
+        let mut c = Cursor::default();
+        let got = lines_of(&b, &mut c);
+        assert_eq!(got, vec![(0, "b1".into()), (8, "b2".into())]);
+        let kept = LINE.take();
+        assert_eq!(kept.as_ptr(), at, "the same buffer, no new block");
     }
 }
