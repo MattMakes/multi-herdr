@@ -15,6 +15,16 @@ thread_local! {
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
     /// The bytes this thread holds: allocated minus freed, for the RSS guard.
     static LIVE: Cell<i64> = const { Cell::new(0) };
+    /// The most bytes this thread has held at once, since the last
+    /// [`peak_reset`].
+    static PEAK: Cell<i64> = const { Cell::new(0) };
+}
+
+/// Start a new [`PEAK`] at the bytes held now; returns them.
+fn peak_reset() -> i64 {
+    let live = LIVE.with(Cell::get);
+    PEAK.with(|p| p.set(live));
+    live
 }
 
 /// The system allocator, counting each thread's allocations and live bytes.
@@ -23,7 +33,12 @@ struct Counting;
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
-        let _ = LIVE.try_with(|n| n.set(n.get() + layout.size() as i64));
+        if let Ok(live) = LIVE.try_with(|n| {
+            n.set(n.get() + layout.size() as i64);
+            n.get()
+        }) {
+            let _ = PEAK.try_with(|p| p.set(p.get().max(live)));
+        }
         unsafe { System.alloc(layout) }
     }
 
@@ -556,6 +571,26 @@ fn rss_mib() -> f64 {
     kib / 1024.0
 }
 
+/// This process's peak resident set size in MiB (`getrusage`).
+#[cfg(unix)]
+fn max_rss_mib() -> f64 {
+    // SAFETY: an all-zero `rusage` is valid, and `u` is a valid out pointer.
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+    // Bytes on macOS, KiB on Linux.
+    let div = if cfg!(target_os = "macos") {
+        1048576.0
+    } else {
+        1024.0
+    };
+    u.ru_maxrss as f64 / div
+}
+
+#[cfg(not(unix))]
+fn max_rss_mib() -> f64 {
+    0.0
+}
+
 /// This thread's CPU time: other load on the host barely moves it, where it
 /// moves the wall clock a lot.
 #[cfg(unix)]
@@ -599,14 +634,54 @@ fn nfr_02_live_store_rss() {
     let loc = horch_core::usage::Locations::under_home(&home, &inherited);
     let now = horch_core::clock::now();
     let live = || LIVE.with(Cell::get);
-    let before = live();
+    let mib = |b: i64| b as f64 / 1048576.0;
+    // The parts of an open and a first tick, each alone: what it holds after
+    // and its peak above the bytes held before it.
+    let part = |name: &str, f: &mut dyn FnMut()| {
+        let base = peak_reset();
+        f();
+        eprintln!(
+            "part {name}: {:.1} MiB held, peak +{:.1} MiB",
+            mib(live() - base),
+            mib(PEAK.with(Cell::get) - base)
+        );
+    };
+    let tel = horch_core::telemetry::dir(Path::new(&state));
+    // `HORCH_PERF_PARTS=1`: each part alone, then stop. The parts are
+    // leaked, so a collector after them would show their RSS too.
+    if std::env::var_os("HORCH_PERF_PARTS").is_some() {
+        part("store", &mut || {
+            let s = horch_core::telemetry::store::Store::open(&tel, now, 35).unwrap();
+            eprintln!("  {} events", s.len());
+            std::mem::forget(s);
+        });
+        part("cursors", &mut || {
+            let c = horch_core::telemetry::store::load_cursors(&tel);
+            eprintln!("  {} cursors", c.len());
+            std::mem::forget(c);
+        });
+        part("ledgers", &mut || {
+            let r = horch_core::telemetry::collect::read_ledgers(Path::new(&state));
+            eprintln!("  {} records", r.len());
+            std::mem::forget(r);
+        });
+        eprintln!(
+            "parts (leaked): RSS {:.1} MiB, max RSS {:.1} MiB",
+            rss_mib(),
+            max_rss_mib()
+        );
+        return;
+    }
+
+    let before = peak_reset();
     let mut c = Collector::open_at(Path::new(&state), loc, Probing::Never, now).unwrap();
     let held = live() - before;
     let events = c.store.len().max(1);
     eprintln!(
-        "open: {events} events, {:.1} MiB held ({} B per event), RSS {:.1} MiB",
-        held as f64 / 1048576.0,
+        "open: {events} events, {:.1} MiB held ({} B per event), peak +{:.1} MiB, RSS {:.1} MiB",
+        mib(held),
         held / events as i64,
+        mib(PEAK.with(Cell::get) - before),
         rss_mib()
     );
     let mut worst = std::time::Duration::ZERO;
@@ -619,9 +694,12 @@ fn nfr_02_live_store_rss() {
             worst = worst.max(took);
         }
         eprintln!(
-            "tick {n}: {took:?} ({cpu:?} CPU), {:.1} MiB held, RSS {:.1} MiB",
-            (live() - before) as f64 / 1048576.0,
-            rss_mib()
+            "tick {n}: {took:?} ({cpu:?} CPU), {:.1} MiB held, peak {:.1} MiB held, \
+             RSS {:.1} MiB, max RSS {:.1} MiB",
+            mib(live() - before),
+            mib(PEAK.with(Cell::get) - before),
+            rss_mib(),
+            max_rss_mib()
         );
         eprintln!("  {}", c.timing.line());
         if n > 1 {
