@@ -379,3 +379,65 @@ fn a_quiet_tick_does_not_rewrite_the_cursors() {
         "new input saves the cursors (temp file + rename)"
     );
 }
+
+/// NFR-02: a tick whose snapshot content is the same as the file's (all but
+/// `generated_at`) does not rewrite `snapshot.json`. A tick with a new event
+/// rewrites it. The file is compact JSON, and `Snapshot::read` reads it.
+#[cfg(unix)]
+#[test]
+fn nfr_02_an_unchanged_snapshot_is_not_rewritten() {
+    let w = world(Part::Whole);
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    let first = c.tick(now()).unwrap();
+    let path = horch_core::telemetry::collect::snapshot_path(&w.state);
+    let ino = |p: &std::path::Path| {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(p).unwrap().ino()
+    };
+    let before = ino(&path);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("\n  "), "compact JSON");
+    let read = Snapshot::read(&path).unwrap();
+    assert_eq!(
+        (read.generated_at, read.live.len()),
+        (first.generated_at.clone(), first.live.len())
+    );
+
+    // 1 s earlier: no event crosses a window start (2 s later, one leaves 5h).
+    let quiet = c.tick(at(-1)).unwrap();
+    assert_eq!(ino(&path), before, "a quiet tick keeps the snapshot file");
+    assert_eq!(c.timing.written("snapshot"), 0);
+    assert_eq!(
+        quiet.generated_at,
+        clock::stamp(at(-1)),
+        "the tick returns now"
+    );
+    let mut same = quiet.clone();
+    same.generated_at = first.generated_at.clone();
+    assert_eq!(same, first);
+
+    // A new collector over the same files finds the content unchanged too.
+    let mut again = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    again.info = c.info.clone();
+    again.tick(at(-1)).unwrap();
+    assert_eq!(
+        ino(&path),
+        before,
+        "a restart over the same content keeps it"
+    );
+
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(
+            w.home
+                .join(format!(".claude/projects/-work-alpha/{A2}.jsonl")),
+        )
+        .unwrap();
+    std::io::Write::write_all(&mut f, assistant_line(&w, "msg_nfr02_snap").as_bytes()).unwrap();
+    let grown = again.tick(at(-1)).unwrap();
+    assert_ne!(ino(&path), before, "new content rewrites the snapshot");
+    assert_eq!(
+        Snapshot::read(&path).unwrap().generated_at,
+        grown.generated_at
+    );
+}

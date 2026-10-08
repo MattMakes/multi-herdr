@@ -193,6 +193,9 @@ pub struct Collector {
     /// Print [`Collector::timing`] to stderr after each tick
     /// (`HORCH_TELEMETRY_TIMING=1`).
     pub print_timing: bool,
+    /// The content hash of `snapshot.json` as last written or read
+    /// ([`content_hash`]); `None` before the first tick.
+    snapshot_hash: Option<u64>,
 }
 
 impl Collector {
@@ -245,8 +248,10 @@ impl Collector {
         )?;
         let mut c = c.with_faults(&ctx.settings.faults);
         use crate::runtime::EnvSource;
-        c.print_timing =
-            crate::runtime::ProcessEnv.var("HORCH_TELEMETRY_TIMING").as_deref() == Some("1");
+        c.print_timing = crate::runtime::ProcessEnv
+            .var("HORCH_TELEMETRY_TIMING")
+            .as_deref()
+            == Some("1");
         Ok(c)
     }
 
@@ -290,6 +295,7 @@ impl Collector {
             abort_after_append: false,
             timing: TickTiming::default(),
             print_timing: false,
+            snapshot_hash: None,
         })
     }
 
@@ -403,11 +409,20 @@ impl Collector {
             self.info.clone(),
         );
         let at = self.timing.lap("build", at);
-        let json = serde_json::to_vec_pretty(&snapshot)?;
+        // NFR-02: write the file only when its content changed.
+        let path = snapshot_path(&self.state_root);
+        let hash = content_hash(&snapshot)?;
+        let known = *self
+            .snapshot_hash
+            .get_or_insert_with(|| file_hash(&path).unwrap_or(!hash));
         let at = self.timing.lap("serialize", at);
-        store::replace_private(&snapshot_path(&self.state_root), &json)?;
-        self.timing.lap("write", at);
-        self.timing.wrote("snapshot", json.len() as u64);
+        if known != hash {
+            let json = serde_json::to_vec(&snapshot)?;
+            store::replace_private(&path, &json)?;
+            self.snapshot_hash = Some(hash);
+            self.timing.lap("write", at);
+            self.timing.wrote("snapshot", json.len() as u64);
+        }
         Ok(snapshot)
     }
 
@@ -421,7 +436,8 @@ impl Collector {
         let bytes = self.store.bytes_written;
         self.store.append(events)?;
         let at = self.timing.lap("append", at);
-        self.timing.wrote("events", self.store.bytes_written - bytes);
+        self.timing
+            .wrote("events", self.store.bytes_written - bytes);
         if self.abort_after_append {
             eprintln!("HORCH_FAULT=abort-after-append: dying before the cursor save");
             std::process::abort();
@@ -556,6 +572,38 @@ impl Collector {
         self.timing.wrote("quota", bytes);
         Ok(QuotaView::new(file, now, self.policy.clone(), false))
     }
+}
+
+/// The hash of `snapshot`'s compact JSON with `generated_at` empty: 2
+/// snapshots with the same hash differ only in when they were built.
+fn content_hash(snapshot: &Snapshot) -> Result<u64> {
+    let content = Snapshot {
+        generated_at: String::new(),
+        ..snapshot.clone()
+    };
+    Ok(bytes_hash(&serde_json::to_vec(&content)?))
+}
+
+fn bytes_hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
+/// [`content_hash`] of the compact snapshot file at `path`, from its bytes:
+/// a parse would not give the same floats back to the last bit. `None` when
+/// the file is absent or not compact JSON that starts with `schema` and
+/// `generated_at` (the field order of [`Snapshot`]).
+fn file_hash(path: &Path) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    let head = b",\"generated_at\":\"";
+    let at = bytes.windows(head.len()).position(|w| w == head)? + head.len();
+    if !bytes.starts_with(b"{\"schema\":") || at > 40 {
+        return None;
+    }
+    let end = at + bytes[at..].iter().position(|b| *b == b'"')?;
+    Some(bytes_hash(&[&bytes[..at], &bytes[end..]].concat()))
 }
 
 /// One ledger file's last good records, and the file's stamp when they
