@@ -33,7 +33,7 @@ skills:
   - godot-build-verify
   - godot-scene-files
 # Named by name only: related skills.
-available_skills: [godot-state-machine, godot-export-pipeline, godot-event-bus, godot-language-choice]
+available_skills: [godot-state-machine, godot-export-pipeline, godot-event-bus, godot-language-choice, godot-save-security]
 # A C# project (a *.csproj next to project.godot) adds the C# skills to this
 # builder (GW11, roster/offer.rs project_skills). godot-csharp-engineer owns
 # interop, .NET builds and source-generator problems.
