@@ -357,6 +357,7 @@ impl Collector {
 
     fn tick_on(&mut self, records: &[&Record], now: DateTime<Utc>) -> Result<Snapshot> {
         let oldest = clock::stamp(now - Duration::days(self.policy.retention_days));
+        self.store.advance(now);
         let batch = self.batch.max(1);
         let mut pending = Vec::new();
         let mut signals: Vec<QuotaSignal> = Vec::new();
@@ -561,9 +562,9 @@ impl Collector {
     /// input moves. Returns whether a cursor changed.
     ///
     /// - A cursor whose input file is gone is dropped.
-    /// - A cursor whose session has no record inside the retention window,
-    ///   and whose input has not changed for [`QUIET_H`] hours, is dropped:
-    ///   no tick polls it.
+    /// - A cursor whose session has no live record and no record inside the
+    ///   retention window, and whose input has not changed for [`QUIET_H`]
+    ///   hours, is dropped.
     /// - A cursor whose records are all done, and whose input has not
     ///   changed for [`QUIET_H`] hours, keeps only its newest
     ///   [`QUIET_RECENT_IDS`] Claude message ids: the recent ids were most
@@ -574,9 +575,12 @@ impl Collector {
     /// start, a tidied one from its offset. The store drops the events
     /// it already holds (section 8.2).
     fn tidy_cursors(&mut self, records: &[&Record], oldest: &str, now: DateTime<Utc>) -> bool {
-        // (agent, session) -> whether every record of it in the window is done.
+        // (agent, session) -> whether every record of it is done: the records
+        // in the window, and every live one (a live record can keep an old
+        // `updated_at`).
         let mut owners: HashMap<(&str, &str), bool> = HashMap::new();
-        for r in records.iter().filter(|r| r.updated_at.as_str() >= oldest) {
+        let owns = |r: &&&Record| r.updated_at.as_str() >= oldest || r.execution_status().is_live();
+        for r in records.iter().filter(owns) {
             let Some(sid) = r.session_id.as_deref().filter(|s| !s.is_empty()) else {
                 continue;
             };

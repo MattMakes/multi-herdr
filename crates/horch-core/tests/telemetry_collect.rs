@@ -717,3 +717,65 @@ fn nfr_02_a_pruned_cursor_reads_again_from_the_start_without_double_counting() {
     let unique: BTreeSet<&String> = ids.iter().collect();
     assert_eq!(unique.len(), ids.len(), "no event twice");
 }
+
+/// The review's scenario (R2): 40 days on, a restart deletes a session's
+/// old event file with its keys, and the tidy drops its quiet cursor. When
+/// the session comes back, its transcript is read from the start: the
+/// events older than the retention window are dropped, not stored again.
+#[test]
+fn r2_a_pruned_cursor_does_not_restore_events_outside_retention() {
+    const SID: &str = "88888888-8888-4888-8888-888888888888";
+    let w = world(Part::Whole);
+    let path = copied_session(&w, "r2-retention", SID, "done", "2026-09-28T17:00:00Z");
+    let mut first = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    first.tick(now()).unwrap();
+    assert!(session_events(&w, SID).len() > 1);
+    drop(first);
+
+    let far = now() + chrono::Duration::days(40);
+    age(&path, far - chrono::Duration::hours(25));
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, far).unwrap();
+    c.tick(far).unwrap();
+    assert!(cursor_json(&w, SID).is_none(), "the old cursor is pruned");
+    assert!(
+        session_events(&w, SID).is_empty(),
+        "the old event file is pruned"
+    );
+
+    session_ledger(&w, "r2-retention", SID, "working", &clock::stamp(far));
+    let mut fresh: serde_json::Value =
+        serde_json::from_str(&assistant_line(&w, "msg_r2_fresh")).unwrap();
+    fresh["timestamp"] = clock::stamp(far).into();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    std::io::Write::write_all(&mut f, format!("{fresh}\n").as_bytes()).unwrap();
+    c.tick(far + chrono::Duration::seconds(2)).unwrap();
+
+    let stored = session_events(&w, SID);
+    let ids: Vec<&str> = stored.iter().map(|e| e.event_id.as_str()).collect();
+    assert_eq!(ids, ["msg_r2_fresh"], "only the new event is stored");
+    assert!(c.store.expired_dropped > 0);
+}
+
+/// R2 review: a live record keeps its quiet cursor although its
+/// `updated_at` is older than the retention window.
+#[test]
+fn a_live_record_with_an_old_update_keeps_its_cursor() {
+    const SID: &str = "99999999-9999-4999-8999-999999999999";
+    let w = world(Part::Whole);
+    let path = copied_session(&w, "live-old", SID, "working", "2026-09-28T17:00:00Z");
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    c.tick(now()).unwrap();
+    assert!(cursor_json(&w, SID).is_some());
+
+    session_ledger(&w, "live-old", SID, "working", "2026-08-01T00:00:00Z");
+    age(&path, now() - chrono::Duration::hours(25));
+    c.tick(at(60 * horch_core::telemetry::collect::TIDY_EVERY_MIN))
+        .unwrap();
+    assert!(
+        cursor_json(&w, SID).is_some(),
+        "the live record's cursor is kept"
+    );
+}

@@ -34,6 +34,13 @@ pub struct Store {
     pub(crate) table: Table,
     /// The bytes appended to the event files since open (NFR-02 timing).
     pub bytes_written: u64,
+    /// The retention window in days, and the oldest event file date it
+    /// keeps (`YYYY-MM-DD`). [`Store::append`] drops older events.
+    retention_days: i64,
+    oldest: String,
+    /// The events [`Store::append`] dropped as older than the retention
+    /// window: a transcript read again from the start (section 8.2).
+    pub expired_dropped: u64,
 }
 
 /// Strings stored once, each with a dense id.
@@ -163,11 +170,21 @@ fn private_options() -> std::fs::OpenOptions {
 
 /// The event file an event belongs in: the UTC date of its timestamp.
 fn file_for(dir: &Path, ts: &str) -> PathBuf {
-    let date = ts
-        .get(..10)
+    dir.join(format!("events-{}.jsonl", file_date(ts)))
+}
+
+/// The date part of an event file name: the date of `ts`, or `undated`.
+fn file_date(ts: &str) -> &str {
+    ts.get(..10)
         .filter(|d| d.as_bytes().get(4) == Some(&b'-'))
-        .unwrap_or("undated");
-    dir.join(format!("events-{date}.jsonl"))
+        .unwrap_or("undated")
+}
+
+/// The oldest event file date the retention window keeps at `now`.
+fn oldest_date(now: DateTime<Utc>, retention_days: i64) -> String {
+    (now - Duration::days(retention_days))
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 /// Event files in `dir`, oldest first, with their date.
@@ -195,11 +212,11 @@ impl Store {
     /// window and loading the rest (keys and events).
     pub fn open(dir: &Path, now: DateTime<Utc>, retention_days: i64) -> Result<Store> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        let oldest = (now - Duration::days(retention_days))
-            .format("%Y-%m-%d")
-            .to_string();
+        let oldest = oldest_date(now, retention_days);
         let mut store = Store {
             dir: dir.to_path_buf(),
+            retention_days,
+            oldest: oldest.clone(),
             ..Store::default()
         };
         let prices = usage::builtin_prices();
@@ -231,6 +248,13 @@ impl Store {
         &self.dir
     }
 
+    /// Move the retention window to `now`: [`Store::append`] drops the
+    /// events older than it. The files already stored stay until the next
+    /// open.
+    pub fn advance(&mut self, now: DateTime<Utc>) {
+        self.oldest = oldest_date(now, self.retention_days);
+    }
+
     /// Room for `n` events in the key index and the table.
     fn reserve(&mut self, n: usize) {
         self.keys.reserve(n);
@@ -255,6 +279,13 @@ impl Store {
         self.keys.contains(&(agent, session, key.2.as_str().into()))
     }
 
+    /// Whether an event at `ts` is older than the retention window: its
+    /// file date, as [`Store::open`] keeps files. An undated event is kept.
+    fn expired(&self, ts: &str) -> bool {
+        let date = file_date(ts);
+        date != "undated" && date < self.oldest.as_str()
+    }
+
     /// Record `e`'s key; false when it is already stored.
     fn insert_key(&mut self, e: &Event) -> bool {
         let agent = self.table.names.id(&e.agent);
@@ -264,10 +295,15 @@ impl Store {
     }
 
     /// Append the events whose keys are new, and sync. Returns how many were
-    /// appended.
+    /// appended. An event older than the retention window is dropped: its
+    /// key may be gone with its file, and the store never takes it back.
     pub fn append(&mut self, events: Vec<Event>) -> Result<usize> {
         let mut by_file: BTreeMap<PathBuf, Vec<Event>> = BTreeMap::new();
         for event in events {
+            if self.expired(&event.ts) {
+                self.expired_dropped += 1;
+                continue;
+            }
             if self.insert_key(&event) {
                 by_file
                     .entry(file_for(&self.dir, &event.ts))
@@ -708,6 +744,30 @@ mod tests {
         let s = Store::open(tmp.path(), now(), 35).unwrap();
         assert_eq!(s.len(), 1);
         assert!(!tmp.path().join("events-2026-08-01.jsonl").exists());
+    }
+
+    /// R2 review: the store never takes an event older than its retention
+    /// window back (a transcript read again from the start, after its old
+    /// keys left with their file). The window moves with [`Store::advance`];
+    /// an undated event is kept, as its file is.
+    #[test]
+    fn append_drops_events_older_than_the_retention_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Store::open(tmp.path(), now(), 35).unwrap();
+        let n = s
+            .append(vec![
+                ev("old", "2026-08-23T23:59:59Z", "r1", 1, 0.0),
+                ev("edge", "2026-08-24T00:00:00Z", "r1", 1, 0.0),
+                ev("undated", "soon", "r1", 1, 0.0),
+            ])
+            .unwrap();
+        assert_eq!((n, s.expired_dropped), (2, 1));
+        assert!(!tmp.path().join("events-2026-08-23.jsonl").exists());
+        s.advance(now() + Duration::days(1));
+        let n = s
+            .append(vec![ev("edge2", "2026-08-24T12:00:00Z", "r1", 1, 0.0)])
+            .unwrap();
+        assert_eq!((n, s.expired_dropped), (0, 2));
     }
 
     #[test]
