@@ -397,21 +397,19 @@ impl Collector {
                 }
             }
         }
-        // A cursor moves only when its input is polled.
-        self.store_batch(pending, moved.then_some(true))?;
-        // After the events are stored: a tidy drops no cursor a crash needs.
+        // The tidy's changes are saved with the last batch, after its events
+        // (its time counts as cursor_save).
         if self
             .tidied_at
             .is_none_or(|t| now - t >= Duration::minutes(TIDY_EVERY_MIN))
         {
             self.tidied_at = Some(now);
             let at = Instant::now();
-            if self.tidy_cursors(records, &oldest, now) {
-                let bytes = store::save_cursors(self.store.dir(), &self.cursors, true)?;
-                self.timing.wrote("cursors", bytes as u64);
-            }
+            moved |= self.tidy_cursors(records, &oldest, now);
             self.timing.lap("cursor_save", at);
         }
+        // A cursor moves only when its input is polled or tidied.
+        self.store_batch(pending, moved.then_some(true))?;
 
         let at = Instant::now();
         let quota = self.update_quota(now, &signals)?;
