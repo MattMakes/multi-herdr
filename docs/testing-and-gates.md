@@ -112,7 +112,7 @@ user-visible behavior changed.
 | `crates/horch-core/tests/oracles/ledgers/` | ledger reads | `baseline_oracles.rs` |
 | `crates/horch/tests/oracles/` | `horch skills` and `horch sessions` output | `crates/horch/tests/baseline_cli.rs` |
 | `crates/horch-core/tests/golden/` | rendered briefings and execpolicy files; `export-1.0.0.jsonl`; `worker-run-1.0.0.json` | `golden_prompts.rs`, `dataset_export.rs`, `measure.rs` |
-| `crates/horch/tests/golden/` | telemetry screen frames | unit tests in `crates/horch/src/cmd/telemetry.rs` |
+| `crates/horch/tests/golden/` | telemetry screen frames (`ratatui` `TestBackend` text) | unit tests in `crates/horch/src/cmd/telemetry/mod.rs` |
 | `crates/horch-e2e/tests/golden/` | the telemetry e2e frame | `crates/horch-e2e/tests/scenario.rs` |
 | `crates/horch-core/tests/fixtures/harness/` | launch snapshots from before the harness move | `crates/horch-core/tests/harness.rs` |
 

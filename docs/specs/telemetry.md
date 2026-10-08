@@ -85,9 +85,12 @@ Every requirement has an ID. Tests carry the ID in their name (section 16.4), an
 | SPC-01 | At most 1 collector runs per state root. A stale lock (its pid is dead) is broken and reported. |
 | SPC-02 | `horch telemetry` becomes a read-only viewer when the lock is held. Any number of viewers can run. |
 | SPC-03 | `horch telemetry ensure` opens the collector in its own herdr workspace with `--no-focus`. It never focuses, moves, splits or tiles any existing pane, and it does nothing when a live collector runs the current binary. A live collector on another binary is stopped (by pid and start time) and replaced. A live collector that horch cannot stop safely (it recorded no start time) is left running: `ensure` warns on stderr with the pid and the way to stop it by hand, reports it live and exits 0. A start leaves 1 `horch telemetry` workspace: it runs the collector in an old collector workspace (labelled `horch telemetry`, 1 pane, not the live collector's) when one exists, and closes the other old ones after the new collector holds the lock. It never closes a workspace with another label or the live collector's workspace. |
-| SPC-04 | The screen shows pools, live panes, rollups and insights, with keys `g`, `w`, `p`, `q` (section 12.4). |
+| SPC-04 | The screen shows pools, live panes, rollups and insights, with keys `g`, `w`, `p`, `r`, `?`, `Esc`, `q` and Ctrl-C (section 12.4). `horch telemetry render` prints 1 `ratatui` frame as plain text. |
 | SPC-05 | `horch usage` and `horch quota` print the same data as the screen, as text or `--json`. |
 | SPC-06 | `horch fleet` calls `ensure`. If `ensure` fails, the fleet still starts and prints 1 warning line. |
+| SPC-07 | The live panes and rollup tables scroll and have 1 selected row: `Tab` / `Shift-Tab` focus, `↓` `j` / `↑` `k`, `PgDn` / `PgUp`, `Home` / `End`, and the mouse wheel. A selection keeps its row across an update (section 12.4). |
+| SPC-08 | The screen writes nothing to the terminal while nothing changes: it draws only on an update, a view change, a resize or a new minute; an equal frame writes nothing; `ratatui` writes only the changed cells; the loop never sends `Clear(All)`. |
+| SPC-09 | The UI thread does no file I/O and runs no tick: a worker thread does. The filtered snapshot is cached by `generated_at`, project and minute; a viewer reads `snapshot.json` only when it changed. |
 
 ### Balancing (BAL)
 
@@ -477,25 +480,48 @@ A reading whose `resets_at` has passed is treated as `used = 0` for that window 
 
 ### 12.4 Screen
 
-`ratatui` + `crossterm`. Keys: `g` cycles the grouping (teammate, phase, agent, project, plan, kind); `w` cycles the window (live, 5h, today, 7d); `p` cycles the project filter; `q` quits. A frame is a pure function `render(&Snapshot, &ViewState, Rect) -> Buffer`, which is what makes it testable.
+`ratatui` + `crossterm`, in `crates/horch/src/cmd/telemetry/` (`view.rs`: the view state, the keys and `draw`; `screen.rs`: the threads and the loop).
+
+**Layout, top to bottom.**
+
+1. Header (1 line): `horch telemetry · N fleets · N live panes · HH:MMZ` on the left; `[collector|viewer]  group: G  window: W  project: P` on the right. The left part gives way first.
+2. Pools: the `pool_table()` text that `horch quota` prints. The state is green for ok, yellow for tight and red for exhausted. The text is the same without colors.
+3. Live panes: a table titled `live panes  rows A-B of N`. It scrolls and has 1 selected row (reversed when the table has the focus). An idle pane is dimmed.
+4. Rollup (not in the `live` window): a table titled `<window> by <group>  rows A-B of N`, with the same scroll and selection.
+5. Facts: the `UNREAD` line, the insights line, the `UNPRICED` line, and the status line (`! <error>`).
+6. Footer (1 line): `Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  p project  r refresh  ? help  q quit`, clipped to the width.
+
+On a short terminal the pools, then the facts, give way to the tables.
+
+**Keys.** `Tab` / `Shift-Tab` move the focus to the next or the previous table that exists (1 table in the `live` window). `↓` `j` / `↑` `k` move the selection 1 row, and the table scrolls to keep it visible. `PgDn` / `PgUp` move 1 page; `Home` / `End` go to the first or the last row. The mouse wheel scrolls the table under the pointer. `g` cycles the grouping (teammate, phase, agent, project, plan, kind); `w` cycles the window (live, 5h, today, 7d); `p` cycles the project filter; `r` asks for a tick now; `?` shows or hides a help popup with every key and the meaning of the 4 windows; `Esc` closes the help, else clears the project filter; `q` and Ctrl-C quit. When an update changes the rows, a selection stays on the same row (the pane's record id, or the rollup key) when that row still exists; else it is clamped.
+
+**Threads.** A worker thread owns the source: the collector with its lock, or a viewer. It runs a tick every `tick_ms`, and at once on `r`. It computes the project-filtered snapshot and caches it by the snapshot's `generated_at`, the project and the current minute (a new minute moves the window starts). A snapshot that differs from the last one only in `generated_at` is no update. A viewer reads `snapshot.json` only when its modification time or length changed. An input thread forwards terminal events and SIGINT/SIGTERM. The UI thread holds only `Arc<Snapshot>`s: it reads no file and runs no tick. On `q`, Ctrl-C or a signal, the UI stops and joins the worker (which releases the lock), then restores the terminal; a guard restores it after a panic too.
+
+**Redraw rule.** The UI thread draws only when an update arrived, a key or the mouse changed the view, the terminal was resized, or the minute of the header clock changed. It waits on its channel until the next minute boundary; there is no fixed redraw interval. A frame equal to the last one writes nothing. Otherwise `Terminal::draw` writes only the changed cells, inside `BeginSynchronizedUpdate` / `EndSynchronizedUpdate`. The loop never sends `Clear(All)`; it clears only after a resize. The live screen draws at `clock::now()`: on disk `generated_at` is the time of the last content change, not of the last tick.
+
+**Testing.** `on_key` and `on_wheel` are pure functions of a `ViewState` and an input; `draw(frame, snapshot, view, now)` is a pure function of its inputs. `horch telemetry render [--snapshot F] [--size WxH] [--group G] [--window W]` draws 1 frame into a `TestBackend` of that size at the snapshot's `generated_at`, and prints the buffer as plain text: 1 line per row, trailing spaces trimmed, no color codes. `NO_COLOR` turns the colors off on the live screen.
 
 ```
-horch telemetry · 2 fleets · 7 live panes · 17:42Z                     group: teammate   window: 7d
+horch telemetry · 2 fleets · 4 live panes · 17:42Z                             group: teammate  window: 7d  project: all
 POOL          5h      7d     scoped        state       resets         headroom/h
-claude        3%      100%   fable 3%      EXHAUSTED   Thu 14:00Z     0.0%
-codex         -       99%    -             EXHAUSTED   Fri 19:15Z     0.0%
+claude        3%      100%   fable 3%      EXHAUSTED   Fri 14:00Z     0.0%
+codex         -       99%    -             EXHAUSTED   Sat 19:16Z     0.0%
 opencode-zen  no signal                    ok*         -              -          * public work only
 local         -       -      -             BROKEN      pi --version exited 1
-
-LIVE                           model    phase  plan                 fresh   c.read   out    $      tok/min
-multi-herdr   orchestrator     opus-5.5 plan   -                    412k    9.8M     61k    21.40  4.1k
-              sonnet-3         sonnet   impl   golden-prompts-w…    98k     1.2M     22k     1.10  2.3k
-
+ live panes  rows 1-4 of 4 ─────────────────────────────────────────────────────────────────────────────────────────────
+LIVE                           model      phase  plan                 fresh   c.read   out    $       tok/min
+multi-herdr   orchestrator     opus-5.5   plan   -                    412k    9.8M     61k    21.40   4.1k claude:exhau…
+              sonnet-3         sonnet-5   impl   golden-prompts-white…98k     1.2M     22k    1.10    2.3k claude:exhau…
+other         orchestrator     5.6-sol    plan   -                    90k     700k     15k    3.20    900 codex:exhaust…
+              researcher-1>cod…5.6-sol    res    -                    30k     200k     4.0k   0.90    0 idle codex:exha…
+ 7d by teammate  rows 1-4 of 4 ─────────────────────────────────────────────────────────────────────────────────────────
 7D BY TEAMMATE                 tokens   $        share   cache hit   $/DONE
 opus                           88M      412.00   48%     93%         9.20
 orchestrator                   41M      230.00   27%     96%         -
-UNREAD  opencode-ultra-1: sqlite3 not found
-orchestrators 27% of spend · cache hit 91% · 6% of spend while idle
+sonnet                         21M      60.00    7%      95%         2.10
+codex-sol                      8.2M     150.00   18%     89%         14.00
+...
+Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  p project  r refresh  ? help  q quit
 ```
 
 A cost with a `*` leaves out events with no price. The tail then has 1 line for the shown window (5h for `live`): `* UNPRICED  plus <n> event(s), <tokens> tokens, not in $: <model> <n>, ...`.
@@ -731,9 +757,12 @@ Test names start with the requirement ID. U = unit test in the module; I = integ
 | SPC-01 | `spc_01_second_collector_is_refused`, `spc_01_stale_lock_is_broken` (a lock with a dead pid) | I |
 | SPC-02 | `spc_02_viewer_when_locked` | I |
 | SPC-03 | `spc_03_ensure_argv` (fake-herdr log: `workspace create ... --no-focus`, `pane run`, and only read-only calls besides), `spc_03_restart_after_a_dead_collector_leaves_1_telemetry_workspace`, `spc_03_restart_closes_an_old_workspace_it_cannot_reuse`, `spc_03_a_live_collector_keeps_every_workspace` (E), `spc_03_old_collector_workspaces` (U), `spc_03_ensure_noop_when_live` (E: a live collector that records the binary under test), `spc_03_ensure_warns_and_succeeds_for_a_collector_it_cannot_stop` (E). `spc_03_ensure_leaves_a_collector_it_cannot_stop` (U). `spc_03_ensure_restarts_a_collector_on_an_older_binary`, `a_collector_on_another_binary_is_found`, `stop_ends_the_recorded_collector`, `stop_never_signals_a_process_that_is_not_the_recorded_collector` (U, with a fake collector record) | E, U |
-| SPC-04 | `spc_04_render_*` goldens at 120x40 and 80x24, for every `g` and `w` value, from `snapshot-fixture.json` | G |
+| SPC-04 | `spc_04_render_goldens` (120x40 and 80x24, from `snapshot-fixture.json`), `spc_04_render_every_group_and_window_fits` (every `g` and `w` value), `spc_04_the_header_clock_is_the_given_time`, `spc_04_keys_p_q_r` | G, U |
 | SPC-05 | `spc_05_usage_json_schema`, `spc_05_quota_json_schema` (every field in sections 9 and 11.3 present, with its type) | E |
 | SPC-06 | `spc_06_fleet_survives_ensure_failure` (fake-herdr fails `workspace create` for the label) | E |
+| SPC-07 | `spc_07_j_at_the_last_row_stays`, `spc_07_page_down_and_end` (87 rows, a page of 20), `spc_07_tab_cycles_over_the_tables_that_exist`, `spc_07_selection_keeps_its_row_key_across_an_update`, `spc_07_esc_closes_help_before_it_clears_the_project`, `spc_07_wheel_scrolls_and_keeps_the_selection_visible` | U |
+| SPC-08 | `spc_08_no_change_gives_no_draw` (the redraw rule). A manual pty run on a state copy measured 0 bytes between ticks. | U |
+| SPC-09 | `spc_09_the_worker_caches_the_filtered_snapshot`, `spc_09_a_new_minute_recomputes_the_filtered_snapshot`, `spc_09_a_new_generated_at_alone_is_no_update`, `spc_09_the_worker_sends_no_update_for_an_equal_snapshot`, `spc_09_a_viewer_reads_the_snapshot_only_when_it_changed` | U |
 | BAL-01 | `bal_01_merge_rule`: a field-by-field table for researcher -> codex-sol | U |
 | BAL-02 | `bal_02_roster_rules`: 1 failing roster per rule in section 13.3, plus `bal_02_repo_roster_passes` | U |
 | BAL-03 | `bal_03_decision_table`: every cell of the table in section 13.4, x 3 modes, x the flags | U |
