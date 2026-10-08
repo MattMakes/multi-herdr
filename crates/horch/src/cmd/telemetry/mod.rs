@@ -9,7 +9,7 @@
 //! is what the goldens compare and what `horch telemetry render` prints.
 //! `crossterm` only puts those lines on a terminal and reads keys.
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +27,10 @@ use horch_core::usage::Locations;
 use horch_core::workspace::herdr::Herdr;
 
 use crate::output;
+
+mod screen;
+
+use screen::{Feed, LiveFeed, Source};
 
 /// The label of the telemetry workspace. `horch tile` never touches it.
 pub const WORKSPACE_LABEL: &str = "horch telemetry";
@@ -63,6 +67,8 @@ pub struct ViewState {
     pub project: Option<String>,
     /// One line of status (an error from the last tick).
     pub status: Option<String>,
+    /// `collector` or `viewer`, on a live screen.
+    pub mode: Option<&'static str>,
 }
 
 impl ViewState {
@@ -475,6 +481,9 @@ pub fn render(snap: &Snapshot, view: &ViewState, width: u16, height: u16) -> Vec
     if let Some(p) = &view.project {
         right = format!("project: {}   {right}", project_name(Some(p)));
     }
+    if let Some(m) = view.mode {
+        right = format!("[{m}]  {right}");
+    }
     // The left part gives way first: the view's group and window must show.
     let left = clip(&left, width.saturating_sub(right.chars().count() + 2));
     let gap = width
@@ -621,48 +630,12 @@ fn collect_once(ctx: &RuntimeContext) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Where a snapshot comes from on each refresh. The collector variant holds
-/// the lock for as long as it lives. `_lock` is never read; its `Drop`
-/// releases the lock.
-enum Source {
-    Collector {
-        collector: Box<Collector>,
-        _lock: lock::CollectorLock,
-    },
-    Viewer,
-}
-
-impl Source {
-    fn refresh(&mut self, ctx: &RuntimeContext, root: &Path) -> Result<Snapshot> {
-        // A viewer whose collector died takes over (the next `ensure` would).
-        if matches!(self, Source::Viewer) && !lock::collector_live(root) {
-            if let Ok(Ok(held)) = lock::acquire(root, &lock::this_process(&clock::now_stamp(), ctx))
-            {
-                let c = Collector::open_in(
-                    ctx,
-                    Locations::from_context(ctx),
-                    Probing::Scheduled,
-                    clock::now(),
-                )?;
-                *self = Source::Collector {
-                    collector: Box::new(c),
-                    _lock: held,
-                };
-            }
-        }
-        match self {
-            Source::Collector { collector, .. } => collector.tick(clock::now()),
-            Source::Viewer => Snapshot::read(&collect::snapshot_path(root)),
-        }
-    }
-}
-
 /// `horch telemetry`: the collector with its screen, or a viewer.
 fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
     install_signal_handlers();
     let root = ctx.paths.state_root.clone();
     let me = lock::this_process(&clock::now_stamp(), ctx);
-    let mut source = match lock::acquire(&root, &me)? {
+    let source = match lock::acquire(&root, &me)? {
         Ok(held) => {
             let c = Collector::open_in(
                 ctx,
@@ -683,24 +656,25 @@ fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
             Source::Viewer
         }
     };
+    let mut feed = LiveFeed::new(ctx, &root, source);
     let tick = Duration::from_millis(
         super::quotacmd::load_policy(ctx, &root)
             .map(|p| p.tick_ms)
             .unwrap_or(2000),
     );
     if std::io::stdout().is_terminal() {
-        screen(ctx, &root, &mut source, tick)?;
+        screen::screen(&mut feed, tick)?;
     } else {
         // No terminal (a pane started by a test, or output to a file): keep
         // collecting until told to stop.
         while !SHUTDOWN.load(Ordering::SeqCst) {
-            if let Err(e) = source.refresh(ctx, &root) {
+            if let Err(e) = feed.next() {
                 eprintln!("horch telemetry: {e:#}");
             }
             sleep_until_shutdown(tick);
         }
     }
-    drop(source);
+    drop(feed);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -709,83 +683,6 @@ fn sleep_until_shutdown(d: Duration) {
     while Instant::now() < until && !SHUTDOWN.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-/// Restores the terminal however the screen loop ends.
-struct TerminalGuard;
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::cursor::Show,
-            crossterm::terminal::LeaveAlternateScreen
-        );
-    }
-}
-
-fn screen(ctx: &RuntimeContext, root: &Path, source: &mut Source, tick: Duration) -> Result<()> {
-    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-
-    crossterm::terminal::enable_raw_mode()?;
-    let _guard = TerminalGuard;
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::cursor::Hide
-    )?;
-    let mut view = ViewState::default();
-    let mut snap = source.refresh(ctx, root).unwrap_or_default();
-    let mut last = Instant::now();
-    loop {
-        let (w, h) = crossterm::terminal::size().unwrap_or((120, 40));
-        let shown = filtered(&snap, &view, root);
-        let frame = render(&shown, &view, w, h);
-        let mut out = std::io::stdout().lock();
-        crossterm::queue!(
-            out,
-            crossterm::cursor::MoveTo(0, 0),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
-        )?;
-        out.write_all(frame.join("\r\n").as_bytes())?;
-        out.flush()?;
-        drop(out);
-
-        let wait = tick
-            .saturating_sub(last.elapsed())
-            .min(Duration::from_millis(250));
-        if event::poll(wait)? {
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press {
-                    match k.code {
-                        KeyCode::Char('q') => break,
-                        KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
-                        KeyCode::Char('g') => view.group = (view.group + 1) % GROUPS.len(),
-                        KeyCode::Char('w') => view.window = (view.window + 1) % VIEW_WINDOWS.len(),
-                        KeyCode::Char('p') => {
-                            view.project = next_project(&snap, view.project.take())
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        if SHUTDOWN.load(Ordering::SeqCst) {
-            break;
-        }
-        if last.elapsed() >= tick {
-            match source.refresh(ctx, root) {
-                Ok(s) => {
-                    snap = s;
-                    view.status = None;
-                }
-                Err(e) => view.status = Some(format!("{e:#}")),
-            }
-            last = Instant::now();
-        }
-    }
-    Ok(())
 }
 
 /// The projects the `p` key cycles through: none (all), then each one.
@@ -806,29 +703,6 @@ fn next_project(snap: &Snapshot, current: Option<String>) -> Option<String> {
         None => projects.into_iter().next(),
         Some(c) => projects.into_iter().skip_while(|p| *p != c).nth(1),
     }
-}
-
-/// The snapshot with its rollups recomputed for one project, from the event
-/// files, when the project filter is on.
-fn filtered(snap: &Snapshot, view: &ViewState, root: &Path) -> Snapshot {
-    let Some(project) = &view.project else {
-        return snap.clone();
-    };
-    let events: Vec<_> = store::read_all(&horch_core::telemetry::dir(root))
-        .into_iter()
-        .filter(|e| e.project.as_deref() == Some(project.as_str()))
-        .collect();
-    let done = collect::done_record_ids(&collect::read_ledgers(root));
-    let now = clock::parse(&snap.generated_at).unwrap_or_else(clock::now);
-    let mut out = snap.clone();
-    for w in collect::WINDOWS {
-        let since = collect::window_start(w, now);
-        out.rollups.insert(
-            w.to_string(),
-            store::rollup(&events, since.as_deref(), &done),
-        );
-    }
-    out
 }
 
 /// `horch telemetry ensure` (SPC-03): nothing when a live collector runs
