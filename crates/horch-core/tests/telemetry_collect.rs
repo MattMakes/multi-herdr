@@ -479,3 +479,37 @@ fn nfr_02_a_quiet_tick_writes_nothing() {
     assert!(c.timing.written("quota") > 0, "{}", c.timing.line());
     assert_ne!(ino(&quota), before, "a refusal rewrites quota.json");
 }
+
+/// NFR-02: the snapshot is rebuilt on every tick; only its write is skipped
+/// when nothing changed. When only time moves, a rollup window start moves
+/// too: the events that leave the window leave its rollup, and the file is
+/// rewritten with them gone.
+#[test]
+fn nfr_02_a_moving_window_drops_old_events_without_new_input() {
+    use horch_core::telemetry::collect::{self, done_record_ids, read_ledgers};
+    let w = world(Part::Whole);
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    let first = c.tick(now()).unwrap();
+    let stored = events(&w).len();
+    let later = at(3600);
+    let moved = c.tick(later).unwrap();
+    assert_eq!(c.timing.written("events"), 0, "no new input");
+    assert_eq!(events(&w).len(), stored);
+
+    let done = done_record_ids(&read_ledgers(&w.state));
+    let since = collect::window_start("5h", later);
+    let want = store::rollup(&events(&w), since.as_deref(), &done);
+    assert_ne!(first.rollups["5h"], want, "an event leaves the 5h window");
+    assert_eq!(moved.rollups["5h"], want);
+    let on_disk = Snapshot::read(&collect::snapshot_path(&w.state)).unwrap();
+    assert_eq!(on_disk.generated_at, clock::stamp(later), "rewritten");
+    let total = |s: &Snapshot| -> u64 {
+        s.rollups["5h"]
+            .by_kind
+            .iter()
+            .map(|r| r.tokens.total())
+            .sum()
+    };
+    assert_eq!(total(&on_disk), total(&moved));
+    assert!(total(&moved) < total(&first));
+}
