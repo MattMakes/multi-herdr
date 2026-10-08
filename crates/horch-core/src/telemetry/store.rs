@@ -399,11 +399,21 @@ pub(crate) fn cursors_path(dir: &Path) -> PathBuf {
     dir.join("cursors.json")
 }
 
+/// The saved cursors. A cursor saved before it named its agent and session
+/// gets them from its key ([`Cursor::fill_from_key`]).
+///
+/// [`Cursor::fill_from_key`]: super::cursor::Cursor::fill_from_key
 pub fn load_cursors(dir: &Path) -> Cursors {
-    std::fs::read_to_string(cursors_path(dir))
+    let mut cursors: Cursors = std::fs::read_to_string(cursors_path(dir))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for (key, c) in cursors.iter_mut() {
+        if c.agent.is_empty() || c.session_id.is_empty() || c.path.is_empty() {
+            c.fill_from_key(key);
+        }
+    }
+    cursors
 }
 
 /// Replace the cursor file. `sync: false` leaves the new file in the page
@@ -768,6 +778,49 @@ mod tests {
             .append(vec![ev("edge2", "2026-08-24T12:00:00Z", "r1", 1, 0.0)])
             .unwrap();
         assert_eq!((n, s.expired_dropped), (0, 2));
+    }
+
+    /// R2 review: a `cursors.json` saved before the cursors named their
+    /// agent and session loads, each cursor's owner taken from its key, a
+    /// session id with a `|` included; a save then writes the fields.
+    #[test]
+    fn an_old_cursors_file_loads_with_its_owners() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prime = "/s/has|pipe/prime/sessions/p.jsonl";
+        let old = serde_json::json!({
+            "claude|c1|/h/.claude/projects/-w/c1.jsonl":
+                {"path": "/h/.claude/projects/-w/c1.jsonl", "offset": 5},
+            format!("prime|{prime}|{prime}"): {"path": prime, "offset": 7},
+            "opencode|ses_1|/h/opencode.db": {"since_ms": 9},
+            "no key parts": {"offset": 1},
+        });
+        std::fs::write(cursors_path(tmp.path()), old.to_string()).unwrap();
+        let cursors = load_cursors(tmp.path());
+        let owner = |key: &str| {
+            let c = &cursors[key];
+            (c.agent.as_str(), c.session_id.as_str(), c.path.as_str())
+        };
+        assert_eq!(
+            owner("claude|c1|/h/.claude/projects/-w/c1.jsonl"),
+            ("claude", "c1", "/h/.claude/projects/-w/c1.jsonl")
+        );
+        assert_eq!(
+            owner(&format!("prime|{prime}|{prime}")),
+            ("prime", prime, prime)
+        );
+        assert_eq!(
+            owner("opencode|ses_1|/h/opencode.db"),
+            ("opencode", "ses_1", "/h/opencode.db")
+        );
+        assert_eq!(owner("no key parts"), ("", "", ""));
+        assert_eq!(cursors[&format!("prime|{prime}|{prime}")].offset, 7);
+
+        save_cursors(tmp.path(), &cursors, false).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(cursors_path(tmp.path())).unwrap())
+                .unwrap();
+        assert_eq!(saved[format!("prime|{prime}|{prime}")]["session_id"], prime);
+        assert_eq!(load_cursors(tmp.path()), cursors);
     }
 
     #[test]

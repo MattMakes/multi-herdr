@@ -589,13 +589,11 @@ impl Collector {
         }
         let quiet_since = std::time::SystemTime::from(now - Duration::hours(QUIET_H));
         let mut changed = false;
-        self.cursors.retain(|key, c| {
-            let mut parts = key.splitn(3, '|');
-            let (agent, sid, path) = (parts.next(), parts.next(), parts.next());
-            let (Some(agent), Some(sid), Some(path)) = (agent, sid, path) else {
+        self.cursors.retain(|_, c| {
+            if c.path.is_empty() || c.agent.is_empty() {
                 return true;
-            };
-            let modified = match std::fs::metadata(path).and_then(|m| m.modified()) {
+            }
+            let modified = match std::fs::metadata(&c.path).and_then(|m| m.modified()) {
                 Ok(m) => m,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     changed = true;
@@ -606,7 +604,7 @@ impl Collector {
             if modified >= quiet_since {
                 return true;
             }
-            match owners.get(&(agent, sid)) {
+            match owners.get(&(c.agent.as_str(), c.session_id.as_str())) {
                 None => {
                     changed = true;
                     false

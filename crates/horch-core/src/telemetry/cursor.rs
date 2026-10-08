@@ -31,8 +31,15 @@ pub struct Seen {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cursor {
+    /// The input: a file path, or the OpenCode database.
     #[serde(default)]
     pub path: String,
+    /// The session the input belongs to. The cursor's key in
+    /// `cursors.json` names it too, but a session id can hold a `|`.
+    #[serde(default)]
+    pub agent: String,
+    #[serde(default)]
+    pub session_id: String,
     #[serde(default)]
     pub dev: u64,
     #[serde(default)]
@@ -105,6 +112,35 @@ impl Cursor {
     pub(crate) fn recalled(&self, id: &str) -> Option<&Seen> {
         self.recent.iter().find(|s| s.id == id)
     }
+
+    /// Fill the agent, session id and path that a cursor saved before they
+    /// were fields leaves empty, from its key `agent|session id|path`. The
+    /// agent ends at the first `|`. A known path ends the key; else the path
+    /// starts after the last `|`.
+    pub(crate) fn fill_from_key(&mut self, key: &str) {
+        let Some((agent, rest)) = key.split_once('|') else {
+            return;
+        };
+        if self.agent.is_empty() {
+            self.agent = agent.to_string();
+        }
+        let tail = format!("|{}", self.path);
+        let session = match rest.strip_suffix(&tail) {
+            Some(session) if !self.path.is_empty() => session,
+            _ => {
+                let Some((session, path)) = rest.rsplit_once('|') else {
+                    return;
+                };
+                if self.path.is_empty() {
+                    self.path = path.to_string();
+                }
+                session
+            }
+        };
+        if self.session_id.is_empty() {
+            self.session_id = session.to_string();
+        }
+    }
 }
 
 /// Feed every new complete line of `path` to `f`, with the byte offset the
@@ -142,6 +178,8 @@ pub(crate) fn poll_lines_until(
     {
         *cursor = Cursor {
             path: path_str,
+            agent: std::mem::take(&mut cursor.agent),
+            session_id: std::mem::take(&mut cursor.session_id),
             dev,
             ino,
             ..Cursor::default()

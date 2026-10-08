@@ -69,6 +69,20 @@ pub(crate) fn input_key(agent: &str, session_id: &str, path: &Path) -> String {
     format!("{agent}|{session_id}|{}", path.display())
 }
 
+/// The cursor of one input, made when there is none, with its agent,
+/// session id and path set (a tidy reads them, never the key).
+fn cursor_of<'c>(cursors: &'c mut Cursors, agent: &str, sid: &str, path: &Path) -> &'c mut Cursor {
+    let cursor = cursors.entry(input_key(agent, sid, path)).or_default();
+    if cursor.agent.is_empty() || cursor.session_id.is_empty() {
+        cursor.agent = agent.to_string();
+        cursor.session_id = sid.to_string();
+    }
+    if cursor.path.is_empty() {
+        cursor.path = path.to_string_lossy().into_owned();
+    }
+    cursor
+}
+
 /// The input files of one session, found by its harness's finder.
 pub(crate) enum Located {
     /// Transcript files; for Claude the main transcript first, then the
@@ -153,8 +167,7 @@ pub(crate) fn poll_located(
     let mut polled = Polled::default();
     match located {
         Located::OpenCode(db) => {
-            let key = input_key(agent, sid, &db);
-            let cursor = cursors.entry(key).or_default();
+            let cursor = cursor_of(cursors, agent, sid, &db);
             opencode_poll(&db, &loc.sqlite3, sid, cursor, &mut polled.observations)?;
             polled.files.push(db);
         }
@@ -198,7 +211,7 @@ fn poll_file(
     limit: usize,
     mut line_fn: impl FnMut(&mut Cursor, u64, &str, &mut Vec<Observation>),
 ) -> Result<(), Unreadable> {
-    let cursor = cursors.entry(input_key(agent, sid, path)).or_default();
+    let cursor = cursor_of(cursors, agent, sid, path);
     let out = &mut polled.observations;
     let (start, mut full) = (out.len(), false);
     poll_lines_until(path, cursor, |c, at, line| {

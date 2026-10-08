@@ -779,3 +779,42 @@ fn a_live_record_with_an_old_update_keeps_its_cursor() {
         "the live record's cursor is kept"
     );
 }
+
+/// The review's scenario (R2): a state root whose path holds a `|`, so the
+/// Prime session id (its file path) does too. The tidy finds the cursor's
+/// file and owner from the cursor's fields, not by splitting its key, and
+/// keeps the cursor of the live session.
+#[test]
+fn r2_a_prime_cursor_survives_when_its_session_path_contains_a_pipe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("has|pipe");
+    let home = root.join("home");
+    let state = root.join("state");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    for (from, to) in targets(&home, &state) {
+        copy(&from, &to, Part::Whole);
+    }
+    install_ledgers(&state);
+    let loc = locations(&home);
+    let w = World {
+        _tmp: tmp,
+        home,
+        state,
+        loc,
+    };
+    let prime = PathBuf::from(prime_sid(&w.state));
+    age(&prime, now() - chrono::Duration::hours(25));
+
+    let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
+    c.tick(now()).unwrap();
+    let path = horch_core::telemetry::dir(&w.state).join("cursors.json");
+    let all: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let key = format!("prime|{}|{}", prime.display(), prime.display());
+    assert!(
+        all.get(&key).is_some(),
+        "the tidy kept the live Prime cursor: {:?}",
+        all.as_object().unwrap().keys().collect::<Vec<_>>()
+    );
+}
