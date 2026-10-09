@@ -58,7 +58,8 @@ pub use phase::Phase;
 pub use repository::{Roster, TEMPLATE};
 pub use teammate::{reserved_tier, Base, ExecRule, HarnessDefault, OperatorSkills, Teammate};
 pub(crate) use teammate::{
-    BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS, ORCHESTRATOR_ONLY_SKILLS,
+    BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
+    ORCHESTRATOR_ONLY_SKILLS, TOP_TIER_SEATS,
 };
 pub use validation::{fallback_problems, fallback_warnings};
 

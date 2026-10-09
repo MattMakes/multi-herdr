@@ -492,7 +492,7 @@ mod tests {
         req.fallbacks
             .iter()
             .filter_map(|name| roster.get(name))
-            .filter(|f| !f.hidden && Roster::is_spawnable(f).is_ok() && !trains_on_input(f))
+            .filter(|f| !f.hidden && Roster::is_routable(f).is_ok() && !trains_on_input(f))
             .map(|f| {
                 let a = view.assess(f.agent.as_str(), f.model.as_deref().unwrap_or_default());
                 Candidate {

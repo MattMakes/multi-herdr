@@ -232,6 +232,7 @@ to no phase.
 | `architect-reviewer` | `architecture-review`: boundaries, contracts, coupling, reversibility, ranked by consequence. `codebase-design`: module depth, interfaces, seams |
 | `backend-developer` | `api-contracts` (validation, error model, idempotency, evolution) and `data-migrations` (expand/contract, online DDL, backfills); names `codebase-design` |
 | `opus-architect` | `codebase-design`; `improve-codebase-architecture`: deepening candidates in an HTML report under `ai_docs/reports/` (it has Write and no Edit, so it writes the report and edits no code) |
+| `fable-creative`, `astra-creative`, `opus-creative` | `creative-council`: diverge (1 design per seat, alone, under `ai_docs/designs/<slug>/`) or combine (`combined.md`, each part with its source letters) |
 | `frontend-developer`, `opus-domain`, `opus`, `codex-sol`, `codex-reviewer` | name `codebase-design` under `available_skills` |
 
 ### Blender and the Unreal team

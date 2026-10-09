@@ -31,11 +31,13 @@ choose from** — there is no registry to update and nothing to recompile.
   two orchestrators use it because they are launched into a pane, never spawned
   into one. An orchestrator starts with no task, so both orchestrator
   briefings end with "Acknowledge and await further instruction."
-- **The top tier is reserved for the orchestrator.** `fable` and `gpt-6-astra`
-  are refused by `horch spawn`, whichever flavor is orchestrating: a fleet has
-  at most one top-tier session (none under `horch fleet opus` or `sol`). The
-  rule is matched on the tier name, so a version bump stays reserved. `horch teammates --check` fails any offered
-  teammate that asks for one.
+- **The top tier is reserved for the orchestrator and the creative council.**
+  `fable` and `gpt-6-astra` are refused by `horch spawn` for every worker but
+  the 2 seats `fable-creative` (Fable) and `astra-creative` (Astra), which
+  start only when named: never as a fallback or a router's choice. The seats
+  are a list in the code (`TOP_TIER_SEATS`), so a file cannot add one. The
+  rule is matched on the tier name, so a version bump stays reserved.
+  `horch teammates --check` fails any other offered teammate that asks for one.
 - **`brief_description` is the only field the orchestrator reads** to decide
   between a specialist and a generic. One line, ≤120 characters, enforced at
   load. Everything else — persona, model, effort, skills — is applied when the

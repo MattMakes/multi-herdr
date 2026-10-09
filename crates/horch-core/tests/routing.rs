@@ -307,6 +307,46 @@ fn arc_13_exclusion_reasons() {
     assert_eq!(e["pool_state"], "ok");
 }
 
+#[test]
+fn arc_28_a_seat_is_never_a_fallback() {
+    let mut r = roster();
+    with(&mut r, "opus", |t| {
+        t.name = "fable-creative".into();
+        t.model = Some("fable".into());
+        t.fallbacks.clear();
+    });
+    with(&mut r, "researcher", |t| {
+        t.fallbacks = vec!["fable-creative".into()];
+    });
+    let entries = eligible_fallbacks(r.require("researcher").unwrap(), &r, &view("all-ok"));
+    assert_eq!(
+        verdict_of(&entries, "fable-creative").verdict,
+        Verdict::Excluded(ExclusionReason::ReservedTier)
+    );
+    let problems = r.check();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("fallback 'fable-creative'") && p.contains("not spawnable")),
+        "{problems:#?}"
+    );
+}
+
+#[test]
+fn arc_28_a_router_never_picks_a_seat() {
+    let mut r = roster();
+    with(&mut r, "opus", |t| {
+        t.name = "fable-creative".into();
+        t.model = Some("fable".into());
+        t.fallbacks.clear();
+    });
+    let entries = roster_eligibility(&r, &view("all-ok"), &EligibilityFilter::default());
+    assert_eq!(
+        verdict_of(&entries, "fable-creative").verdict,
+        Verdict::Excluded(ExclusionReason::ReservedTier)
+    );
+}
+
 // ─── ARC-14 ─────────────────────────────────────────────────────────────────
 
 #[test]

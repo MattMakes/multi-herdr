@@ -248,6 +248,7 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | ARC-25 | Shims removed; pub(crate) | A12 | arc_25_no_shim_modules |
 | ARC-26 | E2E lifecycle matrix for all 5 harnesses | A6 | arc_26_e2e_lifecycle_matrix_claude, arc_26_e2e_lifecycle_matrix_codex, arc_26_e2e_lifecycle_matrix_opencode, arc_26_e2e_lifecycle_matrix_pi, arc_26_e2e_lifecycle_matrix_prime |
 | ARC-27 | tile/balance pure | A7 | arc_27_tile_balance_pure |
+| ARC-28 | Top-tier seats: only the 2 creative seats start on a reserved tier, by name only | A5 / A6 / B3 | arc_28_a_seat_on_its_own_tier_is_spawnable, arc_28_a_seat_on_the_other_tier_is_refused, arc_28_a_non_seat_on_a_reserved_tier_is_refused_as_before, arc_28_a_seat_resumes_only_on_its_own_tier, arc_28_a_seat_is_never_a_fallback, arc_28_a_router_never_picks_a_seat, arc_28_a_seat_never_competes, arc_28_check_fails_a_seat_off_its_tier_or_with_fallbacks |
 
 ### 3.2 MKT: marketplace
 
@@ -1126,6 +1127,11 @@ pub trait WorkerSteps {
 pub fn run_worker(steps: &mut dyn WorkerSteps) -> anyhow::Result<i32>;   // PaneWorker runs the steps for real
 pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> anyhow::Result<()>;
 ```
+
+`Unspawnable` enforces the reserved-tier boundary. The code-only
+`TOP_TIER_SEATS` allowlist admits `fable-creative` and `astra-creative` on their
+assigned tiers when named, while routing, fallbacks, and competitions exclude
+both seats.
 
 Spec A §8 worker startup order (`execution/lifecycle.rs:run_worker`):
 

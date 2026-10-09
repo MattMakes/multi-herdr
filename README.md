@@ -73,21 +73,24 @@ roster and spawn the same workers, so a Codex orchestrator still reaches for
 Opus is the default because it orchestrates well at well under half Fable's
 price (Opus 5.5 is $4/$20 per MTok against Fable 5.1's $10/$50).
 
-### At most one top-tier session per fleet
+### Top-tier sessions: the orchestrator and the creative council
 
-Fable and Astra are reserved for the orchestrator. `horch spawn` refuses to
-start a worker on either tier, whichever flavor is orchestrating - so a Fable
-orchestrator cannot start an Astra, an Astra cannot start a Fable, and neither
-can clone itself. The rule is matched on the tier name rather than an exact
-model slug, so a version bump stays reserved without an edit. An Opus or Sol
-orchestrator holds no reserved tier, so its workers may run on the same model
-it does.
+Fable and Astra are reserved for the orchestrator and for 2 seats of the
+creative council. `horch spawn` refuses every other worker on either tier,
+whichever flavor is orchestrating. `fable-creative` starts only on Fable and
+`astra-creative` only on Astra, and only when the orchestrator names them: a
+router, a fallback or a competition never picks a seat. The council is for
+creative and out-of-the-box work: the 2 seats and `opus-creative` each write a
+design alone, and a fresh `fable-creative` combines them. The rule is matched
+on the tier name rather than an exact model slug, so a version bump stays
+reserved without an edit.
 
-That is why every briefing is written for an Opus or Codex-Sol reader: the
+Every other briefing is written for an Opus or Codex-Sol reader: the
 orchestrator does the reasoning that needs its tier, writes the result to a
-file, and hands the execution down. `horch teammates --check` fails any teammate
-in the roster that asks for a reserved tier, so the rule cannot be broken by
-adding a file.
+file, and hands the execution down. The seats are a list in the code
+(`TOP_TIER_SEATS`). `horch teammates --check` fails any other offered teammate
+on a reserved tier, a seat off its own tier or with fallbacks, and any fallback
+that names a seat, so the rule cannot be broken by adding a file.
 
 Everything needs a running herdr server: launch the herdr app, or run
 `herdr server` headless.
@@ -157,6 +160,9 @@ registry to update.
 | `opus-domain`          | Claude | Opus   | medium | Intricate algorithms, domain logic, brownfield features |
 | `opus-hardening`       | Claude | Opus   | high   | Races, leaks, security review, fuzz harnesses |
 | `opus-verify`          | Claude | Opus   | max    | Unattended formal proofs, compiler passes, sandboxed pentest |
+| `fable-creative`       | Claude | Fable  | high   | Creative council seat; also combines the designs |
+| `astra-creative`       | Codex  | Astra  | high   | Creative council seat |
+| `opus-creative`        | Claude | Opus   | high   | Creative council seat |
 | `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
 | `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |

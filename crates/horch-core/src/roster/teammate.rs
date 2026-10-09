@@ -13,18 +13,22 @@ use crate::harness::HarnessKind;
 // used both to scaffold new teammates and to hold the documented field list to
 // the struct in a test.
 
-/// The model tiers reserved for the orchestrator, and the teammate to reach for
-/// instead of each.
+/// The model tiers reserved for the orchestrator and named creative seats, and
+/// the ordinary teammate to reach for instead of each.
 ///
-/// A fleet has at most one top-tier session: the orchestrator, when it runs on
-/// Fable or Astra. `horch spawn` refuses to start a worker on EITHER tier,
-/// whichever flavor is orchestrating - so a Fable orchestrator cannot start an
-/// Astra, an Astra cannot start a Fable, and neither can clone itself. The
-/// Opus and Sol flavors (`horch fleet opus|sol`) hold no reserved tier, so the
-/// fleet then has none; their workers may share the orchestrator's model. The
-/// orchestrator writes every brief for an Opus/Codex-Sol reader either way.
+/// `horch spawn` refuses ordinary workers on either tier, whichever flavor is
+/// orchestrating. Only the exact names in `TOP_TIER_SEATS` may start there,
+/// and each seat may use only its assigned tier. The orchestrator writes every
+/// other brief for an Opus/Codex-Sol reader.
 pub(crate) const ORCHESTRATOR_TIERS: [(&str, &str); 2] =
     [("fable", "opus"), ("astra", "codex-sol")];
+
+/// The creative council's top-tier seats, and the tier each one runs on.
+/// The only workers `horch spawn` starts on a reserved tier, and only by
+/// name: never as a fallback, never picked by a router or planner, never in
+/// a competition. A teammate file cannot add a seat; this list can.
+pub(crate) const TOP_TIER_SEATS: [(&str, &str); 2] =
+    [("fable-creative", "fable"), ("astra-creative", "astra")];
 
 /// The teammate files `horch fleet` launches as the orchestrator.
 pub(crate) const FLEET_ORCHESTRATORS: [&str; 2] = ["orchestrator", "orchestrator-codex"];

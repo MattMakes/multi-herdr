@@ -67,10 +67,10 @@ agent: claude
 # opencode: provider/model, e.g. opencode/big-pickle. `opencode models` lists
 #           them; the `opencode/...` provider is the free tier.
 # pi/prime: provider/model too, e.g. ollama/qwen3.8 or anthropic/claude-opus-5-5.
-# Not fable, and not gpt-6-astra: both top tiers are reserved for whichever
-# orchestrator is running, and `horch spawn` refuses to start a worker on
-# either. A fleet has exactly one top-tier session. Reach for opus or
-# codex-sol instead.
+# Not fable, and not gpt-6-astra: only the orchestrator and the 2 code-defined
+# creative seats may use those tiers. A seat starts only by its exact name;
+# routers, planners, fallbacks and competitions never choose it. Adding a file
+# cannot grant another seat. Reach for opus or codex-sol instead.
 model: opus
 
 # ─── usage limits ────────────────────────────────────────────────────────────

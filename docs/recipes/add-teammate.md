@@ -25,7 +25,8 @@ In the steps, `<name>` is the teammate id, for example `design-critic`.
    120 characters, "when would I reach for this?". It is the only field the
    orchestrator reads. Set `agent`, `model`, `effort`, `phase`, `skills`,
    `permission_mode` and tools. Drop `generic:` for a specialist. Do not use
-   `fable` or `gpt-6-astra`: the top tier is reserved for the orchestrator.
+   `fable` or `gpt-6-astra`: only the orchestrator and the 2 code-defined
+   creative seats may use them, and adding a file cannot grant a seat.
    Optional skill fields (see [Skill fields](#skill-fields)):
    `available_skills` and `operator_skills`.
    A spawnable `agent: claude` teammate needs `disallowed_tools: [Agent]`.

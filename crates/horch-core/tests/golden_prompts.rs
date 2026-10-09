@@ -336,9 +336,10 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     let lifecycle = "== Worker lifecycle ==";
     let only_fable_head = "== You are the fleet's only orchestrator ==\n\
         You run on whichever model `horch fleet` was started with (fable, opus,\n\
-        astra or sol). horch spawn never starts a worker on Fable or Astra, so every\n\
-        worker reads your instructions on Opus or Codex Sol at best, often on something\n\
-        cheaper. Write every task for that reader:\n\
+        astra or sol). horch spawn starts a worker on Fable or Astra only for the\n\
+        creative council (fable-creative, astra-creative), so every other worker reads\n\
+        your instructions on Opus or Codex Sol at best, often on something cheaper.\n\
+        Write every task for that reader:\n\
         - State the goal and what \"done\" looks like, explicitly. Do not leave the\n\
         \x20 acceptance criteria to be inferred.\n\
         - Name the files, functions and commands involved. \"The auth layer\" is a\n\

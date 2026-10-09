@@ -145,7 +145,7 @@ fn entry(t: &Teammate, view: &QuotaView, fallback_index: Option<u32>) -> Option<
 fn fallback_rule(f: &Teammate) -> Option<ExclusionReason> {
     if f.hidden {
         Some(ExclusionReason::Hidden)
-    } else if Roster::is_spawnable(f).is_err() {
+    } else if Roster::is_routable(f).is_err() {
         Some(ExclusionReason::ReservedTier)
     } else if trains_on_input(f) {
         Some(ExclusionReason::TrainsOnInput)
@@ -218,7 +218,7 @@ fn roster_rule(
         Some(ExclusionReason::Hidden)
     } else if t.agent == HarnessKind::None {
         Some(ExclusionReason::AgentNone)
-    } else if Roster::is_spawnable(t).is_err() {
+    } else if Roster::is_routable(t).is_err() {
         Some(ExclusionReason::ReservedTier)
     } else if model.is_empty() {
         Some(ExclusionReason::Unspawnable)

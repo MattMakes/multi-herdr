@@ -16,7 +16,7 @@ use super::teammate::{
 use super::{
     effort_problem, reserved_tier, ExecRule, PermissionMode, Roster, Teammate,
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
-    ORCHESTRATOR_ONLY_SKILLS,
+    ORCHESTRATOR_ONLY_SKILLS, TOP_TIER_SEATS,
 };
 use crate::compaction::window::{
     headroom, native_trigger, threshold, BASE_THRESHOLD, HEADROOM_FLOOR,
@@ -81,11 +81,37 @@ impl Roster {
     /// hand-edited record able to start a second top-tier session behind an
     /// innocent-looking tier name.
     pub(crate) fn model_is_spawnable(model: &str, who: &str) -> Result<()> {
-        if let Some((tier, instead)) = reserved_tier(model) {
+        let model_tier = reserved_tier(model);
+        if let Some((_, seat_tier)) = TOP_TIER_SEATS.iter().find(|(seat, _)| *seat == who) {
+            if model_tier.is_some_and(|(tier, _)| tier == *seat_tier) {
+                return Ok(());
+            }
+            bail!(
+                "'{who}' is a top-tier seat for {seat_tier}, but it runs on {model}; \
+                 the seat must run on its own reserved tier"
+            );
+        }
+        if let Some((tier, instead)) = model_tier {
             bail!(
                 "'{who}' runs on {model}, and the {tier} tier is reserved for the \
                  orchestrator; the fleet has at most one top-tier session, whichever \
                  agent is orchestrating. Use {instead}."
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether a planner may choose this teammate without naming it.
+    pub(crate) fn is_routable(t: &Teammate) -> Result<()> {
+        Roster::is_spawnable(t)?;
+        if TOP_TIER_SEATS
+            .iter()
+            .any(|(seat, _)| *seat == t.name.as_str())
+        {
+            bail!(
+                "'{}' is a top-tier seat and starts only when named; a router, \
+                 fallback, or competition cannot choose it",
+                t.name
             );
         }
         Ok(())
@@ -221,8 +247,21 @@ impl Roster {
             }
         }
         problems.extend(self.skills_when_problems(t));
+        if TOP_TIER_SEATS
+            .iter()
+            .any(|(seat, _)| *seat == t.name.as_str())
+            && !t.fallbacks.is_empty()
+        {
+            problems.push(format!(
+                "{who}: a top-tier seat must not define fallbacks; the orchestrator \
+                 decides what to do when its pool is blocked"
+            ));
+        }
         // Anything the orchestrator can pick must be something it may spawn.
-        if !t.hidden {
+        let is_top_tier_seat = TOP_TIER_SEATS
+            .iter()
+            .any(|(seat, _)| *seat == t.name.as_str());
+        if !t.hidden || is_top_tier_seat {
             if let Err(e) = Roster::is_spawnable(t) {
                 problems.push(format!("{e:#}"));
             }
@@ -1246,7 +1285,7 @@ pub fn fallback_problems(roster: &Roster) -> Vec<String> {
             if f.hidden {
                 out.push(format!("{who}: fallback '{fb}' is hidden"));
             }
-            if let Err(e) = Roster::is_spawnable(f) {
+            if let Err(e) = Roster::is_routable(f) {
                 out.push(format!("{who}: fallback '{fb}' is not spawnable: {e:#}"));
             }
             let fpool = quota::pool_for(f.agent.as_str(), f.model.as_deref().unwrap_or_default());
@@ -1410,6 +1449,9 @@ mod spawnable_tests {
                 | "orchestrator"
                 | "orchestrator-codex"
                 | "orchestration-orchestrator"
+                | "fable-creative"
+                | "astra-creative"
+                | "opus-creative"
                 | "ue-tech-lead"
                 | "godot-tech-lead" => Some(Phase::Plan),
                 "architect-reviewer"
@@ -1796,8 +1838,8 @@ mod spawnable_tests {
     fn roster_check_demands_the_subagent_deny_on_every_claude_fleet_pane() {
         const MESSAGE: &str = "a fleet pane must not spawn subagents";
 
-        // The shipped roster already carries it, on the 34 spawnable claude
-        // teammates and on the orchestrator.
+        // The shipped roster already carries it on every spawnable Claude
+        // teammate and on the orchestrator.
         let mut r = Roster::builtin().unwrap();
         assert!(r.check().is_empty(), "{:?}", r.check());
         let covered = r
@@ -1805,7 +1847,7 @@ mod spawnable_tests {
             .values()
             .filter(|t| t.agent == HarnessKind::Claude && (!t.hidden || t.name == "orchestrator"))
             .count();
-        assert_eq!(covered, 61, "the rule should cover 61 claude teammates");
+        assert_eq!(covered, 63, "the rule should cover 63 claude teammates");
 
         // Take the deny away from a worker and the check fails by name.
         r.teammates.get_mut("opus").unwrap().disallowed_tools = Vec::new();
@@ -1981,12 +2023,44 @@ mod spawnable_tests {
         assert!(!t.agent.unsupported_fields(&t).contains(&"skills"));
     }
 
-    /// The fleet has exactly one top-tier session: the orchestrator. Even a
-    /// file that asks for one is refused at spawn, so a stray teammate cannot
-    /// make a second - and the rule does not care which flavor is orchestrating,
-    /// so a Fable cannot start an Astra either.
     #[test]
-    fn a_top_tier_worker_is_refused_at_spawn_whichever_tier_it_names() {
+    fn arc_28_a_seat_on_its_own_tier_is_spawnable() {
+        let r = Roster::builtin().unwrap();
+        for (name, model) in [
+            ("fable-creative", "claude-fable-5-1"),
+            ("astra-creative", "gpt-6-astra"),
+        ] {
+            let mut t = r.require("opus").unwrap().clone();
+            t.name = name.into();
+            t.model = Some(model.into());
+            t.effort = Some("high".into());
+            assert!(Roster::is_spawnable(&t).is_ok(), "{name} on {model}");
+            assert!(
+                effort_problem(t.agent, t.model.as_deref(), "high").is_none(),
+                "{name} must accept effort high"
+            );
+        }
+    }
+
+    #[test]
+    fn arc_28_a_seat_on_the_other_tier_is_refused() {
+        for (name, model) in [
+            ("fable-creative", "gpt-6-astra"),
+            ("astra-creative", "claude-fable-5-1"),
+        ] {
+            let err = Roster::model_is_spawnable(model, name)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("must run on its own reserved tier"), "{err}");
+        }
+    }
+
+    /// A file that asks for a reserved tier is refused at spawn unless it is a
+    /// seat, so a stray teammate cannot add a top-tier session - and the rule
+    /// does not care which flavor is orchestrating, so a Fable cannot start an
+    /// Astra either.
+    #[test]
+    fn arc_28_a_non_seat_on_a_reserved_tier_is_refused_as_before() {
         let r = Roster::builtin().unwrap();
         for (model, instead) in [
             ("fable", "opus"),
@@ -2018,7 +2092,10 @@ mod spawnable_tests {
     /// the rule has to hold on a bare model string too. `horch spawn` applies it
     /// to the resolved model as its last gate before the pane starts.
     #[test]
-    fn the_rule_holds_on_a_bare_model_string_from_a_ledger_record() {
+    fn arc_28_a_seat_resumes_only_on_its_own_tier() {
+        assert!(Roster::model_is_spawnable("claude-fable-5-1", "fable-creative").is_ok());
+        assert!(Roster::model_is_spawnable("gpt-6-astra", "astra-creative").is_ok());
+        assert!(Roster::model_is_spawnable("gpt-6-astra", "fable-creative").is_err());
         let err = Roster::model_is_spawnable("gpt-6-astra", "opus-3")
             .unwrap_err()
             .to_string();
@@ -2026,14 +2103,18 @@ mod spawnable_tests {
         assert!(err.contains("astra"), "{err}");
     }
 
-    /// And nothing the orchestrator is offered runs on a reserved tier.
+    /// And nothing the orchestrator is offered runs on a reserved tier, but a
+    /// seat.
     #[test]
-    fn nothing_offered_runs_on_a_reserved_tier() {
+    fn nothing_offered_runs_on_a_reserved_tier_but_a_seat() {
         let r = Roster::builtin().unwrap();
         for t in r.offered() {
             assert!(
-                reserved_tier(t.model.as_deref().unwrap_or_default()).is_none(),
-                "{} is offered but runs on a reserved tier",
+                reserved_tier(t.model.as_deref().unwrap_or_default()).is_none()
+                    || TOP_TIER_SEATS
+                        .iter()
+                        .any(|(seat, _)| *seat == t.name.as_str()),
+                "{} is offered on a reserved tier but is not a seat",
                 t.name
             );
         }
@@ -2050,6 +2131,39 @@ mod spawnable_tests {
                 "{name} must not be spawnable"
             );
         }
+    }
+
+    #[test]
+    fn arc_28_check_fails_a_seat_off_its_tier_or_with_fallbacks() {
+        let mut r = Roster::builtin().unwrap();
+        let mut wrong = r.require("opus").unwrap().clone();
+        wrong.name = "fable-creative".into();
+        wrong.model = Some("gpt-6-astra".into());
+        wrong.hidden = true;
+        r.insert_for_test(wrong);
+        let problems = r.check();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("fable-creative")
+                    && p.contains("must run on its own reserved tier")),
+            "{problems:#?}"
+        );
+
+        let mut r = Roster::builtin().unwrap();
+        let mut seat = r.require("opus").unwrap().clone();
+        seat.name = "fable-creative".into();
+        seat.model = Some("fable".into());
+        seat.hidden = true;
+        seat.fallbacks = vec!["sonnet".into()];
+        r.insert_for_test(seat);
+        let problems = r.check();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("fable-creative") && p.contains("must not define fallbacks")),
+            "{problems:#?}"
+        );
     }
 }
 

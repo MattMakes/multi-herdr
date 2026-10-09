@@ -224,7 +224,7 @@ fn route_baseline(
 /// The slot a resolved baseline launches: `resolved`'s name with the merged
 /// teammate's harness, model and effort.
 fn baseline_pick(launch: &Teammate, resolved: &str) -> Result<Pick, String> {
-    Roster::is_spawnable(launch).map_err(|e| e.to_string())?;
+    Roster::is_routable(launch).map_err(|e| e.to_string())?;
     let model = ModelId::new(launch.model.as_deref().unwrap_or_default())
         .map_err(|_| "has no model of its own".to_string())?;
     Ok(Pick {
@@ -362,6 +362,34 @@ pub fn candidate_planned_payload(slot: &PlannedSlot) -> CandidatePlanned {
 mod tests {
     use super::*;
     use crate::measure::paths::component;
+    use crate::routing::policy::Policy;
+    use crate::routing::quota::QuotaFile;
+
+    #[test]
+    fn arc_28_a_seat_never_competes() {
+        let mut roster = Roster::builtin().unwrap();
+        let mut seat = roster.require("opus").unwrap().clone();
+        seat.name = "fable-creative".into();
+        seat.model = Some("fable".into());
+        seat.fallbacks.clear();
+        assert!(baseline_pick(&seat, "fable-creative").is_err());
+        roster.insert_for_test(seat);
+        let view = QuotaView::new(
+            QuotaFile::default(),
+            crate::clock::parse("2026-10-08T00:00:00Z").unwrap(),
+            Policy::default(),
+            true,
+        );
+        let entries = roster_eligibility(&roster, &view, &EligibilityFilter::default());
+        let seat = entries
+            .iter()
+            .find(|e| e.teammate.as_str() == "fable-creative")
+            .unwrap();
+        assert_eq!(
+            seat.verdict,
+            Verdict::Excluded(ExclusionReason::ReservedTier)
+        );
+    }
 
     /// The label policy version is `slot-order-1`, a valid path component
     /// (dataset design 4.10.1).
