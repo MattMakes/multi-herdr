@@ -447,6 +447,11 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
         Some(target) => PathBuf::from(target.workdir),
         None => ctx.paths.cwd.clone().unwrap_or_default(),
     };
+    // The agent must not stop at a trust dialog (ARC-29). Before `prepare`:
+    // a codex private home links the operator's `config.toml` as it is then.
+    if super::trust::asks_for_trust(req.teammate.agent) {
+        trust_workdir(ctx, req.teammate.agent, &workdir);
+    }
     let decision = window_decision(ctx, req.teammate, model, &workdir, req.fleet_window.clone());
     let prepared = adapter.prepare(
         ctx,
@@ -535,6 +540,22 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     }
     prepared.finish();
     code
+}
+
+/// Write `harness`'s trust in `workdir` when it is missing (ARC-29), with
+/// 1 stderr line when horch writes it or cannot. A failure does not stop
+/// the launch: the agent then shows its own trust dialog, as before.
+fn trust_workdir(ctx: &RuntimeContext, harness: HarnessKind, workdir: &Path) {
+    let outcome = super::trust::ensure_trusted(
+        harness,
+        workdir,
+        &ctx.paths.home,
+        ctx.inherited.claude_config_dir.as_deref(),
+        ctx.inherited.codex_home.as_deref(),
+    );
+    if let Some(line) = super::trust::trust_note(harness, workdir, &outcome) {
+        eprintln!("{line}");
+    }
 }
 
 /// The activated skills of this launch, from the bundled catalog plus the
@@ -2461,5 +2482,88 @@ mod tests {
         )
         .unwrap();
         assert!(none.is_none());
+    }
+
+    /// ARC-29: the launch writes the harness's trust in its workdir before
+    /// the agent starts. A fake `claude` and a fake `codex` copy their stores
+    /// as they start; the copies already trust the workdir.
+    #[cfg(unix)]
+    #[test]
+    fn arc_29_launch_trusts_the_workdir_before_the_agent_starts() {
+        use crate::runtime::MapEnv;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let workdir = root.join("project");
+        std::fs::create_dir_all(&workdir).unwrap();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(home.join(".claude.json"), r#"{"numStartups": 3}"#).unwrap();
+        let fake = |name: &str, store: &Path| {
+            let bin = root.join(name);
+            let seen = root.join(format!("{name}-saw"));
+            std::fs::write(
+                &bin,
+                format!("#!/bin/sh\ncp '{}' '{}'\n", store.display(), seen.display()),
+            )
+            .unwrap();
+            crate::runtime::process::make_executable(&bin).unwrap();
+            (bin, seen)
+        };
+        let (claude, claude_saw) = fake("claude", &home.join(".claude.json"));
+        let (codex, codex_saw) = fake("codex", &home.join(".codex/config.toml"));
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new(&workdir)
+                .with("HOME", &home.to_string_lossy())
+                .with("PATH", "/nonexistent")
+                .with("HORCH_CLAUDE_BIN", &claude.to_string_lossy())
+                .with("HORCH_CODEX_BIN", &codex.to_string_lossy())
+                .with(
+                    "HORCH_CLAUDE_MANAGED_SETTINGS",
+                    &root.join("managed.json").to_string_lossy(),
+                )
+                .with("HORCH_STATE_DIR", &root.join("state").to_string_lossy())
+                .with("HORCH_DATA_DIR", &root.join("data").to_string_lossy()),
+        )
+        .unwrap();
+        let roster = Roster::builtin().unwrap();
+        for (name, saw) in [("opus", &claude_saw), ("codex-terra", &codex_saw)] {
+            let mut t = roster.require(name).unwrap().clone();
+            t.phase = None;
+            t.skills.clear();
+            t.available_skills.clear();
+            t.operator_skills = None;
+            let code = run_flow_code(
+                &ctx,
+                LaunchRequest {
+                    role: "w-1",
+                    teammate: &t,
+                    session: &SessionMode::Fresh(None),
+                    prompt: "p",
+                    model_override: None,
+                    exec_rules: &[],
+                    child_env: Vec::new(),
+                    record: None,
+                    fleet_window: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(code, Some(0), "{name}");
+            let roots = [workdir.clone()];
+            let text = std::fs::read_to_string(saw).unwrap();
+            let state = match t.agent {
+                HarnessKind::Claude => super::super::trust::claude_trust(Some(&text), &roots),
+                _ => super::super::trust::codex_trust(Some(&text), &roots),
+            }
+            .state;
+            assert_eq!(
+                state,
+                super::super::trust::TrustState::Trusted,
+                "{name}: {text}"
+            );
+        }
+        let kept: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
+                .unwrap();
+        assert_eq!(kept["numStartups"], 3);
     }
 }

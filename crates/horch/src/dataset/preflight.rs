@@ -18,7 +18,9 @@ use horch_core::competition::preflight::{
     PreflightPlan, PreflightReport, StorageProbe,
 };
 use horch_core::fsx;
-use horch_core::harness::trust::{asks_for_trust, read_trust, HarnessTrust};
+use horch_core::harness::trust::{
+    asks_for_trust, ensure_trusted, read_trust, trust_note, HarnessTrust,
+};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::{ExperimentId, TaskId};
 use horch_core::measure::digest::{digest_json, sha256_bytes, Digest};
@@ -351,8 +353,10 @@ fn main_root(toplevel: &Path) -> PathBuf {
 }
 
 /// What each candidate harness that asks for trust has recorded for
-/// `root` (PRE-14). It reads the stores and keeps only the verdict: the
-/// files can hold tokens, so nothing else of them leaves this function.
+/// `root` (PRE-14), after horch wrote each missing trust entry (ARC-29), so
+/// PRE-14 fails only when that write was skipped or failed. It reads the
+/// stores and keeps only the verdict: the files can hold tokens, so nothing
+/// else of them leaves this function.
 fn harness_trust(
     ctx: &RuntimeContext,
     candidates: &[PreflightCandidate],
@@ -371,6 +375,18 @@ fn harness_trust(
         .collect();
     harnesses.sort_unstable_by_key(|h| h.as_str());
     harnesses.dedup();
+    for &harness in &harnesses {
+        let outcome = ensure_trusted(
+            harness,
+            root,
+            &ctx.paths.home,
+            ctx.inherited.claude_config_dir.as_deref(),
+            ctx.inherited.codex_home.as_deref(),
+        );
+        if let Some(line) = trust_note(harness, root, &outcome) {
+            eprintln!("{line}");
+        }
+    }
     read_trust(
         &harnesses,
         &ctx.paths.home,
@@ -811,6 +827,60 @@ mod tests {
         std::fs::write(home.join(".claude.json"), &trusted).unwrap();
         assert_eq!(state(true), TrustState::Untrusted);
         assert_eq!(state(false), TrustState::Trusted);
+    }
+
+    /// ARC-29 and PRE-14: the coordinator writes a missing trust entry for
+    /// the main repository root before the check reads it, so PRE-14 fails
+    /// only when the write was skipped: here, when Claude never ran with
+    /// this config dir.
+    #[test]
+    fn pre_14_trust_is_written_before_the_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("repo");
+        let home = base.join("home");
+        for dir in [&root, &home.join(".codex")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let candidates: Vec<PreflightCandidate> = [
+            ("A", "sonnet", HarnessKind::Claude),
+            ("B", "codex-terra", HarnessKind::Codex),
+        ]
+        .into_iter()
+        .map(|(label, teammate, harness)| PreflightCandidate {
+            label: label.into(),
+            teammate: horch_core::ids::TeammateName::new(teammate).unwrap(),
+            harness,
+            model: horch_core::ids::ModelId::new("m").unwrap(),
+            effort: None,
+        })
+        .collect();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new(&root).with("HOME", &home.to_string_lossy()),
+        )
+        .unwrap();
+        let states = || -> Vec<(String, TrustState)> {
+            harness_trust(&ctx, &candidates, &root)
+                .into_iter()
+                .map(|t| (t.harness, t.state))
+                .collect()
+        };
+        // No .claude.json: Claude is skipped; Codex's file is created.
+        assert_eq!(
+            states(),
+            [
+                ("claude".to_string(), TrustState::Untrusted),
+                ("codex".to_string(), TrustState::Trusted)
+            ]
+        );
+        std::fs::write(home.join(".claude.json"), r#"{"numStartups": 1}"#).unwrap();
+        assert_eq!(
+            states(),
+            [
+                ("claude".to_string(), TrustState::Trusted),
+                ("codex".to_string(), TrustState::Trusted)
+            ]
+        );
     }
 
     /// A linked worktree resolves to the main repository root, where the

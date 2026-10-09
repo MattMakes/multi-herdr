@@ -249,6 +249,7 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | ARC-26 | E2E lifecycle matrix for all 5 harnesses | A6 | arc_26_e2e_lifecycle_matrix_claude, arc_26_e2e_lifecycle_matrix_codex, arc_26_e2e_lifecycle_matrix_opencode, arc_26_e2e_lifecycle_matrix_pi, arc_26_e2e_lifecycle_matrix_prime |
 | ARC-27 | tile/balance pure | A7 | arc_27_tile_balance_pure |
 | ARC-28 | Top-tier seats: only the 2 creative seats start on a reserved tier, by name only | A5 / A6 / B3 | arc_28_a_seat_on_its_own_tier_is_spawnable, arc_28_a_seat_on_the_other_tier_is_refused, arc_28_a_non_seat_on_a_reserved_tier_is_refused_as_before, arc_28_a_seat_resumes_only_on_its_own_tier, arc_28_a_seat_is_never_a_fallback, arc_28_a_router_never_picks_a_seat, arc_28_a_seat_never_competes, arc_28_check_fails_a_seat_off_its_tier_or_with_fallbacks |
+| ARC-29 | Every pane's harness trusts its workdir before the agent starts: written only when missing, atomic, never the home or its ancestors | A4 / A6 | arc_29_claude_entry_written_when_missing_and_other_keys_kept, arc_29_claude_already_trusted_writes_nothing, arc_29_claude_symlinked_store_is_skipped, arc_29_codex_table_appended_and_rest_of_file_byte_identical, arc_29_codex_explicit_untrusted_is_kept, arc_29_antigravity_workspace_added_and_other_keys_kept, arc_29_home_and_its_ancestors_are_never_trusted, arc_29_a_concurrent_write_is_not_lost, arc_29_a_held_claude_lock_is_waited_for_and_a_stale_one_is_taken, arc_29_harnesses_without_trust_are_skipped, arc_29_launch_trusts_the_workdir_before_the_agent_starts |
 
 ### 3.2 MKT: marketplace
 

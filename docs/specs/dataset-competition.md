@@ -199,7 +199,7 @@ or that another row defines.
 | PRE-11 | Storage: write, lock, fsync, rename | B2 | pre_11_storage_probe |
 | PRE-12 | Refuse before any worktree or model; report persisted | B2 | pre_12_e2e_refuses_before_worktree_or_model |
 | PRE-13 | herdr reachable; horch exe found | B2 | pre_13_herdr_and_horch_exe |
-| PRE-14 | Every candidate harness trusts the main repository root; a trust dialog in a pane ends the candidate at once | F2 | pre_14_trusted_root_passes, pre_14_untrusted_root_refuses_with_the_fix, pre_14_claude_store, pre_14_codex_store, pre_14_untrusted_repo_refuses_before_worktree_or_model, pre_14_trust_dialog_pane_ends_the_candidate_at_once |
+| PRE-14 | Every candidate harness trusts the main repository root; horch first writes a missing entry (ARC-29), so PRE-14 fails only when that write was skipped or failed; a trust dialog in a pane ends the candidate at once | F2 | pre_14_trusted_root_passes, pre_14_untrusted_root_refuses_with_the_fix, pre_14_claude_store, pre_14_codex_store, pre_14_trust_is_written_before_the_check, pre_14_untrusted_repo_refuses_before_worktree_or_model, pre_14_trust_dialog_pane_ends_the_candidate_at_once |
 
 ### 3.3 CMP: competition
 
@@ -1189,7 +1189,7 @@ fails. A `warn` never refuses a run. The order and the all-pass base plan are pi
 | PRE-11 | the storage probe fails to write, lock, fsync or rename in the dataset directory | never | pre_11_storage_probe |
 | PRE-12 | a candidate harness has no resolved version (the "round can start" row) | never | pre_12_e2e_refuses_before_worktree_or_model |
 | PRE-13 | herdr is not reachable; the horch executable is not found | never | pre_13_herdr_and_horch_exe |
-| PRE-14 | a candidate harness that asks for trust (Claude, Codex) has not trusted the main repository root. The detail names the harness, the root and the one-time command. | a candidate harness's trust cannot be read (agy; an unreadable store); the repository root is unknown | pre_14_trusted_root_passes, pre_14_untrusted_root_refuses_with_the_fix, pre_14_untrusted_repo_refuses_before_worktree_or_model |
+| PRE-14 | a candidate harness that asks for trust (Claude, Codex, Antigravity) has not trusted the main repository root after the coordinator's `ensure_trusted` (ARC-29): the write was skipped (no store file, a symlinked store, an explicit Codex `trust_level = "untrusted"`, a held lock) or failed. The detail names the harness, the root and the one-time command. | a candidate harness's trust cannot be read (an unreadable or invalid store); the repository root is unknown | pre_14_trusted_root_passes, pre_14_untrusted_root_refuses_with_the_fix, pre_14_trust_is_written_before_the_check, pre_14_untrusted_repo_refuses_before_worktree_or_model |
 
 PRE-09 prices each candidate with `competition/budget.rs:estimate_cost`, the
 same function the live budget uses. It sums in n$ and rounds to µ$ once.
@@ -1336,8 +1336,9 @@ Claude, Codex and Antigravity. The CLI reads the store of each candidate
 harness that asks (`crates/horch/src/dataset/preflight.rs:harness_trust`).
 It matches the root and its canonical form. It keeps only the verdict: the
 files can hold tokens, so no other content of them is read into the plan,
-the report or the output. horch never writes a trust store; the operator
-accepts trust.
+the report or the output. Before it reads, the coordinator writes each
+missing entry for the root (`harness/trust.rs:ensure_trusted`, ARC-29), so
+PRE-14 fails only when that write was skipped or failed.
 
 | Store state | `TrustState` | PRE-14 |
 |---|---|---|
