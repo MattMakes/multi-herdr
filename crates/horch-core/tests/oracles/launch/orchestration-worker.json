@@ -1,0 +1,43 @@
+{
+  "_pinned_env": {
+    "ANTHROPIC_API_KEY": null,
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": null,
+    "CLAUDE_CODE_EFFORT_LEVEL": null,
+    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": null,
+    "CODEX_HOME": null,
+    "DISABLE_AUTOUPDATER": null,
+    "HOME": "<HOME>",
+    "HORCH_CLAUDE_BIN": null,
+    "HORCH_CLAUDE_MANAGED_SETTINGS": "<TMP>/managed-settings.json",
+    "HORCH_CODEX_BIN": null,
+    "HORCH_NOW": null,
+    "HORCH_OPENCODE_BIN": null,
+    "HORCH_PI_BIN": null,
+    "HORCH_PRIME_BIN": null,
+    "HORCH_TEAMMATES_DIR": null,
+    "OPENCODE_CONFIG_CONTENT": null,
+    "OPENCODE_DISABLE_EXTERNAL_SKILLS": null,
+    "PATH": "<TMP>/bin",
+    "PRIME_AGENT_CODING_AGENT_DIR": null,
+    "RLM_MAX_DEPTH": null
+  },
+  "_prompt": "ORACLE PROMPT: do the task.",
+  "_session_ids": {
+    "fresh": "00000000-0000-4000-8000-000000000001",
+    "resume": "00000000-0000-4000-8000-000000000002"
+  },
+  "modes": {
+    "fresh": {
+      "error": "teammate 'orchestration-worker' has no model and none was supplied"
+    },
+    "resume": {
+      "error": "teammate 'orchestration-worker' has no model and none was supplied"
+    },
+    "unmanaged": {
+      "error": "teammate 'orchestration-worker' has no model and none was supplied"
+    }
+  },
+  "skills_bundle": true,
+  "skills_bundle_error": null,
+  "teammate": "orchestration-worker"
+}

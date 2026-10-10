@@ -152,7 +152,10 @@ pub fn promote_release(staging: &Path, release_dir: &Path) -> Result<()> {
     }
     let backup = release_dir.with_file_name(format!(
         ".backup.{}",
-        release_dir.file_name().unwrap_or_default().to_string_lossy()
+        release_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
     ));
     let had_previous = release_dir.exists();
     if had_previous {
@@ -191,7 +194,7 @@ pub fn prune_old_releases(releases_dir: &Path, current: &Path, keep: usize) {
             Some((modified, e.path()))
         })
         .collect();
-    others.sort_by(|a, b| b.0.cmp(&a.0));
+    others.sort_by_key(|o| std::cmp::Reverse(o.0));
     for (_, path) in others.into_iter().skip(keep) {
         let _ = std::fs::remove_dir_all(path);
     }
@@ -206,8 +209,8 @@ mod tests {
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            let options: zip::write::FileOptions<'_, ()> =
-                zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
             for (name, contents) in entries {
                 writer.start_file(*name, options).unwrap();
                 writer.write_all(contents).unwrap();
@@ -248,7 +251,10 @@ mod tests {
         assert!(layout.current_dir.ends_with("current"));
         assert_eq!(
             layout.visible_bin,
-            PathBuf::from(r"C:\Users\a\AppData\Local").join("Programs").join("Herdr").join("bin")
+            PathBuf::from(r"C:\Users\a\AppData\Local")
+                .join("Programs")
+                .join("Herdr")
+                .join("bin")
         );
     }
 
@@ -276,7 +282,10 @@ mod tests {
                 version,
                 "x86_64-pc-windows-msvc",
             );
-            assert!(layout.release_dir.starts_with(&layout.releases_dir), "{version}");
+            assert!(
+                layout.release_dir.starts_with(&layout.releases_dir),
+                "{version}"
+            );
             assert_eq!(
                 layout.release_dir.parent(),
                 Some(layout.releases_dir.as_path()),
@@ -325,17 +334,25 @@ mod tests {
             ("herdr.exe", b"binary"),
             ("conpty/conpty.dll", b"dll"),
             ("conpty/x64/OpenConsole.exe", b"console"),
-            ("THIRD-PARTY-NOTICES/LICENSE.txt", b"legal"),
+            ("docs/readme.txt", b"docs"),
         ]);
 
         extract_zip(&bytes, tmp.path()).unwrap();
-        assert_eq!(std::fs::read(tmp.path().join("herdr.exe")).unwrap(), b"binary");
+        assert_eq!(
+            std::fs::read(tmp.path().join("herdr.exe")).unwrap(),
+            b"binary"
+        );
         assert_eq!(
             std::fs::read(tmp.path().join("conpty").join("conpty.dll")).unwrap(),
             b"dll"
         );
-        assert!(tmp.path().join("conpty").join("x64").join("OpenConsole.exe").exists());
-        assert!(tmp.path().join("THIRD-PARTY-NOTICES").join("LICENSE.txt").exists());
+        assert!(tmp
+            .path()
+            .join("conpty")
+            .join("x64")
+            .join("OpenConsole.exe")
+            .exists());
+        assert!(tmp.path().join("docs").join("readme.txt").exists());
     }
 
     /// Zip-slip: an entry pointing outside the destination must abort the install.
@@ -353,7 +370,9 @@ mod tests {
     #[test]
     fn extract_zip_rejects_a_non_archive() {
         let tmp = tempfile::tempdir().unwrap();
-        let err = extract_zip(b"not a zip at all", tmp.path()).unwrap_err().to_string();
+        let err = extract_zip(b"not a zip at all", tmp.path())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("not a valid zip archive"), "{err}");
     }
 

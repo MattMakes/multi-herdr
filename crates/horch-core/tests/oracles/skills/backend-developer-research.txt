@@ -1,0 +1,8 @@
+
+
+Fleet skill phase: research. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:
+- horch:tdd: Use when adding or changing behavior that needs a regression test, before implementing the change.
+- horch:security-review: Use for an authorized security audit or focused review of trust boundaries, credentials, parsing, and dependencies.
+- horch:api-contracts: Use when building or changing a service boundary - HTTP/REST, RPC, a queue consumer, a webhook, a CLI or library entry point - to pin down the contract. Covers where input is validated, the error model (retryable, caller mistake, page a human), idempotency and retries, ordering, pagination, timeouts, partial failure and compatible evolution. Language-neutral; follow the repo's own framework and idioms.
+- horch:data-migrations: Use when a change alters persisted data - a schema change, a new or dropped column or index, a type change, a backfill, a data fix, a file or message format change - to make it safe against existing rows and live traffic. Covers expand/contract order, online-safe DDL, batched backfills, old and new code running side by side, a rollback path and a verified result.
+Also available in this phase: horch:brainstorm, horch:codebase-design, horch:handoff, horch:research-codebase, horch:trace. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.

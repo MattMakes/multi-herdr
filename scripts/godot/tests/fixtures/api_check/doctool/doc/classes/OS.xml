@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="OS" inherits="Object" api_type="core">
+	<methods>
+		<method name="get_name" qualifiers="const"><return type="String" /></method>
+	</methods>
+</class>

@@ -1,0 +1,7 @@
+Phase: implementation
+  execute            Use when implementing an existing plan or resuming its unfinished tasks.
+  tdd                Use when adding or changing behavior that needs a regression test, before implementing the change.
+  debug              Use when a test, build, runtime behavior, or integration fails unexpectedly and the cause is unknown.
+  check              Use when verifying completed implementation against its plan, requirements, tests, and build.
+  handoff            Use when work must transfer to another worker or continue after context loss.
+Metadata: 468 bytes (~117 tokens, estimate only); workflows load on demand.

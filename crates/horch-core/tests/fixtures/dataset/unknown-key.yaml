@@ -1,0 +1,4 @@
+# `candidate` is a typo for `candidates`; the loader must reject it.
+candidate: 4
+budget:
+  hard_usd_micro: 10000000

@@ -1,0 +1,53 @@
+[package]
+name = "horch-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Fake harness binaries and hermetic end-to-end tests for horch."
+
+# Each fake stands in for one external program. They record every call to
+# $HORCH_FAKE_LOG so a test can assert exactly what horch asked of them.
+[[bin]]
+name = "fake-claude"
+path = "src/bin/fake-claude.rs"
+
+[[bin]]
+name = "fake-codex"
+path = "src/bin/fake-codex.rs"
+
+[[bin]]
+name = "fake-herdr"
+path = "src/bin/fake-herdr.rs"
+
+[[bin]]
+name = "fake-opencode"
+path = "src/bin/fake-opencode.rs"
+
+[[bin]]
+name = "fake-pi"
+path = "src/bin/fake-pi.rs"
+
+[[bin]]
+name = "fake-prime"
+path = "src/bin/fake-prime.rs"
+
+[[bin]]
+name = "fake-antigravity"
+path = "src/bin/fake-antigravity.rs"
+
+[[bin]]
+name = "fake-ollama"
+path = "src/bin/fake-ollama.rs"
+
+[dependencies]
+# `procid`: fake-herdr and the harness signal a recorded process group only
+# while it is the same group.
+horch-core.workspace = true
+# `git::scrub_repo_env`: every git child of the harness and the fakes.
+horch-marketplace.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+tempfile = "3"

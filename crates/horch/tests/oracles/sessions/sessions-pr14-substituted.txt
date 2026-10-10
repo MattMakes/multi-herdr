@@ -1,0 +1,11 @@
+[done] opus (opus-1)  session=33333333-3333-4333-8333-333333333333  record=rec-pr14-0001
+  agent=codex model=gpt-5.5 effort=high  updated=2026-09-29T09:00:00Z
+  phase=implementation
+  ran via codex-sol: claude pool exhausted (7d 98%, resets Fri 14:00Z)
+  task: Implement ai_docs/plans/balance.md
+  done @ 2026-09-29T09:00:00Z: balance gate wired
+
+[working] sonnet (sonnet-1)  session=44444444-4444-4444-8444-444444444444  record=rec-pr14-0002
+  agent=claude model=sonnet effort=medium  updated=2026-09-29T08:05:00Z
+  task: Review the gate
+

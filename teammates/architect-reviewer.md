@@ -5,10 +5,14 @@ base: fleet-worker
 agent: claude
 phase: validation
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route architect-reviewer).
+fallbacks: [codex-sol]
 # high: a missed finding costs a review round, which cost more than the
 # review itself in cezaar#40's baseline (reviewers+judges were 71% of worker
-# spend at xhigh). high, not xhigh: diminishing returns above it. (ai_docs/reports/model-guide-2026-09.md)
+# spend at xhigh). high, not xhigh: diminishing returns above it.
 effort: high
+compact_window: 200000
+compact_at: 300000
 
 # Review is read-only, enforced by denying the editing tools. Not plan mode:
 # ExitPlanMode asks a human to approve, and there is no human at this pane.
@@ -16,7 +20,7 @@ permission_mode: auto
 inherit_plugins: false
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent, Edit, Write, NotebookEdit]
-skills: [code-review, code-analysis]
+skills: [code-review, code-analysis, architecture-review, codebase-design]
 mcp_servers: {}
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]

@@ -2,7 +2,7 @@
 
 "horch" multi-agent orchestration layouts for [herdr](https://herdr.dev), in Rust.
 
-Three binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
+Four binaries, no runtime dependencies beyond herdr itself. No bash, no jq, no
 Node required by horch itself. It runs on macOS, Linux and Windows; Codex phase
 skills currently require macOS/Linux or WSL. A `justfile` at
 the repo root wraps the common ones for people who like typing `just
@@ -11,6 +11,7 @@ herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 | binary            | what it does                                              |
 |-------------------|-----------------------------------------------------------|
 | `horch`           | Build and drive multi-agent herdr workspaces              |
+| `multi-herdr-dataset` | Competitive dataset rounds: N candidates, a blind judge, opt-in promotion (paid model calls) |
 | `herdr-install`   | Install the latest Herdr CLI                              |
 | `herdr-docs-sync` | Mirror the Herdr docs into `herdr-docs/`                  |
 
@@ -31,10 +32,17 @@ on it. On Windows the default install directory is
 Then check your setup and verify the machinery end to end:
 
 ```bash
-horch doctor            # is herdr installed and its server reachable?
+horch doctor            # herdr reachable? roster ok? host tools, effort overrides
 horch smoke messaging   # 2-pane check of the messaging primitives, no agents
 horch smoke fleet       # full spawn -> ledger -> report -> self-close check
 ```
+
+`horch doctor` stops with an error when herdr is missing or its server is
+unreachable. It then prints a warning, and still exits 0, for a roster problem,
+for a host tool that an offered teammate needs (`xcodebuild` for the Swift
+team), and for a setting that overrides every teammate's effort. Run it from
+your project directory: it counts the teammates the orchestrator would be
+offered there.
 
 Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.
@@ -63,24 +71,26 @@ The flavor picks who orchestrates and nothing else. All four read the same
 roster and spawn the same workers, so a Codex orchestrator still reaches for
 `opus` when a task wants Claude, and a Claude one still reaches for `codex-sol`.
 Opus is the default because it orchestrates well at well under half Fable's
-price (Opus 5.5 is $4/$20 per MTok against Fable 5.1's $10/$50; see
-[the model guide](ai_docs/reports/model-guide-2026-09.md)).
+price (Opus 5.5 is $4/$20 per MTok against Fable 5.1's $10/$50).
 
-### At most one top-tier session per fleet
+### Top-tier sessions: the orchestrator and the creative council
 
-Fable and Astra are reserved for the orchestrator. `horch spawn` refuses to
-start a worker on either tier, whichever flavor is orchestrating - so a Fable
-orchestrator cannot start an Astra, an Astra cannot start a Fable, and neither
-can clone itself. The rule is matched on the tier name rather than an exact
-model slug, so a version bump stays reserved without an edit. An Opus or Sol
-orchestrator holds no reserved tier, so its workers may run on the same model
-it does.
+Fable and Astra are reserved for the orchestrator and for 2 seats of the
+creative council. `horch spawn` refuses every other worker on either tier,
+whichever flavor is orchestrating. `fable-creative` starts only on Fable and
+`astra-creative` only on Astra, and only when the orchestrator names them: a
+router, a fallback or a competition never picks a seat. The council is for
+creative and out-of-the-box work: the 2 seats and `opus-creative` each write a
+design alone, and a fresh `fable-creative` combines them. The rule is matched
+on the tier name rather than an exact model slug, so a version bump stays
+reserved without an edit.
 
-That is why every briefing is written for an Opus or Codex-Sol reader: the
+Every other briefing is written for an Opus or Codex-Sol reader: the
 orchestrator does the reasoning that needs its tier, writes the result to a
-file, and hands the execution down. `horch teammates --check` fails any teammate
-in the roster that asks for a reserved tier, so the rule cannot be broken by
-adding a file.
+file, and hands the execution down. The seats are a list in the code
+(`TOP_TIER_SEATS`). `horch teammates --check` fails any other offered teammate
+on a reserved tier, a seat off its own tier or with fallbacks, and any fallback
+that names a seat, so the rule cannot be broken by adding a file.
 
 Everything needs a running herdr server: launch the herdr app, or run
 `herdr server` headless.
@@ -142,15 +152,25 @@ registry to update.
 | `backend-developer`    | Claude | Opus   | medium | JS/TS, Python, Go, C#, Rust services and APIs |
 | `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
 | `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
+| `sonnet-sketch`        | Claude | Sonnet | low    | Drafts, brainstorms, boilerplate, one-file edits |
+| `sonnet-feature`       | Claude | Sonnet | medium | Standard features against a clear spec       |
+| `sonnet-bugfix`        | Claude | Sonnet | high   | Localized bugs with repro steps, edge-case hardening |
+| `sonnet-sweep`         | Claude | Sonnet | max    | Long mechanical multi-file sweeps, exact spec only |
+| `opus-architect`       | Claude | Opus   | low    | Fast architecture critique, API/schema design, triage |
+| `opus-domain`          | Claude | Opus   | medium | Intricate algorithms, domain logic, brownfield features |
+| `opus-hardening`       | Claude | Opus   | high   | Races, leaks, security review, fuzz harnesses |
+| `opus-verify`          | Claude | Opus   | max    | Unattended formal proofs, compiler passes, sandboxed pentest |
+| `fable-creative`       | Claude | Fable  | high   | Creative council seat; also combines the designs |
+| `astra-creative`       | Codex  | Astra  | high   | Creative council seat |
+| `opus-creative`        | Claude | Opus   | high   | Creative council seat |
 | `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
 | `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
 | `pi`                   | pi     | local  | low    | Runs on your own hardware; nothing leaves the machine |
 | `prime`                | Prime Agent | Opus 5.5 | medium | One persistent Python kernel; long, exploratory runs |
 
-Why each runs at that level is in
-[ai_docs/reports/model-guide-2026-09.md](ai_docs/reports/model-guide-2026-09.md);
-see [Models and effort](#models-and-effort) below.
+Why each runs at that level is in [Models and effort](#models-and-effort)
+below.
 
 The two orchestrators are teammate files too, and hidden from the roster:
 `orchestrator` (Claude; Opus or Fable) and `orchestrator-codex` (Codex; Astra
@@ -201,8 +221,8 @@ now carries the rule as a switch.
 
 | harness | feature | switch | where it lives |
 |---|---|---|---|
-| Claude 2.1.278 | the `Agent` tool | `--disallowedTools Agent` | `disallowed_tools: [Agent]` on all 11 Claude fleet teammates |
-| Codex 0.155.1 | feature `multi_agent`, on by default | `-c features.multi_agent=false` | `args:` on the 3 Codex teammates |
+| Claude 2.1.278 | the `Agent` tool | `--disallowedTools Agent` | `disallowed_tools: [Agent]` on every Claude fleet teammate except the 2 `orchestration-*` recipe files |
+| Codex 0.155.1 | feature `multi_agent`, on by default | `-c features.multi_agent=false` | `args:` on every Codex teammate |
 | OpenCode 1.18.2 | subagents `explore` and `general`, via the `task` tool | config-file key only | not applied - `horch` forwards no OpenCode config file |
 | pi | none - its tools are `bash`, `edit`, `read`, `write` | n/a | n/a |
 | Prime | unverified, not installed on this machine | unknown | not applied |
@@ -212,8 +232,7 @@ prompting for it, and `Agent` is the only subagent tool name on that version -
 `Task` does not exist. `horch teammates --check` fails any `agent: claude`
 teammate that the orchestrator can spawn, or the orchestrator itself, if the
 deny is missing; `allow_subagents: true` waives that check for one teammate and
-nothing shipped sets it. `ai_docs/reports/no-subagents.md` records the command
-output behind every row.
+nothing shipped sets it.
 
 #### Booting without external plugins
 
@@ -235,14 +254,15 @@ does not exist.
 The operator may delete the `herdr-orchestrator` and `herdr-worker` symlinks
 from `~/.claude/skills`. If they stay, every Claude teammate switches them off
 by name with `disabled_skills`, which becomes a `skillOverrides: off` entry in
-the settings overlay; this is verified against Claude Code 2.1.278 to hide a
-`~/.claude/skills` entry and not only a plugin skill. `opus` and `sonnet` also
+the settings overlay. This hides a `~/.claude/skills` entry (verified against
+Claude Code 2.1.278). On 2.1.289 it does not hide a plugin skill: horch
+switches a plugin off with `enabledPlugins` (`inherit_plugins: false`) or loads
+a filtered copy (`plugin_skills`). `opus` and `sonnet` also
 name the `herdr` plugin's own copies, `herdr:herdr-orchestrator` and
 `herdr:herdr-worker`, because unlike the orchestrator and the eight Claude
 specialists they do not set `inherit_plugins: false`. The orchestrator briefing
 carries the same instruction in prose, for a pane whose settings horch does not
-control. Evidence and the full reconciliation are in
-[`ai_docs/reports/bake-in-orchestration-inventory.md`](ai_docs/reports/bake-in-orchestration-inventory.md).
+control.
 
 ### Skills for each phase
 
@@ -254,7 +274,8 @@ horch spawn --resume RECORD_ID --phase validation "Check the final diff"
 ```
 
 Research, plan, implementation and validation select portable native skill
-catalogs across all five harnesses. Role defaults and explicit `skills` live in
+catalogs on every harness that can expose skills (Antigravity cannot; see
+`horch agent-list`). Role defaults and explicit `skills` live in
 teammate YAML; resumes preserve the phase. Full workflows load on demand.
 See [the phase catalog, adapters and context measurements](docs/phase-skills.md).
 
@@ -281,7 +302,145 @@ plugin_skills:
 
 `horch cost` then reports which expected skills each worker actually loaded.
 
-### Five harnesses, one roster
+#### Apple's Xcode skills
+
+Xcode 27 ships 7 Apple skills. They belong to Apple, so they cannot ship
+in this repo. Each Mac exports its own copy:
+
+```sh
+xcrun agent skills export --output-dir ~/.agents/skills
+```
+
+- Apple's documentation does not describe this command. The syntax comes
+  from third-party Xcode 27 guides. Check it with
+  `xcrun agent skills export --help`.
+- The command needs Xcode 27 or later as the selected toolchain
+  (`xcode-select -p`).
+- Add `--replace-existing` to refresh the copy after an Xcode update.
+
+`swift-developer` and `apple-platform-developer` name 2 of the skills
+under `operator_skills:`: `swiftui-whats-new-27` and `test-modernizer`.
+
+- On a Mac with the export, the launch copies them into the skill
+  bundle, and the briefing lists them as expected skills.
+- On a host without the export, `horch teammates --check` prints a
+  `warning:` and passes. The launch skips the skill, and the briefing tells
+  the worker to ask you for the export.
+- `device-interaction` stays out: it is a subagent skill.
+- A skill that changed between spawn and launch fails the launch: "the
+  skills changed since <id> was spawned ... Spawn the worker again". Run
+  `horch spawn` again after you refresh the export.
+- See [the operator_skills field](docs/recipes/add-teammate.md).
+
+#### App Store Connect key for app-release-preparer
+
+`app-release-preparer` archives, exports and audits review readiness. It
+never uploads and never submits. When the export is ready, it writes the
+exact upload command, and you run it.
+
+3 lines hold the release safety:
+
+1. **The OS sandbox.** The teammate's `sandbox:` block runs every Bash
+   command, and every process it starts, under Claude Code's sandbox
+   (Seatbelt on macOS, bubblewrap on Linux). `sh -c` and `unset` do not
+   change it. horch refuses to launch the pane on a host that cannot
+   sandbox, and Claude Code exits rather than run a command unsandboxed.
+   Inside the sandbox:
+   - Reads in your home directory are blocked, for Bash and for the Read
+     tool. Only the project, Xcode's directories under `~/Library` and
+     `~/.config/horch/asc/` are readable. `~/.asc`, `~/.config`,
+     `~/Library/Keychains` and altool's `private_keys` directories are
+     blocked by name too. Your login keychain is not in the keychain
+     search list, so asc cannot use the profiles stored there.
+   - asc's credential variables (`ASC_KEY_ID`, `ASC_PRIVATE_KEY`,
+     `ASC_PRIVATE_KEY_PATH` and the others) are unset before each command,
+     so a key in your shell does not reach asc.
+   - The network reaches `api.appstoreconnect.apple.com` only. Build
+     uploads, `xcrun altool`, `notarytool` and `-allowProvisioningUpdates`
+     need other hosts, so they fail.
+   - A command cannot retry outside the sandbox, and a project's
+     `.claude/settings.json` cannot widen it.
+2. **The key's role.** The sandbox keeps every other key out of reach. It
+   cannot limit what the configured key does at the allowed API host: a
+   submit or a price change is 1 API call there. So the key's role must
+   not allow those calls.
+3. **The deny list** in the teammate file blocks the asc commands that
+   submit, publish, change prices or upload. A Bash pattern alone can be
+   bypassed, so this is the last line.
+
+Set up the key:
+
+1. Create a team API key in App Store Connect, under Users and Access >
+   Integrations > App Store Connect API. Give it a role that cannot submit
+   apps or edit pricing and availability.
+   - Apple offers these roles for an API key: Admin, App Manager,
+     Developer, Marketing, Sales, Finance and Customer Support.
+   - Admin and App Manager can submit apps. Admin, App Manager and
+     Marketing can edit pricing and availability.
+   - Use **Developer**. It cannot submit apps or edit pricing
+     ([Apple: role permissions](https://developer.apple.com/support/roles/)).
+2. Download the `.p8` file. Apple lets you download it 1 time only. Keep
+   it in `~/.config/horch/asc/`, with mode 600. The sandbox can read the
+   key only there:
+
+   ```sh
+   mkdir -p ~/.config/horch/asc
+   mv ~/Downloads/AuthKey_<KEY_ID>.p8 ~/.config/horch/asc/
+   chmod 600 ~/.config/horch/asc/AuthKey_<KEY_ID>.p8
+   ```
+
+3. Write `~/.config/horch/asc/config.json` with 1 entry under `keys`.
+   `private_key_path` must be absolute. Replace each `<...>` with your
+   value:
+
+   ```json
+   {
+     "default_key_name": "horch-release",
+     "keys": [
+       {
+         "name": "horch-release",
+         "key_id": "<KEY_ID>",
+         "issuer_id": "<ISSUER_ID>",
+         "private_key_path": "/Users/<you>/.config/horch/asc/AuthKey_<KEY_ID>.p8"
+       }
+     ]
+   }
+   ```
+
+4. Check it the way the pane sees it:
+
+   ```sh
+   ASC_CONFIG_PATH=~/.config/horch/asc/config.json ASC_BYPASS_KEYCHAIN=1 asc auth status
+   ```
+
+   The output must show `horch-release` as the default key. Add
+   `--validate` to test the key against Apple.
+
+The teammate sets `ASC_CONFIG_PATH` to that file and `ASC_BYPASS_KEYCHAIN=1`.
+These variables only choose asc's defaults. The sandbox is what keeps
+`./.asc/config.json`, `~/.asc/config.json`, your keychain and every other
+key file out of reach. The config file holds the path to the key, never
+the key.
+
+What the sandbox does not cover:
+
+- **Code signing.** The login keychain is outside the sandbox, so
+  `xcodebuild archive` cannot sign with an identity stored there. Either
+  put the distribution identity in a separate keychain under
+  `~/.config/horch/asc/` and add it to your keychain search list (not yet
+  tested with horch), or run the signed archive and export yourself.
+- **Swift packages.** Package hosts are outside the network list. Resolve
+  packages before the assignment, or add their hosts to the teammate's
+  `allowedDomains`.
+- **Tools outside the sandbox.** The Edit and Write tools, hooks and the
+  status line run with your access. The teammate loads no MCP servers and
+  has no WebFetch or WebSearch.
+- The sandbox needs Claude Code 2.1.285 or later.
+
+Until the config file and the `.p8` file exist, the teammate reports
+`BLOCKED:` with the missing path and does no release work.
+
+### Six harnesses, one roster
 
 A teammate's `agent:` picks which CLI its pane runs. They differ in almost
 everything - how a prompt is passed, whether horch can name the session before
@@ -296,6 +455,7 @@ scattered through the code.
 | `opencode` | `--prompt` flag | `--model provider/model` | build agent `variant` via `OPENCODE_CONFIG_CONTENT` | harvested from `opencode session list --format json` |
 | `pi`       | after `--` | `--model provider/id` | `--thinking` | horch mints `--session-id` |
 | `prime`    | after `--` | `--model provider/id` | `--thinking` | horch owns the `--session-dir` and reads it back |
+| `antigravity` | `--prompt-interactive` flag | `--model <slug>` | `--effort` (`low` `medium` `high`) | harvested from `~/.gemini/antigravity-cli/cache/last_conversations.json` |
 
 Two of those need more than flags:
 
@@ -359,12 +519,32 @@ harness, model, effective effort, phase, expected skills and price.
 ### Measuring a run
 
 ```bash
-horch cost                              # this project's ledger, every session
-horch cost --since 2026-09-24           # one run
+horch cost                              # 30d, 7d and 24h reports to ai_docs/reports/cost/
+horch cost --text                       # the same, with the tables printed
+horch cost --dir /tmp/cost              # the 3 files somewhere else
+horch cost --since 2026-09-24           # 1 report of the calls since then, on stdout
 horch cost --reprice claude-sonnet-5    # what-if: the same tokens on Sonnet
-horch cost --session claude:<id>        # add the orchestrator's own session
-horch cost --json                       # for the tune-fleet skill
+horch cost --session claude:<id>        # add a session outside the ledger
 ```
+
+`horch cost` is informational: spend telemetry to see where tokens go; not
+an input to routing, model or teammate choice. Nothing in its output
+recommends anything.
+
+With no filter it writes 3 reports, for the 30 days, 7 days and 24 hours
+that end now, as `<YYYY_MM_DD_HHMMSS>_30d.json`, `_7d.json` and `_24h.json`
+(the local start time of the run) in `<project>/ai_docs/reports/cost/`, and
+prints a JSON summary: `generated_at`, `project`, `files`, and each window's
+sessions, calls, tokens, cost and unpriced sessions. A window counts each
+call by its own time, so a long session that started before the window shows
+only its calls inside it. Each file holds the window's tables (per tier,
+workers only; the orchestrator; per teammate, with means per session), the
+skill use per teammate, and what could not be priced.
+
+With `--since`, `--record` or `--session` it prints 1 report (JSON, or the
+tables with `--text`) and writes a `<prefix>_custom.json` file only with
+`--dir`. `--since` counts calls by their own time too, as `horch usage
+--since` does. `--json` is still accepted; JSON is the default.
 
 `horch cost` reads each worker's transcript by the session id the ledger
 already holds, so attribution is exact, never a guess from timestamps:
@@ -375,17 +555,76 @@ already holds, so attribution is exact, never a guess from timestamps:
 It prices the tokens with a dated per-MTok table; `--pricing <file.json>`
 overrides any row. It reports:
 - **each worker's cost**;
-- **roll-ups** per role family, harness and teammate, including the
-  cache-read share. cezaar#40 found cache reads were 60-70% of spend.
-- **a skills table**: what each worker actually loaded, and which of its
-  expected skills it never touched.
+- **roll-ups** per tier, teammate, role family and harness, with means per
+  session;
+- **a skills table**: per teammate, how many sessions loaded each expected
+  skill, and which other skills they loaded.
 
-**Never counted as $0:** OpenCode sessions (stored in SQLite, not read),
-sessions without a transcript, and models the table does not know. These are
+**Never counted as $0:** sessions without a transcript, OpenCode sessions on
+a machine without `sqlite3`, and models the table does not know. These are
 listed separately instead.
+
+`horch cost` now reads through the same readers as the telemetry space, so its
+numbers changed (2026-09-28): Codex counts each response's
+`token_usage_record`, including the final one the old running total missed;
+Claude counts subagent transcripts under `<id>/subagents/`; OpenCode is read
+from `opencode.db` with the `sqlite3` CLI.
+
+### The telemetry space and usage limits
+
+One collector per machine reads every ledger under the state root, every
+harness's transcripts, and each harness's own usage limits, and writes
+files that everything else reads
+(`docs/specs/telemetry.md`):
+
+```bash
+horch telemetry                 # the collector and its screen (g, w, p, q); a viewer if one runs
+horch telemetry ensure          # open it in its own herdr workspace, never focused (horch fleet does this)
+horch usage --by plan --window 7d   # where the tokens went, every project
+horch agent-list                # every harness: binary, version, efforts, models, pool state
+horch quota --refresh           # the pools: claude, codex, opencode-zen, google, local
+horch route researcher          # what spawn would do right now: spawn, substitute, or refuse
+horch fleet auto                # Opus or Sol, whichever pool can serve it
+```
+
+Every pane is a ledger record, the orchestrator included, so its spend is
+counted. `horch spawn` checks the teammate's usage pool first. When the pool
+is exhausted, it runs the teammate on its first usable `fallbacks:` entry
+(the persona, phase and skills stay) and prints `SUBSTITUTED:`. With no usable
+fallback it prints `REFUSED:` and exits 3. `--exact` never substitutes,
+`--force` never refuses, and `HORCH_BALANCE=advise|off` (or `balance_mode` in
+`<state root>/policy.json`) softens the gate. No automatic choice ever picks
+a free `opencode-*` teammate. The quota probes use each harness's own client
+(`get_usage`, `account/rateLimits/read`); horch never holds a credential.
 
 To retune the roster from these numbers, use the `tune-fleet` skill
 (`.claude/skills/tune-fleet/SKILL.md`) from a session in this repo.
+
+### Context watch
+
+Every fleet session is compacted, or replaced by a fresh session, at a
+stopping point it chooses, after it writes a handoff, and before its harness
+compacts it by itself:
+
+```bash
+horch context [--over] [--windows]   # each live session: context, native trigger, threshold, state
+horch compact sonnet-1 --request     # ask a worker to write its handoff and report COMPACT-READY
+horch compact sonnet-1               # then compact it in place (Claude, Codex); a detached job
+```
+
+The watch threshold is `min(300,000, 0.8 x the harness's own auto-compact
+trigger)`, so it always fires before the harness compacts. A worker's own
+`horch note` also prints a warning when it is over. The handoff goes to
+`ai_docs/handoffs/<role>-whats-next.md`.
+
+Your settings win: where your own config sets a native window
+(`CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `~/.claude/settings.json`,
+`model_auto_compact_token_limit` in `~/.codex/config.toml`), horch applies
+nothing and never edits the file. The fleet values in
+`teammates/_base/context-windows.md` apply only where you set none;
+`horch context --windows` shows which one each teammate gets. The spec is
+[docs/specs/context-policy.md](docs/specs/context-policy.md); the live check
+is `scripts/live/context.sh`.
 
 ### Free models are paid for with your prompts
 
@@ -471,6 +710,18 @@ The ledger lives at `$HORCH_STATE_DIR`, else
 format is unchanged from the previous bash implementation, so existing ledgers
 stay readable and their sessions stay resumable.
 
+## Skills, domain teams and the contributor handbook
+
+The roster has domain teams for Unreal Engine (Git LFS, UE 5.8), Swift and
+Apple platforms, and design. The orchestrator is offered a domain team only
+when the project has a matching file (`offer_when`). Skills are bundled
+(adapted, verbatim or own text) or come from your machine (`operator_skills`).
+[docs/skills-and-teams.md](docs/skills-and-teams.md) explains how to use each
+team, how to refresh a copied skill and what `horch agent-list` and
+`multi-herdr-dataset` show. [docs/README.md](docs/README.md) is the
+contributor handbook, including the gate rules: never run the gate under
+`git rebase -x`, and run it through the slot wrapper when other gates run.
+
 ## Keeping the docs current
 
 `herdr-docs/` is a mirror of <https://herdr.dev/docs/>. Refresh it any time:
@@ -512,9 +763,17 @@ junction, so an update never overwrites a running `herdr.exe`.
 | `HORCH_OPENCODE_BIN` | Which OpenCode CLI to launch. Defaults to `opencode`           |
 | `HORCH_PI_BIN`       | Which pi CLI to launch. Defaults to `pi`                       |
 | `HORCH_PRIME_BIN`    | Which Prime Agent CLI to launch. Defaults to `prime-agent`     |
+| `HORCH_ANTIGRAVITY_BIN` | Which Antigravity CLI to launch. Defaults to `agy`          |
 | `HORCH_STATE_DIR`    | Where ledgers live                                             |
 | `HORCH_PROJECT_DIR`  | Which project a ledger belongs to. Defaults to the cwd         |
 | `HORCH_WORKSPACE_ID` | Target workspace, when not running inside a herdr pane         |
+| `HORCH_BALANCE`      | Usage-limit gate: `auto` (default), `advise` or `off`          |
+| `HORCH_NOW`          | Pin the clock (RFC 3339), for tests; announced on stderr       |
+| `HORCH_QUOTA_FILE`   | Read pool states from this file and never probe (tests, drills) |
+| `HORCH_HERDR_BIN`    | Which herdr CLI to drive. Defaults to `herdr`                  |
+| `HORCH_SQLITE3_BIN`  | Which `sqlite3` reads OpenCode's database                       |
+| `HORCH_OLLAMA_BIN`   | Which `ollama` the local-pool check asks                       |
+| `HORCH_OPENCODE_DB`  | OpenCode's database. Defaults to `~/.local/share/opencode/opencode.db` |
 | `CODEX_HOME`         | The codex home a private one is mirrored from. Defaults to `~/.codex` |
 | `HERDR_INSTALL_DIR`  | Where `herdr-install` puts herdr                               |
 
@@ -522,17 +781,53 @@ junction, so an update never overwrites a running `herdr.exe`.
 
 ```
 crates/
-  horch-core/         Shared machinery: herdr client, mailbox, ledger, layout,
-                      prompts, codex glue, pane-shell quoting
-  horch/              The horch CLI
+  horch-core/         The domain: roster, harnesses, routing, executions,
+                      messaging, workspace, telemetry, the dataset mode
+  horch/              The horch CLI and the multi-herdr-dataset binary
+  horch-marketplace/  Skill sources, installs and the lockfile
+  horch-e2e/          Fake harness binaries and the hermetic end-to-end tests
   herdr-install/      The Herdr CLI installer
   herdr-docs-sync/    The documentation mirror
 herdr-docs/           The mirrored documentation
 ```
 
+## Architecture
+
+`horch` is a thin CLI over `horch-core`. Rust decides whatever can be decided
+deterministically; an agent decides only where semantic judgment is needed.
+
+- `horch/src/bootstrap.rs` reads the process environment once into a
+  `RuntimeContext`. Nothing else reads it: core code takes the context or
+  explicit parameters (`arc_05_no_ambient_env_in_core`).
+- A command parses its flags, calls core, and prints the result. It picks
+  an exit code (`horch/src/exit.rs`) from an error's type, never from its
+  message text (`arc_22_no_error_string_matching`).
+- Each `horch-core` module owns one part of the domain. Callers import an
+  item from the module that owns it; there are no re-export shims, and an
+  item nothing outside the crate uses is `pub(crate)` (`arc_25_no_shim_modules`).
+
+| module | owns |
+|---|---|
+| `runtime` | the process boundary: `RuntimeContext`, paths, binary overrides |
+| `roster`, `prompts` | `teammates/` files, layering, `--check`, briefing rendering |
+| `skills` | skill catalogs, activation plans, launch bundles |
+| `harness` | one adapter per agent CLI (claude, codex, OpenCode, pi, Prime, Antigravity) and the launch flow |
+| `routing` | quota-aware routing: policy, quota view, decisions |
+| `execution` | executions: model, the ledger record and store, spawn plan, lifecycle |
+| `messaging`, `workspace` | the brief, mailbox and delivery; the herdr client, tiling and balancing |
+| `telemetry`, `usage` | live token telemetry; what a run cost |
+| `vcs`, `measure`, `competition`, `evaluation`, `dataset` | the dataset mode: git, the event store, rounds, judging, promotion, export |
+
+The specs are `docs/specs/architecture.md` and
+`docs/specs/dataset-competition.md`.
+
+New contributors: start with [the handbook in `docs/`](docs/README.md).
+
 ## Tests
 
 ```bash
+just gate               # the per-commit gate: fmt, build, clippy, tests, roster, coverage
+just verify             # build, every test, requirement coverage, the e2e story
 cargo test              # unit tests, no herdr server needed
 horch smoke messaging   # against a live herdr server
 horch smoke fleet

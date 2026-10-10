@@ -21,6 +21,25 @@ generic: false
 # nothing. Distinct from a leading `_`, which means "not parsed at all".
 hidden: false
 
+# Name globs (`*` and `?`, case-sensitive). When set, the orchestrator is
+# offered this teammate only when the fleet's project has a matching file or
+# directory at the top level or one level down; any one match is enough.
+# `horch spawn <name>` still works in any project. Leave it out (the default)
+# and the teammate is offered everywhere. For domain teammates, e.g.
+#   offer_when: ["*.uproject"]
+#   offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]
+offer_when: []
+
+# Host tools this teammate cannot work without. `horch doctor` checks each one
+# when the project is offered this teammate. Values: xcode (`xcodebuild` on
+# PATH, with `sudo xcodebuild -runFirstLaunch` done), blender (`blender` on
+# PATH or `BLENDER_PATH`, and `blender --version` runs), godot (`GODOT_PATH`,
+# `godot` on PATH, or /Applications/Godot.app on macOS, and `godot --version`
+# reports 4.3 or later), git-lfs (`git lfs version` runs with `HORCH_GIT_BIN`
+# or `git` on PATH; in a project with a `*.uproject`, `.gitattributes` also
+# needs a `filter=lfs` rule for `*.uasset`).
+requires: []
+
 # ─── inherited base prompt ───────────────────────────────────────────────────
 # Names a file in _base/. The base carries the orchestrator-facing protocol -
 # horch tell / horch note / horch done, the blocked-and-wait rule, the
@@ -30,7 +49,7 @@ hidden: false
 base: fleet-worker
 
 # ─── which CLI, which model ──────────────────────────────────────────────────
-# agent: claude | codex | opencode | pi | prime | none
+# agent: claude | codex | opencode | pi | prime | antigravity | none
 #   ("none" = the smoke fake, spends no tokens)
 # Session handling is DERIVED from agent and is not configurable here:
 #   claude   -> horch mints the session id, passes --session-id / --resume
@@ -39,6 +58,8 @@ base: fleet-worker
 #   opencode -> harvested from `opencode session list --format json`
 #   prime    -> no --session-id at all; horch gives it a --session-dir it owns
 #               and reads back the session that appears there
+#   antigravity -> agy mints its own id; horch reads it back from
+#               ~/.gemini/antigravity-cli/cache/last_conversations.json
 agent: claude
 
 # claude:   a family alias (sonnet | opus) so it tracks the latest.
@@ -46,11 +67,21 @@ agent: claude
 # opencode: provider/model, e.g. opencode/big-pickle. `opencode models` lists
 #           them; the `opencode/...` provider is the free tier.
 # pi/prime: provider/model too, e.g. ollama/qwen3.8 or anthropic/claude-opus-5-5.
-# Not fable, and not gpt-6-astra: both top tiers are reserved for whichever
-# orchestrator is running, and `horch spawn` refuses to start a worker on
-# either. A fleet has exactly one top-tier session. Reach for opus or
-# codex-sol instead.
+# Not fable, and not gpt-6-astra: only the orchestrator and the 2 code-defined
+# creative seats may use those tiers. A seat starts only by its exact name;
+# routers, planners, fallbacks and competitions never choose it. Adding a file
+# cannot grant another seat. Reach for opus or codex-sol instead.
 model: opus
+
+# ─── usage limits ────────────────────────────────────────────────────────────
+# Teammates whose LAUNCH settings (agent, model, args, env, ...) a spawn
+# borrows when this teammate's usage pool is exhausted, broken or cooling -
+# or tight while a fallback has twice the headroom. This teammate's persona,
+# base, phase and skills stay. First usable entry wins; a fallback's own
+# fallbacks are never followed. Each must run on a different pool, and never
+# on a trains-on-input (opencode) teammate. `horch route <name>` shows what a
+# spawn would do right now.
+fallbacks: []
 
 # claude   -> `--effort <level>`   (low | medium | high | xhigh | max)
 #             Not on haiku: Haiku 4.5 has no effort setting.
@@ -67,9 +98,27 @@ model: opus
 # Same field, different mechanism per agent, and `horch teammates --check`
 # validates it per agent. `horch spawn --effort` overrides it for one spawn.
 # Levels are not comparable across vendors: "high" on codex is not "high" on
-# claude. See ai_docs/reports/model-guide-2026-09.md for why each teammate
-# runs at the level it does.
+# claude.
 effort: xhigh
+
+# ─── compaction amounts per teammate ────────────────────────────────────────
+# compact_at: horch's watch base. horch watches the lower of it and 80% of the
+#   native trigger, and at that token count asks the teammate to hand off and
+#   compact (`horch context`, `horch compact`, the `horch note` warning).
+#   50000 to 1000000. REQUIRED on a harness horch watches (not antigravity):
+#   `horch teammates --check` fails a built-in file without it.
+# compact_window: the harness's own auto-compact setting, when the operator's
+#   files set none: Claude CLAUDE_CODE_AUTO_COMPACT_WINDOW, Codex
+#   model_auto_compact_token_limit, Prime contextWindow. Not for opencode or
+#   antigravity (no lever). Never in `env:`, `settings:` or `args:`.
+# Native window, first match wins: the operator's own setting, this
+#   compact_window, `windows` of _base/context-windows.md, the harness default.
+# `--check` fails a window that leaves under 20000 tokens between the
+#   threshold and the native trigger. `horch context --windows` shows each value
+#   and its source. An operator overlay in ~/.config/horch/teammates/<name>.md
+#   replaces this whole entry, so copy these 2 lines into it.
+compact_window: 200000  # the fleet window for claude/opus
+compact_at: 300000
 
 # claude only. Sets CLAUDE_CODE_SUBAGENT_MODEL, i.e. the model this teammate's
 # OWN subagents run on. Only worth setting when the teammate delegates heavily
@@ -77,7 +126,8 @@ effort: xhigh
 subagent_model:
 
 # ─── skills ──────────────────────────────────────────────────────────────────
-# phase selects a portable repo-owned catalog on all five agent harnesses.
+# phase selects a portable repo-owned catalog on every harness that exposes
+# skills (not antigravity: agy has no skills-dir switch).
 # Values: research | plan | implementation | validation. null means no catalog.
 # `horch spawn --phase` overrides this; resume keeps its recorded phase.
 # skills adds named bundled skills to the phase catalog. Bodies load on demand.
@@ -86,20 +136,59 @@ phase: null
 plugin_dirs: []
 skills: []
 
+# available_skills offers further catalog skills by NAME ONLY: each one is
+# materialized with the launch and named under "Also available" in the
+# briefing, without its description. Use it for a related skill that is worth
+# one name in the briefing, not a full description. The harness still lists
+# every materialized skill's description in its own skill list, so keep the
+# list short. A name in both skills and available_skills fails --check.
+available_skills: []
+
+# skills_when adds catalog skills from project facts: a name glob (the same
+# entry names and rules as offer_when) maps to skills that join `skills` for a
+# launch in a project with a match. The ledger records them like any other
+# expected skill. Each skill must exist in the catalog, and a skill already in
+# skills fails --check. For a C# Godot project, e.g.
+#   skills_when: {"*.csproj": [godot-csharp-godot, godot-csharp-signals]}
+skills_when: {}
+
+# operator_skills copies skills from a directory on the operator's machine
+# into the launch bundle, on every harness that exposes skills. They are
+# never compiled in and never copied into this repo. Example, for skills that
+# `xcrun agent skills export` wrote:
+#   operator_skills:
+#     dir: ~/.agents/skills
+#     names: [swiftui-whats-new-27, test-modernizer]
+# - `~/` expands against the launch's home.
+# - Each name must be <dir>/<name>/SKILL.md, with a matching `name:`.
+# - They are EXPECTED skills, named with their descriptions, like skills:.
+# - A name that is also a bundled or marketplace skill fails: one bundle
+#   directory cannot hold both.
+# - A subagent skill (device-interaction, or a body that says "SUBAGENT
+#   skill" or "Agent tool") fails: fleet panes start no subagents.
+# - Launch copies each directory and checks the copy's digest.
+# `horch teammates --check` fails on a missing dir or name.
+operator_skills: null
+
 # claude only. claude.ai-synced skills are off in every fleet pane; set
 # `inherit_claudeai_skills: true` to keep them. (horch puts
 # syncClaudeAiSkills: false in its --settings overlay; that hides the
 # anthropic-skills:<name> entries for this session only and moves nothing.)
 # disabled_skills switches further skills off by name, e.g. ["dev-prime"],
 # as skillOverrides "off" entries. Settings merge per key, so the operator's
-# own skillOverrides still apply. Verified against Claude Code 2.1.278: this
-# hides a ~/.claude/skills entry, not only a plugin skill.
+# own skillOverrides still apply. This hides a ~/.claude/skills entry
+# (verified against Claude Code 2.1.278). It does NOT hide a plugin skill:
+# Claude Code 2.1.289 ignores a skillOverrides entry such as
+# "herdr:herdr-worker" from --settings. To hide a plugin's skills, set
+# `inherit_plugins: false` (horch writes enabledPlugins, "<plugin>@<marketplace>":
+# false), or load a filtered copy with `plugin_skills` below.
 # The bundled Claude teammates use it for one thing: the operator's stale
 # herdr-orchestrator and herdr-worker skills, whose descriptions trigger on
 # "herdr" and "horch" and whose content predates this horch CLI. The repo
 # carries the real briefing in teammates/_base/, so those copies only mislead
 # a pane. A plugin's copy keeps its plugin prefix and is a different name;
-# switch those off with the prefix, or with inherit_plugins: false.
+# a skillOverrides entry cannot switch it off on 2.1.289. Use
+# inherit_plugins: false, or plugin_skills.
 inherit_claudeai_skills: false
 disabled_skills: []
 
@@ -109,12 +198,16 @@ disabled_skills: []
 # - The named skills go into the worker's briefing, each with its SKILL.md
 #   description, as skills it is expected to use. (The bundled `skills:` above
 #   get the same treatment.) A bare list of names reads as optional.
-# - Every OTHER skill of that plugin is switched off for this session, as a
-#   `"<plugin>:<skill>": "off"` skillOverrides entry. So a marketplace plugin
-#   that ships twenty skills exposes only the two this role should use.
+# - The pane loads a filtered copy of the plugin from its skills bundle
+#   (--plugin-dir): the named skills, no other skill and no command. Its
+#   agents, hooks, MCP servers and scripts stay. The installed original goes
+#   off for this session and the copy goes on, even with inherit_plugins:
+#   false. So a marketplace plugin that ships twenty skills exposes only the
+#   two this role should use. (Claude Code 2.1.289 ignores skillOverrides for
+#   a plugin skill, so horch switches the plugin off with enabledPlugins and
+#   loads this copy instead.)
 # - The plugin is found in plugin_dirs first, then in the operator's
-#   ~/.claude/plugins/installed_plugins.json. An installed one stays enabled
-#   even with inherit_plugins: false.
+#   ~/.claude/plugins/installed_plugins.json.
 # `horch teammates --check` fails on an unknown plugin or skill, and when the
 # teammate has neither a phase nor skills (the briefing could not name them).
 plugin_skills: {}
@@ -169,8 +262,7 @@ permission_mode: acceptEdits
 #   asking for the deny, so a waived teammate really can spawn subagents.
 #
 # Other harnesses carry the same rule through their own switch. Codex uses
-# `args: ["-c", "features.multi_agent=false"]`. See
-# `ai_docs/reports/no-subagents.md` for the evidence per harness.
+# `args: ["-c", "features.multi_agent=false"]`.
 tools:
 allowed_tools: []
 disallowed_tools: [Agent]
@@ -218,6 +310,21 @@ setting_sources:
 # the skill bundle merges horch's switches into this file.
 settings:
 
+# sandbox -> the `sandbox` object of Claude's settings, put in the --settings
+#   overlay (code.claude.com/docs/en/settings-reference, "Sandbox settings").
+#   Claude only. The OS (Seatbelt on macOS, bubblewrap on Linux) holds every
+#   Bash command and its children to it, so `sh -c` or `unset` cannot step
+#   out. Omit = no sandbox. When set, horch always adds enabled: true,
+#   failIfUnavailable: true, allowUnsandboxedCommands: false,
+#   network.strictAllowlist: true and
+#   permissions.blockReadsOutsideWorkingDirectories: true (the Read tool is
+#   outside the sandbox, and this key closes the home directory to it and
+#   to Bash). Re-open paths with filesystem.allowRead. The launch refuses a
+#   host that cannot sandbox. `horch teammates --check` fails a non-claude
+#   agent, a settings file, a value against a forced key, excludedCommands
+#   and filesystem.disabled. See app-release-preparer.md.
+sandbox:
+
 # mcp_servers -> --mcp-config '{"mcpServers": {...}}' --strict-mcp-config
 #   Omit the key = leave the operator's MCP configuration alone.
 #   {} (empty)   = exactly zero MCP servers. `--strict-mcp-config` is what
@@ -235,6 +342,13 @@ mcp_config_files: []
 #   claude e.g. ["--permission-mode", "acceptEdits"]
 #   codex  e.g. ["-s", "workspace-write"] or ["-p", "some-codex-profile"]
 args: []
+# env: set on the CLI's process, never through a shell. A value that starts
+# with `~/` expands against the launch's home. NO SECRETS: point at a file the
+# operator owns instead (see app-release-preparer.md).
+# A value that is exactly `{path_of:<tool>}` becomes the path of that host
+# tool (today: `blender`, found like `horch doctor` finds it). When the tool
+# is not found, the variable is left out and the launch goes on.
+# Harness-wide defaults: _base/harness-defaults.md.
 env: {}
 
 # ─── first instruction ───────────────────────────────────────────────────────

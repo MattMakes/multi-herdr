@@ -12,6 +12,8 @@ rules:
     justification: report results to the fleet orchestrator
   - pattern: '"horch", "note"'
     justification: record progress in the session ledger
+  - pattern: '"horch", "skills", "read"'
+    justification: read a catalog skill that the bundle does not hold
   - pattern: '"horch", "done"'
     justification: mark session done and close own pane
 ---

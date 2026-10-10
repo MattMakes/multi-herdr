@@ -6,9 +6,13 @@ base: fleet-worker
 agent: codex
 phase: implementation
 model: gpt-5.6-sol
+# When this model's usage pool cannot serve a spawn (horch route codex-network).
+fallbacks: [opus]
 # Set explicitly: unset, the pane inherits ~/.codex/config.toml. medium, the
 # same builder level as codex-sol.
 effort: medium
+compact_window: 200000
+compact_at: 160000
 # Network on is the risk this teammate exists to contain. Every other codex
 # teammate runs `auto` (-a never) with the sandbox's network off: nothing a
 # prompt-injected worker reads can make it send code out or pull code in.

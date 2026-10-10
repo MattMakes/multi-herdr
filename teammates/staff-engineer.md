@@ -5,16 +5,21 @@ base: fleet-worker
 agent: claude
 phase: plan
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route staff-engineer).
+fallbacks: [codex-sol]
 # high: plans and product calls are where a wrong turn is expensive, but
-# the orchestrator above already runs at xhigh. (ai_docs/reports/model-guide-2026-09.md)
+# the orchestrator above already runs at xhigh.
 effort: high
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 subagent_model: haiku
 
 # Plans, not code: it reads widely and writes one file. The operator's global
 # plugins are switched off; the portable plan skills are supplied by horch.
 inherit_plugins: false
-skills: [create-plan, pre-flight]
+skills: [create-plan, pre-flight, system-design, codebase-design]
+available_skills: [api-contracts, data-migrations, improve-codebase-architecture]
 mcp_servers: {}
 first_instruction: |-
   Write the plan to a file under ai_docs/ and reply with the file path. Do not

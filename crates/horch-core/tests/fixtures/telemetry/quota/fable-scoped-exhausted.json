@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "written_at": "2026-09-28T17:55:00Z",
+  "pools": {
+    "claude": {
+      "state": "?",
+      "observed_at": "2026-09-28T17:55:00Z",
+      "source": "get_usage",
+      "harness_version": "2.1.284",
+      "windows": [
+        {
+          "name": "5h",
+          "minutes": 300,
+          "scope_model": null,
+          "used": 0.03,
+          "resets_at": "2026-09-28T19:19:59Z"
+        },
+        {
+          "name": "7d",
+          "minutes": 10080,
+          "scope_model": null,
+          "used": 0.4,
+          "resets_at": "2026-10-02T13:59:59Z"
+        },
+        {
+          "name": "7d",
+          "minutes": 10080,
+          "scope_model": "fable",
+          "used": 0.99,
+          "resets_at": "2026-10-02T13:59:59Z"
+        }
+      ],
+      "refusal_seen_at": null,
+      "error": null
+    },
+    "codex": {
+      "state": "?",
+      "observed_at": "2026-09-28T17:55:00Z",
+      "source": "app-server",
+      "harness_version": "0.158.0",
+      "windows": [
+        {
+          "name": "7d",
+          "minutes": 10080,
+          "scope_model": null,
+          "used": 0.12,
+          "resets_at": "2026-10-03T19:15:49Z"
+        }
+      ],
+      "ordinary_usage_allowed": true,
+      "error": null
+    },
+    "opencode-zen": {
+      "state": "ok",
+      "observed_at": "2026-09-28T17:55:00Z",
+      "no_signal": true,
+      "cooling_until": null
+    },
+    "local": {
+      "state": "ok",
+      "observed_at": "2026-09-28T17:55:00Z",
+      "error": null
+    }
+  }
+}

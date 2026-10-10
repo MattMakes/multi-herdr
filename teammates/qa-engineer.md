@@ -5,10 +5,14 @@ base: fleet-worker
 agent: claude
 phase: validation
 model: sonnet
+# When this model's usage pool cannot serve a spawn (horch route qa-engineer).
+fallbacks: [codex-terra]
 # high: a missed finding costs a review round, which cost more than the
 # review itself in cezaar#40's baseline (reviewers+judges were 71% of worker
-# spend at xhigh). high, not xhigh: diminishing returns above it. (ai_docs/reports/model-guide-2026-09.md)
+# spend at xhigh). high, not xhigh: diminishing returns above it.
 effort: high
+compact_window: 150000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [check, debug, tdd]

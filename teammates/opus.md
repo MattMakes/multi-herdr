@@ -6,13 +6,18 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route opus).
+fallbacks: [codex-sol]
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. cezaar#40 runs builders low; medium because our briefs are not
-# always complete specs. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)
+# always complete specs. Raise one spawn with --effort.
 effort: medium
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
+available_skills: [codebase-design]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker,
                   "herdr:herdr-orchestrator", "herdr:herdr-worker"]

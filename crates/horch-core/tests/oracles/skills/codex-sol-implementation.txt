@@ -1,0 +1,3 @@
+
+
+Fleet skill phase: implementation. Available native skills: check, codebase-design, debug, execute, handoff, tdd. Load only the skill matching your current step; do not read every skill at startup. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.

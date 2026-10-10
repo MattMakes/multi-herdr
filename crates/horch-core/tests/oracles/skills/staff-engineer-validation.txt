@@ -1,0 +1,8 @@
+
+
+Fleet skill phase: validation. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:
+- horch:create-plan: Use when a design or requirements are settled and need executable implementation tasks with verification.
+- horch:pre-flight: Use before executing a plan to verify wiring, contracts, preservation, configuration, and prerequisites against source.
+- horch:system-design: Use before writing an implementation plan for a change that crosses components, adds a service or store, changes a data shape, or is hard to undo - frames constraints, compares real options with their tradeoffs, maps data flow and failure modes, sets the migration and rollout order, sizes the blast radius, and records the decision so a planner and a junior builder can work from it.
+- horch:codebase-design: Shared vocabulary for designing deep modules. Use when the task is to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary.
+Also available in this phase: horch:api-contracts, horch:check, horch:code-analysis, horch:code-review, horch:data-migrations, horch:document, horch:handoff, horch:improve-codebase-architecture, horch:security-review. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Your skills name 2 skills that are not in this bundle, for example tdd, trace. Read one with horch skills read <id> only when your step needs it. Report unresolved dependencies through horch tell orchestrator.

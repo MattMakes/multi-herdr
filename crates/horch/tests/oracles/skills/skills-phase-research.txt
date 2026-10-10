@@ -1,0 +1,6 @@
+Phase: research
+  brainstorm         Use when refining a feature, rewrite, or refactor into a design before implementation planning.
+  research-codebase  Use when answering how an existing codebase works or locating its components and relationships.
+  trace              Use when tracing an endpoint, function, event, job, or comparing behavior across old and new implementations.
+  handoff            Use when work must transfer to another worker or continue after context loss.
+Metadata: 415 bytes (~104 tokens, estimate only); workflows load on demand.

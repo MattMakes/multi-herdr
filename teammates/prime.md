@@ -9,7 +9,10 @@ phase: implementation
 # $0.50) and better on the published benchmarks (cezaar#41). medium, because
 # long exploratory runs multiply every thinking token (cezaar#40 researchers).
 model: anthropic/claude-opus-5-5
+# When this model's usage pool cannot serve a spawn (horch route prime).
+fallbacks: [codex-sol]
 effort: medium
+compact_at: 146892
 
 # Prime Agent gives the model a single tool - a persistent IPython kernel - and
 # lets it rewrite its own prompts, skills and sub-agents mid-run. That suits work
@@ -22,8 +25,15 @@ effort: medium
 # each Prime pane its own --daemon-socket and --session-dir, so closing the pane
 # stops that worker's daemon and nothing else - see crates/horch-core/src/prime.rs.
 inherit_plugins: false
+
+# The native window (plans_to_improve §2.3; applies only when ~/.prime/agent
+# sets no window). horch writes it into this pane's own agent dir as a
+# models.json contextWindow override; ~/.prime/agent is never written.
+compact_window: 200000
 ---
 Your tier: PRIME - a persistent Python kernel is your only tool, and your
 harness state is yours to modify. Use that for work that benefits from it:
 long runs, data wrangling, exploration you can build on. Do not rewrite
 your own instructions to widen the task you were given.
+Do not run `/login`, `/logout`, `mcp add` or `mcp remove` in this pane;
+ask the orchestrator.

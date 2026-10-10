@@ -1,0 +1,6 @@
+; Fixture project for scripts/godot/gameplay_scenarios.py (U-25).
+; The runner writes the gdscript blocks of skills/godot-economy-system into res://skill/.
+config_version=5
+
+[application]
+config/name="godot-economy-system-scenario"

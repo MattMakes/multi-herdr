@@ -1,0 +1,7 @@
+
+
+Fleet skill phase: implementation. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:
+- horch:trace: Use when tracing an endpoint, function, event, job, or comparing behavior across old and new implementations.
+- horch:codebase-design: Shared vocabulary for designing deep modules. Use when the task is to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary.
+- horch:improve-codebase-architecture: Use when asked to find architectural friction or deepening opportunities in a codebase. Scans for shallow modules, writes a visual HTML report of candidates, then works through the chosen one with the orchestrator.
+Also available in this phase: horch:check, horch:debug, horch:execute, horch:handoff, horch:tdd. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Report unresolved dependencies through horch tell orchestrator.

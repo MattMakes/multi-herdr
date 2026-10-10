@@ -1,0 +1,2 @@
+fresh: ["/fake/prime-agent","--model","anthropic/claude-opus-5-5","--thinking","medium","--no-extensions","--no-skills","--no-prompt-templates","--no-themes","--daemon-socket","<DAEMON>/d.sock","--session-dir","<DAEMON>/sessions","--","P"]
+resume: ["/fake/prime-agent","--model","anthropic/claude-opus-5-5","--thinking","medium","--no-extensions","--no-skills","--no-prompt-templates","--no-themes","--resume","/s/old.jsonl","--daemon-socket","<DAEMON>/d.sock","--session-dir","<DAEMON>/sessions","--","P"]

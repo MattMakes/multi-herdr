@@ -1,0 +1,1299 @@
+{
+ "schema": 1,
+ "generated_at": "2026-09-28T17:42:00Z",
+ "collector": {
+  "pid": 4242,
+  "version": "0.1.0",
+  "started_at": "2026-09-28T09:00:00Z"
+ },
+ "pools": {
+  "claude": {
+   "state": "exhausted",
+   "reason": "7d 100%, resets 2026-10-02T13:59:59Z (>= 0.98)",
+   "observed_at": "2026-09-28T17:25:02Z",
+   "source": "get_usage",
+   "harness_version": "2.1.284",
+   "windows": [
+    {
+     "name": "5h",
+     "minutes": 300,
+     "scope_model": null,
+     "used": 0.03,
+     "resets_at": "2026-09-28T19:19:59Z"
+    },
+    {
+     "name": "7d",
+     "minutes": 10080,
+     "scope_model": null,
+     "used": 1.0,
+     "resets_at": "2026-10-02T13:59:59Z"
+    },
+    {
+     "name": "7d",
+     "minutes": 10080,
+     "scope_model": "fable",
+     "used": 0.03,
+     "resets_at": "2026-10-02T13:59:59Z"
+    }
+   ],
+   "error": null
+  },
+  "codex": {
+   "state": "exhausted",
+   "reason": "7d 99%, resets 2026-10-03T19:15:49Z (>= 0.98)",
+   "observed_at": "2026-09-28T17:25:03Z",
+   "source": "app-server",
+   "windows": [
+    {
+     "name": "7d",
+     "minutes": 10080,
+     "scope_model": null,
+     "used": 0.99,
+     "resets_at": "2026-10-03T19:15:49Z"
+    }
+   ],
+   "ordinary_usage_allowed": true,
+   "error": null
+  },
+  "opencode-zen": {
+   "state": "ok",
+   "reason": "no signal (no quota endpoint exists)",
+   "observed_at": "2026-09-28T17:25:03Z",
+   "no_signal": true,
+   "windows": []
+  },
+  "local": {
+   "state": "broken",
+   "reason": "pi --version exited 1",
+   "observed_at": "2026-09-28T17:25:03Z",
+   "windows": [],
+   "error": "pi --version exited 1"
+  }
+ },
+ "live": [
+  {
+   "project": "/Users/x/games/lawn-mower-manor",
+   "record_id": "l1",
+   "role": "orchestrator",
+   "teammate": "orchestrator",
+   "via": null,
+   "kind": "orchestrator",
+   "agent": "claude",
+   "model": "claude-opus-5-5",
+   "effort": "xhigh",
+   "phase": "plan",
+   "plan": null,
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 38.76,
+   "rate_tokens_per_min": 0,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": true,
+   "pool": "claude",
+   "pool_state": "ok"
+  },
+  {
+   "project": "/Users/x/games/lawn-mower-manor",
+   "record_id": "l2",
+   "role": "steward",
+   "teammate": "steward",
+   "via": null,
+   "kind": "worker",
+   "agent": "claude",
+   "model": "claude-sonnet-5",
+   "effort": "xhigh",
+   "phase": "implementation",
+   "plan": "steward",
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 9.02,
+   "rate_tokens_per_min": 1200,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": false,
+   "pool": "claude",
+   "pool_state": "ok"
+  },
+  {
+   "project": "/Users/x/work/lawn-mower-manor",
+   "record_id": "l3",
+   "role": "orchestrator",
+   "teammate": "orchestrator",
+   "via": null,
+   "kind": "orchestrator",
+   "agent": "claude",
+   "model": "claude-opus-5-5",
+   "effort": "xhigh",
+   "phase": "plan",
+   "plan": null,
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 216.53,
+   "rate_tokens_per_min": 47000,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": false,
+   "pool": "claude",
+   "pool_state": "tight"
+  },
+  {
+   "project": "/Users/x/work/lawn-mower-manor",
+   "record_id": "l4",
+   "role": "architect-reviewer-1",
+   "teammate": "architect-reviewer",
+   "via": null,
+   "kind": "worker",
+   "agent": "claude",
+   "model": "claude-opus-5-5",
+   "effort": "xhigh",
+   "phase": null,
+   "plan": null,
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 28.38,
+   "rate_tokens_per_min": 0,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": true,
+   "pool": "claude",
+   "pool_state": "tight"
+  },
+  {
+   "project": "/Users/x/projects/prophecy-content-pipeline",
+   "record_id": "l5",
+   "role": "orchestrator",
+   "teammate": "orchestrator",
+   "via": null,
+   "kind": "orchestrator",
+   "agent": "claude",
+   "model": "claude-opus-5-5",
+   "effort": "xhigh",
+   "phase": "plan",
+   "plan": null,
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 1234.56,
+   "rate_tokens_per_min": 94000,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": false,
+   "pool": "claude",
+   "pool_state": "ok",
+   "unpriced_events": 2
+  },
+  {
+   "project": "/Users/x/projects/prophecy-content-pipeline",
+   "record_id": "l6",
+   "role": "swift-developer-12",
+   "teammate": "swift-developer",
+   "via": null,
+   "kind": "worker",
+   "agent": "claude",
+   "model": "claude-opus-5-5",
+   "effort": "xhigh",
+   "phase": "implementation",
+   "plan": "timeline-integration-wave7",
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 1.85,
+   "rate_tokens_per_min": 24000,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": false,
+   "pool": "claude",
+   "pool_state": "ok"
+  },
+  {
+   "project": "/Users/x/projects/prophecy-content-pipeline",
+   "record_id": "l7",
+   "role": "researcher-77",
+   "teammate": "researcher",
+   "via": null,
+   "kind": "worker",
+   "agent": "claude",
+   "model": "claude-opus-5-5",
+   "effort": "xhigh",
+   "phase": "research",
+   "plan": "port-content-journeys",
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 5.23,
+   "rate_tokens_per_min": 0,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": true,
+   "pool": "claude",
+   "pool_state": "ok"
+  },
+  {
+   "project": "/Users/x/projects/prophecy-content-pipeline",
+   "record_id": "l8",
+   "role": "codex-reviewer-2",
+   "teammate": "codex-reviewer",
+   "via": null,
+   "kind": "worker",
+   "agent": "claude",
+   "model": "gpt-5.6-sol",
+   "effort": "xhigh",
+   "phase": "validation",
+   "plan": null,
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 3.26,
+   "rate_tokens_per_min": 126000,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": false,
+   "pool": "codex",
+   "pool_state": "exhausted"
+  },
+  {
+   "project": "/Users/x/multi-herdr",
+   "record_id": "l9",
+   "role": "opencode-pickle-2",
+   "teammate": "opencode-pickle",
+   "via": null,
+   "kind": "worker",
+   "agent": "claude",
+   "model": "big-pickle",
+   "effort": "xhigh",
+   "phase": "implementation",
+   "plan": null,
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 0.0,
+   "rate_tokens_per_min": 0,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": true,
+   "pool": "opencode-zen",
+   "pool_state": "ok"
+  },
+  {
+   "project": "/Users/x/multi-herdr",
+   "record_id": "l10",
+   "role": "researcher-1",
+   "teammate": "researcher",
+   "via": "codex-sol",
+   "kind": "worker",
+   "agent": "claude",
+   "model": "gpt-5.6-terra",
+   "effort": "xhigh",
+   "phase": "research",
+   "plan": null,
+   "status": "working",
+   "task_head": "(orchestrating)",
+   "tokens": {
+    "input": 12000,
+    "cache_write_5m": 100000,
+    "cache_write_1h": 300000,
+    "cache_read": 9800000,
+    "output": 61000,
+    "reasoning": 20000
+   },
+   "cost_usd": 0.46,
+   "rate_tokens_per_min": 0,
+   "rate_usd_per_hour": 3.9,
+   "last_event_at": "2026-09-28T17:41:58Z",
+   "idle": false,
+   "pool": "codex",
+   "pool_state": "exhausted"
+  }
+ ],
+ "rollups": {
+  "5h": {
+   "by_teammate": [
+    {
+     "key": "opus",
+     "tokens": {
+      "input": 1000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 80000000,
+      "output": 2000000,
+      "reasoning": 0
+     },
+     "cost_usd": 20.6,
+     "records": 50,
+     "done": 45,
+     "cache_hit": 0.93,
+     "cost_per_done": 9.2
+    },
+    {
+     "key": "orchestrator",
+     "tokens": {
+      "input": 400000,
+      "cache_write_5m": 300000,
+      "cache_write_1h": 600000,
+      "cache_read": 39000000,
+      "output": 700000,
+      "reasoning": 0
+     },
+     "cost_usd": 11.5,
+     "records": 6,
+     "done": 5,
+     "cache_hit": 0.96,
+     "cost_per_done": null
+    },
+    {
+     "key": "sonnet",
+     "tokens": {
+      "input": 300000,
+      "cache_write_5m": 200000,
+      "cache_write_1h": 100000,
+      "cache_read": 20000000,
+      "output": 400000,
+      "reasoning": 0
+     },
+     "cost_usd": 3.0,
+     "records": 30,
+     "done": 28,
+     "cache_hit": 0.95,
+     "cost_per_done": 2.1
+    },
+    {
+     "key": "codex-sol",
+     "tokens": {
+      "input": 900000,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "cache_read": 7000000,
+      "output": 300000,
+      "reasoning": 0
+     },
+     "cost_usd": 7.5,
+     "records": 12,
+     "done": 10,
+     "cache_hit": 0.89,
+     "cost_per_done": 14.0
+    },
+    {
+     "key": "architect-reviewer-with-a-very-long-name",
+     "tokens": {
+      "input": 1000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 80000000,
+      "output": 2000000,
+      "reasoning": 0
+     },
+     "cost_usd": 12.5,
+     "records": 50,
+     "done": 45,
+     "cache_hit": 0.93,
+     "cost_per_done": 9.2
+    }
+   ],
+   "by_phase": [
+    {
+     "key": "implementation",
+     "tokens": {
+      "input": 1500000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 90000000,
+      "output": 2500000,
+      "reasoning": 0
+     },
+     "cost_usd": 26.0,
+     "records": 70,
+     "done": 65,
+     "cache_hit": 0.94,
+     "cost_per_done": 8.0
+    },
+    {
+     "key": "plan",
+     "tokens": {
+      "input": 1100000,
+      "cache_write_5m": 500000,
+      "cache_write_1h": 800000,
+      "cache_read": 56000000,
+      "output": 900000,
+      "reasoning": 0
+     },
+     "cost_usd": 16.6,
+     "records": 28,
+     "done": 23,
+     "cache_hit": 0.95,
+     "cost_per_done": null
+    }
+   ],
+   "by_agent": [
+    {
+     "key": "claude",
+     "tokens": {
+      "input": 1700000,
+      "cache_write_5m": 2500000,
+      "cache_write_1h": 3700000,
+      "cache_read": 139000000,
+      "output": 3100000,
+      "reasoning": 0
+     },
+     "cost_usd": 35.1,
+     "records": 86,
+     "done": 78,
+     "cache_hit": 0.95,
+     "cost_per_done": 8.8
+    },
+    {
+     "key": "codex",
+     "tokens": {
+      "input": 900000,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "cache_read": 7000000,
+      "output": 300000,
+      "reasoning": 0
+     },
+     "cost_usd": 7.5,
+     "records": 12,
+     "done": 10,
+     "cache_hit": 0.89,
+     "cost_per_done": 14.0
+    }
+   ],
+   "by_project": [
+    {
+     "key": "/Users/x/games/lawn-mower-manor",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 412.0,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "/Users/x/work/lawn-mower-manor",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 1349.72,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "/Users/x/projects/prophecy-content-pipeline",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 152.5,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "/Users/x/multi-herdr",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 60.0,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "-",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 3.1,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    }
+   ],
+   "by_plan": [
+    {
+     "key": "golden-prompts-whitespace",
+     "tokens": {
+      "input": 500000,
+      "cache_write_5m": 300000,
+      "cache_write_1h": 400000,
+      "cache_read": 30000000,
+      "output": 700000,
+      "reasoning": 0
+     },
+     "cost_usd": 9.0,
+     "records": 20,
+     "done": 20,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "-",
+     "tokens": {
+      "input": 2100000,
+      "cache_write_5m": 2200000,
+      "cache_write_1h": 3300000,
+      "cache_read": 116000000,
+      "output": 2700000,
+      "reasoning": 0
+     },
+     "cost_usd": 33.6,
+     "records": 78,
+     "done": 68,
+     "cache_hit": 0.94,
+     "cost_per_done": null
+    }
+   ],
+   "by_kind": [
+    {
+     "key": "worker",
+     "tokens": {
+      "input": 2200000,
+      "cache_write_5m": 2200000,
+      "cache_write_1h": 3100000,
+      "cache_read": 107000000,
+      "output": 2700000,
+      "reasoning": 0
+     },
+     "cost_usd": 31.1,
+     "records": 92,
+     "done": 83,
+     "cache_hit": 0.94,
+     "cost_per_done": 7.5
+    },
+    {
+     "key": "orchestrator",
+     "tokens": {
+      "input": 400000,
+      "cache_write_5m": 300000,
+      "cache_write_1h": 600000,
+      "cache_read": 39000000,
+      "output": 700000,
+      "reasoning": 0
+     },
+     "cost_usd": 11.5,
+     "records": 6,
+     "done": 5,
+     "cache_hit": 0.96,
+     "cost_per_done": null
+    }
+   ]
+  },
+  "today": {
+   "by_teammate": [
+    {
+     "key": "opus",
+     "tokens": {
+      "input": 1000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 80000000,
+      "output": 2000000,
+      "reasoning": 0
+     },
+     "cost_usd": 82.4,
+     "records": 50,
+     "done": 45,
+     "cache_hit": 0.93,
+     "cost_per_done": 9.2
+    },
+    {
+     "key": "orchestrator",
+     "tokens": {
+      "input": 400000,
+      "cache_write_5m": 300000,
+      "cache_write_1h": 600000,
+      "cache_read": 39000000,
+      "output": 700000,
+      "reasoning": 0
+     },
+     "cost_usd": 46.0,
+     "records": 6,
+     "done": 5,
+     "cache_hit": 0.96,
+     "cost_per_done": null
+    },
+    {
+     "key": "sonnet",
+     "tokens": {
+      "input": 300000,
+      "cache_write_5m": 200000,
+      "cache_write_1h": 100000,
+      "cache_read": 20000000,
+      "output": 400000,
+      "reasoning": 0
+     },
+     "cost_usd": 12.0,
+     "records": 30,
+     "done": 28,
+     "cache_hit": 0.95,
+     "cost_per_done": 2.1
+    },
+    {
+     "key": "codex-sol",
+     "tokens": {
+      "input": 900000,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "cache_read": 7000000,
+      "output": 300000,
+      "reasoning": 0
+     },
+     "cost_usd": 30.0,
+     "records": 12,
+     "done": 10,
+     "cache_hit": 0.89,
+     "cost_per_done": 14.0
+    },
+    {
+     "key": "architect-reviewer-with-a-very-long-name",
+     "tokens": {
+      "input": 1000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 80000000,
+      "output": 2000000,
+      "reasoning": 0
+     },
+     "cost_usd": 12.5,
+     "records": 50,
+     "done": 45,
+     "cache_hit": 0.93,
+     "cost_per_done": 9.2
+    }
+   ],
+   "by_phase": [
+    {
+     "key": "implementation",
+     "tokens": {
+      "input": 1500000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 90000000,
+      "output": 2500000,
+      "reasoning": 0
+     },
+     "cost_usd": 104.0,
+     "records": 70,
+     "done": 65,
+     "cache_hit": 0.94,
+     "cost_per_done": 8.0
+    },
+    {
+     "key": "plan",
+     "tokens": {
+      "input": 1100000,
+      "cache_write_5m": 500000,
+      "cache_write_1h": 800000,
+      "cache_read": 56000000,
+      "output": 900000,
+      "reasoning": 0
+     },
+     "cost_usd": 66.4,
+     "records": 28,
+     "done": 23,
+     "cache_hit": 0.95,
+     "cost_per_done": null
+    }
+   ],
+   "by_agent": [
+    {
+     "key": "claude",
+     "tokens": {
+      "input": 1700000,
+      "cache_write_5m": 2500000,
+      "cache_write_1h": 3700000,
+      "cache_read": 139000000,
+      "output": 3100000,
+      "reasoning": 0
+     },
+     "cost_usd": 140.4,
+     "records": 86,
+     "done": 78,
+     "cache_hit": 0.95,
+     "cost_per_done": 8.8
+    },
+    {
+     "key": "codex",
+     "tokens": {
+      "input": 900000,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "cache_read": 7000000,
+      "output": 300000,
+      "reasoning": 0
+     },
+     "cost_usd": 30.0,
+     "records": 12,
+     "done": 10,
+     "cache_hit": 0.89,
+     "cost_per_done": 14.0
+    }
+   ],
+   "by_project": [
+    {
+     "key": "/Users/x/games/lawn-mower-manor",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 412.0,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "/Users/x/work/lawn-mower-manor",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 1349.72,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "/Users/x/projects/prophecy-content-pipeline",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 152.5,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "/Users/x/multi-herdr",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 60.0,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "-",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 3.1,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    }
+   ],
+   "by_plan": [
+    {
+     "key": "golden-prompts-whitespace",
+     "tokens": {
+      "input": 500000,
+      "cache_write_5m": 300000,
+      "cache_write_1h": 400000,
+      "cache_read": 30000000,
+      "output": 700000,
+      "reasoning": 0
+     },
+     "cost_usd": 36.0,
+     "records": 20,
+     "done": 20,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "-",
+     "tokens": {
+      "input": 2100000,
+      "cache_write_5m": 2200000,
+      "cache_write_1h": 3300000,
+      "cache_read": 116000000,
+      "output": 2700000,
+      "reasoning": 0
+     },
+     "cost_usd": 134.4,
+     "records": 78,
+     "done": 68,
+     "cache_hit": 0.94,
+     "cost_per_done": null
+    }
+   ],
+   "by_kind": [
+    {
+     "key": "worker",
+     "tokens": {
+      "input": 2200000,
+      "cache_write_5m": 2200000,
+      "cache_write_1h": 3100000,
+      "cache_read": 107000000,
+      "output": 2700000,
+      "reasoning": 0
+     },
+     "cost_usd": 124.4,
+     "records": 92,
+     "done": 83,
+     "cache_hit": 0.94,
+     "cost_per_done": 7.5
+    },
+    {
+     "key": "orchestrator",
+     "tokens": {
+      "input": 400000,
+      "cache_write_5m": 300000,
+      "cache_write_1h": 600000,
+      "cache_read": 39000000,
+      "output": 700000,
+      "reasoning": 0
+     },
+     "cost_usd": 46.0,
+     "records": 6,
+     "done": 5,
+     "cache_hit": 0.96,
+     "cost_per_done": null
+    }
+   ]
+  },
+  "7d": {
+   "by_teammate": [
+    {
+     "key": "opus",
+     "tokens": {
+      "input": 1000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 80000000,
+      "output": 2000000,
+      "reasoning": 0
+     },
+     "cost_usd": 412.0,
+     "records": 50,
+     "done": 45,
+     "cache_hit": 0.93,
+     "cost_per_done": 9.2
+    },
+    {
+     "key": "orchestrator",
+     "tokens": {
+      "input": 400000,
+      "cache_write_5m": 300000,
+      "cache_write_1h": 600000,
+      "cache_read": 39000000,
+      "output": 700000,
+      "reasoning": 0
+     },
+     "cost_usd": 230.0,
+     "records": 6,
+     "done": 5,
+     "cache_hit": 0.96,
+     "cost_per_done": null
+    },
+    {
+     "key": "sonnet",
+     "tokens": {
+      "input": 300000,
+      "cache_write_5m": 200000,
+      "cache_write_1h": 100000,
+      "cache_read": 20000000,
+      "output": 400000,
+      "reasoning": 0
+     },
+     "cost_usd": 60.0,
+     "records": 30,
+     "done": 28,
+     "cache_hit": 0.95,
+     "cost_per_done": 2.1
+    },
+    {
+     "key": "codex-sol",
+     "tokens": {
+      "input": 900000,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "cache_read": 7000000,
+      "output": 300000,
+      "reasoning": 0
+     },
+     "cost_usd": 150.0,
+     "records": 12,
+     "done": 10,
+     "cache_hit": 0.89,
+     "cost_per_done": 14.0
+    },
+    {
+     "key": "architect-reviewer-with-a-very-long-name",
+     "tokens": {
+      "input": 1000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 80000000,
+      "output": 2000000,
+      "reasoning": 0
+     },
+     "cost_usd": 12.5,
+     "records": 50,
+     "done": 45,
+     "cache_hit": 0.93,
+     "cost_per_done": 9.2
+    }
+   ],
+   "by_phase": [
+    {
+     "key": "implementation",
+     "tokens": {
+      "input": 1500000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 90000000,
+      "output": 2500000,
+      "reasoning": 0
+     },
+     "cost_usd": 520.0,
+     "records": 70,
+     "done": 65,
+     "cache_hit": 0.94,
+     "cost_per_done": 8.0
+    },
+    {
+     "key": "plan",
+     "tokens": {
+      "input": 1100000,
+      "cache_write_5m": 500000,
+      "cache_write_1h": 800000,
+      "cache_read": 56000000,
+      "output": 900000,
+      "reasoning": 0
+     },
+     "cost_usd": 332.0,
+     "records": 28,
+     "done": 23,
+     "cache_hit": 0.95,
+     "cost_per_done": null
+    }
+   ],
+   "by_agent": [
+    {
+     "key": "claude",
+     "tokens": {
+      "input": 1700000,
+      "cache_write_5m": 2500000,
+      "cache_write_1h": 3700000,
+      "cache_read": 139000000,
+      "output": 3100000,
+      "reasoning": 0
+     },
+     "cost_usd": 702.0,
+     "records": 86,
+     "done": 78,
+     "cache_hit": 0.95,
+     "cost_per_done": 8.8
+    },
+    {
+     "key": "codex",
+     "tokens": {
+      "input": 900000,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "cache_read": 7000000,
+      "output": 300000,
+      "reasoning": 0
+     },
+     "cost_usd": 150.0,
+     "records": 12,
+     "done": 10,
+     "cache_hit": 0.89,
+     "cost_per_done": 14.0
+    }
+   ],
+   "by_project": [
+    {
+     "key": "/Users/x/games/lawn-mower-manor",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 412.0,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "/Users/x/work/lawn-mower-manor",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 1349.72,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "/Users/x/projects/prophecy-content-pipeline",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 152.5,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "/Users/x/multi-herdr",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 60.0,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "-",
+     "tokens": {
+      "input": 2000000,
+      "cache_write_5m": 2000000,
+      "cache_write_1h": 3000000,
+      "cache_read": 120000000,
+      "output": 3000000,
+      "reasoning": 0
+     },
+     "cost_usd": 3.1,
+     "records": 80,
+     "done": 72,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    }
+   ],
+   "by_plan": [
+    {
+     "key": "golden-prompts-whitespace",
+     "tokens": {
+      "input": 500000,
+      "cache_write_5m": 300000,
+      "cache_write_1h": 400000,
+      "cache_read": 30000000,
+      "output": 700000,
+      "reasoning": 0
+     },
+     "cost_usd": 180.0,
+     "records": 20,
+     "done": 20,
+     "cache_hit": 0.95,
+     "cost_per_done": 9.0
+    },
+    {
+     "key": "-",
+     "tokens": {
+      "input": 2100000,
+      "cache_write_5m": 2200000,
+      "cache_write_1h": 3300000,
+      "cache_read": 116000000,
+      "output": 2700000,
+      "reasoning": 0
+     },
+     "cost_usd": 672.0,
+     "records": 78,
+     "done": 68,
+     "cache_hit": 0.94,
+     "cost_per_done": null
+    }
+   ],
+   "by_kind": [
+    {
+     "key": "worker",
+     "tokens": {
+      "input": 2200000,
+      "cache_write_5m": 2200000,
+      "cache_write_1h": 3100000,
+      "cache_read": 107000000,
+      "output": 2700000,
+      "reasoning": 0
+     },
+     "cost_usd": 622.0,
+     "records": 92,
+     "done": 83,
+     "cache_hit": 0.94,
+     "cost_per_done": 7.5
+    },
+    {
+     "key": "orchestrator",
+     "tokens": {
+      "input": 400000,
+      "cache_write_5m": 300000,
+      "cache_write_1h": 600000,
+      "cache_read": 39000000,
+      "output": 700000,
+      "reasoning": 0
+     },
+     "cost_usd": 230.0,
+     "records": 6,
+     "done": 5,
+     "cache_hit": 0.96,
+     "cost_per_done": null
+    }
+   ]
+  }
+ },
+ "insights": {
+  "orchestrator_share": 0.27,
+  "cache_hit": 0.91,
+  "idle_spend_share": 0.06,
+  "top_plan": "golden-prompts-whitespace"
+ },
+ "unread": [
+  {
+   "record_id": "r9",
+   "role": "opencode-ultra-1",
+   "agent": "opencode",
+   "reason": "sqlite3 not found"
+  }
+ ],
+ "projects": 4
+}

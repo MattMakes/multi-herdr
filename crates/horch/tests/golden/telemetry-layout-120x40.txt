@@ -1,0 +1,40 @@
+horch telemetry · 3 fleets · 10 live panes · 17:42Z                             group: project  window: 7d  project: all
+POOL          5h      7d     scoped        state       resets         headroom/h
+claude        3%      100%   fable 3%      EXHAUSTED   Fri 14:00Z     0.0%
+codex         -       99%    -             EXHAUSTED   Sat 19:16Z     0.0%
+opencode-zen  no signal                    ok*         -              -          * public work only
+local         -       -      -             BROKEN      pi --version exited 1
+ live panes  rows 1-10 of 10 ───────────────────────────────────────────────────────────────────────────────────────────
+LIVE                           model      phase plan                 fresh c.read out $        tok/min state
+games/lawn-m… orchestrator     opus-5.5   plan  -                    412k  9.8M   61k 38.76    0       idle
+              steward          sonnet-5   impl  steward              412k  9.8M   61k 9.02     1.2k
+work/lawn-mo… orchestrator     opus-5.5   plan  -                    412k  9.8M   61k 216.53   47k     claude:tight
+              architect-revie… opus-5.5   -     -                    412k  9.8M   61k 28.38    0       idle claude:tight
+prophecy-con… orchestrator     opus-5.5   plan  -                    412k  9.8M   61k 1234.56* 94k
+              swift-developer… opus-5.5   impl  timeline-integratio… 412k  9.8M   61k 1.85     24k
+              researcher-77    opus-5.5   res   port-content-journe… 412k  9.8M   61k 5.23     0       idle
+              codex-reviewer-2 5.6-sol    val   -                    412k  9.8M   61k 3.26     126k    codex:exhausted
+multi-herdr   opencode-pickle… big-pickle impl  -                    412k  9.8M   61k 0.00     0       idle
+              researcher-1>co… 5.6-terra  res   -                    412k  9.8M   61k 0.46     0       codex:exhausted
+ 7d by project  rows 1-5 of 5 ──────────────────────────────────────────────────────────────────────────────────────────
+7D BY PROJECT             tokens $       share cache hit $/DONE
+games/lawn-mower-manor    130M   412.00  21%   95%       9.00
+work/lawn-mower-manor     130M   1349.72 68%   95%       9.00
+prophecy-content-pipeline 130M   152.50  8%    95%       9.00
+multi-herdr               130M   60.00   3%    95%       9.00
+-                         130M   3.10    0%    95%       9.00
+
+
+
+
+
+
+
+
+
+
+
+
+UNREAD  opencode-ultra-1: sqlite3 not found
+orchestrators 27% of spend · cache hit 91% · 6% of spend while idle · top plan golden-prompts-whitespace
+? help  q quit  Tab focus  ↑↓ jk move  PgUp PgDn  Home End  g group  w window  p project  r refresh

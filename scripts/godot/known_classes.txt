@@ -1,0 +1,60 @@
+# Class names that api_check.py allows in GDScript type positions although
+# Godot 4.7.2 does not define them and the skill does not define them either.
+# One line per name: `Name: skill[, skill...]  # where the class comes from`.
+# The name is allowed only in the skills listed. Add a name only when it is
+# an addon class or a project class that the example assumes; a typo or a
+# Godot 3 class (KinematicBody2D, Spatial) never goes here.
+
+# Addon classes (the skill documents the addon).
+ActionLeaf: godot-beehave  # Beehave
+BeehaveNode: godot-beehave  # Beehave
+BeehaveTree: godot-beehave  # Beehave
+Blackboard: godot-beehave  # Beehave
+ConditionLeaf: godot-beehave  # Beehave
+Decorator: godot-beehave  # Beehave
+BTAction: godot-limboai  # LimboAI (GDExtension)
+BTCondition: godot-limboai  # LimboAI
+BTPlayer: godot-limboai  # LimboAI
+BTState: godot-limboai  # LimboAI
+LimboHSM: godot-limboai  # LimboAI
+LimboState: godot-limboai  # LimboAI
+Status: godot-limboai  # LimboAI BT.Status, inherited by BTTask subclasses
+DialogueLine: godot-dialogue-manager  # Dialogue Manager
+DialogueResource: godot-dialogue-manager  # Dialogue Manager
+DialogueResponse: godot-dialogue-manager  # Dialogue Manager
+GdUnitTestSuite: godot-testing  # gdUnit4
+GutTest: godot-dependency-injection, godot-event-bus, godot-testing  # GUT
+PhantomCamera2D: godot-phantom-camera  # Phantom Camera
+PhantomCamera3D: godot-phantom-camera  # Phantom Camera
+PhantomCameraHost: godot-phantom-camera  # Phantom Camera
+PhantomCameraTween: godot-phantom-camera  # Phantom Camera
+NineVerbCommands: godot-popochiu  # Popochiu
+PopochiuDialog: godot-popochiu  # Popochiu
+PopochiuDialogOption: godot-popochiu  # Popochiu
+PopochiuInventoryItem: godot-popochiu  # Popochiu
+PopochiuProp: godot-popochiu  # Popochiu
+BillingClient: godot-mobile-development  # GodotGooglePlayBilling plugin
+GDExample: godot-gdextension  # the C++ class the skill's GDExtension example registers
+
+# Project classes that an example assumes (defined by the reader's project or
+# by another skill of the catalog).
+AudioManager: godot-dependency-injection  # the injected service of the example
+Bullet: godot-optimization  # the pooled projectile of the example
+DungeonGenerator: godot-testing  # the generator under test
+DungeonMap: godot-testing  # the generator's output
+GameConfig: godot-testing  # godot-resource-pattern defines it
+HealthComponent: godot-component-system, godot-hud-system  # godot-scene-organization defines it
+HudLayer: godot-event-bus  # the HUD under test
+InteractionPrompt: godot-hud-system  # the prompt scene's script
+Inventory: godot-dialogue-system  # godot-inventory-system defines it
+Item: godot-debugging  # the example's item class
+ItemData: godot-brainstorming, godot-dialogue-system  # godot-inventory-system defines it
+ItemResource: godot-gdscript-patterns  # the exported resource of the example
+LootTable: godot-brainstorming  # godot-economy-system defines it
+MyItemData: godot-addon-development  # the edited resource of the inspector plugin
+MyNode: godot-addon-development, godot-testing  # the example's node class
+MyNode3D: godot-addon-development  # the node the gizmo plugin draws
+MyResource: godot-testing  # the resource under test
+Player: godot-event-bus, godot-gdscript-patterns, godot-testing  # the game's player class
+ScreenShakeCamera: godot-camera-system  # the camera script of the example
+WeaponData: godot-csharp-godot  # the GDScript resource the C# interop example reads

@@ -39,7 +39,7 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
    - Local — `pi`. Use for anything that must not leave the machine.
 4. Effort is set per teammate in its frontmatter, tuned to the role. `horch spawn <teammate> --effort <level> "task"` overrides it for one spawn: raise it for a fix that already failed review, lower it for a mechanical task. For a different kind of reasoning, spawn a stronger teammate instead.
 5. A precise plan is the cheap lever. A plan that names the files, the steps and the check lets a lower teammate do work a higher one would otherwise need.
-6. The top tier is reserved. `horch spawn` refuses Fable and Astra for every worker, whichever flavor orchestrates; a fleet has at most one top-tier session.
+6. The top tier is reserved. `horch spawn` refuses Fable and Astra for every worker but the 2 creative council seats (§10), whichever flavor orchestrates.
 7. Select a phase with `--phase research|plan|implementation|validation` when the assignment differs from the teammate's default.
 8. Review a risky change with the other vendor. `codex-reviewer` reviews Claude-built work; `architect-reviewer` or `qa-engineer` review Codex-built work. A second model family shares fewer blind spots with the author.
 
@@ -86,3 +86,26 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 7. Giving a second task to a worker that already finished one. Its pane is closed; spawn fresh with `PRIOR WORK`.
 8. Treating a `[<role>]` line as the human operator. It is worker status, and only the human sets direction.
 9. Declaring the run done while panes are mid-task. Check `horch inbox` last.
+
+## 9. Design work
+
+1. Run visual work as a pipeline, not as one build task:
+   - `design-director` writes the direction contract and the storyboard. It writes no production code.
+   - Builders work from those 2 files: `landing-page-builder` for marketing pages, `design-system-engineer` for tokens and components, `motion-engineer` for animation, `frontend-developer` for application screens.
+   - `design-critic` reviews the built pages with screenshots at 390, 768 and 1440 px and writes a scored critique file.
+   - Send the critique findings to a fresh builder as a fix plan. Repeat the review until the critique has no high-cost finding.
+2. Give every builder and the critic the paths of the contract and the storyboard in `CONTEXT`. A builder without the contract makes its own direction.
+3. Serialize builders that share the token or theme files. `design-system-engineer` goes first when the page needs new tokens.
+4. Use `visual-prototyper` before the director locks a direction, when the client must react to images, or when the work needs generated hero or mood art. Its output is a prototype, not production code.
+5. Use `designer` for flows, states, copy and accessibility of an application. Use `design-director` for the look and feel.
+6. Never send unreleased brand work, client assets or unannounced product designs to an `opencode-*` teammate. Those providers train on input.
+
+## 10. Creative work
+
+1. Convene the creative council when the problem has no settled direction and the answer depends on ideas, not effort: a product or game concept, a mechanic, a name, an architecture with no obvious shape, a research strategy, or a problem that 2 ordinary attempts did not solve. Do not convene it for work whose direction is decided, for reviews or for mechanical work: 4 strong sessions do what 1 worker would.
+2. Write 1 plan file for the 3 seats: the brief, the hard constraints, the files to read, the job `diverge`, and the output `ai_docs/designs/<slug>/design-<letter>.md`. Do not hint at the answer you expect; a hint comes back 3 times.
+3. Spawn `fable-creative`, `astra-creative` and `opus-creative` at once, with the letters A, B and C in a random order: `horch spawn opus-creative "Read and follow <plan> exactly. Your letter is A."`. Keep the letter-to-seat map in your notes only.
+4. If a pool blocks a seat, run with the seats that start, at least 2. Do not put another model in the seat; the seats have no fallbacks on purpose.
+5. When the designs are in, spawn a fresh `fable-creative` with a second plan file: the job `combine`, the design paths by letter, and the output `ai_docs/designs/<slug>/combined.md`.
+6. Read `combined.md` and take its operator choices to the human. Then turn the chosen design into ordinary plan files for builders; the council writes designs, not code.
+7. Run 1 council at a time. It is the only time the fleet has more than 1 top-tier session.

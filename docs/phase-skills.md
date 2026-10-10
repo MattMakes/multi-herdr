@@ -1,6 +1,6 @@
 # Phase-scoped skills
 
-The sixteen skills in [skills/](../skills/README.md) are repo-owned: fourteen are adaptations of `public-skills`, with source revision and hashes recorded in [provenance.json](../skills/provenance.json); `orchestrate` is original to this repository with a null source; and `skill-creator` is a verbatim copy of Anthropic's, with its own source repository and revision in the same file. They are compiled into `horch`; an installed binary works without either source checkout. No skill download or global installation happens when a worker starts.
+The skills in `skills/` are repo-owned. [skills/README.md](../skills/README.md) lists every skill with its kind. [copied.json](../skills/copied.json) lists the copied files of each skill. The phase catalogs below use only process skills. Every other skill (design skills, `orchestrate`, `skill-creator`) belongs to no phase: they attach to a teammate by name, in its `skills:` list. They are compiled into `horch`; an installed binary works without a source checkout. No skill download or global installation happens when a worker starts.
 
 | Phase | Fleet catalog |
 |---|---|
@@ -21,6 +21,8 @@ horch spawn prime --phase implementation "Implement ai_docs/plans/storage.md"
 horch spawn opencode-pickle --phase validation "Validate the completed storage change"
 horch spawn --resume RECORD_ID --phase validation "Check the final diff"
 ```
+
+The `ai_docs/` paths are examples of scratch plan files. `ai_docs/` is local scratch and is not in git.
 
 Resume retains its recorded phase unless explicitly overridden. Old ledger entries fall back to the teammate default. Skill selection changes on the next launch; assigning new work to an already running pane does not hot-reload its catalog. Prefer a fresh session for a new phase when the old conversation is unnecessary: a resumed conversation may still contain previously loaded skill bodies. Pass findings, plans and evidence as file paths.
 

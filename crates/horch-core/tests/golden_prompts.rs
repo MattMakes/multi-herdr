@@ -29,8 +29,9 @@
 //! rather than pass. A new briefing line is added here as a named block with
 //! the reason for it, which is what makes the change reviewable.
 
+use horch_core::execution::SessionMode;
 use horch_core::prompts;
-use horch_core::teammates::Roster;
+use horch_core::roster::Roster;
 
 fn golden(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -44,6 +45,90 @@ fn golden(name: &str) -> String {
 fn roster() -> Roster {
     Roster::builtin().expect("built-in roster parses")
 }
+
+/// The `== Context compaction ==` and `== Compact instructions ==` blocks of
+/// `fleet-worker.md`, as they render for `role`, with their trailing blank line.
+fn worker_context_compaction(role: &str) -> String {
+    "== Context compaction ==\n\
+     horch watches your context size. Your handoff file is\n\
+     ai_docs/handoffs/{role}-whats-next.md.\n\
+     A line that starts \"NOTE: Your context is\" asks you to prepare:\n\
+     1. Finish the current plan step and its check. Do not stop during an\n\
+     \x20  edit, a build or a test run. If you wait for an answer, go on at once.\n\
+     2. Load the horch:handoff skill. Write your handoff file.\n\
+     3. Run: horch note \"handoff: ai_docs/handoffs/{role}-whats-next.md\"\n\
+     \x20  If horch note fails, go on to step 4.\n\
+     4. Send: horch tell orchestrator \"[{role}] NOTE: COMPACT-READY ai_docs/handoffs/{role}-whats-next.md\"\n\
+     5. Stop and wait. Do not start new work. horch compacts this session and\n\
+     \x20  tells you to read the handoff file, or the orchestrator tells you to\n\
+     \x20  run horch done. Follow that line.\n\
+     If horch note prints a line that starts \"NOTE: Context warning\", do\n\
+     steps 2 to 5 at once. That horch note call is your stopping point.\n\
+     \n\
+     == Compact instructions ==\n\
+     When this conversation is summarized, keep these facts in the summary:\n\
+     - your role, {role}, and your report target, the orchestrator;\n\
+     - the plan or brief path from your task;\n\
+     - your handoff file, ai_docs/handoffs/{role}-whats-next.md;\n\
+     - every file you touched, and whether it is committed;\n\
+     - the decisions you made, and why;\n\
+     - every open question you sent to the orchestrator, and its answer.\n\n"
+        .replace("{role}", role)
+}
+
+/// The `== Context watch ==` and `== Compact instructions ==` blocks of
+/// `fleet-orchestrator.md`, with their trailing blank line.
+const ORCHESTRATOR_CONTEXT_WATCH: &str = "== Context watch ==\n\
+    horch watches the context size of every session, yours included:\n\
+    \x20 horch context --over            sessions at or over their threshold\n\
+    \x20 horch context                   every live session and its threshold\n\
+    \x20 horch compact <role> --request  ask a worker to write its handoff\n\
+    \x20 horch compact <role>            compact a session that is ready\n\
+    Run horch context --over after you handle each worker message and before\n\
+    each spawn. For a worker in state \"over\":\n\
+    1. Run horch compact <role> --request once. The state becomes \"requested\".\n\
+    \x20  Do not ask a \"requested\" worker again.\n\
+    2. On \"[<role>] NOTE: COMPACT-READY <path>\", run horch compact <role>. It\n\
+    \x20  returns at once. horch compacts the worker when it is idle, then tells\n\
+    \x20  it to read its handoff file.\n\
+    3. If horch compact refuses with \"uses the fresh route\", or a line starts\n\
+    \x20  with \"[horch] BLOCKED:\", or the row state is \"compact-lost\", use the\n\
+    \x20  fresh route: tell the worker to run\n\
+    \x20  horch done with a summary that names <path>. Then spawn the same\n\
+    \x20  teammate with a task that names the plan file and\n\
+    \x20  \"PRIOR WORK: read <path> first\".\n\
+    A line that starts with \"[horch] NOTE:\" reports a finished compaction.\n\
+    A Codex teammate with permission_mode plan runs read-only and cannot write\n\
+    its handoff. horch compact <role> --request switches it to write first. The\n\
+    job switches it back to plan before the resume line. A row state that ends\n\
+    in \"[write]\" is a plan pane in write mode.\n\
+    \x20 horch mode <role> write|plan    switch a plan pane by hand\n\
+    If a \"[horch] BLOCKED:\" line names step restore-mode, the compaction is\n\
+    done: run horch mode <role> plan, then tell the worker to read its handoff\n\
+    file. Do not use the fresh route for it.\n\
+    When your own row is \"over\", compact yourself at your next stopping point:\n\
+    every worker message is answered, no spawn is half-done, and you are not\n\
+    verifying a DONE.\n\
+    1. Load horch:handoff. Write ai_docs/handoffs/orchestrator-whats-next.md.\n\
+    \x20  Name every live role from horch sessions, its plan file, every open\n\
+    \x20  question, and every COMPACT-READY line you did not yet act on.\n\
+    2. Run horch compact orchestrator.\n\
+    3. If it prints \"scheduled\", end your turn at once. horch compacts this\n\
+    \x20  pane when it is idle. Then it tells you to read the handoff file.\n\
+    \x20  If it prints a line that starts with \"[horch] BLOCKED:\", do not end your\n\
+    \x20  turn for it. Go on with your work and try again at the next stopping\n\
+    \x20  point.\n\
+    \n\
+    == Compact instructions ==\n\
+    When this conversation is summarized, keep these facts in the summary:\n\
+    - your role: the fleet orchestrator;\n\
+    - the roster: every live role, its teammate and its pane;\n\
+    - the ownership map: which role owns which plan file;\n\
+    - your plan file and your handoff file,\n\
+    \x20 ai_docs/handoffs/orchestrator-whats-next.md;\n\
+    - every open question from a worker, and its answer;\n\
+    - every COMPACT-READY line you did not yet act on;\n\
+    - the decisions you made, and why.\n\n";
 
 /// The `== Message style: Simplified Technical English ==` section that both
 /// base briefings gained, as it renders: the rules are word for word the same
@@ -74,7 +159,7 @@ fn ste_section(lead: &[&str], example: &str) -> String {
     )
 }
 
-/// The worker briefing differs in exactly five places, and this pins them. The
+/// The worker briefing differs in exactly six places, and this pins them. The
 /// first: the orchestrator is no longer described to workers as a Claude session.
 ///
 /// `horch fleet codex` puts a Codex orchestrator in that pane, and OpenCode and
@@ -93,8 +178,10 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
     // in these goldens has the role "r-1", so that is the tag the example shows.
     let lifecycle_end = "gotchas, current state.\n\n";
     // Third sanctioned change: the `horch done` bullet now names what a summary
-    // must carry that the old wording left out - the work that is NOT done.
-    let done_summary = "  Write files touched, decisions, gotchas, and what is not done.\n";
+    // must carry that the old wording left out - the work that is NOT done -
+    // and that the summary must not repeat the tag and keyword `horch done` adds.
+    let done_summary = "  Write files touched, decisions, gotchas, and what is not done.\n  \
+        Do not start the summary with \"[r-1] DONE:\". horch done adds it.\n";
     // Fourth: the `== Scope ==` block, inserted whole between the lifecycle list
     // and the STE section. A worker that reads one thing before starting reads
     // what it owns and what it must not touch.
@@ -122,6 +209,16 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
          src/parse.rs in place, and option 2 adds src/parse/json.rs. I recommend option 2 \
          because the plan gives src/parse.rs to sonnet-2.",
     );
+    // Sixth: `context_compaction`, the compaction protocol and the keep-list
+    // (`== Context compaction ==` and `== Compact instructions ==`), inserted
+    // whole between the scope block and the STE section (CTX-11, CTX-19).
+    let context_compaction = worker_context_compaction("r-1");
+    // Seventh: the `horch skills read` bullet after the `horch note` bullet
+    // (SKL-09). A bundle holds only the teammate's skills, and its texts name
+    // others; the codex execpolicy allows only commands this list names.
+    let note_end = "  doing and has done.\n";
+    let skills_read =
+        "- horch skills read <id> [<file>] - print a skill that is not in your bundle.\n";
     // No `fable` here: the generic Fable worker was removed when Fable became
     // the orchestrator's reserved model. Its goldens went with it.
     for name in ["sonnet", "opus", "codex-sol", "codex-terra", "smoke"] {
@@ -131,7 +228,12 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
             ("idle", "", false),
             ("resume", "Continue where you left off", true),
         ] {
-            let got = prompts::worker_prompt(&r, t, "r-1", task, resume).unwrap();
+            let session = if resume {
+                SessionMode::Resume("s-1".parse().unwrap())
+            } else {
+                SessionMode::Fresh(None)
+            };
+            let got = prompts::worker_prompt(&r, t, "r-1", task, &session).unwrap();
             let was = golden(&format!("worker-{name}-{label}"));
             let old_agent = "orchestrator (a separate Claude session) runs in another pane";
             let new_agent = "orchestrator (a separate agent session) runs in another pane";
@@ -146,12 +248,21 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
                 "worker-{name}-{label} should end its lifecycle block exactly once"
             );
             assert_eq!(
-                was.replace(old_agent, new_agent).replace(
-                    lifecycle_end,
-                    &format!("gotchas, current state.\n{done_summary}\n{scope}{ste}")
-                ),
+                was.matches(note_end).count(),
+                1,
+                "worker-{name}-{label} should end its horch note bullet exactly once"
+            );
+            assert_eq!(
+                was.replace(old_agent, new_agent)
+                    .replace(note_end, &format!("{note_end}{skills_read}"))
+                    .replace(
+                        lifecycle_end,
+                        &format!(
+                        "gotchas, current state.\n{done_summary}\n{scope}{context_compaction}{ste}"
+                    )
+                    ),
                 got,
-                "worker-{name}-{label} drifted outside the five sanctioned blocks"
+                "worker-{name}-{label} drifted outside the seven sanctioned blocks"
             );
             checked += 1;
         }
@@ -159,8 +270,10 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
     assert_eq!(checked, 15);
 }
 
+/// The orchestration-orchestrator briefing gains one closing line: the
+/// operator starts it with no task. The worker briefing is unchanged.
 #[test]
-fn the_orchestration_recipe_briefings_are_unchanged() {
+fn the_orchestration_recipe_briefings_differ_only_by_the_await_line() {
     let r = roster();
     assert_eq!(
         prompts::agent_prompt(
@@ -169,7 +282,10 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
             "orchestrator"
         )
         .unwrap(),
-        golden("orchestration-orchestrator")
+        format!(
+            "{}\n\nAcknowledge and await further instruction.",
+            golden("orchestration-orchestrator")
+        )
     );
     assert_eq!(
         prompts::agent_prompt(&r, r.require("orchestration-worker").unwrap(), "sonnet-1").unwrap(),
@@ -177,7 +293,7 @@ fn the_orchestration_recipe_briefings_are_unchanged() {
     );
 }
 
-/// The orchestrator briefing differs in exactly ten places, and this pins them.
+/// The orchestrator briefing differs in exactly fourteen places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -218,11 +334,12 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     // immediately before the lifecycle section. It names no model of its own:
     // one file backs both the Opus (default) and the Fable fleet flavors.
     let lifecycle = "== Worker lifecycle ==";
-    let only_fable = "== You are the fleet's only orchestrator ==\n\
+    let only_fable_head = "== You are the fleet's only orchestrator ==\n\
         You run on whichever model `horch fleet` was started with (fable, opus,\n\
-        astra or sol). horch spawn never starts a worker on Fable or Astra, so every\n\
-        worker reads your instructions on Opus or Codex Sol at best, often on something\n\
-        cheaper. Write every task for that reader:\n\
+        astra or sol). horch spawn starts a worker on Fable or Astra only for the\n\
+        creative council (fable-creative, astra-creative), so every other worker reads\n\
+        your instructions on Opus or Codex Sol at best, often on something cheaper.\n\
+        Write every task for that reader:\n\
         - State the goal and what \"done\" looks like, explicitly. Do not leave the\n\
         \x20 acceptance criteria to be inferred.\n\
         - Name the files, functions and commands involved. \"The auth layer\" is a\n\
@@ -234,14 +351,39 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         When a piece of work needs orchestrator-level reasoning - a design with real\n\
         tradeoffs, a plan across many moving parts, a judgement call - that reasoning\n\
         is yours. Do it here, write the result to a file, and hand the execution to\n\
-        opus. Never delegate the thinking itself downward and hope.\n\n\
-        == horch:skill-creator ==\n\
+        opus. Never delegate the thinking itself downward and hope.\n\n";
+    let skill_creator = "== horch:skill-creator ==\n\
         The skill-creator skill is yours alone; no worker has it. It tells you to\n\
         spawn subagents and to run `claude -p` loops. The fleet rule wins: use its\n\
         no-subagent path. Run each test case yourself, one at a time, and grade\n\
         inline. Skip the baseline runs, the blind comparison and the description\n\
         optimization loop.\n\n";
     assert_eq!(was.matches(lifecycle).count(), 1);
+
+    // Twelfth sanctioned change: product ownership. The operator: "You should
+    // have deep product ownership ... fix them as you find them." The block
+    // sits in both personas, right after the "only orchestrator" section.
+    let own_product = "== Own the product ==\n\
+        You are a Senior Staff Engineer who owns this product, not a dispatcher who\n\
+        reports on it. Take pride in what the fleet ships.\n\
+        - When you notice a gap - a flaky test, a stale workaround, a missing check,\n\
+        \x20 a loose end in a worker's report - fix it in this run. Spawn a unit for it\n\
+        \x20 or fold it into the next plan. A \"known gaps\" list at the end of a run is a\n\
+        \x20 list of work you chose not to do.\n\
+        - Read every DONE report for its \"not done\", \"outside my scope\" and \"gotcha\"\n\
+        \x20 lines. Decide each one: fix it now, fix it in a follow-up unit you spawn\n\
+        \x20 now, or name it as a real blocker.\n\
+        - Only these go back to the operator unresolved: a decision that is theirs\n\
+        \x20 (product direction, a spec text, a terms or policy question), a credential\n\
+        \x20 or a paid real-world run, and anything outward-facing (push, PR, publish),\n\
+        \x20 which still needs their OK.\n\
+        - Fix causes, not symptoms. A flaky test gets a root cause, not a retry.\n\
+        - Leave work a junior engineer can pick up: plans that name files and\n\
+        \x20 checks, reports that say what changed and why, docs that explain where\n\
+        \x20 things live and how to verify them. If a junior could not continue from\n\
+        \x20 what you leave, you are not done.\n\
+        \n";
+    let only_fable = format!("{only_fable_head}{own_product}{skill_creator}");
 
     let old_spawning = "  horch spawn <tier> \"<task>\"                            new session\n  horch spawn --resume <session-or-record-id> \"<task>\"   resume old session\n";
     let new_spawning = "  horch spawn <tier> [--phase <phase>] \"<task>\"            new session\n\
@@ -325,10 +467,35 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         --direction right|down to control layout (pane ids come from herdr pane list,\n\
         and horch spawn prints the new pane's id on stdout). `horch layout` reports\n\
         the current worker grid and the next split that keeps it 2 rows by N columns.";
-    let new_placement = "`horch spawn` lays the grid out for you after each spawn, and again when a\n\
+    let new_placement =
+        "`horch spawn` lays the grid out for you after each spawn, and again when a\n\
         worker closes. You never pass --from-pane or --direction. Run `horch layout`\n\
         to see the grid, and `horch tile` only if it looks wrong.";
     assert_eq!(was.matches(old_placement).count(), 1);
+
+    // Eleventh: usage limits (design 2026-09-28-fleet-telemetry, BAL-07). The
+    // orchestrator now works against weekly pools that run out; `horch spawn`
+    // may print NOTE:, SUBSTITUTED: or REFUSED:, and this is where it is told
+    // to read them, how to see a decision first, and which pools are public-
+    // only. Inserted whole, directly before the context section.
+    let context = "== Protect your context ==";
+    let usage_limits = "== Usage limits ==\n\
+        Run horch quota before you spawn a batch of workers. It shows each pool: claude, codex, opencode-zen, google, local.\n\
+        Treat NOTE:, SUBSTITUTED: and REFUSED: lines from horch spawn as facts. Adjust the plan to them.\n\
+        Use horch route <teammate> to see the decision before you spawn.\n\
+        When 2 teammates fit the work equally, choose the one whose pool has more headroom per hour.\n\
+        Use opencode-* only for public or open-source work. Use pi for private, simple work when the local pool is ok.\n\
+        If your own pool becomes tight, write a handoff with horch:handoff and tell the operator.\n\n";
+    assert_eq!(was.matches(context).count(), 1);
+
+    // Thirteenth: `context_watch`, the context-watch protocol, the orchestrator's
+    // self-compaction and its keep-list, inserted whole directly before the
+    // context section, after the usage limits (CTX-09, CTX-16, CTX-18, CTX-19).
+    let context_watch = ORCHESTRATOR_CONTEXT_WATCH;
+
+    // Fourteenth: the operator starts an orchestrator with no task, so the
+    // briefing ends with the instruction to acknowledge and wait.
+    let await_line = "\nAcknowledge and await further instruction.";
 
     let expected = was
         .replace(old_block, &new_block)
@@ -339,19 +506,59 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         .replace(spawn_sentence, workers_only)
         .replace(old_placement, new_placement)
         .replace(spawning_header, &format!("{core_loop}{spawning_header}"))
-        .replace(close, &format!("{close}{guard}"));
+        .replace(close, &format!("{close}{guard}{await_line}"))
+        .replace(context, &format!("{usage_limits}{context_watch}{context}"));
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the ten sanctioned blocks"
+        "the orchestrator briefing changed outside the fourteen sanctioned blocks"
+    );
+}
+
+/// BAL-07: the usage-limits block is a named, sanctioned change (the
+/// eleventh in `the_orchestrator_briefing_differs_only_where_sanctioned`),
+/// it reaches both orchestrator flavors, and a codex orchestrator may run the
+/// two commands it names.
+#[test]
+fn bal_07_usage_limits_block_sanctioned() {
+    let r = roster();
+    for name in ["orchestrator", "orchestrator-codex"] {
+        let p = prompts::agent_prompt(&r, r.require(name).unwrap(), "orchestrator").unwrap();
+        let at = p.find("== Usage limits ==").expect("the block");
+        assert!(at < p.find("== Protect your context ==").unwrap(), "{name}");
+        assert!(p.contains("Use horch route <teammate> to see the decision before you spawn."));
+    }
+    let rules: Vec<String> = r
+        .orchestrator_exec_rules()
+        .iter()
+        .map(|x| x.pattern.clone())
+        .collect();
+    assert!(rules.iter().any(|p| p.contains("\"quota\"")), "{rules:?}");
+    assert!(rules.iter().any(|p| p.contains("\"route\"")), "{rules:?}");
+    let golden_was = golden("fleet-orchestrator");
+    assert!(
+        !golden_was.contains("== Usage limits =="),
+        "the golden is the OLD text"
     );
 }
 
 /// Execpolicy rules render exactly as they did, so an existing
-/// `~/.codex/execpolicy` is not duplicated on upgrade.
+/// `~/.codex/execpolicy` is not duplicated on upgrade. The
+/// `horch skills read` rule (SKL-09) is a sanctioned addition: it has no
+/// golden, its block is pinned here, and the 3 old blocks stay unchanged.
 #[test]
 fn execpolicy_blocks_are_unchanged() {
+    const SKILLS_READ: &str = "read a catalog skill that the bundle does not hold";
     let r = roster();
     for rule in r.exec_rules() {
+        if rule.justification == SKILLS_READ {
+            assert_eq!(
+                prompts::codex_rule_block(rule),
+                "prefix_rule(\n    pattern = [\"horch\", \"skills\", \"read\"],\n    \
+                 decision = \"allow\",\n    justification = \"herdr-fleet: {SKILLS_READ}\",\n)\n"
+                    .replace("{SKILLS_READ}", SKILLS_READ)
+            );
+            continue;
+        }
         let name = format!("execpolicy-{}", rule.justification.replace(' ', "-"));
         assert_eq!(
             prompts::codex_rule_block(rule),
@@ -359,7 +566,7 @@ fn execpolicy_blocks_are_unchanged() {
             "{name} drifted"
         );
     }
-    assert_eq!(r.exec_rules().len(), 3);
+    assert_eq!(r.exec_rules().len(), 4);
 }
 
 /// The Codex flavor shares the whole orchestrator briefing and differs only in
@@ -377,7 +584,10 @@ fn the_codex_orchestrator_differs_from_the_claude_one_only_in_its_tier_block() {
     // The same heading, a different reader ladder and hand-off teammate.
     assert!(codex.contains("on Codex Sol or Opus at best"), "{codex}");
     assert!(claude.contains("on Opus or Codex Sol at best"), "{claude}");
-    assert!(codex.contains("hand the execution to\ncodex-sol."), "{codex}");
+    assert!(
+        codex.contains("hand the execution to\ncodex-sol."),
+        "{codex}"
+    );
     // No placeholder may survive into a live pane - not {roster}, not {persona}.
     assert!(
         !codex.contains('{'),
@@ -399,4 +609,181 @@ fn the_codex_orchestrator_differs_from_the_claude_one_only_in_its_tier_block() {
         format!("{}{}", &text[..start], &text[end..])
     };
     assert_eq!(strip(&claude), strip(&codex));
+}
+
+fn orchestrator_briefings() -> Vec<(&'static str, String)> {
+    let r = roster();
+    ["orchestrator", "orchestrator-codex"]
+        .into_iter()
+        .map(|name| {
+            let t = r.require(name).unwrap();
+            (name, prompts::agent_prompt(&r, t, "orchestrator").unwrap())
+        })
+        .collect()
+}
+
+fn worker_briefing(name: &str, role: &str) -> String {
+    let r = roster();
+    let t = r.require(name).unwrap();
+    prompts::worker_prompt(&r, t, role, "Do the task", &SessionMode::Fresh(None)).unwrap()
+}
+
+/// The operator starts an orchestrator with no task; a worker gets its task at spawn.
+#[test]
+fn orchestrator_briefings_end_with_the_await_instruction() {
+    let r = roster();
+    for name in [
+        "orchestrator",
+        "orchestrator-codex",
+        "orchestration-orchestrator",
+    ] {
+        let t = r.require(name).unwrap();
+        let p = prompts::agent_prompt(&r, t, "orchestrator").unwrap();
+        assert!(
+            p.trim_end()
+                .ends_with("Acknowledge and await further instruction."),
+            "{name} briefing does not end with the await instruction"
+        );
+    }
+    for name in ["sonnet", "opus", "codex-sol"] {
+        assert!(
+            !worker_briefing(name, "sonnet-1").contains("await further instruction"),
+            "{name} worker briefing holds the await instruction"
+        );
+    }
+}
+
+/// CTX-09: both orchestrator briefings name the 2 checkpoints, and the Codex
+/// orchestrator may run the 2 new commands.
+#[test]
+fn ctx_09_orchestrator_briefing_names_the_checkpoints() {
+    for (name, p) in orchestrator_briefings() {
+        assert!(p.contains("horch context --over"), "{name}");
+        assert!(p.contains("after you handle each worker message"), "{name}");
+        assert!(p.contains("before\neach spawn"), "{name}");
+    }
+    let r = roster();
+    let rules: Vec<String> = r
+        .orchestrator_exec_rules()
+        .iter()
+        .map(|x| x.pattern.clone())
+        .collect();
+    assert!(
+        rules.iter().any(|p| p == "\"horch\", \"context\""),
+        "{rules:?}"
+    );
+    assert!(
+        rules.iter().any(|p| p == "\"horch\", \"compact\""),
+        "{rules:?}"
+    );
+}
+
+/// CTX-11: a worker briefing explains the COMPACT-READY protocol, with the
+/// fallback when `horch note` fails (review finding 2).
+#[test]
+fn ctx_11_worker_briefing_explains_compact_ready() {
+    let p = worker_briefing("sonnet", "sonnet-1");
+    assert!(p.contains("NOTE: COMPACT-READY ai_docs/handoffs/sonnet-1-whats-next.md"));
+    assert!(p.contains("NOTE: Your context is"));
+    assert!(p.contains("NOTE: Context warning"));
+    assert!(p.contains("If horch note fails, go on to step 4."));
+}
+
+/// CTX-11 (review finding 9): each prefix a briefing names starts the message
+/// horch types, so a change to one without the other fails here.
+#[test]
+fn ctx_11_briefing_prefixes_start_the_rendered_messages() {
+    let r = roster();
+    let path = "ai_docs/handoffs/sonnet-1-whats-next.md";
+    let vars = std::collections::BTreeMap::from([
+        ("role", "sonnet-1"),
+        ("tokens", "311225"),
+        ("threshold", "300000"),
+        ("handoff", path),
+        ("pre", "311225"),
+        ("post", "20000"),
+        ("step", "send"),
+        ("reason", "pane closed"),
+        ("log", "ai_docs/x.log"),
+    ]);
+    let msg = |key: &str| prompts::context_message(&r, key, &vars).unwrap();
+    let ready = format!("[sonnet-1] NOTE: COMPACT-READY {path}");
+
+    assert!(msg("request").starts_with("NOTE: Your context is"));
+    assert!(msg("warning").starts_with("NOTE: Context warning"));
+    assert!(msg("warning-orchestrator").starts_with("NOTE: Context warning"));
+    assert!(msg("request").contains(&ready));
+    assert!(msg("warning").contains(&ready));
+    assert!(msg("reported").starts_with("[horch] NOTE:"));
+    assert!(msg("failed").starts_with("[horch] BLOCKED:"));
+
+    let worker = worker_briefing("sonnet", "sonnet-1");
+    for prefix in [
+        "NOTE: Your context is",
+        "NOTE: Context warning",
+        "NOTE: COMPACT-READY",
+    ] {
+        assert!(worker.contains(prefix), "worker briefing lacks {prefix}");
+    }
+    for (name, p) in orchestrator_briefings() {
+        for prefix in ["[horch] NOTE:", "[horch] BLOCKED:"] {
+            assert!(p.contains(prefix), "{name} briefing lacks {prefix}");
+        }
+    }
+}
+
+/// CTX-12: the handoff skill writes a per-role path, so 2 workers never
+/// share a handoff file.
+#[test]
+fn ctx_12_handoff_skill_names_the_role_path() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/handoff/SKILL.md");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert!(text.contains("ai_docs/handoffs/<role>-whats-next.md"));
+    assert!(!text.contains("ai_docs/handoffs/whats-next.md"));
+}
+
+/// CTX-16: the orchestrator briefing names the fresh route and its triggers.
+#[test]
+fn ctx_16_orchestrator_briefing_names_the_fresh_route() {
+    for (name, p) in orchestrator_briefings() {
+        assert!(p.contains("uses the fresh route"), "{name}");
+        assert!(p.contains("compact-lost"), "{name}");
+        assert!(p.contains("PRIOR WORK: read <path> first"), "{name}");
+    }
+}
+
+/// CTX-18: the orchestrator briefing tells the orchestrator how to compact itself.
+#[test]
+fn ctx_18_orchestrator_briefing_has_self_compaction() {
+    for (name, p) in orchestrator_briefings() {
+        assert!(p.contains("horch compact orchestrator"), "{name}");
+        assert!(
+            p.contains("ai_docs/handoffs/orchestrator-whats-next.md"),
+            "{name}"
+        );
+    }
+}
+
+/// CTX-19: every fleet briefing has exactly 1 keep-list block, and the 2
+/// orchestrators name what they must keep.
+#[test]
+fn ctx_19_every_fleet_briefing_has_one_keep_list_block() {
+    let block = "== Compact instructions ==";
+    for name in [
+        "opus",
+        "codex-sol",
+        "opencode-pickle",
+        "pi",
+        "prime",
+        "antigravity",
+    ] {
+        let p = worker_briefing(name, "w-1");
+        assert_eq!(p.matches(block).count(), 1, "{name}");
+    }
+    for (name, p) in orchestrator_briefings() {
+        assert_eq!(p.matches(block).count(), 1, "{name}");
+        assert!(p.contains("the roster"), "{name}");
+        assert!(p.contains("the ownership map"), "{name}");
+    }
 }

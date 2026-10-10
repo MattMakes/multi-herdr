@@ -1,0 +1,28 @@
+{
+  "estimate_note": "Names and descriptions only; bytes/4 estimate excludes harness wrappers, paths, ambient skills and tools. Full bodies load on demand.",
+  "metadata_bytes": 415,
+  "metadata_tokens_estimate": 104,
+  "phase": "research",
+  "skills": [
+    {
+      "description": "Use when refining a feature, rewrite, or refactor into a design before implementation planning.",
+      "name": "brainstorm",
+      "skill_file_bytes": 2640
+    },
+    {
+      "description": "Use when answering how an existing codebase works or locating its components and relationships.",
+      "name": "research-codebase",
+      "skill_file_bytes": 2399
+    },
+    {
+      "description": "Use when tracing an endpoint, function, event, job, or comparing behavior across old and new implementations.",
+      "name": "trace",
+      "skill_file_bytes": 2642
+    },
+    {
+      "description": "Use when work must transfer to another worker or continue after context loss.",
+      "name": "handoff",
+      "skill_file_bytes": 2629
+    }
+  ]
+}

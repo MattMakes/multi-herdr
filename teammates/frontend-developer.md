@@ -5,13 +5,18 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route frontend-developer).
+fallbacks: [codex-sol]
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. cezaar#40 runs builders low; medium because our briefs are not
-# always complete specs. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)
+# always complete specs. Raise one spawn with --effort.
 effort: medium
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
-skills: [tdd]
+skills: [tdd, ui-taste, design-system]
+available_skills: [codebase-design]
 
 # Playwright drives the page; chrome-devtools inspects what the page actually
 # did - DOM, network, console, performance traces. context7 pulls current
@@ -20,7 +25,7 @@ skills: [tdd]
 mcp_servers:
   playwright: {"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]}
   chrome-devtools: {"type":"stdio","command":"npx","args":["-y","chrome-devtools-mcp@latest"]}
-  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp"]}
+  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp@4.1.1"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
@@ -41,3 +46,10 @@ follow-up.
 When you need a framework or library API, look it up with context7 rather than
 recalling it. Framework APIs move faster than any model's training data, and a
 confidently wrong hook signature costs more than the lookup.
+
+When you style a screen, use the `ui-taste` skill and follow any direction
+contract the task names. Use the `design-system` skill when you add or
+change tokens, themes or component states, and reuse the project's existing
+tokens before you add one. Brand inputs - guidelines, logo colours, brand
+fonts - override the palettes and font pairings in the design skills. Check
+the result in screenshots at 390, 768 and 1440 px wide.

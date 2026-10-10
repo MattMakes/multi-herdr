@@ -5,10 +5,15 @@ base: fleet-worker
 agent: codex
 phase: validation
 model: gpt-5.6-sol
+# When this model's usage pool cannot serve a spawn (horch route codex-reviewer).
+fallbacks: [opus]
 # high, like the claude reviewers: a missed finding costs a review round
 # (cezaar#40). Not xhigh or max: diminishing returns above high.
 effort: high
+compact_window: 200000
+compact_at: 160000
 skills: [code-review, security-review]
+available_skills: [codebase-design]
 # auto, not plan: plan maps to `-s read-only -a on-request`, and an approval
 # prompt stalls a pane nobody watches. codex has no per-tool deny, so "never
 # edit" is carried by the persona below.

@@ -5,42 +5,65 @@
 //! `just --justfile <repo>/justfile herdr-fleet` and so depended on the repo
 //! staying put. `horch` embeds its prompts and needs no repo, so installing is
 //! just putting one binary on PATH - no profile editing, nothing to keep in sync.
+//! The dataset binary, `multi-herdr-dataset`, goes next to it.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use horch_core::agent;
+use horch_core::runtime::{process, RuntimeContext};
 
 /// Where to put the binary when the caller does not say.
-pub fn default_dir() -> PathBuf {
+pub fn default_dir(ctx: &RuntimeContext) -> PathBuf {
     if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA")
-            .filter(|v| !v.is_empty())
-            .map(|base| Path::new(&base).join("Programs").join("horch"))
-            .unwrap_or_else(|| agent::home_dir().join("horch"))
+        ctx.inherited
+            .local_app_data
+            .as_ref()
+            .map(|base| Path::new(base).join("Programs").join("horch"))
+            .unwrap_or_else(|| ctx.paths.home.join("horch"))
     } else {
-        agent::home_dir().join(".local").join("bin")
+        ctx.paths.home.join(".local").join("bin")
     }
 }
 
-pub fn install(dir: Option<&str>) -> Result<()> {
-    let dir = dir.map(PathBuf::from).unwrap_or_else(default_dir);
-    let source = std::env::current_exe().context("locating the running horch binary")?;
+pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
+    let dir = dir.map(PathBuf::from).unwrap_or_else(|| default_dir(ctx));
+    let source = ctx
+        .bins
+        .current_exe
+        .clone()
+        .context("locating the running horch binary")?;
     let file_name = source
         .file_name()
         .context("the running binary has no file name")?;
     let target = dir.join(file_name);
 
-    // `same_file` follows symlinks, so a link that resolves to this binary
-    // would count as installed. The install must be a real file: not a link.
-    if same_file(&source, &target) && !is_symlink(&target) {
-        println!("horch is already installed at {}", target.display());
-    } else {
-        place_binary(&source, &target)?;
-        println!("installed horch to {}", target.display());
+    install_one("horch", &source, &target)?;
+    // A live collector keeps running the binary it started with: old
+    // prices, old readers. Restart it on the binary just installed.
+    let herdr = horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
+    if let Err(e) = super::telemetry::restart_if_stale(ctx, &herdr, &target) {
+        println!("warning: telemetry collector not restarted: {e:#}; run `horch telemetry ensure`");
     }
 
-    if agent::on_path(&dir) {
+    // The dataset binary is built next to horch (`cargo build --bin
+    // multi-herdr-dataset`), and is installed next to it too.
+    let dataset_source = dataset_sibling(&source);
+    let dataset_target = dir.join(exe_name(DATASET_BIN));
+    if dataset_source.is_file() {
+        install_one(DATASET_BIN, &dataset_source, &dataset_target)?;
+    } else {
+        println!(
+            "{DATASET_BIN} is not built next to horch ({}); build it with `cargo build --release --bin {DATASET_BIN}`, then install again",
+            dataset_source.display()
+        );
+    }
+
+    if ctx
+        .inherited
+        .path
+        .as_ref()
+        .is_some_and(|path| process::on_path_in(path, &dir))
+    {
         println!("\nReady. cd into a project and run: horch fleet");
         println!("(needs a running herdr server: launch the herdr app, or `herdr server`)");
     } else {
@@ -49,10 +72,7 @@ pub fn install(dir: Option<&str>) -> Result<()> {
             println!("  PowerShell (current session):");
             println!("    $env:Path = \"{};$env:Path\"", dir.display());
             println!("\n  Permanently, for future sessions:");
-            println!(
-                "    setx PATH \"{};$($env:Path)\"",
-                dir.display()
-            );
+            println!("    setx PATH \"{};$($env:Path)\"", dir.display());
         } else {
             println!("  Add to ~/.zshrc (or ~/.bashrc):");
             println!("    export PATH=\"{}:$PATH\"", dir.display());
@@ -61,6 +81,35 @@ pub fn install(dir: Option<&str>) -> Result<()> {
     }
 
     println!("\nInstalled version: {}", installed_version(&target)?);
+    Ok(())
+}
+
+/// The second binary that `horch install` puts on PATH.
+pub const DATASET_BIN: &str = "multi-herdr-dataset";
+
+fn exe_name(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The dataset binary built beside `horch_source`. A link to horch is
+/// resolved first, so the sibling is the one in the build directory.
+fn dataset_sibling(horch_source: &Path) -> PathBuf {
+    let real = horch_source
+        .canonicalize()
+        .unwrap_or_else(|_| horch_source.to_path_buf());
+    real.with_file_name(exe_name(DATASET_BIN))
+}
+
+/// Install `source` as `target`, unless that real file is there already.
+fn install_one(name: &str, source: &Path, target: &Path) -> Result<()> {
+    // `same_file` follows symlinks, so a link that resolves to this binary
+    // would count as installed. The install must be a real file: not a link.
+    if same_file(source, target) && !is_symlink(target) {
+        println!("{name} is already installed at {}", target.display());
+    } else {
+        place_binary(source, target)?;
+        println!("installed {name} to {}", target.display());
+    }
     Ok(())
 }
 
@@ -84,9 +133,12 @@ fn place_binary(source: &Path, target: &Path) -> Result<()> {
     let staged = dir.join(format!(".{}.new", file_name.to_string_lossy()));
     std::fs::copy(&source, &staged)
         .with_context(|| format!("copying {} to {}", source.display(), staged.display()))?;
-    agent::make_executable(&staged)?;
+    process::make_executable(&staged)?;
     std::fs::rename(&staged, target).with_context(|| {
-        format!("installing to {} (is a horch process running from there?)", target.display())
+        format!(
+            "installing to {} (is a horch process running from there?)",
+            target.display()
+        )
     })?;
     Ok(())
 }
@@ -146,7 +198,13 @@ mod tests {
 
     #[test]
     fn default_dir_is_platform_appropriate() {
-        let dir = default_dir();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with("HOME", "/h")
+                .with("USERPROFILE", "/h"),
+        )
+        .unwrap();
+        let dir = default_dir(&ctx);
         if cfg!(windows) {
             assert!(dir.ends_with("horch"), "{}", dir.display());
         } else {
@@ -218,6 +276,41 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, vec![std::ffi::OsString::from("horch")]);
+    }
+
+    #[test]
+    fn install_puts_the_dataset_binary_next_to_horch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build = tmp.path().join("release");
+        std::fs::create_dir_all(&build).unwrap();
+        let horch = build.join(exe_name("horch"));
+        std::fs::write(&horch, "horch").unwrap();
+        std::fs::write(build.join(exe_name(DATASET_BIN)), "dataset").unwrap();
+        let bin = tmp.path().join("bin");
+
+        let source = dataset_sibling(&horch);
+        install_one(DATASET_BIN, &source, &bin.join(exe_name(DATASET_BIN))).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(bin.join(exe_name(DATASET_BIN))).unwrap(),
+            "dataset"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dataset_sibling_follows_a_link_to_horch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build = tmp.path().join("release");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(build.join("horch"), "horch").unwrap();
+        let link = tmp.path().join("horch-link");
+        std::os::unix::fs::symlink(build.join("horch"), &link).unwrap();
+
+        assert_eq!(
+            dataset_sibling(&link),
+            build.canonicalize().unwrap().join(DATASET_BIN)
+        );
     }
 
     #[test]

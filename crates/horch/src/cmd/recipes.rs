@@ -6,19 +6,27 @@
 //! `fleet` starts one orchestrator alone, which then grows and shrinks the fleet
 //! itself through the session ledger.
 
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use horch_core::agent;
-use horch_core::codex;
-use horch_core::herdr::{Direction, Herdr};
-use horch_core::launch::{self, Session};
-use horch_core::ledger::Ledger;
-use horch_core::mailbox::Mailbox;
-use horch_core::paneshell::PaneShell;
+use horch::project::project_facts;
+use horch_core::execution::legacy::{Record, KIND_ORCHESTRATOR};
+use horch_core::execution::records::{Ledger, ORCHESTRATING_TASK};
+use horch_core::execution::SessionMode;
+use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
+use horch_core::harness::HarnessKind;
+use horch_core::ids::SessionId;
+use horch_core::messaging::mailbox::Mailbox;
 use horch_core::prompts;
-use horch_core::teammates::{Agent, Roster};
+use horch_core::roster::{Roster, Teammate};
+use horch_core::routing::quota::{self, QuotaView, State};
+use horch_core::runtime::RuntimeContext;
+use horch_core::skills::{harness_support, SkillResolution};
+use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::model::Direction;
+use horch_core::workspace::paneshell::PaneShell;
 
 use super::doctor;
 
@@ -82,6 +90,9 @@ pub enum FleetFlavor {
     Astra,
     /// Codex, on Sol.
     Sol,
+    /// Whichever of Opus and Sol the usage pools can serve (BAL-08). Resolved
+    /// to one of the others before anything launches.
+    Auto,
 }
 
 impl FleetFlavor {
@@ -91,6 +102,7 @@ impl FleetFlavor {
             FleetFlavor::Fable => "fable",
             FleetFlavor::Astra => "astra",
             FleetFlavor::Sol => "sol",
+            FleetFlavor::Auto => "auto",
         }
     }
 
@@ -101,6 +113,7 @@ impl FleetFlavor {
             FleetFlavor::Fable => "Claude Code on Fable",
             FleetFlavor::Astra => "Codex on Astra",
             FleetFlavor::Sol => "Codex on Sol",
+            FleetFlavor::Auto => "chosen by usage limits",
         }
     }
 
@@ -108,7 +121,8 @@ impl FleetFlavor {
     /// latest release; codex has no alias mechanism, so its slugs are literal.
     pub fn model(self) -> &'static str {
         match self {
-            FleetFlavor::Opus => "opus",
+            // `Auto` never launches as itself; `fleet` resolves it first.
+            FleetFlavor::Opus | FleetFlavor::Auto => "opus",
             FleetFlavor::Fable => "fable",
             FleetFlavor::Astra => "gpt-6-astra",
             FleetFlavor::Sol => "gpt-5.6-sol",
@@ -118,7 +132,9 @@ impl FleetFlavor {
     /// The teammate file this flavor's orchestrator pane is briefed from.
     fn pane_kind(self) -> PaneKind {
         match self {
-            FleetFlavor::Opus | FleetFlavor::Fable => PaneKind::FleetOrchestrator,
+            FleetFlavor::Opus | FleetFlavor::Fable | FleetFlavor::Auto => {
+                PaneKind::FleetOrchestrator
+            }
             FleetFlavor::Astra | FleetFlavor::Sol => PaneKind::FleetCodexOrchestrator,
         }
     }
@@ -136,8 +152,9 @@ impl std::str::FromStr for FleetFlavor {
             "fable" => Ok(FleetFlavor::Fable),
             "astra" | "codex" => Ok(FleetFlavor::Astra),
             "sol" => Ok(FleetFlavor::Sol),
+            "auto" => Ok(FleetFlavor::Auto),
             other => Err(format!(
-                "unknown fleet flavor '{other}' (expected opus, fable, astra or sol; \
+                "unknown fleet flavor '{other}' (expected opus, fable, astra, sol or auto; \
                  cc/claude mean opus, codex means astra)"
             )),
         }
@@ -151,17 +168,40 @@ impl std::fmt::Display for FleetFlavor {
 }
 
 /// Resolve the project directory a recipe should root its workspace at.
-fn resolve_cwd(cwd: Option<&str>) -> Result<String> {
+fn resolve_cwd(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<String> {
     let dir = match cwd {
         Some(c) => PathBuf::from(c),
-        None => std::env::current_dir().context("resolving the current directory")?,
+        None => ctx.paths.current_dir()?,
     };
     Ok(dir.to_string_lossy().into_owned())
 }
 
 /// The command line that turns a pane into `kind`.
-fn pane_command(role: &str, kind: PaneKind, model: Option<&str>) -> Result<String> {
-    let exe = std::env::current_exe().context("locating the horch binary")?;
+fn pane_command(
+    ctx: &RuntimeContext,
+    role: &str,
+    kind: PaneKind,
+    model: Option<&str>,
+) -> Result<String> {
+    pane_command_for(ctx, role, kind, model, None, None)
+}
+
+/// The ledger identity an orchestrator pane runs under.
+struct PaneRecord<'a> {
+    record_id: &'a str,
+    session_id: Option<&'a str>,
+}
+
+/// [`pane_command`], carrying a ledger record for the pane.
+fn pane_command_for(
+    ctx: &RuntimeContext,
+    role: &str,
+    kind: PaneKind,
+    model: Option<&str>,
+    record: Option<PaneRecord<'_>>,
+    compete: Option<&CompeteSettings>,
+) -> Result<String> {
+    let exe = ctx.bins.exe()?;
     let mut args = vec![
         "pane-launch".to_string(),
         "--role".to_string(),
@@ -175,13 +215,112 @@ fn pane_command(role: &str, kind: PaneKind, model: Option<&str>) -> Result<Strin
     }
     // A pane does not inherit this process's environment, so the roster path
     // has to be written into the command line the herdr server will run.
-    if let Ok(dir) = std::env::var("HORCH_TEAMMATES_DIR") {
-        if !dir.is_empty() {
-            args.push("--teammates-dir".to_string());
+    if let Some(dir) = super::path_text(ctx.bins.roster_override.as_deref()) {
+        args.push("--teammates-dir".to_string());
+        args.push(dir);
+    }
+    if let Some(record) = record {
+        args.push("--record-id".to_string());
+        args.push(record.record_id.to_string());
+        if let Some(sid) = record.session_id {
+            args.push("--session-id".to_string());
+            args.push(sid.to_string());
+        }
+        // The same reason as the roster path: the ledger this record lives
+        // in must be the one the pane writes.
+        if let Some(dir) = super::path_text(ctx.paths.state_override.as_deref()) {
+            args.push("--state-dir".to_string());
             args.push(dir);
         }
     }
-    Ok(PaneShell::host().command_line(&exe, &args))
+    // The skill store too: `pane-launch`, its agent and every `horch spawn`
+    // that agent runs read `HORCH_DATA_DIR`, so they all use this store.
+    let data_root = ctx.paths.data_root.to_string_lossy();
+    let rounds = compete.map(|c| c.rounds.to_string());
+    let mut env: Vec<(&str, &str)> = vec![("HORCH_DATA_DIR", data_root.as_ref())];
+    // Competition mode (FDS-13) reaches the briefing the same way.
+    if let (Some(c), Some(rounds)) = (compete, rounds.as_deref()) {
+        env.push((COMPETE_ROUNDS_ENV, rounds));
+        env.push((COMPETE_BUDGET_ENV, c.budget_usd.as_str()));
+    }
+    Ok(PaneShell::host().command_line_with_env(&exe, &env, &args))
+}
+
+/// Environment variables that carry the competition settings into the
+/// orchestrator pane, where `pane_launch` renders the briefing.
+const COMPETE_ROUNDS_ENV: &str = "HORCH_COMPETE_ROUNDS";
+const COMPETE_BUDGET_ENV: &str = "HORCH_COMPETE_BUDGET_USD";
+
+/// Competition mode (FDS-13): what the briefing tells the orchestrator about
+/// rounds. The rules live in the base `fleet-compete`; these are its 2 values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompeteSettings {
+    /// At most this many rounds in 1 fleet session.
+    pub rounds: u32,
+    /// The hard ceiling of 1 round in US dollars, as the dataset CLI takes it
+    /// for `--budget-usd`: a decimal string.
+    pub budget_usd: String,
+}
+
+impl Default for CompeteSettings {
+    fn default() -> Self {
+        Self {
+            rounds: 3,
+            budget_usd: "10".to_string(),
+        }
+    }
+}
+
+impl CompeteSettings {
+    /// The settings a pane inherits from [`COMPETE_ROUNDS_ENV`] and
+    /// [`COMPETE_BUDGET_ENV`]. None when competition mode is off.
+    fn from_env() -> Result<Option<Self>> {
+        let (Ok(rounds), Ok(budget)) = (
+            std::env::var(COMPETE_ROUNDS_ENV),
+            std::env::var(COMPETE_BUDGET_ENV),
+        ) else {
+            return Ok(None);
+        };
+        let rounds = rounds
+            .parse()
+            .with_context(|| format!("{COMPETE_ROUNDS_ENV}='{rounds}' is not a number"))?;
+        Ok(Some(Self {
+            rounds,
+            budget_usd: budget,
+        }))
+    }
+}
+
+/// Options of `horch fleet` beyond the flavor.
+#[derive(Debug, Clone, Default)]
+pub struct FleetOptions {
+    /// Some: append the competition rules to the orchestrator's briefing.
+    pub compete: Option<CompeteSettings>,
+}
+
+/// The briefing of a fleet orchestrator: the base briefing, then with
+/// `compete` the rendered base `fleet-compete` after 1 blank line (FDS-13).
+/// Without `compete` it is [`prompts::agent_prompt`] unchanged.
+pub(crate) fn orchestrator_briefing(
+    roster: &Roster,
+    teammate: &Teammate,
+    role: &str,
+    compete: Option<&CompeteSettings>,
+) -> Result<String> {
+    let briefing = prompts::agent_prompt(roster, teammate, role)?;
+    let Some(compete) = compete else {
+        return Ok(briefing);
+    };
+    let base = roster
+        .base("fleet-compete")
+        .context("base 'fleet-compete' does not exist in _base/")?;
+    let rounds = compete.rounds.to_string();
+    let vars = BTreeMap::from([
+        ("compete_rounds", rounds.as_str()),
+        ("compete_budget_usd", compete.budget_usd.as_str()),
+    ]);
+    let rules = prompts::render(&base.body, &vars).context("base 'fleet-compete'")?;
+    Ok(format!("{}\n\n{}", briefing.trim_end(), rules.trim_start()))
 }
 
 /// Launch the herdr-fleet workspace.
@@ -194,40 +333,190 @@ fn pane_command(role: &str, kind: PaneKind, model: Option<&str>) -> Result<Strin
 /// Earlier versions pre-spawned a fixed 2x2 grid of idle workers. That decided
 /// the shape of the team before anyone knew what the work was, and burned four
 /// agent sessions holding a greeting.
-pub fn fleet(cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
-    doctor::check()?;
-    let herdr = Herdr::new();
-    let cwd = resolve_cwd(cwd)?;
+pub fn fleet(ctx: &RuntimeContext, cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
+    fleet_with(ctx, cwd, flavor, &FleetOptions::default())
+}
+
+/// [`fleet`] with `options`: the same launch, with competition mode when
+/// `options.compete` is set.
+pub fn fleet_with(
+    ctx: &RuntimeContext,
+    cwd: Option<&str>,
+    flavor: FleetFlavor,
+    options: &FleetOptions,
+) -> Result<()> {
+    doctor::check(ctx)?;
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let cwd = resolve_cwd(ctx, cwd)?;
 
     warn_about_missing_integrations(&herdr);
 
-    println!("Creating fleet workspace rooted at {cwd}...");
-    let ws = herdr.workspace_create(&workspace_label(Path::new(&cwd)), Some(&cwd), true)?;
-    std::env::set_var("HORCH_WORKSPACE_ID", &ws.workspace_id);
-    std::env::set_var("HORCH_PROJECT_DIR", &cwd);
+    let flavor = if flavor == FleetFlavor::Auto {
+        let state_root = ctx.paths.state_root.clone();
+        let policy = super::quotacmd::load_policy(ctx, &state_root)?;
+        let view = horch_core::routing::snapshot::obtain(
+            &state_root,
+            horch_core::clock::now(),
+            &policy,
+            true,
+            &super::quotacmd::quota_env(ctx),
+        )?;
+        let (chosen, why) = auto_flavor(&view);
+        println!("fleet: auto chose {chosen} - {why}.");
+        chosen
+    } else {
+        flavor
+    };
 
+    println!("Creating fleet workspace rooted at {cwd}...");
+    let label = workspace_label(Path::new(&cwd), ctx.paths.cwd.as_deref());
+    let ws = herdr.workspace_create(&label, Some(&cwd), true)?;
+    // The rest of this command works in the new workspace and its project.
+    let mut ctx = ctx.clone();
+    ctx.herdr.workspace = Some(horch_core::ids::WorkspaceId::new(ws.workspace_id.as_str())?);
+    ctx.paths.project_dir = Some(PathBuf::from(&cwd));
+    let ctx = &ctx;
+
+    // The orchestrator is a ledger record like any worker (TEL-02), so its
+    // spend is counted. Orchestrators of workspaces that are gone are
+    // retired first: an orchestrator never runs `horch done`.
+    let ledger = Ledger::open_in(ctx)?;
+    if let Ok(open) = herdr.workspace_list() {
+        let open: Vec<String> = open.into_iter().map(|w| w.workspace_id).collect();
+        ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
+    }
     let kind = flavor.pane_kind();
+    // The project's facts add its `skills_when` skills, here and at the
+    // pane launch, so the record and the launch agree.
+    let roster = super::load_roster(ctx, None)?.with_project_facts(project_facts(Path::new(&cwd)));
+    let teammate = &roster.for_launch(roster.require(orchestrator_teammate(kind))?.clone());
+    let record_id = horch_core::mint_uuid();
+    let session_id = teammate
+        .agent
+        .capabilities()
+        .caller_minted_session
+        .then(horch_core::mint_uuid);
+    // The record lists the skills the launch will activate, as a worker's
+    // does (SKL-04): the launch fails on a record whose skills differ.
+    let home = ctx.inherited.home_var.as_deref().map(Path::new);
+    let skills = SkillResolution::read(
+        roster.skill_catalog()?,
+        Some(teammate),
+        home,
+        harness_support,
+    )?
+    .plan(teammate)?;
+    ledger.insert(Record {
+        record_id: record_id.clone(),
+        session_id: session_id.clone(),
+        agent: teammate.agent.as_str().to_string(),
+        tier: teammate.name.clone(),
+        model: flavor.model().to_string(),
+        effort: teammate.effort.clone(),
+        phase: teammate.phase,
+        role: "orchestrator".to_string(),
+        kind: KIND_ORCHESTRATOR.to_string(),
+        task: ORCHESTRATING_TASK.to_string(),
+        project: Some(cwd.clone()),
+        workspace_id: Some(ws.workspace_id.clone()),
+        skills: skills.activated,
+        ..Record::default()
+    })?;
+
     println!("Launching orchestrator ({})...", flavor.label());
     herdr.pane_run(
         &ws.root_pane_id,
-        &pane_command("orchestrator", kind, Some(flavor.model()))?,
+        &pane_command_for(
+            ctx,
+            "orchestrator",
+            kind,
+            Some(flavor.model()),
+            Some(PaneRecord {
+                record_id: &record_id,
+                session_id: session_id.as_deref(),
+            }),
+            options.compete.as_ref(),
+        )?,
     )?;
+
+    // The telemetry space (SPC-06). Never a reason for the fleet to fail.
+    if let Err(e) = super::telemetry::ensure(ctx, &herdr, true) {
+        println!("warning: telemetry space not started: {e:#}");
+    }
 
     println!(
         "\nDone. Fleet workspace {} is live with one orchestrator pane.",
         ws.workspace_id
     );
-    println!("Session ledger: {}", Ledger::open()?.path().display());
+    println!("Session ledger: {}", Ledger::open_in(ctx)?.path().display());
     println!("Orchestrator commands: horch sessions | horch assign | horch spawn [--resume]");
     println!("Workers are spawned on demand: horch spawn <teammate> \"task\"");
     Ok(())
 }
 
+/// Which teammate file backs a fleet orchestrator pane of `kind`.
+fn orchestrator_teammate(kind: PaneKind) -> &'static str {
+    match kind {
+        PaneKind::FleetCodexOrchestrator => "orchestrator-codex",
+        _ => "orchestrator",
+    }
+}
+
+/// `claude 7d 100% (resets Fri 14:00Z)`: a pool in a few words.
+fn pool_words(view: &QuotaView, pool: &str, scope: &str) -> String {
+    let a = view.assess_pool(pool, Some(scope), None);
+    match &a.worst {
+        Some(w) => {
+            let mut s = format!("{pool} {} {}", w.label(), quota::pct(w.used_at(view.now)));
+            if a.state.blocks() {
+                if let Some(r) = &w.resets_at {
+                    s.push_str(&format!(" (resets {})", quota::short_time(r)));
+                }
+            }
+            s
+        }
+        None => format!("{pool} {}", a.state),
+    }
+}
+
+/// `horch fleet auto` (BAL-08): Opus if the claude pool can serve it, else
+/// Sol if the codex pool can, else whichever pool resets first.
+fn auto_flavor(view: &QuotaView) -> (FleetFlavor, String) {
+    let claude = view.assess_pool(quota::POOL_CLAUDE, Some("opus"), None);
+    let codex = view.assess_pool(quota::POOL_CODEX, Some("sol"), None);
+    let why = format!(
+        "{}, {}",
+        pool_words(view, quota::POOL_CLAUDE, "opus"),
+        pool_words(view, quota::POOL_CODEX, "sol")
+    );
+    let serves = |s: State| matches!(s, State::Ok | State::Tight);
+    let chosen = if serves(claude.state) {
+        FleetFlavor::Opus
+    } else if serves(codex.state) {
+        FleetFlavor::Sol
+    } else {
+        let reset = |a: &quota::Assessment| {
+            a.worst
+                .as_ref()
+                .and_then(|w| w.resets_at.clone())
+                .unwrap_or_else(|| "9999".into())
+        };
+        if reset(&codex) < reset(&claude) {
+            FleetFlavor::Sol
+        } else {
+            FleetFlavor::Opus
+        }
+    };
+    (chosen, why)
+}
+
 /// The fleet workspace is named after the project folder; a path with no final
 /// component (such as `/`) keeps the old fixed label. The path is resolved
 /// first, because `.` and `..` have no final component of their own.
-fn workspace_label(cwd: &Path) -> String {
-    resolved_path(cwd)
+/// `current` is the process's current directory, which a relative path is
+/// resolved against.
+fn workspace_label(cwd: &Path, current: Option<&Path>) -> String {
+    resolved_path(cwd, current)
         .as_deref()
         .and_then(Path::file_name)
         .map(|name| name.to_string_lossy().into_owned())
@@ -238,14 +527,14 @@ fn workspace_label(cwd: &Path) -> String {
 /// `path` as an absolute path with no `.` or `..` in it: `canonicalize` when the
 /// path exists, otherwise the current directory joined with it and normalised by
 /// hand. An empty path resolves to nothing rather than to the current directory.
-fn resolved_path(path: &Path) -> Option<PathBuf> {
+fn resolved_path(path: &Path, current: Option<&Path>) -> Option<PathBuf> {
     if path.as_os_str().is_empty() {
         return None;
     }
     if let Ok(resolved) = std::fs::canonicalize(path) {
         return Some(resolved);
     }
-    let absolute = std::env::current_dir().ok()?.join(path);
+    let absolute = current?.join(path);
     let mut resolved = PathBuf::new();
     for component in absolute.components() {
         match component {
@@ -282,10 +571,10 @@ fn warn_about_missing_integrations(herdr: &Herdr) {
 /// 1 orchestrator (Claude, Fable) + 4 workers (2x Claude Sonnet xhigh, 1x Claude
 /// Opus xhigh, 1x Codex CLI), laid out as orchestrator-left with a 2x2 worker grid
 /// on the right, wired for two-way messaging via `horch tell`.
-pub fn orchestration(cwd: Option<&str>) -> Result<()> {
-    doctor::check()?;
-    let herdr = Herdr::new();
-    let cwd = resolve_cwd(cwd)?;
+pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<()> {
+    doctor::check(ctx)?;
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let cwd = resolve_cwd(ctx, cwd)?;
 
     println!("Creating workspace rooted at {cwd}...");
     let ws = herdr.workspace_create("Herdr Orchestration", Some(&cwd), true)?;
@@ -326,7 +615,7 @@ pub fn orchestration(cwd: Option<&str>) -> Result<()> {
     ];
     for (pane, role, kind, model) in panes {
         println!("Launching {role}...");
-        herdr.pane_run(pane, &pane_command(role, kind, model)?)?;
+        herdr.pane_run(pane, &pane_command(ctx, role, kind, model)?)?;
     }
 
     println!(
@@ -345,40 +634,84 @@ pub fn orchestration(cwd: Option<&str>) -> Result<()> {
 ///
 /// Replaces `scripts/herdr-fleet/orchestrator.sh`, `scripts/lib/herdr-worker.sh`,
 /// and the five `scripts/herdr-orchestration/*.sh` launchers.
+/// The ledger identity `horch fleet` gave an orchestrator pane.
+#[derive(Debug, Clone, Default)]
+pub struct PaneIdentity {
+    pub record_id: Option<String>,
+    pub session_id: Option<String>,
+    pub state_dir: Option<String>,
+}
+
 pub fn pane_launch(
+    ctx: &mut RuntimeContext,
     role: &str,
     kind: PaneKind,
     model: Option<&str>,
     teammates_dir: Option<&str>,
+    identity: PaneIdentity,
 ) -> Result<ExitCode> {
-    let herdr = Herdr::new();
-    Mailbox::register(&herdr, role)?;
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let (mailbox, _pane) = Mailbox::register_in(&herdr, ctx, role)?;
+    // What the agent inherits on top of this process's environment. A pane
+    // is a fresh shell, so everything `horch fleet` knew travels here.
+    let mut child_env: Vec<(String, String)> = vec![(
+        "HORCH_WORKSPACE_ID".into(),
+        mailbox.workspace_id().to_string(),
+    )];
+    if let Some(dir) = &identity.state_dir {
+        ctx.paths.set_state_dir(dir);
+        child_env.push(("HORCH_STATE_DIR".into(), dir.clone()));
+    }
+    // Like a worker, the orchestrator knows its own record.
+    if let Some(record_id) = &identity.record_id {
+        child_env.push(("HORCH_RECORD_ID".into(), record_id.clone()));
+    }
 
     // Re-export it: the orchestrator runs `horch spawn` from this pane, and
     // those spawns must resolve the same roster this pane was launched with.
     if let Some(dir) = teammates_dir {
-        std::env::set_var("HORCH_TEAMMATES_DIR", dir);
+        child_env.push(("HORCH_TEAMMATES_DIR".into(), dir.to_string()));
     }
-    if let Ok(project) = std::env::var("HORCH_PROJECT_DIR") {
-        if !project.is_empty() {
-            let _ = std::env::set_current_dir(&project);
+    // `HORCH_PROJECT_DIR`, when it names another directory, is where this
+    // pane works. The process's working directory, not an environment
+    // variable, so the agent and a relative roster path both see it.
+    if let Some(project) = ctx
+        .paths
+        .project_dir
+        .clone()
+        .filter(|p| Some(p) != ctx.paths.cwd.as_ref())
+    {
+        if std::env::set_current_dir(&project).is_ok() {
+            ctx.paths.cwd = Some(project);
         }
     }
     // Both orchestrator and worker briefings name `horch` as an on-PATH command.
-    if let Err(e) = agent::prepend_own_dir_to_path() {
-        eprintln!("horch pane-launch[{role}]: could not add horch to PATH: {e}");
+    if let Some(path) = ctx.prepend_own_dir_to_path() {
+        child_env.push(("PATH".into(), path.to_string_lossy().into_owned()));
     }
+    let ctx: &RuntimeContext = ctx;
     // Which teammate file backs this pane. The model, effort level and
     // permission mode all come from that file - a pane kind selects a file, it
     // does not carry launch settings of its own.
-    let roster = Roster::load_with(teammates_dir)?;
+    let mut roster = super::load_roster(ctx, teammates_dir)?;
+    // A fleet orchestrator is offered only the teammates this project needs
+    // (`offer_when`). The fixed recipe briefs no roster choice, so it keeps
+    // the full list.
+    if matches!(
+        kind,
+        PaneKind::FleetOrchestrator | PaneKind::FleetCodexOrchestrator
+    ) {
+        if let Ok(project) = ctx.paths.project() {
+            roster = roster.with_project_facts(project_facts(&project));
+        }
+    }
     let name = match kind {
         PaneKind::FleetOrchestrator => "orchestrator",
         PaneKind::FleetCodexOrchestrator => "orchestrator-codex",
         PaneKind::OrchestrationOrchestrator => "orchestration-orchestrator",
         PaneKind::OrchestrationClaude | PaneKind::OrchestrationCodex => "orchestration-worker",
     };
-    let mut teammate = roster.require(name)?.clone();
+    let mut teammate = roster.for_launch(roster.require(name)?.clone());
     // A fleet flavor passes the orchestrator's model; carry it on the teammate
     // too, so everything that reads the resolved teammate sees the model
     // actually launched, not the file's fallback.
@@ -392,7 +725,7 @@ pub fn pane_launch(
     }
     // The fixed 5-pane recipe assigns agent and model per pane, not per file.
     if kind == PaneKind::OrchestrationCodex {
-        teammate.agent = Agent::Codex;
+        teammate.agent = HarnessKind::Codex;
         teammate.effort = None;
     }
     if matches!(
@@ -403,64 +736,108 @@ pub fn pane_launch(
         anyhow::bail!("--model is required for an orchestration worker pane");
     }
 
-    let prompt = prompts::agent_prompt(&roster, &teammate, role)?;
-    launch::apply_env(&teammate);
-    let skills = horch_core::skills::Bundle::install(&horch_core::ledger::state_root(), &teammate)?;
-    let rules = if teammate.agent.uses_execpolicy() {
-        // An orchestrator runs a different set of commands than a worker, and
-        // codex refuses anything its execpolicy does not name. Install the set
-        // this pane actually needs, not both.
-        let needed = match kind {
-            PaneKind::FleetCodexOrchestrator => roster.orchestrator_exec_rules(),
-            _ => roster.exec_rules(),
-        };
-        Some(codex::Rules::install(&agent::home_dir(), role, needed)?)
-    } else {
-        None
+    // Competition settings reach a fleet orchestrator only (FDS-13).
+    let compete = match kind {
+        PaneKind::FleetOrchestrator | PaneKind::FleetCodexOrchestrator => {
+            CompeteSettings::from_env()?
+        }
+        _ => None,
     };
-
-    let mut cmd = launch::command_with_skills(
-        &teammate,
-        Session::Unmanaged,
-        &prompt,
-        model,
-        skills.as_ref(),
-    )?;
-    if let Some(rules) = &rules {
-        if let Some(skills) = &skills {
-            rules.attach_skills(&skills.skills_dir())?;
-        }
-        rules.apply(&mut cmd);
-    }
-    let name = format!("{:?}", cmd.get_program());
-    let code = run(cmd, name.trim_matches('"'));
-    if let Some(rules) = rules {
-        rules.finish();
-    }
-    code
-}
-
-fn run(mut cmd: Command, name: &str) -> Result<ExitCode> {
-    let status = cmd.status().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            anyhow::anyhow!(
-                "agent CLI '{name}' not found on PATH. Set HORCH_CLAUDE_BIN or \
-                 HORCH_CODEX_BIN to point at it."
-            )
-        } else {
-            anyhow::Error::new(e).context(format!("launching {name}"))
-        }
-    })?;
-    Ok(match status.code() {
-        Some(0) => ExitCode::SUCCESS,
-        Some(code) => ExitCode::from(code.clamp(1, 255) as u8),
-        None => ExitCode::FAILURE,
-    })
+    let prompt = orchestrator_briefing(&roster, &teammate, role, compete.as_ref())?;
+    // An orchestrator runs a different set of commands than a worker, and
+    // codex refuses anything its execpolicy does not name. Install the set
+    // this pane actually needs, not both.
+    let exec_rules = match kind {
+        PaneKind::FleetCodexOrchestrator => roster.orchestrator_exec_rules(),
+        _ => roster.exec_rules(),
+    };
+    // A managed session when `horch fleet` minted an id (claude); a codex
+    // orchestrator's id is discovered after launch, as a worker's is.
+    let session = SessionMode::Fresh(identity.session_id.map(SessionId::new).transpose()?);
+    let workdir = match &identity.record_id {
+        Some(_) => Some(ctx.paths.project()?.to_string_lossy().into_owned()),
+        None => None,
+    };
+    launch::run_flow(
+        ctx,
+        LaunchRequest {
+            role,
+            teammate: &teammate,
+            session: &session,
+            prompt: &prompt,
+            model_override: model,
+            exec_rules,
+            child_env,
+            record: identity.record_id.as_deref().zip(workdir.as_deref()).map(
+                |(record_id, workdir)| DiscoveryTarget {
+                    mailbox: &mailbox,
+                    record_id,
+                    workdir,
+                },
+            ),
+            fleet_window: roster.fleet_window(
+                &teammate,
+                model.or(teammate.model.as_deref()).unwrap_or_default(),
+            ),
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horch_core::roster::ProjectFacts;
+
+    /// The orchestrator's briefing for `compete`, from the compiled-in roster.
+    fn briefing(compete: Option<&CompeteSettings>) -> String {
+        let roster = Roster::builtin().unwrap();
+        let t = roster.require("orchestrator").unwrap();
+        orchestrator_briefing(&roster, t, "orchestrator", compete).unwrap()
+    }
+
+    /// FDS-13: no compete settings, the briefing is the unchanged one.
+    #[test]
+    fn fds_13_briefing_without_compete_unchanged() {
+        let roster = Roster::builtin().unwrap();
+        let t = roster.require("orchestrator").unwrap();
+        let before = prompts::agent_prompt(&roster, t, "orchestrator").unwrap();
+        assert_eq!(briefing(None), before);
+        assert!(!before.contains("== Competition mode =="));
+        assert!(FleetOptions::default().compete.is_none());
+    }
+
+    /// FDS-13: compete settings append the rules, with both values rendered.
+    #[test]
+    fn fds_13_briefing_with_compete_rendered() {
+        let plain = briefing(None);
+        let text = briefing(Some(&CompeteSettings::default()));
+        assert!(text.starts_with(plain.trim_end()), "base text comes first");
+        assert!(text.contains("== Competition mode =="), "{text}");
+        assert!(text.contains("--budget-usd 10"), "{text}");
+        assert!(text.contains("fewer than 3 rounds"), "{text}");
+        assert!(!text.contains("{compete_"), "{text}");
+        let rules = text.split("== Competition mode ==").next().unwrap();
+        assert!(rules.ends_with("\n\n"), "1 blank line before the rules");
+        let custom = briefing(Some(&CompeteSettings {
+            rounds: 5,
+            budget_usd: "2.50".into(),
+        }));
+        assert!(custom.contains("--budget-usd 2.50"));
+        assert!(custom.contains("fewer than 5 rounds"));
+    }
+
+    /// A context with a known binary path and nothing else.
+    fn test_ctx() -> RuntimeContext {
+        RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/").with_exe("/opt/horch/bin/horch"),
+        )
+        .unwrap()
+    }
+
+    /// [`workspace_label`] against the test process's current directory.
+    fn label(path: &Path) -> String {
+        workspace_label(path, std::env::current_dir().ok().as_deref())
+    }
 
     #[test]
     fn pane_kinds_round_trip() {
@@ -481,7 +858,10 @@ mod tests {
     #[test]
     fn fleet_flavors_parse_from_what_a_user_types() {
         for (words, flavor) in [
-            (&["opus", "cc", "claude", "CC", "Opus"][..], FleetFlavor::Opus),
+            (
+                &["opus", "cc", "claude", "CC", "Opus"][..],
+                FleetFlavor::Opus,
+            ),
             (&["fable", "FABLE"][..], FleetFlavor::Fable),
             (&["astra", "codex", "CODEX"][..], FleetFlavor::Astra),
             (&["sol", "Sol"][..], FleetFlavor::Sol),
@@ -515,13 +895,26 @@ mod tests {
         for (flavor, kind, model) in [
             (FleetFlavor::Opus, PaneKind::FleetOrchestrator, "opus"),
             (FleetFlavor::Fable, PaneKind::FleetOrchestrator, "fable"),
-            (FleetFlavor::Astra, PaneKind::FleetCodexOrchestrator, "gpt-6-astra"),
-            (FleetFlavor::Sol, PaneKind::FleetCodexOrchestrator, "gpt-5.6-sol"),
+            (
+                FleetFlavor::Astra,
+                PaneKind::FleetCodexOrchestrator,
+                "gpt-6-astra",
+            ),
+            (
+                FleetFlavor::Sol,
+                PaneKind::FleetCodexOrchestrator,
+                "gpt-5.6-sol",
+            ),
         ] {
             assert_eq!(flavor.pane_kind(), kind, "{flavor}");
             assert_eq!(flavor.model(), model, "{flavor}");
-            let cmd =
-                pane_command("orchestrator", flavor.pane_kind(), Some(flavor.model())).unwrap();
+            let cmd = pane_command(
+                &test_ctx(),
+                "orchestrator",
+                flavor.pane_kind(),
+                Some(flavor.model()),
+            )
+            .unwrap();
             assert!(cmd.contains(kind.as_str()), "{cmd}");
             assert!(cmd.contains(model), "{cmd}");
         }
@@ -532,7 +925,7 @@ mod tests {
     /// out of every worker's reach whichever flavor runs.
     #[test]
     fn only_fable_and_astra_orchestrators_hold_a_reserved_tier() {
-        use horch_core::teammates::reserved_tier;
+        use horch_core::roster::reserved_tier;
         assert!(reserved_tier(FleetFlavor::Fable.model()).is_some());
         assert!(reserved_tier(FleetFlavor::Astra.model()).is_some());
         assert!(reserved_tier(FleetFlavor::Opus.model()).is_none());
@@ -543,7 +936,7 @@ mod tests {
     /// up, fails to resolve its briefing, and dies where nobody is watching.
     #[test]
     fn every_pane_kind_names_a_teammate_that_exists() {
-        let roster = Roster::builtin().unwrap();
+        let roster = horch_core::roster::Roster::builtin().unwrap();
         for (kind, name) in [
             (PaneKind::FleetOrchestrator, "orchestrator"),
             (PaneKind::FleetCodexOrchestrator, "orchestrator-codex"),
@@ -562,18 +955,51 @@ mod tests {
 
     #[test]
     fn pane_command_includes_the_model_only_when_given() {
-        let with = pane_command("sonnet-1", PaneKind::OrchestrationClaude, Some("sonnet")).unwrap();
+        let with = pane_command(
+            &test_ctx(),
+            "sonnet-1",
+            PaneKind::OrchestrationClaude,
+            Some("sonnet"),
+        )
+        .unwrap();
         assert!(with.contains("--model"), "{with}");
         assert!(with.contains("sonnet-1"), "{with}");
 
-        let without = pane_command("codex-1", PaneKind::OrchestrationCodex, None).unwrap();
+        let without =
+            pane_command(&test_ctx(), "codex-1", PaneKind::OrchestrationCodex, None).unwrap();
         assert!(!without.contains("--model"), "{without}");
+    }
+
+    /// G7: a pane does not inherit `$XDG_DATA_HOME`, so the pane command
+    /// names the spawner's skill store.
+    #[test]
+    fn pane_command_sets_the_spawners_data_dir() {
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with("XDG_DATA_HOME", "/xdg-data"),
+        )
+        .unwrap();
+        let cmd = pane_command(
+            &ctx,
+            "orchestrator",
+            PaneKind::FleetOrchestrator,
+            Some("opus"),
+        )
+        .unwrap();
+        let data = std::path::Path::new("/xdg-data").join("horch");
+        let set = if cfg!(windows) {
+            format!("$env:HORCH_DATA_DIR = '{}'; ", data.display())
+        } else {
+            format!(" 'HORCH_DATA_DIR={}' ", data.display())
+        };
+        assert!(cmd.contains(&set), "{cmd}");
     }
 
     #[test]
     fn workspace_label_is_the_project_folder_name() {
         assert_eq!(
-            workspace_label(Path::new("/Users/me/projects/multi-herdr")),
+            label(Path::new("/Users/me/projects/multi-herdr")),
             "multi-herdr"
         );
     }
@@ -581,15 +1007,15 @@ mod tests {
     #[test]
     fn workspace_label_ignores_a_trailing_slash() {
         assert_eq!(
-            workspace_label(Path::new("/Users/me/projects/multi-herdr/")),
+            label(Path::new("/Users/me/projects/multi-herdr/")),
             "multi-herdr"
         );
     }
 
     #[test]
     fn workspace_label_falls_back_when_the_path_has_no_folder_name() {
-        assert_eq!(workspace_label(Path::new("/")), "Herdr Fleet");
-        assert_eq!(workspace_label(Path::new("")), "Herdr Fleet");
+        assert_eq!(label(Path::new("/")), "Herdr Fleet");
+        assert_eq!(label(Path::new("")), "Herdr Fleet");
     }
 
     fn folder_name(path: &Path) -> String {
@@ -604,26 +1030,26 @@ mod tests {
     /// component until it is resolved against the current directory.
     #[test]
     fn workspace_label_resolves_dot_to_the_current_directory_name() {
-        assert_eq!(workspace_label(Path::new(".")), folder_name(&current_dir()));
+        assert_eq!(label(Path::new(".")), folder_name(&current_dir()));
     }
 
     #[test]
     fn workspace_label_resolves_dot_dot_to_the_parent_directory_name() {
         let parent = current_dir().parent().unwrap().to_path_buf();
-        assert_eq!(workspace_label(Path::new("..")), folder_name(&parent));
+        assert_eq!(label(Path::new("..")), folder_name(&parent));
     }
 
     /// These paths do not exist, so `canonicalize` fails and the label helper
     /// has to normalise `.` and `..` itself.
     #[test]
     fn workspace_label_normalises_a_path_that_does_not_exist() {
-        assert_eq!(workspace_label(Path::new("some/dir/.")), "dir");
+        assert_eq!(label(Path::new("some/dir/.")), "dir");
         assert_eq!(
-            workspace_label(Path::new("no-such-dir/..")),
+            label(Path::new("no-such-dir/..")),
             folder_name(&current_dir())
         );
         assert_eq!(
-            workspace_label(Path::new("/Users/me/projects/multi-herdr/../other")),
+            label(Path::new("/Users/me/projects/multi-herdr/../other")),
             "other"
         );
     }
@@ -634,11 +1060,35 @@ mod tests {
         let project = tmp.path().join("my-project");
         std::fs::create_dir_all(project.join("sub")).unwrap();
 
-        assert_eq!(workspace_label(&project), "my-project");
-        assert_eq!(workspace_label(&project.join(".")), "my-project");
+        assert_eq!(label(&project), "my-project");
+        assert_eq!(label(&project.join(".")), "my-project");
+        assert_eq!(label(&project.join("sub").join("..")), "my-project");
+    }
+    /// `offer_when` sees the top level and one level down, and nothing deeper
+    /// or inside a dot-directory.
+    #[test]
+    fn project_facts_reach_one_level_down() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("Game.uproject"), "").unwrap();
+        std::fs::create_dir_all(root.join("ios/App.xcodeproj")).unwrap();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/Deep.uplugin"), "").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/Hidden.uasset"), "").unwrap();
+
+        let facts = project_facts(root);
+        assert!(facts.has_match("*.uproject"), "top level");
+        assert!(
+            facts.has_match("*.xcodeproj"),
+            "one level down, a directory"
+        );
+        assert!(facts.has_match("b"), "a directory one level down is a name");
+        assert!(!facts.has_match("*.uplugin"), "two levels down");
+        assert!(!facts.has_match("*.uasset"), "inside a dot-directory");
         assert_eq!(
-            workspace_label(&project.join("sub").join("..")),
-            "my-project"
+            project_facts(&root.join("missing")),
+            ProjectFacts::default()
         );
     }
 }

@@ -16,7 +16,9 @@ the ONLY channel - your output is not otherwise watched):
 - When your assigned work is TRULY complete - results reported, nothing
   pending - run: horch done "<one-paragraph summary of what you did and where
   things stand>". This records the summary, notifies the orchestrator, and
-  closes your pane. Write the summary so a FRESH session could be briefed
+  closes your pane. When no orchestrator is registered, horch done still
+  records the summary and exits 0. A failed horch tell never blocks done.
+  Write the summary so a FRESH session could be briefed
   from it alone: files touched, decisions made, gotchas, current state.
 
 You are RESUMING one of your earlier sessions - your prior

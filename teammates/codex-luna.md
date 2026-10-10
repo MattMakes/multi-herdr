@@ -7,10 +7,12 @@ agent: codex
 phase: implementation
 # Luna is the fastest, cheapest gpt-5.6 tier. It is the codex counterpart to
 # cezaar#40's "runner" (Sonnet 5, low): command execution with minimal
-# reasoning. Prices disagree across sources; see
-# ai_docs/reports/model-guide-2026-09.md.
+# reasoning. Prices disagree across sources.
 model: gpt-5.6-luna
+# When this model's usage pool cannot serve a spawn (horch route codex-luna).
+fallbacks: [sonnet, pi]
 effort: low
+compact_at: 300000
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 args: ["--dangerously-bypass-hook-trust", "-c", "features.multi_agent=false"]

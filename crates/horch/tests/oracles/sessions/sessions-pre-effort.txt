@@ -1,0 +1,12 @@
+[done] sonnet (sonnet-1)  session=22222222-2222-4222-8222-222222222222  record=rec-pre-0001
+  agent=claude model=sonnet  updated=2026-09-18T13:00:00Z
+  phase=implementation
+  task: Implement ai_docs/plans/skills-phase.md
+  done @ 2026-09-18T13:00:00Z: phase skills land on all harnesses
+
+[working] opencode-pickle (opencode-pickle-1)  session=ses_oracle0002  record=rec-pre-0002
+  agent=opencode model=opencode/big-pickle  updated=2026-09-18T12:40:00Z
+  phase=research
+  task: Survey the quota probes
+  note @ 2026-09-18T12:40:00Z: two probes found
+

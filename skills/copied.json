@@ -1,0 +1,1551 @@
+{
+  "format": "One entry per bundled skill. copied_files lists the files, relative to the skill directory, that were copied into this repository from elsewhere; a check reports problems in them but does not fail on them. An empty list means the skill is own text. verbatim: true means the directory is an unchanged copy: copied_files lists every file and none was edited. A verbatim skill is exempt from the bundled size budget. budget_exempt: \"<reason>\" exempts a skill that is not verbatim (renamed, adapted or combined) from the size budget; set it only on a skill over the budget.",
+  "skills": [
+    {
+      "name": "api-contracts",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "app-intents",
+      "copied_files": [
+        "SKILL.md",
+        "references/anti-patterns.md",
+        "references/assistant-schemas.md",
+        "references/dependencies.md",
+        "references/entities.md",
+        "references/fundamentals.md",
+        "references/long-running-and-execution.md",
+        "references/onscreen-awareness.md",
+        "references/open-and-snippet-intents.md",
+        "references/parameters.md",
+        "references/shortcuts-and-siri.md",
+        "references/siri-intelligence.md",
+        "references/spotlight.md",
+        "references/testing-intents.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "app-store-changelog",
+      "copied_files": [
+        "SKILL.md",
+        "references/release-notes-guidelines.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "appkit-accessibility-auditor",
+      "copied_files": [
+        "SKILL.md",
+        "checklist.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "appstore-review",
+      "copied_files": [
+        "SKILL.md",
+        "references/appstore-review-ref.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "adapted copy; the copied SKILL.md keeps its upstream length so a refresh re-applies only the fleet edits"
+    },
+    {
+      "name": "architecture-review",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "art-direction",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "asc-cli-usage",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "asc-crash-triage",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "asc-id-resolver",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "asc-metadata-sync",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "asc-submission-health",
+      "copied_files": [
+        "SKILL.md",
+        "references/readiness-repairs.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "asc-xcode-build",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "background-execution",
+      "copied_files": [
+        "SKILL.md",
+        "references/anti-patterns.md",
+        "references/background-audio.md",
+        "references/background-modes.md",
+        "references/background-push.md",
+        "references/background-url-session.md",
+        "references/bg-task-scheduler.md",
+        "references/fundamentals.md",
+        "references/macos-background.md",
+        "references/swiftui-background-tasks.md",
+        "references/task-assertions.md",
+        "references/testing-and-debugging.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "blender-baking",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "blender-modeling",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "blender-rigging",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "blender-ue-pipeline",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "brainstorm",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "brand-identity",
+      "copied_files": [
+        "SKILL.md",
+        "references/visual-identity.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "check",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "code-analysis",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "code-review",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "codebase-design",
+      "copied_files": [
+        "DEEPENING.md",
+        "DESIGN-IT-TWICE.md",
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "create-plan",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "creative-council",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "data-migrations",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "debug",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "design-imagery",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "design-system",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "document",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "execute",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-2d-essentials",
+      "copied_files": [
+        "SKILL.md",
+        "references/2d-particles.md",
+        "references/custom-drawing.md",
+        "references/lights-and-shadows.md",
+        "references/parallax.md",
+        "references/tilemap.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-3d-essentials",
+      "copied_files": [
+        "SKILL.md",
+        "references/common-pitfalls.md",
+        "references/decals.md",
+        "references/environment-and-post.md",
+        "references/fog-recipes.md",
+        "references/global-illumination.md",
+        "references/godot-4.7-additions.md",
+        "references/lod-and-culling.md",
+        "references/materials-and-lighting-recipes.md",
+        "references/renderer-comparison.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-ability-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/stat-modifiers.md",
+        "references/tags-and-conditions.md",
+        "references/ui-binding.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-addon-development",
+      "copied_files": [
+        "SKILL.md",
+        "references/dock-panels.md",
+        "references/gizmos-deep-dive.md",
+        "references/inspector-plugins.md",
+        "references/testing-plugins.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-ai-navigation",
+      "copied_files": [
+        "SKILL.md",
+        "references/async-baking.md",
+        "references/behavior-trees.md",
+        "references/chase-attack.md",
+        "references/patrol-patterns.md",
+        "references/steering-behaviors.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-animation-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/bone-constraints.md",
+        "references/common-pitfalls.md",
+        "references/common-recipes.md",
+        "references/ik-recipes.md",
+        "references/ik-solver-comparison.md",
+        "references/retargeting.md",
+        "references/skeleton-modifiers.md",
+        "references/sprite-animation.md",
+        "references/state-machine-examples.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-assets-pipeline",
+      "copied_files": [
+        "SKILL.md",
+        "references/runtime-resource-loading.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-audio-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/audio-settings.md",
+        "references/interactive-music.md",
+        "references/music-manager.md",
+        "references/sfx-pooling.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-beehave",
+      "copied_files": [
+        "SKILL.md",
+        "references/custom-nodes.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-brainstorming",
+      "copied_files": [
+        "SKILL.md",
+        "references/example-chest.md",
+        "references/node-selection.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-build-verify",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-camera-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/camera-zones.md",
+        "references/camera3d-patterns.md",
+        "references/split-screen.md",
+        "references/transitions.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-code-review",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-combat-system",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-component-system",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-csharp-godot",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-csharp-signals",
+      "copied_files": [
+        "SKILL.md",
+        "references/awaiting-signals.md",
+        "references/connecting-gdscript-signals.md",
+        "references/custom-signal-patterns.md",
+        "references/disconnecting.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-debugging",
+      "copied_files": [
+        "SKILL.md",
+        "references/performance-debugging.md",
+        "references/scene-tree-debugging.md",
+        "references/signal-tracing.md",
+        "references/systematic-method.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-dedicated-server",
+      "copied_files": [
+        "SKILL.md",
+        "references/deployment.md",
+        "references/lobby-management.md",
+        "references/match-flow.md",
+        "references/server-config.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-dependency-injection",
+      "copied_files": [
+        "SKILL.md",
+        "references/autoloads.md",
+        "references/export-injection.md",
+        "references/scene-injection.md",
+        "references/service-locator.md",
+        "references/testing-with-di.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-dialogue-manager",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-dialogue-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/branching-and-conditions.md",
+        "references/dialogue-manager.md",
+        "references/external-formats.md",
+        "references/ui-presentation.md",
+        "references/variable-interpolation.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-dimension-port",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-economy-system",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-event-bus",
+      "copied_files": [
+        "SKILL.md",
+        "references/anti-patterns.md",
+        "references/testing.md",
+        "references/typed-signals.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-export-pipeline",
+      "copied_files": [
+        "SKILL.md",
+        "references/ci-cd-github-actions.md",
+        "references/distribution-itch-steam.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-gameplay-loops",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-gdextension",
+      "copied_files": [
+        "SKILL.md",
+        "references/debugging-native.md",
+        "references/rust-gdext.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-gdscript-advanced",
+      "copied_files": [
+        "SKILL.md",
+        "references/metaprogramming-recipes.md",
+        "references/profiler-recipes.md",
+        "references/tool-script-recipes.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-gdscript-patterns",
+      "copied_files": [
+        "SKILL.md",
+        "references/abstract-classes.md",
+        "references/common-idioms.md",
+        "references/export-annotations.md",
+        "references/super-in-virtual-methods.md",
+        "references/variadic-functions.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-genre-blueprints",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-grill",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-hud-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/damage-numbers.md",
+        "references/interaction-prompts.md",
+        "references/minimap.md",
+        "references/notifications.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-input-handling",
+      "copied_files": [
+        "SKILL.md",
+        "references/action-rebinding.md",
+        "references/event-propagation.md",
+        "references/gamepad.md",
+        "references/input-buffering.md",
+        "references/mouse.md",
+        "references/touch.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-inventory-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/core-classes.md",
+        "references/equipment.md",
+        "references/serialization.md",
+        "references/ui-binding.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-language-choice",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-limboai",
+      "copied_files": [
+        "SKILL.md",
+        "references/hsm.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-localization",
+      "copied_files": [
+        "SKILL.md",
+        "references/csv-plural-context.md",
+        "references/editor-preview.md",
+        "references/locale-formatting.md",
+        "references/rtl-support.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-math-essentials",
+      "copied_files": [
+        "SKILL.md",
+        "references/curves-and-paths.md",
+        "references/game-math-recipes.md",
+        "references/random-numbers.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-mobile-development",
+      "copied_files": [
+        "SKILL.md",
+        "references/crash-debugging.md",
+        "references/iap-and-ads.md",
+        "references/plugins.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-multiplayer-basics",
+      "copied_files": [
+        "SKILL.md",
+        "references/disconnect-handling.md",
+        "references/enet-setup.md",
+        "references/player-join-flow.md",
+        "references/spawning-networked-objects.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-multiplayer-sync",
+      "copied_files": [
+        "SKILL.md",
+        "references/bandwidth-optimization.md",
+        "references/client-prediction.md",
+        "references/interpolation.md",
+        "references/lag-compensation.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-multithreading",
+      "copied_files": [
+        "SKILL.md",
+        "references/pitfalls.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-optimization",
+      "copied_files": [
+        "SKILL.md",
+        "references/cpu-bottlenecks.md",
+        "references/draw-calls.md",
+        "references/memory-management.md",
+        "references/physics-tuning.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-particles-vfx",
+      "copied_files": [
+        "SKILL.md",
+        "references/attractors-and-collision.md",
+        "references/flipbook-animation.md",
+        "references/performance-and-pitfalls.md",
+        "references/process-material-basics.md",
+        "references/subemitters.md",
+        "references/trails.md",
+        "references/vfx-recipes.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-phantom-camera",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "renamed copy (godot- prefix on the name and cross-references); the copied SKILL.md keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-physics-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/area-recipes.md",
+        "references/collision-layers.md",
+        "references/collision-shapes.md",
+        "references/interpolation-camera.md",
+        "references/interpolation-tuning.md",
+        "references/jolt-differences.md",
+        "references/ragdoll-recipes.md",
+        "references/raycasting-recipes.md",
+        "references/rigidbody-recipes.md",
+        "references/softbody-recipes.md",
+        "references/staticbody-recipes.md",
+        "references/troubleshooting.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-player-controller",
+      "copied_files": [
+        "SKILL.md",
+        "references/common-movement-recipes.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-popochiu",
+      "copied_files": [
+        "SKILL.md",
+        "references/dialogs.md",
+        "references/gui.md",
+        "references/inventory.md",
+        "references/pipeline.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-procedural-generation",
+      "copied_files": [
+        "SKILL.md",
+        "references/bsp-dungeons.md",
+        "references/cellular-automata.md",
+        "references/noise-generation.md",
+        "references/wave-function-collapse.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-project-context",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-project-setup",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-quest-system",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-resource-pattern",
+      "copied_files": [
+        "SKILL.md",
+        "references/collections.md",
+        "references/configuration-pattern.md",
+        "references/editor-integration.md",
+        "references/saving-resources.md",
+        "references/sharing-vs-unique.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-responsive-ui",
+      "copied_files": [
+        "SKILL.md",
+        "references/adaptive-layouts.md",
+        "references/dpi-scaling.md",
+        "references/mobile.md",
+        "references/pixel-art-setup.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-save-load",
+      "copied_files": [
+        "SKILL.md",
+        "references/configfile.md",
+        "references/json-saves.md",
+        "references/save-architecture.md",
+        "references/version-migration.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-scene-files",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-scene-organization",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-shader-basics",
+      "copied_files": [
+        "SKILL.md",
+        "references/2d-shader-recipes.md",
+        "references/3d-shader-recipes.md",
+        "references/compositor-effects.md",
+        "references/post-processing.md",
+        "references/shader-baker.md",
+        "references/stencil-buffer.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-state-machine",
+      "copied_files": [
+        "SKILL.md",
+        "references/hierarchical-and-parallel.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-testing",
+      "copied_files": [
+        "SKILL.md",
+        "gdunit4-reference.md",
+        "gut-reference.md",
+        "references/running-tests.md",
+        "references/tdd-workflow.md",
+        "references/testing-patterns.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-tween-animation",
+      "copied_files": [
+        "SKILL.md",
+        "references/common-recipes.md",
+        "references/lifecycle.md",
+        "references/looping-and-signals.md",
+        "references/property-tweener-modifiers.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-ui",
+      "copied_files": [
+        "SKILL.md",
+        "references/anchors-in-code.md",
+        "references/focus-and-navigation.md",
+        "references/foldable-container.md",
+        "references/signals.md",
+        "references/theme-system.md",
+        "references/ui-patterns.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-version-migration",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-xr-development",
+      "copied_files": [
+        "SKILL.md",
+        "references/controllers-and-input.md",
+        "references/godot-4-5-features.md",
+        "references/grabbing-objects.md",
+        "references/hand-tracking.md",
+        "references/passthrough.md",
+        "references/xr-ui.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "handoff",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "improve-codebase-architecture",
+      "copied_files": [
+        "HTML-REPORT.md",
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "ios-simulator-run",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "landing-page",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "motion-gsap",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "observability",
+      "copied_files": [
+        "SKILL.md",
+        "references/activity-tracing.md",
+        "references/anti-patterns.md",
+        "references/crash-reporting.md",
+        "references/fundamentals.md",
+        "references/log-cli-and-console.md",
+        "references/logger-api.md",
+        "references/metrickit.md",
+        "references/network-telemetry.md",
+        "references/oslogstore.md",
+        "references/production-monitoring.md",
+        "references/signposts.md",
+        "references/symbolication.md",
+        "references/third-party-sdks.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "orchestrate",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "pre-flight",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "product-requirements",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "research-codebase",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "security-review",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "skill-creator",
+      "copied_files": [
+        "SKILL.md",
+        "agents/analyzer.md",
+        "agents/comparator.md",
+        "agents/grader.md",
+        "assets/eval_review.html",
+        "eval-viewer/generate_review.py",
+        "eval-viewer/viewer.html",
+        "references/schemas.md",
+        "scripts/__init__.py",
+        "scripts/aggregate_benchmark.py",
+        "scripts/generate_report.py",
+        "scripts/improve_description.py",
+        "scripts/package_skill.py",
+        "scripts/quick_validate.py",
+        "scripts/run_eval.py",
+        "scripts/run_loop.py",
+        "scripts/utils.py"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "swift-code-audit",
+      "copied_files": [
+        "SKILL.md",
+        "references/report-template.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "swift-concurrency-pro",
+      "copied_files": [
+        "SKILL.md",
+        "references/actors.md",
+        "references/async-streams.md",
+        "references/bridging.md",
+        "references/bug-patterns.md",
+        "references/cancellation.md",
+        "references/diagnostics.md",
+        "references/hotspots.md",
+        "references/interop.md",
+        "references/new-features.md",
+        "references/structured.md",
+        "references/testing.md",
+        "references/unstructured.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "swift-focusengine-pro",
+      "copied_files": [
+        "SKILL.md",
+        "references/accessibility-focus.md",
+        "references/anti-patterns.md",
+        "references/async-focus.md",
+        "references/debugging.md",
+        "references/focus-restoration.md",
+        "references/focus-styling.md",
+        "references/ios-focus.md",
+        "references/layout-patterns.md",
+        "references/macos-focus.md",
+        "references/realitykit-focus.md",
+        "references/swiftui-focus.md",
+        "references/uikit-focus.md",
+        "references/visionos-focus.md",
+        "references/watchos-focus.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "swift-format-style",
+      "copied_files": [
+        "SKILL.md",
+        "references/anti-patterns.md",
+        "references/date-styles.md",
+        "references/duration-styles.md",
+        "references/numeric-styles.md",
+        "references/other-styles.md",
+        "references/swiftui.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "swift-security-expert",
+      "copied_files": [
+        "SKILL.md",
+        "references/biometric-authentication.md",
+        "references/certificate-trust.md",
+        "references/common-anti-patterns.md",
+        "references/compliance-owasp-mapping.md",
+        "references/credential-storage-patterns.md",
+        "references/cryptokit-public-key.md",
+        "references/cryptokit-symmetric.md",
+        "references/keychain-access-control.md",
+        "references/keychain-fundamentals.md",
+        "references/keychain-item-classes.md",
+        "references/keychain-sharing.md",
+        "references/migration-legacy-stores.md",
+        "references/secure-enclave.md",
+        "references/testing-security-code.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "adapted SKILL.md and verbatim references; the copied files keep their upstream length so a refresh re-applies only the fleet edits"
+    },
+    {
+      "name": "swift-testing-pro",
+      "copied_files": [
+        "SKILL.md",
+        "references/async-tests.md",
+        "references/core-rules.md",
+        "references/migrating-from-xctest.md",
+        "references/new-features.md",
+        "references/writing-better-tests.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "swiftdata-pro",
+      "copied_files": [
+        "SKILL.md",
+        "references/class-inheritance.md",
+        "references/cloudkit.md",
+        "references/concurrency-and-actors.md",
+        "references/core-data-adoption.md",
+        "references/core-rules.md",
+        "references/indexing.md",
+        "references/migrations-and-history.md",
+        "references/predicates.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "swiftdata-testing",
+      "copied_files": [
+        "SKILL.md",
+        "references/decimal-money-values.md",
+        "references/import-hash-dedup.md",
+        "references/mock-repositories.md",
+        "references/model-actor-testing.md",
+        "references/model-container-fixtures.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "swiftui-accessibility-auditor",
+      "copied_files": [
+        "SKILL.md",
+        "checklist.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "swiftui-liquid-glass",
+      "copied_files": [
+        "SKILL.md",
+        "references/liquid-glass.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "swiftui-performance-audit",
+      "copied_files": [
+        "SKILL.md",
+        "references/code-smells.md",
+        "references/demystify-swiftui-performance-wwdc23.md",
+        "references/optimizing-swiftui-performance-instruments.md",
+        "references/profiling-intake.md",
+        "references/report-template.md",
+        "references/understanding-hangs-in-your-app.md",
+        "references/understanding-improving-swiftui-performance.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "swiftui-pro",
+      "copied_files": [
+        "SKILL.md",
+        "references/accessibility.md",
+        "references/api.md",
+        "references/data.md",
+        "references/design.md",
+        "references/hygiene.md",
+        "references/navigation.md",
+        "references/performance.md",
+        "references/swift.md",
+        "references/views.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "system-design",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "tdd",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "trace",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "ue-actor-component-architecture",
+      "copied_files": [
+        "SKILL.md",
+        "references/actor-lifecycle.md",
+        "references/component-types.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-ai-navigation",
+      "copied_files": [
+        "SKILL.md",
+        "references/behavior-tree-patterns.md",
+        "references/eqs-reference.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-animation-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/anim-notify-reference.md",
+        "references/locomotion-setup.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-async-threading",
+      "copied_files": [
+        "SKILL.md",
+        "references/thread-safety-guide.md",
+        "references/threading-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-audio-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/audio-component-reference.md",
+        "references/audio-setup-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-blueprint-cpp-interop",
+      "copied_files": [
+        "SKILL.md",
+        "references/blueprint-meta-specifiers.md",
+        "references/blueprint-node-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-build-verify",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "ue-character-movement",
+      "copied_files": [
+        "SKILL.md",
+        "references/cmc-extension-patterns.md",
+        "references/movement-pipeline.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-cpp-foundations",
+      "copied_files": [
+        "SKILL.md",
+        "references/container-patterns.md",
+        "references/delegate-patterns.md",
+        "references/property-specifiers.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-data-assets-tables",
+      "copied_files": [
+        "SKILL.md",
+        "references/asset-loading-patterns.md",
+        "references/data-driven-design.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-editor-scripting",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "ue-editor-tools",
+      "copied_files": [
+        "SKILL.md",
+        "references/detail-customization-patterns.md",
+        "references/editor-module-setup.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-game-features",
+      "copied_files": [
+        "SKILL.md",
+        "references/experience-system.md",
+        "references/game-feature-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-gameplay-abilities",
+      "copied_files": [
+        "SKILL.md",
+        "references/ability-task-reference.md",
+        "references/gameplay-effect-reference.md",
+        "references/gas-setup-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-gameplay-cameras",
+      "copied_files": [
+        "SKILL.md",
+        "references/classic-camera-stack.md",
+        "references/gameplay-camera-system.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-gameplay-framework",
+      "copied_files": [
+        "SKILL.md",
+        "references/framework-class-map.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-gameplay-tags-messaging",
+      "copied_files": [
+        "SKILL.md",
+        "references/gameplay-messaging.md",
+        "references/gameplay-tag-reference.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-input-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/input-action-reference.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-mass-entity",
+      "copied_files": [
+        "SKILL.md",
+        "references/mass-entity-patterns.md",
+        "references/mass-fragment-reference.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-materials-rendering",
+      "copied_files": [
+        "SKILL.md",
+        "references/global-shaders-rdg.md",
+        "references/material-parameter-reference.md",
+        "references/post-process-settings.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-module-build-system",
+      "copied_files": [
+        "SKILL.md",
+        "references/build-cs-reference.md",
+        "references/common-build-errors.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-mover",
+      "copied_files": [
+        "SKILL.md",
+        "references/mover-recipes.md",
+        "references/mover-reference.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-networking-replication",
+      "copied_files": [
+        "SKILL.md",
+        "references/replication-patterns.md",
+        "references/rpc-decision-guide.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-niagara-effects",
+      "copied_files": [
+        "SKILL.md",
+        "references/niagara-data-interfaces.md",
+        "references/niagara-parameter-types.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-physics-collision",
+      "copied_files": [
+        "SKILL.md",
+        "references/collision-channel-setup.md",
+        "references/trace-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-procedural-generation",
+      "copied_files": [
+        "SKILL.md",
+        "references/pcg-node-reference.md",
+        "references/procedural-mesh-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-project-context",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "adapted copy; the copied SKILL.md keeps its upstream length so a refresh re-applies only the fleet edits"
+    },
+    {
+      "name": "ue-sequencer-cinematics",
+      "copied_files": [
+        "SKILL.md",
+        "references/sequencer-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-serialization-savegames",
+      "copied_files": [
+        "SKILL.md",
+        "references/save-system-architecture.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-state-trees",
+      "copied_files": [
+        "SKILL.md",
+        "references/state-tree-mass-integration.md",
+        "references/state-tree-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-testing-debugging",
+      "copied_files": [
+        "SKILL.md",
+        "references/automation-test-patterns.md",
+        "references/profiling-commands.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-ui-umg-slate",
+      "copied_files": [
+        "SKILL.md",
+        "references/common-ui-setup.md",
+        "references/slate-patterns.md",
+        "references/widget-types.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ue-world-level-streaming",
+      "copied_files": [
+        "SKILL.md",
+        "references/streaming-patterns.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "ui-redesign",
+      "copied_files": [
+        "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "ui-taste",
+      "copied_files": [
+        "SKILL.md",
+        "references/anti-patterns.md",
+        "references/color.md",
+        "references/copy.md",
+        "references/layout-and-space.md",
+        "references/typography.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "uikit-accessibility-auditor",
+      "copied_files": [
+        "SKILL.md",
+        "checklist.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "widgets",
+      "copied_files": [
+        "SKILL.md",
+        "references/animations-and-transitions.md",
+        "references/anti-patterns.md",
+        "references/configuration-and-intents.md",
+        "references/controls.md",
+        "references/data-and-networking.md",
+        "references/deep-linking-and-navigation.md",
+        "references/design-and-gallery.md",
+        "references/families-and-layout.md",
+        "references/fundamentals.md",
+        "references/interactive-widgets.md",
+        "references/live-activities.md",
+        "references/lock-screen-and-watch.md",
+        "references/migration-and-deprecations.md",
+        "references/platforms.md",
+        "references/previews-and-testing.md",
+        "references/relevance-and-smart-stacks.md",
+        "references/rendering-modes-and-tinting.md",
+        "references/timeline-provider.md",
+        "references/worked-example.md"
+      ],
+      "verbatim": true
+    },
+    {
+      "name": "writing-for-interfaces",
+      "copied_files": [
+        "SKILL.md",
+        "references/patterns.md",
+        "references/sources.md"
+      ],
+      "verbatim": false,
+      "budget_exempt": "adapted SKILL.md and verbatim references; the copied files keep their upstream length so a refresh re-applies only the fleet edits"
+    }
+  ]
+}

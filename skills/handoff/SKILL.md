@@ -13,7 +13,7 @@ Preserve the state needed to continue the original objective without repeating i
 4. List remaining tasks in dependency order with exact paths, contracts to preserve, acceptance checks, and the next executable action. Identify task owners and active work so a successor does not overwrite concurrent changes.
 5. Preserve failed approaches, observed errors, runtime discoveries, and hypotheses not yet tested. Include only failures that help the successor avoid repetition or understand a decision.
 6. Record environment prerequisites and locations of configuration/credential sources without secret values. Link relevant design, plan, research, reports, and authoritative external sources.
-7. Write the assigned handoff path or `ai_docs/handoffs/whats-next.md`. Re-read it against the actual workspace and ensure it tells the successor what to do first, what evidence to trust, and what remains uncertain.
+7. Write the assigned handoff path. With no assigned path, write `ai_docs/handoffs/<role>-whats-next.md`, where `<role>` is `$HORCH_ROLE`, or `orchestrator` in the orchestrator pane. Re-read it against the actual workspace and ensure it tells the successor what to do first, what evidence to trust, and what remains uncertain.
 
 Notify the orchestrator of the artifact and exact status. A handoff is a checkpoint, not proof the objective is complete and not a requirement for a human to restart a session. Continue authorized work when context and task ownership permit. A successor should recheck workspace state and relevant evidence before assuming recorded work is unchanged.
 

@@ -1,0 +1,12 @@
+{
+  "os": "macos",
+  "arch": "arm64",
+  "cpus": 18,
+  "mem_total_bytes": 137438953472,
+  "mem_available_bytes": 85899345920,
+  "disk_free_bytes": 500000000000,
+  "disk_total_bytes": 994662584320,
+  "gpu": "apple_silicon",
+  "max_open_files": 10240,
+  "max_processes": 8000
+}

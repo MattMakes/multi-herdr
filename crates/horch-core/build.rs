@@ -12,7 +12,12 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 fn main() {
-    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Read at run time, not with `env!`: cargo reuses a compiled build
+    // script across checkouts at different paths (path dependencies hash
+    // without their absolute path), and an `env!` value would point every
+    // later build at the checkout that first compiled this script.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let crate_dir = Path::new(&manifest_dir);
     let root = crate_dir.parent().unwrap().parent().unwrap();
     let teammates = root.join("teammates");
 
@@ -53,10 +58,38 @@ fn main() {
     }
     files.sort();
     let mut bundled = String::from("pub static BUNDLED_SKILL_FILES: &[(&str, &[u8])] = &[\n");
-    for (relative, absolute) in files {
+    for (relative, absolute) in &files {
         writeln!(bundled, "    ({relative:?}, include_bytes!({absolute:?})),").unwrap();
     }
     bundled.push_str("];\n");
+    // The files of `BUNDLED_SKILL_FILES` with an execute bit, so a bundle
+    // writes them executable.
+    let executable: Vec<&str> = files
+        .iter()
+        .filter(|(_, absolute)| is_executable(Path::new(absolute)))
+        .map(|(relative, _)| relative.as_str())
+        .collect();
+    bundled.push_str("pub static BUNDLED_SKILL_EXECUTABLES: &[&str] = &[\n");
+    for relative in &executable {
+        writeln!(bundled, "    {relative:?},").unwrap();
+    }
+    bundled.push_str("];\n");
+    // The tree digest of each bundled skill, so no process digests the
+    // compiled-in files at run time.
+    bundled.push_str("pub(crate) static BUNDLED_SKILL_DIGESTS: &[(&str, [u8; 32])] = &[\n");
+    for (name, digest) in skill_digests(&files, &executable) {
+        writeln!(bundled, "    ({name:?}, {digest:?}),").unwrap();
+    }
+    bundled.push_str("];\n");
+    // Which files of each bundled skill were copied into this repository.
+    let copied = skills.join("copied.json");
+    println!("cargo:rerun-if-changed={}", copied.display());
+    writeln!(
+        bundled,
+        "pub static BUNDLED_COPIED: &str = include_str!({:?});",
+        copied.to_string_lossy()
+    )
+    .unwrap();
     std::fs::write(
         Path::new(&std::env::var("OUT_DIR").unwrap()).join("bundled_skills.rs"),
         bundled,
@@ -64,9 +97,72 @@ fn main() {
     .unwrap();
 }
 
+/// Whether the file at `path` has any execute bit. Always false off Unix.
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// The tree digest of every skill in `files` (sorted `(relative, absolute)`
+/// pairs), by the rule of `skills::catalog`: a skill is a top-level
+/// `<name>/SKILL.md`; its digest is sha256 over the sorted lines
+/// `<path under <name>/>\0<hex sha256 of the bytes>\n`. The line of a
+/// file in `executable` ends `\0x\n` instead, so the execute bit is part
+/// of the digest and a skill without one keeps the marketplace digest.
+fn skill_digests(files: &[(String, String)], executable: &[&str]) -> Vec<(String, [u8; 32])> {
+    use sha2::{Digest as _, Sha256};
+    let mut out = Vec::new();
+    for (relative, _) in files {
+        let Some(name) = relative.strip_suffix("/SKILL.md") else {
+            continue;
+        };
+        if name.contains('/') {
+            continue;
+        }
+        let prefix = format!("{name}/");
+        let mut lines: Vec<(&str, String, bool)> = files
+            .iter()
+            .filter_map(|(relative, absolute)| {
+                let rel = relative.strip_prefix(&prefix)?;
+                let bytes = std::fs::read(absolute).unwrap();
+                let hash: String = Sha256::digest(&bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                Some((rel, hash, executable.contains(&relative.as_str())))
+            })
+            .collect();
+        lines.sort();
+        let mut tree = Sha256::new();
+        for (rel, hash, exec) in &lines {
+            tree.update(rel.as_bytes());
+            tree.update([0u8]);
+            tree.update(hash.as_bytes());
+            if *exec {
+                tree.update(b"\0x");
+            }
+            tree.update(b"\n");
+        }
+        out.push((name.to_owned(), tree.finalize().into()));
+    }
+    out
+}
+
 fn collect_skill_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) {
     for entry in std::fs::read_dir(dir).unwrap() {
         let entry = entry.unwrap();
+        // Dotfiles (`.DS_Store`, `.git`) are never part of a skill.
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
         let kind = entry.file_type().unwrap();
         assert!(
             !kind.is_symlink(),
@@ -106,7 +202,7 @@ fn emit(out: &mut String, ident: &str, dir: &Path, keep: fn(&str) -> bool) {
     // Sorted so the generated file is stable across filesystems.
     entries.sort();
 
-    writeln!(out, "pub static {ident}: &[(&str, &str)] = &[").unwrap();
+    writeln!(out, "pub(crate) static {ident}: &[(&str, &str)] = &[").unwrap();
     for (stem, path) in entries {
         writeln!(out, "    (\"{stem}\", include_str!(r\"{path}\")),").unwrap();
     }

@@ -1,0 +1,38 @@
+{
+  "estimate_note": "Names and descriptions only; bytes/4 estimate excludes harness wrappers, paths, ambient skills and tools. Full bodies load on demand.",
+  "metadata_bytes": 661,
+  "metadata_tokens_estimate": 166,
+  "phase": "validation",
+  "skills": [
+    {
+      "description": "Use when verifying completed implementation against its plan, requirements, tests, and build.",
+      "name": "check",
+      "skill_file_bytes": 2590
+    },
+    {
+      "description": "Use when assessing changed code for complexity, maintainability, or configured static-analysis violations.",
+      "name": "code-analysis",
+      "skill_file_bytes": 2852
+    },
+    {
+      "description": "Use when reviewing a diff, branch, or completed feature for correctness, maintainability, and regression risk.",
+      "name": "code-review",
+      "skill_file_bytes": 2559
+    },
+    {
+      "description": "Use for an authorized security audit or focused review of trust boundaries, credentials, parsing, and dependencies.",
+      "name": "security-review",
+      "skill_file_bytes": 3043
+    },
+    {
+      "description": "Use when documenting actual architecture, developer workflows, or behavior changed by completed work.",
+      "name": "document",
+      "skill_file_bytes": 2614
+    },
+    {
+      "description": "Use when work must transfer to another worker or continue after context loss.",
+      "name": "handoff",
+      "skill_file_bytes": 2629
+    }
+  ]
+}

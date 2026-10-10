@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="Tween" inherits="Object" api_type="core">
+	<methods>
+		<method name="tween_property"><return type="PropertyTweener" /></method>
+	</methods>
+	<constants>
+		<constant name="TRANS_SINE" value="1" enum="TransitionType"></constant>
+	</constants>
+</class>

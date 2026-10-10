@@ -5,13 +5,18 @@ base: fleet-worker
 agent: claude
 phase: implementation
 model: opus
+# When this model's usage pool cannot serve a spawn (horch route backend-developer).
+fallbacks: [codex-sol]
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. cezaar#40 runs builders low; medium because our briefs are not
-# always complete specs. Raise one spawn with --effort. (ai_docs/reports/model-guide-2026-09.md)
+# always complete specs. Raise one spawn with --effort.
 effort: medium
+compact_window: 200000
+compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
-skills: [tdd, security-review]
+skills: [tdd, security-review, api-contracts, data-migrations]
+available_skills: [codebase-design]
 
 # context7 for current library and framework documentation. No browser servers:
 # this teammate has no page to look at.
@@ -21,7 +26,7 @@ skills: [tdd, security-review]
 # set here yet. When a flag or settings key appears, it goes in `args` or
 # `settings` rather than becoming a new field.
 mcp_servers:
-  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp"]}
+  context7: {"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp@4.1.1"]}
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
