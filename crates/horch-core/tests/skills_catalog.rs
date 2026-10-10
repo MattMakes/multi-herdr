@@ -49,6 +49,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-language-choice",
     "godot-project-context",
     "godot-quest-system",
+    "godot-save-security",
     "godot-scene-files",
     "godot-sound-design",
     "godot-version-migration",
