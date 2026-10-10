@@ -835,6 +835,11 @@
       "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
+      "name": "godot-sound-design",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "godot-state-machine",
       "copied_files": [
         "SKILL.md",

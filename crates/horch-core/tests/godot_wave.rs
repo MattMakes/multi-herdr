@@ -1,5 +1,5 @@
 //! The Godot wave (GDW-01 to GDW-12, `docs/specs/godot.md`): the Godot
-//! requirement, the 19 `godot-*` seats, the 65 `godot-*` skills and the
+//! requirement, the 19 `godot-*` seats, the 66 `godot-*` skills and the
 //! gate's Godot checks.
 //!
 //! The seat tests read the teammates through the public roster API and
@@ -381,9 +381,9 @@ fn gdw_06_copied_failures_fail_only_above_the_baseline() {
 }
 
 #[test]
-fn gdw_07_the_catalog_has_65_godot_skills_and_no_excluded_one() {
+fn gdw_07_the_catalog_has_66_godot_skills_and_no_excluded_one() {
     let skills = godot_skills();
-    assert_eq!(skills.len(), 65, "{skills:?}");
+    assert_eq!(skills.len(), 66, "{skills:?}");
     for name in EXCLUDED {
         assert!(!skills.contains(name), "{name} is excluded");
     }
