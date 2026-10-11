@@ -422,6 +422,17 @@ impl Roster {
                     "{who}: remote_control belongs to the orchestrator only"
                 ));
             }
+            if t.worker_channel {
+                problems.push(format!(
+                    "{who}: worker_channel belongs to the orchestrator only"
+                ));
+            }
+        }
+        if t.worker_channel && !matches!(t.agent, HarnessKind::Claude | HarnessKind::Codex) {
+            problems.push(format!(
+                "{who}: worker_channel needs agent claude or codex; agent {} cannot host it",
+                t.agent
+            ));
         }
         // Only Claude has an OS sandbox horch can switch on per launch. On any
         // other agent the field would promise a boundary that never exists.
@@ -1830,6 +1841,43 @@ mod spawnable_tests {
             "{:?}",
             r.check()
         );
+    }
+
+    #[test]
+    fn arc_30_worker_channel_belongs_to_the_orchestrator_only() {
+        let mut r = Roster::builtin().unwrap();
+        let opus = r.teammates.get_mut("opus").unwrap();
+        opus.worker_channel = true;
+        let problems = r.check();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p == "opus: worker_channel belongs to the orchestrator only"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn arc_30_worker_channel_needs_claude_or_codex() {
+        let mut r = Roster::builtin().unwrap();
+        let orch = r.teammates.get_mut("orchestrator").unwrap();
+        orch.worker_channel = true;
+        orch.agent = HarnessKind::OpenCode;
+        let problems = r.check();
+        assert!(
+            problems.iter().any(|p| {
+                p == "orchestrator: worker_channel needs agent claude or codex; agent opencode cannot host it"
+            }),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn arc_30_both_orchestrators_set_worker_channel() {
+        let r = Roster::builtin().unwrap();
+        for name in ["orchestrator", "orchestrator-codex"] {
+            assert!(r.require(name).unwrap().worker_channel, "{name}");
+        }
     }
 
     /// A fleet pane must not spawn subagents. The deny is the proof, and

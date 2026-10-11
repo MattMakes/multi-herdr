@@ -127,13 +127,25 @@ pub(super) fn claude_command(
     // `--strict-mcp-config` makes `--mcp-config` the whole truth rather than an
     // addition, so an empty `mcpServers` object is what "no MCP servers at all"
     // looks like. Without strict, the operator's servers would still load.
-    if let Some(servers) = &teammate.mcp_servers {
+    if teammate.mcp_servers.is_some() || teammate.worker_channel {
+        let mut servers = teammate.mcp_servers.clone().unwrap_or_default();
+        if teammate.worker_channel {
+            servers.insert(
+                "horch".into(),
+                json!({
+                    "command": env.horch_exe,
+                    "args": ["channel", "serve", "--agent", "claude"]
+                }),
+            );
+        }
         let config = serde_json::json!({ "mcpServers": servers });
         cmd.arg("--mcp-config").arg(config.to_string());
         for file in &teammate.mcp_config_files {
             cmd.arg("--mcp-config").arg(env.expand_home(file));
         }
-        cmd.arg("--strict-mcp-config");
+        if teammate.mcp_servers.is_some() {
+            cmd.arg("--strict-mcp-config");
+        }
     } else if !teammate.mcp_config_files.is_empty() {
         cmd.arg("--mcp-config");
         for file in &teammate.mcp_config_files {
@@ -151,6 +163,9 @@ pub(super) fn claude_command(
     if !teammate.disallowed_tools.is_empty() {
         cmd.arg("--disallowedTools")
             .arg(teammate.disallowed_tools.join(","));
+    }
+    if teammate.worker_channel {
+        cmd.args(["--dangerously-load-development-channels", "server:horch"]);
     }
 
     let model = model_for(teammate, model_override)?;
@@ -836,6 +851,86 @@ pub(crate) const AMBIENT_SKILL_CREATOR: [&str; 2] =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn command_args(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn arc_30_claude_orchestrator_loads_the_horch_channel() {
+        let mut env = LaunchEnv::for_test();
+        env.horch_exe = "/opt/horch test".into();
+        let teammate = Teammate {
+            model: Some("sonnet".into()),
+            worker_channel: true,
+            mcp_servers: Some(Default::default()),
+            ..Default::default()
+        };
+        let args = command_args(
+            &claude_command(&env, &teammate, Session::Unmanaged, "the prompt", None).unwrap(),
+        );
+        let config_at = args.iter().position(|arg| arg == "--mcp-config").unwrap();
+        let config: Value = serde_json::from_str(&args[config_at + 1]).unwrap();
+        assert_eq!(config["mcpServers"]["horch"]["command"], "/opt/horch test");
+        assert_eq!(
+            config["mcpServers"]["horch"]["args"],
+            json!(["channel", "serve", "--agent", "claude"])
+        );
+        assert!(args.iter().any(|arg| arg == "--strict-mcp-config"));
+        let channel_at = args
+            .iter()
+            .position(|arg| arg == "--dangerously-load-development-channels")
+            .unwrap();
+        assert_eq!(args[channel_at + 1], "server:horch");
+        let model_at = args.iter().position(|arg| arg == "--model").unwrap();
+        assert!(channel_at < model_at, "{args:?}");
+        assert_eq!(args.last().map(String::as_str), Some("the prompt"));
+    }
+
+    #[test]
+    fn arc_30_claude_channel_without_mcp_servers_is_not_strict() {
+        let teammate = Teammate {
+            model: Some("sonnet".into()),
+            worker_channel: true,
+            ..Default::default()
+        };
+        let args = command_args(
+            &claude_command(
+                &LaunchEnv::for_test(),
+                &teammate,
+                Session::Unmanaged,
+                "p",
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(args.iter().any(|arg| arg == "--mcp-config"));
+        assert!(!args.iter().any(|arg| arg == "--strict-mcp-config"));
+    }
+
+    #[test]
+    fn arc_30_claude_without_worker_channel_adds_nothing() {
+        let teammate = Teammate {
+            model: Some("sonnet".into()),
+            ..Default::default()
+        };
+        let args = command_args(
+            &claude_command(
+                &LaunchEnv::for_test(),
+                &teammate,
+                Session::Unmanaged,
+                "p",
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(!args.iter().any(|arg| arg == "--mcp-config"));
+        assert!(!args
+            .iter()
+            .any(|arg| arg == "--dangerously-load-development-channels"));
+    }
 
     /// Run `read` in a thread; panic when it does not return within 1 s.
     #[cfg(unix)]

@@ -219,6 +219,12 @@ plugin_skills: {}
 # it.
 remote_control: false
 
+# claude or codex, orchestrator only. Starts `horch channel serve` as the
+# pane's MCP server. Worker reports use the relay while it is live, and
+# `horch tell` falls back to terminal text injection when it is down.
+# `horch teammates --check` fails a non-orchestrator that sets it.
+worker_channel: false
+
 # ─── startup mode ────────────────────────────────────────────────────────────
 # How much the teammate may do without asking. Unset = inherit the operator's
 # settings, which for a worker in an unwatched pane usually means it stops on

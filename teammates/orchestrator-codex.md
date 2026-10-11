@@ -10,6 +10,10 @@ model: gpt-6-astra
 effort: xhigh
 compact_at: 300000
 permission_mode: auto
+# Worker reports reach this pane through `horch channel serve`.
+# The relay delivers reports without terminal text injection.
+# `horch tell` types reports only when the relay is down.
+worker_channel: true
 
 # No inherit_plugins, mcp_servers or setting_sources here: those are claude-only
 # levers, and `horch teammates --check` rejects them on a codex teammate. Codex

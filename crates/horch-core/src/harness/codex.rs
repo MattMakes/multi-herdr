@@ -884,6 +884,42 @@ pub(super) fn codex_command(
     if let Session::Resume(_) = session {
         cmd.arg("resume");
     }
+    if teammate.worker_channel {
+        const CHANNEL_ENV_VARS: [&str; 14] = [
+            "HORCH_WORKSPACE_ID",
+            "HORCH_RECORD_ID",
+            "HORCH_STATE_DIR",
+            "HORCH_DATA_DIR",
+            "HORCH_TEAMMATES_DIR",
+            "HORCH_CODEX_BIN",
+            "HERDR_PANE_ID",
+            "HERDR_SOCKET_PATH",
+            "HERDR_BIN_PATH",
+            "HORCH_HERDR_BIN",
+            "XDG_STATE_HOME",
+            "XDG_DATA_HOME",
+            "HOME",
+            "PATH",
+        ];
+        let horch = env.horch_exe.to_string_lossy();
+        let workdir = env
+            .workdir
+            .as_deref()
+            .context("the worker channel needs a launch workdir")?
+            .to_string_lossy();
+        let channel_args = ["channel", "serve", "--agent", "codex"]
+            .map(toml_string)
+            .join(",");
+        let env_vars = CHANNEL_ENV_VARS.map(toml_string).join(",");
+        for pair in [
+            format!("mcp_servers.horch.command={}", toml_string(&horch)),
+            format!("mcp_servers.horch.args=[{channel_args}]"),
+            format!("mcp_servers.horch.cwd={}", toml_string(&workdir)),
+            format!("mcp_servers.horch.env_vars=[{env_vars}]"),
+        ] {
+            cmd.arg("-c").arg(pair);
+        }
+    }
     cmd.arg("-c").arg(&model);
     // Fleet panes must reach their briefing without startup dialogs. Keep
     // sandbox/command approval policy separate from trust for enabled hooks.
@@ -1063,7 +1099,97 @@ pub fn status_shows(mode: PaneMode, permissions: &str) -> bool {
 mod tests {
     use super::*;
     use crate::roster::Roster;
+    use serde_json::{json, Value};
     use std::time::Duration;
+
+    fn command_args(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn arc_30_codex_orchestrator_gets_the_horch_mcp_server() {
+        let mut env = LaunchEnv::for_test();
+        env.horch_exe = "/opt/horch test".into();
+        env.workdir = Some("/work tree".into());
+        let teammate = Teammate {
+            model: Some("gpt-5.6-sol".into()),
+            worker_channel: true,
+            ..Default::default()
+        };
+        let args = command_args(
+            &codex_command(&env, &teammate, Session::Resume("thread-1"), "p", None).unwrap(),
+        );
+        assert_eq!(args[0], "resume");
+        let pairs: Vec<&str> = args[1..9]
+            .chunks_exact(2)
+            .map(|pair| {
+                assert_eq!(pair[0], "-c");
+                pair[1].as_str()
+            })
+            .collect();
+        let parsed: Vec<(&str, Value)> = pairs
+            .iter()
+            .map(|pair| {
+                let (key, value) = pair.split_once('=').unwrap();
+                (key, serde_json::from_str(value).unwrap())
+            })
+            .collect();
+        assert_eq!(
+            parsed[0],
+            ("mcp_servers.horch.command", json!("/opt/horch test"))
+        );
+        assert_eq!(
+            parsed[1],
+            (
+                "mcp_servers.horch.args",
+                json!(["channel", "serve", "--agent", "codex"])
+            )
+        );
+        assert_eq!(parsed[2], ("mcp_servers.horch.cwd", json!("/work tree")));
+        assert_eq!(
+            parsed[3],
+            (
+                "mcp_servers.horch.env_vars",
+                json!([
+                    "HORCH_WORKSPACE_ID",
+                    "HORCH_RECORD_ID",
+                    "HORCH_STATE_DIR",
+                    "HORCH_DATA_DIR",
+                    "HORCH_TEAMMATES_DIR",
+                    "HORCH_CODEX_BIN",
+                    "HERDR_PANE_ID",
+                    "HERDR_SOCKET_PATH",
+                    "HERDR_BIN_PATH",
+                    "HORCH_HERDR_BIN",
+                    "XDG_STATE_HOME",
+                    "XDG_DATA_HOME",
+                    "HOME",
+                    "PATH"
+                ])
+            )
+        );
+    }
+
+    #[test]
+    fn arc_30_codex_without_worker_channel_adds_nothing() {
+        let teammate = Teammate {
+            model: Some("gpt-5.6-sol".into()),
+            ..Default::default()
+        };
+        let args = command_args(
+            &codex_command(
+                &LaunchEnv::for_test(),
+                &teammate,
+                Session::Unmanaged,
+                "p",
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(!args.iter().any(|arg| arg.starts_with("mcp_servers.horch.")));
+    }
 
     /// Run `read` in a thread; panic when it does not return within 1 s.
     #[cfg(unix)]

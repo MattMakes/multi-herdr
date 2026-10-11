@@ -21,6 +21,10 @@ permission_mode: auto
 # phone. A built-in, not a plugin: `remoteControlAtStartup` in the settings
 # overlay. Every other pane gets the same key set to false.
 remote_control: true
+# Worker reports reach this pane through `horch channel serve`.
+# The relay delivers reports without terminal text injection.
+# `horch tell` types reports only when the relay is down.
+worker_channel: true
 
 # The orchestrator's context is the scarcest resource in the fleet: it holds
 # the plan, the roster, and who is doing what, for the whole run. It keeps the

@@ -39,6 +39,8 @@ use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest, WindowInputs
 #[derive(Debug, Clone)]
 pub struct LaunchEnv {
     pub bins: HarnessBins,
+    /// The resolved `horch` executable used by child MCP servers.
+    pub horch_exe: PathBuf,
     /// `$HOME` exactly as set (`Inherited::home_var`).
     pub home: Option<PathBuf>,
     /// `$OPENCODE_CONFIG_CONTENT`.
@@ -78,6 +80,7 @@ impl LaunchEnv {
     pub fn from_context(ctx: &RuntimeContext) -> LaunchEnv {
         LaunchEnv {
             bins: ctx.bins.harness.clone(),
+            horch_exe: ctx.bins.horch_exe.clone(),
             home: ctx.inherited.home_var.as_ref().map(PathBuf::from),
             opencode_config_content: ctx.inherited.opencode_config_content.clone(),
             path: ctx.inherited.path.clone(),
@@ -102,6 +105,7 @@ impl LaunchEnv {
     pub(crate) fn for_test() -> LaunchEnv {
         LaunchEnv {
             bins: HarnessBins::resolve(&BinOverrides::default(), None, None),
+            horch_exe: PathBuf::from("horch"),
             home: None,
             opencode_config_content: None,
             path: None,
@@ -112,7 +116,7 @@ impl LaunchEnv {
             codex_home: None,
             claude_config_dir: None,
             claude_managed_settings: None,
-            workdir: None,
+            workdir: Some(PathBuf::from("/workdir")),
             compact_window: None,
         }
     }
@@ -2045,7 +2049,20 @@ mod tests {
             "would remove the built-in /context and /config: {a:?}"
         );
         assert!(a.contains(&"--strict-mcp-config".to_string()), "{a:?}");
-        assert!(a.contains(&r#"{"mcpServers":{}}"#.to_string()), "{a:?}");
+        let config_at = a.iter().position(|arg| arg == "--mcp-config").unwrap();
+        let config: serde_json::Value = serde_json::from_str(&a[config_at + 1]).unwrap();
+        assert_eq!(
+            config,
+            serde_json::json!({
+                "mcpServers": {
+                    "horch": {
+                        "command": "horch",
+                        "args": ["channel", "serve", "--agent", "claude"]
+                    }
+                }
+            }),
+            "{a:?}"
+        );
         assert!(!a.contains(&"--plugin-dir".to_string()), "{a:?}");
 
         // Only the operator's ENABLED plugins are switched off, by name.
