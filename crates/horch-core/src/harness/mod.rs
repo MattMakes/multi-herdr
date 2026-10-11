@@ -407,6 +407,25 @@ impl fmt::Display for HarnessKind {
     }
 }
 
+impl HarnessKind {
+    /// How an orchestrator pane of this harness takes a pushed worker report
+    /// (ARC-30): a Claude channel notification, or a `codex queue` call for
+    /// the session `thread` names. Every other harness has no relay, and its
+    /// reports stay typed.
+    pub fn channel_output(
+        self,
+        codex_bin: std::path::PathBuf,
+        thread: Box<dyn Fn() -> anyhow::Result<String> + Send + Sync>,
+    ) -> anyhow::Result<crate::messaging::channel::Output> {
+        use crate::messaging::channel::Output;
+        match self {
+            HarnessKind::Claude => Ok(Output::ClaudeNotification),
+            HarnessKind::Codex => Ok(Output::CodexQueue { codex_bin, thread }),
+            other => anyhow::bail!("agent '{other}' has no channel relay; use claude or codex"),
+        }
+    }
+}
+
 impl FromStr for HarnessKind {
     type Err = String;
 

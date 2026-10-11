@@ -454,8 +454,8 @@ enum Command {
 enum ChannelSubcommand {
     /// Serve the relay as an MCP stdio server.
     Serve {
-        #[arg(long)]
-        agent: cmd::channel::Agent,
+        #[arg(long, value_parser = |s: &str| s.parse::<horch_core::harness::HarnessKind>())]
+        agent: horch_core::harness::HarnessKind,
     },
 }
 

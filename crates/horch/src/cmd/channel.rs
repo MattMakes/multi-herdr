@@ -1,20 +1,14 @@
 //! The worker-report channel relay exposed as an MCP stdio server.
 
 use anyhow::{Context, Result};
-use clap::ValueEnum;
 use horch_core::execution::records::Ledger;
-use horch_core::messaging::channel::{self, Output, ServeOptions};
+use horch_core::harness::HarnessKind;
+use horch_core::messaging::channel::{self, ServeOptions};
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum Agent {
-    Claude,
-    Codex,
-}
-
 /// Run the channel relay until its MCP input reaches EOF.
-pub fn serve(ctx: &RuntimeContext, agent: Agent) -> Result<()> {
+pub fn serve(ctx: &RuntimeContext, agent: HarnessKind) -> Result<()> {
     let workspace = ctx
         .herdr
         .workspace
@@ -28,16 +22,11 @@ pub fn serve(ctx: &RuntimeContext, agent: Agent) -> Result<()> {
         .body
         .clone();
     let socket = channel::socket_path(&ctx.paths.state_root, &workspace);
-    let output = match agent {
-        Agent::Claude => Output::ClaudeNotification,
-        Agent::Codex => {
-            let ctx = ctx.clone();
-            Output::CodexQueue {
-                codex_bin: ctx.bins.harness.codex.clone(),
-                thread: Box::new(move || thread_id(&ctx)),
-            }
-        }
-    };
+    let thread_ctx = ctx.clone();
+    let output = agent.channel_output(
+        ctx.bins.harness.codex.clone(),
+        Box::new(move || thread_id(&thread_ctx)),
+    )?;
     channel::serve(
         ServeOptions {
             socket,
