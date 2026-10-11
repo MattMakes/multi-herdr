@@ -2,6 +2,7 @@
 //! registry, what a message says and how it is typed into a pane.
 
 pub mod brief;
+pub mod channel;
 pub mod delivery;
 pub mod mailbox;
 pub mod message;
