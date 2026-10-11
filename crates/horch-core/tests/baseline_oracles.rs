@@ -238,6 +238,11 @@ impl World {
         if let Some(b) = bundle {
             out = out.replace(&*b.to_string_lossy(), "<BUNDLE>");
         }
+        // The launch workdir is this test's own directory (a Codex relay
+        // names it in `mcp_servers.horch.cwd`), which differs per checkout.
+        if let Ok(cwd) = std::env::current_dir() {
+            out = out.replace(&*cwd.to_string_lossy(), "<CWD>");
+        }
         out = out.replace(&*self.home.to_string_lossy(), "<HOME>");
         out = out.replace(&*self.root.to_string_lossy(), "<TMP>");
         out.replace(PROMPT, "<PROMPT>")
