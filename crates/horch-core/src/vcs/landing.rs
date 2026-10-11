@@ -19,6 +19,7 @@ use crate::fsx::{self, DirLock, PRIVATE_FILE};
 
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCK_HEARTBEAT: Duration = Duration::from_secs(60);
 
 /// The durable state of a worktree claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +81,9 @@ pub struct Landing {
     runner: GitRunner,
     state_root: PathBuf,
     env: Vec<(OsString, OsString)>,
+    lock_stale_after: Duration,
+    lock_timeout: Duration,
+    lock_heartbeat: Duration,
 }
 
 #[derive(Debug)]
@@ -95,6 +99,9 @@ impl Landing {
             runner: GitRunner::new(git_bin),
             state_root,
             env: Vec::new(),
+            lock_stale_after: LOCK_STALE_AFTER,
+            lock_timeout: LOCK_TIMEOUT,
+            lock_heartbeat: LOCK_HEARTBEAT,
         }
     }
 
@@ -102,6 +109,14 @@ impl Landing {
     pub fn with_env(mut self, key: &str, value: &str) -> Self {
         self.runner = self.runner.with_env(key, value);
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    #[cfg(test)]
+    fn with_lock_timing(mut self, stale: Duration, timeout: Duration, heartbeat: Duration) -> Self {
+        self.lock_stale_after = stale;
+        self.lock_timeout = timeout;
+        self.lock_heartbeat = heartbeat;
         self
     }
 
@@ -183,7 +198,7 @@ impl Landing {
         check: Option<&str>,
     ) -> Result<Landed> {
         let repo = self.repo(dir)?;
-        let _guard = self.lock(&repo)?;
+        let guard = self.lock(&repo)?;
         let mut claims = self.load_unlocked(&repo)?;
         let matches: Vec<usize> = claims
             .iter()
@@ -210,7 +225,7 @@ impl Landing {
         }
         let index = matches[0];
         let claim = claims[index].clone();
-        let result = self.land_locked(&repo, &claim, check).map_err(|error| {
+        let result = self.land_locked(&repo, &claim, check, &guard).map_err(|error| {
             anyhow!(
                 "{error}\nKept branch {} and worktree when they still exist. Continue by hand:\ngit -C {} status\ngit -C {} rebase {}\ngit -C {} merge --ff-only {}\ngit -C {} worktree remove {}\ngit -C {} branch -d {}",
                 claim.branch,
@@ -364,7 +379,13 @@ impl Landing {
         Ok(result)
     }
 
-    fn land_locked(&self, repo: &Repo, claim: &Claim, check: Option<&str>) -> Result<Landed> {
+    fn land_locked(
+        &self,
+        repo: &Repo,
+        claim: &Claim,
+        check: Option<&str>,
+        guard: &fsx::DirLockGuard,
+    ) -> Result<Landed> {
         if !claim.path.is_dir() {
             bail!("worktree {} does not exist", claim.path.display());
         }
@@ -374,6 +395,25 @@ impl Landing {
                 "refused to land: worktree {} has {} modified, staged, or untracked entries",
                 claim.path.display(),
                 line_count(&dirty)
+            );
+        }
+
+        let base_checkouts = self
+            .worktrees(&repo.top)?
+            .into_iter()
+            .filter(|(_, branch)| branch.as_deref() == Some(claim.base.as_str()))
+            .map(|(path, _)| path)
+            .collect::<Vec<_>>();
+        if base_checkouts.len() > 1 {
+            bail!(
+                "refused to land: base {} is checked out in {} worktrees: {}",
+                claim.base,
+                base_checkouts.len(),
+                base_checkouts
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
 
@@ -405,68 +445,117 @@ impl Landing {
             };
             bail!("git rebase {} failed: {detail}", claim.base);
         }
-
-        if let Some(command) = check {
-            let status = self.run_check(&claim.path, command)?;
-            if !status.success() {
-                bail!("check failed with status {status}: {command}");
+        let new_branch = self.text(&claim.path, &["rev-parse", "--verify", &claim.branch])?;
+        let after_rebase = (|| {
+            if let Some(command) = check {
+                let status = self.run_check_with_heartbeat(&claim.path, command, guard)?;
+                if !status.success() {
+                    bail!("check failed with status {status}: {command}");
+                }
             }
-        }
 
-        let commit = self.text(&claim.path, &["rev-parse", "--verify", &claim.branch])?;
-        let commits = self
-            .lines(&claim.path, &["rev-list", &format!("{base_tip}..{commit}")])?
-            .len();
-        let base_checkout = self
-            .worktrees(&repo.top)?
-            .into_iter()
-            .find(|(_, branch)| branch.as_deref() == Some(claim.base.as_str()));
-        let base_was_checked_out = base_checkout.is_some();
-        match base_checkout {
-            Some((path, _)) => {
-                self.run(&path, &["merge", "--ff-only", &claim.branch])?;
+            let commits = self
+                .lines(
+                    &claim.path,
+                    &["rev-list", &format!("{base_tip}..{new_branch}")],
+                )?
+                .len();
+            let base_checkout = base_checkouts.into_iter().next();
+            let base_was_checked_out = base_checkout.is_some();
+            match base_checkout {
+                Some(path) => {
+                    self.run(&path, &["merge", "--ff-only", &claim.branch])?;
+                }
+                None => {
+                    self.run(
+                        &repo.top,
+                        &["fetch", ".", &format!("{}:{}", claim.branch, claim.base)],
+                    )?;
+                }
             }
-            None => {
+            let contains = self.is_ancestor(&repo.top, &claim.branch, &claim.base)?;
+            if !contains {
+                bail!(
+                    "base {} does not contain {} after fast-forward",
+                    claim.base,
+                    claim.branch
+                );
+            }
+            // `branch -d` checks the upstream when one exists. Set it when the
+            // repository's current checkout is unrelated to the landed base.
+            if !base_was_checked_out {
                 self.run(
                     &repo.top,
-                    &["fetch", ".", &format!("{}:{}", claim.branch, claim.base)],
+                    &["branch", "--set-upstream-to", &claim.base, &claim.branch],
                 )?;
             }
-        }
-        let contains = self.is_ancestor(&repo.top, &claim.branch, &claim.base)?;
-        if !contains {
-            bail!(
-                "base {} does not contain {} after fast-forward",
-                claim.base,
-                claim.branch
-            );
-        }
-        // `branch -d` checks the upstream when one exists. Set it when the
-        // repository's current checkout is unrelated to the landed base.
-        if !base_was_checked_out {
-            self.run(
-                &repo.top,
-                &["branch", "--set-upstream-to", &claim.base, &claim.branch],
-            )?;
-        }
-        self.run(&repo.top, &["worktree", "remove", path_text(&claim.path)?])?;
-        self.run(&repo.top, &["branch", "-d", &claim.branch])?;
-        Ok(Landed {
-            branch: claim.branch.clone(),
-            base: claim.base.clone(),
-            commit,
-            commits,
+            self.run(&repo.top, &["worktree", "remove", path_text(&claim.path)?])?;
+            self.run(&repo.top, &["branch", "-d", &claim.branch])?;
+            Ok(Landed {
+                branch: claim.branch.clone(),
+                base: claim.base.clone(),
+                commit: new_branch.clone(),
+                commits,
+            })
+        })();
+        after_rebase.map_err(|error| {
+            if old_branch == new_branch {
+                error
+            } else {
+                anyhow!(
+                    "{error}\nbranch {} was rebased from {} to {}; the old tip is {} in the reflog",
+                    claim.branch,
+                    old_branch,
+                    new_branch,
+                    old_branch
+                )
+            }
+        })
+    }
+
+    fn run_check_with_heartbeat(
+        &self,
+        dir: &Path,
+        command: &str,
+        guard: &fsx::DirLockGuard,
+    ) -> Result<std::process::ExitStatus> {
+        std::thread::scope(|scope| {
+            let (stop, stopped) = std::sync::mpsc::channel();
+            let heartbeat = scope.spawn(move || -> fsx::Result<()> {
+                loop {
+                    match stopped.recv_timeout(self.lock_heartbeat) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            return Ok(())
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => guard.refresh()?,
+                    }
+                }
+            });
+            let status = self.run_check(dir, command);
+            let _ = stop.send(());
+            let refreshed = heartbeat
+                .join()
+                .expect("lock heartbeat thread does not panic");
+            status.and_then(|status| {
+                refreshed.map_err(anyhow::Error::from)?;
+                Ok(status)
+            })
         })
     }
 
     fn repo(&self, dir: &Path) -> Result<Repo> {
-        let top = PathBuf::from(self.text(dir, &["rev-parse", "--show-toplevel"])?);
-        let common_text = self.text(dir, &["rev-parse", "--git-common-dir"])?;
+        let top = self
+            .worktrees(dir)?
+            .into_iter()
+            .next()
+            .map(|(path, _)| path)
+            .ok_or_else(|| anyhow!("git worktree list returned no main worktree"))?;
+        let common_text = self.text(&top, &["rev-parse", "--git-common-dir"])?;
         let common = PathBuf::from(common_text);
         let common = if common.is_absolute() {
             common
         } else {
-            dir.join(common)
+            top.join(common)
         };
         let common = common
             .canonicalize()
@@ -484,8 +573,8 @@ impl Landing {
         DirLock::acquire(
             &repo.registry_dir,
             &repo.key,
-            LOCK_STALE_AFTER,
-            LOCK_TIMEOUT,
+            self.lock_stale_after,
+            self.lock_timeout,
         )
         .map_err(Into::into)
     }
@@ -787,10 +876,33 @@ mod tests {
         let expected = fixture.git(&claim.path, &["rev-parse", "HEAD"]);
         let landed = fixture
             .landing
-            .land(&fixture.repo, "worker", Some("one"), None)
+            .land(&claim.path, "worker", Some("one"), None)
             .unwrap();
         assert_eq!(landed.commit, expected);
         assert_eq!(landed.commits, 1);
+        assert_eq!(fixture.git(&fixture.repo, &["rev-parse", "main"]), expected);
+        assert!(!claim.path.exists());
+        assert!(!fixture
+            .landing
+            .ref_exists(&fixture.repo, &format!("refs/heads/{}", claim.branch))
+            .unwrap());
+        assert_eq!(
+            fixture.landing.claims(&fixture.repo).unwrap()[0].state,
+            ClaimState::Landed
+        );
+    }
+
+    #[test]
+    fn arc_31_land_from_inside_the_worktree_completes() {
+        let fixture = Fixture::new();
+        let claim = fixture.create("worker", None, "one");
+        fixture.commit_file(&claim.path, "worker.txt", "work\n", "worker");
+        let expected = fixture.git(&claim.path, &["rev-parse", "HEAD"]);
+        let landed = fixture
+            .landing
+            .land(&claim.path, "worker", Some("one"), None)
+            .unwrap();
+        assert_eq!(landed.commit, expected);
         assert_eq!(fixture.git(&fixture.repo, &["rev-parse", "main"]), expected);
         assert!(!claim.path.exists());
         assert!(!fixture
@@ -811,7 +923,7 @@ mod tests {
         fixture.commit_file(&fixture.repo, "base.txt", "base\n", "base");
         let landed = fixture
             .landing
-            .land(&fixture.repo, "worker", Some("one"), None)
+            .land(&claim.path, "worker", Some("one"), None)
             .unwrap();
         assert_eq!(landed.commits, 1);
         assert!(fixture.repo.join("worker.txt").is_file());
@@ -828,7 +940,7 @@ mod tests {
         fs::write(claim.path.join("untracked.txt"), "new\n").unwrap();
         let error = fixture
             .landing
-            .land(&fixture.repo, "worker", Some("one"), None)
+            .land(&claim.path, "worker", Some("one"), None)
             .unwrap_err();
         assert!(error
             .to_string()
@@ -847,7 +959,7 @@ mod tests {
         fixture.commit_file(&fixture.repo, "common.txt", "base\n", "base");
         let error = fixture
             .landing
-            .land(&fixture.repo, "worker", Some("one"), None)
+            .land(&claim.path, "worker", Some("one"), None)
             .unwrap_err();
         assert!(error.to_string().contains("common.txt"));
         assert_eq!(fixture.git(&claim.path, &["rev-parse", "HEAD"]), branch);
@@ -862,11 +974,95 @@ mod tests {
         let base = fixture.git(&fixture.repo, &["rev-parse", "main"]);
         let error = fixture
             .landing
-            .land(&fixture.repo, "worker", Some("one"), Some("exit 9"))
+            .land(&claim.path, "worker", Some("one"), Some("exit 9"))
             .unwrap_err();
         assert!(error.to_string().contains("check failed"));
         assert_eq!(fixture.git(&fixture.repo, &["rev-parse", "main"]), base);
         assert!(claim.path.is_dir());
+    }
+
+    #[test]
+    fn arc_31_failed_check_after_rebase_names_the_old_tip() {
+        let fixture = Fixture::new();
+        let claim = fixture.create("worker", None, "one");
+        fixture.commit_file(&claim.path, "worker.txt", "work\n", "worker");
+        let old = fixture.git(&claim.path, &["rev-parse", "HEAD"]);
+        fixture.commit_file(&fixture.repo, "base.txt", "base\n", "base");
+        let error = fixture
+            .landing
+            .land(&claim.path, "worker", Some("one"), Some("exit 9"))
+            .unwrap_err();
+        let new = fixture.git(&claim.path, &["rev-parse", "HEAD"]);
+        assert_ne!(new, old, "the moved base causes a real rebase");
+        assert!(
+            error.to_string().contains(&format!(
+                "branch {} was rebased from {old} to {new}; the old tip is {old} in the reflog",
+                claim.branch
+            )),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn arc_31_land_refuses_base_checked_out_twice() {
+        let fixture = Fixture::new();
+        let claim = fixture.create("worker", None, "one");
+        fixture.commit_file(&claim.path, "worker.txt", "work\n", "worker");
+        let second = fixture._temp.path().join("second-main");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "--force",
+                second.to_str().unwrap(),
+                "main",
+            ],
+        );
+        let before = fixture.git(&claim.path, &["rev-parse", "HEAD"]);
+        let error = fixture
+            .landing
+            .land(&claim.path, "worker", Some("one"), None)
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("base main is checked out in 2 worktrees"),
+            "{text}"
+        );
+        assert!(text.contains(&fixture.repo.display().to_string()), "{text}");
+        assert!(text.contains(&second.display().to_string()), "{text}");
+        assert_eq!(fixture.git(&claim.path, &["rev-parse", "HEAD"]), before);
+    }
+
+    #[test]
+    fn arc_31_long_check_keeps_the_lock() {
+        let fixture = Fixture::new();
+        let landing = configured_landing(&fixture.state, &fixture.config).with_lock_timing(
+            Duration::from_millis(40),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+        );
+        let claim = landing
+            .create(&fixture.repo, "worker", None, "one")
+            .unwrap();
+        fixture.commit_file(&claim.path, "worker.txt", "work\n", "worker");
+        let marker = fixture._temp.path().join("check-started");
+        let command = format!("touch {}; sleep 0.3", marker.display());
+        let worker_path = claim.path.clone();
+        let worker_landing = landing.clone();
+        let land = std::thread::spawn(move || {
+            worker_landing.land(&worker_path, "worker", Some("one"), Some(&command))
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(marker.exists(), "the check started");
+        let error = landing
+            .create(&fixture.repo, "worker-2", None, "two")
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error:#}");
+        land.join().unwrap().unwrap();
     }
 
     #[test]
@@ -878,7 +1074,7 @@ mod tests {
         fs::write(fixture.repo.join("common.txt"), "local\n").unwrap();
         let error = fixture
             .landing
-            .land(&fixture.repo, "worker", Some("one"), None)
+            .land(&claim.path, "worker", Some("one"), None)
             .unwrap_err();
         assert!(error.to_string().contains("local changes"));
         assert_eq!(fixture.git(&fixture.repo, &["rev-parse", "main"]), base);
@@ -898,7 +1094,7 @@ mod tests {
         fixture.git(&fixture.repo, &["switch", "-c", "parking"]);
         fixture
             .landing
-            .land(&fixture.repo, "worker", Some("one"), None)
+            .land(&claim.path, "worker", Some("one"), None)
             .unwrap();
         assert_eq!(fixture.git(&fixture.repo, &["rev-parse", "main"]), expected);
         assert_eq!(

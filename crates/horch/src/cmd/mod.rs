@@ -22,6 +22,7 @@ pub mod telemetry;
 pub mod tilecmd;
 pub mod usagecmd;
 pub mod worker;
+pub mod worktree;
 
 use std::path::Path;
 

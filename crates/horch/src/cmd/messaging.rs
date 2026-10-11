@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use horch_core::compaction::policy;
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
-use horch_core::execution::lifecycle::{self, DoneRequest, DoneSteps, ReportTarget};
+use horch_core::execution::lifecycle::{self, ClaimLine, DoneRequest, DoneSteps, ReportTarget};
 use horch_core::execution::records::Ledger;
 use horch_core::execution::store::to_execution;
 use horch_core::execution::ExecutionKind;
@@ -29,6 +29,8 @@ use horch_core::prompts;
 use horch_core::runtime::RuntimeContext;
 use horch_core::usage::Locations;
 use horch_core::vcs::git::GitCli;
+use horch_core::vcs::git::GitClient;
+use horch_core::vcs::landing::Landing;
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 
@@ -81,14 +83,14 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
             Err(channel::SendError::NotDelivered(error)) if socket.exists() => eprintln!(
                 "horch tell: the channel relay did not take the message ({error}); typing it instead"
             ),
-            Err(_) => {}
-        }
             Err(channel::SendError::Unconfirmed(error)) => {
                 eprintln!(
                     "horch tell: the channel relay did not confirm the message ({error}); typing it again with a duplicate warning"
                 );
                 line.push_str(" (sent again: the channel relay did not confirm)");
             }
+            Err(_) => {}
+        }
     }
     let Some(target) = mailbox.pane_for(role) else {
         let known: Vec<String> = mailbox.roles().into_iter().map(|(r, _)| r).collect();
@@ -277,7 +279,7 @@ pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
 /// while waiting on a question). The order of the steps is
 /// [`lifecycle::done`]'s.
-pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
+pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<()> {
     let record_id = require_env("HORCH_RECORD_ID", worker_var(ctx, |w| &w.record_id))?;
     let role = require_env("HORCH_ROLE", worker_var(ctx, |w| &w.role))?;
     let pane_env = require_env(
@@ -302,6 +304,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
             workspace: workspace.as_deref(),
             summary,
             report_to: report_target(ctx, workspace.as_deref(), &role),
+            unlanded,
         },
     );
     // After the close, and only when it worked: a Prime pane's tools (this
@@ -359,6 +362,59 @@ struct CliDone<'a> {
 }
 
 impl DoneSteps for CliDone<'_> {
+    fn open_claims(&self, record_id: &str) -> Result<Vec<ClaimLine>> {
+        let dir = self.ctx.paths.project()?;
+        let landing = Landing::new(
+            self.ctx.bins.harness.git.clone(),
+            self.ctx.paths.state_root.clone(),
+        );
+        landing
+            .open_claims_for_record(&dir, record_id)?
+            .into_iter()
+            .map(|claim| claim_line(self.ctx, &landing, claim))
+            .collect()
+    }
+
+    fn mark_unlanded(&self, record_id: &str, reason: &str) -> Result<Vec<ClaimLine>> {
+        let dir = self.ctx.paths.project()?;
+        let landing = Landing::new(
+            self.ctx.bins.harness.git.clone(),
+            self.ctx.paths.state_root.clone(),
+        );
+        let claims = landing.open_claims_for_record(&dir, record_id)?;
+        claims
+            .into_iter()
+            .map(|claim| {
+                let line = claim_line(self.ctx, &landing, claim.clone())?;
+                landing.mark_unlanded(&dir, &claim.id, reason)?;
+                Ok(line)
+            })
+            .collect()
+    }
+
+    fn unregistered(&self) -> Result<Vec<String>> {
+        let dir = self.ctx.paths.project()?;
+        Landing::new(
+            self.ctx.bins.harness.git.clone(),
+            self.ctx.paths.state_root.clone(),
+        )
+        .unregistered(&dir)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| {
+                    format!(
+                        "{} branch {} ahead {} dirty {}",
+                        entry.path.display(),
+                        entry.branch.as_deref().unwrap_or("detached"),
+                        entry.ahead,
+                        entry.dirty
+                    )
+                })
+                .collect()
+        })
+    }
+
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()> {
         Ledger::open_in(self.ctx)?.done(record_id, summary)
     }
@@ -413,6 +469,26 @@ impl DoneSteps for CliDone<'_> {
         let now = horch_core::clock::now();
         record_run(&paths, &project, &record, &sources, now, WrittenBy::Done).map(|_| ())
     }
+}
+
+fn claim_line(
+    ctx: &RuntimeContext,
+    landing: &Landing,
+    claim: horch_core::vcs::landing::Claim,
+) -> Result<ClaimLine> {
+    let status = landing.status(&claim)?;
+    let git = GitCli::new(ctx.bins.harness.git.clone());
+    let sha = git
+        .rev_parse(&ctx.paths.project()?, &claim.branch)?
+        .or(claim.landed_commit)
+        .unwrap_or_else(|| "unknown".into());
+    Ok(ClaimLine {
+        branch: claim.branch,
+        short_sha: sha.chars().take(7).collect(),
+        ahead: status.ahead,
+        base: claim.base,
+        path: claim.path,
+    })
 }
 
 /// Record this pane's public id under `role` so other panes can address it.

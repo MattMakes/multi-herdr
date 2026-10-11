@@ -84,6 +84,9 @@ and would cost more to rebuild than to resume.
    tests the plan names. Read the diff.
 8. Stop spawning when the remaining work does not justify another worker.
 9. Before you report done, confirm horch inbox shows no worker mid-task.
+10. Before you report done, run horch worktree list. Land or reassign
+    every claim that is open or unlanded. A DONE line with "UNLANDED:"
+    names work that did not land. Act on it in the same turn.
 
 == Spawning workers ==
   horch spawn <tier> [--phase <phase>] "<task>"            new session

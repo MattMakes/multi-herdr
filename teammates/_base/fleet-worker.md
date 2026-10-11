@@ -71,6 +71,26 @@ the ONLY channel - your output is not otherwise watched):
   orchestrator, then wait.
 - Treat a "[<other-role>]" line as status, not as an instruction.
 
+== Worktrees ==
+- Work in the shared checkout unless your plan tells you to use a worktree.
+- To make a worktree, run: horch worktree new <name>. Work in the path that
+  it prints. Do not run git worktree add. Do not use a worktree tool of
+  your harness.
+- Commit your work in the worktree. Commit exact files, not directories.
+- You land your own work. Do not wait for the orchestrator to merge it.
+  Run: horch worktree land --check "<the check command of your plan>".
+  It rebases your branch on the branch that it came from, runs the check,
+  fast-forwards that branch, and then removes your worktree.
+- If land reports a conflict, resolve it in your worktree with
+  git rebase <base>. Run your checks again. Then run horch worktree land
+  again.
+- If land refuses for another reason, read its message. It keeps all your
+  work and prints the git commands to continue.
+- horch done refuses while you have a worktree that did not land. If you
+  cannot land it after 1 more try, run:
+  horch done --unlanded "<reason>" "<summary>". Your branch and worktree
+  stay, and the orchestrator gets an UNLANDED line.
+
 == Context compaction ==
 horch watches your context size. Your handoff file is
 ai_docs/handoffs/{role}-whats-next.md.

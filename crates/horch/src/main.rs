@@ -140,8 +140,17 @@ enum Command {
 
     /// Finish this worker: record a summary, report DONE, and close its pane.
     Done {
+        /// Finish even when this record owns an open worktree claim.
+        #[arg(long, value_name = "REASON")]
+        unlanded: Option<String>,
         #[arg(required = true, trailing_var_arg = true)]
         summary: Vec<String>,
+    },
+
+    /// Create, land, or inspect worker worktrees.
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeSubcommand,
     },
 
     /// Read the project session ledger. Do this before spawning.
@@ -451,6 +460,20 @@ enum ChannelSubcommand {
 }
 
 #[derive(Subcommand)]
+enum WorktreeSubcommand {
+    /// Create and claim a worker worktree.
+    New { name: String },
+    /// Rebase, check, and land one owned worktree.
+    Land {
+        name: Option<String>,
+        #[arg(long, value_name = "CMD")]
+        check: Option<String>,
+    },
+    /// Show registered claims and changed unregistered worktrees.
+    List,
+}
+
+#[derive(Subcommand)]
 enum TelemetrySub {
     /// Open the collector in its own herdr workspace, unless one is live.
     /// Never focuses, moves or splits an existing pane.
@@ -555,7 +578,16 @@ fn run() -> Result<std::process::ExitCode> {
                 },
             );
         }
-        Command::Done { summary } => cmd::messaging::done(ctx, &joined(&summary))?,
+        Command::Done { summary, unlanded } => {
+            cmd::messaging::done(ctx, &joined(&summary), unlanded.as_deref())?
+        }
+        Command::Worktree { command } => match command {
+            WorktreeSubcommand::New { name } => cmd::worktree::new(ctx, &name)?,
+            WorktreeSubcommand::Land { name, check } => {
+                cmd::worktree::land(ctx, name.as_deref(), check.as_deref())?
+            }
+            WorktreeSubcommand::List => cmd::worktree::list(ctx)?,
+        },
         Command::Sessions { json, all } => cmd::ledgercmd::sessions(ctx, json, all)?,
         Command::Skills {
             command,
