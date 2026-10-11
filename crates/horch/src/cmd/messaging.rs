@@ -52,7 +52,7 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
         Some(me) => message::ensure_tag(text, me),
         None => text.to_string(),
     };
-    let line = if text.chars().count() > message::MAX_INLINE {
+    let mut line = if text.chars().count() > message::MAX_INLINE {
         let from = sender.as_deref().unwrap_or("orchestrator");
         let path = message::spool(
             &message::spool_dir(&ctx.paths.state_root),
@@ -67,13 +67,28 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     if role == "orchestrator" {
         let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
         let from = sender.as_deref().unwrap_or("orchestrator");
-        match channel::send(&socket, from, &line, channel::SEND_TIMEOUT) {
+        let send_timeout = if cfg!(debug_assertions) {
+            std::env::var("HORCH_TEST_CHANNEL_SEND_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .map(std::time::Duration::from_millis)
+                .unwrap_or(channel::SEND_TIMEOUT)
+        } else {
+            channel::SEND_TIMEOUT
+        };
+        match channel::send(&socket, from, &line, send_timeout) {
             Ok(()) => return Ok(()),
-            Err(error) if socket.exists() => eprintln!(
+            Err(channel::SendError::NotDelivered(error)) if socket.exists() => eprintln!(
                 "horch tell: the channel relay did not take the message ({error}); typing it instead"
             ),
             Err(_) => {}
         }
+            Err(channel::SendError::Unconfirmed(error)) => {
+                eprintln!(
+                    "horch tell: the channel relay did not confirm the message ({error}); typing it again with a duplicate warning"
+                );
+                line.push_str(" (sent again: the channel relay did not confirm)");
+            }
     }
     let Some(target) = mailbox.pane_for(role) else {
         let known: Vec<String> = mailbox.roles().into_iter().map(|(r, _)| r).collect();

@@ -44,6 +44,7 @@ pub fn serve(ctx: &RuntimeContext, agent: Agent) -> Result<()> {
             output,
             instructions,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            connection_timeout: channel::CONNECTION_TIMEOUT,
         },
         std::io::stdin().lock(),
         std::io::stdout(),

@@ -3,6 +3,7 @@
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -306,6 +307,37 @@ fn arc_30_e2e_tell_types_when_the_relay_fails() {
     assert!(typed[0].to_string().contains("[sonnet-1] DONE: e2e"));
     let (lines, _) = relay.stop();
     assert_eq!(lines.len(), 1, "each relay stdout line parses as JSON");
+}
+
+#[test]
+fn arc_30_e2e_unconfirmed_tell_types_with_the_resent_suffix() {
+    let mut h = world("arc30-unconfirmed");
+    h.set("HORCH_TEST_CHANNEL_SEND_TIMEOUT_MS", "100");
+    let socket = channel_socket(&h);
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(&socket).expect("binding fake relay");
+    let fake_relay = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accepting tell");
+        let mut request = String::new();
+        BufReader::new(stream)
+            .read_line(&mut request)
+            .expect("reading tell");
+        std::thread::sleep(Duration::from_millis(300));
+        request
+    });
+
+    let sent = tell(&h);
+    assert!(sent.status.success(), "{}", stderr(&sent));
+    assert!(stderr(&sent).contains("the channel relay did not confirm the message"));
+    let typed = typed_lines(&h);
+    assert_eq!(typed.len(), 1, "{typed:?}");
+    assert!(typed[0]
+        .to_string()
+        .contains("[sonnet-1] DONE: e2e (sent again: the channel relay did not confirm)"));
+    assert!(fake_relay
+        .join()
+        .expect("fake relay thread")
+        .contains("[sonnet-1] DONE: e2e"));
 }
 
 #[test]

@@ -23,6 +23,9 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 /// The longest wait a sender makes for the relay's answer.
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(12);
 
+/// The longest wait for one relay client to send or receive a complete line.
+pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The longest wait for one `codex queue` process.
 pub const CODEX_QUEUE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -43,6 +46,32 @@ pub struct ServeOptions {
     pub output: Output,
     pub instructions: String,
     pub version: String,
+    pub connection_timeout: Duration,
+}
+
+/// Why a relay did not confirm one message.
+#[derive(Debug)]
+pub enum SendError {
+    /// The relay did not receive and deliver the complete message.
+    NotDelivered(anyhow::Error),
+    /// The relay received the message, but its acknowledgement was not received.
+    Unconfirmed(anyhow::Error),
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotDelivered(error) | Self::Unconfirmed(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SendError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotDelivered(error) | Self::Unconfirmed(error) => error.source(),
+        }
+    }
 }
 
 /// `<state_root>/channels/<file-safe workspace>.sock`.
@@ -66,7 +95,12 @@ fn file_safe(value: &str) -> String {
 }
 
 /// Send one message to a relay and wait for its answer.
-pub fn send(socket: &Path, from: &str, text: &str, timeout: Duration) -> Result<()> {
+pub fn send(
+    socket: &Path,
+    from: &str,
+    text: &str,
+    timeout: Duration,
+) -> std::result::Result<(), SendError> {
     request(socket, &json!({"from": from, "text": text}), timeout)
 }
 
@@ -75,30 +109,44 @@ pub fn is_live(socket: &Path) -> bool {
     request(socket, &json!({"ping": true}), Duration::from_secs(1)).is_ok()
 }
 
-fn request(socket: &Path, value: &Value, timeout: Duration) -> Result<()> {
+fn request(socket: &Path, value: &Value, timeout: Duration) -> std::result::Result<(), SendError> {
     let mut stream = UnixStream::connect(socket)
-        .with_context(|| format!("connect to channel relay {}", socket.display()))?;
+        .with_context(|| format!("connect to channel relay {}", socket.display()))
+        .map_err(SendError::NotDelivered)?;
     stream
         .set_write_timeout(Some(timeout))
-        .context("set channel relay write timeout")?;
+        .context("set channel relay write timeout")
+        .map_err(SendError::NotDelivered)?;
     stream
         .set_read_timeout(Some(timeout))
-        .context("set channel relay read timeout")?;
-    serde_json::to_writer(&mut stream, value).context("encode channel request")?;
-    stream.write_all(b"\n").context("write channel request")?;
-    stream.flush().context("flush channel request")?;
+        .context("set channel relay read timeout")
+        .map_err(SendError::NotDelivered)?;
+    serde_json::to_writer(&mut stream, value)
+        .context("encode channel request")
+        .map_err(SendError::NotDelivered)?;
+    stream
+        .write_all(b"\n")
+        .context("write channel request")
+        .map_err(SendError::NotDelivered)?;
+    stream
+        .flush()
+        .context("flush channel request")
+        .map_err(SendError::NotDelivered)?;
 
     let mut answer = String::new();
     BufReader::new(stream)
         .read_line(&mut answer)
-        .context("read channel relay answer")?;
+        .context("read channel relay answer")
+        .map_err(SendError::Unconfirmed)?;
     let answer = answer.trim_end_matches(['\r', '\n']);
     if answer == "ok" {
         Ok(())
     } else if answer.is_empty() {
-        bail!("channel relay closed without an answer")
+        Err(SendError::Unconfirmed(anyhow!(
+            "channel relay closed without an answer"
+        )))
     } else {
-        bail!("{answer}")
+        Err(SendError::NotDelivered(anyhow!(answer.to_owned())))
     }
 }
 
@@ -133,6 +181,7 @@ pub fn serve<R: BufRead, W: Write + Send + 'static>(
                     &opts.socket,
                     Arc::clone(&delivery),
                     Arc::clone(&output),
+                    opts.connection_timeout,
                 )?);
             }
 
@@ -212,6 +261,32 @@ struct Relay {
     accept_thread: Option<JoinHandle<()>>,
 }
 
+struct SocketPathGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl SocketPathGuard {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            armed: true,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SocketPathGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 impl Drop for Relay {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -233,7 +308,22 @@ fn start_relay<W: Write + Send + 'static>(
     socket: &Path,
     delivery: Arc<Output>,
     output: Arc<Mutex<W>>,
+    connection_timeout: Duration,
 ) -> Result<Relay> {
+    start_relay_after_bind(socket, delivery, output, connection_timeout, || Ok(()))
+}
+
+fn start_relay_after_bind<W, F>(
+    socket: &Path,
+    delivery: Arc<Output>,
+    output: Arc<Mutex<W>>,
+    connection_timeout: Duration,
+    after_bind: F,
+) -> Result<Relay>
+where
+    W: Write + Send + 'static,
+    F: FnOnce() -> Result<()>,
+{
     if socket.as_os_str().as_encoded_bytes().len() >= 104 {
         bail!("channel socket path is too long: {}", socket.display());
     }
@@ -255,6 +345,8 @@ fn start_relay<W: Write + Send + 'static>(
 
     let listener = UnixListener::bind(socket)
         .with_context(|| format!("bind channel socket {}", socket.display()))?;
+    let socket_guard = SocketPathGuard::new(socket);
+    after_bind()?;
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
         .with_context(|| format!("set channel socket mode on {}", socket.display()))?;
     listener
@@ -267,6 +359,13 @@ fn start_relay<W: Write + Send + 'static>(
         while !thread_stop.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((stream, _)) => {
+                    let timeout_result = stream
+                        .set_read_timeout(Some(connection_timeout))
+                        .and_then(|()| stream.set_write_timeout(Some(connection_timeout)));
+                    if let Err(error) = timeout_result {
+                        eprintln!("cannot set channel connection timeout: {error}");
+                        continue;
+                    }
                     let delivery = Arc::clone(&delivery);
                     let output = Arc::clone(&output);
                     thread::spawn(move || handle_connection(stream, &delivery, &output));
@@ -282,6 +381,8 @@ fn start_relay<W: Write + Send + 'static>(
         }
     });
 
+    socket_guard.disarm();
+
     Ok(Relay {
         socket: socket.to_path_buf(),
         stop,
@@ -293,8 +394,12 @@ fn handle_connection<W: Write>(mut stream: UnixStream, delivery: &Output, output
     let answer = match read_socket_request(&stream) {
         Ok(SocketRequest::Ping) => Ok(()),
         Ok(SocketRequest::Message { from, text }) => deliver(delivery, output, &from, &text),
-        Err(()) => {
-            let _ = stream.write_all(b"error: bad request\n");
+        Err(error) => {
+            let answer = match error {
+                SocketReadError::Timeout => b"error: timeout\n".as_slice(),
+                SocketReadError::BadRequest => b"error: bad request\n".as_slice(),
+            };
+            let _ = stream.write_all(answer);
             let _ = stream.flush();
             return;
         }
@@ -312,26 +417,46 @@ enum SocketRequest {
     Message { from: String, text: String },
 }
 
-fn read_socket_request(stream: &UnixStream) -> std::result::Result<SocketRequest, ()> {
+enum SocketReadError {
+    Timeout,
+    BadRequest,
+}
+
+fn read_socket_request(stream: &UnixStream) -> std::result::Result<SocketRequest, SocketReadError> {
     let mut bytes = Vec::new();
     let mut limited = BufReader::new(stream).take((MAX_LINE_BYTES + 2) as u64);
-    limited.read_until(b'\n', &mut bytes).map_err(|_| ())?;
+    limited.read_until(b'\n', &mut bytes).map_err(|error| {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ) {
+            SocketReadError::Timeout
+        } else {
+            SocketReadError::BadRequest
+        }
+    })?;
     if !bytes.ends_with(b"\n") {
-        return Err(());
+        return Err(SocketReadError::BadRequest);
     }
     bytes.pop();
     if bytes.last() == Some(&b'\r') {
         bytes.pop();
     }
     if bytes.len() > MAX_LINE_BYTES {
-        return Err(());
+        return Err(SocketReadError::BadRequest);
     }
-    let value: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| SocketReadError::BadRequest)?;
     if value.get("ping") == Some(&Value::Bool(true)) {
         return Ok(SocketRequest::Ping);
     }
-    let from = value.get("from").and_then(Value::as_str).ok_or(())?;
-    let text = value.get("text").and_then(Value::as_str).ok_or(())?;
+    let from = value
+        .get("from")
+        .and_then(Value::as_str)
+        .ok_or(SocketReadError::BadRequest)?;
+    let text = value
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or(SocketReadError::BadRequest)?;
     Ok(SocketRequest::Message {
         from: from.to_owned(),
         text: text.to_owned(),
@@ -392,7 +517,7 @@ fn run_codex_queue(codex_bin: &Path, thread_id: &str, text: &str) -> Result<()> 
 mod tests {
     use std::io::{BufReader, Cursor};
     use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::UnixStream;
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -434,11 +559,19 @@ mod tests {
             output,
             instructions: "channel instructions".to_owned(),
             version: "1.2.3".to_owned(),
+            connection_timeout: CONNECTION_TIMEOUT,
         }
     }
 
     fn start_server(
         output_kind: Output,
+    ) -> (PathBuf, UnixStream, SharedWriter, JoinHandle<Result<()>>) {
+        start_server_with_timeout(output_kind, CONNECTION_TIMEOUT)
+    }
+
+    fn start_server_with_timeout(
+        output_kind: Output,
+        connection_timeout: Duration,
     ) -> (PathBuf, UnixStream, SharedWriter, JoinHandle<Result<()>>) {
         let socket = socket_path(&temp_root(), "test");
         let (reader, writer) = UnixStream::pair().expect("stdin pair");
@@ -446,11 +579,9 @@ mod tests {
         let server_output = output.clone();
         let server_socket = socket.clone();
         let handle = thread::spawn(move || {
-            serve(
-                options(server_socket, output_kind),
-                BufReader::new(reader),
-                server_output,
-            )
+            let mut options = options(server_socket, output_kind);
+            options.connection_timeout = connection_timeout;
+            serve(options, BufReader::new(reader), server_output)
         });
         (socket, writer, output, handle)
     }
@@ -647,12 +778,17 @@ mod tests {
         fs::write(
             &script,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n",
+                "#!/bin/sh\nif [ \"$1\" = warm ]; then\n  exit 0\nfi\nprintf '%s\\n' \"$@\" >> '{}'\n",
                 args_file.display()
             ),
         )
         .expect("write codex script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).expect("chmod script");
+        assert!(Command::new(&script)
+            .arg("warm")
+            .status()
+            .expect("warm codex script")
+            .success());
         let (socket, mut input, _output, server) = start_server(Output::CodexQueue {
             codex_bin: script,
             thread: Box::new(|| Ok("T1".to_owned())),
@@ -674,8 +810,17 @@ mod tests {
     fn arc_30_codex_failure_answers_error() {
         let root = temp_root();
         let script = root.join("codex");
-        fs::write(&script, "#!/bin/sh\nexit 1\n").expect("write codex script");
+        fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then\n  exit 0\nfi\nexit 1\n",
+        )
+        .expect("write codex script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).expect("chmod script");
+        assert!(Command::new(&script)
+            .arg("warm")
+            .status()
+            .expect("warm codex script")
+            .success());
         let (socket, mut input, _output, server) = start_server(Output::CodexQueue {
             codex_bin: script,
             thread: Box::new(|| Ok("T1".to_owned())),
@@ -693,7 +838,91 @@ mod tests {
     #[test]
     fn arc_30_send_to_missing_socket_is_err() {
         let socket = socket_path(&temp_root(), "missing");
-        assert!(send(&socket, "worker", "hello", SEND_TIMEOUT).is_err());
+        assert!(matches!(
+            send(&socket, "worker", "hello", SEND_TIMEOUT),
+            Err(SendError::NotDelivered(_))
+        ));
+    }
+
+    #[test]
+    fn arc_30_silent_client_is_dropped_after_the_timeout() {
+        let (socket, mut input, _output, server) =
+            start_server_with_timeout(Output::ClaudeNotification, Duration::from_millis(200));
+        initialize(&mut input, &socket);
+        let stream = UnixStream::connect(&socket).expect("connect silent client");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set client timeout");
+        let mut answer = String::new();
+        BufReader::new(stream)
+            .read_line(&mut answer)
+            .expect("read timeout answer");
+        assert_eq!(answer, "error: timeout\n");
+        drop(input);
+        server
+            .join()
+            .expect("server thread")
+            .expect("server result");
+    }
+
+    #[test]
+    fn arc_30_send_reports_unconfirmed_when_no_answer() {
+        let socket = socket_path(&temp_root(), "unconfirmed");
+        fs::create_dir_all(socket.parent().expect("socket parent")).expect("create parent");
+        let listener = UnixListener::bind(&socket).expect("bind test listener");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept request");
+            let mut request = String::new();
+            BufReader::new(stream)
+                .read_line(&mut request)
+                .expect("read request");
+            thread::sleep(Duration::from_millis(200));
+            request
+        });
+        let result = send(&socket, "worker", "hello", Duration::from_millis(50));
+        assert!(matches!(result, Err(SendError::Unconfirmed(_))));
+        assert!(server
+            .join()
+            .expect("server thread")
+            .contains("\"text\":\"hello\""));
+    }
+
+    #[test]
+    fn arc_30_send_reports_not_delivered_on_error_answer() {
+        let socket = socket_path(&temp_root(), "rejected");
+        fs::create_dir_all(socket.parent().expect("socket parent")).expect("create parent");
+        let listener = UnixListener::bind(&socket).expect("bind test listener");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut request = String::new();
+            BufReader::new(&stream)
+                .read_line(&mut request)
+                .expect("read request");
+            stream
+                .write_all(b"error: rejected\n")
+                .expect("write answer");
+        });
+        let result = send(&socket, "worker", "hello", SEND_TIMEOUT);
+        assert!(matches!(result, Err(SendError::NotDelivered(_))));
+        server.join().expect("server thread");
+    }
+
+    #[test]
+    fn arc_30_failed_setup_removes_the_socket() {
+        let socket = socket_path(&temp_root(), "failed-setup");
+        let result = start_relay_after_bind(
+            &socket,
+            Arc::new(Output::ClaudeNotification),
+            Arc::new(Mutex::new(SharedWriter::default())),
+            CONNECTION_TIMEOUT,
+            || bail!("injected setup failure"),
+        );
+        let error = match result {
+            Ok(_) => panic!("setup must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("injected setup failure"));
+        assert!(!socket.exists(), "failed setup left the socket path");
     }
 
     #[test]
