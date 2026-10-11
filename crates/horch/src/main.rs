@@ -32,6 +32,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run the worker-report channel relay.
+    #[command(hide = true)]
+    Channel {
+        #[command(subcommand)]
+        command: ChannelSubcommand,
+    },
+
     /// Launch the herdr-fleet workspace: ONE orchestrator pane, which spawns
     /// exactly the workers the work needs, with a per-project session ledger.
     Fleet {
@@ -435,6 +442,15 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum ChannelSubcommand {
+    /// Serve the relay as an MCP stdio server.
+    Serve {
+        #[arg(long)]
+        agent: cmd::channel::Agent,
+    },
+}
+
+#[derive(Subcommand)]
 enum TelemetrySub {
     /// Open the collector in its own herdr workspace, unless one is live.
     /// Never focuses, moves or splits an existing pane.
@@ -491,6 +507,9 @@ fn run() -> Result<std::process::ExitCode> {
     let mut ctx = bootstrap::context()?;
     let ctx = &mut ctx;
     match cli.command {
+        Command::Channel { command } => match command {
+            ChannelSubcommand::Serve { agent } => cmd::channel::serve(ctx, agent)?,
+        },
         Command::Fleet { cwd, flavor } => cmd::recipes::fleet(ctx, cwd.as_deref(), flavor)?,
         Command::Orchestration { cwd } => cmd::recipes::orchestration(ctx, cwd.as_deref())?,
         Command::Tell { role, message } => cmd::messaging::tell(ctx, &role, &joined(&message))?,

@@ -1,5 +1,6 @@
 pub mod agentlist;
 pub mod balancecmd;
+pub mod channel;
 pub mod compact;
 pub mod context;
 pub mod cost;

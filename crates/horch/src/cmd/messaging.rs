@@ -21,6 +21,7 @@ use horch_core::fleet_runs::facts::{record_run, RunSources};
 use horch_core::fleet_runs::rows::WrittenBy;
 use horch_core::harness::launch;
 use horch_core::measure::paths::DatasetPaths;
+use horch_core::messaging::channel;
 use horch_core::messaging::delivery;
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
@@ -46,20 +47,6 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
 
-    let Some(target) = mailbox.pane_for(role) else {
-        let known: Vec<String> = mailbox.roles().into_iter().map(|(r, _)| r).collect();
-        let known = if known.is_empty() {
-            "none yet".to_string()
-        } else {
-            known.join(" ")
-        };
-        let sender = ctx.worker.as_ref().and_then(|w| w.role.as_deref());
-        bail!(
-            "role '{role}' is not registered in {}\n       known roles: {known}{}",
-            mailbox.dir().display(),
-            no_orchestrator_hint(role, sender)
-        );
-    };
     let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
     let text = match &sender {
         Some(me) => message::ensure_tag(text, me),
@@ -76,6 +63,30 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
         message::reference_line(&text, &path)
     } else {
         text
+    };
+    if role == "orchestrator" {
+        let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
+        let from = sender.as_deref().unwrap_or("orchestrator");
+        match channel::send(&socket, from, &line, channel::SEND_TIMEOUT) {
+            Ok(()) => return Ok(()),
+            Err(error) if socket.exists() => eprintln!(
+                "horch tell: the channel relay did not take the message ({error}); typing it instead"
+            ),
+            Err(_) => {}
+        }
+    }
+    let Some(target) = mailbox.pane_for(role) else {
+        let known: Vec<String> = mailbox.roles().into_iter().map(|(r, _)| r).collect();
+        let known = if known.is_empty() {
+            "none yet".to_string()
+        } else {
+            known.join(" ")
+        };
+        bail!(
+            "role '{role}' is not registered in {}\n       known roles: {known}{}",
+            mailbox.dir().display(),
+            no_orchestrator_hint(role, sender.as_deref())
+        );
     };
     // An agent that is still starting drops typed text, so wait it out. A
     // role that registered just now may not show its agent yet.
@@ -126,20 +137,26 @@ pub fn inbox(ctx: &RuntimeContext) -> Result<()> {
     if roles.iter().any(|r| r.state == PaneState::Unknown) {
         eprintln!("horch inbox: herdr did not answer, so pane states are unknown");
     }
-    output::print(&inbox_listing(&roles));
+    let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
+    output::print(&inbox_listing(&roles, channel::is_live(&socket)));
     Ok(())
 }
 
 /// One line for each role: name, pane, and `(pane closed)` when herdr does
 /// not list the pane.
-fn inbox_listing(roles: &[RoleEntry]) -> String {
+fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
     let mut listing = String::new();
     for r in roles {
         let mark = match r.state {
             PaneState::Closed => "  (pane closed)",
             PaneState::Open | PaneState::Unknown => "",
         };
-        listing.push_str(&format!("{:<12} {}{mark}\n", r.role, r.pane));
+        let channel = if channel_live && r.role == "orchestrator" {
+            "  (channel)"
+        } else {
+            ""
+        };
+        listing.push_str(&format!("{:<12} {}{mark}{channel}\n", r.role, r.pane));
     }
     listing
 }
@@ -414,6 +431,39 @@ mod tests {
     use super::*;
     use horch_core::execution::legacy::Record;
     use std::time::Duration;
+
+    #[test]
+    fn inbox_listing_marks_closed_panes() {
+        let roles = [RoleEntry {
+            role: "sonnet-1".into(),
+            pane: "p2".into(),
+            state: PaneState::Closed,
+        }];
+        assert_eq!(
+            inbox_listing(&roles, false),
+            "sonnet-1     p2  (pane closed)\n"
+        );
+    }
+
+    #[test]
+    fn arc_30_inbox_marks_a_live_relay() {
+        let roles = [
+            RoleEntry {
+                role: "orchestrator".into(),
+                pane: "p1".into(),
+                state: PaneState::Open,
+            },
+            RoleEntry {
+                role: "sonnet-1".into(),
+                pane: "p2".into(),
+                state: PaneState::Open,
+            },
+        ];
+        assert_eq!(
+            inbox_listing(&roles, true),
+            "orchestrator p1  (channel)\nsonnet-1     p2\n"
+        );
+    }
 
     #[test]
     fn tell_waits_only_the_rest_of_the_grace() {
