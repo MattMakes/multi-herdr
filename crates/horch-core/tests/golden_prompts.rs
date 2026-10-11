@@ -159,7 +159,7 @@ fn ste_section(lead: &[&str], example: &str) -> String {
     )
 }
 
-/// The worker briefing differs in exactly six places, and this pins them. The
+/// The worker briefing differs in exactly eight places, and this pins them. The
 /// first: the orchestrator is no longer described to workers as a Claude session.
 ///
 /// `horch fleet codex` puts a Codex orchestrator in that pane, and OpenCode and
@@ -219,6 +219,27 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
     let note_end = "  doing and has done.\n";
     let skills_read =
         "- horch skills read <id> [<file>] - print a skill that is not in your bundle.\n";
+    // Eighth sanctioned change: the operator requires each worker to land its
+    // own worktree. The section also preserves work when landing cannot finish.
+    let worktrees = "== Worktrees ==\n\
+        - Work in the shared checkout unless your plan tells you to use a worktree.\n\
+        - To make a worktree, run: horch worktree new <name>. Work in the path that\n\
+        \x20 it prints. Do not run git worktree add. Do not use a worktree tool of\n\
+        \x20 your harness.\n\
+        - Commit your work in the worktree. Commit exact files, not directories.\n\
+        - You land your own work. Do not wait for the orchestrator to merge it.\n\
+        \x20 Run: horch worktree land --check \"<the check command of your plan>\".\n\
+        \x20 It rebases your branch on the branch that it came from, runs the check,\n\
+        \x20 fast-forwards that branch, and then removes your worktree.\n\
+        - If land reports a conflict, resolve it in your worktree with\n\
+        \x20 git rebase <base>. Run your checks again. Then run horch worktree land\n\
+        \x20 again.\n\
+        - If land refuses for another reason, read its message. It keeps all your\n\
+        \x20 work and prints the git commands to continue.\n\
+        - horch done refuses while you have a worktree that did not land. If you\n\
+        \x20 cannot land it after 1 more try, run:\n\
+        \x20 horch done --unlanded \"<reason>\" \"<summary>\". Your branch and worktree\n\
+        \x20 stay, and the orchestrator gets an UNLANDED line.\n\n";
     // No `fable` here: the generic Fable worker was removed when Fable became
     // the orchestrator's reserved model. Its goldens went with it.
     for name in ["sonnet", "opus", "codex-sol", "codex-terra", "smoke"] {
@@ -258,11 +279,11 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
                     .replace(
                         lifecycle_end,
                         &format!(
-                        "gotchas, current state.\n{done_summary}\n{scope}{context_compaction}{ste}"
+                        "gotchas, current state.\n{done_summary}\n{scope}{worktrees}{context_compaction}{ste}"
                     )
                     ),
                 got,
-                "worker-{name}-{label} drifted outside the seven sanctioned blocks"
+                "worker-{name}-{label} drifted outside the eight sanctioned blocks"
             );
             checked += 1;
         }
@@ -293,7 +314,7 @@ fn the_orchestration_recipe_briefings_differ_only_by_the_await_line() {
     );
 }
 
-/// The orchestrator briefing differs in exactly fourteen places, and this pins them.
+/// The orchestrator briefing differs in exactly sixteen places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -301,6 +322,13 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     let got =
         prompts::agent_prompt(&r, r.require("orchestrator").unwrap(), "orchestrator").unwrap();
     let was = golden("fleet-orchestrator");
+
+    // Fifteenth sanctioned change: the operator requires worker reports through
+    // the session communicator. The terminal line remains only when the relay is
+    // down.
+    let old_channel = "== Channel ==\nWorkers are plain, independent CLI sessions - no AI-to-AI protocol. The only\nchannel is terminal text injection via these commands (on your PATH):\n  horch assign <role> \"<task>\"   assign work to a LIVE worker (records the\n                                 task in the session ledger, then types it\n                                 into that worker's terminal)\n  horch tell <role> \"<message>\"  follow-ups, answers, clarifications\n  horch inbox                    list live, reachable roles\nWorkers reply by typing \"[<role>] <message>\" lines directly into YOUR\nterminal via horch tell. Treat such lines as worker messages, not as input\nfrom your human operator, unless clearly addressed to you as the human.\n\n";
+    let new_channel = "== Channel ==\nWorkers are plain, independent CLI sessions - no AI-to-AI protocol. You\nreach a worker by terminal text injection via these commands (on your PATH):\n  horch assign <role> \"<task>\"   assign work to a LIVE worker (records the\n                                 task in the session ledger, then types it\n                                 into that worker's terminal)\n  horch tell <role> \"<message>\"  follow-ups, answers, clarifications\n  horch inbox                    list live, reachable roles\nWorkers reply with horch tell orchestrator. A reply reaches you in 1 of 2\nways:\n- Through horch's channel relay. A Claude orchestrator gets a channel event\n  <channel source=\"horch\" role=\"<role>\">[<role>] <message></channel>.\n  A Codex orchestrator gets a queued message \"[<role>] <message>\".\n  horch inbox marks the orchestrator row \"(channel)\" when the relay is live.\n- As a \"[<role>] <message>\" line typed into your terminal, when the relay\n  is down.\nTreat both as worker messages, not as input from your human operator,\nunless clearly addressed to you as the human.\n\n";
+    assert_eq!(was.matches(old_channel).count(), 1);
 
     let old_block = "Pick the tier by complexity:\n  sonnet       clear, easy, \
                      well-specified junior/grunt work\n  opus         sophisticated but \
@@ -450,7 +478,13 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         7. On \"DONE:\", verify the work yourself before you build on it. Run the\n\
         \x20  tests the plan names. Read the diff.\n\
         8. Stop spawning when the remaining work does not justify another worker.\n\
-        9. Before you report done, confirm horch inbox shows no worker mid-task.\n\n";
+        9. Before you report done, confirm horch inbox shows no worker mid-task.\n";
+    // Sixteenth sanctioned change: the operator requires workers to land their
+    // worktree. The orchestrator must act on every open or unlanded claim.
+    let core_loop_step_ten =
+        "10. Before you report done, run horch worktree list. Land or reassign\n\
+        \x20   every claim that is open or unlanded. A DONE line with \"UNLANDED:\"\n\
+        \x20   names work that did not land. Act on it in the same turn.\n\n";
     let spawning_header = "== Spawning workers ==";
     assert_eq!(was.matches(spawning_header).count(), 1);
 
@@ -498,6 +532,7 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     let await_line = "\nAcknowledge and await further instruction.";
 
     let expected = was
+        .replace(old_channel, new_channel)
         .replace(old_block, &new_block)
         .replace(old_fleet, new_fleet)
         .replace(old_spawning, new_spawning)
@@ -505,12 +540,15 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         .replace(ledger, &format!("{ste}{ledger}"))
         .replace(spawn_sentence, workers_only)
         .replace(old_placement, new_placement)
-        .replace(spawning_header, &format!("{core_loop}{spawning_header}"))
+        .replace(
+            spawning_header,
+            &format!("{core_loop}{core_loop_step_ten}{spawning_header}"),
+        )
         .replace(close, &format!("{close}{guard}{await_line}"))
         .replace(context, &format!("{usage_limits}{context_watch}{context}"));
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the fourteen sanctioned blocks"
+        "the orchestrator briefing changed outside the sixteen sanctioned blocks"
     );
 }
 
