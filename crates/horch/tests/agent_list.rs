@@ -45,11 +45,12 @@ impl World {
     fn fake(&self, name: &str, version: &str) -> PathBuf {
         let path = self.root.join("bin").join(name);
         let script = format!(
-            "#!/bin/sh\necho \"{name} $*\" >> '{}'\necho '{version}'\n",
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\necho \"{name} $*\" >> '{}'\necho '{version}'\n",
             self.log().display()
         );
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(Command::new(&path).arg("warm").status().unwrap().success());
         path
     }
 
@@ -193,12 +194,13 @@ fn agent_list_reports_a_crashing_harness_as_broken() {
     let pi = w.root.join("bin/pi");
     std::fs::write(
         &pi,
-        "#!/bin/sh\necho 'node:internal/modules/cjs/loader:1669' >&2\n\
+        "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\necho 'node:internal/modules/cjs/loader:1669' >&2\n\
          echo 'Error [ERR_REQUIRE_ESM]: require() of ES Module cli.js not supported.' >&2\n\
          exit 1\n",
     )
     .unwrap();
     std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(Command::new(&pi).arg("warm").status().unwrap().success());
     let mut envs = w.envs();
     envs.retain(|(k, _)| *k != "HORCH_PI_BIN");
     envs.push(("HORCH_PI_BIN", pi));

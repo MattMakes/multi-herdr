@@ -740,13 +740,15 @@ mod tests {
         std::fs::write(
             &bin,
             format!(
-                "#!/bin/sh\necho 1.2.3\nhead -c {SIZE} /dev/zero | tr '\\0' x\n\
+                "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\necho 1.2.3\nhead -c {SIZE} /dev/zero | tr '\\0' x\n\
                  head -c {SIZE} /dev/zero | tr '\\0' y >&2\nexit 0\n"
             ),
         )
         .unwrap();
         crate::runtime::process::make_executable(&bin).unwrap();
 
+        // Warm the first-exec scan by syspolicyd before the timed section.
+        assert!(Command::new(&bin).arg("warm").status().unwrap().success());
         let started = Instant::now();
         let out = run_short(&bin, &[], timeout).unwrap();
         assert_eq!(out.len(), "1.2.3\n".len() + SIZE);

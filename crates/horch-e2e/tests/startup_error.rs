@@ -12,7 +12,7 @@
 //! mailbox that does not have it. For the late worker, a wrapper starts the
 //! pane line 2 s late.
 
-use std::process::Output;
+use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use horch_e2e::harness::{fixtures, Harness};
@@ -116,6 +116,7 @@ fn a_worker_that_registers_after_the_wait_still_works() {
         "herdr-slow",
         format!(
             "#!/bin/sh\n\
+             if [ \"$1\" = warm ]; then exit 0; fi\n\
              if [ \"$1\" = pane ] && [ \"$2\" = run ]; then\n\
              \x20 exec '{fake}' pane run \"$3\" \"/bin/sleep 2; $4\"\n\
              fi\n\
@@ -124,6 +125,11 @@ fn a_worker_that_registers_after_the_wait_still_works() {
         )
         .as_bytes(),
     );
+    assert!(Command::new(&wrapper)
+        .arg("warm")
+        .status()
+        .unwrap()
+        .success());
     h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
     let out = spawn_smoke(&h);
     assert!(out.status.success(), "{}", text(&out));
@@ -154,6 +160,7 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
         "herdr-elsewhere",
         format!(
             "#!/bin/sh\n\
+             if [ \"$1\" = warm ]; then exit 0; fi\n\
              if [ \"$1\" = pane ] && [ \"$2\" = run ]; then\n\
              \x20 export HORCH_WORKSPACE_ID=elsewhere\n\
              fi\n\
@@ -162,6 +169,11 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
         )
         .as_bytes(),
     );
+    assert!(Command::new(&wrapper)
+        .arg("warm")
+        .status()
+        .unwrap()
+        .success());
     h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
 
     let started = Instant::now();
