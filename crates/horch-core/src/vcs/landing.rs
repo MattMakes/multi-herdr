@@ -1067,31 +1067,44 @@ mod tests {
 
     #[test]
     fn arc_31_long_check_keeps_the_lock() {
+        // The check holds until the test releases it, so it outlives the
+        // stale age by a known margin; wall-clock races under a loaded test
+        // run made the 0.3 s version flaky.
         let fixture = Fixture::new();
+        let stale = Duration::from_millis(400);
         let landing = configured_landing(&fixture.state, &fixture.config).with_lock_timing(
-            Duration::from_millis(40),
-            Duration::from_millis(80),
-            Duration::from_millis(10),
+            stale,
+            Duration::from_millis(200),
+            Duration::from_millis(20),
         );
         let claim = landing
             .create(&fixture.repo, "worker", None, "one")
             .unwrap();
         fixture.commit_file(&claim.path, "worker.txt", "work\n", "worker");
         let marker = fixture._temp.path().join("check-started");
-        let command = format!("touch {}; sleep 0.3", marker.display());
+        let release = fixture._temp.path().join("check-release");
+        let command = format!(
+            "touch {}; while [ ! -f {} ]; do sleep 0.02; done",
+            marker.display(),
+            release.display()
+        );
         let worker_path = claim.path.clone();
         let worker_landing = landing.clone();
         let land = std::thread::spawn(move || {
             worker_landing.land(&worker_path, "worker", Some("one"), Some(&command))
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while !marker.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(marker.exists(), "the check started");
-        let error = landing
-            .create(&fixture.repo, "worker-2", None, "two")
-            .unwrap_err();
+        // Without the heartbeat the lock would be stale by now.
+        std::thread::sleep(stale * 5 / 2);
+        let second = landing.create(&fixture.repo, "worker-2", None, "two");
+        // Release before any assert: a failed assert must not leave the
+        // check looping forever.
+        fs::write(&release, "").unwrap();
+        let error = second.unwrap_err();
         assert!(error.to_string().contains("timed out"), "{error:#}");
         land.join().unwrap().unwrap();
     }
