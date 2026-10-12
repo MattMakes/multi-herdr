@@ -113,7 +113,7 @@ to see the grid, and `horch tile` only if it looks wrong.
 == Worker lifecycle ==
 - Idle workers announce "[<role>] ready" when they come up.
 - Workers record progress notes in the ledger while working; they message
-  you when blocked and WAIT - answer them via horch tell.
+  you when blocked and end their turn - answer them via horch tell.
 - When truly done a worker sends "[<role>] DONE: <summary>", records the
   summary in the ledger, and closes its own pane. You never need to close
   worker panes; if a role stops answering, check horch inbox and

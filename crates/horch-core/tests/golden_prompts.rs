@@ -59,7 +59,7 @@ fn worker_context_compaction(role: &str) -> String {
      3. Run: horch note \"handoff: ai_docs/handoffs/{role}-whats-next.md\"\n\
      \x20  If horch note fails, go on to step 4.\n\
      4. Send: horch tell orchestrator \"[{role}] NOTE: COMPACT-READY ai_docs/handoffs/{role}-whats-next.md\"\n\
-     5. Stop and wait. Do not start new work. horch compacts this session and\n\
+     5. End your turn. Do not start new work. horch compacts this session and\n\
      \x20  tells you to read the handoff file, or the orchestrator tells you to\n\
      \x20  run horch done. Follow that line.\n\
      If horch note prints a line that starts \"NOTE: Context warning\", do\n\
@@ -159,7 +159,7 @@ fn ste_section(lead: &[&str], example: &str) -> String {
     )
 }
 
-/// The worker briefing differs in exactly eight places, and this pins them. The
+/// The worker briefing differs in exactly nine places, and this pins them. The
 /// first: the orchestrator is no longer described to workers as a Claude session.
 ///
 /// `horch fleet codex` puts a Codex orchestrator in that pane, and OpenCode and
@@ -240,6 +240,20 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
         \x20 cannot land it after 1 more try, run:\n\
         \x20 horch done --unlanded \"<reason>\" \"<summary>\". Your branch and worktree\n\
         \x20 stay, and the orchestrator gets an UNLANDED line.\n\n";
+    // Ninth sanctioned change: workers end their turn when they need a reply.
+    // The operator: a worker polled a wait tool for 32 minutes; workers end
+    // their turn instead.
+    let old_wait_words = "then wait for your first assignment to arrive in your terminal.";
+    let new_wait_words = "Then end your turn. Your first assignment arrives as your next message.";
+    let old_wait_reply =
+        "- If you are blocked or need clarification, ask via `horch tell` and WAIT for\n\
+        \x20 the reply. Never shut down while your question is unanswered.\n";
+    let new_wait_reply =
+        "- If you are blocked or need clarification, ask via `horch tell`, then end your\n\
+        \x20 turn. The reply arrives as your next message. Do not poll, sleep, or call a\n\
+        \x20 wait tool to wait for it. Never shut down while your question is unanswered.\n";
+    let old_scope_wait = "  orchestrator, then wait.\n";
+    let new_scope_wait = "  orchestrator, then end your turn.\n";
     // No `fable` here: the generic Fable worker was removed when Fable became
     // the orchestrator's reserved model. Its goldens went with it.
     for name in ["sonnet", "opus", "codex-sol", "codex-terra", "smoke"] {
@@ -281,9 +295,12 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
                         &format!(
                         "gotchas, current state.\n{done_summary}\n{scope}{worktrees}{context_compaction}{ste}"
                     )
-                    ),
+                    )
+                    .replace(old_wait_words, new_wait_words)
+                    .replace(old_wait_reply, new_wait_reply)
+                    .replace(old_scope_wait, new_scope_wait),
                 got,
-                "worker-{name}-{label} drifted outside the eight sanctioned blocks"
+                "worker-{name}-{label} drifted outside the nine sanctioned blocks"
             );
             checked += 1;
         }
@@ -314,7 +331,7 @@ fn the_orchestration_recipe_briefings_differ_only_by_the_await_line() {
     );
 }
 
-/// The orchestrator briefing differs in exactly sixteen places, and this pins them.
+/// The orchestrator briefing differs in exactly seventeen places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -527,6 +544,12 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     // context section, after the usage limits (CTX-09, CTX-16, CTX-18, CTX-19).
     let context_watch = ORCHESTRATOR_CONTEXT_WATCH;
 
+    // Seventeenth sanctioned change: workers end their turn when blocked.
+    // The operator: a worker polled a wait tool for 32 minutes; workers end
+    // their turn instead.
+    let old_blocked_wait = "  you when blocked and WAIT - answer them via horch tell.";
+    let new_blocked_wait = "  you when blocked and end their turn - answer them via horch tell.";
+
     // Fourteenth: the operator starts an orchestrator with no task, so the
     // briefing ends with the instruction to acknowledge and wait.
     let await_line = "\nAcknowledge and await further instruction.";
@@ -545,10 +568,11 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
             &format!("{core_loop}{core_loop_step_ten}{spawning_header}"),
         )
         .replace(close, &format!("{close}{guard}{await_line}"))
-        .replace(context, &format!("{usage_limits}{context_watch}{context}"));
+        .replace(context, &format!("{usage_limits}{context_watch}{context}"))
+        .replace(old_blocked_wait, new_blocked_wait);
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the sixteen sanctioned blocks"
+        "the orchestrator briefing changed outside the seventeen sanctioned blocks"
     );
 }
 

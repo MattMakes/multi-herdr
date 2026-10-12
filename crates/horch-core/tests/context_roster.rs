@@ -228,7 +228,7 @@ fn context_message_renders_the_warning_line() {
          ai_docs/handoffs/sonnet-1-whats-next.md with the horch:handoff skill. Then run: horch \
          note \"handoff: ai_docs/handoffs/sonnet-1-whats-next.md\". Then send: horch tell \
          orchestrator \"[sonnet-1] NOTE: COMPACT-READY ai_docs/handoffs/sonnet-1-whats-next.md\". \
-         Then end your turn and wait."
+         Then end your turn."
     );
 }
 
