@@ -363,11 +363,14 @@ struct CliDone<'a> {
 
 impl DoneSteps for CliDone<'_> {
     fn open_claims(&self, record_id: &str) -> Result<Vec<ClaimLine>> {
-        let dir = self.ctx.paths.project()?;
         let landing = Landing::new(
             self.ctx.bins.harness.git.clone(),
             self.ctx.paths.state_root.clone(),
         );
+        if !landing.record_has_open_claims(record_id)? {
+            return Ok(Vec::new());
+        }
+        let dir = self.ctx.paths.project()?;
         landing
             .open_claims_for_record(&dir, record_id)?
             .into_iter()
@@ -376,11 +379,14 @@ impl DoneSteps for CliDone<'_> {
     }
 
     fn mark_unlanded(&self, record_id: &str, reason: &str) -> Result<Vec<ClaimLine>> {
-        let dir = self.ctx.paths.project()?;
         let landing = Landing::new(
             self.ctx.bins.harness.git.clone(),
             self.ctx.paths.state_root.clone(),
         );
+        if !landing.record_has_open_claims(record_id)? {
+            return Ok(Vec::new());
+        }
+        let dir = self.ctx.paths.project()?;
         let claims = landing.open_claims_for_record(&dir, record_id)?;
         claims
             .into_iter()
@@ -394,6 +400,22 @@ impl DoneSteps for CliDone<'_> {
 
     fn unregistered(&self) -> Result<Vec<String>> {
         let dir = self.ctx.paths.project()?;
+        let git = GitCli::new(self.ctx.bins.harness.git.clone());
+        if let Err(error) = git.toplevel(&dir) {
+            let git_not_found = error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound)
+            });
+            let not_work_tree = error
+                .root_cause()
+                .to_string()
+                .starts_with("git rev-parse --show-toplevel failed (128):");
+            if git_not_found || not_work_tree {
+                return Ok(Vec::new());
+            }
+            return Err(error);
+        }
         Landing::new(
             self.ctx.bins.harness.git.clone(),
             self.ctx.paths.state_root.clone(),

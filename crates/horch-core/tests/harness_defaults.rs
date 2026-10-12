@@ -699,7 +699,12 @@ fn hdf_04_migrated_launch_env_and_args_match_w2() {
         ("codex-sol", &codex_worker[..]),
         ("orchestrator-codex", &codex_orchestrator[..]),
     ] {
-        let (_, pairs) = launch(name);
+        let (_, mut pairs) = launch(name);
+        // `worker_channel` adds these ARC-30 pairs, which harness/codex.rs tests.
+        // They are not harness defaults and can contain runtime-specific paths.
+        if name == "orchestrator-codex" {
+            pairs.retain(|pair| !pair.starts_with("mcp_servers.horch."));
+        }
         let want: BTreeSet<String> = want.iter().map(|s| s.to_string()).collect();
         assert_eq!(pairs, want, "{name}");
     }

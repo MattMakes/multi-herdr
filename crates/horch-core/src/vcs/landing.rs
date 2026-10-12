@@ -320,6 +320,37 @@ impl Landing {
             .collect())
     }
 
+    /// Return whether any registry has an open claim owned by one ledger record.
+    pub fn record_has_open_claims(&self, record_id: &str) -> Result<bool> {
+        let registry_dir = self.state_root.join("worktrees");
+        let entries = match std::fs::read_dir(&registry_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", registry_dir.display()))
+            }
+        };
+        let mut found = false;
+        for entry in entries {
+            let path = entry
+                .with_context(|| format!("reading {}", registry_dir.display()))?
+                .path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("reading claim registry {}", path.display()))?;
+            let claims: Vec<Claim> = serde_json::from_slice(&bytes)
+                .with_context(|| format!("reading claim registry {}", path.display()))?;
+            if claims.iter().any(|claim| {
+                claim.state == ClaimState::Open && claim.record_id.as_deref() == Some(record_id)
+            }) {
+                found = true;
+            }
+        }
+        Ok(found)
+    }
+
     /// Mark a claim unlanded without removing its branch or worktree.
     pub fn mark_unlanded(&self, dir: &Path, claim_id: &str, reason: &str) -> Result<Claim> {
         let repo = self.repo(dir)?;
@@ -1150,6 +1181,33 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn arc_31_open_claim_lookup_needs_no_git() {
+        let fixture = Fixture::new();
+        fixture.create("worker-1", Some("record-1"), "one");
+        let landing = Landing::new(
+            fixture._temp.path().join("git-does-not-exist"),
+            fixture.state.clone(),
+        );
+        assert!(landing.record_has_open_claims("record-1").unwrap());
+        assert!(!landing.record_has_open_claims("record-2").unwrap());
+
+        let no_registry = Landing::new(
+            fixture._temp.path().join("git-does-not-exist"),
+            fixture._temp.path().join("state-does-not-exist"),
+        );
+        assert!(!no_registry.record_has_open_claims("record-1").unwrap());
+
+        let invalid_state = fixture._temp.path().join("invalid-state");
+        std::fs::create_dir_all(invalid_state.join("worktrees")).unwrap();
+        std::fs::write(invalid_state.join("worktrees/broken.json"), b"not json").unwrap();
+        let invalid = Landing::new(
+            fixture._temp.path().join("git-does-not-exist"),
+            invalid_state,
+        );
+        assert!(invalid.record_has_open_claims("record-1").is_err());
     }
 
     #[test]
