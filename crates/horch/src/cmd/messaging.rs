@@ -668,7 +668,7 @@ mod tests {
                      horch:handoff skill. Then run: horch note \"handoff: \
                      ai_docs/handoffs/sonnet-1-whats-next.md\". Then send: horch tell \
                      orchestrator \"[sonnet-1] NOTE: COMPACT-READY \
-                     ai_docs/handoffs/sonnet-1-whats-next.md\". Then end your turn and wait."
+                     ai_docs/handoffs/sonnet-1-whats-next.md\". Then end your turn."
                 )
             );
             assert_eq!(first, Some(sonnet_warning(&w)));
