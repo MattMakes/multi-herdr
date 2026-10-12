@@ -19,9 +19,10 @@
 //! The alternative - appending to the shared `rules/default.rules` - grants
 //! every codex session on the machine whatever any fleet ever needed, forever.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::SystemTime;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
 
@@ -31,6 +32,7 @@ use super::{
     Session, WindowInputs, Workdir,
 };
 use crate::compaction::window::OperatorWindow;
+use crate::fsx;
 use crate::prompts;
 use crate::roster::{ExecRule, HarnessDefault, PermissionMode, Teammate};
 use crate::runtime::RuntimeContext;
@@ -52,6 +54,91 @@ pub fn codex_home(home: &Path, codex_home_var: Option<&Path>) -> PathBuf {
         .filter(|v| !v.as_os_str().is_empty())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| home.join(".codex"))
+}
+
+/// Write a copy of Codex's live model catalog that makes every model use the
+/// v1 multi-agent protocol. Codex otherwise exposes v2 collaboration tools
+/// even when `features.multi_agent=false`.
+pub(crate) fn write_v1_catalog(codex_bin: &Path, state_root: &Path) -> Result<PathBuf> {
+    let mut cmd = Command::new(codex_bin);
+    cmd.args(["debug", "models"]);
+    let output = run_with_deadline(cmd, Duration::from_secs(5))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "{} debug models exited with {}: {}",
+            codex_bin.display(),
+            output.status,
+            stderr.trim()
+        );
+    }
+
+    let mut catalog: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parsing {} debug models output", codex_bin.display()))?;
+    let models = match &mut catalog {
+        serde_json::Value::Object(root) => root
+            .get_mut("models")
+            .and_then(serde_json::Value::as_array_mut)
+            .context("model catalog object has no models array")?,
+        serde_json::Value::Array(models) => models,
+        _ => bail!("model catalog is neither an object nor an array"),
+    };
+    for model in models {
+        let Some(model) = model.as_object_mut() else {
+            continue;
+        };
+        if model.contains_key("multi_agent_version") {
+            model.insert("multi_agent_version".into(), serde_json::json!("v1"));
+        }
+    }
+
+    let dir = state_root.join("codex");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let path = dir.join("model-catalog-v1.json");
+    let bytes = serde_json::to_vec_pretty(&catalog).context("encoding v1 model catalog")?;
+    fsx::write_atomic(&path, &bytes, fsx::PRIVATE_FILE)
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+/// Run one short command, kill it after `timeout`, and collect both pipes.
+fn run_with_deadline(mut cmd: Command, timeout: Duration) -> Result<std::process::Output> {
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("starting codex catalog command")?;
+    let stdout = child.stdout.take().context("capturing codex stdout")?;
+    let stderr = child.stderr.take().context("capturing codex stderr")?;
+    let read = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        })
+    };
+    let out = read(Box::new(stdout));
+    let err = read(Box::new(stderr));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("codex debug models timed out after {}s", timeout.as_secs());
+            }
+            Err(e) => return Err(e).context("waiting for codex catalog command"),
+        }
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
 }
 
 /// One codex launch's execpolicy rules.
@@ -869,6 +956,35 @@ pub(crate) fn default_args(
     out
 }
 
+fn config_pair_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
+    let mut found = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg != "-c" {
+            continue;
+        }
+        let Some((pair_key, value)) = args.next().and_then(|pair| pair.split_once('=')) else {
+            continue;
+        };
+        if pair_key.trim() == key {
+            found = Some(value.trim());
+        }
+    }
+    found
+}
+
+/// Whether the final Codex `-c` pairs turn native multi-agent support off.
+pub(crate) fn multi_agent_off(env: &LaunchEnv, teammate: &Teammate) -> bool {
+    let defaults = default_args(teammate, || {
+        let home = env.home()?;
+        let dir = codex_home(home, env.codex_home.as_deref());
+        read_config(&dir.join("config.toml"))
+    });
+    config_pair_value(&teammate.args, "features.multi_agent")
+        .or_else(|| config_pair_value(&defaults, "features.multi_agent"))
+        == Some("false")
+}
+
 pub(super) fn codex_command(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -950,11 +1066,15 @@ pub(super) fn codex_command(
             .arg(format!("model_reasoning_effort=\"{effort}\""));
     }
     // Harness defaults first, so the teammate's own args come later and win.
-    cmd.args(default_args(teammate, || {
+    let defaults = default_args(teammate, || {
         let home = env.home()?;
         let dir = codex_home(home, env.codex_home.as_deref());
         read_config(&dir.join("config.toml"))
-    }));
+    });
+    let multi_agent_off = config_pair_value(&teammate.args, "features.multi_agent")
+        .or_else(|| config_pair_value(&defaults, "features.multi_agent"))
+        == Some("false");
+    cmd.args(defaults);
     // The fleet window, with the defaults: only when the decision applies
     // it, and not over the teammate's own pair.
     let window = env.compact_window.as_ref().filter(|d| d.applied);
@@ -964,6 +1084,19 @@ pub(super) fn codex_command(
         }
     }
     cmd.args(&teammate.args);
+    if multi_agent_off {
+        if let Some(path) = env
+            .state_root
+            .as_ref()
+            .map(|root| root.join("codex/model-catalog-v1.json"))
+            .filter(|path| path.is_file())
+        {
+            cmd.arg("-c").arg(format!(
+                "model_catalog_json={}",
+                toml_string(&path.to_string_lossy())
+            ));
+        }
+    }
     if let Session::Resume(id) = session {
         cmd.arg(id);
     }
@@ -1106,6 +1239,119 @@ mod tests {
         cmd.get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[cfg(unix)]
+    fn fake_codex(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Warm the new script without a deadline. macOS can spend tens of
+        // seconds on its first exec while syspolicyd inspects it.
+        let _ = Command::new(&path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nw_01_catalog_forces_v1() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let object = fake_codex(
+            tmp.path(),
+            "codex-object",
+            r#"printf '%s\n' '{"models":[{"slug":"a","multi_agent_version":"v2"},{"slug":"b","multi_agent_version":"v1"},{"slug":"c"}]}'"#,
+        );
+        let path = write_v1_catalog(&object, &tmp.path().join("state-object")).unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["models"][0]["multi_agent_version"], "v1");
+        assert_eq!(value["models"][1]["multi_agent_version"], "v1");
+        assert!(value["models"][2].get("multi_agent_version").is_none());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let array = fake_codex(
+            tmp.path(),
+            "codex-array",
+            r#"printf '%s\n' '[{"slug":"a","multi_agent_version":"v2"}]'"#,
+        );
+        let path = write_v1_catalog(&array, &tmp.path().join("state-array")).unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(value[0]["multi_agent_version"], "v1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nw_01_catalog_failure_is_an_err() {
+        let tmp = tempfile::tempdir().unwrap();
+        let codex = fake_codex(tmp.path(), "codex-fail", "echo broken >&2\nexit 1");
+        let err = write_v1_catalog(&codex, &tmp.path().join("state")).unwrap_err();
+        assert!(err.to_string().contains("exited with"), "{err:#}");
+        assert!(err.to_string().contains("broken"), "{err:#}");
+    }
+
+    fn catalog_args(env: &LaunchEnv, feature: &str) -> Vec<String> {
+        let teammate = Teammate {
+            model: Some("gpt-6-sol".into()),
+            args: vec!["-c".into(), format!("features.multi_agent={feature}")],
+            ..Default::default()
+        };
+        command_args(&codex_command(env, &teammate, Session::Unmanaged, "p", None).unwrap())
+    }
+
+    #[test]
+    fn nw_02_multi_agent_off_points_at_the_v1_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("codex/model-catalog-v1.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        let mut env = LaunchEnv::for_test();
+        env.state_root = Some(tmp.path().to_path_buf());
+        let args = catalog_args(&env, "false");
+        let pair = format!(
+            "model_catalog_json={}",
+            toml_string(&path.to_string_lossy())
+        );
+        let own = args
+            .iter()
+            .position(|arg| arg == "features.multi_agent=false")
+            .unwrap();
+        let added = args.iter().position(|arg| arg == &pair).unwrap();
+        assert!(added > own, "{args:?}");
+    }
+
+    #[test]
+    fn nw_02_multi_agent_on_keeps_the_live_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("codex/model-catalog-v1.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "{}").unwrap();
+        let mut env = LaunchEnv::for_test();
+        env.state_root = Some(tmp.path().to_path_buf());
+        let args = catalog_args(&env, "true");
+        assert!(!args
+            .iter()
+            .any(|arg| arg.starts_with("model_catalog_json=")));
+    }
+
+    #[test]
+    fn nw_02_missing_catalog_adds_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut env = LaunchEnv::for_test();
+        env.state_root = Some(tmp.path().to_path_buf());
+        let args = catalog_args(&env, "false");
+        assert!(!args
+            .iter()
+            .any(|arg| arg.starts_with("model_catalog_json=")));
     }
 
     #[test]
