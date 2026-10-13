@@ -32,6 +32,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run the worker-report channel relay.
+    #[command(hide = true)]
+    Channel {
+        #[command(subcommand)]
+        command: ChannelSubcommand,
+    },
+
     /// Launch the herdr-fleet workspace: ONE orchestrator pane, which spawns
     /// exactly the workers the work needs, with a per-project session ledger.
     Fleet {
@@ -133,8 +140,17 @@ enum Command {
 
     /// Finish this worker: record a summary, report DONE, and close its pane.
     Done {
+        /// Finish even when this record owns an open worktree claim.
+        #[arg(long, value_name = "REASON")]
+        unlanded: Option<String>,
         #[arg(required = true, trailing_var_arg = true)]
         summary: Vec<String>,
+    },
+
+    /// Create, land, or inspect worker worktrees.
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeSubcommand,
     },
 
     /// Read the project session ledger. Do this before spawning.
@@ -435,6 +451,29 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum ChannelSubcommand {
+    /// Serve the relay as an MCP stdio server.
+    Serve {
+        #[arg(long, value_parser = |s: &str| s.parse::<horch_core::harness::HarnessKind>())]
+        agent: horch_core::harness::HarnessKind,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorktreeSubcommand {
+    /// Create and claim a worker worktree.
+    New { name: String },
+    /// Rebase, check, and land one owned worktree.
+    Land {
+        name: Option<String>,
+        #[arg(long, value_name = "CMD")]
+        check: Option<String>,
+    },
+    /// Show registered claims and changed unregistered worktrees.
+    List,
+}
+
+#[derive(Subcommand)]
 enum TelemetrySub {
     /// Open the collector in its own herdr workspace, unless one is live.
     /// Never focuses, moves or splits an existing pane.
@@ -491,6 +530,9 @@ fn run() -> Result<std::process::ExitCode> {
     let mut ctx = bootstrap::context()?;
     let ctx = &mut ctx;
     match cli.command {
+        Command::Channel { command } => match command {
+            ChannelSubcommand::Serve { agent } => cmd::channel::serve(ctx, agent)?,
+        },
         Command::Fleet { cwd, flavor } => cmd::recipes::fleet(ctx, cwd.as_deref(), flavor)?,
         Command::Orchestration { cwd } => cmd::recipes::orchestration(ctx, cwd.as_deref())?,
         Command::Tell { role, message } => cmd::messaging::tell(ctx, &role, &joined(&message))?,
@@ -536,7 +578,16 @@ fn run() -> Result<std::process::ExitCode> {
                 },
             );
         }
-        Command::Done { summary } => cmd::messaging::done(ctx, &joined(&summary))?,
+        Command::Done { summary, unlanded } => {
+            cmd::messaging::done(ctx, &joined(&summary), unlanded.as_deref())?
+        }
+        Command::Worktree { command } => match command {
+            WorktreeSubcommand::New { name } => cmd::worktree::new(ctx, &name)?,
+            WorktreeSubcommand::Land { name, check } => {
+                cmd::worktree::land(ctx, name.as_deref(), check.as_deref())?
+            }
+            WorktreeSubcommand::List => cmd::worktree::list(ctx)?,
+        },
         Command::Sessions { json, all } => cmd::ledgercmd::sessions(ctx, json, all)?,
         Command::Skills {
             command,

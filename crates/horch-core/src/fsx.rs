@@ -378,6 +378,34 @@ impl DirLockGuard {
         &self.path
     }
 
+    /// Refresh the lock directory age while a long operation still owns it.
+    pub fn refresh(&self) -> Result<()> {
+        let Some(nonce) = &self.nonce else {
+            return io(
+                &self.path,
+                Err(std::io::Error::other("lock owner is not initialized")),
+            );
+        };
+        if read_owner(&self.path).is_none_or(|owner| &owner.nonce != nonce) {
+            return io(
+                &self.path,
+                Err(std::io::Error::other(
+                    "lock is no longer owned by this guard",
+                )),
+            );
+        }
+        let heartbeat = self.path.join(format!("heartbeat-{nonce}"));
+        write_atomic(&heartbeat, b"live\n", PRIVATE_FILE)?;
+        if read_owner(&self.path).is_none_or(|owner| &owner.nonce != nonce) {
+            let _ = std::fs::remove_file(&heartbeat);
+            return io(
+                &self.path,
+                Err(std::io::Error::other("lock changed while it was refreshed")),
+            );
+        }
+        Ok(())
+    }
+
     /// Release now (the same as dropping it).
     pub fn release(self) {}
 }

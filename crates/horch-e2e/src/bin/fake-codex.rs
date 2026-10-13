@@ -30,6 +30,16 @@ use serde_json::{json, Value};
 const ALLOWED: [&str; 3] = ["initialize", "initialized", "account/rateLimits/read"];
 
 fn main() {
+    // horch reads the model catalog before each Codex launch with
+    // multi_agent off (4278edc). Answer like the real CLI and record no
+    // call: it is a lookup, not an agent run.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("debug")
+        && args.get(1).map(String::as_str) == Some("models")
+    {
+        say(r#"{"models":[{"slug":"gpt-5.6-sol","multi_agent_version":"v2"}]}"#);
+        return;
+    }
     let mut call = Call::start("codex");
     if call.argv.iter().any(|a| a == "--version") {
         say("codex-cli 0.158.0");

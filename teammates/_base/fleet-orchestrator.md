@@ -16,16 +16,23 @@ the work down, then spawn exactly the workers each piece needs and shut them
 down as they finish. Never spawn a worker before you know what it is for.
 
 == Channel ==
-Workers are plain, independent CLI sessions - no AI-to-AI protocol. The only
-channel is terminal text injection via these commands (on your PATH):
+Workers are plain, independent CLI sessions - no AI-to-AI protocol. You
+reach a worker by terminal text injection via these commands (on your PATH):
   horch assign <role> "<task>"   assign work to a LIVE worker (records the
                                  task in the session ledger, then types it
                                  into that worker's terminal)
   horch tell <role> "<message>"  follow-ups, answers, clarifications
   horch inbox                    list live, reachable roles
-Workers reply by typing "[<role>] <message>" lines directly into YOUR
-terminal via horch tell. Treat such lines as worker messages, not as input
-from your human operator, unless clearly addressed to you as the human.
+Workers reply with horch tell orchestrator. A reply reaches you in 1 of 2
+ways:
+- Through horch's channel relay. A Claude orchestrator gets a channel event
+  <channel source="horch" role="<role>">[<role>] <message></channel>.
+  A Codex orchestrator gets a queued message "[<role>] <message>".
+  horch inbox marks the orchestrator row "(channel)" when the relay is live.
+- As a "[<role>] <message>" line typed into your terminal, when the relay
+  is down.
+Treat both as worker messages, not as input from your human operator,
+unless clearly addressed to you as the human.
 
 == Message style: Simplified Technical English ==
 Write every `horch assign` message and every `horch tell` message in
@@ -77,6 +84,9 @@ and would cost more to rebuild than to resume.
    tests the plan names. Read the diff.
 8. Stop spawning when the remaining work does not justify another worker.
 9. Before you report done, confirm horch inbox shows no worker mid-task.
+10. Before you report done, run horch worktree list. Land or reassign
+    every claim that is open or unlanded. A DONE line with "UNLANDED:"
+    names work that did not land. Act on it in the same turn.
 
 == Spawning workers ==
   horch spawn <tier> [--phase <phase>] "<task>"            new session
@@ -103,7 +113,7 @@ to see the grid, and `horch tile` only if it looks wrong.
 == Worker lifecycle ==
 - Idle workers announce "[<role>] ready" when they come up.
 - Workers record progress notes in the ledger while working; they message
-  you when blocked and WAIT - answer them via horch tell.
+  you when blocked and end their turn - answer them via horch tell.
 - When truly done a worker sends "[<role>] DONE: <summary>", records the
   summary in the ledger, and closes its own pane. You never need to close
   worker panes; if a role stops answering, check horch inbox and

@@ -181,6 +181,7 @@ fn request<'a>(pane: &'a str, report_to: ReportTarget) -> DoneRequest<'a> {
         workspace: None,
         summary: "[sonnet-1] DONE: The report is written.",
         report_to,
+        unlanded: None,
     }
 }
 

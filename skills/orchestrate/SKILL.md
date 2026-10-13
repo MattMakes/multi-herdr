@@ -26,6 +26,7 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
    - `CONSTRAINTS` — style, tests to keep green, commands to run, things to avoid.
    - `DONE WHEN` — verifiable acceptance criteria: a test passes, a command prints a value, a file exists.
    - `REPORT` — when to send `horch note`, when to send `horch tell orchestrator`, what the `horch done` summary must contain.
+   Write 'end your turn' where a worker must wait for a reply. Never write 'wait': a worker can read it as an order to poll.
 3. Spawn with the task text `Read and follow <path> exactly.` Put every long passage, code sample and quoting-hostile string in the file, not on the command line.
 4. Do not summarize a plan into a task line. A summarized plan is the version the worker acts on.
 
@@ -60,6 +61,7 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 4. Run `horch sessions` to confirm the ledger holds the summary.
 5. Copy the gotchas and decisions from that summary into the next unit's `PRIOR WORK`.
 6. The worker's own `horch done` closed its pane. There is no retire step and no pane for you to close.
+7. Act on every `UNLANDED:` or `UNREGISTERED:` part of the line. Land the branch, or spawn a fresh worker to land it. Work that is not on the base is not done.
 
 ## 6. Resume versus fresh
 
@@ -71,9 +73,10 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 ## 7. Wrap up
 
 1. Confirm `horch inbox` shows no worker mid-task.
-2. Confirm every unit is finished or deliberately dropped, and say which were dropped.
-3. Run the full verification yourself: the build, the whole test suite, the acceptance checks from every plan file.
-4. Report to the human what was built, which teammate built each part, and what was left undone.
+2. Run `horch worktree list`. Confirm that no claim is open or unlanded.
+3. Confirm every unit is finished or deliberately dropped, and say which were dropped.
+4. Run the full verification yourself: the build, the whole test suite, the acceptance checks from every plan file.
+5. Report to the human what was built, which teammate built each part, and what was left undone.
 
 ## 8. Things that go wrong
 

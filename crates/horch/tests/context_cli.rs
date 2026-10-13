@@ -180,7 +180,7 @@ This horch note call is your stopping point. Do not start new work. \
 Write ai_docs/handoffs/sonnet-1-whats-next.md with the horch:handoff skill. \
 Then run: horch note \"handoff: ai_docs/handoffs/sonnet-1-whats-next.md\". \
 Then send: horch tell orchestrator \"[sonnet-1] NOTE: COMPACT-READY ai_docs/handoffs/sonnet-1-whats-next.md\". \
-Then end your turn and wait.\n";
+Then end your turn.\n";
     let me = [("HORCH_RECORD_ID", "rec-s1")];
     assert_eq!(w.stdout(&["note", "step 1 done"], &me), warning);
     let handoff = "handoff: ai_docs/handoffs/sonnet-1-whats-next.md";

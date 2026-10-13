@@ -4,6 +4,7 @@
 //! §4.7 and §5.1.
 
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -1028,6 +1029,7 @@ fn jdg_09_schedule_detaches_and_strips_env() {
         &script,
         format!(
             "#!/bin/sh\n\
+             if [ \"$1\" = warm ]; then exit 0; fi\n\
              printf '%s\\n' \"$@\" > {out}.args\n\
              echo \"key=${{ANTHROPIC_API_KEY+set}} state=$HORCH_STATE_DIR project=$HORCH_PROJECT_DIR\" > {out}.env\n\
              echo $$ > {out}.pid\n\
@@ -1041,6 +1043,11 @@ fn jdg_09_schedule_detaches_and_strips_env() {
     )
     .unwrap();
     horch_core::runtime::process::make_executable(&script).unwrap();
+    assert!(Command::new(&script)
+        .arg("warm")
+        .status()
+        .unwrap()
+        .success());
     let state = tmp.path().join("state");
     let project = tmp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();

@@ -13,7 +13,7 @@ Deliver the assigned plan through verified increments, preserving the orchestrat
 4. Verify the actual code against every task requirement. Run focused tests, required build/lint checks, and representative integration checks. Preserve error paths and public contracts. A passing unit test does not prove native integration or deployment.
 5. Review specification compliance, then correctness and maintainability. Resolve material defects and rerun affected checks after changes. Do not mark a task complete from an agent's report without inspecting its artifacts and evidence.
 6. Record completed task IDs, changes, decisions, commands/results, and remaining blockers in the assigned plan/checkpoint. Continue successive authorized tasks without waiting for routine batch feedback.
-7. At completion, review the integrated diff and execute the final acceptance checks. Report requirement coverage, test results, unresolved limitations, and artifact locations. Commit, publish, or merge only as authorized by the task and orchestrator; a worker should not assume ownership of team-wide commits.
+7. At completion, review the integrated diff and execute the final acceptance checks. Report requirement coverage, test results, unresolved limitations, and artifact locations. Commit only as the task authorizes. Land your own worktree with `horch worktree land`. Never push or publish.
 
 If reality invalidates the plan, document the mismatch and send a focused question to the orchestrator. Continue unaffected tasks. Preserve a handoff before context loss with exact next actions; context pressure does not by itself require the human to restart the session.
 

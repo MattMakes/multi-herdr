@@ -30,10 +30,12 @@
     "fresh": {
       "args": [
         "--mcp-config",
-        "{\"mcpServers\":{}}",
+        "{\"mcpServers\":{\"horch\":{\"args\":[\"channel\",\"serve\",\"--agent\",\"claude\"],\"command\":\"horch\"}}}",
         "--strict-mcp-config",
         "--disallowedTools",
         "Agent,RemoteTrigger",
+        "--dangerously-load-development-channels",
+        "server:horch",
         "--model",
         "fable",
         "--effort",
@@ -75,10 +77,12 @@
     "resume": {
       "args": [
         "--mcp-config",
-        "{\"mcpServers\":{}}",
+        "{\"mcpServers\":{\"horch\":{\"args\":[\"channel\",\"serve\",\"--agent\",\"claude\"],\"command\":\"horch\"}}}",
         "--strict-mcp-config",
         "--disallowedTools",
         "Agent,RemoteTrigger",
+        "--dangerously-load-development-channels",
+        "server:horch",
         "--model",
         "fable",
         "--effort",
@@ -120,10 +124,12 @@
     "unmanaged": {
       "args": [
         "--mcp-config",
-        "{\"mcpServers\":{}}",
+        "{\"mcpServers\":{\"horch\":{\"args\":[\"channel\",\"serve\",\"--agent\",\"claude\"],\"command\":\"horch\"}}}",
         "--strict-mcp-config",
         "--disallowedTools",
         "Agent,RemoteTrigger",
+        "--dangerously-load-development-channels",
+        "server:horch",
         "--model",
         "fable",
         "--effort",

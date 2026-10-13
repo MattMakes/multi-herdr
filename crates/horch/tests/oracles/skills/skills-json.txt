@@ -42,7 +42,7 @@
     {
       "description": "Use when implementing an existing plan or resuming its unfinished tasks.",
       "name": "execute",
-      "skill_file_bytes": 2757
+      "skill_file_bytes": 2733
     },
     {
       "description": "Use when work must transfer to another worker or continue after context loss.",
@@ -52,7 +52,7 @@
     {
       "description": "Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.",
       "name": "orchestrate",
-      "skill_file_bytes": 9897
+      "skill_file_bytes": 10255
     },
     {
       "description": "Use before executing a plan to verify wiring, contracts, preservation, configuration, and prerequisites against source.",

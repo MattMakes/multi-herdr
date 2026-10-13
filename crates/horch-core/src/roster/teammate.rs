@@ -172,6 +172,11 @@ pub struct Teammate {
     /// on in a worker. Only an orchestrator may set it; `check` enforces that.
     #[serde(default)]
     pub remote_control: bool,
+    /// Starts `horch channel serve` as an MCP server in this pane, so worker
+    /// reports reach the orchestrator without terminal text injection. Only
+    /// a Claude or Codex orchestrator may set it; `check` enforces that.
+    #[serde(default)]
+    pub worker_channel: bool,
     #[serde(default)]
     pub settings: Option<String>,
     /// Claude's Bash sandbox, as the `sandbox` object of the `--settings`
@@ -280,6 +285,7 @@ impl Default for Teammate {
             disabled_skills: Vec::new(),
             plugin_skills: BTreeMap::new(),
             remote_control: false,
+            worker_channel: false,
             settings: None,
             sandbox: None,
             mcp_servers: None,

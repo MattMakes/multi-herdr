@@ -7,7 +7,7 @@
     {
       "description": "Use when implementing an existing plan or resuming its unfinished tasks.",
       "name": "execute",
-      "skill_file_bytes": 2757
+      "skill_file_bytes": 2733
     },
     {
       "description": "Use when adding or changing behavior that needs a regression test, before implementing the change.",

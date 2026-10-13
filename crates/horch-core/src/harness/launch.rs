@@ -39,6 +39,8 @@ use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest, WindowInputs
 #[derive(Debug, Clone)]
 pub struct LaunchEnv {
     pub bins: HarnessBins,
+    /// The resolved `horch` executable used by child MCP servers.
+    pub horch_exe: PathBuf,
     /// `$HOME` exactly as set (`Inherited::home_var`).
     pub home: Option<PathBuf>,
     /// `$OPENCODE_CONFIG_CONTENT`.
@@ -60,6 +62,8 @@ pub struct LaunchEnv {
     /// `$CODEX_HOME`: the codex home whose `config.toml` a codex default
     /// `-c` pair yields to (`codex::codex_home`).
     pub codex_home: Option<PathBuf>,
+    /// Horch's state root, where a Codex launch finds its v1 model catalog.
+    pub state_root: Option<PathBuf>,
     /// `$CLAUDE_CONFIG_DIR`: where the operator's Claude user settings live.
     pub claude_config_dir: Option<PathBuf>,
     /// `RuntimeContext.paths.claude_managed_settings`. `None` reads no
@@ -78,6 +82,7 @@ impl LaunchEnv {
     pub fn from_context(ctx: &RuntimeContext) -> LaunchEnv {
         LaunchEnv {
             bins: ctx.bins.harness.clone(),
+            horch_exe: ctx.bins.horch_exe.clone(),
             home: ctx.inherited.home_var.as_ref().map(PathBuf::from),
             opencode_config_content: ctx.inherited.opencode_config_content.clone(),
             path: ctx.inherited.path.clone(),
@@ -89,6 +94,7 @@ impl LaunchEnv {
                 .filter_map(|k| Some((k.to_string(), ctx.inherited.operator_env(k)?.to_string())))
                 .collect(),
             codex_home: ctx.inherited.codex_home.clone(),
+            state_root: Some(ctx.paths.state_root.clone()),
             claude_config_dir: ctx.inherited.claude_config_dir.clone(),
             claude_managed_settings: Some(ctx.paths.claude_managed_settings.clone()),
             workdir: ctx.paths.cwd.clone(),
@@ -102,6 +108,7 @@ impl LaunchEnv {
     pub(crate) fn for_test() -> LaunchEnv {
         LaunchEnv {
             bins: HarnessBins::resolve(&BinOverrides::default(), None, None),
+            horch_exe: PathBuf::from("horch"),
             home: None,
             opencode_config_content: None,
             path: None,
@@ -110,9 +117,10 @@ impl LaunchEnv {
             blender_app: None,
             operator_env: BTreeMap::new(),
             codex_home: None,
+            state_root: None,
             claude_config_dir: None,
             claude_managed_settings: None,
-            workdir: None,
+            workdir: Some(PathBuf::from("/workdir")),
             compact_window: None,
         }
     }
@@ -452,6 +460,24 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     if super::trust::asks_for_trust(req.teammate.agent) {
         trust_workdir(ctx, req.teammate.agent, &workdir);
     }
+    let v1_catalog_ready = if req.teammate.agent == HarnessKind::Codex {
+        let env = LaunchEnv::from_context(ctx);
+        if super::codex::multi_agent_off(&env, req.teammate) {
+            match super::codex::write_v1_catalog(&env.bins.codex, &ctx.paths.state_root) {
+                Ok(_) => true,
+                Err(e) => {
+                    eprintln!(
+                        "horch: NOTE: no v1 model catalog for codex ({e:#}); multi-agent tools stay on for v2 models"
+                    );
+                    false
+                }
+            }
+        } else {
+            true
+        }
+    } else {
+        true
+    };
     let decision = window_decision(ctx, req.teammate, model, &workdir, req.fleet_window.clone());
     let prepared = adapter.prepare(
         ctx,
@@ -476,6 +502,11 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     teammate.args.extend(prepared.extra_args.iter().cloned());
     let session = session_for(caps, req.session);
     let mut env = LaunchEnv::from_context(ctx);
+    if !v1_catalog_ready {
+        // Do not reuse an older catalog after regeneration failed. Codex can
+        // auto-update between launches, so that file may no longer match it.
+        env.state_root = None;
+    }
     env.compact_window = Some(decision.clone());
     let mut cmd = agent_command_in(
         &env,
@@ -2045,7 +2076,20 @@ mod tests {
             "would remove the built-in /context and /config: {a:?}"
         );
         assert!(a.contains(&"--strict-mcp-config".to_string()), "{a:?}");
-        assert!(a.contains(&r#"{"mcpServers":{}}"#.to_string()), "{a:?}");
+        let config_at = a.iter().position(|arg| arg == "--mcp-config").unwrap();
+        let config: serde_json::Value = serde_json::from_str(&a[config_at + 1]).unwrap();
+        assert_eq!(
+            config,
+            serde_json::json!({
+                "mcpServers": {
+                    "horch": {
+                        "command": "horch",
+                        "args": ["channel", "serve", "--agent", "claude"]
+                    }
+                }
+            }),
+            "{a:?}"
+        );
         assert!(!a.contains(&"--plugin-dir".to_string()), "{a:?}");
 
         // Only the operator's ENABLED plugins are switched off, by name.

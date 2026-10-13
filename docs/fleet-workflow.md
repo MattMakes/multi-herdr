@@ -95,12 +95,12 @@ the operator asks for it.
 
 - The orchestrator owns 1 integration worktree on the run's branch. Nobody
   else edits, commits or builds there.
-- Each unit gets its own branch `ds/<unit>` in its own worktree, created from
-  the integration branch:
+- Each unit gets its own branch in its own worktree, created from the
+  integration branch:
 
   ```bash
-  git -C <main checkout> worktree add -b ds/<unit> <main checkout>/.worktrees/<unit> design-skills
-  cd <main checkout>/.worktrees/<unit>
+  horch worktree new <unit>
+  cd <the path that horch prints>
   ```
 
 - Unit worktrees live under `.worktrees/` in the main checkout. Each builds
@@ -108,18 +108,13 @@ the operator asks for it.
   as its unit merges. Never share one `CARGO_TARGET_DIR` between worktrees.
 - Nobody runs `git checkout` or `git switch` in the shared main checkout.
 
-When a unit is complete, the worker:
-
-1. rebases on the integration branch: `git -C <worktree> rebase design-skills`;
-2. runs the gate again (`HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate`);
-3. sends exactly 1 line:
-   `horch tell orchestrator "[<role>] NOTE: READY-TO-MERGE ds/<unit> <short-sha>. Gate green. See <report path>."`;
-4. waits. On `REBASE` it repeats 1 to 4. On `MERGED` it runs
-   `horch done "<summary>"`.
-
-The orchestrator merges, runs the gate on the integration branch, and updates
-`STATUS.md`. Its merge helpers are operator-local scripts, not in the
-repository.
+When a unit is complete, the worker runs
+`horch worktree land --check "<gate command>"`. The command rebases the
+branch, runs the gate, fast-forwards the integration branch, and removes the
+worktree. On a conflict, the worker rebases, runs the check, and runs the land
+command again. `horch done` refuses while the worker has an open claim.
+`horch done --unlanded "<reason>" "<summary>"` is the last resort. It keeps
+the branch and reports it to the orchestrator.
 
 Shared files (for example `skills/README.md`, `skills/copied.json`,
 `SKIP_NEW_TEAMMATES`) get lines from several units. Each unit adds its lines

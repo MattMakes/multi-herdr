@@ -1,5 +1,6 @@
 pub mod agentlist;
 pub mod balancecmd;
+pub mod channel;
 pub mod compact;
 pub mod context;
 pub mod cost;
@@ -21,6 +22,7 @@ pub mod telemetry;
 pub mod tilecmd;
 pub mod usagecmd;
 pub mod worker;
+pub mod worktree;
 
 use std::path::Path;
 

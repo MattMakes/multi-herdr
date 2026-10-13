@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use horch_core::compaction::policy;
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
-use horch_core::execution::lifecycle::{self, DoneRequest, DoneSteps, ReportTarget};
+use horch_core::execution::lifecycle::{self, ClaimLine, DoneRequest, DoneSteps, ReportTarget};
 use horch_core::execution::records::Ledger;
 use horch_core::execution::store::to_execution;
 use horch_core::execution::ExecutionKind;
@@ -21,6 +21,7 @@ use horch_core::fleet_runs::facts::{record_run, RunSources};
 use horch_core::fleet_runs::rows::WrittenBy;
 use horch_core::harness::launch;
 use horch_core::measure::paths::DatasetPaths;
+use horch_core::messaging::channel;
 use horch_core::messaging::delivery;
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
@@ -28,6 +29,8 @@ use horch_core::prompts;
 use horch_core::runtime::RuntimeContext;
 use horch_core::usage::Locations;
 use horch_core::vcs::git::GitCli;
+use horch_core::vcs::git::GitClient;
+use horch_core::vcs::landing::Landing;
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 
@@ -46,26 +49,12 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
 
-    let Some(target) = mailbox.pane_for(role) else {
-        let known: Vec<String> = mailbox.roles().into_iter().map(|(r, _)| r).collect();
-        let known = if known.is_empty() {
-            "none yet".to_string()
-        } else {
-            known.join(" ")
-        };
-        let sender = ctx.worker.as_ref().and_then(|w| w.role.as_deref());
-        bail!(
-            "role '{role}' is not registered in {}\n       known roles: {known}{}",
-            mailbox.dir().display(),
-            no_orchestrator_hint(role, sender)
-        );
-    };
     let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
     let text = match &sender {
         Some(me) => message::ensure_tag(text, me),
         None => text.to_string(),
     };
-    let line = if text.chars().count() > message::MAX_INLINE {
+    let mut line = if text.chars().count() > message::MAX_INLINE {
         let from = sender.as_deref().unwrap_or("orchestrator");
         let path = message::spool(
             &message::spool_dir(&ctx.paths.state_root),
@@ -76,6 +65,45 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
         message::reference_line(&text, &path)
     } else {
         text
+    };
+    if role == "orchestrator" {
+        let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
+        let from = sender.as_deref().unwrap_or("orchestrator");
+        let send_timeout = if cfg!(debug_assertions) {
+            std::env::var("HORCH_TEST_CHANNEL_SEND_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .map(std::time::Duration::from_millis)
+                .unwrap_or(channel::SEND_TIMEOUT)
+        } else {
+            channel::SEND_TIMEOUT
+        };
+        match channel::send(&socket, from, &line, send_timeout) {
+            Ok(()) => return Ok(()),
+            Err(channel::SendError::NotDelivered(error)) if socket.exists() => eprintln!(
+                "horch tell: the channel relay did not take the message ({error}); typing it instead"
+            ),
+            Err(channel::SendError::Unconfirmed(error)) => {
+                eprintln!(
+                    "horch tell: the channel relay did not confirm the message ({error}); typing it again with a duplicate warning"
+                );
+                line.push_str(" (sent again: the channel relay did not confirm)");
+            }
+            Err(_) => {}
+        }
+    }
+    let Some(target) = mailbox.pane_for(role) else {
+        let known: Vec<String> = mailbox.roles().into_iter().map(|(r, _)| r).collect();
+        let known = if known.is_empty() {
+            "none yet".to_string()
+        } else {
+            known.join(" ")
+        };
+        bail!(
+            "role '{role}' is not registered in {}\n       known roles: {known}{}",
+            mailbox.dir().display(),
+            no_orchestrator_hint(role, sender.as_deref())
+        );
     };
     // An agent that is still starting drops typed text, so wait it out. A
     // role that registered just now may not show its agent yet.
@@ -126,20 +154,26 @@ pub fn inbox(ctx: &RuntimeContext) -> Result<()> {
     if roles.iter().any(|r| r.state == PaneState::Unknown) {
         eprintln!("horch inbox: herdr did not answer, so pane states are unknown");
     }
-    output::print(&inbox_listing(&roles));
+    let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
+    output::print(&inbox_listing(&roles, channel::is_live(&socket)));
     Ok(())
 }
 
 /// One line for each role: name, pane, and `(pane closed)` when herdr does
 /// not list the pane.
-fn inbox_listing(roles: &[RoleEntry]) -> String {
+fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
     let mut listing = String::new();
     for r in roles {
         let mark = match r.state {
             PaneState::Closed => "  (pane closed)",
             PaneState::Open | PaneState::Unknown => "",
         };
-        listing.push_str(&format!("{:<12} {}{mark}\n", r.role, r.pane));
+        let channel = if channel_live && r.role == "orchestrator" {
+            "  (channel)"
+        } else {
+            ""
+        };
+        listing.push_str(&format!("{:<12} {}{mark}{channel}\n", r.role, r.pane));
     }
     listing
 }
@@ -245,7 +279,7 @@ pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
 /// while waiting on a question). The order of the steps is
 /// [`lifecycle::done`]'s.
-pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
+pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<()> {
     let record_id = require_env("HORCH_RECORD_ID", worker_var(ctx, |w| &w.record_id))?;
     let role = require_env("HORCH_ROLE", worker_var(ctx, |w| &w.role))?;
     let pane_env = require_env(
@@ -270,6 +304,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str) -> Result<()> {
             workspace: workspace.as_deref(),
             summary,
             report_to: report_target(ctx, workspace.as_deref(), &role),
+            unlanded,
         },
     );
     // After the close, and only when it worked: a Prime pane's tools (this
@@ -327,6 +362,81 @@ struct CliDone<'a> {
 }
 
 impl DoneSteps for CliDone<'_> {
+    fn open_claims(&self, record_id: &str) -> Result<Vec<ClaimLine>> {
+        let landing = Landing::new(
+            self.ctx.bins.harness.git.clone(),
+            self.ctx.paths.state_root.clone(),
+        );
+        if !landing.record_has_open_claims(record_id)? {
+            return Ok(Vec::new());
+        }
+        let dir = self.ctx.paths.project()?;
+        landing
+            .open_claims_for_record(&dir, record_id)?
+            .into_iter()
+            .map(|claim| claim_line(self.ctx, &landing, claim))
+            .collect()
+    }
+
+    fn mark_unlanded(&self, record_id: &str, reason: &str) -> Result<Vec<ClaimLine>> {
+        let landing = Landing::new(
+            self.ctx.bins.harness.git.clone(),
+            self.ctx.paths.state_root.clone(),
+        );
+        if !landing.record_has_open_claims(record_id)? {
+            return Ok(Vec::new());
+        }
+        let dir = self.ctx.paths.project()?;
+        let claims = landing.open_claims_for_record(&dir, record_id)?;
+        claims
+            .into_iter()
+            .map(|claim| {
+                let line = claim_line(self.ctx, &landing, claim.clone())?;
+                landing.mark_unlanded(&dir, &claim.id, reason)?;
+                Ok(line)
+            })
+            .collect()
+    }
+
+    fn unregistered(&self) -> Result<Vec<String>> {
+        let dir = self.ctx.paths.project()?;
+        let git = GitCli::new(self.ctx.bins.harness.git.clone());
+        if let Err(error) = git.toplevel(&dir) {
+            let git_not_found = error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound)
+            });
+            let not_work_tree = error
+                .root_cause()
+                .to_string()
+                .starts_with("git rev-parse --show-toplevel failed (128):");
+            if git_not_found || not_work_tree {
+                return Ok(Vec::new());
+            }
+            return Err(error);
+        }
+        Landing::new(
+            self.ctx.bins.harness.git.clone(),
+            self.ctx.paths.state_root.clone(),
+        )
+        .unregistered(&dir)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| {
+                    format!(
+                        "{} branch {} ahead {} dirty {}",
+                        entry.path.display(),
+                        entry.branch.as_deref().unwrap_or("detached"),
+                        entry.ahead,
+                        entry.dirty
+                    )
+                })
+                .collect()
+        })
+    }
+
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()> {
         Ledger::open_in(self.ctx)?.done(record_id, summary)
     }
@@ -383,6 +493,26 @@ impl DoneSteps for CliDone<'_> {
     }
 }
 
+fn claim_line(
+    ctx: &RuntimeContext,
+    landing: &Landing,
+    claim: horch_core::vcs::landing::Claim,
+) -> Result<ClaimLine> {
+    let status = landing.status(&claim)?;
+    let git = GitCli::new(ctx.bins.harness.git.clone());
+    let sha = git
+        .rev_parse(&ctx.paths.project()?, &claim.branch)?
+        .or(claim.landed_commit)
+        .unwrap_or_else(|| "unknown".into());
+    Ok(ClaimLine {
+        branch: claim.branch,
+        short_sha: sha.chars().take(7).collect(),
+        ahead: status.ahead,
+        base: claim.base,
+        path: claim.path,
+    })
+}
+
 /// Record this pane's public id under `role` so other panes can address it.
 pub fn register(ctx: &mut RuntimeContext, role: &str) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
@@ -414,6 +544,39 @@ mod tests {
     use super::*;
     use horch_core::execution::legacy::Record;
     use std::time::Duration;
+
+    #[test]
+    fn inbox_listing_marks_closed_panes() {
+        let roles = [RoleEntry {
+            role: "sonnet-1".into(),
+            pane: "p2".into(),
+            state: PaneState::Closed,
+        }];
+        assert_eq!(
+            inbox_listing(&roles, false),
+            "sonnet-1     p2  (pane closed)\n"
+        );
+    }
+
+    #[test]
+    fn arc_30_inbox_marks_a_live_relay() {
+        let roles = [
+            RoleEntry {
+                role: "orchestrator".into(),
+                pane: "p1".into(),
+                state: PaneState::Open,
+            },
+            RoleEntry {
+                role: "sonnet-1".into(),
+                pane: "p2".into(),
+                state: PaneState::Open,
+            },
+        ];
+        assert_eq!(
+            inbox_listing(&roles, true),
+            "orchestrator p1  (channel)\nsonnet-1     p2\n"
+        );
+    }
 
     #[test]
     fn tell_waits_only_the_rest_of_the_grace() {
@@ -505,7 +668,7 @@ mod tests {
                      horch:handoff skill. Then run: horch note \"handoff: \
                      ai_docs/handoffs/sonnet-1-whats-next.md\". Then send: horch tell \
                      orchestrator \"[sonnet-1] NOTE: COMPACT-READY \
-                     ai_docs/handoffs/sonnet-1-whats-next.md\". Then end your turn and wait."
+                     ai_docs/handoffs/sonnet-1-whats-next.md\". Then end your turn."
                 )
             );
             assert_eq!(first, Some(sonnet_warning(&w)));

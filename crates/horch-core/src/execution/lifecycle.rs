@@ -40,11 +40,31 @@ pub struct DoneRequest<'a> {
     pub workspace: Option<&'a str>,
     pub summary: &'a str,
     pub report_to: ReportTarget,
+    pub unlanded: Option<&'a str>,
+}
+
+/// The live facts needed to protect and report one open worktree claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimLine {
+    pub branch: String,
+    pub short_sha: String,
+    pub ahead: usize,
+    pub base: String,
+    pub path: PathBuf,
 }
 
 /// The steps of [`done`] that are not workspace calls. The CLI runs them
 /// against the ledger, `horch tell`, the mailbox and the tiler.
 pub trait DoneSteps {
+    fn open_claims(&self, _record_id: &str) -> Result<Vec<ClaimLine>> {
+        Ok(Vec::new())
+    }
+    fn mark_unlanded(&self, _record_id: &str, _reason: &str) -> Result<Vec<ClaimLine>> {
+        Ok(Vec::new())
+    }
+    fn unregistered(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()>;
     fn report(&self, line: &str) -> Result<()>;
     fn unregister(&self, workspace: &str, role: &str);
@@ -75,10 +95,59 @@ pub trait DoneSteps {
 /// recorded counts as closed: `done` succeeds.
 pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     let role = req.role;
+    let open = steps.open_claims(req.record_id)?;
+    if !open.is_empty() && req.unlanded.is_none() {
+        let claims = open
+            .iter()
+            .map(|claim| {
+                format!(
+                    "{} at {} ({} commits ahead of {}), worktree {}",
+                    claim.branch,
+                    claim.short_sha,
+                    claim.ahead,
+                    claim.base,
+                    claim.path.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!(
+            "horch done refused because this record has an open worktree claim:\n{claims}\n\
+             Run: horch worktree land\n\
+             If it cannot land: horch done --unlanded \"<reason>\" \"<summary>\""
+        );
+    }
+    let unlanded = match req.unlanded {
+        Some(reason) => steps.mark_unlanded(req.record_id, reason)?,
+        None => Vec::new(),
+    };
+    let unregistered = match steps.unregistered() {
+        Ok(entries) => entries,
+        Err(error) => {
+            eprintln!("horch done: could not inspect unregistered worktrees ({error:#})");
+            Vec::new()
+        }
+    };
     // `done` adds the tag and keyword itself; a summary that repeats them would
     // arrive as `[r] DONE: [r] DONE: ...`.
-    let summary = strip_done_prefix(req.summary, role);
-    steps.mark_done(req.record_id, summary)?;
+    let mut summary = strip_done_prefix(req.summary, role).to_owned();
+    if let Some(reason) = req.unlanded {
+        for claim in &unlanded {
+            summary.push_str(&format!(
+                " | UNLANDED: {} at {} ({} commits ahead of {}), worktree {}: {}",
+                claim.branch,
+                claim.short_sha,
+                claim.ahead,
+                claim.base,
+                claim.path.display(),
+                reason
+            ));
+        }
+    }
+    for entry in unregistered {
+        summary.push_str(&format!(" | UNREGISTERED: {entry}"));
+    }
+    steps.mark_done(req.record_id, &summary)?;
 
     if req.report_to == ReportTarget::Orchestrator {
         if let Err(e) = steps.report(&format!("[{role}] DONE: {summary}")) {
@@ -635,11 +704,157 @@ mod tests {
     use crate::messaging::brief::SCHEMA;
     use crate::runtime::{BinOverrides, MapEnv};
     use crate::workspace::testing::FakeWorkspace;
+    use std::cell::RefCell;
 
     fn process_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         let mut vars: Vec<_> = std::env::vars_os().collect();
         vars.sort();
         vars
+    }
+
+    struct ClaimSteps {
+        open: RefCell<Result<Vec<ClaimLine>, String>>,
+        marked_unlanded: RefCell<Vec<String>>,
+        marked_done: RefCell<Vec<String>>,
+        reports: RefCell<Vec<String>>,
+        unregistered: RefCell<Result<Vec<String>, String>>,
+    }
+
+    impl Default for ClaimSteps {
+        fn default() -> Self {
+            Self {
+                open: RefCell::new(Ok(Vec::new())),
+                marked_unlanded: RefCell::new(Vec::new()),
+                marked_done: RefCell::new(Vec::new()),
+                reports: RefCell::new(Vec::new()),
+                unregistered: RefCell::new(Ok(Vec::new())),
+            }
+        }
+    }
+
+    impl ClaimSteps {
+        fn with_claim() -> Self {
+            Self {
+                open: RefCell::new(Ok(vec![ClaimLine {
+                    branch: "wt/sonnet-1-unit".into(),
+                    short_sha: "abc1234".into(),
+                    ahead: 2,
+                    base: "main".into(),
+                    path: PathBuf::from("/repo/.worktrees/sonnet-1-unit"),
+                }])),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl DoneSteps for ClaimSteps {
+        fn open_claims(&self, _: &str) -> Result<Vec<ClaimLine>> {
+            self.open.borrow().clone().map_err(anyhow::Error::msg)
+        }
+
+        fn mark_unlanded(&self, _: &str, reason: &str) -> Result<Vec<ClaimLine>> {
+            self.marked_unlanded.borrow_mut().push(reason.into());
+            self.open_claims("r1")
+        }
+
+        fn unregistered(&self) -> Result<Vec<String>> {
+            self.unregistered
+                .borrow()
+                .clone()
+                .map_err(anyhow::Error::msg)
+        }
+
+        fn mark_done(&self, _: &str, summary: &str) -> Result<()> {
+            self.marked_done.borrow_mut().push(summary.into());
+            Ok(())
+        }
+
+        fn report(&self, line: &str) -> Result<()> {
+            self.reports.borrow_mut().push(line.into());
+            Ok(())
+        }
+
+        fn unregister(&self, _: &str, _: &str) {}
+        fn settle(&self, _: &str) {}
+    }
+
+    fn claim_request<'a>(pane: &'a str, unlanded: Option<&'a str>) -> DoneRequest<'a> {
+        DoneRequest {
+            record_id: "r1",
+            role: "sonnet-1",
+            pane,
+            workspace: None,
+            summary: "finished",
+            report_to: ReportTarget::Orchestrator,
+            unlanded,
+        }
+    }
+
+    #[test]
+    fn arc_31_done_refuses_with_an_open_claim() {
+        let ws = FakeWorkspace::new();
+        let steps = ClaimSteps::with_claim();
+        let error = done(&ws, &steps, &claim_request("p1", None)).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("wt/sonnet-1-unit at abc1234"), "{text}");
+        assert!(text.contains("Run: horch worktree land"), "{text}");
+        assert!(
+            text.contains("horch done --unlanded \"<reason>\" \"<summary>\""),
+            "{text}"
+        );
+        assert!(steps.marked_done.borrow().is_empty());
+        assert!(steps.reports.borrow().is_empty());
+    }
+
+    #[test]
+    fn arc_31_done_unlanded_marks_and_reports_one_line() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps::with_claim();
+        done(&ws, &steps, &claim_request(&pane, Some("cannot rebase"))).unwrap();
+        assert_eq!(&*steps.marked_unlanded.borrow(), &["cannot rebase"]);
+        let reports = steps.reports.borrow();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].lines().count(), 1);
+        assert!(reports[0].contains(" | UNLANDED: wt/sonnet-1-unit at abc1234 (2 commits ahead of main), worktree /repo/.worktrees/sonnet-1-unit: cannot rebase"));
+    }
+
+    #[test]
+    fn arc_31_done_without_claims_is_unchanged() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps::default();
+        done(&ws, &steps, &claim_request(&pane, None)).unwrap();
+        assert_eq!(&*steps.marked_done.borrow(), &["finished"]);
+        assert_eq!(&*steps.reports.borrow(), &["[sonnet-1] DONE: finished"]);
+    }
+
+    #[test]
+    fn arc_31_done_refuses_when_claims_cannot_be_read() {
+        let ws = FakeWorkspace::new();
+        let steps = ClaimSteps {
+            open: RefCell::new(Err("registry is unreadable".into())),
+            ..ClaimSteps::default()
+        };
+        let error = done(&ws, &steps, &claim_request("p1", None)).unwrap_err();
+        assert_eq!(error.to_string(), "registry is unreadable");
+        assert!(steps.marked_done.borrow().is_empty());
+        assert!(steps.reports.borrow().is_empty());
+    }
+
+    #[test]
+    fn arc_31_done_reports_unregistered_worktrees() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps {
+            unregistered: RefCell::new(Ok(vec![
+                "/repo/.worktrees/manual branch manual ahead 1 dirty 0".into(),
+            ])),
+            ..ClaimSteps::default()
+        };
+        done(&ws, &steps, &claim_request(&pane, None)).unwrap();
+        assert!(steps.reports.borrow()[0]
+            .contains(" | UNREGISTERED: /repo/.worktrees/manual branch manual ahead 1 dirty 0"));
     }
 
     /// The brief's transport variables, the workspace and the PATH reach the
@@ -761,6 +976,7 @@ mod tests {
                 workspace: None,
                 summary: "finished",
                 report_to: ReportTarget::None,
+                unlanded: None,
             }
         }
         fn one_pane() -> (FakeWorkspace, String) {
@@ -862,6 +1078,7 @@ mod tests {
                         workspace,
                         summary: "finished",
                         report_to: ReportTarget::None,
+                        unlanded: None,
                     };
                     let case = format!("{at:?}, {workspace:?}, close_pane {close_pane}");
                     let got = done(&ws, &steps, &req);
@@ -981,6 +1198,7 @@ mod tests {
                     workspace,
                     summary: "finished",
                     report_to: ReportTarget::None,
+                    unlanded: None,
                 };
                 done(&ws, &steps, &req)
                     .unwrap_or_else(|e| panic!("vanish before {vanish:?}, {workspace:?}: {e:#}"));

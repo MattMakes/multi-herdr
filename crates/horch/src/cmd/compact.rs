@@ -1268,8 +1268,17 @@ mod tests {
         let bin = f.w.tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let exe = bin.join("sleeper");
-        std::fs::write(&exe, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nsleep 30\n",
+        )
+        .unwrap();
         horch_core::runtime::process::make_executable(&exe).unwrap();
+        assert!(std::process::Command::new(&exe)
+            .arg("warm")
+            .status()
+            .unwrap()
+            .success());
         f.exe = exe;
         f.start_timeout = Duration::from_millis(1500);
         f.pane("sonnet-1");
@@ -1323,12 +1332,17 @@ mod tests {
         std::fs::write(
             &exe,
             format!(
-                "#!/bin/sh\nsleep 0.2\nprintf '%s' '{{\"v\":1,\"role\":\"sonnet-1\",\"record_id\":\"r-1\",\"started_at\":\"x\",\"step\":\"wait-idle\"}}' > '{}/job.json'\n",
+                "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nsleep 0.2\nprintf '%s' '{{\"v\":1,\"role\":\"sonnet-1\",\"record_id\":\"r-1\",\"started_at\":\"x\",\"step\":\"wait-idle\"}}' > '{}/job.json'\n",
                 dir.display()
             ),
         )
         .unwrap();
         horch_core::runtime::process::make_executable(&exe).unwrap();
+        assert!(std::process::Command::new(&exe)
+            .arg("warm")
+            .status()
+            .unwrap()
+            .success());
         f.exe = exe;
         // The success path does not depend on the timeout; a loaded test
         // machine can start a shell slowly.

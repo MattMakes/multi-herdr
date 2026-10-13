@@ -68,6 +68,17 @@ fn corpus(name: &str) -> Harness {
     h
 }
 
+/// Warm the first-exec scan before the quota probes use their short timeout.
+fn warm_quota_fakes(h: &Harness) {
+    for fake in ["claude", "codex", "pi", "ollama"] {
+        assert!(std::process::Command::new(h.bin.join(fake))
+            .arg("warm")
+            .status()
+            .unwrap()
+            .success());
+    }
+}
+
 fn quota_fixture(name: &str) -> String {
     fixtures()
         .join("quota")
@@ -441,6 +452,7 @@ fn quo_01_claude_probe_protocol() {
     let mut h = corpus("quo01");
     h.set("HORCH_FAKE_SCENARIO", "usage_exhausted");
     h.set("ANTHROPIC_API_KEY", "dummy");
+    warm_quota_fakes(&h);
     let out = h.run(&["quota", "--refresh", "--json"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let probes = probes_of(&h, "claude", "stream-json");
@@ -483,6 +495,7 @@ fn quo_01_claude_probe_protocol() {
 fn quo_02_codex_probe_protocol() {
     let mut h = corpus("quo02");
     h.set("HORCH_FAKE_SCENARIO", "limits_5h_weekly");
+    warm_quota_fakes(&h);
     let out = h.run(&["quota", "--refresh", "--json"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let probes = probes_of(&h, "codex", "app-server");
@@ -547,6 +560,7 @@ fn quo_06_local_broken() {
     ] {
         let mut h = corpus(&format!("quo06-{scenario}"));
         h.set("HORCH_FAKE_SCENARIO", scenario);
+        warm_quota_fakes(&h);
         assert!(h.run(&["quota", "--refresh"]).status.success());
         let out = h.run(&["route", "pi", "--json"]);
         let r = json(&out);
@@ -575,6 +589,7 @@ fn quo_06_local_broken() {
 fn quota_probe_records_a_crashing_harness() {
     let mut h = corpus("quota-harness-broken");
     h.set("HORCH_FAKE_SCENARIO", "crash");
+    warm_quota_fakes(&h);
     let q = json(&h.run(&["quota", "--refresh", "--json"]));
     let why = "pi --version exited 1: pi: Node.js 22.19 or newer is required";
     assert_eq!(q["harnesses"]["pi"]["error"], why, "{q}");
@@ -599,6 +614,7 @@ fn quo_07_probe_cadence() {
     let mut h = corpus("quo07b");
     let count = |h: &Harness| probes_of(h, "claude", "stream-json").len();
     h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
+    warm_quota_fakes(&h);
     h.run(&["quota", "--refresh"]);
     assert_eq!(count(&h), 1);
     h.set("HORCH_NOW", "2026-09-28T18:05:00Z");
