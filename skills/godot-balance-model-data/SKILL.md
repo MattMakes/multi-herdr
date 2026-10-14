@@ -121,7 +121,7 @@ The 7 most important rows. The full table is in `references/pitfalls.md`.
 - **FAIL-key differ**: reads 2 outputs and prints new and cleared keys. This skill holds one in
   `references/script-fail_keys.md`; copy the block into a file and run
   `python3 fail_keys.py before.txt after.txt`. It exits 1 when a new key appears. The
-  default key is the text before the word FAIL; `--pattern` with a `(?P<key>...)` group sets
+  default key is the text before the word FAIL, with each number replaced by `#`; `--pattern` with a `(?P<key>...)` group sets
   your own key.
 - **Two-run hash check**: `shasum <exports> > a; export; shasum -c a`.
 - **Asserted replace helper**: `rep(path, old, new)` that fails unless it finds exactly 1 match.

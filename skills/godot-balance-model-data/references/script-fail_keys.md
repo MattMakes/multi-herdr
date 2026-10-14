@@ -18,7 +18,8 @@ Usage: python3 fail_keys.py BEFORE.txt AFTER.txt [--pattern REGEX]
 A FAIL key is the check name plus its subject, without the measured numbers,
 so a value that moves inside an old FAIL does not count as new. By default a
 line counts when it contains the word FAIL, and its key is the text before
-that word, without a leading "12." line number. When FAIL starts the line, the
+that word, without a leading "12." line number, with every standalone number
+replaced by "#". When FAIL starts the line, or only numbers come before it, the
 key is the whole line with every standalone number replaced by "#".
 Pass --pattern to choose lines with your own regex; if it has a group named
 "key", that group is the key.
@@ -42,8 +43,8 @@ def keys(path, pattern):
             if "key" in pattern.groupindex:
                 text = match.group("key")
             else:
-                text = LINE_NUMBER.sub("", line[: match.start()])
-                if not text.strip():
+                text = NUMBER.sub("#", LINE_NUMBER.sub("", line[: match.start()]))
+                if not text.strip("# \t\r\n"):
                     text = NUMBER.sub("#", line)
             text = " ".join(text.split())
             found.add(text)
