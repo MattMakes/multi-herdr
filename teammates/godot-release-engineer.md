@@ -30,8 +30,9 @@ skills:
   - godot-assets-pipeline
   - godot-responsive-ui
   - godot-build-verify
+  - godot-release-and-store
 # Named by name only: related skills.
-available_skills: [godot-dedicated-server, godot-optimization, godot-testing, godot-language-choice]
+available_skills: [godot-dedicated-server, godot-optimization, godot-testing, godot-language-choice, godot-game-audio]
 # A C# project (a *.csproj next to project.godot) adds the C# skills to this
 # builder (GW11, roster/offer.rs project_skills). godot-csharp-engineer owns
 # interop, .NET builds and source-generator problems.

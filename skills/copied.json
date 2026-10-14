@@ -345,10 +345,41 @@
       "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
+      "name": "godot-balance-model-data",
+      "copied_files": [
+        "SKILL.md",
+        "references/design-docs-match-data.md",
+        "references/model-game-parity.md",
+        "references/pitfalls.md",
+        "references/script-fail_keys.md",
+        "references/what-if-and-lever-search.md"
+      ],
+      "verbatim": false
+    },
+    {
       "name": "godot-beehave",
       "copied_files": [
         "SKILL.md",
         "references/custom-nodes.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-bot-balance-loop",
+      "copied_files": [
+        "SKILL.md",
+        "references/artifacts.md",
+        "references/coach-text.md",
+        "references/determinism.md",
+        "references/full-playthrough.md",
+        "references/pitfalls.md",
+        "references/rule-probes.md",
+        "references/script-fight_table.md",
+        "references/shared-pipeline.md",
+        "references/start-states.md",
+        "references/telegraph-parity.md",
+        "references/terms.md",
+        "references/wall-triage.md"
       ],
       "verbatim": false
     },
@@ -505,6 +536,47 @@
       "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
+      "name": "godot-feature-seams-and-saves",
+      "copied_files": [
+        "SKILL.md",
+        "references/pitfalls.md",
+        "references/presets-and-setup-tools.md",
+        "references/row-keys-and-mode-rollout.md",
+        "references/save-integrity-and-migration.md",
+        "references/script-check_idempotent.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-fleet-game-dev",
+      "copied_files": [
+        "SKILL.md",
+        "references/fleet-roles.md",
+        "references/gameplay-changes.md",
+        "references/merges-edits-and-claims.md",
+        "references/pitfalls.md",
+        "references/script-rep.md",
+        "references/script-slot-run.md",
+        "references/script-with-lock.md",
+        "references/shared-machine.md",
+        "references/waits-and-handoffs.md",
+        "references/words.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-game-audio",
+      "copied_files": [
+        "SKILL.md",
+        "references/loop-seam.md",
+        "references/music-sets.md",
+        "references/pitfalls.md",
+        "references/played-mix.md",
+        "references/script-wav_report.md"
+      ],
+      "verbatim": false
+    },
+    {
       "name": "godot-gameplay-loops",
       "copied_files": [],
       "verbatim": false
@@ -551,6 +623,22 @@
       "name": "godot-grill",
       "copied_files": [
         "SKILL.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-headless-runs",
+      "copied_files": [
+        "SKILL.md",
+        "references/import-and-parse.md",
+        "references/pitfalls.md",
+        "references/run-hygiene.md",
+        "references/script-godot-procs.md",
+        "references/script-godot-run.md",
+        "references/script-parse-check.md",
+        "references/script-tool-template.md",
+        "references/task-runner.md",
+        "references/tool-save-isolation.md"
       ],
       "verbatim": false
     },
@@ -697,6 +785,24 @@
       "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
+      "name": "godot-perf-measure",
+      "copied_files": [
+        "SKILL.md",
+        "references/chunk-content.md",
+        "references/cost-budgets.md",
+        "references/hitch-and-cost-maps.md",
+        "references/multimesh-batching.md",
+        "references/physics-interpolation.md",
+        "references/pitfalls.md",
+        "references/pixel-art-camera.md",
+        "references/research.md",
+        "references/script-ab_report.md",
+        "references/shader-warm-up.md",
+        "references/stress-and-leaks.md"
+      ],
+      "verbatim": false
+    },
+    {
       "name": "godot-phantom-camera",
       "copied_files": [
         "SKILL.md"
@@ -723,6 +829,21 @@
       ],
       "verbatim": false,
       "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
+    },
+    {
+      "name": "godot-pixel-art-pipeline",
+      "copied_files": [
+        "SKILL.md",
+        "references/art-drawn-by-script.md",
+        "references/cutouts-and-silhouettes.md",
+        "references/low-poly-models-and-hitboxes.md",
+        "references/pitfalls.md",
+        "references/readability-contrast-gate.md",
+        "references/script-check_art.md",
+        "references/script-contrast_table.md",
+        "references/ui-mockups-by-script.md"
+      ],
+      "verbatim": false
     },
     {
       "name": "godot-player-controller",
@@ -774,6 +895,21 @@
       "verbatim": false
     },
     {
+      "name": "godot-release-and-store",
+      "copied_files": [
+        "SKILL.md",
+        "references/demo-cut.md",
+        "references/gamepad-and-handheld.md",
+        "references/pitfalls.md",
+        "references/script-html-to-text.md",
+        "references/script-loop-seam.md",
+        "references/script-pack-audit.md",
+        "references/store-launch-research.md",
+        "references/trailers-and-store-media.md"
+      ],
+      "verbatim": false
+    },
+    {
       "name": "godot-resource-pattern",
       "copied_files": [
         "SKILL.md",
@@ -794,6 +930,20 @@
         "references/dpi-scaling.md",
         "references/mobile.md",
         "references/pixel-art-setup.md"
+      ],
+      "verbatim": false
+    },
+    {
+      "name": "godot-safe-refactor",
+      "copied_files": [
+        "SKILL.md",
+        "references/changed-measure.md",
+        "references/code-health-scan.md",
+        "references/enforcement-sites.md",
+        "references/pitfalls.md",
+        "references/render-feel-isolation.md",
+        "references/review-and-fix-waves.md",
+        "references/script-first-diff.md"
       ],
       "verbatim": false
     },
@@ -849,6 +999,23 @@
       "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
+      "name": "godot-test-loop",
+      "copied_files": [
+        "SKILL.md",
+        "references/finish-gate.md",
+        "references/flakes-and-isolation.md",
+        "references/input-and-route-tests.md",
+        "references/leaked-at-exit.md",
+        "references/pitfalls.md",
+        "references/prove-the-test-can-fail.md",
+        "references/script-repeat-run.md",
+        "references/script-run-tests.md",
+        "references/script-test-case.md",
+        "references/test-audit-data-echo.md"
+      ],
+      "verbatim": false
+    },
+    {
       "name": "godot-testing",
       "copied_files": [
         "SKILL.md",
@@ -887,8 +1054,51 @@
       "budget_exempt": "copied base SKILL.md (renamed) plus own references; the copied base keeps its upstream length so a refresh stays a re-copy"
     },
     {
+      "name": "godot-upgrade-tree-design",
+      "copied_files": [
+        "SKILL.md",
+        "references/artifacts.md",
+        "references/balance-json.md",
+        "references/contract-template.md",
+        "references/design-research.md",
+        "references/diag-tree-shape.md",
+        "references/fun-band-sweep.md",
+        "references/human-playtest.md",
+        "references/measured-buy-order.md",
+        "references/pitfalls.md",
+        "references/prerequisites.md",
+        "references/reading-the-numbers.md",
+        "references/script-make-policies.md",
+        "references/script-report.md",
+        "references/script-test-report.md",
+        "references/spend-gates.md",
+        "references/strategy-advocates.md",
+        "references/upgrade-cues.md",
+        "references/wing-audit.md"
+      ],
+      "verbatim": false
+    },
+    {
       "name": "godot-version-migration",
       "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "godot-visual-verification",
+      "copied_files": [
+        "SKILL.md",
+        "references/capture-queue.md",
+        "references/fixed-seed-capture.md",
+        "references/owner-visual-pick.md",
+        "references/pitfalls.md",
+        "references/pixel-diff.md",
+        "references/qa-matrix.md",
+        "references/reduced-motion.md",
+        "references/script-pixdiff.md",
+        "references/script-text-fit.md",
+        "references/ui-review.md",
+        "references/visual-gate.md"
+      ],
       "verbatim": false
     },
     {

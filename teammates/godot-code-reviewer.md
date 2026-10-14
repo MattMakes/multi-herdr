@@ -30,8 +30,9 @@ skills:
   - godot-gdscript-advanced
   - godot-scene-organization
   - godot-multithreading
+  - godot-safe-refactor
 # Named by name only: related skills.
-available_skills: [godot-csharp-godot, godot-multiplayer-sync, godot-optimization, godot-language-choice]
+available_skills: [godot-csharp-godot, godot-multiplayer-sync, godot-optimization, godot-language-choice, godot-test-loop]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
 # DONE: needs.
 mcp_servers: {}
