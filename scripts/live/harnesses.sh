@@ -197,13 +197,15 @@ else
     skip agy-effort-refusal "agy accepted or did not answer"
   fi
 
-  # A bare model id with no --effort: refused before a turn starts (1.3.0).
-  # The roster check fails such a teammate (roster/validation.rs).
+  # A bare model id with no --effort: agy 1.3.0 refused it before a turn
+  # starts; 1.4.0 accepts it. The roster check still fails such a teammate
+  # (roster/validation.rs), so the tier does not depend on agy's default
+  # effort. This step records what agy does with a bare id.
   bare="$(cd "$REPO" && clean 60 agy --model "$AGY_MODEL" -p "x" --output-format json 2>/dev/null || true)"
   if grep -q "requires --effort" <<<"$(json_get error <<<"$bare" 2>/dev/null || true)"; then
-    pass agy-bare-needs-effort "agy refuses --model $AGY_MODEL without --effort"
+    skip agy-bare-model "agy refuses a bare model id without --effort (pre-1.4.0 behavior); the roster rule still holds"
   else
-    fail agy-bare-needs-effort "agy accepted a bare model id without --effort; the roster check is stricter than agy"
+    pass agy-bare-model "agy accepts a bare model id; the roster still requires effort"
   fi
 
   # Usage: file names only. A token count would need a file with "usage" or

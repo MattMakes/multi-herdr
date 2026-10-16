@@ -10,8 +10,10 @@ agent: antigravity
 # 3.8 Flash scores at or above 3.1 Pro on coding and agent benchmarks for
 # about a third of the price (checked 2026-10-05).
 model: gemini-3.8-flash
-# Required: agy 1.3.0 refuses a bare model id without --effort, and
-# `horch teammates --check` fails such a teammate. 3.8 Flash takes
+# Required: agy 1.4.0 accepts a bare model id without --effort, but horch
+# updates every CLI before each fleet and a CLI's default effort can change
+# between versions, so every Antigravity teammate states its effort and
+# `horch teammates --check` fails one that does not. 3.8 Flash takes
 # low|medium|high. medium is the lowest level that keeps general
 # implementation work (multi-file edits, tests): low is for short answers.
 # medium is also Google's default for code and agents.
