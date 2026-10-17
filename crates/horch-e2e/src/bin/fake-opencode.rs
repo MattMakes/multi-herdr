@@ -41,6 +41,7 @@ fn main() {
     let id = opencode_session_id(&cwd);
     match args.as_slice() {
         ["--version"] => say("1.18.33"),
+        ["upgrade"] => update(&call),
         ["session", "list", ..] => {
             call.extra.insert("session_id".into(), json!(id));
             say(&json!([{
@@ -166,4 +167,21 @@ fn write_transcript(session: &str, cwd: &std::path::Path) {
         let _ = stdin.write_all(sql.as_bytes());
     }
     let _ = child.wait();
+}
+
+/// `opencode upgrade`: record the call, then answer as the scenario says.
+/// `update_fail:opencode` exits 1 with a coloured error line, and
+/// `update_hang:opencode` sleeps 60 s first. Otherwise it prints 1 line and
+/// exits 0.
+fn update(call: &Call) -> ! {
+    call.flush();
+    if horch_e2e::scenario_has("update_fail:opencode") {
+        eprintln!("\u{1b}[31merror: opencode update failed: network unreachable\u{1b}[0m");
+        std::process::exit(1);
+    }
+    if horch_e2e::scenario_has("update_hang:opencode") {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+    horch_e2e::say("opencode 1.18.33 is up to date");
+    std::process::exit(0);
 }

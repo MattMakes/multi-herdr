@@ -66,9 +66,13 @@ Steps:
   add it to `trustedWorkspaces`.
 - `agy-effort-refusal`: `--effort` on a model id that `agy models` does not
   list is refused.
-- `agy-bare-needs-effort`: `--model gemini-3.8-flash` without `--effort` is
-  refused ("requires --effort"). `horch teammates --check` fails an agy
-  teammate with a bare model id and no `effort:` (`roster/validation.rs`).
+- `agy-bare-model`: `agy` 1.4.0 accepts `--model gemini-3.8-flash` without
+  `--effort` (1.3.0 refused it with "requires --effort"). `PASS` when `agy`
+  accepts the bare id. `horch teammates --check` still fails an agy teammate
+  with a bare model id and no `effort:` (`roster/validation.rs`): horch
+  updates every CLI before each fleet, and a CLI's default effort can change
+  between versions, so every agy teammate states its effort. This step was
+  `agy-bare-needs-effort` until 1.4.0; the rows below keep that name.
 - `agy-no-usage-file`: no file with `usage` or `quota` in its name under
   `~/.gemini/antigravity-cli` (U-60, U-61).
 - `agy-cache-format`: with `AGY_READ_CACHE=1`, `last_conversations.json` maps
@@ -79,9 +83,13 @@ Steps:
   `--session <id> --prompt <p>` in a pseudo-terminal for 45 s. The session
   gains no user turn. Control: the same TUI setup with only `--prompt` starts
   a session that holds the prompt.
-- `prime-status`: the installed `prime-agent` builds its `status --json`
-  record from `pid`, `socketPath` and `uptimeSeconds` (`ps -o etimes` of that
-  pid), with no start time of its own (`cli/daemon-ps.js`).
+- `prime-status`: the Rust build (0.10.0). A scratch Prime TUI (no prompt, no
+  model turn) runs on the socket `<scratch>/prime-agent-<uid>/d.sock`.
+  `TMPDIR=<scratch>/ prime-agent status --json` names that socket with `pid`
+  and `socketPath` and no start time of its own (U-63), and
+  `TMPDIR=<scratch>/ prime-agent shutdown --force --json` names it in
+  `stopped` with an empty `failed`. This is what `Daemon::finish` relies on.
+  Runs before 2026-10-17 checked the TypeScript build's `cli/daemon-ps.js`.
 - `pi-version`: `pi --version` runs on the default `node`.
 
 ## For the operator
@@ -135,7 +143,8 @@ agent's safety check).
 `AGY_TRUST_SCRATCH=1 scripts/live/harnesses.sh`, agy 1.3.0: 17 PASS, 2 SKIP
 (`agy-cache-format`, `agy-fleet-spawn`), 0 FAIL.
 
-- `agy-bare-needs-effort`: agy printed "--model gemini-3.8-flash requires
+- `agy-bare-needs-effort` (now `agy-bare-model`; agy 1.3.0 only): agy printed
+  "--model gemini-3.8-flash requires
   --effort (available: low, medium, high)" and ran no turn. An id with the
   level in it, `--model gemini-3.8-flash-low` without `--effort`, ran 1 turn
   with `status: SUCCESS`.
@@ -152,3 +161,55 @@ agent's safety check).
   `agy-print-no-trust` SKIP, because the path was trusted before the run.
 - The TUI path of `agy` now runs in the trusted scratch repo. The fleet
   steps in "For the operator" are still not run.
+
+## 2026-10-16
+
+Host: macOS 26 (Darwin 25.5.0), arm64. Runner: qa-engineer-1. One run of
+`scripts/live/harnesses.sh` with no flag, after every CLI was updated. 13 PASS,
+1 FAIL, 5 SKIP. Report: `ai_docs/reports/always-latest-clis/cli-check.md`.
+
+Versions: agy 1.4.0, opencode 1.19.3, pi 1.3.0 on node v24.21.0, prime-agent
+0.10.0 (a Rust build; see the Prime row).
+
+| Step | Claim it proves | Tool version | Result | Evidence |
+|---|---|---|---|---|
+| agy-version | U-28: `agy` is installed | agy 1.4.0 | PASS | `agy --version` prints 1.4.0 |
+| agy-flags | U-28: the 7 adapter flags exist | 1.4.0 | PASS | all 7 in `agy --help` |
+| agy-model | U-28: `gemini-3.8-flash` with `--effort` | 1.4.0 | PASS | `agy models` lists `gemini-3.8-flash-low/medium/high` |
+| agy-no-api-key | U-28 step 5: no Gemini key is needed | 1.4.0 | PASS | `settings.json` has no `modelProvider` |
+| agy-trust-store | U-62: `trustedWorkspaces` is a list of path strings | 1.4.0 | PASS | list of path strings |
+| agy-turn | U-28: the teammate argv runs; `agy` mints the id | 1.4.0 | PASS | SUCCESS, `conversation_id` minted by `agy` |
+| agy-resume | U-28 step 11: `--conversation <id>` resumes | 1.4.0 | PASS | same id, recalls the first turn |
+| agy-mode-plan | U-28: `--mode plan` | 1.4.0 | PASS | accepted |
+| agy-resume-prompt | W13 C6: `--conversation <id> --prompt-interactive <p>` delivers `<p>` | 1.4.0 | SKIP | the TUI asks to trust the scratch repo; needs `AGY_TRUST_SCRATCH=1` |
+| agy-print-no-trust | U-62: print mode records no trust | 1.4.0 | PASS | the scratch repo is not in `trustedWorkspaces` |
+| agy-bare-needs-effort | W13 C6: a bare id needs `--effort` (`roster/validation.rs`) | 1.4.0 | FAIL | `agy` 1.4.0 accepted `--model gemini-3.8-flash` without `--effort`; the roster rule is stricter than `agy` |
+| agy-effort-refusal | `agy` refuses `--effort` for an id it does not list | 1.4.0 | PASS | refused for `gemini-3-1-pro` |
+| agy-no-usage-file | U-60, U-61: no usage or quota file | 1.4.0 | PASS | no such file |
+| agy-cache-format | U-28 step 10: `last_conversations.json` format | 1.4.0 | SKIP | needs `AGY_READ_CACHE=1` |
+| agy-fleet-spawn | U-28 steps 8 to 11 in a fleet | - | SKIP | needs a fleet and a trusted directory |
+| opencode-resume-prompt | U-64: `--prompt` beside `--session` is ignored | opencode 1.19.3 | SKIP | the control failed: a fresh TUI `--prompt` did not arrive. In the same run `opencode run` ended at its 120 s limit with no answer, so the free tier may have been slow |
+| prime-status | U-63: Prime reports no daemon start time | prime-agent 0.10.0 | SKIP | the script found no `daemon-ps.js`: the installed Prime is a Rust build with no `dist/cli` |
+| pi-version | U-30 Q1: pi runs on the installed Node | pi 1.3.0, node v24.21.0 | PASS | `pi --version` prints `1.3.0` |
+
+The step `opencode-version` also passed (1.19.3).
+
+## 2026-10-17: Prime adapter, Rust build (prime-agent 0.10.0)
+
+Host: macOS 26 (Darwin 25.5.0), arm64. Runner: opus-2. No model turn and no
+prompt: the TUI showed Prime's first-run "Share agent traces" question, which
+was not answered, and Ctrl+C quit it.
+
+Method: a scratch herdr workspace (`w54`, cwd
+`.worktrees/_scratch/prime-adapter/live`) ran the ignored test
+`live_prime_tui_start_and_finish` (`crates/horch-core/tests/context_prime.rs`)
+with `HORCH_STATE_DIR=/tmp/hpa-live`. It runs the Prime adapter's `prepare`,
+the command horch builds without `--` and the prompt, and `finish`.
+
+| Check | Result | Evidence |
+|---|---|---|
+| argv | PASS | `prime-agent --model anthropic/claude-opus-5-5 --thinking medium --no-skills --no-prompt-templates --no-themes --daemon-socket /tmp/hpa-live/prime/acc05e7c0e30/prime-agent-501/d.sock --session-dir /tmp/hpa-live/prime/acc05e7c0e30/sessions`; Prime started (no "Unknown option") |
+| built-in reporter | PASS | `herdr agent list`: pane `w54:p1` `"agent":"prime-agent"`, `"agent_status":"idle"`. So `STATUS_AGENT` is `prime-agent` (source `herdr:pi`, from the binary) |
+| scoped status | PASS | before finish, `TMPDIR=<launch>/ prime-agent status --json` named `<launch>/prime-agent-501/d.sock`, pid 32121, `status` `current` |
+| finish stops the daemon | PASS | after finish, the same command printed `[]`; `ps` showed no `prime-agent` process; the scan dir and `agent/` were removed; `sessions/` kept the `.jsonl` |
+| release | PASS | after finish, `herdr pane get w54:p1` showed no agent, `agent_status` `unknown` |

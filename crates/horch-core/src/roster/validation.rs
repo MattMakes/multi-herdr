@@ -316,6 +316,15 @@ impl Roster {
                 t.agent
             ));
         }
+        // pi turns `tools` into --tools or, for an empty list, --no-tools.
+        // The Rust build of Prime refuses --tools, --no-tools and
+        // --exclude-tools, so any `tools:` value would exit the pane at launch.
+        if t.agent == HarnessKind::Prime && t.tools.is_some() {
+            problems.push(format!(
+                "{who}: 'tools' is not something prime can express; \
+                 prime refuses --tools and --no-tools, so remove tools"
+            ));
+        }
         // A fleet pane must not spawn subagents. The prose rule in
         // `_base/fleet-worker.md` was not enough on its own, so the switch
         // carries it: `--disallowedTools Agent` takes the tool out of the
@@ -364,9 +373,10 @@ impl Roster {
                     ));
                 }
             }
-            // agy 1.3.0 refuses a bare model id without --effort ("requires
-            // --effort"), so the worker would die at launch. An id with the
-            // level in it (gemini-3.8-flash-low) runs without one.
+            // horch updates every CLI before each fleet, and a CLI's default
+            // effort can change between versions. So every teammate states
+            // its effort and its tier does not depend on a CLI default. An
+            // id with the level in it (gemini-3.8-flash-low) states it too.
             if let Some(model) = &t.model {
                 if t.effort.is_none()
                     && !crate::harness::antigravity::EFFORT_SUFFIXES
@@ -374,8 +384,9 @@ impl Roster {
                         .any(|s| model.ends_with(s))
                 {
                     problems.push(format!(
-                        "{who}: antigravity model '{model}' needs an effort; agy refuses a \
-                         bare model id without --effort (set effort: low, medium or high)"
+                        "{who}: antigravity model '{model}' needs an effort; a bare model id \
+                         takes agy's default effort, which can change between CLI versions \
+                         (set effort: low, medium or high)"
                     ));
                 }
             }
@@ -1768,8 +1779,9 @@ mod spawnable_tests {
         }
     }
 
-    /// agy refuses a bare model id without --effort, so the roster check
-    /// stops it before a launch fails. An id that names the level runs.
+    /// A bare model id would take agy's default effort, which can change
+    /// between CLI versions, so the roster check asks every Antigravity
+    /// teammate to state its effort. An id that names the level states it.
     #[test]
     fn an_antigravity_model_needs_an_effort() {
         let mut r = Roster::builtin().unwrap();
@@ -1781,8 +1793,9 @@ mod spawnable_tests {
         let needs = |r: &Roster| r.check().iter().any(|p| p.contains("needs an effort"));
         assert!(
             r.check().iter().any(|p| p
-                == "sonnet: antigravity model 'gemini-3.8-flash' needs an effort; agy refuses \
-                    a bare model id without --effort (set effort: low, medium or high)"),
+                == "sonnet: antigravity model 'gemini-3.8-flash' needs an effort; a bare \
+                    model id takes agy's default effort, which can change between CLI versions \
+                    (set effort: low, medium or high)"),
             "{:?}",
             r.check()
         );
@@ -2058,6 +2071,43 @@ mod spawnable_tests {
         let fields = t.agent.unsupported_fields(&t);
         assert!(fields.contains(&"disabled_skills"), "{fields:?}");
         assert!(fields.contains(&"inherit_claudeai_skills"), "{fields:?}");
+    }
+
+    /// The Rust build of Prime refuses `--tools` and `--no-tools`, so any
+    /// `tools:` value is refused on Prime. pi still takes both.
+    #[test]
+    fn a_tool_list_is_refused_on_prime_but_not_on_pi() {
+        let mut r = Roster::builtin().unwrap();
+        let refused = |r: &Roster| {
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("sonnet: 'tools' is not something prime can express"))
+        };
+        let t = r.teammates.get_mut("sonnet").unwrap();
+        t.agent = HarnessKind::Prime;
+        t.tools = Some(Vec::new());
+        assert!(refused(&r), "{:?}", r.check());
+        r.teammates.get_mut("sonnet").unwrap().tools = None;
+        assert!(!refused(&r), "{:?}", r.check());
+        let t = r.teammates.get_mut("sonnet").unwrap();
+        t.agent = HarnessKind::Pi;
+        t.tools = Some(Vec::new());
+        assert!(!refused(&r), "{:?}", r.check());
+    }
+
+    #[test]
+    fn a_non_empty_tool_list_is_refused_on_prime() {
+        let mut r = Roster::builtin().unwrap();
+        let t = r.teammates.get_mut("sonnet").unwrap();
+        t.agent = HarnessKind::Prime;
+        t.tools = Some(vec!["read".into(), "bash".into()]);
+        assert!(
+            r.check()
+                .iter()
+                .any(|p| p.starts_with("sonnet: 'tools' is not something prime can express")),
+            "{:?}",
+            r.check()
+        );
     }
 
     #[test]

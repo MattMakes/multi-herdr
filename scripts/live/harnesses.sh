@@ -197,13 +197,15 @@ else
     skip agy-effort-refusal "agy accepted or did not answer"
   fi
 
-  # A bare model id with no --effort: refused before a turn starts (1.3.0).
-  # The roster check fails such a teammate (roster/validation.rs).
+  # A bare model id with no --effort: agy 1.3.0 refused it before a turn
+  # starts; 1.4.0 accepts it. The roster check still fails such a teammate
+  # (roster/validation.rs), so the tier does not depend on agy's default
+  # effort. This step records what agy does with a bare id.
   bare="$(cd "$REPO" && clean 60 agy --model "$AGY_MODEL" -p "x" --output-format json 2>/dev/null || true)"
   if grep -q "requires --effort" <<<"$(json_get error <<<"$bare" 2>/dev/null || true)"; then
-    pass agy-bare-needs-effort "agy refuses --model $AGY_MODEL without --effort"
+    skip agy-bare-model "agy refuses a bare model id without --effort (pre-1.4.0 behavior); the roster rule still holds"
   else
-    fail agy-bare-needs-effort "agy accepted a bare model id without --effort; the roster check is stricter than agy"
+    pass agy-bare-model "agy accepts a bare model id; the roster still requires effort"
   fi
 
   # Usage: file names only. A token count would need a file with "usage" or
@@ -244,8 +246,15 @@ else
   sessions() {
     (cd "$REPO" && opencode session list --format json 2>/dev/null) | python3 -c 'import json,sys; t=sys.stdin.read().strip() or "[]"; [print(r["id"]) for r in json.loads(t) if r.get("directory")==sys.argv[1]]' "$REPO"
   }
-  # tui <args...>: the TUI in a pseudo-terminal for 45 s, then killed.
-  tui() { (cd "$REPO" && clean 45 script -q /dev/null opencode --pure -m "$OC_MODEL" "$@" </dev/null >/dev/null 2>&1) || true; }
+  # tui_stop <args...>: stop the TUI that tui started with these args.
+  # `script` ends first and leaves opencode running, so match opencode's argv.
+  tui_stop() { pkill -f "opencode --pure -m $OC_MODEL $*" 2>/dev/null || true; }
+  # tui <seconds> <args...>: the TUI in a pseudo-terminal for <seconds>, then stopped.
+  tui() {
+    local s="$1"; shift
+    (cd "$REPO" && clean "$s" script -q /dev/null opencode --pure -m "$OC_MODEL" "$@" </dev/null >/dev/null 2>&1) || true
+    tui_stop "$@"
+  }
 
   (cd "$REPO" && clean 120 opencode run --pure -m "$OC_MODEL" "Reply with the single word PONG." </dev/null >"$SCR/opencode-run.log" 2>&1) || true
   SID="$(sessions | head -1)"
@@ -253,41 +262,79 @@ else
     skip opencode-resume-prompt "opencode run made no session (no network or no free tier)"
   else
     before="$(user_turns "$SID")"
-    tui --session "$SID" --prompt "Reply with the single word BANANA."
-    sleep 2
-    after="$(user_turns "$SID")"
-    # Control: the same TUI setup without --session delivers --prompt.
-    tui --prompt "Reply with the single word CHERRY."
-    sleep 2
-    control=""
-    for s in $(sessions); do
-      [ "$s" = "$SID" ] && continue
-      if (cd "$REPO" && opencode export "$s" 2>/dev/null) | grep -q CHERRY; then control=yes; fi
+    # Control: the same TUI setup without --session delivers --prompt. A fresh
+    # opencode TUI can take 1 to 5 minutes to create its session on a loaded
+    # Mac, so poll for up to 360 s and stop the TUI at the control word.
+    CTRL=(--prompt "Reply with the single word CHERRY.")
+    tui 360 "${CTRL[@]}" &
+    tpid=$!
+    control=""; seen=""; startup=360; t0=$SECONDS
+    while [ $((SECONDS - t0)) -lt 360 ] && [ -z "$control" ]; do
+      sleep 10
+      for s in $(sessions); do
+        [ "$s" = "$SID" ] && continue
+        seen=yes
+        if (cd "$REPO" && opencode export "$s" 2>/dev/null) | grep -q CHERRY; then control=yes; fi
+      done
+      [ -n "$control" ] && startup=$((SECONDS - t0))
     done
-    if [ -z "$control" ]; then
+    tui_stop "${CTRL[@]}"
+    wait "$tpid" 2>/dev/null || true
+    if [ -z "$seen" ]; then
+      skip opencode-resume-prompt "opencode TUI made no session in 360 s (startup stall); $(uptime)"
+    elif [ -z "$control" ]; then
       skip opencode-resume-prompt "control failed: a fresh TUI --prompt did not arrive"
-    elif [ "$after" = "$before" ]; then
-      pass opencode-resume-prompt "--prompt beside --session is ignored ($before user turns before and after); a fresh --prompt arrives"
     else
-      fail opencode-resume-prompt "--prompt beside --session now arrives; type nothing on a resume (resume_prompt_typed)"
+      # The resume TUI creates no session, so it shows no startup signal. Give
+      # it the startup time the control needed, then the 45 s window, so a
+      # slow start cannot make "ignored" pass by timing.
+      tui $((startup + 45)) --session "$SID" --prompt "Reply with the single word BANANA."
+      sleep 2
+      after="$(user_turns "$SID")"
+      if [ "$after" = "$before" ]; then
+        pass opencode-resume-prompt "--prompt beside --session is ignored ($before user turns before and after, after ${startup} s of startup); a fresh --prompt arrives"
+      else
+        fail opencode-resume-prompt "--prompt beside --session now arrives; type nothing on a resume (resume_prompt_typed)"
+      fi
     fi
   fi
 fi
 
 # ---------------------------------------------------------------------- Prime
+# The Rust build (0.10.0): `status` and `shutdown` scan only
+# `$TMPDIR/prime-agent-<uid>/`. A scratch TUI (no prompt, no model turn) on a
+# socket in a scratch scan dir; `TMPDIR=<dir>/ prime-agent status --json`
+# must name it with pid and socketPath and no start time (U-63), and the
+# scoped `shutdown --force --json` must name it as stopped.
 if ! command -v prime-agent >/dev/null 2>&1; then
   skip prime-status "prime-agent is not installed"
 else
   PV="$(prime-agent --version 2>&1 | head -1)"
-  # The status record is what runPs prints: discovered daemons plus uptime.
-  PS_JS="$(dirname "$(readlink -f "$(command -v prime-agent)")")/../cli/daemon-ps.js"
-  if [ -f "$PS_JS" ] && grep -q 'uptimeSeconds: uptimes.get(daemon.pid)' "$PS_JS" &&
-    ! grep -qE 'startedAt|startTime' "$PS_JS"; then
-    pass prime-status "prime-agent $PV: status --json has pid, socketPath, uptimeSeconds (ps etimes of that pid), no start time"
-  elif [ -f "$PS_JS" ]; then
-    fail prime-status "prime-agent $PV changed its status record; re-check may_stop (U-63)"
+  PDIR="$SCR/prime"
+  rm -rf "$PDIR"
+  mkdir -p "$PDIR/prime-agent-$(id -u)" "$PDIR/agent" "$PDIR/sessions"
+  chmod 700 "$PDIR/prime-agent-$(id -u)"
+  PSOCK="$PDIR/prime-agent-$(id -u)/d.sock"
+  (sleep 60 | PRIME_AGENT_CODING_AGENT_DIR="$PDIR/agent" clean 60 \
+    script -q /dev/null prime-agent --no-skills --no-themes \
+    --daemon-socket "$PSOCK" --session-dir "$PDIR/sessions" >"$PDIR/tui.log" 2>&1) &
+  PTUI=$!
+  for _ in $(seq 1 30); do [ -S "$PSOCK" ] && break; sleep 1; done
+  PST="$(TMPDIR="$PDIR/" prime-agent status --json 2>&1 || true)"
+  PSTOP="$(TMPDIR="$PDIR/" clean 30 prime-agent shutdown --force --json 2>&1 || true)"
+  pkill -f -- "--daemon-socket $PSOCK" 2>/dev/null || true
+  kill "$PTUI" 2>/dev/null || true
+  wait "$PTUI" 2>/dev/null || true
+  if ! [ -S "$PSOCK" ]; then
+    skip prime-status "prime-agent $PV started no daemon on $PSOCK within 30 s"
+  elif printf '%s' "$PST" | grep -q "\"socketPath\": \"$PSOCK\"" &&
+    printf '%s' "$PST" | grep -q '"pid": [0-9]' &&
+    ! printf '%s' "$PST" | grep -qE 'startedAt|startTime' &&
+    printf '%s' "$PSTOP" | grep -q "\"socketPath\": \"$PSOCK\"" &&
+    printf '%s' "$PSTOP" | grep -q '"failed": \[\]'; then
+    pass prime-status "prime-agent $PV: TMPDIR-scoped status --json has pid, socketPath, no start time; scoped shutdown --force --json stopped it"
   else
-    skip prime-status "cannot find daemon-ps.js for prime-agent $PV"
+    fail prime-status "prime-agent $PV changed its status or shutdown record; re-check may_stop (U-63) and Daemon::finish. status: $PST shutdown: $PSTOP"
   fi
 fi
 
