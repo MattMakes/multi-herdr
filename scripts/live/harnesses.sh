@@ -246,8 +246,15 @@ else
   sessions() {
     (cd "$REPO" && opencode session list --format json 2>/dev/null) | python3 -c 'import json,sys; t=sys.stdin.read().strip() or "[]"; [print(r["id"]) for r in json.loads(t) if r.get("directory")==sys.argv[1]]' "$REPO"
   }
-  # tui <args...>: the TUI in a pseudo-terminal for 45 s, then killed.
-  tui() { (cd "$REPO" && clean 45 script -q /dev/null opencode --pure -m "$OC_MODEL" "$@" </dev/null >/dev/null 2>&1) || true; }
+  # tui_stop <args...>: stop the TUI that tui started with these args.
+  # `script` ends first and leaves opencode running, so match opencode's argv.
+  tui_stop() { pkill -f "opencode --pure -m $OC_MODEL $*" 2>/dev/null || true; }
+  # tui <seconds> <args...>: the TUI in a pseudo-terminal for <seconds>, then stopped.
+  tui() {
+    local s="$1"; shift
+    (cd "$REPO" && clean "$s" script -q /dev/null opencode --pure -m "$OC_MODEL" "$@" </dev/null >/dev/null 2>&1) || true
+    tui_stop "$@"
+  }
 
   (cd "$REPO" && clean 120 opencode run --pure -m "$OC_MODEL" "Reply with the single word PONG." </dev/null >"$SCR/opencode-run.log" 2>&1) || true
   SID="$(sessions | head -1)"
@@ -255,23 +262,40 @@ else
     skip opencode-resume-prompt "opencode run made no session (no network or no free tier)"
   else
     before="$(user_turns "$SID")"
-    tui --session "$SID" --prompt "Reply with the single word BANANA."
-    sleep 2
-    after="$(user_turns "$SID")"
-    # Control: the same TUI setup without --session delivers --prompt.
-    tui --prompt "Reply with the single word CHERRY."
-    sleep 2
-    control=""
-    for s in $(sessions); do
-      [ "$s" = "$SID" ] && continue
-      if (cd "$REPO" && opencode export "$s" 2>/dev/null) | grep -q CHERRY; then control=yes; fi
+    # Control: the same TUI setup without --session delivers --prompt. A fresh
+    # opencode TUI can take 1 to 5 minutes to create its session on a loaded
+    # Mac, so poll for up to 360 s and stop the TUI at the control word.
+    CTRL=(--prompt "Reply with the single word CHERRY.")
+    tui 360 "${CTRL[@]}" &
+    tpid=$!
+    control=""; seen=""; startup=360; t0=$SECONDS
+    while [ $((SECONDS - t0)) -lt 360 ] && [ -z "$control" ]; do
+      sleep 10
+      for s in $(sessions); do
+        [ "$s" = "$SID" ] && continue
+        seen=yes
+        if (cd "$REPO" && opencode export "$s" 2>/dev/null) | grep -q CHERRY; then control=yes; fi
+      done
+      [ -n "$control" ] && startup=$((SECONDS - t0))
     done
-    if [ -z "$control" ]; then
+    tui_stop "${CTRL[@]}"
+    wait "$tpid" 2>/dev/null || true
+    if [ -z "$seen" ]; then
+      skip opencode-resume-prompt "opencode TUI made no session in 360 s (startup stall); $(uptime)"
+    elif [ -z "$control" ]; then
       skip opencode-resume-prompt "control failed: a fresh TUI --prompt did not arrive"
-    elif [ "$after" = "$before" ]; then
-      pass opencode-resume-prompt "--prompt beside --session is ignored ($before user turns before and after); a fresh --prompt arrives"
     else
-      fail opencode-resume-prompt "--prompt beside --session now arrives; type nothing on a resume (resume_prompt_typed)"
+      # The resume TUI creates no session, so it shows no startup signal. Give
+      # it the startup time the control needed, then the 45 s window, so a
+      # slow start cannot make "ignored" pass by timing.
+      tui $((startup + 45)) --session "$SID" --prompt "Reply with the single word BANANA."
+      sleep 2
+      after="$(user_turns "$SID")"
+      if [ "$after" = "$before" ]; then
+        pass opencode-resume-prompt "--prompt beside --session is ignored ($before user turns before and after, after ${startup} s of startup); a fresh --prompt arrives"
+      else
+        fail opencode-resume-prompt "--prompt beside --session now arrives; type nothing on a resume (resume_prompt_typed)"
+      fi
     fi
   fi
 fi

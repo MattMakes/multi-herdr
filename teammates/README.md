@@ -418,6 +418,20 @@ the orchestrator deciding who gets the task, and the decision needs both ends.
 Leave it off for paid, local and self-hosted models: a warning that appears
 everywhere stops being read anywhere.
 
+### A slow opencode start
+
+A fresh opencode pane can take minutes before it starts work. On 2026-10-16
+opencode 1.19.3 showed the task in its input box at once, but created its
+session and sent the task only after 1 to 5 minutes. The task is already in
+the input box: horch passes it with `--prompt`. Do not type the task again. A
+late `--prompt` and a typed task run the task twice. Before you decide that
+the pane is idle, wait for its first tool call, or look for `created id=` in
+`~/.local/share/opencode/log/opencode.log`. A later check could not make the
+stall happen again, so no setting is known to remove it. Every stall came in
+the first 30 minutes after an opencode update, which fits the macOS scan of a
+new executable or library; that is not proven
+(`ai_docs/reports/always-latest-clis/opencode-startup.md`).
+
 ## Harness defaults
 
 `_base/harness-defaults.md` holds the launch defaults of each harness: `env`
