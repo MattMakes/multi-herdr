@@ -7,7 +7,7 @@ agent: codex
 phase: plan
 skills: [orchestrate]
 model: gpt-6-astra
-effort: xhigh
+effort: medium
 compact_at: 300000
 permission_mode: auto
 # Worker reports reach this pane through `horch channel serve`.

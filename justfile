@@ -46,7 +46,7 @@ require-herdr:
     {{horch}} doctor
 
 # Launch herdr-orchestration: 1 orchestrator (Claude, Fable) + 4 workers
-# (2x Claude Sonnet xhigh, 1x Claude Opus xhigh, 1x Codex CLI), laid out
+# (2x Claude Sonnet medium, 1x Claude Opus medium, 1x Codex CLI), laid out
 # as orchestrator-left / 2x2-worker-grid-right, wired for two-way messaging
 # via `horch tell`.
 herdr-orchestration: require-herdr

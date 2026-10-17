@@ -568,8 +568,8 @@ fn warn_about_missing_integrations(herdr: &Herdr) {
 
 /// Launch the fixed 5-pane orchestration workspace.
 ///
-/// 1 orchestrator (Claude, Fable) + 4 workers (2x Claude Sonnet xhigh, 1x Claude
-/// Opus xhigh, 1x Codex CLI), laid out as orchestrator-left with a 2x2 worker grid
+/// 1 orchestrator (Claude, Fable) + 4 workers (2x Claude Sonnet medium, 1x Claude
+/// Opus medium, 1x Codex CLI), laid out as orchestrator-left with a 2x2 worker grid
 /// on the right, wired for two-way messaging via `horch tell`.
 ///
 /// Unless `no_update`, every agent CLI updates first (ARC-32).

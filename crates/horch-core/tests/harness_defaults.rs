@@ -671,7 +671,7 @@ fn hdf_04_migrated_launch_env_and_args_match_w2() {
         "check_for_update_on_startup=false",
         "features.multi_agent=false",
         "model=\"gpt-6-astra\"",
-        "model_reasoning_effort=\"xhigh\"",
+        "model_reasoning_effort=\"medium\"",
         "tui.auto_recap=false",
         "tui.resume_cwd=\"current\"",
     ];

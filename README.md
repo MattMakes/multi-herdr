@@ -498,7 +498,7 @@ Effort follows the role, as in
 - builders run at medium, because the thinking belongs in their brief;
 - reviewers and planners run at high, because a missed finding costs a whole
   review round;
-- the orchestrator runs at xhigh.
+- the orchestrator runs at medium.
 
 `horch spawn <teammate> --effort <level>` overrides the level for one spawn,
 and the ledger records the level each session actually ran at. Levels are not

@@ -388,7 +388,7 @@ Each teammate's `effort:` follows its role, not its model
 
 | role | teammates | effort |
 |---|---|---|
-| orchestrator | `orchestrator`, `orchestrator-codex` | xhigh |
+| orchestrator | `orchestrator`, `orchestrator-codex` | medium |
 | reviewers and planners | `architect-reviewer`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
 | builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `codex-network`, `prime` | medium |
 | runners | `codex-terra`, `codex-luna`, `pi` | low |

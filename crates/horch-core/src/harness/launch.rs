@@ -1490,7 +1490,7 @@ mod tests {
         let a = argv(&cmd);
         assert!(a.contains(&r#"model="gpt-6-astra""#.to_string()), "{a:?}");
         assert!(
-            a.contains(&r#"model_reasoning_effort="xhigh""#.to_string()),
+            a.contains(&r#"model_reasoning_effort="medium""#.to_string()),
             "{a:?}"
         );
         assert!(

@@ -99,7 +99,7 @@ fallbacks: []
 # validates it per agent. `horch spawn --effort` overrides it for one spawn.
 # Levels are not comparable across vendors: "high" on codex is not "high" on
 # claude.
-effort: xhigh
+effort: medium
 
 # ─── compaction amounts per teammate ────────────────────────────────────────
 # compact_at: horch's watch base. horch watches the lower of it and 80% of the

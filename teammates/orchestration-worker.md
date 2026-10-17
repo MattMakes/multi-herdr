@@ -5,7 +5,7 @@ hidden: true
 agent: claude
 phase: implementation
 permission_mode: auto
-effort: xhigh
+effort: medium
 compact_at: 300000
 ---
 You are worker '{role}' in a herdr multi-agent coding workspace. An
