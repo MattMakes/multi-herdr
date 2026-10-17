@@ -153,8 +153,10 @@ passes the fleet value only when there is none:
   The fleet value goes into the single `--settings` overlay as
   `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW`; the overlay keeps the operator's
   other env keys (live check A3).
-- Codex: `model_auto_compact_token_limit` in `$CODEX_HOME/config.toml`
-  (`[profiles.<p>]`, the dotted profile key, then the top level). The fleet
+- Codex: `model_auto_compact_token_limit` in `$CODEX_HOME/<name>.config.toml`
+  for `-p <name>`, then the top level of `$CODEX_HOME/config.toml`. horch
+  does not read the legacy `[profiles.<name>]` table or a top-level
+  `profile` key: Codex 0.163.0 refuses a `config.toml` that holds them. The fleet
   value is `-c model_auto_compact_token_limit=<n>` before the prompt, on
   fresh and resume launches.
 - Prime (slice 2): a provider the operator's `models.json` defines at all is

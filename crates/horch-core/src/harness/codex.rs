@@ -666,32 +666,22 @@ impl Harness for Codex {
 }
 
 /// The value of `key` (dotted, for example `tui.auto_recap`) in a codex
-/// `config.toml`: under `[profiles.<p>]` first, then at the top level and in
-/// its tables. `p` is `profile`, else the file's top-level `profile`. This is
-/// the legacy profile form; [`ConfigLayers`] adds `<name>.config.toml`. A
+/// `config.toml`, at its top level and in its tables. The legacy
+/// `[profiles.<p>]` table and the top-level `profile` key are not read: Codex
+/// 0.163.0 refuses them; [`ConfigLayers`] reads `<name>.config.toml`. A
 /// string loses its quotes and a number its `_` separators. A line scanner
 /// like `trust::codex_trust`, not a TOML parser: no TOML crate.
-pub fn codex_config_value(text: &str, profile: Option<&str>, key: &str) -> Option<String> {
-    let entries = toml_entries(text);
-    let lookup = |full: &str| {
-        entries
-            .iter()
-            .find(|(k, _)| k == full)
-            .map(|(_, v)| toml_scalar(v))
-    };
-    let profile = profile.map(str::to_string).or_else(|| lookup("profile"));
-    if let Some(p) = profile {
-        if let Some(v) = lookup(&format!("profiles.{p}.{key}")) {
-            return Some(v);
-        }
-    }
-    lookup(key)
+pub fn codex_config_value(text: &str, key: &str) -> Option<String> {
+    toml_entries(text)
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| toml_scalar(&v))
 }
 
 /// The operator's Codex config as one launch reads it: `config.toml`, and for
 /// `-p <name>` the `<name>.config.toml` layered over it. Codex 0.163.0 reads
 /// that file from the codex home and refuses `-p <name>` while `config.toml`
-/// holds `[profiles.<name>]` or a top-level `profile`.
+/// holds `[profiles.<name>]` or a top-level `profile`, so horch reads neither.
 pub(crate) struct ConfigLayers {
     base: Option<String>,
     profile_file: Option<String>,
@@ -716,28 +706,22 @@ impl ConfigLayers {
     }
 
     /// The value of `key`, and whether the profile file gave it. The profile
-    /// file wins. With a profile file, `config.toml` is read at its top level
-    /// only. With `-p` and no profile file, the legacy `[profiles.<name>]`
-    /// table still answers; with no `-p`, `config.toml` alone decides.
-    fn lookup(&self, profile: Option<&str>, key: &str) -> Option<(String, bool)> {
+    /// file wins; `config.toml` is read at its top level only. A `-p` with no
+    /// profile file reads `config.toml` alone.
+    fn lookup(&self, key: &str) -> Option<(String, bool)> {
         if let Some(v) = self
             .profile_file
             .as_deref()
-            .and_then(|text| toml_lookup(text, key))
+            .and_then(|text| codex_config_value(text, key))
         {
             return Some((v, true));
         }
         let base = self.base.as_deref()?;
-        let value = if self.profile_file.is_some() {
-            toml_lookup(base, key)
-        } else {
-            codex_config_value(base, profile, key)
-        };
-        value.map(|v| (v, false))
+        codex_config_value(base, key).map(|v| (v, false))
     }
 
-    fn value(&self, profile: Option<&str>, key: &str) -> Option<String> {
-        self.lookup(profile, key).map(|(v, _)| v)
+    fn value(&self, key: &str) -> Option<String> {
+        self.lookup(key).map(|(v, _)| v)
     }
 }
 
@@ -762,7 +746,7 @@ pub(crate) fn codex_operator_limit(
     dir: &Path,
     profile: Option<&str>,
 ) -> Option<OperatorWindow> {
-    let (value, from_profile) = layers?.lookup(profile, LIMIT_KEY)?;
+    let (value, from_profile) = layers?.lookup(LIMIT_KEY)?;
     let path = match profile_config_path(dir, profile).filter(|_| from_profile) {
         Some(p) => p,
         None => dir.join("config.toml"),
@@ -779,15 +763,6 @@ pub(crate) fn codex_operator_limit(
             detail: format!("{path} (not a number)"),
         },
     })
-}
-
-/// The value of the dotted `key` in a TOML text, at its top level and in its
-/// tables, with no profile.
-fn toml_lookup(text: &str, key: &str) -> Option<String> {
-    toml_entries(text)
-        .into_iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| toml_scalar(&v))
 }
 
 /// Every `key = value` line of a TOML text, as (full dotted key, raw value).
@@ -914,10 +889,9 @@ fn launch_sandbox(
     }
     flag.or(pair).or_else(|| {
         let layers = config()?;
-        let profile = args_profile(&teammate.args);
-        layers.value(profile, "sandbox_mode").or_else(|| {
+        layers.value("sandbox_mode").or_else(|| {
             layers
-                .value(profile, "default_permissions")
+                .value("default_permissions")
                 .map(|p| profile_sandbox(&p))
         })
     })
@@ -1005,16 +979,13 @@ pub(crate) fn default_args(
     config: impl FnOnce() -> Option<ConfigLayers>,
 ) -> Vec<String> {
     let teammate_keys = HarnessDefault::config_keys(&teammate.args);
-    let profile = args_profile(&teammate.args);
     let mut config = Some(config);
     let mut layers: Option<ConfigLayers> = None;
     let mut operator_sets = |key: &str| {
         if let Some(read) = config.take() {
             layers = read();
         }
-        layers
-            .as_ref()
-            .is_some_and(|l| l.value(profile, key).is_some())
+        layers.as_ref().is_some_and(|l| l.value(key).is_some())
     };
     let mut out = Vec::new();
     for entry in HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Codex) {
@@ -1916,11 +1887,22 @@ mod tests {
     /// `config` as the codex home's `config.toml`.
     #[cfg(unix)]
     fn fleet_dirs(teammate: &Teammate, config: Option<&str>) -> Vec<String> {
+        let files: Vec<_> = config
+            .map(|text| ("config.toml", text))
+            .into_iter()
+            .collect();
+        fleet_dirs_with(teammate, &files)
+    }
+
+    /// `fleet_dirs` over a codex home holding `files` (name, text).
+    fn fleet_dirs_with(teammate: &Teammate, files: &[(&str, &str)]) -> Vec<String> {
         let tmp = tempfile::tempdir().unwrap();
-        if let Some(text) = config {
+        if !files.is_empty() {
             let dir = tmp.path().join("home").join(".codex");
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("config.toml"), text).unwrap();
+            for (name, text) in files {
+                std::fs::write(dir.join(name), text).unwrap();
+            }
         }
         let (_, prepared) = prepare_in(tmp.path(), teammate);
         prepared
@@ -2137,8 +2119,8 @@ mod tests {
         }
     }
 
-    /// With no sandbox in the argv, the inherited `config.toml` decides: its
-    /// profile, then its top level.
+    /// With no sandbox in the argv, the inherited config decides: the profile
+    /// file, then the top level of `config.toml`.
     #[cfg(unix)]
     #[test]
     fn the_operator_config_sandbox_decides_when_the_argv_sets_none() {
@@ -2152,9 +2134,11 @@ mod tests {
             args: vec!["-p".into(), "ro".into()],
             ..Default::default()
         };
-        let text =
-            "sandbox_mode = \"workspace-write\"\n[profiles.ro]\nsandbox_mode = \"read-only\"\n";
-        assert!(fleet_dirs(&profiled, Some(text)).is_empty());
+        let files = [
+            ("config.toml", "sandbox_mode = \"workspace-write\"\n"),
+            ("ro.config.toml", "sandbox_mode = \"read-only\"\n"),
+        ];
+        assert!(fleet_dirs_with(&profiled, &files).is_empty());
         let plan_over_config = Teammate {
             permission_mode: Some(crate::roster::PermissionMode::Auto),
             ..Default::default()
@@ -2180,7 +2164,7 @@ mod tests {
     }
 
     fn value_of(dir: &Path, t: &Teammate, key: &str) -> Option<String> {
-        ConfigLayers::read(dir, args_profile(&t.args))?.value(args_profile(&t.args), key)
+        ConfigLayers::read(dir, args_profile(&t.args))?.value(key)
     }
 
     /// `-p <name>` layers `$CODEX_HOME/<name>.config.toml` over `config.toml`:
@@ -2210,36 +2194,42 @@ mod tests {
         );
     }
 
-    /// With a profile file present, `config.toml`'s legacy `[profiles.q]`
-    /// table is not read; only its top level is.
+    /// `config.toml`'s legacy `[profiles.q]` table is not read: not with a
+    /// profile file present (only the top level is), and not without one.
     #[test]
-    fn a_profile_file_shuts_out_the_legacy_table() {
+    fn the_legacy_profiles_table_is_never_read() {
+        let legacy = "model = \"base\"\n[profiles.q]\nmodel = \"legacy\"\nnotify = \"x\"\n";
         let (dir, t) = layers_of(
             &[
-                (
-                    "config.toml",
-                    "model = \"base\"\n[profiles.q]\nmodel = \"legacy\"\nnotify = \"x\"\n",
-                ),
+                ("config.toml", legacy),
                 ("q.config.toml", "tui.theme = \"light\"\n"),
             ],
             &["-p", "q"],
         );
         assert_eq!(value_of(dir.path(), &t, "model").as_deref(), Some("base"));
         assert_eq!(value_of(dir.path(), &t, "notify"), None);
-    }
-
-    /// A missing profile file falls back to the legacy `[profiles.<name>]`
-    /// table, and a profile file alone (no `config.toml`) still answers.
-    #[test]
-    fn a_missing_profile_file_falls_back_to_the_legacy_table() {
+        let (dir, t) = layers_of(&[("config.toml", legacy)], &["-p", "q"]);
+        assert_eq!(value_of(dir.path(), &t, "model").as_deref(), Some("base"));
+        assert_eq!(value_of(dir.path(), &t, "notify"), None);
         let (dir, t) = layers_of(
-            &[(
-                "config.toml",
-                "model = \"base\"\n[profiles.q]\nmodel = \"legacy\"\n",
-            )],
+            &[("config.toml", "[profiles.q]\nmodel = \"legacy\"\n")],
             &["-p", "q"],
         );
-        assert_eq!(value_of(dir.path(), &t, "model").as_deref(), Some("legacy"));
+        assert_eq!(value_of(dir.path(), &t, "model"), None);
+    }
+
+    /// A top-level `profile = "q"` selects nothing (Codex refuses it), with
+    /// or without `-p`; a profile file alone (no `config.toml`) still answers.
+    #[test]
+    fn a_top_level_profile_key_is_not_a_profile_and_a_profile_file_alone_answers() {
+        let (dir, t) = layers_of(
+            &[
+                ("config.toml", "profile = \"q\"\nmodel = \"base\"\n"),
+                ("q.config.toml", "model = \"from-q\"\n"),
+            ],
+            &[],
+        );
+        assert_eq!(value_of(dir.path(), &t, "model").as_deref(), Some("base"));
         let (dir, t) = layers_of(&[("q.config.toml", "model = \"only\"\n")], &["-p", "q"]);
         assert_eq!(value_of(dir.path(), &t, "model").as_deref(), Some("only"));
         let (dir, t) = layers_of(&[], &["-p", "q"]);

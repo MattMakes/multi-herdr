@@ -328,10 +328,10 @@ fn ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value() {
 
 #[test]
 fn ctx_05_codex_operator_limit_from_profile_or_top_level() {
-    let limit = |config: Option<&str>, args: &[&str]| {
+    let limit = |files: &[(&str, &str)], args: &[&str]| {
         let w = World::new();
-        if let Some(text) = config {
-            w.write(&w.codex_config(), text);
+        for (name, text) in files {
+            w.write(&w.home.join(".codex").join(name), text);
         }
         let t = Teammate {
             name: "c".into(),
@@ -360,25 +360,46 @@ fn ctx_05_codex_operator_limit_from_profile_or_top_level() {
         got.map(|op| op.tokens)
     };
     assert_eq!(
-        limit(Some("model_auto_compact_token_limit = 180_000\n"), &[]),
-        Some(Some(180_000))
-    );
-    assert_eq!(
         limit(
-            Some("profile = \"p\"\n[profiles.p]\nmodel_auto_compact_token_limit = 170000\n"),
+            &[("config.toml", "model_auto_compact_token_limit = 180_000\n")],
             &[]
         ),
-        Some(Some(170_000))
+        Some(Some(180_000))
     );
+    // The profile file wins over the top level of `config.toml`.
     assert_eq!(
         limit(
-            Some("[profiles.q]\nmodel_auto_compact_token_limit = 160000\n"),
+            &[
+                ("config.toml", "model_auto_compact_token_limit = 180_000\n"),
+                ("q.config.toml", "model_auto_compact_token_limit = 160000\n"),
+            ],
             &["-p", "q"]
         ),
         Some(Some(160_000))
     );
-    assert_eq!(limit(Some("model = \"x\"\n"), &[]), None);
-    assert_eq!(limit(None, &[]), None);
+    // The legacy `[profiles.<name>]` table and `profile` key are not read.
+    assert_eq!(
+        limit(
+            &[(
+                "config.toml",
+                "profile = \"p\"\n[profiles.p]\nmodel_auto_compact_token_limit = 170000\n"
+            )],
+            &[]
+        ),
+        None
+    );
+    assert_eq!(
+        limit(
+            &[(
+                "config.toml",
+                "[profiles.q]\nmodel_auto_compact_token_limit = 160000\n"
+            )],
+            &["-p", "q"]
+        ),
+        None
+    );
+    assert_eq!(limit(&[("config.toml", "model = \"x\"\n")], &[]), None);
+    assert_eq!(limit(&[], &[]), None);
 }
 
 #[test]
