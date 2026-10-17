@@ -54,9 +54,20 @@ fn exe(name: &str) -> String {
 }
 
 impl Harness {
+    /// On unix the root is `/tmp/horch-e2e-<name>-<pid>-<n>`, with `<name>`
+    /// cut to its first 12 characters and `<n>` in hex (at most 32 digits,
+    /// 16 today): a Prime launch puts its daemon socket at
+    /// `<state>/prime/<id>/prime-agent-<uid>/d.sock`, the macOS socket path
+    /// limit is 104 bytes, and `temp_dir()` on macOS is about 49 bytes. A
+    /// 16-character name with a decimal `<n>` (19 digits) gave 105 bytes.
     pub fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "horch-e2e-{name}-{}-{}",
+        #[cfg(unix)]
+        let base = PathBuf::from("/tmp");
+        #[cfg(not(unix))]
+        let base = std::env::temp_dir();
+        let short: String = name.chars().take(12).collect();
+        let root = base.join(format!(
+            "horch-e2e-{short}-{}-{:x}",
             std::process::id(),
             unique()
         ));

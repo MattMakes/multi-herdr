@@ -277,19 +277,40 @@ else
 fi
 
 # ---------------------------------------------------------------------- Prime
+# The Rust build (0.10.0): `status` and `shutdown` scan only
+# `$TMPDIR/prime-agent-<uid>/`. A scratch TUI (no prompt, no model turn) on a
+# socket in a scratch scan dir; `TMPDIR=<dir>/ prime-agent status --json`
+# must name it with pid and socketPath and no start time (U-63), and the
+# scoped `shutdown --force --json` must name it as stopped.
 if ! command -v prime-agent >/dev/null 2>&1; then
   skip prime-status "prime-agent is not installed"
 else
   PV="$(prime-agent --version 2>&1 | head -1)"
-  # The status record is what runPs prints: discovered daemons plus uptime.
-  PS_JS="$(dirname "$(readlink -f "$(command -v prime-agent)")")/../cli/daemon-ps.js"
-  if [ -f "$PS_JS" ] && grep -q 'uptimeSeconds: uptimes.get(daemon.pid)' "$PS_JS" &&
-    ! grep -qE 'startedAt|startTime' "$PS_JS"; then
-    pass prime-status "prime-agent $PV: status --json has pid, socketPath, uptimeSeconds (ps etimes of that pid), no start time"
-  elif [ -f "$PS_JS" ]; then
-    fail prime-status "prime-agent $PV changed its status record; re-check may_stop (U-63)"
+  PDIR="$SCR/prime"
+  rm -rf "$PDIR"
+  mkdir -p "$PDIR/prime-agent-$(id -u)" "$PDIR/agent" "$PDIR/sessions"
+  chmod 700 "$PDIR/prime-agent-$(id -u)"
+  PSOCK="$PDIR/prime-agent-$(id -u)/d.sock"
+  (sleep 60 | PRIME_AGENT_CODING_AGENT_DIR="$PDIR/agent" clean 60 \
+    script -q /dev/null prime-agent --no-skills --no-themes \
+    --daemon-socket "$PSOCK" --session-dir "$PDIR/sessions" >"$PDIR/tui.log" 2>&1) &
+  PTUI=$!
+  for _ in $(seq 1 30); do [ -S "$PSOCK" ] && break; sleep 1; done
+  PST="$(TMPDIR="$PDIR/" prime-agent status --json 2>&1 || true)"
+  PSTOP="$(TMPDIR="$PDIR/" clean 30 prime-agent shutdown --force --json 2>&1 || true)"
+  pkill -f -- "--daemon-socket $PSOCK" 2>/dev/null || true
+  kill "$PTUI" 2>/dev/null || true
+  wait "$PTUI" 2>/dev/null || true
+  if ! [ -S "$PSOCK" ]; then
+    skip prime-status "prime-agent $PV started no daemon on $PSOCK within 30 s"
+  elif printf '%s' "$PST" | grep -q "\"socketPath\": \"$PSOCK\"" &&
+    printf '%s' "$PST" | grep -q '"pid": [0-9]' &&
+    ! printf '%s' "$PST" | grep -qE 'startedAt|startTime' &&
+    printf '%s' "$PSTOP" | grep -q "\"socketPath\": \"$PSOCK\"" &&
+    printf '%s' "$PSTOP" | grep -q '"failed": \[\]'; then
+    pass prime-status "prime-agent $PV: TMPDIR-scoped status --json has pid, socketPath, no start time; scoped shutdown --force --json stopped it"
   else
-    skip prime-status "cannot find daemon-ps.js for prime-agent $PV"
+    fail prime-status "prime-agent $PV changed its status or shutdown record; re-check may_stop (U-63) and Daemon::finish. status: $PST shutdown: $PSTOP"
   fi
 fi
 

@@ -107,6 +107,12 @@ pub struct Capabilities {
     pub tool_lists: bool,
     /// Takes a denylist of tool names.
     pub tool_denylist: bool,
+    /// Takes `--no-extensions`. The Rust build of Prime (0.10.0) has no
+    /// extension loader and refuses the flag with exit 1.
+    pub extensions_flag: bool,
+    /// Takes `--tools`, `--no-tools` and `--exclude-tools`. The Rust build of
+    /// Prime refuses all 3 with exit 1.
+    pub tool_selection: bool,
     /// Can run one-shot without a terminal (the B4 headless runner).
     pub headless: bool,
     /// Resident memory of one candidate, before a local model.
@@ -185,6 +191,8 @@ pub(crate) const CLAUDE: Capabilities = Capabilities {
     skill_exposure: SkillExposure::PluginDir,
     tool_lists: true,
     tool_denylist: true,
+    extensions_flag: false,
+    tool_selection: false,
     headless: true,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
@@ -205,6 +213,8 @@ pub(crate) const CODEX: Capabilities = Capabilities {
     skill_exposure: SkillExposure::CodexHome,
     tool_lists: false,
     tool_denylist: false,
+    extensions_flag: false,
+    tool_selection: false,
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
@@ -225,6 +235,8 @@ pub(crate) const OPENCODE: Capabilities = Capabilities {
     skill_exposure: SkillExposure::ConfigPaths,
     tool_lists: false,
     tool_denylist: false,
+    extensions_flag: false,
+    tool_selection: false,
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
@@ -247,6 +259,8 @@ pub(crate) const PI: Capabilities = Capabilities {
     skill_exposure: SkillExposure::SkillFlag,
     tool_lists: true,
     tool_denylist: true,
+    extensions_flag: true,
+    tool_selection: true,
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: true,
@@ -267,6 +281,8 @@ pub(crate) const PRIME: Capabilities = Capabilities {
     skill_exposure: SkillExposure::SkillFlag,
     tool_lists: true,
     tool_denylist: false,
+    extensions_flag: false,
+    tool_selection: false,
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
@@ -291,6 +307,8 @@ pub(crate) const ANTIGRAVITY: Capabilities = Capabilities {
     skill_exposure: SkillExposure::None,
     tool_lists: false,
     tool_denylist: false,
+    extensions_flag: false,
+    tool_selection: false,
     headless: false,
     footprint_bytes: HARNESS_FOOTPRINT_BYTES,
     local_model: false,
@@ -311,6 +329,8 @@ pub(crate) const NONE: Capabilities = Capabilities {
     skill_exposure: SkillExposure::None,
     tool_lists: false,
     tool_denylist: false,
+    extensions_flag: false,
+    tool_selection: false,
     headless: false,
     footprint_bytes: NONE_FOOTPRINT_BYTES,
     local_model: false,
@@ -337,6 +357,25 @@ mod tests {
         ];
         for (exposure, name) in names {
             assert_eq!(exposure.as_str(), name);
+        }
+    }
+
+    /// Only pi takes `--no-extensions` and the tool selection flags: the
+    /// Rust build of Prime 0.10.0 refuses them with exit 1, and no other
+    /// harness has them.
+    #[test]
+    fn arc_10_extensions_flag_and_tool_selection_only_for_pi() {
+        for (name, caps) in [
+            ("claude", CLAUDE),
+            ("codex", CODEX),
+            ("opencode", OPENCODE),
+            ("pi", PI),
+            ("prime", PRIME),
+            ("antigravity", ANTIGRAVITY),
+            ("none", NONE),
+        ] {
+            assert_eq!(caps.extensions_flag, name == "pi", "{name}");
+            assert_eq!(caps.tool_selection, name == "pi", "{name}");
         }
     }
 }

@@ -230,7 +230,7 @@ Lowercase non-ID entries (`bal_04`, `tel_*`, `nfr_03`, `quo_07`,
 | ARC-07 | Brief carries only inherited context | A2 | arc_07_brief_v1_readable, arc_07_e2e_bin_overrides_reach_worker |
 | ARC-08 | Roster split, strict serde | A3 | arc_08_unknown_field_rejected, arc_08_roster_never_calls_herdr, arc_08_overlay_precedence, arc_08_legacy_frontmatter_corpus_parses, nfr_03 |
 | ARC-09 | Harness owns command lines | A4 | arc_09_argv_matches_baseline |
-| ARC-10 | Capabilities; dispatch-only lifecycle | A4 | arc_10_capabilities_match_legacy_predicates, arc_10_harness_match_only_in_harness, arc_10_prompts_hold_no_execution_policy |
+| ARC-10 | Capabilities; dispatch-only lifecycle. Only pi gets `--no-extensions` and the tool selection flags (`extensions_flag`, `tool_selection`); a Prime launch holds no flag Prime 0.10.0 refuses | A4 | arc_10_capabilities_match_legacy_predicates, arc_10_harness_match_only_in_harness, arc_10_prompts_hold_no_execution_policy, arc_10_extensions_flag_and_tool_selection_only_for_pi, arc_10_a_prime_command_has_no_flag_prime_refuses, arc_10_prime_launch_in_a_herdr_pane_has_no_refused_flag |
 | ARC-11 | Workdir-scoped discovery | A4 | arc_11_codex_discovery_by_workdir, arc_11_opencode_discovery_by_workdir, arc_11_canonical_tmp_paths |
 | ARC-12 | Pure routing equals baseline | A5 | arc_12_decisions_match_baseline, bal_03, bal_04, bal_05, bal_06, quo_07 |
 | ARC-13 | Eligible set and reasons | A5 | arc_13_exclusion_reasons, arc_13_candidates_equivalent, arc_13_routing_never_launches |
@@ -621,9 +621,9 @@ pub(crate) fn scrub_child_env(cmd: &mut Command);                     // removes
 
 `cmp_16_only_judge_and_compaction_jobs_detached` pins the files that call
 `spawn_detached` (or `setsid`, `process_group`). `harness/prime.rs` is one
-of them: the Prime stop process must outlive the Prime worker's
-process-group SIGKILL. horch waits for it, at most 30 s, so it is not a
-background job.
+of them: the Prime stop process (`TMPDIR=<launch>/ prime-agent shutdown
+--force --json`) must outlive the Prime worker that `horch done` runs
+under. horch waits for it, at most 30 s, so it is not a background job.
 
 The fault abort exit code is 86 (`runtime/fault.rs:ABORT_EXIT_CODE`).
 Spec A names no code. 86 is distinct from every exit code that `horch`
@@ -1262,19 +1262,23 @@ pub trait Harness: Sync {
 
 Capabilities per harness (the constants in `harness/capabilities.rs`):
 
-| Harness | caller_minted_session | resumes | effort | daemon | exec_policy | skill_exposure | tool_lists | tool_denylist | headless | local_model |
-|---|---|---|---|---|---|---|---|---|---|---|
-| claude | yes | yes | low, medium, high, xhigh, max | no | no | PluginDir (`--plugin-dir` + settings overlay) | yes | yes | yes (B4) | no |
-| codex | no | yes | none, low, medium, high, xhigh, max | no | yes | CodexHome (a `skills` link in the private `CODEX_HOME`) | no | no | no | no |
-| opencode | no | yes | none, minimal, low, medium, high, xhigh, max | no | no | ConfigPaths (`OPENCODE_CONFIG_CONTENT` `skills.paths`) | no | no | no | no |
-| pi | yes | yes | off, minimal, low, medium, high, xhigh, max | no | no | SkillFlag (`--skill <dir>`) | yes | yes | no | yes |
-| prime | no | yes | off, minimal, low, medium, high, xhigh, max | yes | no | SkillFlag (`--skill <dir>`) | yes | no | no | no |
-| antigravity | no | yes | low, medium, high | no | no | None (`agy` reads only shared skill directories) | no | no | no | no |
-| none | no | no | (none) | no | no | None | no | no | no | no |
+| Harness | caller_minted_session | resumes | effort | daemon | exec_policy | skill_exposure | tool_lists | tool_denylist | extensions_flag | tool_selection | headless | local_model |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| claude | yes | yes | low, medium, high, xhigh, max | no | no | PluginDir (`--plugin-dir` + settings overlay) | yes | yes | no | no | yes (B4) | no |
+| codex | no | yes | none, low, medium, high, xhigh, max | no | yes | CodexHome (a `skills` link in the private `CODEX_HOME`) | no | no | no | no | no | no |
+| opencode | no | yes | none, minimal, low, medium, high, xhigh, max | no | no | ConfigPaths (`OPENCODE_CONFIG_CONTENT` `skills.paths`) | no | no | no | no | no | no |
+| pi | yes | yes | off, minimal, low, medium, high, xhigh, max | no | no | SkillFlag (`--skill <dir>`) | yes | yes | yes | yes | no | yes |
+| prime | no | yes | off, minimal, low, medium, high, xhigh, max | yes | no | SkillFlag (`--skill <dir>`) | yes | no | no | no | no | no |
+| antigravity | no | yes | low, medium, high | no | no | None (`agy` reads only shared skill directories) | no | no | no | no | no | no |
+| none | no | no | (none) | no | no | None | no | no | no | no | no | no |
 
 `footprint_bytes` is 600 MiB (`HARNESS_FOOTPRINT_BYTES`) for every harness
 except `none`, which is 64 MiB. `arc_10_capabilities_match_legacy_predicates`
-checks every column against the pre-A4 predicates and effort table.
+checks every column against the pre-A4 predicates and effort table;
+`arc_10_extensions_flag_and_tool_selection_only_for_pi` checks
+`extensions_flag` and `tool_selection`, which the Rust build of Prime
+(0.10.0) needs: it refuses `--no-extensions`, `--tools`, `--no-tools` and
+`--exclude-tools`.
 
 ### 4.7 `workspace::WorkspaceClient` (A7)
 

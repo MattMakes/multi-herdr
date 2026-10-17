@@ -23,7 +23,13 @@ compact_at: 146892
 #
 # Prime supervises its own sessions in a background daemon. `horch worker` gives
 # each Prime pane its own --daemon-socket and --session-dir, so closing the pane
-# stops that worker's daemon and nothing else - see crates/horch-core/src/prime.rs.
+# stops that worker's daemon and nothing else - see
+# crates/horch-core/src/harness/prime.rs. Prime 0.10.0 (the Rust build) reports
+# the pane state to herdr itself.
+#
+# Prime 0.10.0 loads no extensions and refuses --no-extensions, --tools,
+# --no-tools and --exclude-tools, so this sets no tools:. inherit_plugins: false
+# gives --no-skills --no-prompt-templates --no-themes.
 inherit_plugins: false
 
 # The native window (plans_to_improve §2.3; applies only when ~/.prime/agent

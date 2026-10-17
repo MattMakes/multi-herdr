@@ -34,7 +34,7 @@ const NO_CHANGE: [&str; 6] = [
     "update: opencode: 1.18.33 (no change)",
     "update: antigravity: 1.1.3 (no change)",
     "update: pi: 0.85.1 (no change)",
-    "update: prime: 0.9.4 (no change)",
+    "update: prime: 0.10.0 (no change)",
 ];
 
 const HEADER: &str = "Updating agent CLIs (horch fleet --no-update skips this)...";

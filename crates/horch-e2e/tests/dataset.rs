@@ -358,6 +358,13 @@ fn pre_07_probe_no_secret_persisted() {
         "claude-leaky",
         format!("#!/bin/sh\necho \"9.9.9 (Claude Code) {TOKEN}\"\n").as_bytes(),
     );
+    // 1 untimed run first: macOS scans a new executable at its first exec
+    // (14 to 38 s here), longer than the 15 s the version probe waits.
+    let mut first = Command::new(&fake);
+    first.arg("--version");
+    h.seal(&mut first);
+    first.env_remove("HORCH_FAKE_LOG");
+    let _ = first.output();
     let machine = machine_fixture(&h, 500_000_000_000);
 
     let out = run(

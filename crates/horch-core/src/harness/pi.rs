@@ -144,28 +144,34 @@ pub(super) fn pi_family_command(
     if let Some(effort) = &teammate.effort {
         cmd.arg("--thinking").arg(effort);
     }
-    if let Some(tools) = &teammate.tools {
-        // `Some([])` means "no tools at all", which is its own flag here rather
-        // than an empty list.
-        if tools.is_empty() {
-            cmd.arg("--no-tools");
-        } else {
-            cmd.arg("--tools").arg(tools.join(","));
+    let caps = teammate.agent.capabilities();
+    // The Rust build of Prime refuses every tool selection flag ("Unknown
+    // option", exit 1), and the roster check rejects `tools:` and
+    // `disallowed_tools` on a Prime teammate, so these only ever fire for pi.
+    if caps.tool_selection {
+        if let Some(tools) = &teammate.tools {
+            // `Some([])` means "no tools at all", which is its own flag here
+            // rather than an empty list.
+            if tools.is_empty() {
+                cmd.arg("--no-tools");
+            } else {
+                cmd.arg("--tools").arg(tools.join(","));
+            }
         }
-    }
-    // `--exclude-tools` is pi's; Prime 0.9.4 has no denylist, and the roster
-    // check rejects `disallowed_tools` on a Prime teammate rather than dropping
-    // it here, so this only ever fires for pi.
-    if !teammate.disallowed_tools.is_empty() && teammate.agent.capabilities().tool_denylist {
-        cmd.arg("--exclude-tools")
-            .arg(teammate.disallowed_tools.join(","));
+        if !teammate.disallowed_tools.is_empty() && caps.tool_denylist {
+            cmd.arg("--exclude-tools")
+                .arg(teammate.disallowed_tools.join(","));
+        }
     }
     // Discovery of everything the repo or the operator might have lying around.
     // Nothing here is on by default in a fleet: a worker with one narrow job
     // should not inherit a project's extensions or the operator's skills.
+    // Prime 0.10.0 loads no extensions and refuses `--no-extensions`.
     if !teammate.inherit_plugins {
-        cmd.arg("--no-extensions")
-            .arg("--no-skills")
+        if caps.extensions_flag {
+            cmd.arg("--no-extensions");
+        }
+        cmd.arg("--no-skills")
             .arg("--no-prompt-templates")
             .arg("--no-themes");
     }
@@ -175,11 +181,11 @@ pub(super) fn pi_family_command(
         // fresh launch and a resume are the same flag with a different id.
         // Prime has no such flag: `horch worker` gives it a `--session-dir` it
         // owns instead, and reads back whatever session appears there.
-        Session::Fresh(id) if teammate.agent.capabilities().caller_minted_session => {
+        Session::Fresh(id) if caps.caller_minted_session => {
             cmd.arg("--session-id").arg(id);
         }
         Session::Resume(id) => {
-            if teammate.agent.capabilities().caller_minted_session {
+            if caps.caller_minted_session {
                 cmd.arg("--session-id").arg(id);
             } else {
                 cmd.arg("--resume").arg(id);
@@ -269,6 +275,63 @@ mod tests {
         assert!(at("--no-extensions") < at("--extension"));
         assert!(at("--extension") < at("--"));
         assert_eq!(args[at("--extension") + 1], path.to_string_lossy());
+    }
+
+    fn command_args(teammate: &Teammate) -> Vec<String> {
+        pi_family_command("bin".into(), teammate, Session::Fresh("s"), "PROMPT", None)
+            .unwrap()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The flags the Rust build of Prime 0.10.0 refuses with "Unknown
+    /// option" and exit 1.
+    const PRIME_REFUSED: [&str; 6] = [
+        "--no-extensions",
+        "-e",
+        "--extension",
+        "--tools",
+        "--no-tools",
+        "--exclude-tools",
+    ];
+
+    /// A Prime command holds no flag that Prime 0.10.0 refuses, also with
+    /// tool lists set (the roster check rejects them first); a pi command
+    /// still has each of them.
+    #[test]
+    fn arc_10_a_prime_command_has_no_flag_prime_refuses() {
+        for tools in [Some(vec![]), Some(vec!["read".to_string()])] {
+            let prime = Teammate {
+                agent: HarnessKind::Prime,
+                model: Some("anthropic/claude-opus-5-5".into()),
+                inherit_plugins: false,
+                tools: tools.clone(),
+                disallowed_tools: vec!["bash".into()],
+                ..Teammate::default()
+            };
+            let args = command_args(&prime);
+            for flag in PRIME_REFUSED {
+                assert!(!args.iter().any(|a| a == flag), "{flag} in {args:?}");
+            }
+            for flag in ["--no-skills", "--no-prompt-templates", "--no-themes"] {
+                assert!(args.iter().any(|a| a == flag), "{flag} missing: {args:?}");
+            }
+
+            let pi = Teammate {
+                agent: HarnessKind::Pi,
+                ..prime.clone()
+            };
+            let args = command_args(&pi);
+            let tool_flag = if tools.as_ref().is_some_and(Vec::is_empty) {
+                "--no-tools"
+            } else {
+                "--tools"
+            };
+            for flag in ["--no-extensions", tool_flag, "--exclude-tools"] {
+                assert!(args.iter().any(|a| a == flag), "{flag} missing: {args:?}");
+            }
+        }
     }
 
     #[test]

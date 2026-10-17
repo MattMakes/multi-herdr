@@ -162,8 +162,8 @@ passes the fleet value only when there is none:
 - Prime (slice 2): a provider the operator's `models.json` defines at all is
   the operator's; else a fleet agent dir with a `models.json` that holds
   only the override. Each launch gets its own agent dir,
-  `<state_root>/prime/<slug>-<uuid>/agent/`, passed as
-  `PRIME_AGENT_CODING_AGENT_DIR`:
+  `<state_root>/prime/<id>/agent/` (`<id>`: the first 12 hex digits of a
+  fresh UUID), passed as `PRIME_AGENT_CODING_AGENT_DIR`:
   - The source dir is the teammate's own `PRIME_AGENT_CODING_AGENT_DIR`,
     else the inherited one, else `~/.prime/agent`. An inherited value under
     `<state_root>/prime/` is another launch's agent dir and is ignored.
@@ -178,6 +178,26 @@ passes the fleet value only when there is none:
   - `Daemon::finish` removes the agent dir when it stops the pane's daemon.
     Each launch sweeps the agent dirs of earlier launches with no daemon
     socket and no live launcher.
+- Prime daemon (Rust build, 0.10.0): the daemon socket of a launch is
+  `<state_root>/prime/<id>/prime-agent-<uid>/d.sock` (dir mode 700), passed
+  as `--daemon-socket`. `prime-agent shutdown` and `status` ignore
+  `--daemon-socket` and act on every daemon in `$TMPDIR/prime-agent-<uid>/`,
+  so horch runs them with `TMPDIR=<launch>/`:
+  - `Daemon::install` fails when the socket path is over 103 bytes (the
+    macOS limit is 104 with the NUL); the error names the path and length.
+  - When no process listens on the socket, there is no daemon: the files
+    go, with no Prime call. A clean stop leaves the socket file
+    (`status` then names it `orphan-file`, with no pid).
+  - `Daemon::finish` runs `TMPDIR=<launch>/ prime-agent shutdown --force
+    --json` for at most 30 s. The stop counts only when its `stopped` list
+    names this socket.
+  - Else `TMPDIR=<launch>/ prime-agent status --json` names the pid,
+    twice, and SIGTERM goes only to a process that started after the
+    launch. When `status` names no pid, horch logs `horch: left Prime
+    daemon <socket> running: status names no pid` and keeps the files.
+  - The sweep and `finish_pane` also handle launch dirs of 0.9.4 runs
+    (`<launch>/d.sock`). The Rust `prime-agent` cannot name such a daemon,
+    so a live one is left running with its files.
 
 Prime agent dir security notes (u9 security review,
 `ai_docs/plans/wave2/w1/u9-security-review-result.md`):
@@ -287,10 +307,11 @@ and Prime stay on this route:
 
 - pi: the in-place round trip is not verifiable yet. In a short session pi
   answers `/compact` with "Nothing to compact (session too small)".
-- Prime: herdr does not detect `prime-agent` (agent `null`), so the
-  compaction job cannot see idle. A forced job failed at `wait-idle` after
-  120 s and typed nothing. Follow-up: horch reports the Prime pane state
-  with `herdr pane report-agent`, or herdr detects `prime-agent`.
+- Prime: on 0.9.4 herdr did not detect `prime-agent` (agent `null`), and a
+  forced job failed at `wait-idle` after 120 s and typed nothing. Prime
+  0.10.0 (Rust build) reports the pane state to herdr itself (built-in
+  reporter, source `herdr:pi`); the in-place round trip is not verified
+  on 0.10.0.
 
 On `COMPACT-READY <path>` when `horch compact` refuses with "fresh route",
 on a `[horch] BLOCKED:` line, or on a row in state `compact-lost`: the
@@ -690,7 +711,7 @@ a job that runs in its own herdr pane.
 | handoff missing or stale | refused; nothing typed | 1 stderr line |
 | the worker ignores the request or the warning | the row stays `requested`; the native trigger compacts later; the block keeps the state | `horch context` |
 | the handoff costs more than the headroom | a native compaction during the handoff; the block keeps the state | LAST COMPACT |
-| herdr does not detect the agent (Prime: agent `null`) | the job never sees idle and fails `wait-idle`; it types nothing. Prime stays on the fresh route, which types nothing | `[horch] BLOCKED:` line on a forced job |
+| herdr does not detect the agent (Prime 0.9.4: agent `null`; 0.10.0 reports itself) | the job never sees idle and fails `wait-idle`; it types nothing. Prime stays on the fresh route, which types nothing | `[horch] BLOCKED:` line on a forced job |
 | pi answers `/compact` with "Nothing to compact (session too small)" | the in-place round trip is not verified; pi stays on the fresh route | live check C5 |
 | a pi or Prime summary drops the compact-instructions block (C3: pi ignored the canary; Prime not verifiable, its RPC compact timed out after 30 s) | the keep-list argument of `horch compact` still carries the state | live check C3 |
 
@@ -710,7 +731,7 @@ slice 3 adds CTX-21 and CTX-25.
 | CTX-02 | Current context is the harness's comparison number from the newest completed response, never a cumulative total. Claude and Codex in slice 1; OpenCode, pi, Prime in slice 2. | W1 | ctx_02_claude_last_main_chain_response_with_output, ctx_02_claude_last_message_iteration, ctx_02_codex_last_token_count_total_and_window, ctx_02_pi_skips_error_and_tool_result_lines, ctx_02_prime_after_compaction, ctx_02_opencode_newest_finished_row |
 | CTX-03 | After a compaction and before the next response: `pending`, with the harness's post figure marked provisional, or unknown. Never 0, never the pre value. | W1 | ctx_03_claude_pending_uses_post_tokens_provisional, ctx_03_claude_new_response_ends_pending, ctx_03_codex_compacted_is_pending_until_token_count, ctx_03_pi_pending_is_unknown |
 | CTX-04 | An unreadable session shows `no-session`, `no-transcript`, `not-read` or `unknown`, never a number, with a 1-line reason. | W1 | ctx_04_no_session_id_is_no_session, ctx_04_missing_transcript_is_no_transcript, ctx_04_harness_without_reader_is_not_read, ctx_04_states_print_a_reason_line, ctx_04_opencode_without_sqlite3_is_not_read |
-| CTX-05 | Every fleet pane runs with its effective native window: the operator's value where any operator source sets one, else the fleet default of its tier. horch never overrides an operator value and never edits operator files. The launch records the decision. Prime (slice 2): each launch gets its own agent dir (§3.3): source dir from the teammate env, then the inherited value, then `~/.prime/agent`, a launch dir under the state root ignored; `*.lock` and `*.tmp` not linked; `auth.json` always linked; `apiKeys` dropped; bounded reads of regular files only; the dir removed when the daemon stops; old dirs swept. | W1 | ctx_05_claude_settings_chain_precedence, ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value, ctx_05_codex_operator_limit_from_profile_or_top_level, ctx_05_codex_fleet_limit_flag_only_without_operator_value, ctx_05_launch_records_window_decision, ctx_05_old_ledger_loads, ctx_05_recorded_applied_matches_the_command, ctx_05_prime_agent_dir_links_and_fleet_models, ctx_05_prime_operator_override_wins, ctx_05_prime_inherited_agent_dir_is_the_source, ctx_05_prime_launch_records_the_applied_window, ctx_05_prime_teammate_agent_dir_is_the_source, ctx_05_prime_inherited_launch_dir_is_ignored, ctx_05_prime_transient_entries_and_missing_auth, ctx_05_prime_settings_copy_drops_api_keys, ctx_05_prime_project_fifo_does_not_block, ctx_05_prime_finish_removes_the_agent_dir, ctx_05_prime_launch_sweeps_old_agent_dirs |
+| CTX-05 | Every fleet pane runs with its effective native window: the operator's value where any operator source sets one, else the fleet default of its tier. horch never overrides an operator value and never edits operator files. The launch records the decision. Prime (slice 2): each launch gets its own agent dir (§3.3): source dir from the teammate env, then the inherited value, then `~/.prime/agent`, a launch dir under the state root ignored; `*.lock` and `*.tmp` not linked; `auth.json` always linked; `apiKeys` dropped; bounded reads of regular files only; the dir removed when the daemon stops; old dirs swept. Prime daemon (0.10.0): the socket in `<launch>/prime-agent-<uid>/` (path at most 103 bytes), stopped with `TMPDIR=<launch>/ prime-agent shutdown --force --json` (counted only when `stopped` names the socket), else SIGTERM only to a pid `status` names twice that started after the launch; no pid: left running with a log line; both launch dir layouts swept; never a daemon horch did not start. | W1 | ctx_05_claude_settings_chain_precedence, ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value, ctx_05_codex_operator_limit_from_profile_or_top_level, ctx_05_codex_fleet_limit_flag_only_without_operator_value, ctx_05_launch_records_window_decision, ctx_05_old_ledger_loads, ctx_05_recorded_applied_matches_the_command, ctx_05_prime_agent_dir_links_and_fleet_models, ctx_05_prime_operator_override_wins, ctx_05_prime_inherited_agent_dir_is_the_source, ctx_05_prime_launch_records_the_applied_window, ctx_05_prime_teammate_agent_dir_is_the_source, ctx_05_prime_inherited_launch_dir_is_ignored, ctx_05_prime_transient_entries_and_missing_auth, ctx_05_prime_settings_copy_drops_api_keys, ctx_05_prime_project_fifo_does_not_block, ctx_05_prime_finish_removes_the_agent_dir, ctx_05_prime_launch_sweeps_old_agent_dirs, ctx_05_prime_each_launch_reserves_its_own_socket_and_sessions, ctx_05_prime_install_refuses_a_long_socket_path, ctx_05_prime_shutdown_counts_only_when_it_names_this_socket, ctx_05_prime_finish_stops_with_a_scoped_shutdown, ctx_05_prime_finish_stops_only_a_daemon_this_launch_started, ctx_05_prime_status_with_no_pid_leaves_the_files, ctx_05_prime_finish_without_a_daemon_runs_no_stop, ctx_05_prime_sweep_handles_both_layouts, ctx_05_prime_finish_pane_stops_only_that_panes_daemon |
 | CTX-06 | The window a pane uses is proved per tier by a re-runnable live check that reads the harness's own report (`/autocompact` for Claude) and compares it with `horch context --windows`. | W1 | ctx_06_windows_view_lists_claude_and_codex_teammates, ctx_06_live_check_covers_every_tier |
 | CTX-07 | Threshold = `min(base, floor(0.8 x native))`, base 300,000; unknown native gives base. | W1 | ctx_07_threshold_is_min_of_base_and_eight_tenths, ctx_07_unknown_native_uses_base, ctx_07_native_trigger_per_rule, ctx_07_compaction_pure_modules_do_no_io |
 | CTX-08 | The roster check fails a teammate whose fleet window leaves headroom below 20,000. | W1 | ctx_08_roster_check_fails_headroom_below_floor, ctx_08_builtin_roster_passes_the_floor |

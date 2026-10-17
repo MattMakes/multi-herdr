@@ -83,9 +83,13 @@ Steps:
   `--session <id> --prompt <p>` in a pseudo-terminal for 45 s. The session
   gains no user turn. Control: the same TUI setup with only `--prompt` starts
   a session that holds the prompt.
-- `prime-status`: the installed `prime-agent` builds its `status --json`
-  record from `pid`, `socketPath` and `uptimeSeconds` (`ps -o etimes` of that
-  pid), with no start time of its own (`cli/daemon-ps.js`).
+- `prime-status`: the Rust build (0.10.0). A scratch Prime TUI (no prompt, no
+  model turn) runs on the socket `<scratch>/prime-agent-<uid>/d.sock`.
+  `TMPDIR=<scratch>/ prime-agent status --json` names that socket with `pid`
+  and `socketPath` and no start time of its own (U-63), and
+  `TMPDIR=<scratch>/ prime-agent shutdown --force --json` names it in
+  `stopped` with an empty `failed`. This is what `Daemon::finish` relies on.
+  Runs before 2026-10-17 checked the TypeScript build's `cli/daemon-ps.js`.
 - `pi-version`: `pi --version` runs on the default `node`.
 
 ## For the operator
@@ -189,3 +193,23 @@ Versions: agy 1.4.0, opencode 1.19.3, pi 1.3.0 on node v24.21.0, prime-agent
 | pi-version | U-30 Q1: pi runs on the installed Node | pi 1.3.0, node v24.21.0 | PASS | `pi --version` prints `1.3.0` |
 
 The step `opencode-version` also passed (1.19.3).
+
+## 2026-10-17: Prime adapter, Rust build (prime-agent 0.10.0)
+
+Host: macOS 26 (Darwin 25.5.0), arm64. Runner: opus-2. No model turn and no
+prompt: the TUI showed Prime's first-run "Share agent traces" question, which
+was not answered, and Ctrl+C quit it.
+
+Method: a scratch herdr workspace (`w54`, cwd
+`.worktrees/_scratch/prime-adapter/live`) ran the ignored test
+`live_prime_tui_start_and_finish` (`crates/horch-core/tests/context_prime.rs`)
+with `HORCH_STATE_DIR=/tmp/hpa-live`. It runs the Prime adapter's `prepare`,
+the command horch builds without `--` and the prompt, and `finish`.
+
+| Check | Result | Evidence |
+|---|---|---|
+| argv | PASS | `prime-agent --model anthropic/claude-opus-5-5 --thinking medium --no-skills --no-prompt-templates --no-themes --daemon-socket /tmp/hpa-live/prime/acc05e7c0e30/prime-agent-501/d.sock --session-dir /tmp/hpa-live/prime/acc05e7c0e30/sessions`; Prime started (no "Unknown option") |
+| built-in reporter | PASS | `herdr agent list`: pane `w54:p1` `"agent":"prime-agent"`, `"agent_status":"idle"`. So `STATUS_AGENT` is `prime-agent` (source `herdr:pi`, from the binary) |
+| scoped status | PASS | before finish, `TMPDIR=<launch>/ prime-agent status --json` named `<launch>/prime-agent-501/d.sock`, pid 32121, `status` `current` |
+| finish stops the daemon | PASS | after finish, the same command printed `[]`; `ps` showed no `prime-agent` process; the scan dir and `agent/` were removed; `sessions/` kept the `.jsonl` |
+| release | PASS | after finish, `herdr pane get w54:p1` showed no agent, `agent_status` `unknown` |

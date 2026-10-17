@@ -327,14 +327,28 @@ fn fake_opencode_writes_transcript_rows_when_asked() {
     assert_eq!(rows[0]["n"], 1);
 }
 
+/// `prime-agent` with `TMPDIR` set, as horch scopes `status` and
+/// `shutdown`.
+fn fake_in(h: &Harness, tmpdir: &str, args: &[&str]) -> Output {
+    let mut cmd = Command::new(h.bin.join("prime-agent"));
+    cmd.args(args);
+    h.seal(&mut cmd);
+    cmd.env("TMPDIR", tmpdir);
+    cmd.output().expect("running a fake")
+}
+
+#[cfg(unix)]
 #[test]
 fn fake_prime_creates_session_file() {
     let mut h = Harness::new("fakes-prime");
-    assert_eq!(version(&h, "prime-agent"), "0.9.4");
-    let base = h.state.join("prime/prime-1-abc");
+    assert_eq!(version(&h, "prime-agent"), "0.10.0");
+    let base = h.state.join("prime/0a1b2c3d4e5f");
     let sessions = base.join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
-    let socket = base.join("d.sock");
+    let scan = base.join(horch_core::harness::prime::scan_dir_name());
+    std::fs::create_dir_all(&scan).unwrap();
+    let socket = scan.join("d.sock");
+    let tmpdir = format!("{}/", base.display());
     let (socket_arg, sessions_arg) = (
         socket.to_string_lossy().into_owned(),
         sessions.to_string_lossy().into_owned(),
@@ -390,31 +404,84 @@ fn fake_prime_creates_session_file() {
     );
 
     // With no launch alive, `status --json` lists no daemon.
-    let status = |h: &Harness| -> Vec<Value> {
-        json(&fake(h, "prime-agent", &["status", "--json"]))
+    let status = |h: &Harness, tmpdir: &str| -> Vec<Value> {
+        json(&fake_in(h, tmpdir, &["status", "--json"]))
             .as_array()
             .unwrap()
             .clone()
     };
-    assert!(status(&h).is_empty());
+    assert!(status(&h, &tmpdir).is_empty());
 
-    // `stay`: the launch is the daemon for its socket until it is killed.
+    // `stay`: the launch is the daemon for its socket until it is stopped.
     h.set("HORCH_FAKE_SCENARIO", "stay");
     let mut cmd = Command::new(h.bin.join("prime-agent"));
     cmd.args(launch_args);
     h.seal(&mut cmd);
     let mut child = cmd.spawn().unwrap();
     let started = std::time::Instant::now();
-    while status(&h).is_empty() && started.elapsed().as_secs() < 10 {
+    while status(&h, &tmpdir).is_empty() && started.elapsed().as_secs() < 10 {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    let daemons = status(&h);
+    let daemons = status(&h, &tmpdir);
     assert_eq!(daemons.len(), 1, "{daemons:?}");
     assert_eq!(daemons[0]["socketPath"], socket_arg.as_str());
     assert_eq!(daemons[0]["pid"], child.id());
-    child.kill().unwrap();
+    assert!(
+        std::os::unix::net::UnixStream::connect(&socket).is_ok(),
+        "a stay launch listens on its socket"
+    );
+    // Another TMPDIR scans another dir: it sees and stops nothing.
+    let elsewhere = format!("{}/", h.state.join("prime/other").display());
+    assert!(status(&h, &elsewhere).is_empty());
+    let out = json(&fake_in(&h, &elsewhere, &["shutdown", "--force", "--json"]));
+    assert_eq!(out, serde_json::json!({"stopped": [], "failed": []}));
+    // Without --force: refused.
+    let refused = fake_in(&h, &tmpdir, &["shutdown", "--json"]);
+    assert!(!refused.status.success());
+    let out = json(&refused);
+    assert_eq!(out["stopped"], serde_json::json!([]));
+    assert!(out["failed"][0]["reason"]
+        .as_str()
+        .unwrap()
+        .starts_with("confirmation required"));
+    assert_eq!(child.try_wait().unwrap(), None);
+    // With --force: this launch stops.
+    let stop = fake_in(&h, &tmpdir, &["shutdown", "--force", "--json"]);
+    assert!(stop.status.success());
+    let out = json(&stop);
+    assert_eq!(out["stopped"][0]["socketPath"], socket_arg.as_str());
+    assert_eq!(out["failed"], serde_json::json!([]));
     child.wait().unwrap();
-    assert!(status(&h).is_empty(), "a killed launch is not listed");
+    assert!(
+        status(&h, &tmpdir).is_empty(),
+        "a stopped launch is not listed"
+    );
+}
+
+/// The options Prime 0.10.0 refuses: "Unknown option", exit 1, and the
+/// call is still recorded.
+#[test]
+fn fake_prime_refuses_the_options_prime_0_10_refuses() {
+    let h = Harness::new("fakes-prime-refused");
+    for flag in [
+        "--no-extensions",
+        "-e",
+        "--extension",
+        "--tools",
+        "--no-tools",
+        "--exclude-tools",
+    ] {
+        let out = fake(&h, "prime-agent", &["--model", "m/x", flag, "--", "p"]);
+        assert_eq!(out.status.code(), Some(1), "{flag}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr).trim(),
+            format!("Error: Unknown option: {flag}")
+        );
+    }
+    // After `--` it is prompt text.
+    let out = fake(&h, "prime-agent", &["--model", "m/x", "--", "-e"]);
+    assert!(out.status.success());
+    assert_eq!(h.calls_of("prime").len(), 7);
 }
 
 /// Git output with each strict ISO UTC date `...T12:00:00Z` written as

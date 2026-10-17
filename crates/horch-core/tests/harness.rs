@@ -80,9 +80,14 @@ fn harness_codex_rules_snapshot() {
 /// The argv a Prime worker launches with, daemon socket and session
 /// directory included, through the Prime adapter's `prepare` and
 /// `build_command`.
+#[cfg(unix)]
 #[test]
 fn harness_prime_daemon_args_snapshot() {
-    let tmp = tempfile::tempdir().unwrap();
+    // A short path: the daemon socket path must stay within 103 bytes.
+    let tmp = tempfile::Builder::new()
+        .prefix("hp")
+        .tempdir_in("/tmp")
+        .unwrap();
     let ctx = ctx(tmp.path());
     let roster = Roster::builtin().unwrap();
     let teammate = roster.require("prime").unwrap().clone();
@@ -128,9 +133,16 @@ fn harness_prime_daemon_args_snapshot() {
             .unwrap()
             .to_string_lossy()
             .into_owned();
+        // The scan dir name holds the real uid, which differs per machine.
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let scan = format!("prime-agent-{}", unsafe { libc::getuid() });
         let args: Vec<String> = std::iter::once(cmd.get_program())
             .chain(cmd.get_args())
-            .map(|a| a.to_string_lossy().replace(&base, "<DAEMON>"))
+            .map(|a| {
+                a.to_string_lossy()
+                    .replace(&base, "<DAEMON>")
+                    .replace(&scan, "prime-agent-<UID>")
+            })
             .collect();
         out.push_str(&format!(
             "{label}: {}\n",

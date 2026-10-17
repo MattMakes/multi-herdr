@@ -1,11 +1,20 @@
-//! A recording stand-in for the `prime-agent` CLI.
+//! A recording stand-in for the `prime-agent` CLI, Rust build (0.10.0).
 //!
-//! Three kinds of call:
-//! - `--version` prints a fixed version.
+//! Kinds of call:
+//! - `--version` prints `0.10.0`.
 //! - `status --json` prints the array `horch_core::harness::prime` parses
 //!   (`[{"socketPath":..,"pid":..,"sessionCount":..}]`): one entry for each
-//!   launch whose process is still alive. `Daemon::finish` reads it to find
-//!   the pid to stop.
+//!   live launch whose socket is in `$TMPDIR/prime-agent-<uid>/`, as Prime
+//!   0.10.0 scans only that dir. `Daemon::finish` reads it to find the pid
+//!   to stop.
+//! - `shutdown --force --json` stops (SIGTERM) those launches only and prints
+//!   `{"stopped": [{"socketPath":..,"action":..}], "failed": []}`. Without
+//!   `--force` each one is a `failed` entry, "confirmation required", exit 1.
+//! - `update` answers as the scenario says.
+//! - An option Prime 0.10.0 does not know (`--no-extensions`, `-e`,
+//!   `--extension`, `--tools`, `--no-tools`, `--exclude-tools`) before `--`
+//!   prints `Error: Unknown option: <flag>` and exits 1. The call is
+//!   recorded first.
 //! - Any other argv is a launch
 //!   (`--model m [--thinking l] --daemon-socket S --session-dir D [--resume F] -- prompt`).
 //!   The fake records it and creates `S` as a plain file (horch only removes
@@ -15,7 +24,8 @@
 //!
 //! Scenarios (a comma-separated list is allowed):
 //! - `default`: a launch exits 0 at once. No daemon stays registered.
-//! - `stay`: a launch stays alive until killed, and is the registered daemon.
+//! - `stay`: a launch listens on `S` (a Unix socket), stays alive until
+//!   killed, and is the registered daemon.
 //! - `inspect_skills`: a launch also writes its `--skill` dirs to
 //!   `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
 //!
@@ -35,10 +45,16 @@ fn main() {
     let argv = call.argv.clone();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     match args.as_slice() {
-        ["--version"] => say("0.9.4"),
+        ["--version"] => say("0.10.0"),
         ["update"] => update(&call),
-        ["status", ..] => say(&Value::Array(live_daemons()).to_string()),
+        ["status", ..] => say(&Value::Array(scanned_daemons()).to_string()),
+        ["shutdown", rest @ ..] => shutdown(&call, rest.contains(&"--force")),
         _ => {
+            if let Some(flag) = refused_option(&args) {
+                call.flush();
+                eprintln!("Error: Unknown option: {flag}");
+                std::process::exit(1);
+            }
             launch(&mut call, &args);
             return;
         }
@@ -90,11 +106,89 @@ fn launch(call: &mut Call, args: &[&str]) {
     // Eager: a `stay` launch is killed, so nothing is written after it.
     call.flush();
     if scenario_has("stay") {
+        // A listening socket: horch stops only a daemon that listens.
+        #[cfg(unix)]
+        let _listener = socket.and_then(|s| {
+            let _ = std::fs::remove_file(s);
+            std::os::unix::net::UnixListener::bind(s).ok()
+        });
         if let Some(socket) = socket {
             register(socket);
         }
         hang();
     }
+}
+
+/// The options Prime 0.10.0 refuses with "Unknown option" and exit 1.
+const REFUSED: [&str; 6] = [
+    "--no-extensions",
+    "-e",
+    "--extension",
+    "--tools",
+    "--no-tools",
+    "--exclude-tools",
+];
+
+/// The first refused option before `--`, if any.
+fn refused_option<'a>(args: &[&'a str]) -> Option<&'a str> {
+    args.iter()
+        .take_while(|a| **a != "--")
+        .find(|a| REFUSED.contains(a))
+        .copied()
+}
+
+/// `$TMPDIR/prime-agent-<uid>`: the only dir Prime 0.10.0's `status` and
+/// `shutdown` scan.
+fn scan_dir() -> Option<PathBuf> {
+    let tmp = std::env::var_os("TMPDIR")?;
+    Some(PathBuf::from(tmp).join(horch_core::harness::prime::scan_dir_name()))
+}
+
+/// Live launches whose socket is in [`scan_dir`].
+fn scanned_daemons() -> Vec<Value> {
+    let Some(scan) = scan_dir() else {
+        return Vec::new();
+    };
+    live_daemons()
+        .into_iter()
+        .filter(|d| {
+            d["socketPath"]
+                .as_str()
+                .and_then(|s| Path::new(s).parent())
+                .is_some_and(|dir| dir == scan)
+        })
+        .collect()
+}
+
+/// `shutdown [--force] --json`: SIGTERM to each scanned launch with
+/// `--force`; without it, each is refused. Exit 1 when one failed.
+fn shutdown(call: &Call, force: bool) -> ! {
+    call.flush();
+    let mut stopped = Vec::new();
+    let mut failed = Vec::new();
+    for daemon in scanned_daemons() {
+        let socket = daemon["socketPath"].clone();
+        if !force {
+            failed.push(json!({"socketPath": socket,
+                "reason": "confirmation required; use \"prime-agent shutdown --force --json\""}));
+            continue;
+        }
+        let pid = daemon["pid"].as_u64().unwrap_or_default();
+        let killed = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("kill -TERM {pid}"))
+            .status()
+            .is_ok_and(|s| s.success());
+        if killed {
+            stopped.push(json!({"socketPath": socket,
+                "action": format!("stopped background service (pid {pid})")}));
+        } else {
+            failed.push(json!({"socketPath": socket, "reason": "kill failed"}));
+        }
+    }
+    let code = i32::from(!failed.is_empty());
+    say(&serde_json::to_string_pretty(&json!({"stopped": stopped, "failed": failed})).unwrap());
+    std::process::exit(code);
 }
 
 /// Every `--skill <dir>` among the options: the dirs, and the flag pairs.
@@ -205,6 +299,6 @@ fn update(call: &Call) -> ! {
     if horch_e2e::scenario_has("update_hang:prime") {
         std::thread::sleep(std::time::Duration::from_secs(60));
     }
-    horch_e2e::say("prime-agent 0.9.4 is up to date");
+    horch_e2e::say("prime-agent 0.10.0 is up to date");
     std::process::exit(0);
 }

@@ -463,14 +463,19 @@ Two of those need more than flags:
 a pane nobody is watching. `permission_mode: plan` has no OpenCode equivalent at
 all, so it is refused rather than quietly downgraded.
 
-**Prime Agent supervises its own sessions.** Verified on 0.9.4: even a `--print`
-run that failed authentication left a background service alive after the process
-exited. herdr already treats a pane as an agent's lifetime, so left alone
+**Prime Agent supervises its own sessions.** Its background daemon outlives the
+CLI. herdr already treats a pane as an agent's lifetime, so left alone
 `horch done` would close the pane and leave the daemon running - one per spawn,
-forever. Every Prime pane therefore gets its own `--daemon-socket`, and horch
-stops exactly that service when the CLI exits. `prime-agent shutdown` is not
-usable here: it stops every agent on the machine, including other panes in the
-same fleet.
+forever. Every Prime pane therefore gets its own launch dir and its own
+`--daemon-socket` in it, `<state>/prime/<id>/prime-agent-<uid>/d.sock`, and
+horch stops exactly that daemon when the CLI exits. A bare `prime-agent shutdown`
+is not usable here: it stops every agent on the machine, including other panes
+in the same fleet. Prime 0.10.0 (the Rust build) scans only
+`$TMPDIR/prime-agent-<uid>/`, so horch runs `TMPDIR=<launch>/ prime-agent
+shutdown --force --json`, which reaches this pane's daemon alone. Prime 0.10.0
+reports the pane's agent state to herdr itself, and it refuses `--no-extensions`
+and the tool selection flags, so horch does not pass them and a Prime teammate
+sets no `tools:`.
 
 pi and Prime have no approval gate at all - their tools simply run, which is what
 makes them usable unattended. `permission_mode` is refused on both, because
