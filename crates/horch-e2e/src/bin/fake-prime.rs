@@ -36,6 +36,7 @@ fn main() {
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["--version"] => say("0.9.4"),
+        ["update"] => update(&call),
         ["status", ..] => say(&Value::Array(live_daemons()).to_string()),
         _ => {
             launch(&mut call, &args);
@@ -189,4 +190,21 @@ fn alive(pid: u64) -> bool {
         .arg(format!("kill -0 {pid} 2>/dev/null"))
         .status()
         .is_ok_and(|s| s.success())
+}
+
+/// `prime-agent update`: record the call, then answer as the scenario says.
+/// `update_fail:prime` exits 1 with a coloured error line, and
+/// `update_hang:prime` sleeps 60 s first. Otherwise it prints 1 line and
+/// exits 0.
+fn update(call: &Call) -> ! {
+    call.flush();
+    if horch_e2e::scenario_has("update_fail:prime") {
+        eprintln!("\u{1b}[31merror: prime update failed: network unreachable\u{1b}[0m");
+        std::process::exit(1);
+    }
+    if horch_e2e::scenario_has("update_hang:prime") {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+    horch_e2e::say("prime-agent 0.9.4 is up to date");
+    std::process::exit(0);
 }

@@ -20,6 +20,7 @@ pub mod spawn;
 pub mod teammatescmd;
 pub mod telemetry;
 pub mod tilecmd;
+pub mod update;
 pub mod usagecmd;
 pub mod worker;
 pub mod worktree;

@@ -754,6 +754,47 @@ Windows support is in beta - and unpacks the release with its ConPTY runtime int
 a versioned directory, pointing `current` and the PATH directory at it by
 junction, so an update never overwrites a running `herdr.exe`.
 
+## Updating the agent CLIs
+
+`horch fleet` and `horch orchestration` update every installed agent CLI
+before the first pane starts, so each fleet starts on the latest builds. Each
+CLI runs its own update command, which knows how it was installed (native,
+Homebrew, npm):
+
+| harness     | update command        |
+|-------------|-----------------------|
+| claude      | `claude update`       |
+| codex       | `codex update`        |
+| opencode    | `opencode upgrade`    |
+| antigravity | `agy update`          |
+| pi          | `pi update --self`    |
+| prime       | `prime-agent update`  |
+
+```bash
+horch update                 # the same step, on demand; exits 1 if 1 updater fails
+horch update codex pi        # only these
+horch update herdr           # herdr too - read the warning below
+horch fleet --no-update      # start a fleet without the update step
+```
+
+The updaters run at the same time. Each one gets `HORCH_UPDATE_TIMEOUT_MS`
+(default 180000; a Homebrew `codex update` alone can take a minute). A CLI
+that is not on `PATH` is skipped. A failed or timed-out updater prints 1
+`horch: NOTE: update:` line, and the fleet still starts on the build it has.
+When `cpx` is the Claude launcher, `claude` updates, because `cpx` only
+launches it. `HORCH_NO_UPDATE=1` skips the step like `--no-update`.
+
+Panes do not update during a fleet run: Claude panes get
+`DISABLE_AUTOUPDATER=1` and Codex panes `check_for_update_on_startup=false`.
+So every pane of 1 fleet runs the same build of each CLI, and no CLI changes
+under a running worker.
+
+herdr is never in the default list. A herdr release can change the
+client/server protocol, and then `herdr update` offers to stop the herdr
+server, which closes every pane, a running fleet included. `horch update herdr`
+prints that warning and runs `herdr update` attached to your terminal, so you
+answer herdr's question yourself.
+
 ## Environment
 
 | variable             | effect                                                        |
@@ -770,6 +811,8 @@ junction, so an update never overwrites a running `herdr.exe`.
 | `HORCH_BALANCE`      | Usage-limit gate: `auto` (default), `advise` or `off`          |
 | `HORCH_NOW`          | Pin the clock (RFC 3339), for tests; announced on stderr       |
 | `HORCH_QUOTA_FILE`   | Read pool states from this file and never probe (tests, drills) |
+| `HORCH_NO_UPDATE`    | `1` skips the agent CLI update step of `horch fleet`, like `--no-update` |
+| `HORCH_UPDATE_TIMEOUT_MS` | The time limit of 1 agent CLI updater. Defaults to 180000 |
 | `HORCH_HERDR_BIN`    | Which herdr CLI to drive. Defaults to `herdr`                  |
 | `HORCH_SQLITE3_BIN`  | Which `sqlite3` reads OpenCode's database                       |
 | `HORCH_OLLAMA_BIN`   | Which `ollama` the local-pool check asks                       |

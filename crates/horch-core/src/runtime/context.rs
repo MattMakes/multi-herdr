@@ -167,9 +167,19 @@ pub struct Settings {
     /// register or to report a startup error. `None` is the default
     /// (`horch spawn`'s `SPAWN_WAIT`); zero does not wait.
     pub spawn_wait: Option<Duration>,
+    /// `HORCH_NO_UPDATE`: `1` skips the agent CLI update step of `horch fleet`
+    /// and `horch orchestration`.
+    pub no_update: bool,
+    /// `HORCH_UPDATE_TIMEOUT_MS`: the time limit of 1 agent CLI updater.
+    /// [`DEFAULT_UPDATE_TIMEOUT`] when unset or not a number.
+    pub update_timeout: Duration,
     /// `HORCH_FAULT`.
     pub faults: Faults,
 }
+
+/// The time limit of 1 agent CLI updater when `HORCH_UPDATE_TIMEOUT_MS` is
+/// unset. A Homebrew `codex update` alone can take 60 s.
+pub(crate) const DEFAULT_UPDATE_TIMEOUT: Duration = Duration::from_millis(180_000);
 
 /// Variables horch does not own but reads, or passes on to the tools it runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -367,6 +377,10 @@ impl RuntimeContext {
             spawn_wait: nonempty("HORCH_SPAWN_WAIT_MS")
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map(Duration::from_millis),
+            no_update: env.var("HORCH_NO_UPDATE").as_deref() == Some("1"),
+            update_timeout: nonempty("HORCH_UPDATE_TIMEOUT_MS")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .map_or(DEFAULT_UPDATE_TIMEOUT, Duration::from_millis),
             faults: Faults::parse(env.var("HORCH_FAULT").as_deref()),
         };
 
@@ -586,6 +600,34 @@ mod tests {
         assert_eq!(ctx.paths.project_dir, Some(PathBuf::from("/cwd")));
         assert!(ctx.bins.overrides.is_empty());
         assert_eq!(ctx.worker, None);
+    }
+
+    /// `HORCH_NO_UPDATE=1` skips the update step; any other value does not.
+    /// `HORCH_UPDATE_TIMEOUT_MS` sets the updater limit, else 180000 ms.
+    #[test]
+    fn arc_34_update_settings_read_both_variables_and_the_default() {
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/")
+                .with("HORCH_NO_UPDATE", "1")
+                .with("HORCH_UPDATE_TIMEOUT_MS", "5000"),
+        )
+        .unwrap();
+        assert!(ctx.settings.no_update);
+        assert_eq!(ctx.settings.update_timeout, Duration::from_millis(5000));
+
+        let ctx = RuntimeContext::from_env(&MapEnv::new("/")).unwrap();
+        assert!(!ctx.settings.no_update);
+        assert_eq!(ctx.settings.update_timeout, Duration::from_millis(180_000));
+        assert_eq!(ctx.settings.update_timeout, DEFAULT_UPDATE_TIMEOUT);
+
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/")
+                .with("HORCH_NO_UPDATE", "0")
+                .with("HORCH_UPDATE_TIMEOUT_MS", "soon"),
+        )
+        .unwrap();
+        assert!(!ctx.settings.no_update);
+        assert_eq!(ctx.settings.update_timeout, DEFAULT_UPDATE_TIMEOUT);
     }
 
     #[test]

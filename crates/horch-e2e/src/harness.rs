@@ -7,7 +7,7 @@
 //! `bin/` alone, and every `HORCH_*_BIN` points into it, so no real harness, no
 //! real herdr and no file outside the temp dir can be reached (NFR-01).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -38,6 +38,9 @@ pub struct Harness {
     pub project: PathBuf,
     /// Extra environment for every `horch` this harness runs.
     pub env: BTreeMap<String, String>,
+    /// Variables the sealed environment sets by default that this harness
+    /// leaves out ([`Harness::without`]).
+    removed: BTreeSet<String>,
     /// The real `git`, by absolute path, once [`Harness::with_git`] found it.
     git: Option<PathBuf>,
 }
@@ -67,6 +70,7 @@ impl Harness {
             project: root.join("work/alpha"),
             root,
             env: BTreeMap::new(),
+            removed: BTreeSet::new(),
             git: None,
         };
         for dir in [&h.home, &h.state, &h.tmp, &h.bin, &h.project] {
@@ -289,6 +293,9 @@ impl Harness {
         // Most scenarios run no worker in a pane, so `horch spawn` does not
         // wait for one to register (tests/startup_error.rs sets the wait).
         env.insert("HORCH_SPAWN_WAIT_MS".into(), "0".into());
+        // `horch fleet` runs no agent CLI updater: a test asserts the exact
+        // calls each fake saw. tests/update.rs uses `allow_updates`.
+        env.insert("HORCH_NO_UPDATE".into(), "1".into());
         env.insert(
             "CODEX_HOME".into(),
             self.home.join(".codex").to_string_lossy().into_owned(),
@@ -317,6 +324,9 @@ impl Harness {
             if let Ok(v) = std::env::var(key) {
                 env.insert(key.into(), v);
             }
+        }
+        for key in &self.removed {
+            env.remove(key);
         }
         for (k, v) in &self.env {
             env.insert(k.clone(), v.clone());
@@ -348,6 +358,21 @@ impl Harness {
     pub fn unset(&mut self, key: &str) -> &mut Self {
         self.env.remove(key);
         self
+    }
+
+    /// Leave `key` out of the sealed environment, also when the harness sets
+    /// it by default (`HORCH_CLAUDE_BIN`, `HORCH_NO_UPDATE`). A later
+    /// [`Harness::set`] of the same key still wins.
+    pub fn without(&mut self, key: &str) -> &mut Self {
+        self.env.remove(key);
+        self.removed.insert(key.to_string());
+        self
+    }
+
+    /// Let `horch fleet` run the agent CLI update step: remove the default
+    /// `HORCH_NO_UPDATE=1`.
+    pub fn allow_updates(&mut self) -> &mut Self {
+        self.without("HORCH_NO_UPDATE")
     }
 
     /// Every call the fakes recorded so far.

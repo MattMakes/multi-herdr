@@ -44,7 +44,7 @@ the harness the teammate runs on. Merge order, first value wins:
 | harness | default | what it stops |
 |---|---|---|
 | claude | `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false"` | a fork of the full conversation after each turn, to suggest the next prompt (2.1.292) |
-| claude | `DISABLE_AUTOUPDATER: "1"` | a mid-fleet update, so all panes in a fleet run 1 build |
+| claude | `DISABLE_AUTOUPDATER: "1"` | a mid-fleet update, so all panes in a fleet run 1 build. `horch fleet` updates every agent CLI before the first pane starts (`horch update`) |
 | codex | `-c tui.auto_recap=false` | a hidden recap thread on the pane's model when the pane loses focus (0.160.0). It yields to `tui.auto_recap` in the operator's `config.toml` |
 | codex, fleet workers | `-c notify=[]` | the operator's `notify` command after every worker turn. `force`: it applies even when `config.toml` sets `notify`. Orchestrators keep the operator's command |
 | opencode | `{"agent":{"title":{"disable":true}}}` in `OPENCODE_CONFIG_CONTENT` | a title call that sends the briefing to the operator's paid `small_model` (1.18.34) |

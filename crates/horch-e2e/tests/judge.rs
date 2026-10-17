@@ -840,6 +840,10 @@ fn cmp_16_only_judge_and_compaction_jobs_detached() {
         // process-group SIGKILL; horch waits for it, so it is not a
         // background job.
         "crates/horch-core/src/harness/prime.rs",
+        // Each agent CLI updater runs in its own process group, so its
+        // timeout kills a `brew` or `npm` child too. horch waits for it, so
+        // it is not detached.
+        "crates/horch-core/src/harness/update.rs",
     ];
     let mut found = Vec::new();
     let mut stack = vec![root.join("crates")];
