@@ -33,7 +33,12 @@ struct World {
 
 impl World {
     fn new() -> World {
-        let tmp = tempfile::tempdir().unwrap();
+        // A short path: the daemon socket path of a launch must stay within
+        // 103 bytes, and the default temp dir of macOS is long.
+        let tmp = tempfile::Builder::new()
+            .prefix("hp")
+            .tempdir_in("/tmp")
+            .unwrap();
         let home = tmp.path().join("home");
         let workdir = tmp.path().join("project");
         std::fs::create_dir_all(&workdir).unwrap();
@@ -183,15 +188,15 @@ fn ctx_05_prime_agent_dir_links_and_fleet_models() {
     let prepared = prepare(&w, &ctx, &t, &decision);
     let agent = agent_dir(&prepared);
 
-    // <state>/prime/<slug>-<uuid>/agent/, beside the daemon's own files.
+    // <state>/prime/<12 hex>/agent/, beside the daemon's own files.
     assert_eq!(agent.file_name().unwrap(), "agent");
     let launch_dir = agent.parent().unwrap();
     assert_eq!(launch_dir.parent().unwrap(), w.state().join("prime"));
-    assert!(launch_dir
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .starts_with("prime-1-"));
+    let id = launch_dir.file_name().unwrap().to_string_lossy();
+    assert!(
+        id.len() == 12 && id.chars().all(|c| c.is_ascii_hexdigit()),
+        "{id}"
+    );
 
     let mut listing: Vec<String> = std::fs::read_dir(&agent)
         .unwrap()
@@ -662,11 +667,148 @@ fn ctx_05_prime_launch_sweeps_old_agent_dirs() {
     assert!(w.source().join("auth.json").is_file());
 }
 
-// ─── X2: Prime reports its pane state to herdr ──────────────────────────────
+// ─── Prime 0.10.0: daemon stop, sweep and herdr release ────────────────────
+
+/// The scan dir name of Prime 0.10.0 under `$TMPDIR`.
+#[cfg(unix)]
+fn scan_dir() -> String {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    format!("prime-agent-{}", unsafe { libc::getuid() })
+}
+
+/// A `prime-agent` like the Rust build, as a shell script. Each call
+/// appends `<command> <TMPDIR>` to `<tmp>/prime.log`. `shutdown` names
+/// `$TMPDIR/prime-agent-<uid>/d.sock` as stopped when that socket exists,
+/// unless `<tmp>/shutdown-fails` exists. `status` prints
+/// `<tmp>/status.json`, else `[]`. It runs once before it is given back,
+/// so the first-exec scan of macOS does not fall inside a test's wait.
+#[cfg(unix)]
+fn fake_rust_prime(w: &World) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = w.tmp.path();
+    let script = format!(
+        r#"#!/bin/sh
+echo "$1 $TMPDIR" >> '{dir}/prime.log'
+case "$1" in
+shutdown)
+  sock="${{TMPDIR}}{scan}/d.sock"
+  if [ -S "$sock" ] && [ ! -e '{dir}/shutdown-fails' ]; then
+    printf '{{"stopped":[{{"socketPath":"%s","action":"stopped"}}],"failed":[]}}\n' "$sock"
+  else
+    echo '{{"stopped":[],"failed":[]}}'
+  fi;;
+status) cat '{dir}/status.json' 2>/dev/null || echo '[]';;
+esac
+"#,
+        dir = dir.display(),
+        scan = scan_dir()
+    );
+    write(&w.fake_prime(), &script);
+    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::process::Command::new(w.fake_prime())
+        .arg("warm")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(dir.join("prime.log"));
+    w.fake_prime()
+}
+
+#[cfg(unix)]
+fn prime_calls(w: &World) -> Vec<String> {
+    std::fs::read_to_string(w.tmp.path().join("prime.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// An earlier launch dir: `agent/`, `sessions/`, the launcher file, and a
+/// socket in the Rust layout (`new_layout`) or the 0.9.4 layout. `listen`
+/// binds the socket, so a process listens on it.
+#[cfg(unix)]
+fn old_launch(
+    w: &World,
+    name: &str,
+    launcher: &str,
+    new_layout: bool,
+    listen: bool,
+) -> (PathBuf, PathBuf, Option<std::os::unix::net::UnixListener>) {
+    let dir = w.state().join("prime").join(name);
+    std::fs::create_dir_all(dir.join("agent/daemon-workers")).unwrap();
+    std::fs::create_dir_all(dir.join("sessions")).unwrap();
+    write(&dir.join("sessions/s.jsonl"), "{}");
+    write(&dir.join("launcher"), launcher);
+    let socket = if new_layout {
+        dir.join(scan_dir()).join("d.sock")
+    } else {
+        dir.join("d.sock")
+    };
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = if listen {
+        Some(std::os::unix::net::UnixListener::bind(&socket).unwrap())
+    } else {
+        write(&socket, "");
+        None
+    };
+    (dir, socket, listener)
+}
+
+/// The pid of a process that has ended, for a launcher file.
+#[cfg(unix)]
+fn dead_launcher() -> String {
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let pid = gone.id();
+    gone.wait().unwrap();
+    format!("{pid} \n")
+}
+
+/// The flags Prime 0.10.0 refuses ("Unknown option", exit 1) are not in a
+/// launch: no `-e` status hook, and the pane file names the pane.
+#[cfg(unix)]
+#[test]
+fn arc_10_prime_launch_in_a_herdr_pane_has_no_refused_flag() {
+    let w = World::new();
+    let (herdr, _log) = fake_herdr(&w);
+    let ctx = w.ctx(&[
+        ("HERDR_PANE_ID", "p_7"),
+        ("HORCH_HERDR_BIN", &herdr.to_string_lossy()),
+    ]);
+    let (t, decision) = decide(&w, &ctx);
+    let prepared = prepare(&w, &ctx, &t, &decision);
+    for flag in [
+        "-e",
+        "--extension",
+        "--no-extensions",
+        "--tools",
+        "--no-tools",
+        "--exclude-tools",
+    ] {
+        assert!(
+            !prepared.extra_args.iter().any(|a| a == flag),
+            "{flag} in {:?}",
+            prepared.extra_args
+        );
+    }
+    let launch = prepared.sessions_dir.clone().unwrap();
+    let launch = launch.parent().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(launch.join("pane")).unwrap(),
+        "p_7\n"
+    );
+    assert_eq!(mode(&launch.join("pane")), 0o600);
+    let names: Vec<String> = std::fs::read_dir(launch)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().all(|n| !n.ends_with(".mjs")),
+        "a status hook was written: {names:?}"
+    );
+}
 
 /// A `herdr` that appends each argv to `<tmp>/herdr.log`, 1 line per call.
 /// Like herdr 0.8.2, it fails when the pane id does not follow the
-/// subcommand (`pane report-agent --source x ...` exits 2).
+/// subcommand (`pane release-agent --source x ...` exits 2).
 #[cfg(unix)]
 fn fake_herdr(w: &World) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
@@ -680,39 +822,20 @@ fn fake_herdr(w: &World) -> (PathBuf, PathBuf) {
         ),
     );
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // The first run of a new executable on macOS can take over 2 s (the
-    // system scans it), longer than the hook waits for 1 call.
+    // The first run of a new executable on macOS can be slow.
     std::process::Command::new(&bin).status().unwrap();
     std::fs::remove_file(&log).unwrap();
     (bin, log)
 }
 
-/// The value after `-e` in the launch's extra args.
-fn status_hook_arg(prepared: &Prepared) -> Option<PathBuf> {
-    prepared
-        .extra_args
-        .windows(2)
-        .find(|w| w[0] == "-e")
-        .map(|w| PathBuf::from(&w[1]))
-}
-
-/// The `--seq` value of a logged herdr call.
-fn seq_of(line: &str) -> u64 {
-    let words: Vec<&str> = line.split_whitespace().collect();
-    let at = words.iter().position(|w| *w == "--seq").expect("--seq");
-    words[at + 1].parse().unwrap()
-}
-
-/// In a herdr pane, the launch writes the status hook beside its socket
-/// (0600, fixed values, no secret), loads it with `-e`, and on finish
-/// releases the pane's agent and removes the hook.
+/// On finish in a herdr pane, horch releases the pane's agent once, with
+/// the source and agent label of Prime's built-in reporter: a clean-up
+/// after a crash.
 #[cfg(unix)]
 #[test]
-fn x2_prime_status_hook_in_a_herdr_pane() {
-    use std::os::unix::fs::PermissionsExt;
+fn x2_prime_finish_releases_the_built_in_reporters_agent() {
     let w = World::new();
-    write(&w.fake_prime(), "#!/bin/sh\necho '[]'\n");
-    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake_rust_prime(&w);
     let (herdr, log) = fake_herdr(&w);
     let ctx = w.ctx(&[
         ("HERDR_PANE_ID", "p_7"),
@@ -720,447 +843,233 @@ fn x2_prime_status_hook_in_a_herdr_pane() {
     ]);
     let (t, decision) = decide(&w, &ctx);
     let prepared = prepare(&w, &ctx, &t, &decision);
-    let hook = status_hook_arg(&prepared).expect("-e <hook> in the extra args");
-    let sessions = prepared.sessions_dir.clone().unwrap();
-    assert_eq!(
-        hook.parent(),
-        sessions.parent(),
-        "the hook is in the launch dir"
-    );
-    assert_eq!(hook.file_name().unwrap(), "herdr-status.mjs");
-    assert_eq!(mode(&hook), 0o600);
-    let text = std::fs::read_to_string(&hook).unwrap();
-    assert!(text.contains(r#"const PANE = "p_7";"#), "{text}");
-    assert!(text.contains(&format!("const HERDR = {:?};", herdr.to_string_lossy())));
-    assert!(text.contains(r#"const SOURCE = "horch:prime";"#));
-    assert!(text.contains(r#"const AGENT = "prime";"#));
-    assert!(!text.contains(TOKEN));
-    assert!(
-        !text.contains("process.env"),
-        "the hook reads no environment"
-    );
-    let pane_file = hook.parent().unwrap().join("pane");
-    assert_eq!(std::fs::read_to_string(&pane_file).unwrap(), "p_7\n");
-    assert_eq!(mode(&pane_file), 0o600);
-
-    // The wrapper the hook's argv mirrors.
-    horch_core::workspace::herdr::Herdr::with_bin(&herdr)
-        .report_agent("p_7", "horch:prime", "prime", "idle", 5)
-        .unwrap();
     prepared.finish();
     let calls = std::fs::read_to_string(&log).unwrap();
-    assert!(
-        calls.starts_with(
-            "pane report-agent p_7 --source horch:prime --agent prime --state idle --seq 5\n"
-        ),
-        "{calls}"
-    );
-    let release: Vec<&str> = calls
-        .lines()
-        .filter(|l| l.contains("release-agent"))
-        .collect();
-    assert_eq!(release.len(), 1, "{calls}");
-    assert!(
-        release[0].starts_with("pane release-agent p_7 --source horch:prime --agent prime --seq "),
-        "{calls}"
-    );
-    assert!(std::fs::symlink_metadata(&hook).is_err(), "the hook stayed");
-}
-
-/// Outside a herdr pane there is nothing to report to: no hook, no `-e`.
-#[test]
-fn x2_prime_no_status_hook_outside_a_pane() {
-    let w = World::new();
-    let ctx = w.ctx(&[]);
-    let (t, decision) = decide(&w, &ctx);
-    let prepared = prepare(&w, &ctx, &t, &decision);
-    assert_eq!(status_hook_arg(&prepared), None);
-    assert!(!prepared
-        .extra_args
-        .iter()
-        .any(|a| a.ends_with("herdr-status.mjs")));
-    let launch = prepared.sessions_dir.clone().unwrap();
-    assert!(!launch.parent().unwrap().join("herdr-status.mjs").exists());
-}
-
-/// A launch killed before `finish` leaves its hook; the next launch's
-/// sweep removes it with the agent dir.
-#[cfg(unix)]
-#[test]
-fn x2_prime_sweep_removes_an_old_status_hook() {
-    let w = World::new();
-    let old = w.state().join("prime").join("prime-1-old");
-    write(&old.join("herdr-status.mjs"), "// old");
-    let ctx = w.ctx(&[]);
-    let (t, decision) = decide(&w, &ctx);
-    let _prepared = prepare(&w, &ctx, &t, &decision);
-    assert!(
-        !old.join("herdr-status.mjs").exists(),
-        "the old hook stayed"
-    );
-}
-
-/// The hook as Prime runs it, in `node` with a fake extension API: a turn
-/// reports `idle`, `working`, `idle`, then `quit` releases; every `--seq`
-/// is higher than the one before. A child session and other shutdown
-/// reasons send nothing. Skipped when `node` is not on PATH.
-#[cfg(unix)]
-#[test]
-fn x2_prime_status_hook_reports_a_turn() {
-    if std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipped: node is not on PATH");
-        return;
-    }
-    let w = World::new();
-    let (herdr, log) = fake_herdr(&w);
-    let ctx = w.ctx(&[
-        ("HERDR_PANE_ID", "p_7"),
-        ("HORCH_HERDR_BIN", &herdr.to_string_lossy()),
-    ]);
-    let (t, decision) = decide(&w, &ctx);
-    let prepared = prepare(&w, &ctx, &t, &decision);
-    let hook = status_hook_arg(&prepared).unwrap();
-    let sessions = prepared.sessions_dir.clone().unwrap();
-    let driver = w.tmp.path().join("driver.mjs");
-    write(
-        &driver,
-        r#"
-const [hook, sessions] = process.argv.slice(2);
-const handlers = {};
-const pi = { on: (name, fn) => { (handlers[name] ??= []).push(fn); } };
-(await import(hook)).default(pi);
-const ctx = (file, idle) => ({
-  sessionManager: { getSessionFile: () => file },
-  isIdle: () => idle,
-});
-const fire = async (name, event, c) => {
-  for (const fn of handlers[name] ?? []) await fn(event, c);
-};
-const root = ctx(`${sessions}/s-1.jsonl`, true);
-const child = ctx(`${sessions}/children/c-1/s-2.jsonl`, false);
-await fire("session_start", { reason: "startup" }, root);
-await fire("agent_start", {}, child);
-await fire("agent_start", {}, root);
-await fire("agent_end", {}, child);
-await fire("agent_end", {}, root);
-await fire("session_shutdown", { reason: "reload" }, root);
-await fire("session_shutdown", { reason: "quit" }, root);
-"#,
-    );
-    let out = std::process::Command::new("node")
-        .arg(&driver)
-        .arg(&hook)
-        .arg(&sessions)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let calls = std::fs::read_to_string(&log).unwrap();
     let lines: Vec<&str> = calls.lines().collect();
-    let kinds: Vec<String> = lines
-        .iter()
-        .map(|l| {
-            let words: Vec<&str> = l.split_whitespace().collect();
-            match words.iter().position(|w| *w == "--state") {
-                Some(at) => words[at + 1].to_string(),
-                None => words[1].to_string(),
-            }
-        })
-        .collect();
-    assert_eq!(
-        kinds,
-        ["idle", "working", "idle", "release-agent"],
+    assert_eq!(lines.len(), 1, "{calls}");
+    assert!(
+        lines[0].starts_with(&format!(
+            "pane release-agent p_7 --source {} --agent {} --seq ",
+            horch_core::harness::prime::STATUS_SOURCE,
+            horch_core::harness::prime::STATUS_AGENT
+        )),
         "{calls}"
     );
-    for line in &lines {
-        assert!(
-            line.contains("--source horch:prime --agent prime --seq "),
-            "{line}"
-        );
-        assert!(line.split_whitespace().nth(2) == Some("p_7"), "{line}");
-    }
-    let seqs: Vec<u64> = lines.iter().map(|l| seq_of(l)).collect();
-    assert!(seqs.windows(2).all(|p| p[0] < p[1]), "{seqs:?}");
+    assert_eq!(horch_core::harness::prime::STATUS_SOURCE, "herdr:pi");
 }
 
-/// herdr missing: the hook throws nothing and the turn goes on.
+/// The sweep handles both layouts, and stops only a daemon that its launch
+/// started:
+/// - Rust layout, nobody listens: files removed, no Prime call.
+/// - 0.9.4 layout, nobody listens: files removed.
+/// - 0.9.4 layout, a process listens: the Rust `prime-agent` cannot name
+///   it, so it is left running with its files.
+/// - Rust layout, the scoped stop fails, `status` names a process started
+///   after the launcher file: SIGTERM.
+/// - Rust layout, `status` names a process started before the launcher
+///   file: left running.
+///
+/// Every child sleeps 1 h, so none ends by itself during the test.
 #[cfg(unix)]
 #[test]
-fn x2_prime_status_hook_without_herdr_is_silent() {
-    if std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipped: node is not on PATH");
-        return;
-    }
+fn ctx_05_prime_sweep_handles_both_layouts() {
+    use std::os::unix::process::ExitStatusExt;
     let w = World::new();
-    let missing = w.tmp.path().join("no-herdr");
-    let ctx = w.ctx(&[
-        ("HERDR_PANE_ID", "p_7"),
-        ("HORCH_HERDR_BIN", &missing.to_string_lossy()),
-    ]);
-    let (t, decision) = decide(&w, &ctx);
-    let prepared = prepare(&w, &ctx, &t, &decision);
-    let hook = status_hook_arg(&prepared).unwrap();
-    let sessions = prepared.sessions_dir.clone().unwrap();
-    let driver = w.tmp.path().join("driver.mjs");
-    write(
-        &driver,
-        r#"
-const [hook, sessions] = process.argv.slice(2);
-const handlers = {};
-(await import(hook)).default({ on: (n, fn) => { (handlers[n] ??= []).push(fn); } });
-const c = { sessionManager: { getSessionFile: () => `${sessions}/s.jsonl` }, isIdle: () => true };
-for (const [n, e] of [["agent_start", {}], ["agent_end", {}], ["session_shutdown", { reason: "quit" }]]) {
-  for (const fn of handlers[n]) await fn(e, c);
-}
-console.log("ok");
-"#,
-    );
-    let out = std::process::Command::new("node")
-        .arg(&driver)
-        .arg(&hook)
-        .arg(&sessions)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
-    assert!(
-        out.stderr.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// A pane closed before `finish` ran leaves its daemon running (a C5 Prime
-/// daemon ran 6 h 44 min after `horch done`). The next launch stops a daemon
-/// whose launcher is gone, if that launch started it, and cleans its dir.
-/// A daemon older than its launch's launcher file is not that launch's.
-#[cfg(unix)]
-#[test]
-fn x2_prime_sweep_stops_an_orphan_daemon() {
-    use std::os::unix::fs::PermissionsExt;
-    let w = World::new();
-    let prime = w.state().join("prime");
-    let mut gone = std::process::Command::new("true").spawn().unwrap();
-    let dead_pid = gone.id();
-    gone.wait().unwrap();
-    let launch = |name: &str| {
-        let dir = prime.join(name);
-        std::fs::create_dir_all(dir.join("agent")).unwrap();
-        write(&dir.join("herdr-status.mjs"), "// old");
-        write(&dir.join("d.sock"), "");
-        dir
-    };
-    // Started before its launch's launcher file: not this launch's daemon.
+    fake_rust_prime(&w);
+    let dead = dead_launcher();
+    let (new_idle, new_idle_sock, _) = old_launch(&w, "0a0a0a0a0a0a", &dead, true, false);
+    let (old_idle, old_idle_sock, _) = old_launch(&w, "prime-1-old", &dead, false, false);
+    let (old_live, old_live_sock, _old_listener) =
+        old_launch(&w, "prime-2-live", &dead, false, true);
+    // Started before its launch's launcher file: not that launch's daemon.
     let mut foreign = std::process::Command::new("sleep")
-        .arg("30")
+        .arg("3600")
         .spawn()
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(2100));
-    let older = launch("prime-1-older");
-    write(&older.join("launcher"), &format!("{dead_pid} \n"));
-    let orphan = launch("prime-1-orphan");
-    write(&orphan.join("launcher"), &format!("{dead_pid} \n"));
+    let (older, older_sock, _older_listener) = old_launch(&w, "0b0b0b0b0b0b", &dead, true, true);
+    let (orphan, orphan_sock, _orphan_listener) = old_launch(&w, "0c0c0c0c0c0c", &dead, true, true);
     let mut daemon = std::process::Command::new("sleep")
-        .arg("30")
+        .arg("3600")
         .spawn()
         .unwrap();
-
-    let status = format!(
-        r#"[{{"socketPath":"{}","pid":{}}},{{"socketPath":"{}","pid":{}}}]"#,
-        orphan.join("d.sock").display(),
-        daemon.id(),
-        older.join("d.sock").display(),
-        foreign.id()
+    // The scoped stop fails, so the `status` fallback runs. The fake's
+    // `status` ignores TMPDIR; horch matches the socket path.
+    write(&w.tmp.path().join("shutdown-fails"), "");
+    write(
+        &w.tmp.path().join("status.json"),
+        &format!(
+            r#"[{{"socketPath":"{}","pid":{}}},{{"socketPath":"{}","pid":{}}}]"#,
+            orphan_sock.display(),
+            daemon.id(),
+            older_sock.display(),
+            foreign.id()
+        ),
     );
-    write(&w.fake_prime(), &format!("#!/bin/sh\necho '{status}'\n"));
-    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::process::Command::new(w.fake_prime()).output().unwrap();
 
     let ctx = w.ctx(&[]);
     let (t, decision) = decide(&w, &ctx);
     let _prepared = prepare(&w, &ctx, &t, &decision);
 
-    let ended = daemon.wait().unwrap();
-    assert!(!ended.success(), "the orphan daemon was not stopped");
-    assert!(!orphan.join("d.sock").exists());
-    assert!(!orphan.join("agent").exists());
-    assert!(!orphan.join("herdr-status.mjs").exists());
-    assert_eq!(
-        foreign.try_wait().unwrap(),
-        None,
-        "a foreign daemon was stopped"
-    );
+    for (dir, sock) in [(&new_idle, &new_idle_sock), (&old_idle, &old_idle_sock)] {
+        assert!(
+            std::fs::symlink_metadata(sock).is_err(),
+            "{}",
+            dir.display()
+        );
+        assert!(!dir.join("agent").exists(), "{}", dir.display());
+        assert!(dir.join("sessions/s.jsonl").is_file(), "{}", dir.display());
+    }
+    assert!(!new_idle.join(scan_dir()).exists(), "the scan dir stayed");
     assert!(
-        older.join("d.sock").exists(),
-        "a running daemon lost its socket"
+        old_live_sock.exists(),
+        "a live 0.9.4 daemon lost its socket"
     );
+    assert!(old_live.join("agent").is_dir());
+
+    let ended = daemon.wait().unwrap();
+    assert_eq!(ended.signal(), Some(libc::SIGTERM), "{ended:?}");
+    assert!(!orphan_sock.exists());
+    assert!(!orphan.join("agent").exists());
+    if let Some(status) = foreign.try_wait().unwrap() {
+        panic!("a foreign daemon ended: {status:?}");
+    }
+    assert!(older_sock.exists(), "a running daemon lost its socket");
+    assert!(older.join("agent").is_dir());
     foreign.kill().unwrap();
     foreign.wait().unwrap();
+
+    // Only the launches with a listening socket got a Prime call, each
+    // scoped by its own launch dir.
+    let calls = prime_calls(&w);
+    let scoped = |dir: &Path, cmd: &str| format!("{cmd} {}/", dir.display());
+    for dir in [&new_idle, &old_idle] {
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.ends_with(&format!("{}/", dir.display()))),
+            "{calls:?}"
+        );
+    }
+    for dir in [&old_live, &older, &orphan] {
+        assert!(calls.contains(&scoped(dir, "shutdown")), "{calls:?}");
+        assert!(calls.contains(&scoped(dir, "status")), "{calls:?}");
+    }
 }
 
 /// `horch done` closes the pane, and herdr kills the pane's processes
 /// within about 1 s, often before the launcher stops the daemon (live check
 /// X2: prime-4's daemon ran on). So `horch done` stops the daemon of each
-/// launch that ran in its pane, and only those.
+/// launch that ran in its pane, and only those: the scoped stop runs with
+/// that launch's `TMPDIR` only.
 #[cfg(unix)]
 #[test]
-fn x2_prime_finish_pane_stops_only_that_panes_daemon() {
-    use std::os::unix::fs::PermissionsExt;
+fn ctx_05_prime_finish_pane_stops_only_that_panes_daemon() {
     let w = World::new();
-    let prime = w.state().join("prime");
-    let launch = |name: &str, pane: &str| {
-        let dir = prime.join(name);
-        std::fs::create_dir_all(dir.join("agent")).unwrap();
-        std::fs::create_dir_all(dir.join("sessions")).unwrap();
-        write(&dir.join("herdr-status.mjs"), "// hook");
-        write(&dir.join("d.sock"), "");
-        write(&dir.join("pane"), &format!("{pane}\n"));
-        write(&dir.join("launcher"), &format!("{} \n", std::process::id()));
-        dir
-    };
-    let mine = launch("prime-4-mine", "w3F:p42");
-    let other = launch("prime-5-other", "w3F:p43");
-    let mut my_daemon = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .unwrap();
-    let mut other_daemon = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .unwrap();
-    let status = format!(
-        r#"[{{"socketPath":"{}","pid":{}}},{{"socketPath":"{}","pid":{}}}]"#,
-        mine.join("d.sock").display(),
-        my_daemon.id(),
-        other.join("d.sock").display(),
-        other_daemon.id()
-    );
-    write(&w.fake_prime(), &format!("#!/bin/sh\necho '{status}'\n"));
-    std::fs::set_permissions(w.fake_prime(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::process::Command::new(w.fake_prime()).output().unwrap();
+    fake_rust_prime(&w);
+    let me = format!("{} \n", std::process::id());
+    let (mine, mine_sock, _mine_listener) = old_launch(&w, "0d0d0d0d0d0d", &me, true, true);
+    let (other, other_sock, _other_listener) = old_launch(&w, "0e0e0e0e0e0e", &me, true, true);
+    write(&mine.join("pane"), "w3F:p42\n");
+    write(&other.join("pane"), "w3F:p43\n");
 
     horch_core::harness::prime::finish_pane(&w.state(), &w.fake_prime(), "w3F:p42");
 
-    let ended = my_daemon.wait().unwrap();
-    assert!(!ended.success(), "this pane's daemon was not stopped");
-    assert!(!mine.join("d.sock").exists());
-    assert!(!mine.join("agent").exists());
-    assert!(!mine.join("herdr-status.mjs").exists());
-    assert!(mine.join("sessions").is_dir(), "sessions/ was removed");
     assert_eq!(
-        other_daemon.try_wait().unwrap(),
-        None,
-        "another pane's daemon was stopped"
+        prime_calls(&w),
+        [format!("shutdown {}/", mine.display())],
+        "only this pane's launch is stopped"
     );
-    assert!(other.join("d.sock").exists());
-    other_daemon.kill().unwrap();
-    other_daemon.wait().unwrap();
+    assert!(std::fs::symlink_metadata(&mine_sock).is_err());
+    assert!(!mine.join("agent").exists());
+    assert!(
+        mine.join("sessions/s.jsonl").is_file(),
+        "sessions/ was removed"
+    );
+    assert!(other_sock.exists());
+    assert!(other.join("agent").is_dir());
 
     // No Prime launch dir at all: nothing to do, no error.
     horch_core::harness::prime::finish_pane(&w.tmp.path().join("none"), &w.fake_prime(), "w3F:p42");
 }
 
-/// The `horch done` path with Prime's own stop (a fake Prime install whose
-/// `daemon-launch.js` answers "stopped"): no agent/, no hook, no socket
-/// after it; sessions/ and the link targets stay (live check X2: prime-6
-/// kept agent/ and the hook).
+/// Live check (docs/live-checks/harnesses.md, "Prime adapter, Rust build"):
+/// run inside a scratch herdr pane, with the real `prime-agent` and
+/// `HORCH_STATE_DIR` set to a short scratch dir. It runs the Prime adapter's
+/// `prepare`, the command horch builds without the `--` and the prompt (no
+/// model turn), the TUI in this terminal until the operator quits it, and
+/// then `finish`. It prints the argv and the scoped `status` before and
+/// after the finish. Never run by the gate.
 #[cfg(unix)]
 #[test]
-fn x2_prime_finish_pane_with_primes_stop_leaves_no_files() {
-    use std::os::unix::fs::PermissionsExt;
-    if std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipped: node is not on PATH");
-        return;
+#[ignore = "live: needs the real prime-agent in a scratch herdr pane"]
+fn live_prime_tui_start_and_finish() {
+    use horch_core::runtime::ProcessEnv;
+    let ctx = RuntimeContext::from_env(&ProcessEnv).unwrap();
+    let workdir = std::env::current_dir().unwrap();
+    let (roster, t) = prime_teammate();
+    let fleet = roster.fleet_window(&t, MODEL);
+    let decision = window_decision(&ctx, &t, MODEL, &workdir, fleet);
+    let adapter = HarnessKind::Prime.adapter();
+    let prepared = adapter
+        .prepare(
+            &ctx,
+            &PrepareRequest {
+                role: "prime-live",
+                exec_rules: &[],
+                skills: None,
+                compact_window: Some(&decision),
+                teammate: &t,
+                model: MODEL,
+                workdir: &workdir,
+            },
+        )
+        .unwrap();
+    let mut teammate = t.clone();
+    teammate.args.extend(prepared.extra_args.iter().cloned());
+    let built = adapter
+        .build_command(
+            &LaunchEnv::from_context(&ctx),
+            &CommandSpec {
+                teammate: &teammate,
+                session: Session::Unmanaged,
+                prompt: "",
+                model_override: None,
+            },
+        )
+        .unwrap();
+    let args: Vec<String> = built
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .take_while(|a| a != "--")
+        .collect();
+    println!("argv: {:?} {args:?}", built.get_program());
+    let mut cmd = std::process::Command::new(built.get_program());
+    cmd.args(&args).env_remove("ANTHROPIC_API_KEY");
+    for (k, v) in built.get_envs() {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
     }
-    let w = World::new();
-    let dist = w.tmp.path().join("lib/dist");
-    write(
-        &dist.join("cli/daemon-launch.js"),
-        "export async function shutdownDaemonAndWait() { return true; }\n",
-    );
-    let cli = dist.join("bundle/cli.js");
-    write(&cli, "#!/bin/sh\necho '[]'\n");
-    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let bin = w.tmp.path().join("prime-agent");
-    std::os::unix::fs::symlink(&cli, &bin).unwrap();
-
-    let launch = w.state().join("prime").join("prime-6-done");
-    let agent = launch.join("agent");
-    std::fs::create_dir_all(agent.join("daemon-workers")).unwrap();
-    std::os::unix::fs::symlink(w.source().join("auth.json"), agent.join("auth.json")).unwrap();
-    std::fs::create_dir_all(launch.join("sessions")).unwrap();
-    write(&launch.join("sessions/s.jsonl"), "{}");
-    write(&launch.join("herdr-status.mjs"), "// hook");
-    write(&launch.join("d.sock"), "");
-    write(&launch.join("pane"), "w3F:p4F\n");
-    write(
-        &launch.join("launcher"),
-        &format!("{} \n", std::process::id()),
-    );
-    let dist_dir = std::fs::canonicalize(&dist).unwrap();
-    write(
-        &launch.join("prime-dist"),
-        &format!("{}\n", dist_dir.display()),
-    );
-    // Prime's stop, not the `status` path, removes the files.
-    write(&cli, "#!/bin/sh\nexit 1\n");
-
-    horch_core::harness::prime::finish_pane(&w.state(), &bin, "w3F:p4F");
-
-    assert!(!agent.exists(), "agent/ stayed");
-    assert!(!launch.join("herdr-status.mjs").exists(), "the hook stayed");
-    assert!(!launch.join("d.sock").exists());
-    assert!(
-        launch.join("sessions/s.jsonl").is_file(),
-        "sessions/ was removed"
-    );
-    assert!(w.source().join("auth.json").is_file());
-}
-
-/// `prepare` records Prime's `dist` dir, found from the program through the
-/// context's PATH (core code reads no environment, ARC-05), so the stop at
-/// `horch done` can find Prime's own shutdown.
-#[cfg(unix)]
-#[test]
-fn x2_prime_prepare_records_the_prime_dist() {
-    use std::os::unix::fs::PermissionsExt;
-    let w = World::new();
-    let dist = w.tmp.path().join("lib/dist");
-    let cli = dist.join("bundle/cli.js");
-    write(&cli, "#!/bin/sh\necho '[]'\n");
-    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let bin_dir = w.tmp.path().join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    std::os::unix::fs::symlink(&cli, bin_dir.join("prime-agent")).unwrap();
-    let ctx = w.ctx(&[
-        ("PATH", &bin_dir.to_string_lossy()),
-        ("HORCH_PRIME_BIN", "prime-agent"),
-    ]);
-    let (t, decision) = decide(&w, &ctx);
-    let prepared = prepare(&w, &ctx, &t, &decision);
+    for (k, v) in &prepared.env {
+        cmd.env(k, v);
+    }
+    let status = cmd.status().unwrap();
+    println!("prime-agent exited: {status}");
     let launch = prepared.sessions_dir.clone().unwrap();
-    let recorded = std::fs::read_to_string(launch.parent().unwrap().join("prime-dist")).unwrap();
-    assert_eq!(
-        recorded,
-        format!("{}\n", std::fs::canonicalize(&dist).unwrap().display())
-    );
+    let launch = launch.parent().unwrap().to_path_buf();
+    let scoped = |what: &str| {
+        let out = std::process::Command::new(&ctx.bins.harness.prime)
+            .args(["status", "--json"])
+            .env("TMPDIR", format!("{}/", launch.display()))
+            .env_remove("ANTHROPIC_API_KEY")
+            .output()
+            .unwrap();
+        println!("{what}: {}", String::from_utf8_lossy(&out.stdout).trim());
+    };
+    scoped("status before finish");
+    prepared.finish();
+    scoped("status after finish");
+    println!("launch dir: {}", launch.display());
 }

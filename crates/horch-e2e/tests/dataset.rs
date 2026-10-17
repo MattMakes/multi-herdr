@@ -30,10 +30,39 @@ fn dataset_bin() -> PathBuf {
 }
 
 /// A harness with git, or `None` when git is missing (and not required).
+/// Every fake the preflight runs is warmed first.
 fn harness(name: &str) -> Option<Harness> {
     let h = Harness::new(name).with_git();
     h.git_bin()?;
+    warm(&h);
     Some(h)
+}
+
+/// The programs the preflight runs, by the name `bin/` holds them under:
+/// the agent CLIs (PRE-06 probes `--version` with a 15 s limit) and herdr.
+const WARMED: [&str; 7] = [
+    "claude",
+    "codex",
+    "opencode",
+    "pi",
+    "prime-agent",
+    "agy",
+    "herdr",
+];
+
+/// Run each fake once, untimed, by the path the preflight executes: macOS
+/// scans a new executable at its first exec, and under load that takes 14
+/// to 35 s. Without `HORCH_FAKE_LOG` the fakes record nothing, so no test
+/// sees these calls.
+fn warm(h: &Harness) {
+    for name in WARMED {
+        let exe = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        let mut cmd = Command::new(h.bin.join(exe));
+        cmd.arg("--version");
+        h.seal(&mut cmd);
+        cmd.env_remove("HORCH_FAKE_LOG");
+        let _ = cmd.output();
+    }
 }
 
 fn machine_fixture(h: &Harness, disk_free: u64) -> PathBuf {
@@ -329,6 +358,13 @@ fn pre_07_probe_no_secret_persisted() {
         "claude-leaky",
         format!("#!/bin/sh\necho \"9.9.9 (Claude Code) {TOKEN}\"\n").as_bytes(),
     );
+    // 1 untimed run first: macOS scans a new executable at its first exec
+    // (14 to 38 s here), longer than the 15 s the version probe waits.
+    let mut first = Command::new(&fake);
+    first.arg("--version");
+    h.seal(&mut first);
+    first.env_remove("HORCH_FAKE_LOG");
+    let _ = first.output();
     let machine = machine_fixture(&h, 500_000_000_000);
 
     let out = run(

@@ -1,5 +1,6 @@
-//! A recording stand-in for the `pi` CLI. Only `--version` is answered: the
-//! local-pool health check is the one thing horch asks of pi outside a pane.
+//! A recording stand-in for the `pi` CLI. Only `--version` and
+//! `update --self` are answered: the local-pool health check and the update
+//! step are the things horch asks of pi outside a pane.
 //!
 //! Scenarios: `ok` (the default), `crash` (exit 1), `model_missing` (as `ok`;
 //! the missing model is fake-ollama's half of that scenario), and
@@ -17,6 +18,8 @@ fn main() {
     let code = if scenario() == "crash" {
         eprintln!("pi: Node.js 22.19 or newer is required");
         1
+    } else if call.argv == ["update", "--self"] {
+        update(&call)
     } else if call.argv.iter().any(|a| a == "--version") {
         say("0.85.1");
         0
@@ -39,4 +42,21 @@ fn main() {
     };
     call.flush();
     std::process::exit(code);
+}
+
+/// `pi update --self`: record the call, then answer as the scenario says.
+/// `update_fail:pi` exits 1 with a coloured error line, and
+/// `update_hang:pi` sleeps 60 s first. Otherwise it prints 1 line and
+/// exits 0.
+fn update(call: &Call) -> ! {
+    call.flush();
+    if horch_e2e::scenario_has("update_fail:pi") {
+        eprintln!("\u{1b}[31merror: pi update failed: network unreachable\u{1b}[0m");
+        std::process::exit(1);
+    }
+    if horch_e2e::scenario_has("update_hang:pi") {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+    horch_e2e::say("pi 0.85.1 is up to date");
+    std::process::exit(0);
 }

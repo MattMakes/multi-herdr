@@ -347,6 +347,8 @@ mcp_config_files: []
 # not a schema change. Appended verbatim, after the derived args.
 #   claude e.g. ["--permission-mode", "acceptEdits"]
 #   codex  e.g. ["-s", "workspace-write"] or ["-p", "some-codex-profile"]
+#          (-p <name> layers $CODEX_HOME/<name>.config.toml over config.toml;
+#          Codex 0.163.0 refuses -p while config.toml holds [profiles.<name>])
 args: []
 # env: set on the CLI's process, never through a shell. A value that starts
 # with `~/` expands against the launch's home. NO SECRETS: point at a file the

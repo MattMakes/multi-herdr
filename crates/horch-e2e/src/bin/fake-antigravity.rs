@@ -37,6 +37,9 @@ fn main() {
         call.flush();
         return;
     }
+    if args == ["update"] {
+        update(&call);
+    }
     for key in FORBIDDEN {
         if std::env::var_os(key).is_some() {
             call.violate(format!("{key} present in the environment"));
@@ -94,4 +97,21 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1))
         .cloned()
+}
+
+/// `agy update`: record the call, then answer as the scenario says.
+/// `update_fail:antigravity` exits 1 with a coloured error line, and
+/// `update_hang:antigravity` sleeps 60 s first. Otherwise it prints 1 line and
+/// exits 0.
+fn update(call: &Call) -> ! {
+    call.flush();
+    if horch_e2e::scenario_has("update_fail:antigravity") {
+        eprintln!("\u{1b}[31merror: antigravity update failed: network unreachable\u{1b}[0m");
+        std::process::exit(1);
+    }
+    if horch_e2e::scenario_has("update_hang:antigravity") {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+    horch_e2e::say("agy 1.1.3 is up to date");
+    std::process::exit(0);
 }

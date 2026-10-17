@@ -294,47 +294,38 @@ fn hdf_02_codex_default_yields_to_operator_config_unless_forced() {
     let text = r##"
 model = "gpt-5.6-sol" # a comment
 model_auto_compact_token_limit = 200_000
-profile = "p"
 tui.theme = "dark"
+notify = ["say", "#not a comment"]
 
 [tui]
 auto_recap = false
-
-[profiles.p]
-notify = ["say", "#not a comment"]
-
-[profiles.q]
-model = "q-model"
 "##;
     assert_eq!(
-        codex_config_value(text, None, "model").as_deref(),
+        codex_config_value(text, "model").as_deref(),
         Some("gpt-5.6-sol")
     );
     assert_eq!(
-        codex_config_value(text, None, "model_auto_compact_token_limit").as_deref(),
+        codex_config_value(text, "model_auto_compact_token_limit").as_deref(),
         Some("200000")
     );
     assert_eq!(
-        codex_config_value(text, None, "tui.auto_recap").as_deref(),
+        codex_config_value(text, "tui.auto_recap").as_deref(),
         Some("false")
     );
     assert_eq!(
-        codex_config_value(text, None, "tui.theme").as_deref(),
+        codex_config_value(text, "tui.theme").as_deref(),
         Some("dark")
     );
-    // The file's own profile.
+    // An array keeps its raw text, and `#` inside a string is not a comment.
     assert_eq!(
-        codex_config_value(text, None, "notify").as_deref(),
+        codex_config_value(text, "notify").as_deref(),
         Some(r##"["say", "#not a comment"]"##)
     );
-    // An explicit profile wins over the file's.
-    assert_eq!(
-        codex_config_value(text, Some("q"), "model").as_deref(),
-        Some("q-model")
-    );
-    assert_eq!(codex_config_value(text, Some("q"), "notify"), None);
-    assert_eq!(codex_config_value("# model = \"x\"\n", None, "model"), None);
-    assert_eq!(codex_config_value(text, None, "absent"), None);
+    // The legacy profile table and `profile` key are not read.
+    let legacy = "profile = \"q\"\n[profiles.q]\nmodel = \"q-model\"\n";
+    assert_eq!(codex_config_value(legacy, "model"), None);
+    assert_eq!(codex_config_value("# model = \"x\"\n", "model"), None);
+    assert_eq!(codex_config_value(text, "absent"), None);
 
     // The launch.
     let home = tempfile::tempdir().unwrap();

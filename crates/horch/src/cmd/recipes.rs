@@ -296,6 +296,8 @@ impl CompeteSettings {
 pub struct FleetOptions {
     /// Some: append the competition rules to the orchestrator's briefing.
     pub compete: Option<CompeteSettings>,
+    /// `--no-update`: skip the agent CLI update step (ARC-34).
+    pub no_update: bool,
 }
 
 /// The briefing of a fleet orchestrator: the base briefing, then with
@@ -333,18 +335,16 @@ pub(crate) fn orchestrator_briefing(
 /// Earlier versions pre-spawned a fixed 2x2 grid of idle workers. That decided
 /// the shape of the team before anyone knew what the work was, and burned four
 /// agent sessions holding a greeting.
-pub fn fleet(ctx: &RuntimeContext, cwd: Option<&str>, flavor: FleetFlavor) -> Result<()> {
-    fleet_with(ctx, cwd, flavor, &FleetOptions::default())
-}
-
-/// [`fleet`] with `options`: the same launch, with competition mode when
-/// `options.compete` is set.
+///
+/// `options.compete` adds competition mode. Unless `options.no_update`, every
+/// agent CLI updates first (ARC-32).
 pub fn fleet_with(
     ctx: &RuntimeContext,
     cwd: Option<&str>,
     flavor: FleetFlavor,
     options: &FleetOptions,
 ) -> Result<()> {
+    super::update::before_fleet(ctx, options.no_update);
     doctor::check(ctx)?;
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let cwd = resolve_cwd(ctx, cwd)?;
@@ -571,7 +571,10 @@ fn warn_about_missing_integrations(herdr: &Herdr) {
 /// 1 orchestrator (Claude, Fable) + 4 workers (2x Claude Sonnet xhigh, 1x Claude
 /// Opus xhigh, 1x Codex CLI), laid out as orchestrator-left with a 2x2 worker grid
 /// on the right, wired for two-way messaging via `horch tell`.
-pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<()> {
+///
+/// Unless `no_update`, every agent CLI updates first (ARC-32).
+pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>, no_update: bool) -> Result<()> {
+    super::update::before_fleet(ctx, no_update);
     doctor::check(ctx)?;
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let cwd = resolve_cwd(ctx, cwd)?;

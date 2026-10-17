@@ -46,6 +46,9 @@ fn main() {
         call.flush();
         return;
     }
+    if call.argv == ["update"] {
+        update(&call);
+    }
     if call.argv.first().map(String::as_str) != Some("app-server") {
         if let Some((label, spec)) = candidate_spec() {
             let id = write_rollout();
@@ -198,4 +201,21 @@ fn write_rollout() -> String {
         format!("{line}\n"),
     );
     id
+}
+
+/// `codex update`: record the call, then answer as the scenario says.
+/// `update_fail:codex` exits 1 with a coloured error line, and
+/// `update_hang:codex` sleeps 60 s first. Otherwise it prints 1 line and
+/// exits 0.
+fn update(call: &Call) -> ! {
+    call.flush();
+    if horch_e2e::scenario_has("update_fail:codex") {
+        eprintln!("\u{1b}[31merror: codex update failed: network unreachable\u{1b}[0m");
+        std::process::exit(1);
+    }
+    if horch_e2e::scenario_has("update_hang:codex") {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+    horch_e2e::say("codex-cli 0.158.0 is the latest version");
+    std::process::exit(0);
 }

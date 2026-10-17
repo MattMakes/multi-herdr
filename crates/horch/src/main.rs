@@ -52,6 +52,10 @@ enum Command {
         /// Project directory the fleet works in. Defaults to the current directory.
         #[arg(long)]
         cwd: Option<String>,
+        /// Do not update the agent CLIs before the first pane starts.
+        /// `HORCH_NO_UPDATE=1` does the same.
+        #[arg(long)]
+        no_update: bool,
     },
 
     /// Launch the fixed 5-pane orchestration workspace: 1 orchestrator (Fable) +
@@ -60,6 +64,27 @@ enum Command {
         /// Project directory. Defaults to the current directory.
         #[arg(long)]
         cwd: Option<String>,
+        /// Do not update the agent CLIs before the first pane starts.
+        /// `HORCH_NO_UPDATE=1` does the same.
+        #[arg(long)]
+        no_update: bool,
+    },
+
+    /// Run the update command of each installed agent CLI. `horch fleet`
+    /// does this before its first pane starts.
+    #[command(long_about = "Run the update command of each installed agent CLI: \
+                            claude update, codex update, opencode upgrade, agy update, \
+                            pi update --self, prime-agent update. With no NAME, all 6 \
+                            agent CLIs update at the same time. Exits 1 when 1 updater \
+                            fails or times out (HORCH_UPDATE_TIMEOUT_MS, default 180000).\n\n\
+                            herdr is never in the default list. `horch update herdr` \
+                            runs `herdr update` attached to this terminal: it can stop \
+                            the herdr server, and that closes every pane.")]
+    Update {
+        /// What to update: claude, codex, opencode, antigravity, pi, prime
+        /// or herdr. Defaults to the 6 agent CLIs.
+        #[arg(value_name = "NAME", value_parser = clap::builder::PossibleValuesParser::new(cmd::update::NAMES))]
+        names: Vec<String>,
     },
 
     /// Send a message into another pane's terminal.
@@ -533,8 +558,23 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Channel { command } => match command {
             ChannelSubcommand::Serve { agent } => cmd::channel::serve(ctx, agent)?,
         },
-        Command::Fleet { cwd, flavor } => cmd::recipes::fleet(ctx, cwd.as_deref(), flavor)?,
-        Command::Orchestration { cwd } => cmd::recipes::orchestration(ctx, cwd.as_deref())?,
+        Command::Fleet {
+            cwd,
+            flavor,
+            no_update,
+        } => cmd::recipes::fleet_with(
+            ctx,
+            cwd.as_deref(),
+            flavor,
+            &cmd::recipes::FleetOptions {
+                no_update,
+                ..Default::default()
+            },
+        )?,
+        Command::Orchestration { cwd, no_update } => {
+            cmd::recipes::orchestration(ctx, cwd.as_deref(), no_update)?
+        }
+        Command::Update { names } => return cmd::update::update(ctx, &names),
         Command::Tell { role, message } => cmd::messaging::tell(ctx, &role, &joined(&message))?,
         Command::Inbox => cmd::messaging::inbox(ctx)?,
         Command::Assign { role, task } => cmd::messaging::assign(ctx, &role, &joined(&task))?,
