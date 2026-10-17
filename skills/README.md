@@ -20,6 +20,7 @@ A bundle is one of these kinds:
 - `security-review` is a direct audit workflow with trust-boundary mapping, deduplication, false-positive verification, and evidence reports. It ships no scanner scripts, language catalogs, report assembler, or hierarchical agent pipeline.
 - `orchestrate` is own text, reconciled from the retired external `herdr-orchestrator` and `herdr-worker` skills against the real `horch` CLI: every command, flag and lifecycle claim in those two files was checked against `horch --help` and either carried, corrected or dropped. It is attached to `orchestrator` and `orchestrator-codex` by name and belongs to no phase.
 - `skill-creator` is a verbatim copy of a whole skill directory. It is attached to the Claude `orchestrator` by name and belongs to no phase. `horch teammates --check` fails any other teammate that names it, and every Claude pane switches off the official plugin and the claude.ai-synced copy. The skill tells its user to spawn subagents and to run `claude -p`; the orchestrator's persona tells it to take the skill's no-subagent path instead.
+- 13 Godot skills are adapted copies of the `godot-incremental` plugin of `MattMakes/skill-marketplace`: `godot-balance-model-data`, `godot-bot-balance-loop`, `godot-feature-seams-and-saves`, `godot-fleet-game-dev`, `godot-game-audio`, `godot-headless-runs`, `godot-perf-measure`, `godot-pixel-art-pipeline`, `godot-release-and-store`, `godot-safe-refactor`, `godot-test-loop`, `godot-upgrade-tree-design` and `godot-visual-verification`. The adaptations: each name has the `godot-` prefix; each plugin script is a code block on a `references/script-*.md` page; each `SKILL.md` moves detail into `references/*.md` to stay within the 12 KB budget.
 - `tdd` retains red/green/refactor for meaningful behavior changes and removes unrelated skill-authoring machinery and destructive instructions to delete existing work. Structural checks are appropriate for low-impact prose/config changes.
 
 ## Copied files
@@ -162,7 +163,7 @@ These skills belong to no phase; an Unreal Engine teammate attaches them by name
 
 ## Godot skills
 
-Skills for the 19 `godot-*` teammates (see [`teammates/README.md`](../teammates/README.md)). They belong to no phase; a Godot teammate attaches them by name. The 66 skills are of 4 kinds, named in the Kind column: 18 **renamed** or **adapted** skills; 36 **combined** skills, each a renamed skill with an extended description plus own-text `references/*.md`; and **own text**, which is 12 skills written in this repository (genres, gameplay loops, combat, economy, quests, dimension ports, version migration, `godot-project-context`, `godot-build-verify`, `godot-scene-files`, `godot-language-choice`, `godot-sound-design`). Own-text references and code blocks are written in this repository's own words. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human. The 5 addon skills name their pinned addon version in the text. The skills target Godot 4.7 only (4.7.2 is the latest stable release): `scripts/godot/api_check.py` checks the engine calls in a skill against a `--doctool` dump of 4.7.2, and `scripts/godot/gdscript_blocks_check.py` parses its GDScript blocks on 4.7.2. Each command in the own-text skills was run on Godot 4.7.2. Failures in copied text do not fail these checks; they ratchet against `scripts/godot/copied-baseline.json` (a count can only go down). `scripts/godot/gameplay_scenarios.py` runs the gameplay, combat, economy and quest bundles headless in the gate.
+Skills for the 19 `godot-*` teammates (see [`teammates/README.md`](../teammates/README.md)). They belong to no phase; a Godot teammate attaches them by name. The 79 skills are of 4 kinds, named in the Kind column: 31 **renamed** or **adapted** skills; 36 **combined** skills, each a renamed skill with an extended description plus own-text `references/*.md`; and **own text**, which is 12 skills written in this repository (genres, gameplay loops, combat, economy, quests, dimension ports, version migration, `godot-project-context`, `godot-build-verify`, `godot-scene-files`, `godot-language-choice`, `godot-sound-design`). Own-text references and code blocks are written in this repository's own words. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human. The 5 addon skills name their pinned addon version in the text. The skills target Godot 4.7 only (4.7.2 is the latest stable release): `scripts/godot/api_check.py` checks the engine calls in a skill against a `--doctool` dump of 4.7.2, and `scripts/godot/gdscript_blocks_check.py` parses its GDScript blocks on 4.7.2. Each command in the own-text skills was run on Godot 4.7.2. Failures in copied text do not fail these checks; they ratchet against `scripts/godot/copied-baseline.json` (a count can only go down). `scripts/godot/gameplay_scenarios.py` runs the gameplay, combat, economy and quest bundles headless in the gate.
 
 **Proof levels.** A note `proof: <level>` next to a claim says how far this repository proved it on Godot 4.7.2:
 
@@ -182,7 +183,9 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-animation-system](godot-animation-system/SKILL.md) | combined |
 | [godot-assets-pipeline](godot-assets-pipeline/SKILL.md) | renamed |
 | [godot-audio-system](godot-audio-system/SKILL.md) | combined |
+| [godot-balance-model-data](godot-balance-model-data/SKILL.md) | adapted |
 | [godot-beehave](godot-beehave/SKILL.md) | renamed |
+| [godot-bot-balance-loop](godot-bot-balance-loop/SKILL.md) | adapted |
 | [godot-brainstorming](godot-brainstorming/SKILL.md) | adapted |
 | [godot-build-verify](godot-build-verify/SKILL.md) | own text |
 | [godot-camera-system](godot-camera-system/SKILL.md) | combined |
@@ -200,12 +203,16 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-economy-system](godot-economy-system/SKILL.md) | own text |
 | [godot-event-bus](godot-event-bus/SKILL.md) | combined |
 | [godot-export-pipeline](godot-export-pipeline/SKILL.md) | combined |
+| [godot-feature-seams-and-saves](godot-feature-seams-and-saves/SKILL.md) | adapted |
+| [godot-fleet-game-dev](godot-fleet-game-dev/SKILL.md) | adapted |
+| [godot-game-audio](godot-game-audio/SKILL.md) | adapted |
 | [godot-gameplay-loops](godot-gameplay-loops/SKILL.md) | own text |
 | [godot-gdextension](godot-gdextension/SKILL.md) | renamed |
 | [godot-gdscript-advanced](godot-gdscript-advanced/SKILL.md) | combined |
 | [godot-gdscript-patterns](godot-gdscript-patterns/SKILL.md) | renamed |
 | [godot-genre-blueprints](godot-genre-blueprints/SKILL.md) | own text |
 | [godot-grill](godot-grill/SKILL.md) | adapted |
+| [godot-headless-runs](godot-headless-runs/SKILL.md) | adapted |
 | [godot-hud-system](godot-hud-system/SKILL.md) | renamed |
 | [godot-input-handling](godot-input-handling/SKILL.md) | combined |
 | [godot-inventory-system](godot-inventory-system/SKILL.md) | combined |
@@ -219,24 +226,31 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-multithreading](godot-multithreading/SKILL.md) | renamed |
 | [godot-optimization](godot-optimization/SKILL.md) | combined |
 | [godot-particles-vfx](godot-particles-vfx/SKILL.md) | combined |
+| [godot-perf-measure](godot-perf-measure/SKILL.md) | adapted |
 | [godot-phantom-camera](godot-phantom-camera/SKILL.md) | renamed |
 | [godot-physics-system](godot-physics-system/SKILL.md) | combined |
+| [godot-pixel-art-pipeline](godot-pixel-art-pipeline/SKILL.md) | adapted |
 | [godot-player-controller](godot-player-controller/SKILL.md) | combined |
 | [godot-popochiu](godot-popochiu/SKILL.md) | renamed |
 | [godot-procedural-generation](godot-procedural-generation/SKILL.md) | combined |
 | [godot-project-context](godot-project-context/SKILL.md) | own text |
 | [godot-project-setup](godot-project-setup/SKILL.md) | combined |
 | [godot-quest-system](godot-quest-system/SKILL.md) | own text |
+| [godot-release-and-store](godot-release-and-store/SKILL.md) | adapted |
 | [godot-resource-pattern](godot-resource-pattern/SKILL.md) | combined |
 | [godot-responsive-ui](godot-responsive-ui/SKILL.md) | renamed |
+| [godot-safe-refactor](godot-safe-refactor/SKILL.md) | adapted |
 | [godot-save-load](godot-save-load/SKILL.md) | combined |
 | [godot-scene-files](godot-scene-files/SKILL.md) | own text |
 | [godot-scene-organization](godot-scene-organization/SKILL.md) | combined |
 | [godot-shader-basics](godot-shader-basics/SKILL.md) | combined |
 | [godot-sound-design](godot-sound-design/SKILL.md) | own text |
 | [godot-state-machine](godot-state-machine/SKILL.md) | combined |
+| [godot-test-loop](godot-test-loop/SKILL.md) | adapted |
 | [godot-testing](godot-testing/SKILL.md) | combined |
 | [godot-tween-animation](godot-tween-animation/SKILL.md) | combined |
 | [godot-ui](godot-ui/SKILL.md) | combined |
+| [godot-upgrade-tree-design](godot-upgrade-tree-design/SKILL.md) | adapted |
 | [godot-version-migration](godot-version-migration/SKILL.md) | own text |
+| [godot-visual-verification](godot-visual-verification/SKILL.md) | adapted |
 | [godot-xr-development](godot-xr-development/SKILL.md) | combined |

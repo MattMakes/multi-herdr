@@ -32,6 +32,7 @@ skills:
   - godot-testing
   - godot-build-verify
   - godot-scene-files
+  - godot-headless-runs
 # Named by name only: related skills.
 available_skills: [godot-csharp-godot, godot-gdextension, godot-export-pipeline, godot-language-choice]
 # A C# project (a *.csproj next to project.godot) adds the C# skills to this

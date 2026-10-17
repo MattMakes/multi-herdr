@@ -30,8 +30,12 @@ skills:
   - godot-testing
   - godot-debugging
   - godot-build-verify
+  - godot-test-loop
+  - godot-headless-runs
+  - godot-bot-balance-loop
+  - godot-visual-verification
 # Named by name only: related skills.
-available_skills: [godot-dependency-injection, godot-gdscript-advanced, godot-optimization, godot-language-choice]
+available_skills: [godot-dependency-injection, godot-gdscript-advanced, godot-optimization, godot-language-choice, godot-fleet-game-dev]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
 # DONE: needs.
 mcp_servers: {}

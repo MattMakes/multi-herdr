@@ -31,8 +31,9 @@ skills:
   - godot-event-bus
   - godot-dependency-injection
   - godot-language-choice
+  - godot-fleet-game-dev
 # Named by name only: related skills.
-available_skills: [godot-component-system, godot-resource-pattern, godot-version-migration]
+available_skills: [godot-component-system, godot-resource-pattern, godot-version-migration, godot-balance-model-data, godot-upgrade-tree-design, godot-safe-refactor]
 # No MCP servers: the shell and `godot --doctool` give a worker everything
 # DONE: needs.
 mcp_servers: {}
