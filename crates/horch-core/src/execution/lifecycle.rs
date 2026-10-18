@@ -602,6 +602,7 @@ impl WorkerSteps for PaneWorker<'_> {
                 }),
                 fleet_window: roster
                     .fleet_window(&teammate, teammate.model.as_deref().unwrap_or_default()),
+                briefing_skill: None,
             },
         )
     }

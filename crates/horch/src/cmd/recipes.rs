@@ -437,7 +437,11 @@ pub fn fleet_with(
     })?;
 
     match &options.resume {
-        Some(id) => println!("Resuming orchestrator session {id} ({})...", flavor.label()),
+        Some(id) => println!(
+            "Resuming orchestrator session {id} ({}). No briefing is sent; \
+             type /orchestrator ($orchestrator in Codex) to re-brief it.",
+            flavor.label()
+        ),
         None => println!("Launching orchestrator ({})...", flavor.label()),
     }
     herdr.pane_run(
@@ -781,6 +785,13 @@ pub fn pane_launch(
         Some(id) if identity.resume => SessionMode::Resume(id),
         id => SessionMode::Fresh(id),
     };
+    // A fleet orchestrator always gets its briefing as `/orchestrator`. A
+    // resumed one already has it in context, so it is not sent again.
+    let fleet = matches!(
+        kind,
+        PaneKind::FleetOrchestrator | PaneKind::FleetCodexOrchestrator
+    );
+    let first_message = if identity.resume { "" } else { prompt.as_str() };
     let workdir = match &identity.record_id {
         Some(_) => Some(ctx.paths.project()?.to_string_lossy().into_owned()),
         None => None,
@@ -791,7 +802,7 @@ pub fn pane_launch(
             role,
             teammate: &teammate,
             session: &session,
-            prompt: &prompt,
+            prompt: first_message,
             model_override: model,
             exec_rules,
             child_env,
@@ -806,6 +817,7 @@ pub fn pane_launch(
                 &teammate,
                 model.or(teammate.model.as_deref()).unwrap_or_default(),
             ),
+            briefing_skill: fleet.then_some(prompt.as_str()),
         },
     )
 }

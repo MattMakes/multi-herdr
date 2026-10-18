@@ -66,6 +66,9 @@ horch fleet sol        # Codex on Sol
 To pick up an earlier orchestrator session in a new workspace, pass its session
 id: `horch fleet --resume <session-id>` (or `herdr-fleet --resume <session-id>`).
 Give the flavor it ran as when it wasn't Opus: `herdr-fleet sol --resume <id>`.
+The resumed orchestrator gets no briefing, since it already has one. Every fleet
+orchestrator can load it on demand: type `/orchestrator` (`$orchestrator` in
+Codex) to re-brief it, for example after it lands in a new workspace.
 
 You get one orchestrator pane and nothing else. It reads the roster, breaks the
 work down, and spawns exactly the workers each piece needs - then shuts them down
