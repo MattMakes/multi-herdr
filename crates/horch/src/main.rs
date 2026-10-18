@@ -58,6 +58,10 @@ enum Command {
         /// `HORCH_NO_UPDATE=1` does the same.
         #[arg(long)]
         no_update: bool,
+        /// Resume an earlier orchestrator session by its session id instead of
+        /// starting a new one. Give the flavor it ran as (e.g. `sol` for Codex).
+        #[arg(long, value_name = "SESSION_ID")]
+        resume: Option<String>,
     },
 
     /// Launch the fixed 5-pane orchestration workspace: 1 orchestrator (Fable) +
@@ -467,6 +471,9 @@ enum Command {
         /// The session id `horch fleet` minted for a claude orchestrator.
         #[arg(long, value_name = "ID")]
         session_id: Option<String>,
+        /// Resume `--session-id` rather than start it fresh.
+        #[arg(long, requires = "session_id")]
+        resume: bool,
         /// The state root, for a pane that does not inherit $HORCH_STATE_DIR.
         #[arg(long, value_name = "DIR")]
         state_dir: Option<String>,
@@ -592,12 +599,14 @@ fn run() -> Result<std::process::ExitCode> {
             cwd,
             flavor,
             no_update,
+            resume,
         } => cmd::recipes::fleet_with(
             ctx,
             cwd.as_deref(),
             flavor,
             &cmd::recipes::FleetOptions {
                 no_update,
+                resume,
                 ..Default::default()
             },
         )?,
@@ -822,6 +831,7 @@ fn run() -> Result<std::process::ExitCode> {
             teammates_dir,
             record_id,
             session_id,
+            resume,
             state_dir,
         } => {
             return cmd::recipes::pane_launch(
@@ -833,6 +843,7 @@ fn run() -> Result<std::process::ExitCode> {
                 cmd::recipes::PaneIdentity {
                     record_id,
                     session_id,
+                    resume,
                     state_dir,
                 },
             )
@@ -1033,9 +1044,28 @@ mod tests {
             vec!["horch", "quota", "--refresh", "--json"],
             vec!["horch", "route", "researcher", "--json"],
             vec!["horch", "fleet", "auto"],
+            vec![
+                "horch",
+                "fleet",
+                "--resume",
+                "0b6f8c1e-6c0e-4a43-9d7e-3f2a1b4c5d6e",
+            ],
+            vec!["horch", "fleet", "sol", "--resume", "thread-1"],
         ] {
             assert!(Cli::try_parse_from(argv.clone()).is_ok(), "{argv:?}");
         }
+    }
+
+    /// `horch fleet --resume` reaches the pane as `--session-id <id> --resume`;
+    /// a bare `--resume` has no session to continue.
+    #[test]
+    fn pane_launch_resume_needs_a_session_id() {
+        let base = ["horch", "pane-launch", "--role", "orchestrator", "--kind"];
+        let kind = cmd::recipes::PaneKind::FleetOrchestrator.as_str();
+        let with_id = [&base[..], &[kind, "--session-id", "s-1", "--resume"]].concat();
+        assert!(Cli::try_parse_from(with_id).is_ok());
+        let without = [&base[..], &[kind, "--resume"]].concat();
+        assert!(Cli::try_parse_from(without).is_err());
     }
 
     #[test]

@@ -190,6 +190,8 @@ fn pane_command(
 struct PaneRecord<'a> {
     record_id: &'a str,
     session_id: Option<&'a str>,
+    /// Resume `session_id` rather than start it fresh.
+    resume: bool,
 }
 
 /// [`pane_command`], carrying a ledger record for the pane.
@@ -225,6 +227,9 @@ fn pane_command_for(
         if let Some(sid) = record.session_id {
             args.push("--session-id".to_string());
             args.push(sid.to_string());
+            if record.resume {
+                args.push("--resume".to_string());
+            }
         }
         // The same reason as the roster path: the ledger this record lives
         // in must be the one the pane writes.
@@ -298,6 +303,8 @@ pub struct FleetOptions {
     pub compete: Option<CompeteSettings>,
     /// `--no-update`: skip the agent CLI update step (ARC-34).
     pub no_update: bool,
+    /// Some: the orchestrator resumes this session instead of starting fresh.
+    pub resume: Option<String>,
 }
 
 /// The briefing of a fleet orchestrator: the base briefing, then with
@@ -336,8 +343,9 @@ pub(crate) fn orchestrator_briefing(
 /// the shape of the team before anyone knew what the work was, and burned four
 /// agent sessions holding a greeting.
 ///
-/// `options.compete` adds competition mode. Unless `options.no_update`, every
-/// agent CLI updates first (ARC-32).
+/// `options.compete` adds competition mode; `options.resume` continues an
+/// earlier orchestrator session instead of starting a new one. Unless
+/// `options.no_update`, every agent CLI updates first (ARC-32).
 pub fn fleet_with(
     ctx: &RuntimeContext,
     cwd: Option<&str>,
@@ -391,11 +399,16 @@ pub fn fleet_with(
     let roster = super::load_roster(ctx, None)?.with_project_facts(project_facts(Path::new(&cwd)));
     let teammate = &roster.for_launch(roster.require(orchestrator_teammate(kind))?.clone());
     let record_id = horch_core::mint_uuid();
-    let session_id = teammate
-        .agent
-        .capabilities()
-        .caller_minted_session
-        .then(horch_core::mint_uuid);
+    // A resumed session's id is known up front for every agent, so the new
+    // record carries it and no discovery is needed.
+    let session_id = match &options.resume {
+        Some(id) => Some(SessionId::new(id.clone())?.as_str().to_string()),
+        None => teammate
+            .agent
+            .capabilities()
+            .caller_minted_session
+            .then(horch_core::mint_uuid),
+    };
     // The record lists the skills the launch will activate, as a worker's
     // does (SKL-04): the launch fails on a record whose skills differ.
     let home = ctx.inherited.home_var.as_deref().map(Path::new);
@@ -423,7 +436,10 @@ pub fn fleet_with(
         ..Record::default()
     })?;
 
-    println!("Launching orchestrator ({})...", flavor.label());
+    match &options.resume {
+        Some(id) => println!("Resuming orchestrator session {id} ({})...", flavor.label()),
+        None => println!("Launching orchestrator ({})...", flavor.label()),
+    }
     herdr.pane_run(
         &ws.root_pane_id,
         &pane_command_for(
@@ -434,6 +450,7 @@ pub fn fleet_with(
             Some(PaneRecord {
                 record_id: &record_id,
                 session_id: session_id.as_deref(),
+                resume: options.resume.is_some(),
             }),
             options.compete.as_ref(),
         )?,
@@ -642,6 +659,8 @@ pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>, no_update: bool) -
 pub struct PaneIdentity {
     pub record_id: Option<String>,
     pub session_id: Option<String>,
+    /// Resume `session_id` rather than start it fresh (`horch fleet --resume`).
+    pub resume: bool,
     pub state_dir: Option<String>,
 }
 
@@ -756,7 +775,12 @@ pub fn pane_launch(
     };
     // A managed session when `horch fleet` minted an id (claude); a codex
     // orchestrator's id is discovered after launch, as a worker's is.
-    let session = SessionMode::Fresh(identity.session_id.map(SessionId::new).transpose()?);
+    // `horch fleet --resume` passes the id to continue, for either agent.
+    let session_id = identity.session_id.map(SessionId::new).transpose()?;
+    let session = match session_id {
+        Some(id) if identity.resume => SessionMode::Resume(id),
+        id => SessionMode::Fresh(id),
+    };
     let workdir = match &identity.record_id {
         Some(_) => Some(ctx.paths.project()?.to_string_lossy().into_owned()),
         None => None,
