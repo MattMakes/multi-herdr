@@ -7,8 +7,7 @@ phase: research
 model: opus
 # When this model's usage pool cannot serve a spawn (horch route product-lead).
 fallbacks: [codex-sol]
-# high: plans and product calls are where a wrong turn is expensive, but
-# the orchestrator above already runs at xhigh.
+# high: plans and product calls are where a wrong turn is expensive.
 effort: high
 compact_window: 200000
 compact_at: 300000

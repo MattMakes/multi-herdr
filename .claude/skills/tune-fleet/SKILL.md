@@ -82,7 +82,7 @@ Each rule below comes from cezaar#40 or from measurement in this repo:
    - reviewers and planners: high;
    - researchers: medium;
    - runners: low;
-   - the orchestrator: xhigh.
+   - the orchestrator: medium.
 2. **Lower effort** where a role is expensive and its output passes review
    the first time.
 3. **Raise effort** where a role's output keeps failing review rounds. One

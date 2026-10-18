@@ -408,6 +408,33 @@ pub struct LaunchRequest<'a> {
     /// The fleet's native window for this teammate and model, with its
     /// source (`Roster::fleet_window`). None: no fleet default.
     pub fleet_window: Option<(u64, String)>,
+    /// Some: also offer this briefing as the user-invoked skill
+    /// [`BRIEFING_SKILL`], so a resumed session can be re-briefed on demand.
+    pub briefing_skill: Option<&'a str>,
+}
+
+/// The skill a fleet orchestrator's briefing is offered as: `/orchestrator`
+/// in Claude Code, `$orchestrator` in Codex.
+pub const BRIEFING_SKILL: &str = "orchestrator";
+
+/// Write `briefing` as `<skills_dir>/orchestrator/SKILL.md`. It is not in the
+/// activation plan, so the ledger's skill check never sees it. Only the
+/// operator invokes it: `disable-model-invocation` keeps the model from
+/// loading a whole briefing on its own.
+fn write_briefing_skill(skills_dir: &Path, briefing: &str) -> Result<()> {
+    let dir = skills_dir.join(BRIEFING_SKILL);
+    std::fs::create_dir_all(skills_dir)?;
+    // create_dir, not create_dir_all: a catalog skill of the same name fails
+    // here rather than being overwritten.
+    std::fs::create_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let text = format!(
+        "---\nname: {BRIEFING_SKILL}\ndescription: The fleet orchestrator briefing. \
+         Invoke to (re)load your role, channel, roster and rules, e.g. after a resume.\n\
+         disable-model-invocation: true\n---\n\n{}\n",
+        briefing.trim_end()
+    );
+    std::fs::write(dir.join("SKILL.md"), text)?;
+    Ok(())
 }
 
 /// Where a discovered session id goes, and which sessions are candidates.
@@ -446,6 +473,15 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     let caps = adapter.capabilities();
     // Held across the launch, so lazy reads of the bundle remain valid.
     let skills = install_skills(ctx, &req)?;
+    if let Some(briefing) = req.briefing_skill {
+        match skills.as_ref().filter(|b| !b.plan().activated.is_empty()) {
+            Some(bundle) => write_briefing_skill(&bundle.skills_dir(), briefing)?,
+            None => eprintln!(
+                "horch[{}]: NOTE: no skills bundle, so /{BRIEFING_SKILL} is not offered",
+                req.role
+            ),
+        }
+    }
     // The intended window decision, before `prepare` (Prime's reads it).
     let model = req
         .model_override
@@ -1242,6 +1278,25 @@ mod tests {
 
     /// No agent CLI receives ANTHROPIC_API_KEY, whatever the shell exports
     /// and whatever a teammate's `env:` says.
+    /// The briefing becomes a user-invoked `orchestrator` skill, and a
+    /// catalog skill of the same name is never overwritten.
+    #[test]
+    fn briefing_skill_is_user_invoked_and_never_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        write_briefing_skill(&skills, "You are the ORCHESTRATOR.\n").unwrap();
+        let text = std::fs::read_to_string(skills.join("orchestrator/SKILL.md")).unwrap();
+        assert!(text.starts_with("---\nname: orchestrator\n"), "{text}");
+        assert!(
+            text.contains("\ndisable-model-invocation: true\n---\n"),
+            "{text}"
+        );
+        assert!(text.ends_with("\n\nYou are the ORCHESTRATOR.\n"), "{text}");
+        assert!(write_briefing_skill(&skills, "other").is_err());
+        let again = std::fs::read_to_string(skills.join("orchestrator/SKILL.md")).unwrap();
+        assert_eq!(again, text);
+    }
+
     /// The bundle is named for its execution, unless that name is not one
     /// plain path component or is taken; then it gets a fresh id.
     #[test]
@@ -1490,7 +1545,7 @@ mod tests {
         let a = argv(&cmd);
         assert!(a.contains(&r#"model="gpt-6-astra""#.to_string()), "{a:?}");
         assert!(
-            a.contains(&r#"model_reasoning_effort="xhigh""#.to_string()),
+            a.contains(&r#"model_reasoning_effort="medium""#.to_string()),
             "{a:?}"
         );
         assert!(
@@ -2588,6 +2643,7 @@ mod tests {
                     child_env: Vec::new(),
                     record: None,
                     fleet_window: None,
+                    briefing_skill: None,
                 },
             )
             .unwrap();

@@ -4969,7 +4969,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestration-orchestrator"
       },
@@ -4997,7 +4997,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestration-orchestrator"
       },
@@ -5025,7 +5025,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestration-orchestrator"
       },
@@ -5053,7 +5053,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestration-orchestrator"
       },
@@ -5081,7 +5081,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestration-orchestrator"
       },
@@ -5109,7 +5109,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestration-orchestrator"
       },
@@ -5137,7 +5137,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestration-orchestrator"
       },
@@ -5165,7 +5165,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestration-orchestrator"
       },
@@ -5193,7 +5193,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestration-orchestrator"
       },
@@ -5221,7 +5221,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": null,
         "name": "orchestration-worker"
       },
@@ -5249,7 +5249,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": null,
         "name": "orchestration-worker"
       },
@@ -5277,7 +5277,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": null,
         "name": "orchestration-worker"
       },
@@ -5305,7 +5305,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": null,
         "name": "orchestration-worker"
       },
@@ -5333,7 +5333,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": null,
         "name": "orchestration-worker"
       },
@@ -5361,7 +5361,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": null,
         "name": "orchestration-worker"
       },
@@ -5389,7 +5389,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": null,
         "name": "orchestration-worker"
       },
@@ -5417,7 +5417,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": null,
         "name": "orchestration-worker"
       },
@@ -5445,7 +5445,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": null,
         "name": "orchestration-worker"
       },
@@ -5473,7 +5473,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "gpt-6-astra",
         "name": "orchestrator-codex"
       },
@@ -5501,7 +5501,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "gpt-6-astra",
         "name": "orchestrator-codex"
       },
@@ -5529,7 +5529,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "gpt-6-astra",
         "name": "orchestrator-codex"
       },
@@ -5557,7 +5557,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "gpt-6-astra",
         "name": "orchestrator-codex"
       },
@@ -5585,7 +5585,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "gpt-6-astra",
         "name": "orchestrator-codex"
       },
@@ -5613,7 +5613,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "gpt-6-astra",
         "name": "orchestrator-codex"
       },
@@ -5641,7 +5641,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "gpt-6-astra",
         "name": "orchestrator-codex"
       },
@@ -5669,7 +5669,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "gpt-6-astra",
         "name": "orchestrator-codex"
       },
@@ -5697,7 +5697,7 @@
       },
       "resolved": {
         "agent": "codex",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "gpt-6-astra",
         "name": "orchestrator-codex"
       },
@@ -5725,7 +5725,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestrator"
       },
@@ -5753,7 +5753,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestrator"
       },
@@ -5781,7 +5781,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestrator"
       },
@@ -5809,7 +5809,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestrator"
       },
@@ -5837,7 +5837,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestrator"
       },
@@ -5865,7 +5865,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestrator"
       },
@@ -5893,7 +5893,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestrator"
       },
@@ -5921,7 +5921,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestrator"
       },
@@ -5949,7 +5949,7 @@
       },
       "resolved": {
         "agent": "claude",
-        "effort": "xhigh",
+        "effort": "medium",
         "model": "fable",
         "name": "orchestrator"
       },

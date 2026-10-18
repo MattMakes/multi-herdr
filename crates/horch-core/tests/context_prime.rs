@@ -436,6 +436,7 @@ fn ctx_05_prime_launch_records_the_applied_window() {
                 workdir: &workdir,
             }),
             fleet_window: roster.fleet_window(&t, MODEL),
+            briefing_skill: None,
         },
     )
     .unwrap();

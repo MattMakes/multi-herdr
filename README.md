@@ -63,6 +63,13 @@ horch fleet sol        # Codex on Sol
 `cc` and `claude` still work and mean `opus`. The launcher takes the same words:
 `herdr-fleet sol`.
 
+To pick up an earlier orchestrator session in a new workspace, pass its session
+id: `horch fleet --resume <session-id>` (or `herdr-fleet --resume <session-id>`).
+Give the flavor it ran as when it wasn't Opus: `herdr-fleet sol --resume <id>`.
+The resumed orchestrator gets no briefing, since it already has one. Every fleet
+orchestrator can load it on demand: type `/orchestrator` (`$orchestrator` in
+Codex) to re-brief it, for example after it lands in a new workspace.
+
 You get one orchestrator pane and nothing else. It reads the roster, breaks the
 work down, and spawns exactly the workers each piece needs - then shuts them down
 as they finish. No worker is started before there is a job for it.
@@ -498,7 +505,7 @@ Effort follows the role, as in
 - builders run at medium, because the thinking belongs in their brief;
 - reviewers and planners run at high, because a missed finding costs a whole
   review round;
-- the orchestrator runs at xhigh.
+- the orchestrator runs at medium.
 
 `horch spawn <teammate> --effort <level>` overrides the level for one spawn,
 and the ledger records the level each session actually ran at. Levels are not

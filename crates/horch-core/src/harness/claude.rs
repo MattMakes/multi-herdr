@@ -298,7 +298,10 @@ pub(super) fn claude_command(
     // Escape-hatch args sit right before the prompt: a variadic flag at the
     // end of `args` would eat it. `Roster::check` warns about that.
     cmd.args(&teammate.args);
-    cmd.arg(prompt);
+    // An empty prompt is no prompt: a resumed orchestrator starts idle.
+    if !prompt.is_empty() {
+        cmd.arg(prompt);
+    }
     Ok(cmd)
 }
 
@@ -887,6 +890,27 @@ mod tests {
         let model_at = args.iter().position(|arg| arg == "--model").unwrap();
         assert!(channel_at < model_at, "{args:?}");
         assert_eq!(args.last().map(String::as_str), Some("the prompt"));
+    }
+
+    /// A resumed fleet orchestrator gets no prompt: `--resume <id>` ends
+    /// the command line, with no empty argument after it.
+    #[test]
+    fn an_empty_prompt_is_left_off_the_command_line() {
+        let teammate = Teammate {
+            model: Some("opus".into()),
+            ..Default::default()
+        };
+        let args = command_args(
+            &claude_command(
+                &LaunchEnv::for_test(),
+                &teammate,
+                Session::Resume("s-1"),
+                "",
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(&args[args.len() - 2..], ["--resume", "s-1"], "{args:?}");
     }
 
     #[test]

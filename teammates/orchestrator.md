@@ -11,7 +11,7 @@ phase: plan
 # ambient copies (the official plugin, the claude.ai-synced one).
 skills: [orchestrate, skill-creator]
 model: fable
-effort: xhigh
+effort: medium
 compact_window: 300000
 compact_at: 300000
 # Auto mode: a classifier approves routine actions, so the orchestrator does

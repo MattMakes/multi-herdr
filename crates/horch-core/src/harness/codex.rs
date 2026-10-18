@@ -1154,7 +1154,10 @@ pub(super) fn codex_command(
     if let Session::Resume(id) = session {
         cmd.arg(id);
     }
-    cmd.arg(prompt);
+    // An empty prompt is no prompt: a resumed orchestrator starts idle.
+    if !prompt.is_empty() {
+        cmd.arg(prompt);
+    }
     Ok(cmd)
 }
 
@@ -1406,6 +1409,31 @@ mod tests {
         assert!(!args
             .iter()
             .any(|arg| arg.starts_with("model_catalog_json=")));
+    }
+
+    /// A resumed fleet orchestrator gets no prompt: the thread id ends the
+    /// command line, with no empty argument after it.
+    #[test]
+    fn an_empty_prompt_is_left_off_the_command_line() {
+        let teammate = Teammate {
+            model: Some("gpt-5.6-sol".into()),
+            ..Default::default()
+        };
+        let args = command_args(
+            &codex_command(
+                &LaunchEnv::for_test(),
+                &teammate,
+                Session::Resume("thread-1"),
+                "",
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("thread-1"),
+            "{args:?}"
+        );
     }
 
     #[test]
