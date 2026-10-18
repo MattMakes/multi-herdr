@@ -12,6 +12,8 @@ use clap::{Parser, Subcommand};
 use horch::{bootstrap, exit, output};
 use horch_core::execution::service::SpawnError;
 use horch_core::execution::TilingMode;
+use horch_core::runtime::{EnvSource, ProcessEnv};
+use horch_core::workspace::herdr::HerdrFailed;
 use horch_core::workspace::model::Direction;
 
 #[derive(Parser)]
@@ -543,9 +545,37 @@ fn main() -> std::process::ExitCode {
         }
         Err(e) => {
             eprintln!("horch: {e:#}");
+            if let Some(hint) = codex_sandbox_hint(&e, ProcessEnv.var("CODEX_SANDBOX").as_deref()) {
+                eprintln!("horch: {hint}");
+            }
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// What to do when herdr failed inside Codex's sandbox. `codex_sandbox` is
+/// `CODEX_SANDBOX`, which Codex sets in every command it runs sandboxed.
+/// The sandbox has no network, so herdr's socket is never reachable from it.
+/// An execpolicy `allow` lifts the sandbox only for a command that matches
+/// the rule's prefix on its own, so `horch spawn` at the end of a script with
+/// a heredoc ran sandboxed, and a Codex orchestrator reported the fleet
+/// BLOCKED.
+fn codex_sandbox_hint(e: &anyhow::Error, codex_sandbox: Option<&str>) -> Option<&'static str> {
+    fn herdr_failed(e: &anyhow::Error) -> bool {
+        // `SpawnError` carries its cause in `Display`, not `source()`.
+        let inner = match e.downcast_ref::<SpawnError>() {
+            Some(SpawnError::LaunchFailed { source, .. } | SpawnError::Store(source)) => {
+                herdr_failed(source)
+            }
+            _ => false,
+        };
+        inner || e.chain().any(|c| c.is::<HerdrFailed>())
+    }
+    (codex_sandbox.is_some() && herdr_failed(e)).then_some(
+        "this ran inside the Codex sandbox, which blocks herdr's socket. It is not a \
+         fleet failure: run the horch command again on its own, as the whole command, \
+         with no `;`, `&&`, `|`, redirect or heredoc. Write any file in a separate command first.",
+    )
 }
 
 fn run() -> Result<std::process::ExitCode> {
@@ -816,6 +846,45 @@ fn run() -> Result<std::process::ExitCode> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    /// The failure a Codex orchestrator hit on `horch spawn`, verbatim.
+    #[cfg(unix)]
+    fn herdr_denied() -> anyhow::Error {
+        use std::os::unix::process::ExitStatusExt;
+        HerdrFailed {
+            command: "pane get wT:p1".into(),
+            status: std::process::ExitStatus::from_raw(256),
+            stderr: r#"Error: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }"#
+                .into(),
+        }
+        .into()
+    }
+
+    /// `horch spawn` at the end of a compound command ran in Codex's sandbox,
+    /// and the orchestrator reported the fleet BLOCKED. The hint names the cause
+    /// and the rerun, through the spawn error that wraps the herdr one.
+    #[cfg(unix)]
+    #[test]
+    fn a_herdr_failure_in_the_codex_sandbox_says_to_run_horch_alone() {
+        let spawn: anyhow::Error = SpawnError::LaunchFailed {
+            id: horch_core::ids::ExecutionId::new("1a00fce6-6ca6-42ab-9d41-9cff5404221b").unwrap(),
+            stage: horch_core::execution::LaunchStage::Split,
+            source: herdr_denied(),
+        }
+        .into();
+        for e in [herdr_denied(), herdr_denied().context("horch tell"), spawn] {
+            let hint = codex_sandbox_hint(&e, Some("seatbelt")).unwrap();
+            assert!(hint.contains("on its own"), "{hint}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_sandbox_hint_outside_the_sandbox_or_for_another_failure() {
+        assert_eq!(codex_sandbox_hint(&herdr_denied(), None), None);
+        let other = anyhow::anyhow!("roster: no teammate named 'x'");
+        assert_eq!(codex_sandbox_hint(&other, Some("seatbelt")), None);
+    }
 
     #[test]
     fn cli_definition_is_valid() {

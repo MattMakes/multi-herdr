@@ -69,6 +69,24 @@ struct WorkspaceCreateResult {
     root_pane: Pane,
 }
 
+/// A `herdr` command that exited non-zero, with herdr's own stderr, which is
+/// what actually explains a failure. Typed so the CLI can tell a herdr failure
+/// from any other without reading the message (ARC-22).
+#[derive(Debug)]
+pub struct HerdrFailed {
+    pub command: String,
+    pub status: std::process::ExitStatus,
+    pub stderr: String,
+}
+
+impl std::fmt::Display for HerdrFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "herdr {} failed ({}): {}", self.command, self.status, self.stderr)
+    }
+}
+
+impl std::error::Error for HerdrFailed {}
+
 /// Handle to the `herdr` executable.
 #[derive(Debug, Clone)]
 pub struct Herdr {
@@ -96,12 +114,12 @@ impl Herdr {
                 .iter()
                 .map(|a| a.as_ref().to_string_lossy().into_owned())
                 .collect();
-            bail!(
-                "herdr {} failed ({}): {}",
-                rendered.join(" "),
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
+            return Err(HerdrFailed {
+                command: rendered.join(" "),
+                status: out.status,
+                stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            }
+            .into());
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
