@@ -133,6 +133,7 @@ fn prepare(w: &World, ctx: &RuntimeContext, t: &Teammate, decision: &WindowDecis
                 teammate: t,
                 model: MODEL,
                 workdir: &w.workdir,
+                shell_env: &[],
             },
         )
         .unwrap()
@@ -1023,6 +1024,7 @@ fn live_prime_tui_start_and_finish() {
                 teammate: &t,
                 model: MODEL,
                 workdir: &workdir,
+                shell_env: &[],
             },
         )
         .unwrap();

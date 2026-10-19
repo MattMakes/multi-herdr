@@ -64,6 +64,7 @@ fn harness_codex_rules_snapshot() {
                     teammate: roster.require("codex-sol").unwrap(),
                     model: "gpt-5.6-sol",
                     workdir: tmp.path(),
+                    shell_env: &[],
                 },
             )
             .unwrap();
@@ -109,6 +110,7 @@ fn harness_prime_daemon_args_snapshot() {
                     teammate: &teammate,
                     model: "anthropic/claude-opus-5-5",
                     workdir: tmp.path(),
+                    shell_env: &[],
                 },
             )
             .unwrap();
