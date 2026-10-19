@@ -168,13 +168,16 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     if req.report_to == ReportTarget::Orchestrator {
         if let Err(e) = steps.report(&format!("[{role}] DONE: {summary}")) {
             steps.report_failed(req.record_id, &format!("{e:#}"));
-            bail!(
-                "horch done: the report did not reach the orchestrator: {e:#}\n\
+            // A context, not a new error: the CLI's sandbox hint looks for
+            // the herdr failure in the chain.
+            return Err(e.context(
+                "horch done: the report did not reach the orchestrator.\n\
                  This pane stays open. The record is not done. Your role stays registered.\n\
                  Fix the cause if you can, then run the same horch done command again.\n\
                  If it fails again, record your summary with horch note and end your turn.\n\
-                 Do not close this pane."
-            );
+                 Do not close this pane.\n\
+                 The cause",
+            ));
         }
     }
     // After the report: a claim marked unlanded is not open, and a retry of
@@ -952,14 +955,18 @@ mod tests {
         };
         let error = done(&ws, &steps, &claim_request(&pane, Some("cannot rebase"))).unwrap_err();
         assert!(
-            error.to_string().contains("channel relay refused"),
-            "{error}"
+            format!("{error:#}").contains("This pane stays open. The record is not done."),
+            "{error:#}"
+        );
+        assert!(
+            format!("{error:#}").ends_with("The cause: channel relay refused"),
+            "{error:#}"
         );
         assert!(steps.marked_unlanded.borrow().is_empty());
         assert!(steps.marked_done.borrow().is_empty());
         assert_eq!(steps.report_failures.borrow().len(), 1);
         assert!(steps.report_failures.borrow()[0].contains("channel relay refused"));
-        assert_eq!(ws.pane_ids(), [pane.clone()], "the pane stays open");
+        assert_eq!(ws.pane_ids(), vec![pane.clone()], "the pane stays open");
 
         let retry = ClaimSteps::with_claim();
         done(&ws, &retry, &claim_request(&pane, Some("cannot rebase"))).unwrap();

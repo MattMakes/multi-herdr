@@ -562,10 +562,17 @@ fn worker_var(
     ctx.worker.as_ref().and_then(|w| field(w).clone())
 }
 
-/// A required environment value, with a message naming what sets it.
+/// A required environment value, with a message naming what sets it. A
+/// worker that sets it inline instead runs sandboxed in Codex, where its
+/// report cannot get out (W2 C1), so the message says not to.
 fn require_env(key: &str, value: Option<String>) -> Result<String> {
     value.filter(|v| !v.is_empty()).with_context(|| {
-        format!("{key} is unset (this command runs inside a `horch spawn` worker pane)")
+        format!(
+            "{key} is unset (this command runs inside a `horch spawn` worker pane). \
+             Do not set it yourself: in Codex, a command with a variable prefix runs in \
+             the sandbox and cannot reach the orchestrator. Run the plain horch command \
+             from the project directory, and tell the operator if it fails again"
+        )
     })
 }
 
@@ -606,6 +613,18 @@ mod tests {
             inbox_listing(&roles, true),
             "orchestrator p1  (channel)\nsonnet-1     p2\n"
         );
+    }
+
+    /// W2 C1: a worker that met this error set the variable inline, ran
+    /// sandboxed in Codex, and lost its report. The error says not to.
+    #[test]
+    fn w2_an_unset_variable_says_not_to_set_it_inline() {
+        let text = require_env("HORCH_RECORD_ID", None)
+            .unwrap_err()
+            .to_string();
+        assert!(text.starts_with("HORCH_RECORD_ID is unset"), "{text}");
+        assert!(text.contains("Do not set it yourself"), "{text}");
+        assert_eq!(require_env("HORCH_ROLE", Some("r".into())).unwrap(), "r");
     }
 
     #[test]

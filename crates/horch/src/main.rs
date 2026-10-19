@@ -552,7 +552,9 @@ fn main() -> std::process::ExitCode {
         }
         Err(e) => {
             eprintln!("horch: {e:#}");
-            if let Some(hint) = codex_sandbox_hint(&e, ProcessEnv.var("CODEX_SANDBOX").as_deref()) {
+            let argv: Vec<String> = std::env::args().collect();
+            let sandbox = ProcessEnv.var("CODEX_SANDBOX");
+            if let Some(hint) = codex_sandbox_hint(&e, sandbox.as_deref(), &plain_command(&argv)) {
                 eprintln!("horch: {hint}");
             }
             std::process::ExitCode::FAILURE
@@ -566,8 +568,14 @@ fn main() -> std::process::ExitCode {
 /// An execpolicy `allow` lifts the sandbox only for a command that matches
 /// the rule's prefix on its own, so `horch spawn` at the end of a script with
 /// a heredoc ran sandboxed, and a Codex orchestrator reported the fleet
-/// BLOCKED.
-fn codex_sandbox_hint(e: &anyhow::Error, codex_sandbox: Option<&str>) -> Option<&'static str> {
+/// BLOCKED. A worker that set the fleet variables inline lost its report
+/// the same way (W2 C1), so the hint ends with `command`, the exact command
+/// to run.
+fn codex_sandbox_hint(
+    e: &anyhow::Error,
+    codex_sandbox: Option<&str>,
+    command: &str,
+) -> Option<String> {
     fn herdr_failed(e: &anyhow::Error) -> bool {
         // `SpawnError` carries its cause in `Display`, not `source()`.
         let inner = match e.downcast_ref::<SpawnError>() {
@@ -578,11 +586,35 @@ fn codex_sandbox_hint(e: &anyhow::Error, codex_sandbox: Option<&str>) -> Option<
         };
         inner || e.chain().any(|c| c.is::<HerdrFailed>())
     }
-    (codex_sandbox.is_some() && herdr_failed(e)).then_some(
-        "this ran inside the Codex sandbox, which blocks herdr's socket. It is not a \
-         fleet failure: run the horch command again on its own, as the whole command, \
-         with no `;`, `&&`, `|`, redirect or heredoc. Write any file in a separate command first.",
-    )
+    (codex_sandbox.is_some() && herdr_failed(e)).then(|| {
+        format!(
+            "this ran inside the Codex sandbox, which blocks herdr's socket and the \
+             channel relay. It is not a fleet failure. Write any file in a separate \
+             command first. Then run exactly this, as the whole command, with no \
+             variable prefix, `env`, `export`, `cd`, `;`, `&&`, `|`, redirect, heredoc \
+             or script:\n  {command}"
+        )
+    })
+}
+
+/// `argv` as one shell command, with `horch` as the program and each other
+/// word quoted when it needs it.
+fn plain_command(argv: &[String]) -> String {
+    let words = argv.iter().skip(1).map(|word| {
+        let plain = !word.is_empty()
+            && word
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_./:=@%+,".contains(&b));
+        if plain {
+            word.clone()
+        } else {
+            format!("'{}'", word.replace('\'', r"'\''"))
+        }
+    });
+    std::iter::once("horch".to_string())
+        .chain(words)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn run() -> Result<std::process::ExitCode> {
@@ -884,17 +916,40 @@ mod tests {
         }
         .into();
         for e in [herdr_denied(), herdr_denied().context("horch tell"), spawn] {
-            let hint = codex_sandbox_hint(&e, Some("seatbelt")).unwrap();
-            assert!(hint.contains("on its own"), "{hint}");
+            let hint = codex_sandbox_hint(&e, Some("seatbelt"), "horch spawn x").unwrap();
+            assert!(hint.contains("as the whole command"), "{hint}");
         }
+    }
+
+    /// W2 C1: a worker that set the variables inline, or ran `horch done`
+    /// from a script, ran sandboxed and lost its report. The hint gives the
+    /// exact plain command to run, quoted for the shell, also through the
+    /// error of a `horch done` whose report failed.
+    #[cfg(unix)]
+    #[test]
+    fn w2_the_sandbox_hint_names_the_exact_command() {
+        let argv = ["horch", "done", "It's finished; tests pass"].map(String::from);
+        let command = plain_command(&argv);
+        assert_eq!(command, r#"horch done 'It'\''s finished; tests pass'"#);
+        let done = herdr_denied().context("horch done: the report did not reach the orchestrator");
+        let hint = codex_sandbox_hint(&done, Some("seatbelt"), &command).unwrap();
+        assert!(hint.ends_with(&format!("\n  {command}")), "{hint}");
+        assert!(hint.contains("variable prefix"), "{hint}");
+        assert_eq!(
+            plain_command(&["horch", "note", "x"].map(String::from)),
+            "horch note x"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn no_sandbox_hint_outside_the_sandbox_or_for_another_failure() {
-        assert_eq!(codex_sandbox_hint(&herdr_denied(), None), None);
+        assert_eq!(codex_sandbox_hint(&herdr_denied(), None, "horch x"), None);
         let other = anyhow::anyhow!("roster: no teammate named 'x'");
-        assert_eq!(codex_sandbox_hint(&other, Some("seatbelt")), None);
+        assert_eq!(
+            codex_sandbox_hint(&other, Some("seatbelt"), "horch x"),
+            None
+        );
     }
 
     #[test]

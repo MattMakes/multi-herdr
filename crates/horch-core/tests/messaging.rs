@@ -217,14 +217,14 @@ fn arc_21_done_order() {
     // the worker what to do next.
     let (ws, pane) = one_pane();
     let rec = Recorder::new(&ws, true);
-    let error = lifecycle::done(&ws, &rec, &request(&pane, ReportTarget::Orchestrator))
-        .unwrap_err()
-        .to_string();
+    let error =
+        lifecycle::done(&ws, &rec, &request(&pane, ReportTarget::Orchestrator)).unwrap_err();
+    let error = format!("{error:#}");
     assert_eq!(
         rec.finish(),
         ["report [sonnet-1] DONE: The report is written."]
     );
-    assert_eq!(ws.pane_ids(), [pane.clone()], "the pane stays open");
+    assert_eq!(ws.pane_ids(), vec![pane.clone()], "the pane stays open");
     assert!(error.contains("orchestrator unreachable"), "{error}");
     assert!(error.contains("This pane stays open"), "{error}");
     assert!(
