@@ -99,10 +99,21 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
         } else {
             known.join(" ")
         };
-        bail!(
-            "role '{role}' is not registered in {}\n       known roles: {known}{}",
-            mailbox.dir().display(),
+        // A relay that answers is an orchestrator that refused this one
+        // message: `horch done` would not get through either.
+        let relay_live = role == "orchestrator"
+            && channel::is_live(&channel::socket_path(
+                &ctx.paths.state_root,
+                mailbox.workspace_id(),
+            ));
+        let hint = if relay_live {
+            ""
+        } else {
             no_orchestrator_hint(role, sender.as_deref())
+        };
+        bail!(
+            "role '{role}' is not registered in {}\n       known roles: {known}{hint}",
+            mailbox.dir().display(),
         );
     };
     // An agent that is still starting drops typed text, so wait it out. A
@@ -455,11 +466,18 @@ impl DoneSteps for CliDone<'_> {
 
     /// Tell the orchestrator. A workspace with no registered orchestrator
     /// (a scratch workspace, a worker spawned by hand) has nobody to tell:
-    /// that is not a failure, so `done` goes on and exits 0.
+    /// that is not a failure, so `done` goes on and exits 0. A live channel
+    /// relay is an orchestrator too, with or without a registered pane.
     fn report(&self, line: &str) -> Result<()> {
         let herdr = Herdr::with_bin(&self.ctx.bins.harness.herdr);
         let registered = Mailbox::resolve_in(&herdr, self.ctx)
-            .map(|m| m.pane_for("orchestrator").is_some())
+            .map(|m| {
+                m.pane_for("orchestrator").is_some()
+                    || channel::is_live(&channel::socket_path(
+                        &self.ctx.paths.state_root,
+                        m.workspace_id(),
+                    ))
+            })
             .unwrap_or(true);
         if !registered {
             eprintln!("{NO_ORCHESTRATOR}");

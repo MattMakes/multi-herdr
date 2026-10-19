@@ -351,3 +351,81 @@ fn arc_30_e2e_relay_stdout_is_json_only() {
     let (lines, _) = relay.stop();
     assert_eq!(lines.len(), 2);
 }
+
+/// W2: a live relay reaches the orchestrator even when no orchestrator pane
+/// is registered. `horch done` sends its report through the relay instead
+/// of saying that nobody is told.
+#[test]
+fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
+    let h = world("w2-relay-only");
+    std::fs::remove_file(
+        h.tmp
+            .join(format!("herdr-orchestration-{WORKSPACE}"))
+            .join("orchestrator.id"),
+    )
+    .unwrap();
+    let worker_pane = create_target_pane(&h);
+    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+        .insert(Record {
+            record_id: "worker-e2e".into(),
+            agent: "claude".into(),
+            tier: "sonnet".into(),
+            model: "sonnet".into(),
+            role: "sonnet-1".into(),
+            task: "work".into(),
+            ..Record::default()
+        })
+        .unwrap();
+    let mut relay = Relay::start(&h, "claude");
+    relay.initialize(&channel_socket(&h));
+
+    let mut done = h.horch(&["done", "finished the work"]);
+    done.env("HERDR_PANE_ID", &worker_pane)
+        .env("HORCH_RECORD_ID", "worker-e2e");
+    let done = done.output().unwrap();
+    assert!(done.status.success(), "{}", stderr(&done));
+    assert!(
+        !stderr(&done).contains("no orchestrator is registered"),
+        "{}",
+        stderr(&done)
+    );
+    let delivered = relay.read_json();
+    assert_eq!(
+        delivered["params"]["content"],
+        "[sonnet-1] DONE: finished the work"
+    );
+    relay.stop();
+}
+
+/// W2: a live relay that refuses a message, with no orchestrator pane to
+/// type into, fails the `tell` without the "no orchestrator runs here" hint:
+/// an orchestrator runs, and `horch done` would fail the same way.
+#[test]
+fn w2_e2e_refused_tell_without_a_pane_does_not_claim_no_orchestrator() {
+    let mut h = world("w2-refused");
+    std::fs::remove_file(
+        h.tmp
+            .join(format!("herdr-orchestration-{WORKSPACE}"))
+            .join("orchestrator.id"),
+    )
+    .unwrap();
+    install_codex_queue(&mut h, 1);
+    install_thread_record(&h);
+    h.set("HORCH_RECORD_ID", "record-e2e");
+    let mut relay = Relay::start(&h, "codex");
+    relay.initialize(&channel_socket(&h));
+
+    let sent = tell(&h);
+    assert!(!sent.status.success(), "{}", stderr(&sent));
+    assert!(
+        stderr(&sent).contains("codex queue exited with exit status: 1"),
+        "{}",
+        stderr(&sent)
+    );
+    assert!(
+        !stderr(&sent).contains("still records your summary"),
+        "{}",
+        stderr(&sent)
+    );
+    relay.stop();
+}
