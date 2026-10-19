@@ -5,6 +5,8 @@
 //! - `horch inbox` marks a role whose pane closed without `horch done`.
 //! - W2: a `horch done` whose report fails keeps the pane, the role and the
 //!   live record, exits non-zero, and a retry finishes once.
+//! - W2: an agent that exits before `horch done` leaves an `exited` event,
+//!   and its worker tells the orchestrator with a `BLOCKED:` line.
 //! - `horch spawn --resume` of that record ends it and resumes it; while the
 //!   pane is open, it refuses and names the command that fixes it.
 //!
@@ -288,4 +290,47 @@ fn w2_done_stays_open_when_the_report_fails() {
         .filter(|e| e["event"] == "done")
         .count();
     assert_eq!(dones, 1, "{r}");
+}
+
+/// W2: the codex agent exits 0 at once, without `horch done` (as Codex
+/// can at a usage limit or a crash). The record ends with an `exited` event,
+/// and the worker types a `BLOCKED:` line into the orchestrator's pane.
+#[test]
+fn w2_agent_exit_before_done_tells_the_orchestrator() {
+    let h = fleet("w2-early-exit", "exec");
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    let pane = spawn(&h, &["codex-sol", "build the thing"]);
+    let id = records(&h).pop().unwrap()["record_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let blocked = wait_for_or(
+        "the BLOCKED line",
+        || {
+            h.calls_of("herdr").into_iter().find_map(|call| {
+                let argv: Vec<String> = call["argv"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|a| a.as_str().map(str::to_owned))
+                    .collect();
+                (argv.len() == 4 && argv[..3] == ["agent", "prompt", "w1:p1"])
+                    .then(|| argv[3].clone())
+                    .filter(|line| line.contains("BLOCKED:"))
+            })
+        },
+        || pane_context(&h, &pane, &id),
+    );
+    assert!(
+        blocked.ends_with(&format!(
+            "BLOCKED: My agent exited with code 0 before horch done. The work can be \
+             incomplete. Resume it with: horch spawn --resume {id}"
+        )),
+        "{blocked}"
+    );
+    let r = record(&h, &id);
+    let last = r["history"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["event"], "exited", "{r}");
 }

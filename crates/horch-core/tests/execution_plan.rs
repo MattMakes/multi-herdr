@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use horch_core::execution::legacy::{LedgerRecordV1, KIND_ORCHESTRATOR};
-use horch_core::execution::lifecycle::{run_worker, WorkerSteps};
+use horch_core::execution::lifecycle::{record_early_exit, run_worker, WorkerSteps, EVENT_EXITED};
 use horch_core::execution::plan::{
     finish_plan, needs_gate, plan_launch, GateInputs, MintedIds, PlanError, PlanInputs,
 };
@@ -1134,7 +1134,7 @@ impl WorkerSteps for Steps<'_> {
     fn agent_exited(&mut self, b: &Brief, code: Option<i32>) -> Result<()> {
         self.calls.push(format!("agent_exited({code:?})"));
         match self.store {
-            Some(s) => s.record_exit(&b.record_id, code),
+            Some(s) => s.record_exit(&b.record_id, code).map(|_| ()),
             None => Ok(()),
         }
     }
@@ -1215,7 +1215,7 @@ impl WorkerSteps for FailingSteps<'_> {
     }
     fn agent_exited(&mut self, b: &Brief, code: Option<i32>) -> Result<()> {
         self.calls.push(format!("agent_exited({code:?})"));
-        self.store.record_exit(&b.record_id, code)
+        self.store.record_exit(&b.record_id, code).map(|_| ())
     }
 }
 
@@ -1258,6 +1258,44 @@ fn arc_18_register_failure_records_failed() {
 #[test]
 fn arc_18_enter_context_failure_records_failed() {
     startup_failure_records_failed("enter_context");
+}
+
+/// W2: `record_exit` says when it ended a live record (the agent left
+/// without `horch done`), and the worker then writes an `exited` event. A
+/// record that `horch done` ended is not ended again.
+#[test]
+fn w2_agent_exit_before_done_leaves_an_exited_event() {
+    let mut live = record("sonnet", "claude", "sonnet");
+    live.status = "working".into();
+    let last = |store: &ExecutionStore| {
+        let r = store.get("rec-1").unwrap();
+        r.history.last().map(|h| (h.event.clone(), h.text.clone()))
+    };
+
+    let (_tmp, store) = store_with(live.clone());
+    assert!(store.record_exit("rec-1", Some(0)).unwrap());
+    assert_eq!(
+        store.get("rec-1").unwrap().execution_status(),
+        ExecutionStatus::Done
+    );
+    record_early_exit(&store, "rec-1", Some(0)).unwrap();
+    assert_eq!(
+        last(&store),
+        Some((
+            EVENT_EXITED.to_string(),
+            "agent exited with code 0 before horch done".to_string()
+        ))
+    );
+    record_early_exit(&store, "rec-1", None).unwrap();
+    assert_eq!(
+        last(&store).unwrap().1,
+        "agent was ended by a signal before horch done"
+    );
+
+    let mut finished = live;
+    finished.status = "done".into();
+    let (_tmp, store) = store_with(finished);
+    assert!(!store.record_exit("rec-1", Some(0)).unwrap());
 }
 
 #[test]
