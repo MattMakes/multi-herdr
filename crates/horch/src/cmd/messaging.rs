@@ -14,7 +14,7 @@ use horch_core::compaction::policy;
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
 use horch_core::execution::lifecycle::{self, ClaimLine, DoneRequest, DoneSteps, ReportTarget};
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::{Ledger, EVENT_REPORT_FAILED};
 use horch_core::execution::store::to_execution;
 use horch_core::execution::ExecutionKind;
 use horch_core::fleet_runs::facts::{record_run, RunSources};
@@ -439,6 +439,18 @@ impl DoneSteps for CliDone<'_> {
 
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()> {
         Ledger::open_in(self.ctx)?.done(record_id, summary)
+    }
+
+    fn recorded(&self, record_id: &str) -> Result<bool> {
+        Ledger::open_in(self.ctx)?.done_recorded(record_id)
+    }
+
+    fn report_failed(&self, record_id: &str, error: &str) {
+        let noted = Ledger::open_in(self.ctx)
+            .and_then(|l| l.record_event(record_id, EVENT_REPORT_FAILED, error));
+        if let Err(e) = noted {
+            eprintln!("horch done: could not record the failed report ({e:#})");
+        }
     }
 
     /// Tell the orchestrator. A workspace with no registered orchestrator

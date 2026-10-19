@@ -67,6 +67,14 @@ pub trait DoneSteps {
     }
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()>;
     fn report(&self, line: &str) -> Result<()>;
+    /// Whether an earlier `done` of this record reported and recorded its
+    /// summary, so a retry only closes the pane. The default says no.
+    fn recorded(&self, _record_id: &str) -> Result<bool> {
+        Ok(false)
+    }
+    /// Note in the record's history that the report failed with `error`.
+    /// Best effort; the default does nothing.
+    fn report_failed(&self, _record_id: &str, _error: &str) {}
     fn unregister(&self, workspace: &str, role: &str);
     fn settle(&self, workspace: &str);
     /// One last session discovery, before the pane close ends the discovery
@@ -84,16 +92,30 @@ pub trait DoneSteps {
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
 /// while waiting on a question).
 ///
-/// The order is fixed: mark done in the ledger, report to the orchestrator,
-/// record a session id still undiscovered, unregister the mailbox entry, settle the grid, write the
-/// fleet run row, close the pane. Everything
-/// happens BEFORE the pane close, because closing the pane kills this very
-/// process tree. The underlying agent session stays on disk and resumable.
+/// The order is fixed: report to the orchestrator, mark the claims unlanded,
+/// mark done in the ledger, record a session id still undiscovered,
+/// unregister the mailbox entry, settle the grid, write the fleet run row,
+/// close the pane. Everything happens BEFORE the pane close, because closing
+/// the pane kills this very process tree. The underlying agent session stays
+/// on disk and resumable.
 ///
-/// A failed report is logged and the shutdown goes on; the ledger already
-/// holds the summary. A pane that is gone at any step after the summary is
-/// recorded counts as closed: `done` succeeds.
+/// A failed report stops `done` before any change: the record is not done,
+/// the claims stay open, the role stays registered and the pane stays open.
+/// The error tells the worker to retry; a worker whose report was lost must
+/// not leave. A retry after a `done` that recorded its summary (and then
+/// could not close the pane) only closes the pane. A pane that is gone at
+/// any step after the summary is recorded counts as closed: `done` succeeds.
 pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
+    if steps.recorded(req.record_id)? {
+        eprintln!("horch done: an earlier horch done recorded this summary; closing the pane");
+    } else {
+        report_and_record(steps, req)?;
+    }
+    close(ws, steps, req)
+}
+
+/// The steps of [`done`] up to the summary in the ledger.
+fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     let role = req.role;
     let open = steps.open_claims(req.record_id)?;
     if !open.is_empty() && req.unlanded.is_none() {
@@ -117,10 +139,6 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
              If it cannot land: horch done --unlanded \"<reason>\" \"<summary>\""
         );
     }
-    let unlanded = match req.unlanded {
-        Some(reason) => steps.mark_unlanded(req.record_id, reason)?,
-        None => Vec::new(),
-    };
     let unregistered = match steps.unregistered() {
         Ok(entries) => entries,
         Err(error) => {
@@ -132,7 +150,7 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
     // arrive as `[r] DONE: [r] DONE: ...`.
     let mut summary = strip_done_prefix(req.summary, role).to_owned();
     if let Some(reason) = req.unlanded {
-        for claim in &unlanded {
+        for claim in &open {
             summary.push_str(&format!(
                 " | UNLANDED: {} at {} ({} commits ahead of {}), worktree {}: {}",
                 claim.branch,
@@ -147,17 +165,29 @@ pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) 
     for entry in unregistered {
         summary.push_str(&format!(" | UNREGISTERED: {entry}"));
     }
-    steps.mark_done(req.record_id, &summary)?;
-
     if req.report_to == ReportTarget::Orchestrator {
         if let Err(e) = steps.report(&format!("[{role}] DONE: {summary}")) {
-            eprintln!(
-                "horch done: could not reach orchestrator ({e:#}); ledger is updated, \
-                 shutting down anyway"
+            steps.report_failed(req.record_id, &format!("{e:#}"));
+            bail!(
+                "horch done: the report did not reach the orchestrator: {e:#}\n\
+                 This pane stays open. The record is not done. Your role stays registered.\n\
+                 Fix the cause if you can, then run the same horch done command again.\n\
+                 If it fails again, record your summary with horch note and end your turn.\n\
+                 Do not close this pane."
             );
         }
     }
+    // After the report: a claim marked unlanded is not open, and a retry of
+    // a failed report must find it open to report the same line.
+    if let Some(reason) = req.unlanded {
+        steps.mark_unlanded(req.record_id, reason)?;
+    }
+    steps.mark_done(req.record_id, &summary)
+}
 
+/// The steps of [`done`] after the summary is in the ledger: the pane closes.
+fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
+    let role = req.role;
     // The record holds the summary now. The dataset coordinator closes the
     // pane of a candidate whose record is done, so from here on it can close
     // this pane first, at any step. A pane that is gone is closed: the steps
@@ -719,6 +749,9 @@ mod tests {
         marked_done: RefCell<Vec<String>>,
         reports: RefCell<Vec<String>>,
         unregistered: RefCell<Result<Vec<String>, String>>,
+        recorded: bool,
+        fail_report: bool,
+        report_failures: RefCell<Vec<String>>,
     }
 
     impl Default for ClaimSteps {
@@ -729,6 +762,9 @@ mod tests {
                 marked_done: RefCell::new(Vec::new()),
                 reports: RefCell::new(Vec::new()),
                 unregistered: RefCell::new(Ok(Vec::new())),
+                recorded: false,
+                fail_report: false,
+                report_failures: RefCell::new(Vec::new()),
             }
         }
     }
@@ -772,7 +808,18 @@ mod tests {
 
         fn report(&self, line: &str) -> Result<()> {
             self.reports.borrow_mut().push(line.into());
+            if self.fail_report {
+                bail!("channel relay refused");
+            }
             Ok(())
+        }
+
+        fn recorded(&self, _: &str) -> Result<bool> {
+            Ok(self.recorded)
+        }
+
+        fn report_failed(&self, _: &str, error: &str) {
+            self.report_failures.borrow_mut().push(error.into());
         }
 
         fn unregister(&self, _: &str, _: &str) {}
@@ -828,6 +875,51 @@ mod tests {
         done(&ws, &steps, &claim_request(&pane, None)).unwrap();
         assert_eq!(&*steps.marked_done.borrow(), &["finished"]);
         assert_eq!(&*steps.reports.borrow(), &["[sonnet-1] DONE: finished"]);
+    }
+
+    /// W2: a report that fails leaves the claim open and the record not
+    /// done, so the retry with the same `--unlanded` reports the same line.
+    #[test]
+    fn w2_failed_report_leaves_the_claim_open_for_the_retry() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps {
+            fail_report: true,
+            ..ClaimSteps::with_claim()
+        };
+        let error = done(&ws, &steps, &claim_request(&pane, Some("cannot rebase"))).unwrap_err();
+        assert!(
+            error.to_string().contains("channel relay refused"),
+            "{error}"
+        );
+        assert!(steps.marked_unlanded.borrow().is_empty());
+        assert!(steps.marked_done.borrow().is_empty());
+        assert_eq!(steps.report_failures.borrow().len(), 1);
+        assert!(steps.report_failures.borrow()[0].contains("channel relay refused"));
+        assert_eq!(ws.pane_ids(), [pane.clone()], "the pane stays open");
+
+        let retry = ClaimSteps::with_claim();
+        done(&ws, &retry, &claim_request(&pane, Some("cannot rebase"))).unwrap();
+        assert_eq!(&*retry.reports.borrow(), &*steps.reports.borrow());
+        assert_eq!(&*retry.marked_unlanded.borrow(), &["cannot rebase"]);
+        assert_eq!(retry.marked_done.borrow().len(), 1);
+        assert!(ws.pane_ids().is_empty(), "the retry closes the pane");
+    }
+
+    /// W2: a record that an earlier `done` reported and marked is not
+    /// reported or marked again; the retry only closes the pane.
+    #[test]
+    fn w2_done_retry_after_a_recorded_done_only_closes() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps {
+            recorded: true,
+            ..ClaimSteps::default()
+        };
+        done(&ws, &steps, &claim_request(&pane, None)).unwrap();
+        assert!(steps.reports.borrow().is_empty());
+        assert!(steps.marked_done.borrow().is_empty());
+        assert!(ws.pane_ids().is_empty(), "the pane is closed");
     }
 
     #[test]

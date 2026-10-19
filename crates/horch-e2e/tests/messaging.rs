@@ -3,6 +3,8 @@
 //!
 //! - `horch done` records the summary, tells nobody, says why, exits 0.
 //! - `horch inbox` marks a role whose pane closed without `horch done`.
+//! - W2: a `horch done` whose report fails keeps the pane, the role and the
+//!   live record, exits non-zero, and a retry finishes once.
 //! - `horch spawn --resume` of that record ends it and resumes it; while the
 //!   pane is open, it refuses and names the command that fixes it.
 //!
@@ -225,4 +227,65 @@ fn g5_resume_after_a_closed_pane() {
 
     let role2 = r["role"].as_str().unwrap().to_string();
     done(&h, &pane2, &role2, &id);
+}
+
+/// W2: the orchestrator is registered, but typing into its pane fails.
+/// `horch done` exits non-zero and says what to do; the record stays live
+/// with a `report-failed` event, the role stays registered and the pane
+/// stays open. The retry, once typing works, reports and records once.
+#[test]
+fn w2_done_stays_open_when_the_report_fails() {
+    let h = fleet("w2-report-fails", "exec,stay,fail_typing");
+    let (pane, role, id) = running_worker(&h);
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+
+    let failed = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
+    assert!(!failed.status.success(), "{}", text(&failed));
+    assert!(
+        text(&failed).contains("the report did not reach the orchestrator"),
+        "{}",
+        text(&failed)
+    );
+    assert!(
+        text(&failed).contains("This pane stays open"),
+        "{}",
+        text(&failed)
+    );
+    let r = record(&h, &id);
+    assert_eq!(r["status"], "working", "{r}");
+    let events: Vec<&str> = r["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["event"].as_str())
+        .collect();
+    assert_eq!(events.last(), Some(&"report-failed"), "{r}");
+    assert!(!events.contains(&"done"), "{r}");
+    assert!(
+        mailbox.join(format!("{role}.id")).exists(),
+        "role stays registered"
+    );
+    assert!(
+        herdr(&h, &["pane", "get", &pane]).status.success(),
+        "the pane stays open"
+    );
+
+    let mut retry = h.horch(&["done", "finished the work"]);
+    retry
+        .env("HORCH_FAKE_SCENARIO", "exec,stay")
+        .env("HERDR_PANE_ID", &pane)
+        .env("HORCH_ROLE", &role)
+        .env("HORCH_RECORD_ID", &id);
+    let retried = retry.output().unwrap();
+    assert!(retried.status.success(), "{}", text(&retried));
+    let r = record(&h, &id);
+    assert_eq!(r["status"], "done", "{r}");
+    let dones = r["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["event"] == "done")
+        .count();
+    assert_eq!(dones, 1, "{r}");
 }

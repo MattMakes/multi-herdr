@@ -189,8 +189,8 @@ fn request<'a>(pane: &'a str, report_to: ReportTarget) -> DoneRequest<'a> {
 fn arc_21_done_order() {
     let full = |pane: &str| {
         vec![
-            "ledger done r1 The report is written.".to_string(),
             "report [sonnet-1] DONE: The report is written.".to_string(),
+            "ledger done r1 The report is written.".to_string(),
             format!("ws pane_get {pane}"),
             "unregister w1 sonnet-1".to_string(),
             "settle w1".to_string(),
@@ -209,14 +209,28 @@ fn arc_21_done_order() {
     let rec = Recorder::new(&ws, false);
     lifecycle::done(&ws, &rec, &request(&pane, ReportTarget::None)).unwrap();
     let mut expected = full(&pane);
-    expected.remove(1);
+    expected.remove(0);
     assert_eq!(rec.finish(), expected);
 
-    // A failed report does not stop the shutdown.
+    // W2: a failed report stops the shutdown. The ledger is not marked done,
+    // the role stays registered, the pane stays open, and the error tells
+    // the worker what to do next.
     let (ws, pane) = one_pane();
     let rec = Recorder::new(&ws, true);
-    lifecycle::done(&ws, &rec, &request(&pane, ReportTarget::Orchestrator)).unwrap();
-    assert_eq!(rec.finish(), full(&pane));
+    let error = lifecycle::done(&ws, &rec, &request(&pane, ReportTarget::Orchestrator))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        rec.finish(),
+        ["report [sonnet-1] DONE: The report is written."]
+    );
+    assert_eq!(ws.pane_ids(), [pane.clone()], "the pane stays open");
+    assert!(error.contains("orchestrator unreachable"), "{error}");
+    assert!(error.contains("This pane stays open"), "{error}");
+    assert!(
+        error.contains("run the same horch done command again"),
+        "{error}"
+    );
 
     // An explicit workspace wins over the pane's own.
     let (ws, pane) = one_pane();
