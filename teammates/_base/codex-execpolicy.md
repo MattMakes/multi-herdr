@@ -8,8 +8,8 @@ description: >
   the pane that needs them - horch gives each codex launch a private CODEX_HOME
   rather than adding to the operator's shared rules file.
 rules:
-  - pattern: '"horch", "tell", "orchestrator"'
-    justification: report results to the fleet orchestrator
+  - pattern: '"horch", "tell"'
+    justification: report to the orchestrator or message another fleet worker
   - pattern: '"horch", "note"'
     justification: record progress in the session ledger
   - pattern: '"horch", "skills", "read"'

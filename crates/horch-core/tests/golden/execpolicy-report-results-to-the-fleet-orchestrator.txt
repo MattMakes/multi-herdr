@@ -1,5 +1,0 @@
-prefix_rule(
-    pattern = ["horch", "tell", "orchestrator"],
-    decision = "allow",
-    justification = "herdr-fleet: report results to the fleet orchestrator",
-)

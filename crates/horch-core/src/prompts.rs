@@ -268,7 +268,8 @@ mod tests {
     fn codex_rules_match_the_commands_workers_are_told_to_run() {
         let r = roster();
         let joined: String = r.exec_rules().iter().map(codex_rule_block).collect();
-        assert!(joined.contains(r#"pattern = ["horch", "tell", "orchestrator"]"#));
+        // W2: `horch tell <worker>` too; it ran sandboxed and failed.
+        assert!(joined.contains(r#"pattern = ["horch", "tell"],"#));
         assert!(joined.contains(r#"pattern = ["horch", "note"]"#));
         assert!(joined.contains(r#"pattern = ["horch", "done"]"#));
         // And the roster agrees they are all actually used in the briefing.

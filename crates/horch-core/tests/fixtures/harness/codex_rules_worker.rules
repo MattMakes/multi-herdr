@@ -1,7 +1,7 @@
 prefix_rule(
-    pattern = ["horch", "tell", "orchestrator"],
+    pattern = ["horch", "tell"],
     decision = "allow",
-    justification = "herdr-fleet: report results to the fleet orchestrator",
+    justification = "herdr-fleet: report to the orchestrator or message another fleet worker",
 )
 prefix_rule(
     pattern = ["horch", "note"],
