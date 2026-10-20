@@ -19,8 +19,8 @@ $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomF
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
     Write-Host "Downloading $name"
-    Invoke-WebRequest "$base/$name" -OutFile (Join-Path $tmp $name)
-    Invoke-WebRequest "$base/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
+    Invoke-WebRequest -UseBasicParsing "$base/$name" -OutFile (Join-Path $tmp $name)
+    Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
 
     $line = Get-Content (Join-Path $tmp 'SHA256SUMS') |
         Where-Object { $_ -match "^[0-9a-fA-F]{64}\s+$([regex]::Escape($name))$" } |

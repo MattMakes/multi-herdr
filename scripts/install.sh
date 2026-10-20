@@ -46,7 +46,7 @@ name="multi-herdr-$tag-$target.tar.gz"
 base="https://github.com/$REPO/releases/download/$tag"
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT INT TERM
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 cd "$tmp"
 
 echo "Downloading $name"
