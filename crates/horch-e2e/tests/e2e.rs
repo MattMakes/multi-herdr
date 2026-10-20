@@ -526,6 +526,64 @@ fn quo_02_codex_probe_protocol() {
     assert_eq!(names, ["5h", "7d"]);
 }
 
+/// The google pool reads `agy -p /usage --output-format json`, never a
+/// model turn, and scopes the Argon bucket to Argon: an empty Argon bucket
+/// moves spec-writer to its opus fallback and leaves Flash alone.
+#[test]
+fn quo_google_probe_reads_agy_usage() {
+    let mut h = corpus("quogoogle");
+    h.set("HORCH_FAKE_SCENARIO", "agy_argon_exhausted");
+    h.set("GEMINI_API_KEY", "dummy");
+    warm_quota_fakes(&h);
+    assert!(std::process::Command::new(h.bin.join("agy"))
+        .arg("--version")
+        .status()
+        .unwrap()
+        .success());
+    let out = h.run(&["quota", "--refresh", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let probes = probes_of(&h, "antigravity", "/usage");
+    assert_eq!(probes.len(), 1, "one probe process");
+    let argv: Vec<String> = serde_json::from_value(probes[0]["argv"].clone()).unwrap();
+    assert_eq!(argv[..4], ["-p", "/usage", "--output-format", "json"]);
+    assert!(
+        !argv
+            .iter()
+            .any(|a| a == "--prompt-interactive" || a == "--model"),
+        "{argv:?}"
+    );
+    assert!(!probes[0]["env_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|k| k == "GEMINI_API_KEY"));
+    let q = json(&out);
+    let argon = q["pools"]["google"]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["scope_model"] == "argon")
+        .unwrap()
+        .clone();
+    assert_eq!(argon["used"].as_f64(), Some(1.0));
+    assert_eq!(q["pools"]["google"]["source"], "usage");
+
+    // The fake claude probe reads exhausted by default, so the opus fallback
+    // cannot help here: the gate refuses, and names the Argon window.
+    let route = h.run(&["route", "spec-writer"]);
+    let text = format!("{}{}", stdout(&route), stderr(&route));
+    assert!(
+        text.contains("spec-writer cannot start. google exhausted (7d:argon 100%"),
+        "{text}"
+    );
+    let route = h.run(&["route", "antigravity"]);
+    assert!(
+        stdout(&route).contains("SPAWN: antigravity runs as itself"),
+        "{}",
+        stdout(&route)
+    );
+}
+
 #[test]
 fn quo_03_fallback_on_probe_failure() {
     for scenario in ["hang", "error"] {

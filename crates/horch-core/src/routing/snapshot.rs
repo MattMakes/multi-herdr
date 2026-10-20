@@ -87,7 +87,7 @@ impl QuotaFile {
         self.written_at = Some(clock::stamp(now));
         let view = QuotaView::new(self.clone(), now, policy.clone(), false);
         for (name, reading) in self.pools.iter_mut() {
-            let a = view.assess_pool(name, None, None);
+            let a = view.assess_shown(name);
             reading.state = a.state.as_str().to_string();
             reading.reason = Some(a.reason);
         }

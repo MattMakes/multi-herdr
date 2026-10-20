@@ -690,7 +690,7 @@ fn refreshed(file: &QuotaFile, now: DateTime<Utc>, policy: &Policy) -> QuotaFile
     let mut next = file.clone();
     let view = QuotaView::new(file.clone(), now, policy.clone(), false);
     for (name, reading) in next.pools.iter_mut() {
-        let a = view.assess_pool(name, None, None);
+        let a = view.assess_shown(name);
         reading.state = a.state.as_str().to_string();
         reading.reason = Some(a.reason);
     }
@@ -1170,7 +1170,7 @@ fn build_indexed(
 
     let mut pools = quota.file.pools.clone();
     for (name, reading) in pools.iter_mut() {
-        let a = quota.assess_pool(name, None, None);
+        let a = quota.assess_shown(name);
         reading.state = a.state.as_str().to_string();
         reading.reason = Some(a.reason);
     }

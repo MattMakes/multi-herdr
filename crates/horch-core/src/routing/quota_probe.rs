@@ -14,8 +14,8 @@ use serde_json::Value;
 
 use crate::clock;
 use crate::routing::quota::{
-    parse_claude_usage, parse_codex_limits, HarnessHealth, Probed, QuotaFile, Window, POOL_CLAUDE,
-    POOL_CODEX, POOL_LOCAL, POOL_ZEN,
+    parse_agy_usage, parse_claude_usage, parse_codex_limits, HarnessHealth, Probed, QuotaFile,
+    Window, POOL_CLAUDE, POOL_CODEX, POOL_GOOGLE, POOL_LOCAL, POOL_ZEN,
 };
 
 /// A child process whose stdout is read line by line with a deadline.
@@ -158,6 +158,34 @@ pub(crate) fn probe_codex(bin: &Path, timeout: StdDuration) -> Result<Probed, St
             )
         })?;
     parse_codex_limits(&reply)
+}
+
+/// Ask agy for its plan quotas: `agy -p /usage --output-format json`. A
+/// slash command in print mode runs no model turn (`num_turns: 0`), so the
+/// probe spends no quota. It runs in `temp_root`: print mode needs no trusted
+/// directory and records none (docs/live-checks/harnesses.md).
+pub(crate) fn probe_google(
+    bin: &Path,
+    timeout: StdDuration,
+    temp_root: &Path,
+) -> Result<Probed, String> {
+    let mut cmd = Command::new(bin);
+    cmd.args(["-p", "/usage", "--output-format", "json", "--print-timeout"])
+        .arg(format!("{}s", timeout.as_secs().max(1)))
+        .current_dir(temp_root);
+    for key in crate::harness::antigravity::ANTIGRAVITY_FORBIDDEN_ENV {
+        cmd.env_remove(key);
+    }
+    let name = format!("{} -p /usage", bin.display());
+    let out = match run_with_deadline(cmd, timeout) {
+        Err(e) => return Err(format!("{name} could not start: {e}")),
+        Ok(None) => return Err(format!("{name} timed out after {}s", timeout.as_secs())),
+        Ok(Some((status, out, _))) if status.success() => out,
+        Ok(Some((status, out, err))) => return Err(failure(&name, status, &err, &out)),
+    };
+    let reply: Value =
+        serde_json::from_str(out.trim()).map_err(|e| format!("{name}: not JSON: {e}"))?;
+    parse_agy_usage(&reply)
 }
 
 /// Run a short command with a deadline; its stdout, or why it failed.
@@ -406,6 +434,7 @@ fn collect_rollouts(dir: &Path, out: &mut Vec<(std::time::SystemTime, PathBuf)>)
 pub struct ProbeBins {
     pub claude: PathBuf,
     pub codex: PathBuf,
+    pub antigravity: PathBuf,
     pub pi: PathBuf,
     pub ollama: PathBuf,
     pub codex_sessions: PathBuf,
@@ -423,6 +452,7 @@ impl ProbeBins {
         ProbeBins {
             claude: bins.claude.clone(),
             codex: bins.codex.clone(),
+            antigravity: bins.antigravity.clone(),
             pi: bins.pi.clone(),
             ollama: bins.ollama.clone(),
             codex_sessions,
@@ -462,6 +492,7 @@ pub(crate) fn probe_all(
     probe_harnesses(file, &bins.harnesses, &stamp, VERSION_TIMEOUT);
     let version_of = |name: &str| file.harnesses.get(name).and_then(|h| h.version.clone());
     let (claude_version, codex_version) = (version_of("claude"), version_of("codex"));
+    let antigravity_version = version_of("antigravity");
 
     let claude = file.pools.entry(POOL_CLAUDE.into()).or_default();
     claude.probed_at = Some(stamp.clone());
@@ -510,9 +541,20 @@ pub(crate) fn probe_all(
         zen.source = Some("none".into());
     }
 
-    // The google pool (agy) has no probe (U-61): agy 1.2.17 writes no local
-    // quota or usage signal and has no usage subcommand, so the pool stays
-    // `unknown`. Seen live: docs/live-checks/harnesses.md.
+    // Without agy the probe records a start failure, the pool assesses
+    // `unknown`, and routing substitutes an Antigravity teammate's fallback.
+    let google = file.pools.entry(POOL_GOOGLE.into()).or_default();
+    google.probed_at = Some(stamp.clone());
+    google.harness_version = antigravity_version.or(google.harness_version.take());
+    match probe_google(&bins.antigravity, timeout, temp_root) {
+        Ok(p) => {
+            google.windows = p.windows;
+            google.observed_at = Some(stamp.clone());
+            google.source = Some("usage".into());
+            google.error = None;
+        }
+        Err(e) => google.error = Some(e),
+    }
 
     let local = file.pools.entry(POOL_LOCAL.into()).or_default();
     local.probed_at = Some(stamp.clone());
