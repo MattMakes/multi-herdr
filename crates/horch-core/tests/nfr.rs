@@ -92,7 +92,8 @@ fn deps(manifest: &Path) -> Vec<String> {
 }
 
 /// NFR-05: no new runtime crate beyond crossterm (and ratatui, which the
-/// design allowed but the screen does not need), and only in `horch`.
+/// design allowed but the screen does not need) and the `horch self-update`
+/// crates (operator decision, 2026-10-20), and only in `horch`.
 #[test]
 fn nfr_05_no_new_runtime_crates() {
     let allowed_core = [
