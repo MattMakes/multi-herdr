@@ -56,6 +56,15 @@ Each recipe names every file to change and the check for each step.
 - [`specs/telemetry.md`](specs/telemetry.md): telemetry, usage
   limits and routing.
 
+## Proposals
+
+Designs that are not approved for build. They are not specs, so the
+requirement coverage check does not read them.
+
+- [`proposals/plan-format-v1.md`](proposals/plan-format-v1.md): plan files
+  that horch parses and checks, and the staged evaluation that decides
+  whether to build it.
+
 ## One rule above all
 
 Never use `ANTHROPIC_API_KEY`. Every `claude` run uses the operator's
