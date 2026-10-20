@@ -17,6 +17,27 @@ herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 
 ## Getting started
 
+Install a prebuilt release. No Rust toolchain needed.
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MattMakes/multi-herdr/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/MattMakes/multi-herdr/main/scripts/install.ps1 | iex
+```
+
+Update later with `horch self-update`.
+
+If you download an archive in a browser on macOS, clear the quarantine flag
+before you run it: `xattr -d com.apple.quarantine horch multi-herdr-dataset herdr-install`.
+
+### From source (contributors)
+
 Build and put the binaries on your PATH:
 
 ```bash
@@ -49,6 +70,14 @@ the scratch workspace open when they fail, so you can look at it.
 
 Day to day: `just install` once, then `herdr-fleet` from any project.
 To pick up new changes, run `git pull` yourself, then `just install` again.
+
+## Releases
+
+A release is a tag `vX.Y.Z`. The `release` workflow builds 5 targets
+(macOS arm64 and x86_64, Linux arm64 and x86_64, Windows x86_64) and publishes
+them to a GitHub release with a `SHA256SUMS` file. The repo skills `/release`
+and `/push-pr` open the PRs. A plain PR is not a release, and users get no
+update notice for it.
 
 ## Running a fleet
 
