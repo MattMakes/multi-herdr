@@ -67,6 +67,9 @@ jobs:
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          # macOS tar would add AppleDouble `._*` entries for extended attributes.
+          COPYFILE_DISABLE: "1"
         run: |
           name="multi-herdr-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.tar.gz"
           tar -czf "$name" -C "target/${{ matrix.target }}/release" horch multi-herdr-dataset herdr-install
