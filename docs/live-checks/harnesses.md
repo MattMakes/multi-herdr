@@ -213,3 +213,22 @@ the command horch builds without `--` and the prompt, and `finish`.
 | scoped status | PASS | before finish, `TMPDIR=<launch>/ prime-agent status --json` named `<launch>/prime-agent-501/d.sock`, pid 32121, `status` `current` |
 | finish stops the daemon | PASS | after finish, the same command printed `[]`; `ps` showed no `prime-agent` process; the scan dir and `agent/` were removed; `sessions/` kept the `.jsonl` |
 | release | PASS | after finish, `herdr pane get w54:p1` showed no agent, `agent_status` `unknown` |
+
+## 2026-10-20: the google pool probe (agy 1.4.3)
+
+Host: macOS 26 (Darwin 25.5.0), arm64. `agy` 1.4.3 at `~/.local/bin/agy`.
+
+U-61 said `agy` has no usage signal. 1.4.3 has one: the `/usage` slash command
+in print mode. `routing/quota_probe.rs:probe_google` runs it.
+
+| Check | Result | Evidence |
+|---|---|---|
+| `/usage` runs no model turn | PASS | `agy -p "/usage" --output-format json --print-timeout 60s`: `status` `SUCCESS`, `num_turns` 0, every `usage` count 0, `conversation_id` empty |
+| reply shape | PASS | `command.data.groups[]`: "Gemini Models" (`gemini-weekly`, `gemini-5h`), "Claude and GPT models" (`3p-weekly`, `3p-5h`), "Gemini 4 Argon" (`gemini-argon-wtu-weekly`). Each bucket has `window`, `remaining_fraction` 0-1, `reset_time` UTC. The field names are not documented |
+| time | PASS | 3.3 s and 3.7 s wall time: inside the 10 s probe timeout |
+| probe | PASS | `HORCH_STATE_DIR=<scratch> horch quota --refresh` (dev build) wrote 9 google windows with `source` `usage`; `horch quota` shows `google ... argon 0% ok` |
+| routing | PASS | `horch route spec-writer`: `SPAWN` on the live reading. With the Argon window set to 100% (`HORCH_QUOTA_FILE`): `SUBSTITUTED: spec-writer runs on opus`, while `horch route antigravity` (Flash) still spawns |
+
+Not covered: the reply when the login has expired or the quota is spent.
+`parse_agy_usage` treats any `status` other than `SUCCESS` as a probe error,
+so the pool is then `unknown` and the Argon teammates run on their fallback.
