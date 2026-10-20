@@ -519,8 +519,12 @@ impl ExecutionStore {
     /// `Failed(AgentExited)` otherwise, unless it is an orchestrator, which
     /// keeps its state. A record that is already terminal (the worker ran
     /// `horch done`) only gets the code.
-    pub fn record_exit(&self, key: &str, code: Option<i32>) -> Result<()> {
+    ///
+    /// True when it ended the record: the agent left without `horch done`,
+    /// so nobody told the orchestrator.
+    pub fn record_exit(&self, key: &str, code: Option<i32>) -> Result<bool> {
         let at = crate::clock::now_stamp();
+        let mut ended = false;
         self.update_key(key, |r| {
             r.exit_code = code;
             r.updated_at = at.clone();
@@ -535,7 +539,9 @@ impl ExecutionStore {
             };
             r.finished_at.get_or_insert_with(|| at.clone());
             r.set_state(state);
-        })
+            ended = true;
+        })?;
+        Ok(ended)
     }
 
     /// The recovery rule for a spawner that stopped between the insert and

@@ -515,6 +515,17 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
         true
     };
     let decision = window_decision(ctx, req.teammate, model, &workdir, req.fleet_window.clone());
+    // What `horch tell`, `note` and `done` read in the agent's shell tool.
+    // PATH is the operator's to shape; the agent inherits it.
+    let mut shell_env: Vec<(String, String)> = req
+        .child_env
+        .iter()
+        .filter(|(key, _)| key != "PATH")
+        .cloned()
+        .collect();
+    if let Some(pane) = &ctx.herdr.pane {
+        shell_env.push(("HERDR_PANE_ID".into(), pane.to_string()));
+    }
     let prepared = adapter.prepare(
         ctx,
         &PrepareRequest {
@@ -526,6 +537,7 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
             teammate: req.teammate,
             model,
             workdir: &workdir,
+            shell_env: &shell_env,
         },
     )?;
 

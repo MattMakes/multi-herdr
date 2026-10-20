@@ -26,6 +26,10 @@ const IDLE_TASK: &str = "(idle - awaiting assignment)";
 /// Task an orchestrator record carries. It has no task of its own.
 pub const ORCHESTRATING_TASK: &str = "(orchestrating)";
 
+/// The history event of a `horch done` whose report did not reach the
+/// orchestrator. Its text is the error; the record stays live.
+pub const EVENT_REPORT_FAILED: &str = "report-failed";
+
 /// A project's ledger file.
 #[derive(Debug, Clone)]
 pub struct Ledger {
@@ -311,6 +315,19 @@ impl Ledger {
         })
     }
 
+    /// Whether the record `key` holds a `done` summary from its current run:
+    /// a `done` history entry newer than its last `spawned` or `resumed`. A
+    /// retried `horch done` asks, so it does not report or record twice.
+    pub fn done_recorded(&self, key: &str) -> Result<bool> {
+        Ok(self
+            .get(key)?
+            .history
+            .iter()
+            .rev()
+            .find(|h| matches!(h.event.as_str(), "done" | "spawned" | "resumed"))
+            .is_some_and(|h| h.event == "done"))
+    }
+
     /// Append 1 history entry `event` with `text` to the record `key`: the
     /// context-policy events (`compact-requested`, `context-warned`,
     /// `compacted`, `compact-failed`).
@@ -506,6 +523,32 @@ mod tests {
         assert_eq!(r.status, STATUS_DONE);
         let events: Vec<&str> = r.history.iter().map(|h| h.event.as_str()).collect();
         assert_eq!(events, vec!["spawned", "note", "done"]);
+    }
+
+    /// W2: a retried `horch done` asks whether its summary is recorded. Only
+    /// a `done` after the newest spawn or resume counts; a failed report
+    /// and a resumed record do not.
+    #[test]
+    fn w2_done_recorded_only_after_the_newest_start() {
+        let (_t, l) = ledger();
+        l.add(
+            "r1",
+            "claude",
+            "sonnet",
+            "sonnet",
+            "sonnet-1",
+            Some("s1"),
+            "t",
+        )
+        .unwrap();
+        assert!(!l.done_recorded("r1").unwrap());
+        l.record_event("r1", EVENT_REPORT_FAILED, "relay refused")
+            .unwrap();
+        assert!(!l.done_recorded("r1").unwrap());
+        l.done("r1", "all finished").unwrap();
+        assert!(l.done_recorded("r1").unwrap());
+        l.resume("r1", "sonnet-1", "more").unwrap();
+        assert!(!l.done_recorded("r1").unwrap());
     }
 
     #[test]

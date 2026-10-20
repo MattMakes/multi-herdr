@@ -54,6 +54,11 @@ pub struct PrepareRequest<'a> {
     pub model: &'a str,
     /// The directory the agent starts in.
     pub workdir: &'a Path,
+    /// The variables the fleet commands (`horch tell`, `note`, `done`) read
+    /// in the agent's shell tool. A codex launch sets them through
+    /// `shell_environment_policy.set`, so an operator policy such as
+    /// `inherit = "core"` does not strip them.
+    pub shell_env: &'a [(String, String)],
 }
 
 /// What an operator window resolver reads for one launch (design §6.4).

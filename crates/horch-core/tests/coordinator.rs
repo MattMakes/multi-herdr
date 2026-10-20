@@ -371,7 +371,9 @@ fn round_cfg(
                     .set_state(&r.record_id, ExecutionStatus::Running)
                     .unwrap();
                 match agent {
-                    Agent::Crash => store.record_exit(&r.record_id, Some(2)).unwrap(),
+                    Agent::Crash => {
+                        store.record_exit(&r.record_id, Some(2)).unwrap();
+                    }
                     Agent::TrustDialog => {
                         fake.set_screen(r.pane_id.as_deref().unwrap(), CLAUDE_TRUST_SCREEN)
                     }

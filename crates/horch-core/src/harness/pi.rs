@@ -228,6 +228,7 @@ mod tests {
                     teammate: &teammate,
                     model: "ollama/qwen3.8",
                     workdir: tmp,
+                    shell_env: &[],
                 },
             )
             .unwrap();

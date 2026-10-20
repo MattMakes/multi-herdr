@@ -88,10 +88,30 @@ sequenceDiagram
     H->>W: text arrives in the worker pane
 
     W->>H: horch done "summary"
-    H->>L: Done + summary
     H->>O: DONE message
+    H->>L: Done + summary
     H->>W: start a detached re-tile, close the pane
 ```
+
+### When the DONE message does not arrive
+
+`horch done` sends the DONE message first. It writes the ledger only after
+the message arrives.
+
+- If the message fails, `horch done` exits 1. The ledger gets a
+  `report-failed` event with the error. The record stays live, open claims
+  stay open, the role stays registered, and the pane stays open. The error
+  tells the worker to run the same `horch done` command again.
+- A retry after a `done` that recorded its summary (and then could not
+  close the pane) only closes the pane. It does not send or record the
+  summary again.
+- A workspace with no registered orchestrator pane and no live channel relay
+  has nobody to tell. `horch done` records the summary, says so, and exits 0.
+- An agent that exits without `horch done` ends its record (`Done` on exit
+  0, else `Failed`) with an `exited` event. The `horch worker` process,
+  which is still alive in the pane, sends the orchestrator
+  `[<role>] BLOCKED: My agent exited ... before horch done` with the resume
+  command.
 
 ### The spawn registration wait
 

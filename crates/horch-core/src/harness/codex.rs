@@ -604,6 +604,17 @@ impl Harness for Codex {
             }
             _ => {}
         }
+        // A JSON string is a valid TOML basic string, newlines escaped too.
+        for (key, value) in req.shell_env {
+            if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                continue;
+            }
+            let value = serde_json::to_string(value).context("encoding a shell variable")?;
+            prepared.extra_args.push("-c".into());
+            prepared
+                .extra_args
+                .push(format!("shell_environment_policy.set.{key}={value}"));
+        }
         if let Rules::Private { dir } = &rules {
             // On the child only. This process keeps the real CODEX_HOME, so the
             // session discovery still reads the real sessions directory.
@@ -1852,10 +1863,67 @@ mod tests {
                     teammate,
                     model: "gpt-5.6-sol",
                     workdir: tmp,
+                    shell_env: &[],
                 },
             )
             .unwrap();
         (ctx, prepared)
+    }
+
+    /// W2 C2: the operator's `shell_environment_policy.inherit = "core"`
+    /// stripped `HORCH_*` and `HERDR_*` from the agent's shell commands, so
+    /// `horch tell`, `note` and `done` failed with `HORCH_RECORD_ID is
+    /// unset`. Each fleet variable is set through the policy instead, which
+    /// `inherit` does not filter. A name that is not a plain variable name
+    /// is skipped.
+    #[cfg(unix)]
+    #[test]
+    fn w2_a_launch_sets_the_fleet_variables_in_the_shell_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        let env = crate::runtime::MapEnv::new(tmp.path())
+            .with("HOME", &home.to_string_lossy())
+            .with(
+                "HORCH_STATE_DIR",
+                &tmp.path().join("state").to_string_lossy(),
+            );
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let shell_env = [
+            ("HORCH_RECORD_ID".to_string(), "r-1".to_string()),
+            ("HERDR_PANE_ID".to_string(), "w1:p2".to_string()),
+            ("HORCH_TASK".to_string(), "say \"hi\"\nnow".to_string()),
+            ("BAD KEY".to_string(), "x".to_string()),
+        ];
+        let prepared = Codex
+            .prepare(
+                &ctx,
+                &PrepareRequest {
+                    role: "codex-1",
+                    exec_rules: &[],
+                    skills: None,
+                    compact_window: None,
+                    teammate: &Teammate::default(),
+                    model: "gpt-5.6-sol",
+                    workdir: tmp.path(),
+                    shell_env: &shell_env,
+                },
+            )
+            .unwrap();
+        let pairs: Vec<&str> = prepared
+            .extra_args
+            .windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                r#"shell_environment_policy.set.HORCH_RECORD_ID="r-1""#,
+                r#"shell_environment_policy.set.HERDR_PANE_ID="w1:p2""#,
+                r#"shell_environment_policy.set.HORCH_TASK="say \"hi\"\nnow""#,
+            ]
+        );
     }
 
     /// Live check B2: an execpolicy `allow` does not lift the sandbox for a

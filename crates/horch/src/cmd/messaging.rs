@@ -14,7 +14,7 @@ use horch_core::compaction::policy;
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
 use horch_core::execution::lifecycle::{self, ClaimLine, DoneRequest, DoneSteps, ReportTarget};
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::{Ledger, EVENT_REPORT_FAILED};
 use horch_core::execution::store::to_execution;
 use horch_core::execution::ExecutionKind;
 use horch_core::fleet_runs::facts::{record_run, RunSources};
@@ -99,10 +99,21 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
         } else {
             known.join(" ")
         };
-        bail!(
-            "role '{role}' is not registered in {}\n       known roles: {known}{}",
-            mailbox.dir().display(),
+        // A relay that answers is an orchestrator that refused this one
+        // message: `horch done` would not get through either.
+        let relay_live = role == "orchestrator"
+            && channel::is_live(&channel::socket_path(
+                &ctx.paths.state_root,
+                mailbox.workspace_id(),
+            ));
+        let hint = if relay_live {
+            ""
+        } else {
             no_orchestrator_hint(role, sender.as_deref())
+        };
+        bail!(
+            "role '{role}' is not registered in {}\n       known roles: {known}{hint}",
+            mailbox.dir().display(),
         );
     };
     // An agent that is still starting drops typed text, so wait it out. A
@@ -441,13 +452,32 @@ impl DoneSteps for CliDone<'_> {
         Ledger::open_in(self.ctx)?.done(record_id, summary)
     }
 
+    fn recorded(&self, record_id: &str) -> Result<bool> {
+        Ledger::open_in(self.ctx)?.done_recorded(record_id)
+    }
+
+    fn report_failed(&self, record_id: &str, error: &str) {
+        let noted = Ledger::open_in(self.ctx)
+            .and_then(|l| l.record_event(record_id, EVENT_REPORT_FAILED, error));
+        if let Err(e) = noted {
+            eprintln!("horch done: could not record the failed report ({e:#})");
+        }
+    }
+
     /// Tell the orchestrator. A workspace with no registered orchestrator
     /// (a scratch workspace, a worker spawned by hand) has nobody to tell:
-    /// that is not a failure, so `done` goes on and exits 0.
+    /// that is not a failure, so `done` goes on and exits 0. A live channel
+    /// relay is an orchestrator too, with or without a registered pane.
     fn report(&self, line: &str) -> Result<()> {
         let herdr = Herdr::with_bin(&self.ctx.bins.harness.herdr);
         let registered = Mailbox::resolve_in(&herdr, self.ctx)
-            .map(|m| m.pane_for("orchestrator").is_some())
+            .map(|m| {
+                m.pane_for("orchestrator").is_some()
+                    || channel::is_live(&channel::socket_path(
+                        &self.ctx.paths.state_root,
+                        m.workspace_id(),
+                    ))
+            })
             .unwrap_or(true);
         if !registered {
             eprintln!("{NO_ORCHESTRATOR}");
@@ -532,10 +562,17 @@ fn worker_var(
     ctx.worker.as_ref().and_then(|w| field(w).clone())
 }
 
-/// A required environment value, with a message naming what sets it.
+/// A required environment value, with a message naming what sets it. A
+/// worker that sets it inline instead runs sandboxed in Codex, where its
+/// report cannot get out (W2 C1), so the message says not to.
 fn require_env(key: &str, value: Option<String>) -> Result<String> {
     value.filter(|v| !v.is_empty()).with_context(|| {
-        format!("{key} is unset (this command runs inside a `horch spawn` worker pane)")
+        format!(
+            "{key} is unset (this command runs inside a `horch spawn` worker pane). \
+             Do not set it yourself: in Codex, a command with a variable prefix runs in \
+             the sandbox and cannot reach the orchestrator. Run the plain horch command \
+             from the project directory, and tell the operator if it fails again"
+        )
     })
 }
 
@@ -576,6 +613,18 @@ mod tests {
             inbox_listing(&roles, true),
             "orchestrator p1  (channel)\nsonnet-1     p2\n"
         );
+    }
+
+    /// W2 C1: a worker that met this error set the variable inline, ran
+    /// sandboxed in Codex, and lost its report. The error says not to.
+    #[test]
+    fn w2_an_unset_variable_says_not_to_set_it_inline() {
+        let text = require_env("HORCH_RECORD_ID", None)
+            .unwrap_err()
+            .to_string();
+        assert!(text.starts_with("HORCH_RECORD_ID is unset"), "{text}");
+        assert!(text.contains("Do not set it yourself"), "{text}");
+        assert_eq!(require_env("HORCH_ROLE", Some("r".into())).unwrap(), "r");
     }
 
     #[test]

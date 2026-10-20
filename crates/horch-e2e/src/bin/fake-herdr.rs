@@ -30,6 +30,9 @@
 //!   exits 1, as real herdr does for a pane without an agent. `pane
 //!   send-text` types text into the pane; `pane send-keys <pane> enter` runs
 //!   the typed line like `exec`, with its output appended to the pane.
+//! - `fail_typing`: `agent prompt` and `pane send-text` exit 1 with a message
+//!   on stderr, as a pane that is gone or a sandboxed caller gets. Nothing is
+//!   typed.
 //!
 //! `pane read` prints the pane text: the output of its commands, then the
 //! line typed and not yet entered. `pane wait-output` searches that text
@@ -345,6 +348,12 @@ fn run(call: &mut Call) -> i32 {
         ["pane", "read", pane, ..] => {
             say(&pane_text(&state, pane));
             0
+        }
+        ["agent", "prompt", pane, ..] | ["pane", "send-text", pane, ..]
+            if scenario_has("fail_typing") =>
+        {
+            eprintln!("fake-herdr: typing into {pane} refused (scenario fail_typing)");
+            1
         }
         ["pane", "send-text", pane, text] if scenario_has("shell") => {
             let typed = state["typed"][*pane].as_str().unwrap_or("").to_string();
