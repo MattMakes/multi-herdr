@@ -45,13 +45,16 @@ pub(crate) fn strip_done_prefix<'a>(summary: &'a str, role: &str) -> &'a str {
 }
 
 /// Directory under `state_root` (`RuntimeContext::paths.state_root`) that
-/// holds messages delivered by reference.
-pub fn spool_dir(state_root: &Path) -> PathBuf {
-    state_root.join("messages")
+/// holds the messages of one workspace delivered by reference. A fleet never
+/// lists another fleet's messages: role names repeat across fleets.
+pub fn spool_dir(state_root: &Path, workspace: &str) -> PathBuf {
+    state_root.join("messages").join(file_safe(workspace))
 }
 
-/// Write `message` to a new file under `dir` and return its path.
-pub fn spool(dir: &Path, from: &str, to: &str, message: &str) -> Result<PathBuf> {
+/// Write `message` to a new file under `dir` and return its path. The file
+/// opens with a line that names `workspace`, `from` and `to`, so a reader that
+/// finds it by chance can see whom it is for.
+pub fn spool(dir: &Path, workspace: &str, from: &str, to: &str, message: &str) -> Result<PathBuf> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -61,7 +64,8 @@ pub fn spool(dir: &Path, from: &str, to: &str, message: &str) -> Result<PathBuf>
         file_safe(to),
         &id[..8]
     ));
-    std::fs::write(&path, message).with_context(|| format!("writing {}", path.display()))?;
+    let contents = format!("<!-- horch workspace={workspace} from={from} to={to} -->\n{message}");
+    std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
 
@@ -157,14 +161,36 @@ mod tests {
             "Brandon and nova were other authors. ".repeat(40)
         );
         let dir = tempfile::tempdir().unwrap();
-        let path = spool(dir.path(), "sonnet-1", "orchestrator", &long).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), long);
+        let path = spool(dir.path(), "w1", "sonnet-1", "orchestrator", &long).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().ends_with(&long));
         let line = reference_line(&long, &path);
         assert!(line.starts_with("[sonnet-1] DONE: Brandon"));
         assert!(line.ends_with(&format!("Read the full text in {}]", path.display())));
         assert!(line.contains(&format!("{} chars in total", long.trim().chars().count())));
         assert!(line.len() < MAX_INLINE);
         assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn r1_spool_dir_is_per_workspace() {
+        let root = Path::new("/state");
+        assert_eq!(spool_dir(root, "w16"), root.join("messages").join("w16"));
+        assert_ne!(spool_dir(root, "w14"), spool_dir(root, "w16"));
+        // A workspace id never climbs out of `messages/`.
+        assert_eq!(
+            spool_dir(root, "../w16"),
+            root.join("messages").join("___w16")
+        );
+    }
+
+    #[test]
+    fn r1_spool_file_names_its_workspace_on_the_first_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = spool(dir.path(), "w16", "opus-1", "orchestrator", "[opus-1] hi").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "<!-- horch workspace=w16 from=opus-1 to=orchestrator -->\n[opus-1] hi"
+        );
     }
 
     #[test]

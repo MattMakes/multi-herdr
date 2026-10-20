@@ -334,3 +334,67 @@ fn w2_agent_exit_before_done_tells_the_orchestrator() {
     let last = r["history"].as_array().unwrap().last().unwrap().clone();
     assert_eq!(last["event"], "exited", "{r}");
 }
+
+/// R1: a long `horch tell` spools its text under `messages/<workspace>/`, not
+/// in a directory shared by every fleet, and the line typed into the
+/// orchestrator's pane names that file.
+#[test]
+fn r1_long_tell_spools_under_its_own_workspace() {
+    let h = fleet("r1-spool", "exec");
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+
+    let long = format!("QUESTION: {}", "Which branch lands first? ".repeat(40));
+    let tell = as_worker(
+        &h,
+        &["tell", "orchestrator", &long],
+        "w1:p2",
+        "opus-1",
+        "r1",
+    );
+    assert!(tell.status.success(), "{}", text(&tell));
+
+    let messages = h.state.join("messages");
+    let files_in = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .map(|d| {
+                d.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.is_file())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let spooled = files_in(&messages.join("w1"));
+    assert_eq!(spooled.len(), 1, "{:?}", files_in(&messages));
+    assert!(
+        files_in(&messages).is_empty(),
+        "a file sits directly under messages/: {:?}",
+        files_in(&messages)
+    );
+    let body = std::fs::read_to_string(&spooled[0]).unwrap();
+    assert!(
+        body.starts_with("<!-- horch workspace=w1 from=opus-1 to=orchestrator -->\n"),
+        "{body}"
+    );
+
+    let typed = h
+        .calls_of("herdr")
+        .into_iter()
+        .filter_map(|call| {
+            let argv: Vec<String> = call["argv"]
+                .as_array()?
+                .iter()
+                .filter_map(|a| a.as_str().map(str::to_owned))
+                .collect();
+            (argv.len() == 4 && argv[..3] == ["agent", "prompt", "w1:p1"]).then(|| argv[3].clone())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(typed.len(), 1, "{typed:?}");
+    assert!(
+        typed[0].contains(&spooled[0].display().to_string()),
+        "the typed line does not name {}: {}",
+        spooled[0].display(),
+        typed[0]
+    );
+}

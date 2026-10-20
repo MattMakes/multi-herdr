@@ -56,8 +56,10 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     };
     let mut line = if text.chars().count() > message::MAX_INLINE {
         let from = sender.as_deref().unwrap_or("orchestrator");
+        let workspace = mailbox.workspace_id();
         let path = message::spool(
-            &message::spool_dir(&ctx.paths.state_root),
+            &message::spool_dir(&ctx.paths.state_root, workspace),
+            workspace,
             from,
             role,
             &text,
