@@ -320,10 +320,17 @@ request.
   `--prompt-interactive`.
 - It cannot expose skills (`skills=none` in `horch agent-list`). A teammate on
   it has no `phase` and no `skills`, and `horch spawn` refuses one that has.
-- It uses the `google` usage pool, which has no probe. Its prompts can train
-  the provider's models until the operator confirms the opt-out, so send it
-  public and open-source work only.
-- The shipped teammate is `antigravity`.
+- It uses the `google` usage pool. The probe runs `agy -p /usage --output-format
+  json` (no model turn) and scopes each window to its model group: `argon`,
+  `gemini`, or the `3p` models (`opus`, `sonnet`, `gpt-oss`).
+- Whether Google may use the prompts is the operator's Enable Telemetry setting
+  in agy's `/config`. horch cannot read it, so it trusts the operator and sets
+  no `trains_on_input`.
+- `horch doctor` warns when an offered teammate runs on agy and `agy` is not
+  installed, with the installer: `curl -fsSL
+  https://antigravity.google/cli/install.sh | bash`.
+- The shipped teammates are `antigravity` (Gemini 3.8 Flash), and
+  `spec-writer` and `ticket-writer` (Gemini 4 Argon, `fallbacks: [opus]`).
 
 ## `multi-herdr-dataset`: competitive rounds
 

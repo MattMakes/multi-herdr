@@ -166,6 +166,23 @@ pub fn builtin_prices() -> BTreeMap<String, Price> {
     ] {
         m.insert(id.into(), gemini_flash);
     }
+    // 4 Argon, Standard tier (ai.google.dev/gemini-api/docs/pricing, read
+    // 2026-10-20): introductory until 2026-11-30, then $4 / $20, cached
+    // $0.20. One price at every prompt length; implicit caching only, so a
+    // write prices as plain input.
+    let gemini_argon = Price {
+        cache_write_5m: Some(2.0),
+        cache_write_1h: Some(2.0),
+        ..Price::new(2.0, 10.0, 0.10)
+    };
+    for id in [
+        "gemini-4-argon",
+        "gemini-4-argon-high",
+        "gemini-4-argon-medium",
+        "gemini-4-argon-low",
+    ] {
+        m.insert(id.into(), gemini_argon);
+    }
     // No row for `codex-auto-review`, on purpose. It is Codex's approval
     // reviewer (`approvals_reviewer = "auto_review"`; a rollout with
     // `thread_source: guardian_review` names it). Codex's models cache lists

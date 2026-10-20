@@ -175,9 +175,34 @@ registry to update.
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |
 | `pi`                   | pi     | local  | low    | Runs on your own hardware; nothing leaves the machine |
 | `prime`                | Prime Agent | Opus 5.5 | medium | One persistent Python kernel; long, exploratory runs |
+| `spec-writer`          | Antigravity | Argon | medium | Rough idea to a spec with test seams; falls back to Opus |
+| `ticket-writer`        | Antigravity | Argon | medium | Resolved spec to 1 ticket file each plus `MAP.md`; falls back to Opus |
+| `antigravity`          | Antigravity | Gemini 3.8 Flash | medium | General implementation work |
 
 Why each runs at that level is in [Models and effort](#models-and-effort)
 below.
+
+### From a rough idea to tickets
+
+Give the orchestrator a rough idea and it runs 2 Argon workers before any
+build work:
+
+1. `spec-writer` reads `ai_docs/specs/<slug>/brief.md` and writes
+   `spec.md` beside it: user stories, test seams, implementation and testing
+   decisions, and open questions with a recommendation each.
+2. The orchestrator answers the open questions it can, and asks you only the
+   ones that are yours.
+3. A new `ticket-writer` writes 1 file per ticket into
+   `ai_docs/tickets/<slug>/`, plus `MAP.md`: every ticket's blockers, the
+   waves that can run in parallel, and the critical path.
+4. The orchestrator runs the waves.
+
+Both writers report only file paths, and only once the file is complete. They
+run on the `google` pool, which horch reads with `agy -p /usage` (no model
+turn). When Argon's bucket is empty, or `agy` is not installed, `horch spawn`
+runs the same persona on Opus and prints `SUBSTITUTED:`. Install `agy` with
+`curl -fsSL https://antigravity.google/cli/install.sh | bash`; `horch doctor`
+prints that line when it is missing.
 
 The two orchestrators are teammate files too, and hidden from the roster:
 `orchestrator` (Claude; Opus or Fable) and `orchestrator-codex` (Codex; Astra

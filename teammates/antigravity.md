@@ -1,6 +1,6 @@
 ---
 name: antigravity
-brief_description: Gemini 3.8 Flash on agy, general work. TRAINS ON INPUT unless opt-out confirmed; treat like opencode-*.
+brief_description: Gemini 3.8 Flash on agy, general implementation work.
 generic: true
 base: fleet-worker
 agent: antigravity
@@ -21,10 +21,9 @@ effort: medium
 # auto = --sandbox --dangerously-skip-permissions: no approval prompt in a pane
 # nobody watches, and terminal commands stay in agy's OS sandbox.
 permission_mode: auto
-# A personal Google account's interactions can train Google's models unless
-# the operator turns Activity and Telemetry off. Until the operator confirms
-# that, the orchestrator sends this tier public work only, as for opencode-*.
-trains_on_input: true
+# No trains_on_input. Whether Google may use these interactions is the
+# operator's Enable Telemetry setting in agy's /config. horch cannot read it
+# (agy has no command that reports it), so it trusts the operator's choice.
 
 # No phase and no skills: agy has no flag or variable that points it at a
 # skills directory, so horch exposes no bundled skills to it. agy still loads
@@ -35,5 +34,5 @@ trains_on_input: true
 # each directory, and horch cannot answer it. Trust the worktree once first.
 ---
 Your tier: ANTIGRAVITY - Google's agy CLI on the operator's Google login.
-General implementation work on public code. Keep changes minimal, and say
-plainly when a task needs a model or a data policy this tier does not have.
+General implementation work. Keep changes minimal, and say plainly when a
+task needs a model this tier does not have.

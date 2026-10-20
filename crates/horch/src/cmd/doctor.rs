@@ -11,6 +11,7 @@ use std::process::Command;
 
 use anyhow::{bail, Result};
 use horch_core::harness::inventory::BinaryFacts;
+use horch_core::harness::HarnessKind;
 use horch_core::roster::{operator_effort_warnings, Requirement, Roster};
 use horch_core::runtime::bins::{host_tool_bin, BLENDER_APP, GODOT_APP, GODOT_MONO_APP};
 use horch_core::runtime::{process, RuntimeContext};
@@ -59,6 +60,14 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
         ctx.paths.project().ok().as_deref(),
     );
     for p in &tool_problems {
+        eprintln!("warning: {p}");
+    }
+    if let Some(p) = antigravity_problem(
+        &roster,
+        ctx.inherited.path.as_deref(),
+        ctx.inherited.pathext.as_deref(),
+        &ctx.bins.harness.antigravity,
+    ) {
         eprintln!("warning: {p}");
     }
     match xcode_export_check(
@@ -213,6 +222,43 @@ pub(crate) fn requirement_problems(
         }
     }
     problems
+}
+
+/// The Antigravity CLI's own installer.
+const AGY_INSTALL: &str = "curl -fsSL https://antigravity.google/cli/install.sh | bash";
+
+/// `agy` is missing while an offered teammate runs on it. Not fatal: routing
+/// moves a teammate with `fallbacks:` to its fallback (the google pool probe
+/// fails, so the pool is unknown), and the others fail at launch. `bin` is
+/// `HORCH_ANTIGRAVITY_BIN`, else `agy`; a bare name is looked up on PATH.
+fn antigravity_problem(
+    roster: &Roster,
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    bin: &Path,
+) -> Option<String> {
+    let needed_by: Vec<&str> = roster
+        .offered()
+        .iter()
+        .filter(|t| t.agent == HarnessKind::Antigravity)
+        .map(|t| t.name.as_str())
+        .collect();
+    if needed_by.is_empty() {
+        return None;
+    }
+    let found = if bin.components().count() > 1 {
+        bin.is_file()
+    } else {
+        process::which(path, pathext, &bin.to_string_lossy()).is_some()
+    };
+    (!found).then(|| {
+        format!(
+            "antigravity (needed by {}): {} not found. Install it with `{AGY_INSTALL}`, \
+             then run `agy` once to sign in.",
+            needed_by.join(", "),
+            bin.display()
+        )
+    })
 }
 
 /// `git lfs version` must run with the fleet's git, or a new worktree of an
@@ -641,6 +687,30 @@ fn godot_version(stdout: &str) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
     use horch_core::roster::Teammate;
+
+    #[test]
+    fn missing_agy_names_the_installer_and_its_teammates() {
+        let r = Roster::builtin().unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        let p = antigravity_problem(&r, Some(empty.path().as_os_str()), None, Path::new("agy"))
+            .unwrap();
+        assert!(p.contains(AGY_INSTALL), "{p}");
+        assert!(
+            p.contains("spec-writer") && p.contains("ticket-writer"),
+            "{p}"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let agy = dir.path().join("agy");
+        std::fs::write(&agy, "#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            antigravity_problem(&r, Some(dir.path().as_os_str()), None, Path::new("agy")),
+            None
+        );
+        assert_eq!(antigravity_problem(&r, None, None, &agy), None);
+    }
 
     fn roster_requiring_xcode() -> Roster {
         let mut r = Roster::builtin().unwrap();

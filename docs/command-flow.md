@@ -176,9 +176,14 @@ pools: claude, codex, opencode-zen, google, local), `horch agent-list` (the
 agent CLIs, their versions and pool state), `horch spawn --resume <id>`
 (continue an old worker's session).
 
-An `antigravity` worker draws on the `google` pool. That pool has no probe, so
-`horch quota` shows it as `unknown`. `horch cost` cannot price an
-`antigravity` session: `agy` writes no local usage file.
+An `antigravity`, `spec-writer` or `ticket-writer` worker draws on the
+`google` pool. Its probe is `agy -p /usage --output-format json`, a slash
+command that runs no model turn. Each window is scoped to the model group
+`agy` reports it for (`argon`, `gemini`, the `3p` Claude and GPT models), so
+an empty Argon bucket moves only the Argon teammates to their fallback.
+Without `agy` the probe fails, the pool is `unknown`, and those teammates run
+on their fallback. `horch cost` cannot price an Antigravity session: `agy`
+writes no local usage file.
 
 ## 3. A dataset round
 

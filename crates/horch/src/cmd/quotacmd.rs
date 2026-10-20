@@ -30,7 +30,7 @@ pub fn assessed(view: &QuotaView) -> QuotaFile {
     let mut file = view.file.clone();
     file.written_at = file.written_at.or_else(|| Some(clock::stamp(view.now)));
     for (name, reading) in file.pools.iter_mut() {
-        let a = view.assess_pool(name, None, None);
+        let a = view.assess_shown(name);
         reading.state = a.state.as_str().to_string();
         reading.reason = Some(a.reason);
     }

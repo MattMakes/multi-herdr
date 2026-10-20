@@ -1461,8 +1461,8 @@ mod spawnable_tests {
                 t.name
             );
             let expected = match t.name.as_str() {
-                // antigravity exposes no skills, so it can have no phase.
-                "smoke" | "judge" | "antigravity" => None,
+                // agy exposes no skills, so its teammates can have no phase.
+                "smoke" | "judge" | "antigravity" | "spec-writer" | "ticket-writer" => None,
                 "researcher" | "product-lead" | "designer" | "design-director" => {
                     Some(Phase::Research)
                 }

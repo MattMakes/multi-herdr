@@ -14,6 +14,7 @@
 //! | claude | `claude -p --input-format stream-json` + one `get_usage` control request |
 //! | codex | `codex app-server`: `initialize`, `initialized`, `account/rateLimits/read` |
 //! | opencode-zen | none exists; a `FreeUsageLimitError` starts a cooldown |
+//! | google | `agy -p /usage --output-format json`: a slash command, no model turn |
 //! | local | `pi --version`, and the model in `ollama list` |
 
 //!
@@ -35,7 +36,8 @@ pub const POOL_CLAUDE: &str = "claude";
 pub const POOL_CODEX: &str = "codex";
 pub const POOL_ZEN: &str = "opencode-zen";
 /// The operator's Google account, which every Antigravity model draws on,
-/// whoever made the model. No probe reads it yet, so it assesses `unknown`.
+/// whoever made the model. Its windows are scoped by model group
+/// ([`parse_agy_usage`]).
 pub const POOL_GOOGLE: &str = "google";
 pub(crate) const POOL_LOCAL: &str = "local";
 pub(crate) const POOL_UNKNOWN: &str = "unknown";
@@ -150,8 +152,10 @@ pub fn pool_for(agent: &str, model: &str) -> &'static str {
 /// The model family a scoped window can limit, from a model name.
 pub(crate) fn model_family(model: &str) -> Option<&'static str> {
     let m = model.to_ascii_lowercase();
+    // `argon` before `gemini`: `gemini-4-argon` is limited by its own group.
     [
-        "opus", "sonnet", "haiku", "fable", "astra", "sol", "terra", "luna",
+        "opus", "sonnet", "haiku", "fable", "astra", "sol", "terra", "luna", "argon", "gemini",
+        "gpt-oss",
     ]
     .into_iter()
     .find(|f| m.contains(f))
@@ -407,6 +411,25 @@ impl QuotaView {
         let local_model =
             (pool == POOL_LOCAL).then(|| model.split_once('/').map(|(_, m)| m).unwrap_or(model));
         self.assess_pool(pool, model_family(model), local_model)
+    }
+
+    /// The state a screen shows for `pool`, with no model in view. A pool
+    /// whose every window is scoped (google: 1 group per model family) has no
+    /// pool-wide limit, so it shows its most usable scope. Routing never uses
+    /// this: it judges each model by its own scope ([`QuotaView::assess`]).
+    pub fn assess_shown(&self, pool: &str) -> Assessment {
+        let scopes: Vec<&str> = self
+            .file
+            .pools
+            .get(pool)
+            .map(|r| r.windows.iter().map(|w| w.scope_model.as_deref()).collect())
+            .and_then(|s: Option<Vec<&str>>| s)
+            .unwrap_or_default();
+        scopes
+            .iter()
+            .map(|s| self.assess_pool(pool, Some(s), None))
+            .max_by_key(|a| a.state)
+            .unwrap_or_else(|| self.assess_pool(pool, None, None))
     }
 
     /// The state of `pool` for a model family scope (section 11.4).
@@ -788,6 +811,91 @@ pub(crate) fn parse_codex_limits(reply: &Value) -> Result<Probed, String> {
     Ok(Probed {
         windows,
         ordinary_usage_allowed: allowed,
+    })
+}
+
+/// Parse `agy -p /usage --output-format json` (agy 1.4.3; the field names are
+/// undocumented). Each group of `command.data.groups` lists `buckets` with a
+/// `window` (`weekly`, `5h`), a `remaining_fraction` 0-1 and a UTC
+/// `reset_time`. A group limits only its own models, so each window is
+/// scoped by its bucket id:
+/// - `gemini-argon-*`: `argon`. Pro plans give Argon its own group.
+/// - `gemini-*`: `gemini`, and `argon` too when no Argon group exists (Ultra
+///   plans count Argon against the Gemini buckets).
+/// - `3p-*`: the Claude and GPT models agy serves: `opus`, `sonnet`,
+///   `gpt-oss`.
+/// - any other id: unscoped, so it limits every model (the conservative
+///   choice).
+pub(crate) fn parse_agy_usage(reply: &Value) -> Result<Probed, String> {
+    let status = reply.get("status").and_then(Value::as_str).unwrap_or("");
+    if status != "SUCCESS" {
+        let why = reply
+            .get("response")
+            .and_then(Value::as_str)
+            .and_then(|r| r.lines().find(|l| !l.trim().is_empty()))
+            .unwrap_or("no status");
+        return Err(format!("agy /usage status {status:?}: {why}"));
+    }
+    let groups = reply
+        .pointer("/command/data/groups")
+        .and_then(Value::as_array)
+        .ok_or("agy /usage reply has no command.data.groups")?;
+    let buckets: Vec<&Value> = groups
+        .iter()
+        .filter_map(|g| g.get("buckets").and_then(Value::as_array))
+        .flatten()
+        .collect();
+    let id = |b: &Value| {
+        b.get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let own_argon = buckets.iter().any(|b| id(b).starts_with("gemini-argon-"));
+    let mut windows = Vec::new();
+    for b in buckets {
+        let minutes = match b.get("window").and_then(Value::as_str) {
+            Some("weekly") => 10_080,
+            Some("5h") => 300,
+            _ => continue,
+        };
+        let Some(left) = b.get("remaining_fraction").and_then(Value::as_f64) else {
+            continue;
+        };
+        let id = id(b);
+        let scopes: &[&str] = if id.starts_with("gemini-argon-") {
+            &["argon"]
+        } else if id.starts_with("gemini-") {
+            if own_argon {
+                &["gemini"]
+            } else {
+                &["gemini", "argon"]
+            }
+        } else if id.starts_with("3p-") {
+            &["opus", "sonnet", "gpt-oss"]
+        } else {
+            &[]
+        };
+        let resets = reset_stamp(b.get("reset_time"));
+        let used = 1.0 - left;
+        if scopes.is_empty() {
+            windows.push(Window::new(minutes, used, resets.clone(), None));
+        }
+        for s in scopes {
+            windows.push(Window::new(
+                minutes,
+                used,
+                resets.clone(),
+                Some(s.to_string()),
+            ));
+        }
+    }
+    if windows.is_empty() {
+        return Err("agy /usage reply has no windows".into());
+    }
+    Ok(Probed {
+        windows,
+        ordinary_usage_allowed: None,
     })
 }
 
@@ -1196,5 +1304,101 @@ mod tests {
             v.assess("pi", "anthropic/claude-sonnet-5-5").state,
             State::Ok
         );
+    }
+
+    fn agy_usage(name: &str) -> Value {
+        serde_json::from_str(
+            &std::fs::read_to_string(fixture(&format!("probes/agy-usage-{name}.json"))).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn google_view(windows: Vec<Window>) -> QuotaView {
+        let mut file = QuotaFile::default();
+        file.pools.insert(
+            POOL_GOOGLE.into(),
+            PoolReading {
+                windows,
+                observed_at: Some(clock::stamp(now())),
+                ..Default::default()
+            },
+        );
+        QuotaView::new(file, now(), Policy::default(), false)
+    }
+
+    /// Each agy group limits only its own models: an empty Argon bucket
+    /// stops Argon and leaves Flash and the 3p models alone.
+    #[test]
+    fn agy_usage_scopes_each_group_to_its_models() {
+        let p = parse_agy_usage(&agy_usage("pro")).unwrap();
+        let labels: Vec<String> = p.windows.iter().map(Window::label).collect();
+        assert_eq!(
+            labels,
+            [
+                "7d:gemini",
+                "5h:gemini",
+                "7d:opus",
+                "7d:sonnet",
+                "7d:gpt-oss",
+                "5h:opus",
+                "5h:sonnet",
+                "5h:gpt-oss",
+                "7d:argon",
+            ]
+        );
+        let argon = p.windows.last().unwrap();
+        assert_eq!(argon.used, 1.0);
+        assert_eq!(argon.resets_at.as_deref(), Some("2026-10-27T18:48:25Z"));
+        let v = google_view(p.windows);
+        assert_eq!(
+            v.assess("antigravity", "gemini-4-argon").state,
+            State::Exhausted
+        );
+        assert_eq!(v.assess("antigravity", "gemini-3.8-flash").state, State::Ok);
+        assert_eq!(v.assess("antigravity", "claude-opus-5-5").state, State::Ok);
+        // A screen shows the pool by its most usable scope, not `unknown`.
+        assert_eq!(v.assess_shown(POOL_GOOGLE).state, State::Ok);
+        assert_eq!(v.assess_shown(POOL_CLAUDE).state, State::Unknown);
+    }
+
+    /// Without its own group (Ultra), Argon draws on the Gemini buckets.
+    #[test]
+    fn agy_usage_without_an_argon_group_limits_argon_by_gemini() {
+        let p = parse_agy_usage(&agy_usage("ultra")).unwrap();
+        let v = google_view(p.windows);
+        for model in ["gemini-4-argon", "gemini-3.8-flash"] {
+            assert_eq!(
+                v.assess("antigravity", model).state,
+                State::Exhausted,
+                "{model}"
+            );
+        }
+        assert_eq!(
+            v.assess("antigravity", "claude-sonnet-5-5").state,
+            State::Ok
+        );
+    }
+
+    #[test]
+    fn agy_usage_errors_are_errors() {
+        let e = parse_agy_usage(&agy_usage("error")).unwrap_err();
+        assert!(e.contains("You are not signed in"), "{e}");
+        assert!(parse_agy_usage(&serde_json::json!({"status": "SUCCESS"})).is_err());
+        assert!(parse_agy_usage(
+            &serde_json::json!({"status": "SUCCESS", "command": {"data": {"groups": []}}})
+        )
+        .is_err());
+        // An unknown bucket id limits every model.
+        let odd = serde_json::json!({"status": "SUCCESS", "command": {"data": {"groups": [
+            {"buckets": [{"id": "new-bucket", "window": "5h", "remaining_fraction": 0.5}]}]}}});
+        assert_eq!(parse_agy_usage(&odd).unwrap().windows[0].scope_model, None);
+    }
+
+    #[test]
+    fn agy_model_families() {
+        assert_eq!(model_family("gemini-4-argon"), Some("argon"));
+        assert_eq!(model_family("gemini-3.8-flash"), Some("gemini"));
+        assert_eq!(model_family("gpt-oss-120b"), Some("gpt-oss"));
+        assert_eq!(model_family("claude-opus-5-5"), Some("opus"));
     }
 }
