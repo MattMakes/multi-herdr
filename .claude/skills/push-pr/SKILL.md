@@ -52,7 +52,8 @@ so a missing line means a missing note.
 ## 5. Open the PR with a living description
 
 Keep the description in a file outside the tree so each update rewrites it in
-one call: `BODY="$(git rev-parse --git-dir)/pr-body-<branch>.md"`.
+one call. Branch names hold `/`, so flatten it into the file name:
+`BODY="$(git rev-parse --git-dir)/pr-body-$(git branch --show-current | tr '/' '-').md"`.
 
 Write it in the style of the repo's recent PRs (`gh pr view <n> --json body`
 on a recent merged PR shows it): an opening paragraph that says what the PR

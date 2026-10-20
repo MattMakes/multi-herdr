@@ -15,7 +15,7 @@ notice at boot, and `horch self-update` installs it. The full contract is in
 
 Releasing reaches the operator and their friends at once, and a published tag
 must never be moved. So this skill confirms once, at the point of no return
-(step 7), and treats everything after the tag push as fix-forward.
+(step 6), and treats everything after the tag push as fix-forward.
 
 This skill is for an operator session opened in this repository.
 
@@ -50,8 +50,11 @@ End it with the PR attribution line your session requires.
 ## 1. Preflight
 
 1. `git fetch origin --tags`. The tree must be clean (`git status --short`
-   empty). If it is not, ask whether to commit the work into this release
-   (then do it as `/push-pr` steps 1-4 would, on the release branch) or stop.
+   empty). If it is not, stop and suggest `/push-pr` for that work first.
+   Start from `main` with `HEAD` equal to `origin/main`
+   (`git switch main && git pull --ff-only origin main`, then
+   `git rev-parse HEAD origin/main` prints 1 sha twice). A release ships what
+   is on `main`, so the changelog and the tested revision both start there.
 2. `gh auth status` must succeed.
 3. `.github/workflows/release.yml` must exist on `origin/main` (`git show
    origin/main:.github/workflows/release.yml`). Without it a tag publishes
@@ -76,9 +79,8 @@ The new tag `vX.Y.Z` must not exist locally or on origin
 
 ## 3. Branch, bump, roll the changelog
 
-1. Create `release/vX.Y.Z` from the current HEAD (normally an up-to-date
-   `main`; if HEAD is a feature branch, its commits ship in this release, so
-   say so).
+1. Create `release/vX.Y.Z` from `main` (step 1 made it equal to
+   `origin/main`).
 2. Set `[workspace.package] version = "X.Y.Z"` in `Cargo.toml`. Then run
    `cargo update --workspace` so `Cargo.lock` follows. Check:
    `cargo run -q --bin horch -- --version` prints `X.Y.Z`.
@@ -112,11 +114,17 @@ the release is waiting.
 
 ## 7. Merge and tag
 
-1. `gh pr merge <n> --squash --delete-branch`. Tick "Merged".
-2. `git switch main && git pull --ff-only origin main`. The merge commit is
-   `HEAD`. Check that its `Cargo.toml` version is `X.Y.Z`; if not, stop
-   (something else merged in between) and report.
-3. `git tag -a vX.Y.Z -m "vX.Y.Z" HEAD && git push origin vX.Y.Z`.
+1. Make sure CI tested what you are about to merge. `git fetch origin`, then
+   `git merge-base --is-ancestor origin/main release/vX.Y.Z`. If it fails,
+   another PR merged during the release: merge `origin/main` into the release
+   branch, add any new user-visible change to this version's CHANGELOG
+   section, push, and go back to step 5. Do not merge on a stale green.
+2. `gh pr merge <n> --squash --delete-branch`. Tick "Merged".
+3. `git switch main && git pull --ff-only origin main`. Take the squash
+   commit from the PR, not from `HEAD` (another PR may merge right after):
+   `SHA=$(gh pr view <n> --json mergeCommit --jq .mergeCommit.oid)`. Check
+   `git show $SHA:Cargo.toml` has version `X.Y.Z`; if not, stop and report.
+4. `git tag -a vX.Y.Z -m "vX.Y.Z" $SHA && git push origin vX.Y.Z`.
    Tick "Tagged" with the sha.
 
 ## 8. Follow the release workflow
@@ -130,7 +138,9 @@ the release is waiting.
    failed jobs (`gh run rerun <id> --failed`) for a flaky runner, or fix the
    workflow on a branch, merge it, and run
    `gh workflow run release.yml -f tag=vX.Y.Z` to rebuild the same tag. A fix
-   to horch's own code is a new patch release instead.
+   to horch's own code is a new patch release instead. If the publish job
+   failed mid-upload, it left an unpublished draft release; a re-run deletes
+   that draft (never the tag) and publishes again, so re-running is safe.
 
 ## 9. Verify what was published
 
