@@ -123,6 +123,13 @@ fn nfr_05_no_new_runtime_crates() {
         "libc",
         "ratatui",
         "crossterm",
+        // `horch self-update` (operator decision, 2026-10-20): the release
+        // lookup and download, the digest check, and the archive formats.
+        "ureq",
+        "sha2",
+        "flate2",
+        "tar",
+        "zip",
     ];
     for d in deps(&repo().join("crates/horch/Cargo.toml")) {
         assert!(allowed.contains(&d.as_str()), "horch gained '{d}'");
@@ -179,9 +186,11 @@ fn assert_no_workspace_dep(banned: &[&str], exempt: &[&str], why: &str) {
     }
 }
 
-/// NFR-06 (OD6): horch-marketplace stays on its allowed list, and no horch
-/// crate takes an HTTP client. herdr-install and herdr-docs-sync are the
-/// standalone download tools; they used ureq before this rule.
+/// NFR-06 (OD6): horch-marketplace stays on its allowed list, and horch-core
+/// and horch-marketplace take no HTTP client. herdr-install and
+/// herdr-docs-sync are the standalone download tools; they used ureq before
+/// this rule. horch takes ureq for `horch self-update` (operator decision,
+/// 2026-10-20).
 #[test]
 fn nfr_06_dependency_allowlist() {
     let manifest = repo().join("crates/horch-marketplace/Cargo.toml");
@@ -196,7 +205,8 @@ fn nfr_06_dependency_allowlist() {
     }
     assert_no_workspace_dep(
         &["reqwest", "ureq", "hyper", "isahc", "attohttpc", "curl"],
-        &["herdr-install", "herdr-docs-sync"],
+        // horch: `horch self-update` (operator decision, 2026-10-20).
+        &["herdr-install", "herdr-docs-sync", "horch"],
         "NFR-06: no HTTP crate",
     );
 }

@@ -37,10 +37,11 @@ pub fn run_step(ctx: &RuntimeContext, harnesses: &[HarnessKind]) -> bool {
     results.iter().any(UpdateResult::failed)
 }
 
-/// The update step of `horch fleet` and `horch orchestration`: every agent
-/// CLI, unless `--no-update` or `HORCH_NO_UPDATE=1`. A failed updater never
-/// fails the command.
+/// The update step of `horch fleet` and `horch orchestration`: the check for
+/// a newer horch release, then every agent CLI, unless `--no-update` or
+/// `HORCH_NO_UPDATE=1`. A failed updater never fails the command.
 pub fn before_fleet(ctx: &RuntimeContext, no_update: bool) {
+    super::selfupdate::notice(ctx, no_update);
     if no_update || ctx.settings.no_update {
         return;
     }

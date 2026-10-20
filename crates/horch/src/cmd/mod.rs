@@ -14,6 +14,7 @@ pub mod mode;
 pub mod quotacmd;
 pub mod recipes;
 pub mod route;
+pub mod selfupdate;
 pub mod skillscmd;
 pub mod smoke;
 pub mod spawn;

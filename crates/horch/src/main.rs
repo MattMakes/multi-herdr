@@ -440,6 +440,19 @@ enum Command {
         dir: Option<String>,
     },
 
+    /// Install the latest multi-herdr release over this horch.
+    #[command(long_about = "Look up the latest multi-herdr release on GitHub. When it is \
+                            newer than this horch, download the archive for this machine, \
+                            verify it against the release's SHA256SUMS, and run its \
+                            `horch install --dir <dir of this horch>`. A source build \
+                            (under a cargo target dir) is refused: update it with \
+                            `git pull` and `just install`.")]
+    SelfUpdate {
+        /// Only say whether a newer release is out. Exits 0 either way.
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Self-verifying checks of the machinery. Run these after installing.
     Smoke {
         #[command(subcommand)]
@@ -854,6 +867,7 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Marketplace { command } => return cmd::marketplacecmd::run(ctx, command),
         Command::Doctor => cmd::doctor::doctor(ctx)?,
         Command::Install { dir } => cmd::install::install(ctx, dir.as_deref())?,
+        Command::SelfUpdate { check } => return cmd::selfupdate::self_update(ctx, check),
         Command::Smoke { command } => return cmd::smoke::run(ctx, command),
         Command::Worker { role } => return cmd::worker::worker(ctx, &role),
         Command::PaneLaunch {
