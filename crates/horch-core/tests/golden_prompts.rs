@@ -331,7 +331,7 @@ fn the_orchestration_recipe_briefings_differ_only_by_the_await_line() {
     );
 }
 
-/// The orchestrator briefing differs in exactly seventeen places, and this pins them.
+/// The orchestrator briefing differs in exactly eighteen places, and this pins them.
 /// Anything else that drifts fails here rather than in a live pane.
 #[test]
 fn the_orchestrator_briefing_differs_only_where_sanctioned() {
@@ -503,6 +503,41 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         \x20   every claim that is open or unlanded. A DONE line with \"UNLANDED:\"\n\
         \x20   names work that did not land. Act on it in the same turn.\n\n";
     let spawning_header = "== Spawning workers ==";
+
+    // Eighteenth: the idea-to-tickets flow. A rough idea goes to spec-writer,
+    // the orchestrator resolves the open questions, a new ticket-writer writes
+    // the tickets and MAP.md, and the waves run. Inserted whole, after the
+    // core loop and before the spawning section.
+    let idea_to_tickets = r#"== From a rough idea to tickets ==
+When the operator gives you a rough idea of something to build, and no spec
+or plan exists yet, do these 4 steps before any implementation unit:
+1. Spec. Write the operator's idea, in their words, to
+   ai_docs/specs/<slug>/brief.md. Spawn spec-writer with the task text
+   "Brief: ai_docs/specs/<slug>/brief.md. Write the spec to
+   ai_docs/specs/<slug>/spec.md."
+2. Resolve. On DONE:, read the spec's "Open Questions" section. Decide each
+   question yourself when the code, the brief or the recommendation makes
+   the answer clear. Ask the operator only a question that is theirs:
+   product direction, scope, or a trade-off they have to own. Write each
+   answer under its question as "Decision: <answer> (orchestrator)" or
+   "(operator)". When an answer changes the spec beyond that section, resume
+   the spec-writer session with the path of the decisions.
+3. Tickets. Create ai_docs/tickets/<slug>/. Spawn a new ticket-writer with
+   the task text "Spec: ai_docs/specs/<slug>/spec.md. Write the tickets and
+   MAP.md to ai_docs/tickets/<slug>/."
+4. Schedule. On DONE:, read ai_docs/tickets/<slug>/MAP.md. Resolve its open
+   questions the same way as in step 2. Then run the waves: spawn every
+   ticket of wave 1 at once, each with the task text "Read and follow
+   <ticket path> exactly." Serialize the tickets that MAP.md says share an
+   area. Start a wave when every blocker of its tickets is DONE and
+   verified.
+Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
+when that pool cannot serve them. horch spawn does the fallback; a
+SUBSTITUTED: line tells you it happened. If an Argon pane reports a quota or
+sign-in error, run horch quota --refresh, then spawn the same teammate again.
+Both writers talk only in file paths: read the file, not the message.
+
+"#;
     assert_eq!(was.matches(spawning_header).count(), 1);
 
     // Tenth: the stale-skill guard. Two `~/.claude/skills` symlinks describe an
@@ -565,14 +600,14 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         .replace(old_placement, new_placement)
         .replace(
             spawning_header,
-            &format!("{core_loop}{core_loop_step_ten}{spawning_header}"),
+            &format!("{core_loop}{core_loop_step_ten}{idea_to_tickets}{spawning_header}"),
         )
         .replace(close, &format!("{close}{guard}{await_line}"))
         .replace(context, &format!("{usage_limits}{context_watch}{context}"))
         .replace(old_blocked_wait, new_blocked_wait);
     assert_eq!(
         expected, got,
-        "the orchestrator briefing changed outside the seventeen sanctioned blocks"
+        "the orchestrator briefing changed outside the eighteen sanctioned blocks"
     );
 }
 

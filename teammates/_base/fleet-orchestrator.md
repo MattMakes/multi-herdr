@@ -88,6 +88,35 @@ and would cost more to rebuild than to resume.
     every claim that is open or unlanded. A DONE line with "UNLANDED:"
     names work that did not land. Act on it in the same turn.
 
+== From a rough idea to tickets ==
+When the operator gives you a rough idea of something to build, and no spec
+or plan exists yet, do these 4 steps before any implementation unit:
+1. Spec. Write the operator's idea, in their words, to
+   ai_docs/specs/<slug>/brief.md. Spawn spec-writer with the task text
+   "Brief: ai_docs/specs/<slug>/brief.md. Write the spec to
+   ai_docs/specs/<slug>/spec.md."
+2. Resolve. On DONE:, read the spec's "Open Questions" section. Decide each
+   question yourself when the code, the brief or the recommendation makes
+   the answer clear. Ask the operator only a question that is theirs:
+   product direction, scope, or a trade-off they have to own. Write each
+   answer under its question as "Decision: <answer> (orchestrator)" or
+   "(operator)". When an answer changes the spec beyond that section, resume
+   the spec-writer session with the path of the decisions.
+3. Tickets. Create ai_docs/tickets/<slug>/. Spawn a new ticket-writer with
+   the task text "Spec: ai_docs/specs/<slug>/spec.md. Write the tickets and
+   MAP.md to ai_docs/tickets/<slug>/."
+4. Schedule. On DONE:, read ai_docs/tickets/<slug>/MAP.md. Resolve its open
+   questions the same way as in step 2. Then run the waves: spawn every
+   ticket of wave 1 at once, each with the task text "Read and follow
+   <ticket path> exactly." Serialize the tickets that MAP.md says share an
+   area. Start a wave when every blocker of its tickets is DONE and
+   verified.
+Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
+when that pool cannot serve them. horch spawn does the fallback; a
+SUBSTITUTED: line tells you it happened. If an Argon pane reports a quota or
+sign-in error, run horch quota --refresh, then spawn the same teammate again.
+Both writers talk only in file paths: read the file, not the message.
+
 == Spawning workers ==
   horch spawn <tier> [--phase <phase>] "<task>"            new session
   horch spawn --resume <session-or-record-id> [--phase <phase>] "<task>"
