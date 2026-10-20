@@ -38,6 +38,12 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
         .context("the running binary has no file name")?;
     let target = dir.join(file_name);
 
+    if cfg!(windows) {
+        // A process that still runs from a `.old` file keeps it; that is fine.
+        for old in stale_old_paths(&dir) {
+            let _ = std::fs::remove_file(old);
+        }
+    }
     install_one("horch", &source, &target)?;
     // A live collector keeps running the binary it started with: old
     // prices, old readers. Restart it on the binary just installed.
@@ -81,13 +87,13 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
 pub const DATASET_BIN: &str = "multi-herdr-dataset";
 
 /// The third binary. It is optional for a source build.
-const HERDR_INSTALL_BIN: &str = "herdr-install";
+pub const HERDR_INSTALL_BIN: &str = "herdr-install";
 
 /// The launcher scripts, with `__TEAMMATES_DIR__` as the roster placeholder.
 const FLEET_LAUNCHER: &str = include_str!("../../../../scripts/herdr-fleet");
 const RUN_LAUNCHER: &str = include_str!("../../../../scripts/herdr-run");
 
-fn exe_name(name: &str) -> String {
+pub fn exe_name(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
@@ -128,11 +134,25 @@ fn install_launchers(dir: &Path, teammates: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// The roster assignment line of a launcher template.
+const TEAMMATES_LINE: &str = "HORCH_TEAMMATES_DIR=\"__TEAMMATES_DIR__\"";
+
+/// `text` as a POSIX single-quoted literal: no expansion happens inside it.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// Fills in a launcher template. With a roster dir the path is baked in; with
 /// none the two `HORCH_TEAMMATES_DIR` lines go, and horch uses its own roster.
 fn render_launcher(template: &str, teammates: Option<&Path>) -> String {
     match teammates {
-        Some(dir) => template.replace("__TEAMMATES_DIR__", &dir.to_string_lossy()),
+        Some(dir) => {
+            let line = format!(
+                "HORCH_TEAMMATES_DIR={}",
+                shell_quote(&dir.to_string_lossy())
+            );
+            template.replace(TEAMMATES_LINE, &line)
+        }
         None => template
             .lines()
             .filter(|line| !line.contains("HORCH_TEAMMATES_DIR"))
@@ -193,19 +213,55 @@ fn replace_file(target: &Path, fill: impl FnOnce(&Path) -> Result<()>) -> Result
     fill(&staged)?;
     process::make_executable(&staged)?;
     // A running exe cannot be overwritten on Windows, but it can be renamed.
-    if cfg!(windows) && target.exists() {
+    swap_in(&staged, target, cfg!(windows), |from, to| {
+        std::fs::rename(from, to)
+    })
+}
+
+/// Moves `staged` to `target`. With `move_aside`, an existing `target` goes to
+/// its `.old` path first, and comes back if the final rename fails. `rename`
+/// is a parameter so a test can make it fail.
+fn swap_in(
+    staged: &Path,
+    target: &Path,
+    move_aside: bool,
+    rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
+    let mut aside = None;
+    if move_aside && target.exists() {
         let old = old_path(target);
         let _ = std::fs::remove_file(&old);
-        std::fs::rename(target, &old)
+        rename(target, &old)
             .with_context(|| format!("moving {} aside to {}", target.display(), old.display()))?;
+        aside = Some(old);
     }
-    std::fs::rename(&staged, target).with_context(|| {
-        format!(
-            "installing to {} (is a horch process running from there?)",
-            target.display()
-        )
-    })?;
-    Ok(())
+    let Err(err) = rename(staged, target) else {
+        return Ok(());
+    };
+    let err = anyhow::Error::new(err).context(format!(
+        "installing to {} (is a horch process running from there?)",
+        target.display()
+    ));
+    let Some(old) = aside else {
+        return Err(err);
+    };
+    match rename(&old, target) {
+        Ok(()) => Err(err.context(format!("restored the previous {}", target.display()))),
+        Err(rollback) => Err(err.context(format!(
+            "restoring {} from {} also failed: {rollback}",
+            target.display(),
+            old.display()
+        ))),
+    }
+}
+
+/// The `.old` files that `install` removes at its start: one per installed
+/// binary in `dir`. Windows leaves them after a replacement.
+fn stale_old_paths(dir: &Path) -> Vec<PathBuf> {
+    ["horch", DATASET_BIN, HERDR_INSTALL_BIN]
+        .iter()
+        .map(|bin| old_path(&dir.join(exe_name(bin))))
+        .collect()
 }
 
 /// Where Windows moves a replaced exe: `.<file name>.old` in the same dir.
@@ -429,7 +485,7 @@ mod tests {
         for template in [FLEET_LAUNCHER, RUN_LAUNCHER] {
             let out = render_launcher(template, Some(Path::new("/r/teammates")));
             assert!(
-                out.contains("HORCH_TEAMMATES_DIR=\"/r/teammates\""),
+                out.contains("HORCH_TEAMMATES_DIR='/r/teammates'\n"),
                 "{out}"
             );
             assert!(out.contains("export HORCH_TEAMMATES_DIR"));
@@ -469,6 +525,110 @@ mod tests {
             );
         }
         assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote("/a b"), "'/a b'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn render_launcher_quotes_a_roster_path_with_shell_characters() {
+        let path = "/r/$HOME/`id`/\"q\"/it's\\x";
+        for template in [FLEET_LAUNCHER, RUN_LAUNCHER] {
+            let out = render_launcher(template, Some(Path::new(path)));
+            let line = out
+                .lines()
+                .find(|l| l.starts_with("HORCH_TEAMMATES_DIR="))
+                .unwrap();
+            let script = format!("{line}; printf %s \"$HORCH_TEAMMATES_DIR\"");
+            let got = std::process::Command::new("sh")
+                .args(["-c", &script])
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8_lossy(&got.stdout), path);
+        }
+    }
+
+    #[test]
+    fn stale_old_paths_name_the_3_binaries() {
+        assert_eq!(
+            stale_old_paths(Path::new("/d")),
+            vec![
+                PathBuf::from(format!("/d/.horch{}.old", std::env::consts::EXE_SUFFIX)),
+                PathBuf::from(format!(
+                    "/d/.{DATASET_BIN}{}.old",
+                    std::env::consts::EXE_SUFFIX
+                )),
+                PathBuf::from(format!(
+                    "/d/.{HERDR_INSTALL_BIN}{}.old",
+                    std::env::consts::EXE_SUFFIX
+                )),
+            ]
+        );
+    }
+
+    fn swap_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("horch");
+        let staged = tmp.path().join(".horch.new");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::write(&staged, "new").unwrap();
+        (tmp, staged, target)
+    }
+
+    #[test]
+    fn swap_in_with_move_aside_replaces_the_target_and_keeps_old() {
+        let (_tmp, staged, target) = swap_fixture();
+
+        swap_in(&staged, &target, true, |from, to| std::fs::rename(from, to)).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(old_path(&target)).unwrap(), "old");
+    }
+
+    #[test]
+    fn swap_in_restores_the_old_target_when_the_final_rename_fails() {
+        let (_tmp, staged, target) = swap_fixture();
+        let fail_install = |from: &Path, to: &Path| -> std::io::Result<()> {
+            if from.ends_with(".horch.new") {
+                Err(std::io::Error::other("antivirus lock"))
+            } else {
+                std::fs::rename(from, to)
+            }
+        };
+
+        let err = swap_in(&staged, &target, true, fail_install).unwrap_err();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
+        assert!(!old_path(&target).exists());
+        let text = format!("{err:#}");
+        assert!(text.contains("antivirus lock"), "{text}");
+        assert!(text.contains("restored the previous"), "{text}");
+    }
+
+    #[test]
+    fn swap_in_reports_both_errors_when_the_rollback_fails_too() {
+        let (_tmp, staged, target) = swap_fixture();
+        let old = old_path(&target);
+        let fail_after_aside = |from: &Path, to: &Path| -> std::io::Result<()> {
+            if from == old {
+                Err(std::io::Error::other("rollback denied"))
+            } else if from.ends_with(".horch.new") {
+                Err(std::io::Error::other("antivirus lock"))
+            } else {
+                std::fs::rename(from, to)
+            }
+        };
+
+        let err = swap_in(&staged, &target, true, fail_after_aside).unwrap_err();
+
+        let text = format!("{err:#}");
+        assert!(text.contains("antivirus lock"), "{text}");
+        assert!(text.contains("rollback denied"), "{text}");
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), "old");
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! `horch install --dir <dir of this horch>` from a temp dir.
 
 use std::io::IsTerminal;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
@@ -149,18 +149,28 @@ pub fn is_fresh(now: DateTime<Utc>, checked_at: &str) -> bool {
     age >= chrono::Duration::zero() && age < chrono::Duration::hours(CACHE_TTL_HOURS)
 }
 
+/// Whether `exe` sits in a cargo target layout: `target/{debug,release}/` or
+/// `target/<triple>/{debug,release}/`. A dir named `target` alone is not one.
+fn is_cargo_build(exe: &Path) -> bool {
+    let name_of = |dir: Option<&Path>| dir.and_then(Path::file_name).map(|n| n == "target");
+    let profile = exe.parent();
+    let in_profile_dir = profile
+        .and_then(Path::file_name)
+        .is_some_and(|n| n == "debug" || n == "release");
+    in_profile_dir
+        && (name_of(profile.and_then(Path::parent)) == Some(true)
+            || name_of(profile.and_then(Path::parent).and_then(Path::parent)) == Some(true))
+}
+
 /// The directory `self-update` installs into: the canonical parent of the
-/// running horch, else `default_dir`. A horch under a cargo `target` dir is a
+/// running horch, else `default_dir`. A horch in a cargo `target` layout is a
 /// source build, and a release must not overwrite it.
 pub fn install_dir(current_exe: Option<&Path>, default_dir: &Path) -> Result<PathBuf> {
     let Some(exe) = current_exe else {
         return Ok(default_dir.to_path_buf());
     };
     let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
-    if exe
-        .components()
-        .any(|c| c == Component::Normal("target".as_ref()))
-    {
+    if is_cargo_build(&exe) {
         bail!(
             "{} is a source build; run `git pull` and `just install` to update it",
             exe.display()
@@ -169,6 +179,20 @@ pub fn install_dir(current_exe: Option<&Path>, default_dir: &Path) -> Result<Pat
     exe.parent()
         .map(Path::to_path_buf)
         .with_context(|| format!("{} has no parent directory", exe.display()))
+}
+
+/// The binaries every release archive holds, which are absent from `dir`.
+/// An install with only some of them would mix versions.
+fn missing_binaries(dir: &Path) -> Vec<String> {
+    [
+        "horch",
+        super::install::DATASET_BIN,
+        super::install::HERDR_INSTALL_BIN,
+    ]
+    .iter()
+    .map(|bin| super::install::exe_name(bin))
+    .filter(|file| !dir.join(file).is_file())
+    .collect()
 }
 
 /// The 2 lines the boot check prints.
@@ -287,8 +311,13 @@ pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
     let new_horch = tmp
         .path()
         .join(format!("horch{}", std::env::consts::EXE_SUFFIX));
-    if !new_horch.is_file() {
-        bail!("{name} holds no horch binary");
+    let absent = missing_binaries(tmp.path());
+    if !absent.is_empty() {
+        bail!(
+            "{name} of release {} lacks {}; nothing is installed",
+            release.tag,
+            absent.join(", ")
+        );
     }
     let status = Command::new(&new_horch)
         .arg("install")
@@ -417,8 +446,8 @@ fn extract(archive: &[u8], dir: &Path) -> Result<()> {
 
 #[cfg(windows)]
 fn extract(archive: &[u8], dir: &Path) -> Result<()> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive))
-        .context("the archive is not a .zip")?;
+    let mut zip =
+        zip::ZipArchive::new(std::io::Cursor::new(archive)).context("the archive is not a .zip")?;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).context("reading the archive")?;
         let name = flat_name(entry.name())?.to_string();
@@ -450,7 +479,15 @@ mod tests {
         assert_eq!(parse_version("v0.2.0"), Some((0, 2, 0)));
         assert_eq!(parse_version("1.10.3"), Some((1, 10, 3)));
         for bad in [
-            "", "v", "0.2", "0.2.0.1", "v0.2.0-rc1", "0.2.x", "+1.0.0", "1..0", "vv1.0.0",
+            "",
+            "v",
+            "0.2",
+            "0.2.0.1",
+            "v0.2.0-rc1",
+            "0.2.x",
+            "+1.0.0",
+            "1..0",
+            "vv1.0.0",
         ] {
             assert_eq!(parse_version(bad), None, "{bad}");
         }
@@ -543,6 +580,51 @@ mod tests {
     }
 
     #[test]
+    fn install_dir_refuses_only_a_cargo_target_layout() {
+        let fallback = Path::new("/fallback");
+        // Nothing here exists, so canonicalize keeps the path as written.
+        assert_eq!(
+            install_dir(Some(Path::new("/opt/target/bin/horch")), fallback).unwrap(),
+            Path::new("/opt/target/bin")
+        );
+        for exe in [
+            "/x/target/release/horch",
+            "/x/target/debug/horch",
+            "/x/target/aarch64-apple-darwin/release/horch",
+        ] {
+            let err = install_dir(Some(Path::new(exe)), fallback)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("source build"), "{exe}: {err}");
+        }
+        // `release` alone, or `target` 3 levels up, is not a cargo layout.
+        assert!(install_dir(Some(Path::new("/x/release/horch")), fallback).is_ok());
+        assert!(install_dir(Some(Path::new("/x/target/a/b/release/horch")), fallback).is_ok());
+    }
+
+    #[test]
+    fn missing_binaries_names_each_absent_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = super::super::install::exe_name;
+        assert_eq!(
+            missing_binaries(tmp.path()),
+            vec![
+                exe("horch"),
+                exe("multi-herdr-dataset"),
+                exe("herdr-install")
+            ]
+        );
+        std::fs::write(tmp.path().join(exe("horch")), "").unwrap();
+        std::fs::write(tmp.path().join(exe("herdr-install")), "").unwrap();
+        assert_eq!(
+            missing_binaries(tmp.path()),
+            vec![exe("multi-herdr-dataset")]
+        );
+        std::fs::write(tmp.path().join(exe("multi-herdr-dataset")), "").unwrap();
+        assert!(missing_binaries(tmp.path()).is_empty());
+    }
+
+    #[test]
     fn flat_name_refuses_paths() {
         assert!(flat_name("horch").is_ok());
         for bad in ["", "a/b", "a\\b", "..", "../horch", "/horch"] {
@@ -594,7 +676,10 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].starts_with("horch: NOTE: multi-herdr v0.3.0 is out (you have v"));
         assert!(lines[0].ends_with("): https://x/v0.3.0"));
-        assert_eq!(lines[1], "horch: NOTE: run `horch self-update` to install it.");
+        assert_eq!(
+            lines[1],
+            "horch: NOTE: run `horch self-update` to install it."
+        );
     }
 
     #[test]

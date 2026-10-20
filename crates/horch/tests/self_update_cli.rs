@@ -17,18 +17,23 @@ fn archive_name() -> String {
     format!("multi-herdr-v99.0.0-{}.tar.gz", env!("HORCH_TARGET"))
 }
 
-fn tar_gz(script: &str) -> Vec<u8> {
+/// An archive of the named binaries, each holding `script`.
+fn tar_gz(script: &str, names: &[&str]) -> Vec<u8> {
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut builder = tar::Builder::new(gz);
-    let mut header = tar::Header::new_gnu();
-    header.set_size(script.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    builder
-        .append_data(&mut header, "horch", script.as_bytes())
-        .unwrap();
+    for name in names {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(script.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, name, script.as_bytes())
+            .unwrap();
+    }
     builder.into_inner().unwrap().finish().unwrap()
 }
+
+const ALL_BINARIES: [&str; 3] = ["horch", "multi-herdr-dataset", "herdr-install"];
 
 fn hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -95,7 +100,7 @@ fn self_update(root: &Path, api: &str) -> Output {
         .unwrap()
 }
 
-fn setup() -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
+fn setup(names: &[&str]) -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     for dir in ["home", "data", "state", "bin"] {
@@ -103,12 +108,12 @@ fn setup() -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
     }
     let marker = root.join("marker");
     let script = format!("#!/bin/sh\necho \"$@\" > '{}'\n", marker.display());
-    (tmp, root, tar_gz(&script))
+    (tmp, root, tar_gz(&script, names))
 }
 
 #[test]
 fn self_update_verifies_and_runs_the_new_horch_install() {
-    let (_tmp, root, archive) = setup();
+    let (_tmp, root, archive) = setup(&ALL_BINARIES);
     let sums = hex(&archive);
     let api = serve(archive, sums);
     std::fs::write(root.join("state/self-check.json"), "{}").unwrap();
@@ -128,12 +133,27 @@ fn self_update_verifies_and_runs_the_new_horch_install() {
 
 #[test]
 fn self_update_refuses_a_wrong_digest_and_installs_nothing() {
-    let (_tmp, root, archive) = setup();
+    let (_tmp, root, archive) = setup(&ALL_BINARIES);
     let api = serve(archive, "0".repeat(64));
 
     let out = self_update(&root, &api);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{stderr}");
     assert!(stderr.contains("checksum mismatch"), "{stderr}");
+    assert!(!root.join("marker").exists());
+}
+
+#[test]
+fn self_update_refuses_an_archive_that_lacks_a_binary_and_installs_nothing() {
+    let (_tmp, root, archive) = setup(&["horch"]);
+    let sums = hex(&archive);
+    let api = serve(archive, sums);
+
+    let out = self_update(&root, &api);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("multi-herdr-dataset"), "{stderr}");
+    assert!(stderr.contains("herdr-install"), "{stderr}");
+    assert!(stderr.contains("v99.0.0"), "{stderr}");
     assert!(!root.join("marker").exists());
 }
