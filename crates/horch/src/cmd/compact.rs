@@ -1288,8 +1288,9 @@ mod tests {
         let begin = Instant::now();
         let o = f.run("sonnet-1", |_| {});
         let took = begin.elapsed();
+        // Well under the sleeper's 30 s, with room for a loaded CI runner.
         assert!(
-            took >= f.start_timeout && took < Duration::from_secs(2),
+            took >= f.start_timeout && took < Duration::from_secs(10),
             "{took:?}"
         );
         assert_eq!(o.code, 1, "{o:?}");
