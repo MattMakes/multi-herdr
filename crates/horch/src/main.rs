@@ -441,12 +441,14 @@ enum Command {
     },
 
     /// Install the latest multi-herdr release over this horch.
-    #[command(long_about = "Look up the latest multi-herdr release on GitHub. When it is \
+    #[command(
+        long_about = "Look up the latest multi-herdr release on GitHub. When it is \
                             newer than this horch, download the archive for this machine, \
                             verify it against the release's SHA256SUMS, and run its \
                             `horch install --dir <dir of this horch>`. A source build \
                             (under a cargo target dir) is refused: update it with \
-                            `git pull` and `just install`.")]
+                            `git pull` and `just install`."
+    )]
     SelfUpdate {
         /// Only say whether a newer release is out. Exits 0 either way.
         #[arg(long)]

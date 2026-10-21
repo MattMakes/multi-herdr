@@ -2,10 +2,14 @@
 //!
 //! The relay is an MCP server on stdin and stdout. After MCP initialization it
 //! also accepts one-line messages on a workspace-specific Unix socket.
+//! Off Unix there is no relay: `send` reports it as not delivered.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -109,6 +113,16 @@ pub fn is_live(socket: &Path) -> bool {
     request(socket, &json!({"ping": true}), Duration::from_secs(1)).is_ok()
 }
 
+/// The relay needs Unix sockets, so off Unix no relay is ever reachable.
+#[cfg(not(unix))]
+fn request(socket: &Path, _: &Value, _: Duration) -> std::result::Result<(), SendError> {
+    Err(SendError::NotDelivered(anyhow!(
+        "channel relay {} needs Unix sockets, which this platform lacks",
+        socket.display()
+    )))
+}
+
+#[cfg(unix)]
 fn request(socket: &Path, value: &Value, timeout: Duration) -> std::result::Result<(), SendError> {
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("connect to channel relay {}", socket.display()))
@@ -313,6 +327,25 @@ fn start_relay<W: Write + Send + 'static>(
     start_relay_after_bind(socket, delivery, output, connection_timeout, || Ok(()))
 }
 
+#[cfg(not(unix))]
+fn start_relay_after_bind<W, F>(
+    socket: &Path,
+    _: Arc<Output>,
+    _: Arc<Mutex<W>>,
+    _: Duration,
+    _: F,
+) -> Result<Relay>
+where
+    W: Write + Send + 'static,
+    F: FnOnce() -> Result<()>,
+{
+    bail!(
+        "channel relay {} needs Unix sockets, which this platform lacks",
+        socket.display()
+    )
+}
+
+#[cfg(unix)]
 fn start_relay_after_bind<W, F>(
     socket: &Path,
     delivery: Arc<Output>,
@@ -390,6 +423,7 @@ where
     })
 }
 
+#[cfg(unix)]
 fn handle_connection<W: Write>(mut stream: UnixStream, delivery: &Output, output: &Arc<Mutex<W>>) {
     let answer = match read_socket_request(&stream) {
         Ok(SocketRequest::Ping) => Ok(()),
@@ -412,16 +446,19 @@ fn handle_connection<W: Write>(mut stream: UnixStream, delivery: &Output, output
     let _ = stream.flush();
 }
 
+#[cfg(unix)]
 enum SocketRequest {
     Ping,
     Message { from: String, text: String },
 }
 
+#[cfg(unix)]
 enum SocketReadError {
     Timeout,
     BadRequest,
 }
 
+#[cfg(unix)]
 fn read_socket_request(stream: &UnixStream) -> std::result::Result<SocketRequest, SocketReadError> {
     let mut bytes = Vec::new();
     let mut limited = BufReader::new(stream).take((MAX_LINE_BYTES + 2) as u64);
@@ -513,6 +550,7 @@ fn run_codex_queue(codex_bin: &Path, thread_id: &str, text: &str) -> Result<()> 
     }
 }
 
+#[cfg(unix)]
 #[cfg(test)]
 mod tests {
     use std::io::{BufReader, Cursor};

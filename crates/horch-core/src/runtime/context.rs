@@ -642,7 +642,10 @@ mod tests {
                 Some(v) => MapEnv::new("/").with("HORCH_NO_SELF_CHECK", v),
                 None => MapEnv::new("/"),
             };
-            RuntimeContext::from_env(&env).unwrap().settings.no_self_check
+            RuntimeContext::from_env(&env)
+                .unwrap()
+                .settings
+                .no_self_check
         };
         assert!(read(Some("1")));
         assert!(!read(Some("0")));
