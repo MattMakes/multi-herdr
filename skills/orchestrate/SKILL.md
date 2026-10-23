@@ -50,7 +50,7 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 2. Answer a `BLOCKED:` message at once with `horch tell <role> "<answer>"`. A blocked worker waits and produces nothing until the answer arrives.
 3. Decide, or escalate to the human. An acknowledgement with a decision to come is better than silence.
 4. Run `horch layout` to see the grid across tabs. Run `horch tile` to rebuild it and `horch balance` to equalize column widths. `horch spawn` already does this after each spawn and each worker close.
-5. Run `horch inbox` to list the roles registered in this workspace.
+5. Run `horch inbox` to print and acknowledge pending worker messages, then list the roles registered in this workspace.
 6. Reserve your own hands for decomposition, answers, verification and integration.
 
 ## 5. Verify a DONE
@@ -72,7 +72,7 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 
 ## 7. Wrap up
 
-1. Confirm `horch inbox` shows no worker mid-task.
+1. Confirm `horch inbox` shows no worker mid-task and no message is pending.
 2. Run `horch worktree list`. Confirm that no claim is open or unlanded.
 3. Confirm every unit is finished or deliberately dropped, and say which were dropped.
 4. Run the full verification yourself: the build, the whole test suite, the acceptance checks from every plan file.

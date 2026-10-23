@@ -142,7 +142,7 @@ pane's terminal and submitted, as if you switched panes and typed it by hand.
 | command                            | who runs it  | what it does                          |
 |------------------------------------|--------------|---------------------------------------|
 | `horch tell <role> "<message>"`    | anyone       | Type a message into another pane      |
-| `horch inbox`                      | anyone       | List reachable roles                  |
+| `horch inbox`                      | anyone       | List roles; the orchestrator prints and acknowledges pending worker messages |
 | `horch assign <role> "<task>"`     | orchestrator | Record a task on the ledger, then send it |
 | `horch spawn <teammate> "<task>"`  | orchestrator | New pane, new agent session           |
 | `horch spawn --resume <id> "<task>"` | orchestrator | New pane, resuming an old session   |

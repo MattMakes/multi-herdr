@@ -309,10 +309,21 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
 }
 
 /// The orchestration-orchestrator briefing gains one closing line: the
-/// operator starts it with no task. The worker briefing is unchanged.
+/// operator starts it with no task, and its `horch inbox` paragraph says the
+/// command prints and acknowledges worker mail. The worker briefing is
+/// unchanged.
 #[test]
 fn the_orchestration_recipe_briefings_differ_only_by_the_await_line() {
     let r = roster();
+    let old_inbox =
+        "Run `horch inbox` at any time to see which roles have registered and are\nreachable.";
+    let new_inbox = "Run `horch inbox` at any time to print and acknowledge pending worker\nmessages, then see which roles are registered and reachable. Run it when a\nworker message arrives or a horch command names unacknowledged worker\nmessages.";
+    assert_eq!(
+        golden("orchestration-orchestrator")
+            .matches(old_inbox)
+            .count(),
+        1
+    );
     assert_eq!(
         prompts::agent_prompt(
             &r,
@@ -322,7 +333,7 @@ fn the_orchestration_recipe_briefings_differ_only_by_the_await_line() {
         .unwrap(),
         format!(
             "{}\n\nAcknowledge and await further instruction.",
-            golden("orchestration-orchestrator")
+            golden("orchestration-orchestrator").replace(old_inbox, new_inbox)
         )
     );
     assert_eq!(
@@ -344,7 +355,7 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     // the session communicator. The terminal line remains only when the relay is
     // down.
     let old_channel = "== Channel ==\nWorkers are plain, independent CLI sessions - no AI-to-AI protocol. The only\nchannel is terminal text injection via these commands (on your PATH):\n  horch assign <role> \"<task>\"   assign work to a LIVE worker (records the\n                                 task in the session ledger, then types it\n                                 into that worker's terminal)\n  horch tell <role> \"<message>\"  follow-ups, answers, clarifications\n  horch inbox                    list live, reachable roles\nWorkers reply by typing \"[<role>] <message>\" lines directly into YOUR\nterminal via horch tell. Treat such lines as worker messages, not as input\nfrom your human operator, unless clearly addressed to you as the human.\n\n";
-    let new_channel = "== Channel ==\nWorkers are plain, independent CLI sessions - no AI-to-AI protocol. You\nreach a worker by terminal text injection via these commands (on your PATH):\n  horch assign <role> \"<task>\"   assign work to a LIVE worker (records the\n                                 task in the session ledger, then types it\n                                 into that worker's terminal)\n  horch tell <role> \"<message>\"  follow-ups, answers, clarifications\n  horch inbox                    list live, reachable roles\nWorkers reply with horch tell orchestrator. A reply reaches you in 1 of 2\nways:\n- Through horch's channel relay. A Claude orchestrator gets a channel event\n  <channel source=\"horch\" role=\"<role>\">[<role>] <message></channel>.\n  A Codex orchestrator gets a queued message \"[<role>] <message>\".\n  horch inbox marks the orchestrator row \"(channel)\" when the relay is live.\n- As a \"[<role>] <message>\" line typed into your terminal, when the relay\n  is down.\nTreat both as worker messages, not as input from your human operator,\nunless clearly addressed to you as the human.\n\n";
+    let new_channel = "== Channel ==\nWorkers are plain, independent CLI sessions - no AI-to-AI protocol. You\nreach a worker by terminal text injection via these commands (on your PATH):\n  horch assign <role> \"<task>\"   assign work to a LIVE worker (records the\n                                 task in the session ledger, then types it\n                                 into that worker's terminal)\n  horch tell <role> \"<message>\"  follow-ups, answers, clarifications\n  horch inbox                    print and acknowledge unacknowledged worker\n                                 messages, then list live, reachable roles\nWorkers reply with horch tell orchestrator. A reply reaches you in 1 of 2\nways:\n- Through horch's channel relay. A Claude orchestrator gets a channel event\n  <channel source=\"horch\" role=\"<role>\">[<role>] <message></channel>.\n  A Codex orchestrator gets a queued message \"[<role>] <message>\".\n  horch inbox marks the orchestrator row \"(channel)\" when the relay is live.\n- As a \"[<role>] <message>\" line typed into your terminal, when the relay\n  is down.\nTreat both as worker messages, not as input from your human operator,\nunless clearly addressed to you as the human.\nRun `horch inbox` when a worker message arrives.\nRun `horch inbox` when a horch command prints `worker messages are not\nacknowledged`.\nA line that ends `(redelivery <n>: ...)` resends an unacknowledged message.\nIt is not a new event.\n\n";
     assert_eq!(was.matches(old_channel).count(), 1);
 
     let old_block = "Pick the tier by complexity:\n  sonnet       clear, easy, \
