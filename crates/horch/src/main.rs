@@ -41,6 +41,13 @@ enum Command {
         command: ChannelSubcommand,
     },
 
+    /// Deliver durable worker mail.
+    #[command(hide = true)]
+    Mail {
+        #[command(subcommand)]
+        command: MailSubcommand,
+    },
+
     /// Launch the herdr-fleet workspace: ONE orchestrator pane, which spawns
     /// exactly the workers the work needs, with a per-project session ledger.
     Fleet {
@@ -509,6 +516,15 @@ enum ChannelSubcommand {
 }
 
 #[derive(Subcommand)]
+enum MailSubcommand {
+    /// Redeliver pending mail until it is acknowledged.
+    Courier {
+        #[arg(long)]
+        workspace: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum WorktreeSubcommand {
     /// Create and claim a worker worktree.
     New { name: String },
@@ -637,10 +653,32 @@ fn run() -> Result<std::process::ExitCode> {
     // The one read of the process environment. Every command takes its
     // values from this context.
     let mut ctx = bootstrap::context()?;
-    let ctx = &mut ctx;
-    match cli.command {
+    let remind = !matches!(
+        &cli.command,
+        Command::Channel { .. }
+            | Command::Mail { .. }
+            | Command::Worker { .. }
+            | Command::Tile { .. }
+            | Command::Balance { .. }
+            | Command::Inbox
+    );
+    let result = dispatch(&mut ctx, cli.command);
+    if remind {
+        cmd::messaging::remind_pending(&ctx);
+    }
+    result
+}
+
+fn dispatch(
+    ctx: &mut horch_core::runtime::RuntimeContext,
+    command: Command,
+) -> Result<std::process::ExitCode> {
+    match command {
         Command::Channel { command } => match command {
             ChannelSubcommand::Serve { agent } => cmd::channel::serve(ctx, agent)?,
+        },
+        Command::Mail { command } => match command {
+            MailSubcommand::Courier { workspace } => cmd::mail::courier(ctx, &workspace)?,
         },
         Command::Fleet {
             cwd,
