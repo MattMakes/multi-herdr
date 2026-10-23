@@ -16,6 +16,8 @@ briefing is `teammates/_base/fleet-orchestrator.md`; the orchestrator's
 playbook is the bundled skill `skills/orchestrate/SKILL.md`. A worker never
 starts a subagent. A worker that needs more hands sends `QUESTION:` to the
 orchestrator, and the orchestrator spawns another pane.
+`horch inbox` prints and acknowledges pending worker messages before it lists
+the reachable roles.
 
 The operator starts the orchestrator with no task. Its briefing ends with
 "Acknowledge and await further instruction.", so it acknowledges the briefing

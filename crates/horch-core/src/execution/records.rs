@@ -30,6 +30,9 @@ pub const ORCHESTRATING_TASK: &str = "(orchestrating)";
 /// orchestrator. Its text is the error; the record stays live.
 pub const EVENT_REPORT_FAILED: &str = "report-failed";
 
+/// The history event of a durable `horch done` report whose push failed.
+pub const EVENT_REPORT_QUEUED: &str = "report-queued";
+
 /// A project's ledger file.
 #[derive(Debug, Clone)]
 pub struct Ledger {

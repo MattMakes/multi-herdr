@@ -17,6 +17,27 @@ herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 
 ## Getting started
 
+Install a prebuilt release. No Rust toolchain needed.
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MattMakes/multi-herdr/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/MattMakes/multi-herdr/main/scripts/install.ps1 | iex
+```
+
+Update later with `horch self-update`.
+
+If you download an archive in a browser on macOS, clear the quarantine flag
+before you run it: `xattr -d com.apple.quarantine horch multi-herdr-dataset herdr-install`.
+
+### From source (contributors)
+
 Build and put the binaries on your PATH:
 
 ```bash
@@ -49,6 +70,14 @@ the scratch workspace open when they fail, so you can look at it.
 
 Day to day: `just install` once, then `herdr-fleet` from any project.
 To pick up new changes, run `git pull` yourself, then `just install` again.
+
+## Releases
+
+A release is a tag `vX.Y.Z`. The `release` workflow builds 5 targets
+(macOS arm64 and x86_64, Linux arm64 and x86_64, Windows x86_64) and publishes
+them to a GitHub release with a `SHA256SUMS` file. The repo skills `/release`
+and `/push-pr` open the PRs. A plain PR is not a release, and users get no
+update notice for it.
 
 ## Running a fleet
 
@@ -113,7 +142,7 @@ pane's terminal and submitted, as if you switched panes and typed it by hand.
 | command                            | who runs it  | what it does                          |
 |------------------------------------|--------------|---------------------------------------|
 | `horch tell <role> "<message>"`    | anyone       | Type a message into another pane      |
-| `horch inbox`                      | anyone       | List reachable roles                  |
+| `horch inbox`                      | anyone       | List roles; the orchestrator prints and acknowledges pending worker messages |
 | `horch assign <role> "<task>"`     | orchestrator | Record a task on the ledger, then send it |
 | `horch spawn <teammate> "<task>"`  | orchestrator | New pane, new agent session           |
 | `horch spawn --resume <id> "<task>"` | orchestrator | New pane, resuming an old session   |

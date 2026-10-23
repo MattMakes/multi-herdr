@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use horch_core::execution::lifecycle::{self, DoneRequest, DoneSteps, ReportTarget};
+use horch_core::execution::lifecycle::{self, DoneRequest, DoneSteps, ReportStatus, ReportTarget};
 use horch_core::messaging::delivery::{self, Timing};
 use horch_core::workspace::client::WorkspaceClient;
 use horch_core::workspace::testing::{FakeCall, FakeWorkspace};
@@ -158,12 +158,12 @@ impl DoneSteps for Recorder<'_> {
         self.push(format!("ledger done {record_id} {summary}"));
         Ok(())
     }
-    fn report(&self, line: &str) -> Result<()> {
+    fn report(&self, line: &str) -> Result<ReportStatus> {
         self.push(format!("report {line}"));
         if self.fail_report {
             return Err(anyhow!("orchestrator unreachable"));
         }
-        Ok(())
+        Ok(ReportStatus::Delivered)
     }
     fn unregister(&self, workspace: &str, role: &str) {
         self.push(format!("unregister {workspace} {role}"));

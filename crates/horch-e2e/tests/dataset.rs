@@ -84,6 +84,11 @@ fn machine_fixture(h: &Harness, disk_free: u64) -> PathBuf {
 }
 
 fn run(h: &Harness, extra: &[(&str, &str)]) -> Output {
+    run_with(h, &[], extra)
+}
+
+/// `run` with more `multi-herdr-dataset run` arguments.
+fn run_with(h: &Harness, args: &[&str], extra: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(dataset_bin());
     cmd.args([
         "run",
@@ -93,6 +98,7 @@ fn run(h: &Harness, extra: &[(&str, &str)]) -> Output {
         "--budget-usd",
         "100",
     ]);
+    cmd.args(args);
     h.seal(&mut cmd);
     cmd.envs(extra.iter().copied());
     cmd.output().expect("running multi-herdr-dataset")
@@ -192,8 +198,12 @@ fn pre_06_harness_resolution_before_worktree() {
     let Some(h) = harness("pre06") else { return };
     let machine = machine_fixture(&h, 500_000_000_000);
     let missing = h.bin.join("no-such-claude");
-    let out = run(
+    // The planner draws the exploration slot at random (seeded by the fresh
+    // round id), so a claude candidate is not certain. `--baseline` plans
+    // one claude teammate in slot A, so PRE-06 always has a claude to fail.
+    let out = run_with(
         &h,
+        &["--baseline", "sonnet"],
         &[
             ("HORCH_MACHINE_FILE", machine.to_str().unwrap()),
             ("HORCH_CLAUDE_BIN", missing.to_str().unwrap()),
@@ -325,7 +335,13 @@ fn pre_14_untrusted_repo_refuses_before_worktree_or_model() {
     // The operator never trusted this repository in Claude or Codex.
     h.untrust_project();
     let machine = machine_fixture(&h, 500_000_000_000);
-    let out = run(&h, &[("HORCH_MACHINE_FILE", machine.to_str().unwrap())]);
+    // `--baseline` plans a claude teammate, so the refusal names claude's
+    // fix whichever teammate the random exploration slot draws.
+    let out = run_with(
+        &h,
+        &["--baseline", "sonnet"],
+        &[("HORCH_MACHINE_FILE", machine.to_str().unwrap())],
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(4), "{}", text(&out));
 

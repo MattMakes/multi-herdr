@@ -4,5 +4,6 @@
 pub mod brief;
 pub mod channel;
 pub mod delivery;
+pub mod mail;
 pub mod mailbox;
 pub mod message;
