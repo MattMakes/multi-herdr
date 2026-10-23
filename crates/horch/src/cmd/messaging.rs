@@ -85,14 +85,35 @@ fn tell_outcome(ctx: &RuntimeContext, role: &str, text: &str) -> Result<ReportSt
     let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
     let durable = role == "orchestrator" && sender.is_some();
     if durable && target.is_none() && !channel::is_live(&socket) {
-        push_line(ctx, &herdr, &mailbox, role, sender.as_deref(), target, line)?;
+        // Nobody to queue for. Skip the relay: one that starts now would take
+        // the message with nothing queued behind it. The not-registered error
+        // makes `done` stay open and retry.
+        push_line(
+            ctx,
+            &herdr,
+            &mailbox,
+            role,
+            sender.as_deref(),
+            target,
+            line,
+            false,
+        )?;
         return Ok(ReportStatus::Delivered);
     }
     if durable {
         Mail::under(&ctx.paths.state_root, mailbox.workspace_id())
             .enqueue(sender.as_deref().expect("durable mail has a sender"), &line)?;
     }
-    let pushed = push_line(ctx, &herdr, &mailbox, role, sender.as_deref(), target, line);
+    let pushed = push_line(
+        ctx,
+        &herdr,
+        &mailbox,
+        role,
+        sender.as_deref(),
+        target,
+        line,
+        true,
+    );
     if durable {
         super::mail::start_courier(ctx, mailbox.workspace_id());
         return Ok(match pushed {
@@ -104,6 +125,7 @@ fn tell_outcome(ctx: &RuntimeContext, role: &str, text: &str) -> Result<ReportSt
     Ok(ReportStatus::Delivered)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_line(
     ctx: &RuntimeContext,
     herdr: &Herdr,
@@ -112,8 +134,9 @@ fn push_line(
     sender: Option<&str>,
     target: Option<String>,
     mut line: String,
+    relay: bool,
 ) -> Result<()> {
-    if role == "orchestrator" {
+    if role == "orchestrator" && relay {
         let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
         let from = sender.unwrap_or("orchestrator");
         let send_timeout = if cfg!(debug_assertions) {

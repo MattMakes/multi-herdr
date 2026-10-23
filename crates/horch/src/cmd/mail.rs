@@ -28,8 +28,6 @@ pub fn start_courier(ctx: &RuntimeContext, workspace: &str) {
     let _ = process::spawn_detached(&mut cmd);
 }
 
-// MAIL-U1 targets rustc 1.96 and requires the standard library's file lock.
-#[allow(clippy::incompatible_msrv)]
 pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     let mail = Mail::under(&ctx.paths.state_root, workspace);
     std::fs::create_dir_all(mail.dir())
@@ -128,10 +126,17 @@ pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
 }
 
 fn attempt_for_age(message: &Message) -> usize {
-    let now = SystemTime::now();
+    first_attempt_after(message.created_at, SystemTime::now())
+}
+
+/// The redelivery a courier that starts at `now` owes a message: the first
+/// one not yet due. An attempt that fell due before this courier started is
+/// skipped, never replayed: a courier per enqueue would otherwise resend it
+/// once for every later message. 7 means none is left.
+fn first_attempt_after(created_at: SystemTime, now: SystemTime) -> usize {
     (1..=6)
-        .rfind(|attempt| due_at(message.created_at, *attempt).is_some_and(|due| due <= now))
-        .unwrap_or(1)
+        .find(|attempt| due_at(created_at, *attempt).is_some_and(|due| due > now))
+        .unwrap_or(7)
 }
 
 fn due_at(created_at: SystemTime, attempt: usize) -> Option<SystemTime> {
@@ -156,4 +161,32 @@ fn test_duration(name: &str, default: Duration) -> Duration {
     }
     let _ = name;
     default
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use super::first_attempt_after;
+
+    #[test]
+    fn a_new_message_owes_the_first_redelivery() {
+        let at = SystemTime::UNIX_EPOCH;
+        assert_eq!(first_attempt_after(at, at), 1);
+    }
+
+    #[test]
+    fn a_restarted_courier_skips_redeliveries_already_due() {
+        let at = SystemTime::UNIX_EPOCH;
+        // 100 s old: attempts 1 (30 s) and 2 (90 s) fell due; 3 (210 s) is next.
+        assert_eq!(first_attempt_after(at, at + Duration::from_secs(100)), 3);
+    }
+
+    #[test]
+    fn a_restarted_courier_never_replays_the_last_redelivery() {
+        let at = SystemTime::UNIX_EPOCH;
+        // Past the 6th (1050 s): nothing left, on every restart.
+        assert_eq!(first_attempt_after(at, at + Duration::from_secs(1050)), 7);
+        assert_eq!(first_attempt_after(at, at + Duration::from_secs(86_400)), 7);
+    }
 }
