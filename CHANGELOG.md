@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.2.0 - 2026-10-25
+
 - Codex workers and the Codex orchestrator start with `--approve-for-me`:
   a request to act outside the sandbox goes to Codex's automatic reviewer
   instead of failing. Plan panes stay read-only with the same reviewer.
