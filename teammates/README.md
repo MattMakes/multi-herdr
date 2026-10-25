@@ -364,9 +364,9 @@ no `astra` generic: those tiers belong to the orchestrator.
 
 `codex-network` is the only Codex worker whose sandbox reaches the network
 (`-c sandbox_workspace_write.network_access=true`). Every other Codex
-teammate keeps the network off, because it runs `auto` (`-a never`) and
-nothing would stop it from sending code out. `codex-network` runs
-`acceptEdits` (`-a on-request`) instead, and `horch teammates --check` fails
+teammate keeps the network off, so a command that needs it must ask and
+Codex's automatic reviewer (`--approve-for-me`) decides. `codex-network` runs
+`acceptEdits` instead, and `horch teammates --check` fails
 any Codex teammate that pairs network access with `auto` or
 `bypassPermissions`. Claude workers need no switch: no Claude sandbox is
 configured, so their Bash and WebFetch already reach the network.

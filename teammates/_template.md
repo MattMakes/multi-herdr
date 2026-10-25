@@ -232,11 +232,14 @@ worker_channel: false
 #
 # claude -> --permission-mode <value>
 #           acceptEdits | auto | bypassPermissions | manual | dontAsk | plan
-# codex  -> no single equivalent; mapped onto its sandbox + approval pair:
-#           plan               -s read-only        -a on-request
-#           acceptEdits        -s workspace-write  -a on-request
-#           auto               -s workspace-write  -a never
+# codex  -> no single equivalent; mapped onto its sandbox + approval flags:
+#           plan               -s read-only -a on-request
+#                              -c approvals_reviewer="auto_review"
+#           acceptEdits, auto  --approve-for-me (workspace-write; approval
+#                              requests go to Codex's automatic reviewer)
 #           bypassPermissions  --dangerously-bypass-approvals-and-sandbox
+#           When args set their own sandbox, --approve-for-me is spelled out
+#           as -a on-request -c approvals_reviewer="auto_review".
 #           manual, dontAsk    no equivalent -> load-time error
 permission_mode: acceptEdits
 

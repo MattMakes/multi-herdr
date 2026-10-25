@@ -14,12 +14,10 @@ effort: medium
 compact_window: 200000
 compact_at: 160000
 # Network on is the risk this teammate exists to contain. Every other codex
-# teammate runs `auto` (-a never) with the sandbox's network off: nothing a
-# prompt-injected worker reads can make it send code out or pull code in.
-# This one has the network, so it does not also get "never ask":
-# acceptEdits is `-s workspace-write -a on-request`. An escalation goes to
-# the operator's approvals_reviewer (auto_review in ~/.codex/config.toml),
-# or to a human if that key is unset.
+# teammate keeps the sandbox's network off: a command that needs the network
+# must ask, and Codex's automatic reviewer decides. This one has the network
+# open in the sandbox itself. acceptEdits maps to `--approve-for-me`
+# (workspace-write, on-request, approvals_reviewer = auto_review).
 permission_mode: acceptEdits
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 # `sandbox_workspace_write.network_access=true` opens the network inside the

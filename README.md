@@ -730,10 +730,14 @@ your global Codex configuration. Verified with Codex CLI 0.154.0; see the
 [official CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
-The bundled Codex workers and orchestrator use `permission_mode: auto`, mapped
-to `-s workspace-write -a never`. Commands allowed by the sandbox or explicit
-rules can run; actions needing approval fail back to the agent instead of
-waiting for a person. This preserves sandbox restrictions. It does not use
+The bundled Codex workers and orchestrator use `permission_mode: auto`, and
+every Codex write mode (`auto`, `acceptEdits`) launches with
+`--approve-for-me` (Codex 0.147+): the workspace-write sandbox, with approval
+requests sent to Codex's automatic reviewer instead of waiting for a person.
+Commands allowed by the sandbox or explicit rules run; anything else, such as
+network access or a write outside the workspace, runs only when the reviewer
+approves it. A `plan` pane stays read-only with the same reviewer
+(`-c approvals_reviewer="auto_review"`). It does not use
 `--dangerously-bypass-approvals-and-sandbox`. Custom teammates can still choose
 an interactive permission mode. Authentication and any required first-run
 setup must already be complete before launching unattended panes.

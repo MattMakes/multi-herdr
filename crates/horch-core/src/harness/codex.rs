@@ -34,6 +34,7 @@ use super::{
 use crate::compaction::window::OperatorWindow;
 use crate::fsx;
 use crate::prompts;
+use crate::roster::permission::{CODEX_APPROVE_FOR_ME, CODEX_AUTO_REVIEWER};
 use crate::roster::{ExecRule, HarnessDefault, PermissionMode, Teammate};
 use crate::runtime::RuntimeContext;
 
@@ -877,7 +878,9 @@ fn launch_sandbox(
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-s" | "--sandbox" => flag = it.next().cloned(),
-            "--full-auto" => flag = Some(WORKSPACE_WRITE.into()),
+            "--full-auto" | "--approve-for-me" | "--not-so-yolo" => {
+                flag = Some(WORKSPACE_WRITE.into())
+            }
             "--dangerously-bypass-approvals-and-sandbox" | "--yolo" => {
                 flag = Some("danger-full-access".into())
             }
@@ -927,21 +930,25 @@ pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
 /// no sandbox and no profile (Codex refuses `sandbox_mode` and
 /// `default_permissions` together).
 fn plan_profile_form(teammate: &Teammate) -> bool {
-    if teammate.permission_mode != Some(PermissionMode::Plan) {
-        return false;
-    }
+    teammate.permission_mode == Some(PermissionMode::Plan) && !sets_own_sandbox(teammate)
+}
+
+/// Whether the teammate's own args choose a sandbox or a permissions
+/// profile.
+fn sets_own_sandbox(teammate: &Teammate) -> bool {
     let keys = HarnessDefault::config_keys(&teammate.args);
     let flags = [
         "-s",
         "--sandbox",
         "--full-auto",
+        "--approve-for-me",
+        "--not-so-yolo",
         "--dangerously-bypass-approvals-and-sandbox",
         "--yolo",
     ];
-    !keys
-        .iter()
+    keys.iter()
         .any(|k| matches!(*k, "sandbox_mode" | "default_permissions"))
-        && !teammate
+        || teammate
             .args
             .iter()
             .any(|a| flags.contains(&a.as_str()) || a.starts_with("--sandbox="))
@@ -952,6 +959,11 @@ fn plan_profile_form(teammate: &Teammate) -> bool {
 /// read-only`: only then does `/permissions` list Read Only, so `horch mode
 /// <role> plan` can switch back (X6 repro 3). `None`: no mode, or no codex
 /// equivalent.
+///
+/// Codex refuses `--approve-for-me` next to a sandbox flag, and the flag's
+/// own `sandbox_mode` next to `default_permissions`. So when the teammate's
+/// args choose a sandbox, the flag is spelled out as the approval and
+/// reviewer pairs it stands for, and the teammate's sandbox wins.
 fn permission_args(teammate: &Teammate) -> Option<Vec<String>> {
     if plan_profile_form(teammate) {
         let args = [
@@ -959,10 +971,17 @@ fn permission_args(teammate: &Teammate) -> Option<Vec<String>> {
             "default_permissions=\":read-only\"",
             "-a",
             "on-request",
+            "-c",
+            CODEX_AUTO_REVIEWER,
         ];
         return Some(args.iter().map(|s| s.to_string()).collect());
     }
-    teammate.permission_mode?.codex_args()
+    let args = teammate.permission_mode?.codex_args()?;
+    if args == [CODEX_APPROVE_FOR_ME] && sets_own_sandbox(teammate) {
+        let spelled = ["-a", "on-request", "-c", CODEX_AUTO_REVIEWER];
+        return Some(spelled.iter().map(|s| s.to_string()).collect());
+    }
+    Some(args)
 }
 
 /// The profile a codex launch runs: the value after `-p` or `--profile` in
@@ -2201,6 +2220,10 @@ mod tests {
             (None, vec!["--full-auto"], true),
             (Some(Plan), vec!["--sandbox", "workspace-write"], true),
             (Some(Auto), vec!["-s", "danger-full-access"], false),
+            // `--approve-for-me` means workspace-write.
+            (Some(Auto), vec![], true),
+            (Some(AcceptEdits), vec![], true),
+            (None, vec!["--approve-for-me"], true),
         ] {
             let teammate = Teammate {
                 permission_mode: mode,
