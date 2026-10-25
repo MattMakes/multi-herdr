@@ -1,6 +1,6 @@
 # Changelog
 
-<!-- /release renames "## Unreleased" to "## vX.Y.Z - YYYY-MM-DD" and adds a new empty "## Unreleased" above it. -->
+<!-- On a merge to main with entries under "## Unreleased", the auto-release workflow renames it to "## vX.Y.Z - YYYY-MM-DD", adds a new empty "## Unreleased" above it, and publishes the section as the release notes. -->
 
 ## Unreleased
 

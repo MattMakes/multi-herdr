@@ -1,14 +1,16 @@
 ---
 name: push-pr
-description: Use when the operator types /push-pr, or asks to push the current work, open a PR, "ship this as a normal PR", or send a change that does not need a release. Commits, pushes and opens an ordinary pull request against main with a description that is kept up to date as checks run. No version bump, no tag, no release - users get no update notice. For a versioned release use /release instead.
+description: Use when the operator types /push-pr, or asks to push the current work, open a PR, or "ship this". Commits, pushes and opens a pull request against main with a description that is kept up to date as checks run. A user-visible change gets a CHANGELOG line, and merging it then publishes a release automatically; a change without one ships quietly. To follow or check a published release, use /release.
 ---
 
-# /push-pr - an ordinary PR, no release
+# /push-pr - a PR; merging it releases when it has a changelog line
 
-A push-pr change lands on `main` but is not a release. The version in
-`Cargo.toml` does not move, so `horch` on users' machines shows no update
-notice. It reaches users with the next `/release`. Use this for fixes and
-features that can wait, docs, internal tooling and CI.
+Releases are automatic. When a merge to `main` leaves entries under
+`## Unreleased` in `CHANGELOG.md`, the `auto-release` workflow bumps the
+version, tags it and publishes a release, and every `horch` shows an update
+notice. A merge without a changelog line (docs, CI, internal tooling) lands
+quietly and ships with the next release. So the changelog line in step 3 is
+the decision to release.
 
 This skill is for an operator session opened in this repository. Pushing and
 opening a PR are outward-facing: the operator asked for them by invoking the
@@ -23,8 +25,8 @@ operator's call.
    change, kind one of `feat`, `fix`, `docs`, `chore`, `ci`. Never push to
    `main` directly.
 4. Run `git diff origin/main -- Cargo.toml`. If `[workspace.package] version`
-   changed, stop: a version bump is a release. Tell the operator to use
-   `/release`, or revert the bump.
+   changed, stop and ask the operator to revert it: the `auto-release`
+   workflow sets the version, and a hand bump makes it skip a number.
 5. Look at what is about to be committed. Leave out build output, scratch
    files and anything that looks like a credential. Ask when unsure.
 
@@ -39,8 +41,13 @@ is red on arrival wastes the reviewer's time and CI minutes.
 When the change is visible to a user (a command, a flag, an output, a fix
 they would notice), add one line under `## Unreleased` in `CHANGELOG.md`, in
 plain words, written for the user, not the developer. Skip it for internal
-refactors, tests and CI. `/release` turns this section into the release notes,
-so a missing line means a missing note.
+refactors, tests and CI. The line becomes the release notes, and it is what
+makes the merge a release: no line, no release.
+
+The bump is a patch by default. When the change adds a feature or changes a
+behavior, add the label `release:minor` after step 5
+(`gh pr edit <n> --add-label release:minor`); before 1.0 a breaking change is
+also `release:minor`. Use `release:major` only when the operator asks.
 
 ## 4. Commit and push
 
@@ -62,7 +69,7 @@ block, then the prose:
 
 ```markdown
 > **Status:** checks running
-> **Release:** none. No version bump; ships with the next `/release`.
+> **Release:** <"patch on merge" / "minor on merge" / "none: no changelog line, ships with the next release">
 
 - [x] Local tests: `cargo test --workspace` passed
 - [ ] CI
@@ -90,5 +97,6 @@ End the body with the PR attribution line your session requires.
 
 ## 7. Report
 
-Give the operator the PR URL, the CI result, and one line: "Not a release:
-users get it with the next `/release`."
+Give the operator the PR URL, the CI result, and one line on what merging
+does: "Merging publishes vX.Y.Z (patch|minor)" when there is a changelog line,
+or "Not a release: users get it with the next release" when there is none.

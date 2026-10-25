@@ -73,11 +73,20 @@ To pick up new changes, run `git pull` yourself, then `just install` again.
 
 ## Releases
 
-A release is a tag `vX.Y.Z`. The `release` workflow builds 5 targets
-(macOS arm64 and x86_64, Linux arm64 and x86_64, Windows x86_64) and publishes
-them to a GitHub release with a `SHA256SUMS` file. The repo skills `/release`
-and `/push-pr` open the PRs. A plain PR is not a release, and users get no
-update notice for it.
+Releases are automatic. When a merge to `main` leaves entries under
+`## Unreleased` in `CHANGELOG.md`, the `auto-release` workflow bumps the
+version, moves those entries under `## vX.Y.Z - <date>`, commits
+`Release vX.Y.Z` to `main` and tags it. It then runs the `release` workflow,
+which builds 5 targets (macOS arm64 and x86_64, Linux arm64 and x86_64,
+Windows x86_64) and publishes them to a GitHub release with a `SHA256SUMS`
+file. The changelog section becomes the release notes.
+
+- A merge with an empty `## Unreleased` (docs, CI, refactors) is not a
+  release, and users get no update notice for it.
+- The bump is a patch. Label the PR `release:minor` or `release:major` for a
+  bigger one.
+- `/push-pr` opens the PR and adds the changelog line for a user-visible
+  change. `/release` follows a published release and checks its assets.
 
 ## Running a fleet
 

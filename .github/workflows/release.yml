@@ -8,12 +8,19 @@ on:
       tag:
         description: "Existing tag to release, for example v0.2.0"
         required: true
+  # auto-release.yml calls this after it pushes the tag: a tag pushed with
+  # GITHUB_TOKEN does not trigger the push event above.
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 env:
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   verify:
@@ -110,7 +117,7 @@ jobs:
         run: |
           version="${{ needs.verify.outputs.version }}"
           awk -v h="## v$version" '
-            index($0, h) == 1 && !found { found = 1; next }
+            ($0 == h || index($0, h " ") == 1) && !found { found = 1; next }
             found && /^## / { exit }
             found { print }
           ' CHANGELOG.md > notes.md
