@@ -17,6 +17,27 @@ herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 
 ## Getting started
 
+Install a prebuilt release. No Rust toolchain needed.
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MattMakes/multi-herdr/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/MattMakes/multi-herdr/main/scripts/install.ps1 | iex
+```
+
+Update later with `horch self-update`.
+
+If you download an archive in a browser on macOS, clear the quarantine flag
+before you run it: `xattr -d com.apple.quarantine horch multi-herdr-dataset herdr-install`.
+
+### From source (contributors)
+
 Build and put the binaries on your PATH:
 
 ```bash
@@ -49,6 +70,23 @@ the scratch workspace open when they fail, so you can look at it.
 
 Day to day: `just install` once, then `herdr-fleet` from any project.
 To pick up new changes, run `git pull` yourself, then `just install` again.
+
+## Releases
+
+Releases are automatic. When a merge to `main` leaves entries under
+`## Unreleased` in `CHANGELOG.md`, the `auto-release` workflow bumps the
+version, moves those entries under `## vX.Y.Z - <date>`, commits
+`Release vX.Y.Z` to `main` and tags it. It then runs the `release` workflow,
+which builds 5 targets (macOS arm64 and x86_64, Linux arm64 and x86_64,
+Windows x86_64) and publishes them to a GitHub release with a `SHA256SUMS`
+file. The changelog section becomes the release notes.
+
+- A merge with an empty `## Unreleased` (docs, CI, refactors) is not a
+  release, and users get no update notice for it.
+- The bump is a patch. Label the PR `release:minor` or `release:major` for a
+  bigger one.
+- `/push-pr` opens the PR and adds the changelog line for a user-visible
+  change. `/release` follows a published release and checks its assets.
 
 ## Running a fleet
 
@@ -113,7 +151,7 @@ pane's terminal and submitted, as if you switched panes and typed it by hand.
 | command                            | who runs it  | what it does                          |
 |------------------------------------|--------------|---------------------------------------|
 | `horch tell <role> "<message>"`    | anyone       | Type a message into another pane      |
-| `horch inbox`                      | anyone       | List reachable roles                  |
+| `horch inbox`                      | anyone       | List roles; the orchestrator prints and acknowledges pending worker messages |
 | `horch assign <role> "<task>"`     | orchestrator | Record a task on the ledger, then send it |
 | `horch spawn <teammate> "<task>"`  | orchestrator | New pane, new agent session           |
 | `horch spawn --resume <id> "<task>"` | orchestrator | New pane, resuming an old session   |
@@ -692,10 +730,14 @@ your global Codex configuration. Verified with Codex CLI 0.154.0; see the
 [official CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
-The bundled Codex workers and orchestrator use `permission_mode: auto`, mapped
-to `-s workspace-write -a never`. Commands allowed by the sandbox or explicit
-rules can run; actions needing approval fail back to the agent instead of
-waiting for a person. This preserves sandbox restrictions. It does not use
+The bundled Codex workers and orchestrator use `permission_mode: auto`, and
+every Codex write mode (`auto`, `acceptEdits`) launches with
+`--approve-for-me` (Codex 0.147+): the workspace-write sandbox, with approval
+requests sent to Codex's automatic reviewer instead of waiting for a person.
+Commands allowed by the sandbox or explicit rules run; anything else, such as
+network access or a write outside the workspace, runs only when the reviewer
+approves it. A `plan` pane stays read-only with the same reviewer
+(`-c approvals_reviewer="auto_review"`). It does not use
 `--dangerously-bypass-approvals-and-sandbox`. Custom teammates can still choose
 an interactive permission mode. Authentication and any required first-run
 setup must already be complete before launching unattended panes.

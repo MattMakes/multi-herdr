@@ -53,6 +53,13 @@ pub struct ClaimLine {
     pub path: PathBuf,
 }
 
+/// The result of reporting after the report itself has been accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReportStatus {
+    Delivered,
+    Queued(String),
+}
+
 /// The steps of [`done`] that are not workspace calls. The CLI runs them
 /// against the ledger, `horch tell`, the mailbox and the tiler.
 pub trait DoneSteps {
@@ -66,7 +73,7 @@ pub trait DoneSteps {
         Ok(Vec::new())
     }
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()>;
-    fn report(&self, line: &str) -> Result<()>;
+    fn report(&self, line: &str) -> Result<ReportStatus>;
     /// Whether an earlier `done` of this record reported and recorded its
     /// summary, so a retry only closes the pane. The default says no.
     fn recorded(&self, _record_id: &str) -> Result<bool> {
@@ -75,6 +82,8 @@ pub trait DoneSteps {
     /// Note in the record's history that the report failed with `error`.
     /// Best effort; the default does nothing.
     fn report_failed(&self, _record_id: &str, _error: &str) {}
+    /// Note that a durable report awaits redelivery. Best effort.
+    fn report_queued(&self, _record_id: &str, _error: &str) {}
     fn unregister(&self, workspace: &str, role: &str);
     fn settle(&self, workspace: &str);
     /// One last session discovery, before the pane close ends the discovery
@@ -166,18 +175,27 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
         summary.push_str(&format!(" | UNREGISTERED: {entry}"));
     }
     if req.report_to == ReportTarget::Orchestrator {
-        if let Err(e) = steps.report(&format!("[{role}] DONE: {summary}")) {
-            steps.report_failed(req.record_id, &format!("{e:#}"));
-            // A context, not a new error: the CLI's sandbox hint looks for
-            // the herdr failure in the chain.
-            return Err(e.context(
-                "horch done: the report did not reach the orchestrator.\n\
-                 This pane stays open. The record is not done. Your role stays registered.\n\
-                 Fix the cause if you can, then run the same horch done command again.\n\
-                 If it fails again, record your summary with horch note and end your turn.\n\
-                 Do not close this pane.\n\
-                 The cause",
-            ));
+        match steps.report(&format!("[{role}] DONE: {summary}")) {
+            Ok(ReportStatus::Delivered) => {}
+            Ok(ReportStatus::Queued(cause)) => {
+                eprintln!(
+                    "horch done: the push did not land ({cause}); the courier will redeliver it"
+                );
+                steps.report_queued(req.record_id, &cause);
+            }
+            Err(e) => {
+                steps.report_failed(req.record_id, &format!("{e:#}"));
+                // A context, not a new error: the CLI's sandbox hint looks for
+                // the herdr failure in the chain.
+                return Err(e.context(
+                    "horch done: the report did not reach the orchestrator.\n\
+                     This pane stays open. The record is not done. Your role stays registered.\n\
+                     Fix the cause if you can, then run the same horch done command again.\n\
+                     If it fails again, record your summary with horch note and end your turn.\n\
+                     Do not close this pane.\n\
+                     The cause",
+                ));
+            }
         }
     }
     // After the report: a claim marked unlanded is not open, and a retry of
@@ -872,12 +890,12 @@ mod tests {
             Ok(())
         }
 
-        fn report(&self, line: &str) -> Result<()> {
+        fn report(&self, line: &str) -> Result<ReportStatus> {
             self.reports.borrow_mut().push(line.into());
             if self.fail_report {
                 bail!("channel relay refused");
             }
-            Ok(())
+            Ok(ReportStatus::Delivered)
         }
 
         fn recorded(&self, _: &str) -> Result<bool> {
@@ -1116,8 +1134,8 @@ mod tests {
         fn mark_done(&self, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<()> {
-            Ok(())
+        fn report(&self, _: &str) -> Result<ReportStatus> {
+            Ok(ReportStatus::Delivered)
         }
         fn unregister(&self, _: &str, _: &str) {}
         fn settle(&self, _: &str) {
@@ -1197,7 +1215,7 @@ mod tests {
             self.reach(Step::PaneGet);
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<()> {
+        fn report(&self, _: &str) -> Result<ReportStatus> {
             unreachable!("the request reports to nobody")
         }
         fn record_session(&self, workspace: &str, _: &str, _: &str) -> Result<()> {
@@ -1307,7 +1325,7 @@ mod tests {
             self.at(Step::PaneGet);
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<()> {
+        fn report(&self, _: &str) -> Result<ReportStatus> {
             unreachable!("the request reports to nobody")
         }
         fn record_session(&self, workspace: &str, _: &str, _: &str) -> Result<()> {

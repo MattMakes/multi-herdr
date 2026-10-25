@@ -180,10 +180,15 @@ fn lifecycle_in(h: Harness, harness: &str, teammate: &str, fake: &str) {
     );
     let r = record(&h, &id);
     assert_eq!(r["session_id"], session.as_str(), "the session is reused");
-    assert_eq!(
-        r["history"].as_array().unwrap().last().unwrap()["event"],
-        "resumed"
-    );
+    // The fake may already have exited again, so skip a trailing "exited".
+    let last = r["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|e| e["event"] != "exited")
+        .unwrap();
+    assert_eq!(last["event"], "resumed", "{r}");
     assert_eq!(r["routing"]["mode"], "resume");
     assert_eq!(records(&h).len(), 1, "a resume writes no new record");
 

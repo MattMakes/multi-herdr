@@ -33,6 +33,8 @@
 //! - `fail_typing`: `agent prompt` and `pane send-text` exit 1 with a message
 //!   on stderr, as a pane that is gone or a sandboxed caller gets. Nothing is
 //!   typed.
+//! - `mail_drop`: the first non-redelivery agent prompt succeeds but is
+//!   dropped, then the pane reports an idle agent for the courier.
 //!
 //! `pane read` prints the pane text: the output of its commands, then the
 //! line typed and not yet entered. `pane wait-output` searches that text
@@ -294,9 +296,14 @@ fn run(call: &mut Call) -> i32 {
             let pane = format!("{ws}:p1");
             let tab = format!("{ws}:t1");
             state["next"] = json!(n + 1);
+            let mut root_pane = json!({"pane_id": pane, "workspace_id": ws, "tab_id": tab});
+            if scenario_has("mail_drop") {
+                root_pane["agent"] = json!("claude");
+                root_pane["agent_status"] = json!("working");
+            }
             let entry = json!({
                 "workspace_id": ws, "label": label, "active_tab_id": tab,
-                "panes": [{"pane_id": pane, "workspace_id": ws, "tab_id": tab}],
+                "panes": [root_pane],
                 "next_pane": 2,
                 "focused": !rest.contains(&"--no-focus"),
             });
@@ -354,6 +361,15 @@ fn run(call: &mut Call) -> i32 {
         {
             eprintln!("fake-herdr: typing into {pane} refused (scenario fail_typing)");
             1
+        }
+        ["agent", "prompt", pane, text]
+            if scenario_has("mail_drop") && !text.contains("(redelivery") =>
+        {
+            if let Some(target) = find_pane_mut(&mut state, pane) {
+                target["agent_status"] = json!("idle");
+                save(&state);
+            }
+            ok(json!({"type": "ok"}))
         }
         ["pane", "send-text", pane, text] if scenario_has("shell") => {
             let typed = state["typed"][*pane].as_str().unwrap_or("").to_string();
@@ -426,6 +442,14 @@ fn find_pane(state: &Value, id: &str) -> Option<Value> {
         .iter()
         .flat_map(|w| w["panes"].as_array().cloned().unwrap_or_default())
         .find(|p| p["pane_id"].as_str() == Some(id))
+}
+
+fn find_pane_mut<'a>(state: &'a mut Value, id: &str) -> Option<&'a mut Value> {
+    state["workspaces"]
+        .as_array_mut()?
+        .iter_mut()
+        .flat_map(|workspace| workspace["panes"].as_array_mut().into_iter().flatten())
+        .find(|pane| pane["pane_id"].as_str() == Some(id))
 }
 
 /// Add a pane next to `from`, in its tab and workspace. A source pane that is

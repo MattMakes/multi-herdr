@@ -1,0 +1,143 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, for example v0.2.0"
+        required: true
+  # auto-release.yml calls this after it pushes the tag: a tag pushed with
+  # GITHUB_TOKEN does not trigger the push event above.
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.TAG }}
+      - id: check
+        shell: bash
+        run: |
+          version=$(awk '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{sub(/^[^"]*"/,"");sub(/".*/,"");print;exit}' Cargo.toml)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag is '$TAG' but Cargo.toml version gives 'v$version'"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin horch --bin multi-herdr-dataset --bin herdr-install
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          # macOS tar would add AppleDouble `._*` entries for extended attributes.
+          COPYFILE_DISABLE: "1"
+        run: |
+          name="multi-herdr-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.tar.gz"
+          tar -czf "$name" -C "target/${{ matrix.target }}/release" horch multi-herdr-dataset herdr-install
+          echo "ARCHIVE=$name" >> "$GITHUB_ENV"
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "multi-herdr-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.zip"
+          $dir = "target/${{ matrix.target }}/release"
+          Compress-Archive -Path "$dir/horch.exe", "$dir/multi-herdr-dataset.exe", "$dir/herdr-install.exe" -DestinationPath $name
+          "ARCHIVE=$name" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: archive-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          pattern: archive-*
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum multi-herdr-v*.tar.gz multi-herdr-v*.zip > SHA256SUMS
+      - name: Release notes
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+          awk -v h="## v$version" '
+            ($0 == h || index($0, h " ") == 1) && !found { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no non-empty '## v$version' section"
+            exit 1
+          fi
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+          # `gh release view` fails when no release exists for the tag.
+          if state=$(gh release view "v$version" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$state" = "true" ]; then
+              # Draft left by a partial upload: delete it, never the tag.
+              gh release delete "v$version" --yes
+            else
+              echo "::error::release v$version is already published"
+              exit 1
+            fi
+          fi
+          gh release create "v$version" --verify-tag --title "v$version" --notes-file notes.md dist/multi-herdr-v*.tar.gz dist/multi-herdr-v*.zip dist/SHA256SUMS

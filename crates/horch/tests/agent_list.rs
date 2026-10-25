@@ -14,6 +14,22 @@ use std::process::Command;
 
 use serde_json::Value;
 
+/// Run a fresh script once with `warm`. On Linux a test thread that forks
+/// while another writes a script can hold it open for writing, so exec fails
+/// with "Text file busy" until that child execs; retry until it does.
+fn warm(path: &Path) {
+    for _ in 0..100 {
+        match Command::new(path).arg("warm").status() {
+            Ok(status) => return assert!(status.success()),
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => panic!("warm {}: {e}", path.display()),
+        }
+    }
+    panic!("{} stayed busy", path.display());
+}
+
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -50,7 +66,7 @@ impl World {
         );
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(Command::new(&path).arg("warm").status().unwrap().success());
+        warm(&path);
         path
     }
 
@@ -200,7 +216,7 @@ fn agent_list_reports_a_crashing_harness_as_broken() {
     )
     .unwrap();
     std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(Command::new(&pi).arg("warm").status().unwrap().success());
+    warm(&pi);
     let mut envs = w.envs();
     envs.retain(|(k, _)| *k != "HORCH_PI_BIN");
     envs.push(("HORCH_PI_BIN", pi));

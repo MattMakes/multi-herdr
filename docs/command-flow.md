@@ -61,6 +61,7 @@ sequenceDiagram
     actor You
     participant O as Orchestrator pane
     participant H as horch (CLI)
+    participant M as Pending mail
     participant L as Ledger
     participant W as Worker pane
 
@@ -88,6 +89,7 @@ sequenceDiagram
     H->>W: text arrives in the worker pane
 
     W->>H: horch done "summary"
+    H->>M: write pending worker report
     H->>O: DONE message
     H->>L: Done + summary
     H->>W: start a detached re-tile, close the pane
@@ -95,18 +97,27 @@ sequenceDiagram
 
 ### When the DONE message does not arrive
 
-`horch done` sends the DONE message first. It writes the ledger only after
-the message arrives.
+`horch done` writes its worker report to pending mail before it pushes the
+DONE message. The report stays pending until the orchestrator runs
+`horch inbox`. That command prints each pending report, oldest first, and
+acknowledges it. It then prints the role list.
 
-- If the message fails, `horch done` exits 1. The ledger gets a
-  `report-failed` event with the error. The record stays live, open claims
-  stay open, the role stays registered, and the pane stays open. The error
-  tells the worker to run the same `horch done` command again.
-- A retry after a `done` that recorded its summary (and then could not
-  close the pane) only closes the pane. It does not send or record the
-  summary again.
+- If the pending-mail write fails, `horch done` fails as a failed report.
+  The ledger gets a `report-failed` event. The record stays live, and the
+  pane stays open.
+- If the write succeeds and the push fails, `horch done` records and closes.
+  It prints that the courier will redeliver the report. The ledger gets a
+  `report-queued` event with the cause.
+- The courier starts after each queued report. It checks pending mail every
+  5 s. When the orchestrator pane is ready, it resends each due report with
+  `(redelivery <n>: not acknowledged; run horch inbox)`.
+- The courier waits 30 s, 1 min, 2 min, 4 min, then 5 min between retries.
+  It stops pushes after 6 redeliveries. The report stays pending, and horch
+  commands continue to name unacknowledged worker messages.
+- If no orchestrator pane and no live relay exist for 10 min, the courier
+  exits. The pending report stays available for a later `horch inbox`.
 - A workspace with no registered orchestrator pane and no live channel relay
-  has nobody to tell. `horch done` records the summary, says so, and exits 0.
+  has nobody to tell. `horch done` does not queue or report, and exits 0.
 - An agent that exits without `horch done` ends its record (`Done` on exit
   0, else `Failed`) with an `exited` event. The `horch worker` process,
   which is still alive in the pane, sends the orchestrator

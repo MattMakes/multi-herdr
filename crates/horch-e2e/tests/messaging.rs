@@ -170,6 +170,10 @@ fn g5_done_without_an_orchestrator() {
     );
     let r = record(&h, &id);
     assert_eq!(r["status"], "done", "{r}");
+    assert!(
+        !h.state.join("mail/w1/pending").exists(),
+        "no recipient means no durable report"
+    );
 }
 
 /// G5: a worker pane closed without `horch done`. `horch inbox` marks the
@@ -231,16 +235,18 @@ fn g5_resume_after_a_closed_pane() {
     done(&h, &pane2, &role2, &id);
 }
 
-/// W2: the orchestrator is registered, but typing into its pane fails.
+/// MAIL-U1: the mail directory cannot be created, so enqueue fails.
 /// `horch done` exits non-zero and says what to do; the record stays live
 /// with a `report-failed` event, the role stays registered and the pane
-/// stays open. The retry, once typing works, reports and records once.
+/// stays open. The retry, once enqueue works, reports and records once.
 #[test]
-fn w2_done_stays_open_when_the_report_fails() {
-    let h = fleet("w2-report-fails", "exec,stay,fail_typing");
+fn mail_u1_done_stays_open_when_enqueue_fails() {
+    let h = fleet("mail-enqueue", "exec,stay");
     let (pane, role, id) = running_worker(&h);
     let mailbox = h.tmp.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    std::fs::create_dir_all(h.state.join("mail/w1")).unwrap();
+    std::fs::write(h.state.join("mail/w1/pending"), "not a directory").unwrap();
 
     let failed = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
     assert!(!failed.status.success(), "{}", text(&failed));
@@ -273,9 +279,9 @@ fn w2_done_stays_open_when_the_report_fails() {
         "the pane stays open"
     );
 
+    std::fs::remove_file(h.state.join("mail/w1/pending")).unwrap();
     let mut retry = h.horch(&["done", "finished the work"]);
     retry
-        .env("HORCH_FAKE_SCENARIO", "exec,stay")
         .env("HERDR_PANE_ID", &pane)
         .env("HORCH_ROLE", &role)
         .env("HORCH_RECORD_ID", &id);
@@ -290,6 +296,176 @@ fn w2_done_stays_open_when_the_report_fails() {
         .filter(|e| e["event"] == "done")
         .count();
     assert_eq!(dones, 1, "{r}");
+}
+
+/// MAIL-U1: once the report is durable, a failed push records and closes.
+#[test]
+fn mail_u1_done_push_failure_records_queued_and_closes() {
+    let h = fleet("mail-done", "exec,stay,fail_typing");
+    let (pane, role, id) = running_worker(&h);
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+
+    let done = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
+
+    assert!(done.status.success(), "{}", text(&done));
+    assert!(
+        String::from_utf8_lossy(&done.stderr).contains("horch done: the push did not land ("),
+        "{}",
+        text(&done)
+    );
+    let r = record(&h, &id);
+    assert_eq!(r["status"], "done", "{r}");
+    let events: Vec<&str> = r["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["event"].as_str())
+        .collect();
+    assert!(events.contains(&"report-queued"), "{r}");
+    assert!(!events.contains(&"report-failed"), "{r}");
+    let pending = h.state.join("mail/w1/pending");
+    assert_eq!(std::fs::read_dir(pending).unwrap().count(), 1);
+}
+
+/// MAIL-U1: a failed push is not a failed worker message once its exact line
+/// is durable. The courier note tells the caller why exit status is zero.
+#[test]
+fn mail_u1_tell_push_failure_leaves_pending_mail() {
+    let h = fleet("mail-tell", "exec,stay,fail_typing");
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+
+    let tell = as_worker(
+        &h,
+        &["tell", "orchestrator", "NOTE: durable"],
+        "w1:p2",
+        "sonnet-1",
+        "r1",
+    );
+
+    assert!(tell.status.success(), "{}", text(&tell));
+    assert!(
+        String::from_utf8_lossy(&tell.stderr).contains("the courier will redeliver it"),
+        "{}",
+        text(&tell)
+    );
+    let pending = h.state.join("mail/w1/pending");
+    let files: Vec<_> = std::fs::read_dir(&pending)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    let message: Value =
+        serde_json::from_str(&std::fs::read_to_string(&files[0]).unwrap()).unwrap();
+    assert_eq!(message["from"], "sonnet-1");
+    assert_eq!(message["text"], "[sonnet-1] NOTE: durable");
+}
+
+#[test]
+fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
+    let h = fleet("mail-inbox", "exec,stay");
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
+    for message in ["NOTE: first", "DONE: second"] {
+        let tell = as_worker(
+            &h,
+            &["tell", "orchestrator", message],
+            "w1:p2",
+            "sonnet-1",
+            "r1",
+        );
+        assert!(tell.status.success(), "{}", text(&tell));
+    }
+
+    let inbox = h.run(&["inbox"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    let first = stdout.find("[sonnet-1] NOTE: first").unwrap();
+    let second = stdout.find("[sonnet-1] DONE: second").unwrap();
+    let roles = stdout.find("orchestrator").unwrap();
+    assert!(first < second && second < roles, "{stdout}");
+    assert_eq!(
+        std::fs::read_dir(h.state.join("mail/w1/pending"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        std::fs::read_dir(h.state.join("mail/w1/acked"))
+            .unwrap()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
+    let h = fleet("mail-worker", "exec,stay");
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    let tell = as_worker(
+        &h,
+        &["tell", "orchestrator", "NOTE: private"],
+        "w1:p2",
+        "sonnet-1",
+        "r1",
+    );
+    assert!(tell.status.success(), "{}", text(&tell));
+
+    let inbox = as_worker(&h, &["inbox"], "w1:p2", "sonnet-1", "r1");
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        !String::from_utf8_lossy(&inbox.stdout).contains("NOTE: private"),
+        "{}",
+        text(&inbox)
+    );
+    assert_eq!(
+        std::fs::read_dir(h.state.join("mail/w1/pending"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn mail_u1_orchestrator_command_reminds_without_acking() {
+    let h = fleet("mail-remind", "exec,stay");
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    for message in ["NOTE: first", "NOTE: second"] {
+        let tell = as_worker(
+            &h,
+            &["tell", "orchestrator", message],
+            "w1:p2",
+            "sonnet-1",
+            "r1",
+        );
+        assert!(tell.status.success(), "{}", text(&tell));
+    }
+
+    let sessions = h.run(&["sessions"]);
+
+    assert!(sessions.status.success(), "{}", text(&sessions));
+    assert!(
+        String::from_utf8_lossy(&sessions.stderr)
+            .contains("horch: 2 worker messages are not acknowledged; run horch inbox"),
+        "{}",
+        text(&sessions)
+    );
+    assert_eq!(
+        std::fs::read_dir(h.state.join("mail/w1/pending"))
+            .unwrap()
+            .count(),
+        2
+    );
 }
 
 /// W2: the codex agent exits 0 at once, without `horch done` (as Codex
@@ -333,4 +509,68 @@ fn w2_agent_exit_before_done_tells_the_orchestrator() {
     let r = record(&h, &id);
     let last = r["history"].as_array().unwrap().last().unwrap().clone();
     assert_eq!(last["event"], "exited", "{r}");
+}
+
+/// R1: a long `horch tell` spools its text under `messages/<workspace>/`, not
+/// in a directory shared by every fleet, and the line typed into the
+/// orchestrator's pane names that file.
+#[test]
+fn r1_long_tell_spools_under_its_own_workspace() {
+    let h = fleet("r1-spool", "exec");
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+
+    let long = format!("QUESTION: {}", "Which branch lands first? ".repeat(40));
+    let tell = as_worker(
+        &h,
+        &["tell", "orchestrator", &long],
+        "w1:p2",
+        "opus-1",
+        "r1",
+    );
+    assert!(tell.status.success(), "{}", text(&tell));
+
+    let messages = h.state.join("messages");
+    let files_in = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .map(|d| {
+                d.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.is_file())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let spooled = files_in(&messages.join("w1"));
+    assert_eq!(spooled.len(), 1, "{:?}", files_in(&messages));
+    assert!(
+        files_in(&messages).is_empty(),
+        "a file sits directly under messages/: {:?}",
+        files_in(&messages)
+    );
+    let body = std::fs::read_to_string(&spooled[0]).unwrap();
+    assert!(
+        body.starts_with("<!-- horch workspace=w1 from=opus-1 to=orchestrator -->\n"),
+        "{body}"
+    );
+
+    let typed = h
+        .calls_of("herdr")
+        .into_iter()
+        .filter_map(|call| {
+            let argv: Vec<String> = call["argv"]
+                .as_array()?
+                .iter()
+                .filter_map(|a| a.as_str().map(str::to_owned))
+                .collect();
+            (argv.len() == 4 && argv[..3] == ["agent", "prompt", "w1:p1"]).then(|| argv[3].clone())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(typed.len(), 1, "{typed:?}");
+    assert!(
+        typed[0].contains(&spooled[0].display().to_string()),
+        "the typed line does not name {}: {}",
+        spooled[0].display(),
+        typed[0]
+    );
 }

@@ -1675,7 +1675,8 @@ mod spawnable_tests {
     }
 
     /// Only `codex-network` opens the codex sandbox's network, and it is not
-    /// allowed to pair that with "never ask".
+    /// allowed to pair that with "never ask": `--approve-for-me` asks
+    /// (on-request), and Codex's reviewer answers.
     #[test]
     fn codex_network_access_is_contained() {
         let mut r = Roster::builtin().unwrap();
@@ -1697,11 +1698,8 @@ mod spawnable_tests {
             .get_args()
             .map(|x| x.to_string_lossy().into_owned())
             .collect();
-        assert!(
-            a.windows(4)
-                .any(|w| w == ["-s", "workspace-write", "-a", "on-request"]),
-            "{a:?}"
-        );
+        assert!(a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
+        assert!(!a.windows(2).any(|w| w == ["-a", "never"]), "{a:?}");
         assert!(a.windows(2).any(|w| w == ["-c", net]), "{a:?}");
 
         r.teammates

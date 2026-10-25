@@ -623,7 +623,7 @@ fn mea_04_prop_duplicates_no_effect() {
         assert_eq!(log, want);
         assert_eq!(index.len(), want.len());
 
-        if case % 500 != 0 {
+        if !case.is_multiple_of(500) {
             return;
         }
         let (_, rec) = open_dataset(&tmp.path().join(case.to_string()));

@@ -1423,7 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_permission_mode_becomes_sandbox_and_approval() {
+    fn codex_permission_mode_becomes_approve_for_me() {
         let r = Roster::builtin().unwrap();
         let cmd = command_in(
             &LaunchEnv::for_test(),
@@ -1434,11 +1434,54 @@ mod tests {
         )
         .unwrap();
         let a = argv(&cmd);
-        assert!(
-            a.windows(2).any(|w| w == ["-s", "workspace-write"]),
+        assert_eq!(
+            a.iter().filter(|x| *x == "--approve-for-me").count(),
+            1,
             "{a:?}"
         );
-        assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{a:?}");
+        // Codex refuses `--approve-for-me` next to `-s`.
+        assert!(!a.iter().any(|x| x == "-s" || x == "--sandbox"), "{a:?}");
+    }
+
+    /// A plan pane stays read-only: `--approve-for-me` would make it
+    /// workspace-write, so only its reviewer is turned on.
+    #[test]
+    fn codex_plan_pane_gets_the_reviewer_not_the_flag() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("codex-terra").unwrap().clone();
+        t.permission_mode = Some(crate::roster::PermissionMode::Plan);
+        let a =
+            argv(&command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap());
+        assert!(!a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["-c", "default_permissions=\":read-only\""]),
+            "{a:?}"
+        );
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["-c", "approvals_reviewer=\"auto_review\""]),
+            "{a:?}"
+        );
+    }
+
+    /// A teammate whose own args choose the sandbox gets the flag spelled out,
+    /// since Codex refuses `--approve-for-me` next to `-s`.
+    #[test]
+    fn codex_own_sandbox_spells_out_approve_for_me() {
+        let r = Roster::builtin().unwrap();
+        let mut t = r.require("codex-terra").unwrap().clone();
+        t.args.extend(["-s".into(), "read-only".into()]);
+        let a =
+            argv(&command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap());
+        assert!(!a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["-a", "on-request"]), "{a:?}");
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["-c", "approvals_reviewer=\"auto_review\""]),
+            "{a:?}"
+        );
+        assert!(a.windows(2).any(|w| w == ["-s", "read-only"]), "{a:?}");
     }
 
     #[test]
@@ -1457,8 +1500,8 @@ mod tests {
             )
             .unwrap(),
         );
-        assert!(a.windows(2).any(|w| w == ["-s", "workspace-write"]));
-        assert!(a.windows(2).any(|w| w == ["-a", "never"]));
+        assert!(a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
+        assert!(!a.iter().any(|x| x == "-a"), "{a:?}");
     }
 
     #[test]
@@ -1524,11 +1567,8 @@ mod tests {
                     1,
                     "{name}: {a:?}"
                 );
-                assert!(
-                    a.windows(2).any(|w| w == ["-s", "workspace-write"]),
-                    "{name}: {a:?}"
-                );
-                assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{name}: {a:?}");
+                assert!(a.iter().any(|x| x == "--approve-for-me"), "{name}: {a:?}");
+                assert!(!a.iter().any(|x| x == "-s"), "{name}: {a:?}");
                 assert!(!a.iter().any(|arg| {
                     arg == "--dangerously-bypass-approvals-and-sandbox"
                         || arg == "danger-full-access"
@@ -1560,10 +1600,7 @@ mod tests {
             a.contains(&r#"model_reasoning_effort="medium""#.to_string()),
             "{a:?}"
         );
-        assert!(
-            a.windows(2).any(|w| w == ["-s", "workspace-write"]),
-            "{a:?}"
-        );
+        assert!(a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
         assert_eq!(a.last().unwrap(), "BRIEFING");
         assert_ne!(a[0], "resume", "a fresh orchestrator is not a resume");
     }

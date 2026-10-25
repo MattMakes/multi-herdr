@@ -170,6 +170,9 @@ pub struct Settings {
     /// `HORCH_NO_UPDATE`: `1` skips the agent CLI update step of `horch fleet`
     /// and `horch orchestration`.
     pub no_update: bool,
+    /// `HORCH_NO_SELF_CHECK`: `1` skips the boot check for a newer horch
+    /// release.
+    pub no_self_check: bool,
     /// `HORCH_UPDATE_TIMEOUT_MS`: the time limit of 1 agent CLI updater.
     /// [`DEFAULT_UPDATE_TIMEOUT`] when unset or not a number.
     pub update_timeout: Duration,
@@ -378,6 +381,7 @@ impl RuntimeContext {
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map(Duration::from_millis),
             no_update: env.var("HORCH_NO_UPDATE").as_deref() == Some("1"),
+            no_self_check: env.var("HORCH_NO_SELF_CHECK").as_deref() == Some("1"),
             update_timeout: nonempty("HORCH_UPDATE_TIMEOUT_MS")
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map_or(DEFAULT_UPDATE_TIMEOUT, Duration::from_millis),
@@ -628,6 +632,24 @@ mod tests {
         .unwrap();
         assert!(!ctx.settings.no_update);
         assert_eq!(ctx.settings.update_timeout, DEFAULT_UPDATE_TIMEOUT);
+    }
+
+    /// `HORCH_NO_SELF_CHECK=1` skips the release check; any other value does not.
+    #[test]
+    fn self_check_setting_reads_only_1() {
+        let read = |value: Option<&str>| {
+            let env = match value {
+                Some(v) => MapEnv::new("/").with("HORCH_NO_SELF_CHECK", v),
+                None => MapEnv::new("/"),
+            };
+            RuntimeContext::from_env(&env)
+                .unwrap()
+                .settings
+                .no_self_check
+        };
+        assert!(read(Some("1")));
+        assert!(!read(Some("0")));
+        assert!(!read(None));
     }
 
     #[test]

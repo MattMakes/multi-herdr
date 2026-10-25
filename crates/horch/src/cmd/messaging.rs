@@ -13,8 +13,10 @@ use anyhow::{bail, Context, Result};
 use horch_core::compaction::policy;
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
-use horch_core::execution::lifecycle::{self, ClaimLine, DoneRequest, DoneSteps, ReportTarget};
-use horch_core::execution::records::{Ledger, EVENT_REPORT_FAILED};
+use horch_core::execution::lifecycle::{
+    self, ClaimLine, DoneRequest, DoneSteps, ReportStatus, ReportTarget,
+};
+use horch_core::execution::records::{Ledger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
 use horch_core::execution::store::to_execution;
 use horch_core::execution::ExecutionKind;
 use horch_core::fleet_runs::facts::{record_run, RunSources};
@@ -23,6 +25,7 @@ use horch_core::harness::launch;
 use horch_core::measure::paths::DatasetPaths;
 use horch_core::messaging::channel;
 use horch_core::messaging::delivery;
+use horch_core::messaging::mail::Mail;
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
 use horch_core::prompts;
@@ -45,6 +48,16 @@ use crate::output;
 /// short line that quotes its head and names the file. An agent that is
 /// still starting in that pane is waited for first; it would drop the text.
 pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
+    match tell_outcome(ctx, role, text)? {
+        ReportStatus::Delivered => Ok(()),
+        ReportStatus::Queued(cause) => {
+            eprintln!("horch tell: the push did not land ({cause}); the courier will redeliver it");
+            Ok(())
+        }
+    }
+}
+
+fn tell_outcome(ctx: &RuntimeContext, role: &str, text: &str) -> Result<ReportStatus> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
@@ -54,10 +67,12 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
         Some(me) => message::ensure_tag(text, me),
         None => text.to_string(),
     };
-    let mut line = if text.chars().count() > message::MAX_INLINE {
+    let line = if text.chars().count() > message::MAX_INLINE {
         let from = sender.as_deref().unwrap_or("orchestrator");
+        let workspace = mailbox.workspace_id();
         let path = message::spool(
-            &message::spool_dir(&ctx.paths.state_root),
+            &message::spool_dir(&ctx.paths.state_root, workspace),
+            workspace,
             from,
             role,
             &text,
@@ -66,9 +81,64 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     } else {
         text
     };
-    if role == "orchestrator" {
+    let target = mailbox.pane_for(role);
+    let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
+    let durable = role == "orchestrator" && sender.is_some();
+    if durable && target.is_none() && !channel::is_live(&socket) {
+        // Nobody to queue for. Skip the relay: one that starts now would take
+        // the message with nothing queued behind it. The not-registered error
+        // makes `done` stay open and retry.
+        push_line(
+            ctx,
+            &herdr,
+            &mailbox,
+            role,
+            sender.as_deref(),
+            target,
+            line,
+            false,
+        )?;
+        return Ok(ReportStatus::Delivered);
+    }
+    if durable {
+        Mail::under(&ctx.paths.state_root, mailbox.workspace_id())
+            .enqueue(sender.as_deref().expect("durable mail has a sender"), &line)?;
+    }
+    let pushed = push_line(
+        ctx,
+        &herdr,
+        &mailbox,
+        role,
+        sender.as_deref(),
+        target,
+        line,
+        true,
+    );
+    if durable {
+        super::mail::start_courier(ctx, mailbox.workspace_id());
+        return Ok(match pushed {
+            Ok(()) => ReportStatus::Delivered,
+            Err(error) => ReportStatus::Queued(format!("{error:#}")),
+        });
+    }
+    pushed?;
+    Ok(ReportStatus::Delivered)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_line(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    mailbox: &Mailbox,
+    role: &str,
+    sender: Option<&str>,
+    target: Option<String>,
+    mut line: String,
+    relay: bool,
+) -> Result<()> {
+    if role == "orchestrator" && relay {
         let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
-        let from = sender.as_deref().unwrap_or("orchestrator");
+        let from = sender.unwrap_or("orchestrator");
         let send_timeout = if cfg!(debug_assertions) {
             std::env::var("HORCH_TEST_CHANNEL_SEND_TIMEOUT_MS")
                 .ok()
@@ -92,7 +162,7 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
             Err(_) => {}
         }
     }
-    let Some(target) = mailbox.pane_for(role) else {
+    let Some(target) = target else {
         let known: Vec<String> = mailbox.roles().into_iter().map(|(r, _)| r).collect();
         let known = if known.is_empty() {
             "none yet".to_string()
@@ -109,7 +179,7 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
         let hint = if relay_live {
             ""
         } else {
-            no_orchestrator_hint(role, sender.as_deref())
+            no_orchestrator_hint(role, sender)
         };
         bail!(
             "role '{role}' is not registered in {}\n       known roles: {known}{hint}",
@@ -121,7 +191,7 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
     let grace = ctx.settings.tell_grace.unwrap_or(delivery::TELL_GRACE);
     let age = mailbox.registered_at(role).and_then(|at| at.elapsed().ok());
     delivery::send_line_when_ready(
-        &herdr,
+        herdr,
         &target,
         &line,
         grace_left(age, grace),
@@ -157,6 +227,18 @@ fn no_orchestrator_hint(role: &str, sender: Option<&str>) -> &'static str {
 pub fn inbox(ctx: &RuntimeContext) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
+    if ctx
+        .worker
+        .as_ref()
+        .and_then(|worker| worker.role.as_ref())
+        .is_none()
+    {
+        let mail = Mail::under(&ctx.paths.state_root, mailbox.workspace_id());
+        for message in mail.pending()? {
+            println!("{}", message.text);
+            mail.ack(&message.id)?;
+        }
+    }
     let roles = mailbox.role_states(&herdr);
     if roles.is_empty() {
         println!("no roles registered yet");
@@ -168,6 +250,37 @@ pub fn inbox(ctx: &RuntimeContext) -> Result<()> {
     let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
     output::print(&inbox_listing(&roles, channel::is_live(&socket)));
     Ok(())
+}
+
+/// Tell an orchestrator that durable mail still waits for explicit acknowledgement.
+pub fn remind_pending(ctx: &RuntimeContext) {
+    if ctx
+        .worker
+        .as_ref()
+        .and_then(|worker| worker.role.as_ref())
+        .is_some()
+    {
+        return;
+    }
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let Some(count) = Mailbox::resolve_in(&herdr, ctx)
+        .ok()
+        .and_then(|mailbox| {
+            Mail::under(&ctx.paths.state_root, mailbox.workspace_id())
+                .pending()
+                .ok()
+        })
+        .map(|messages| messages.len())
+        .filter(|count| *count > 0)
+    else {
+        return;
+    };
+    let (message, verb) = if count == 1 {
+        ("message", "is")
+    } else {
+        ("messages", "are")
+    };
+    eprintln!("horch: {count} worker {message} {verb} not acknowledged; run horch inbox");
 }
 
 /// One line for each role: name, pane, and `(pane closed)` when herdr does
@@ -464,11 +577,19 @@ impl DoneSteps for CliDone<'_> {
         }
     }
 
+    fn report_queued(&self, record_id: &str, error: &str) {
+        let noted = Ledger::open_in(self.ctx)
+            .and_then(|ledger| ledger.record_event(record_id, EVENT_REPORT_QUEUED, error));
+        if let Err(event_error) = noted {
+            eprintln!("horch done: could not record the queued report ({event_error:#})");
+        }
+    }
+
     /// Tell the orchestrator. A workspace with no registered orchestrator
     /// (a scratch workspace, a worker spawned by hand) has nobody to tell:
     /// that is not a failure, so `done` goes on and exits 0. A live channel
     /// relay is an orchestrator too, with or without a registered pane.
-    fn report(&self, line: &str) -> Result<()> {
+    fn report(&self, line: &str) -> Result<ReportStatus> {
         let herdr = Herdr::with_bin(&self.ctx.bins.harness.herdr);
         let registered = Mailbox::resolve_in(&herdr, self.ctx)
             .map(|m| {
@@ -481,9 +602,9 @@ impl DoneSteps for CliDone<'_> {
             .unwrap_or(true);
         if !registered {
             eprintln!("{NO_ORCHESTRATOR}");
-            return Ok(());
+            return Ok(ReportStatus::Delivered);
         }
-        tell(self.ctx, "orchestrator", line)
+        tell_outcome(self.ctx, "orchestrator", line)
     }
 
     fn unregister(&self, workspace: &str, role: &str) {

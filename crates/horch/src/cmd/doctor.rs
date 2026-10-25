@@ -18,6 +18,7 @@ use horch_core::runtime::{process, RuntimeContext};
 use horch_core::workspace::herdr::Herdr;
 
 pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
+    super::selfupdate::notice(ctx, false);
     check(ctx)?;
     println!("herdr is installed and its server is reachable.");
     let mut roster = super::load_roster_unwarned(ctx, None)?;

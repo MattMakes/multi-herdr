@@ -1,0 +1,90 @@
+name: auto-release
+
+# Every push to main publishes a release when CHANGELOG.md has entries under
+# "## Unreleased". The bump is patch, or minor/major when a PR merged since
+# the last tag has the label `release:minor` or `release:major`. A merge with
+# an empty Unreleased section (docs, CI, refactors) publishes nothing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The tip of main, not the pushed sha: a queued run must see the
+          # release commit an earlier run pushed.
+          ref: main
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Choose the bump from PR labels
+        id: bump
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          last=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          # Before the first tag, only the merge that triggered this run.
+          if [ -n "$last" ]; then range="$last..HEAD"; else range="-1 HEAD"; fi
+          labels=""
+          for sha in $(git log --format=%H $range); do
+            labels+=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/pulls" --jq '.[].labels[].name')$'\n'
+          done
+          bump=patch
+          if grep -qx 'release:minor' <<<"$labels"; then bump=minor; fi
+          if grep -qx 'release:major' <<<"$labels"; then bump=major; fi
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+      - name: Bump version and roll the changelog
+        id: prepare
+        run: echo "version=$(scripts/release-prepare.sh ${{ steps.bump.outputs.bump }})" >> "$GITHUB_OUTPUT"
+      - name: Commit, tag and push
+        id: publish
+        if: steps.prepare.outputs.version != ''
+        run: |
+          tag="v${{ steps.prepare.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "$tag" >/dev/null; then
+            echo "::error::tag $tag already exists"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "Release $tag"
+          git tag -a "$tag" -m "$tag"
+          # Pushes made with GITHUB_TOKEN start no workflows, so this commit
+          # does not re-run auto-release and the tag does not start
+          # release.yml on its own: the release job below calls it.
+          if ! git push --atomic origin HEAD:main "$tag"; then
+            echo "::notice::main moved while preparing $tag; the run for the newer push releases it"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag (${{ steps.bump.outputs.bump }})" >> "$GITHUB_STEP_SUMMARY"
+      - name: No release
+        if: steps.prepare.outputs.version == ''
+        run: echo "CHANGELOG.md has no Unreleased entries; nothing to release." >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}

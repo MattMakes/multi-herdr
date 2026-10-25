@@ -481,7 +481,7 @@ impl<G: GitClient> Coordinator<'_, G> {
         // How long each candidate has waited at its prompt (4.11.5).
         let mut idle: BTreeMap<String, IdleWatch> = BTreeMap::new();
         loop {
-            let check = tick % every == 0;
+            let check = tick.is_multiple_of(every);
             tick += 1;
             let view = self.view(spec)?;
             if view.candidates.values().all(CandidateView::is_terminal) {

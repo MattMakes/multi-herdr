@@ -823,7 +823,9 @@ fn sec_08_e2e_no_api_key_in_judge_job() {
 ///   `crate::heartbeat`;
 /// - `harness/prime.rs`: the Prime stop process must outlive the Prime
 ///   worker's process-group SIGKILL; horch waits for it, so it is not a
-///   background job.
+///   background job;
+/// - `cmd/mail.rs` starts the mail courier, which outlives the worker pane
+///   that queued the report.
 ///
 /// No competition, measure or dataset command code detaches anything.
 #[test]
@@ -844,6 +846,9 @@ fn cmp_16_only_judge_and_compaction_jobs_detached() {
         // timeout kills a `brew` or `npm` child too. horch waits for it, so
         // it is not detached.
         "crates/horch-core/src/harness/update.rs",
+        // The mail courier redelivers a worker's report after the worker's
+        // pane, and its session, is gone.
+        "crates/horch/src/cmd/mail.rs",
     ];
     let mut found = Vec::new();
     let mut stack = vec![root.join("crates")];

@@ -398,8 +398,9 @@ fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
 }
 
 /// W2: a live relay that refuses a message, with no orchestrator pane to
-/// type into, fails the `tell` without the "no orchestrator runs here" hint:
-/// an orchestrator runs, and `horch done` would fail the same way.
+/// type into, does not get the "no orchestrator runs here" hint: an
+/// orchestrator runs. The message is in the mail queue first (MAIL-U1), so
+/// the `tell` exits 0 and says the courier will redeliver it.
 #[test]
 fn w2_e2e_refused_tell_without_a_pane_does_not_claim_no_orchestrator() {
     let mut h = world("w2-refused");
@@ -416,7 +417,14 @@ fn w2_e2e_refused_tell_without_a_pane_does_not_claim_no_orchestrator() {
     relay.initialize(&channel_socket(&h));
 
     let sent = tell(&h);
-    assert!(!sent.status.success(), "{}", stderr(&sent));
+    assert!(sent.status.success(), "{}", stderr(&sent));
+    assert!(
+        stderr(&sent).contains("the courier will redeliver it"),
+        "{}",
+        stderr(&sent)
+    );
+    let pending = std::fs::read_dir(h.state.join(format!("mail/{WORKSPACE}/pending"))).unwrap();
+    assert_eq!(pending.count(), 1, "the refused message stays pending");
     assert!(
         stderr(&sent).contains("codex queue exited with exit status: 1"),
         "{}",
