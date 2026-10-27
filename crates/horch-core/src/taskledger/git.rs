@@ -125,6 +125,11 @@ impl Git {
         )
     }
 
+    /// The tree `HEAD` holds in `dir`: what a finish step judges.
+    pub fn tree(&self, dir: &Path) -> Result<String> {
+        self.run(dir, &["rev-parse", "--verify", "HEAD^{tree}"])
+    }
+
     /// Whether `ancestor` is reachable from `of`.
     pub fn is_ancestor(&self, dir: &Path, ancestor: &str, of: &str) -> bool {
         self.try_run(dir, &["merge-base", "--is-ancestor", ancestor, of])

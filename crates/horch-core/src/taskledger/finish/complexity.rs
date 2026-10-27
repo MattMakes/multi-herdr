@@ -149,7 +149,7 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
         })
         .map(|s| s.to_string())
         .collect();
-    let tree = git.rev(&cx.dir, "HEAD^{tree}").ok();
+    let tree = git.tree(&cx.dir).ok();
     if files.is_empty() {
         return Ok(
             Outcome::not_applicable("no changed file is in a language the analyser reads")

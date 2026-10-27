@@ -65,7 +65,7 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
     let log = cx
         .evidence_dir
         .join(format!("{}-{}.log", cx.seq, name.as_str()));
-    let tree = cx.tools.git.rev(&cx.dir, "HEAD^{tree}").ok();
+    let tree = cx.tools.git.tree(&cx.dir).ok();
     if run_check(&cx.tools.shell, &cx.dir, cmd, &log)? {
         Ok(Outcome::pass("exit 0", Some(log), &format!("`{cmd}` passed")).judged(tree))
     } else {
@@ -349,6 +349,13 @@ pub fn remove(
         }
     }
     if errors.is_empty() && git.branch_exists(&root, &wt.branch) {
+        // `branch -d` checks the branch is merged into its upstream (else the
+        // checked-out branch): make that the run branch, so git itself
+        // verifies the work is on it. Never `-D`.
+        let _ = git.try_run(
+            &root,
+            &["branch", "--set-upstream-to", run_branch, &wt.branch],
+        );
         let out = git.try_run(&root, &["branch", "-d", &wt.branch])?;
         if !out.ok {
             errors.push(format!("git branch -d: {}", out.stderr));

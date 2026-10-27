@@ -449,3 +449,317 @@ fn a_spawned_worker_records_its_pids_session_and_checkins() {
 fn libc_sigterm() -> i32 {
     15
 }
+
+/// A fake `gh`: `pr create` prints a URL and keeps the body, `pr view`
+/// prints the body and the remote run branch's head, `pr edit` replaces
+/// the body. Calls go to `<dir>/calls`.
+const FAKE_GH: &str = r#"#!/bin/sh
+st="$FAKE_GH_DIR"
+cmd="$1 $2"
+shift 2
+echo "$cmd $*" >> "$st/calls"
+case "$cmd" in
+"pr create")
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --body) printf '%s' "$2" > "$st/body"; shift 2;;
+      *) shift;;
+    esac
+  done
+  echo "https://github.com/o/r/pull/7";;
+"pr view")
+  head=$("$HORCH_GIT_BIN" rev-parse "refs/remotes/origin/$FAKE_GH_BRANCH")
+  b=$(/usr/bin/sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' "$st/body" | /usr/bin/awk 'BEGIN{ORS="\\n"}{print}')
+  printf '{"body":"%s","headRefOid":"%s"}\n' "$b" "$head";;
+"pr edit")
+  shift
+  if [ "$1" = "--body-file" ]; then /bin/cat "$2" > "$st/body"; fi;;
+esac
+"#;
+
+fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
+    let mut c = h.git_cmd(args);
+    c.current_dir(dir);
+    let o = c.output().unwrap();
+    assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
+    out(&o).trim().to_string()
+}
+
+/// A world with a bare remote, a fake gh, a fake analyser and the code-sweep
+/// reviewer prompts.
+fn finish_world(name: &str) -> Harness {
+    let mut h = world(name);
+    let remote = h.root.join("remote.git");
+    let root = h.root.clone();
+    git_in(
+        &h,
+        &root,
+        &["init", "--quiet", "--bare", &remote.to_string_lossy()],
+    );
+    git_in(
+        &h,
+        &h.project.clone(),
+        &["remote", "add", "origin", &remote.to_string_lossy()],
+    );
+    git_in(
+        &h,
+        &h.project.clone(),
+        &["push", "--quiet", "origin", "main"],
+    );
+    let gh_dir = h.root.join("gh");
+    std::fs::create_dir_all(&gh_dir).unwrap();
+    h.write_bin("gh", FAKE_GH.as_bytes());
+    h.set("HORCH_GH_BIN", h.bin.join("gh").to_string_lossy());
+    h.set("FAKE_GH_DIR", gh_dir.to_string_lossy());
+    h.set("FAKE_GH_BRANCH", "fleet/alpha");
+    let cli = h.write_bin(
+        "fake-complexity",
+        b"#!/bin/sh\necho '{\"files\":[],\"violations\":[]}'\n",
+    );
+    h.set("HORCH_COMPLEXITY_CLI", cli.to_string_lossy());
+    let sweep = h.root.join("code-sweep");
+    std::fs::create_dir_all(sweep.join("reviewers")).unwrap();
+    for r in [
+        "bug-hunter",
+        "clarity-checker",
+        "coverage-analyst",
+        "vulnerability-scanner",
+        "structure-inspector",
+        "efficiency-auditor",
+        "contract-guardian",
+        "waste-detector",
+        "reliability-auditor",
+        "dependency-examiner",
+        "power-of-ten-reviewer",
+        "interface-auditor",
+    ] {
+        std::fs::write(
+            sweep.join("reviewers").join(format!("{r}.md")),
+            format!("You are {r}.\n"),
+        )
+        .unwrap();
+    }
+    h.set("HORCH_CODE_SWEEP_DIR", sweep.to_string_lossy());
+    h
+}
+
+fn finish_json(h: &Harness, worker: &str) -> (Option<i32>, Value) {
+    let mut cmd = h.horch(&["ledger", "finish", "--json"]);
+    cmd.env("HORCH_WORKER_ID", worker);
+    let o = cmd.output().unwrap();
+    let v: Value =
+        serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)));
+    (o.status.code(), v)
+}
+
+#[test]
+fn a_task_finishes_through_review_land_pr_and_cleanup() {
+    let h = finish_world("tl-finish");
+    ok(&h, &["ledger", "run", "new", "alpha"]);
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+            "--check",
+            "test -f worker.txt",
+            "--issue",
+            "https://github.com/o/r/issues/29",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    ok_as(&h, &w, &["ledger", "claim"]);
+    let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feature"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    assert!(path.ends_with(".worktrees/T1-feature"), "{wt}");
+
+    // Uncommitted work is refused.
+    std::fs::write(path.join("worker.txt"), "work\n").unwrap();
+    let mut cmd = h.horch(&["ledger", "finish"]);
+    cmd.env("HORCH_WORKER_ID", &w);
+    let o = cmd.output().unwrap();
+    assert!(!o.status.success());
+    assert!(text(&o).contains("uncommitted"), "{}", text(&o));
+    // done refuses before the steps pass.
+    let mut cmd = h.horch(&["ledger", "done", "early"]);
+    cmd.env("HORCH_WORKER_ID", &w);
+    let o = cmd.output().unwrap();
+    assert!(
+        !o.status.success() && text(&o).contains("is not finished"),
+        "{}",
+        text(&o)
+    );
+
+    // A 50 MB ignored build folder is removed with the worktree.
+    std::fs::write(path.join(".gitignore"), "target/\n").unwrap();
+    std::fs::create_dir_all(path.join("target")).unwrap();
+    std::fs::write(path.join("target/big.bin"), vec![0u8; 50 * 1024 * 1024]).unwrap();
+    std::fs::write(path.join("lib.rs"), "fn feature() -> u8 {\n    1\n}\n").unwrap();
+    git_in(&h, &path, &["add", "worker.txt", ".gitignore", "lib.rs"]);
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "feature"],
+    );
+
+    // Round 1: code-sweep queues reviewer tasks and the pipeline waits.
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(r["stopped_at"], "code-sweep", "{r}");
+    let reviews = r["queued_reviews"].as_array().unwrap().clone();
+    assert!(reviews.len() >= 2, "bugs and clarity at least: {r}");
+    let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
+    assert_eq!(plan[0]["persona"], "codex-reviewer", "{plan}");
+
+    // Each reviewer claims its task, writes findings, and finishes.
+    for _ in &reviews {
+        let rw = worker_new(&h, "codex-reviewer");
+        let c: Value =
+            serde_json::from_str(&ok_as(&h, &rw, &["ledger", "claim", "--json"])).unwrap();
+        let findings = c["task"]["spec_ref"].as_str().unwrap().to_string();
+        std::fs::write(
+            &findings,
+            "## Critical\n- none\n## Important\n- none\n## Minor\n- worker.txt:1 name it better\n",
+        )
+        .unwrap();
+        ok_as(
+            &h,
+            &rw,
+            &["ledger", "done", "0 critical, 0 important, 1 minor"],
+        );
+    }
+
+    // Round 2: every step passes.
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    let names: Vec<(&str, &str)> = r["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["name"].as_str().unwrap(), s["status"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            ("check", "passed"),
+            ("code-sweep", "passed"),
+            ("complexity-sweep", "passed"),
+            ("recheck", "passed"),
+            ("land", "passed"),
+            ("pr", "passed"),
+            ("cleanup", "passed"),
+        ]
+    );
+    assert!(!path.exists(), "the worktree is gone");
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    let wtl = &st["worktrees"][0];
+    assert_eq!(wtl["status"], "cleaned");
+    assert!(
+        wtl["bytes_on_disk"].as_i64().unwrap() >= 50 * 1024 * 1024,
+        "{wtl}"
+    );
+    // The remote run branch has the work; the PR has the task's section.
+    let remote = h.root.join("remote.git");
+    let log = git_in(&h, &remote, &["log", "--oneline", "fleet/alpha"]);
+    assert!(log.contains("feature"), "{log}");
+    let body = std::fs::read_to_string(h.root.join("gh/body")).unwrap();
+    assert!(body.contains("<!-- horch:task T-1 -->"), "{body}");
+    assert!(body.contains("Closes #29"), "{body}");
+    assert_eq!(st["run"]["pr_number"], 7);
+
+    ok_as(
+        &h,
+        &w,
+        &["ledger", "done", "Feature landed. worker.txt added."],
+    );
+    let o = h.run(&["ledger", "status"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+}
+
+#[test]
+fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
+    let h = finish_world("tl-critical");
+    ok(
+        &h,
+        &["ledger", "run", "new", "alpha", "--steps", "code-sweep"],
+    );
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    ok_as(&h, &w, &["ledger", "claim"]);
+    let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(path.join("a.txt"), "1\n").unwrap();
+    git_in(&h, &path, &["add", "a.txt"]);
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "a"],
+    );
+
+    let review_round = |critical: &str, important: &str| {
+        let (_, r) = finish_json(&h, &w);
+        let n = r["queued_reviews"].as_array().unwrap().len();
+        for i in 0..n {
+            let rw = worker_new(&h, "codex-reviewer");
+            let c: Value =
+                serde_json::from_str(&ok_as(&h, &rw, &["ledger", "claim", "--json"])).unwrap();
+            let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
+            let (crit, imp) = if i == 0 {
+                (critical, important)
+            } else {
+                ("- none", "- none")
+            };
+            std::fs::write(
+                &f,
+                format!("## Critical\n{crit}\n## Important\n{imp}\n## Minor\n- none\n"),
+            )
+            .unwrap();
+            ok_as(&h, &rw, &["ledger", "done", "reviewed"]);
+        }
+    };
+    review_round("- a.txt:1 data loss. Fix: x", "- none");
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert!(r["message"].as_str().unwrap().contains("Critical"), "{r}");
+
+    // A fix is a new commit: the next finish reviews it again.
+    std::fs::write(path.join("a.txt"), "2\n").unwrap();
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-am", "fix"],
+    );
+    review_round("- none", "- a.txt:1 slow. Fix: cache");
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "an unanswered Important finding fails");
+    let msg = r["message"].as_str().unwrap().to_string();
+    let answers = msg
+        .split_whitespace()
+        .find(|t| t.ends_with("answers.md"))
+        .expect("the message names the answers file")
+        .to_string();
+    std::fs::write(&answers, "F1: the input is 3 items at most\n").unwrap();
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(
+        code,
+        Some(0),
+        "an answered Important finding passes on WARN: {r}"
+    );
+    assert_eq!(r["steps"][0]["verdict"], "WARN");
+}

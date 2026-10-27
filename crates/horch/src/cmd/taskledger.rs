@@ -1018,7 +1018,8 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             .parent()
             .map(|p| p.join("evidence"))
             .unwrap_or_else(|| PathBuf::from("evidence")),
-        shell: PathBuf::from("sh"),
+        // An absolute shell: a pane's PATH may not reach one.
+        shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
     }
 }
 

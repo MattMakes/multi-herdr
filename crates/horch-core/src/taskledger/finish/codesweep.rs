@@ -334,7 +334,7 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         .or(cx.run.base_branch.clone())
         .context("the run has no run branch")?;
     let names = git.run(&cx.dir, &["diff", "--name-only", &format!("{base}...HEAD")])?;
-    let tree = git.rev(&cx.dir, "HEAD^{tree}")?;
+    let tree = git.tree(&cx.dir)?;
     if names.trim().is_empty() {
         return Ok(Outcome::not_applicable("the branch changes no file").judged(Some(tree)));
     }

@@ -275,8 +275,10 @@ pub fn worktree_new(
         .context("the run has no run branch: create runs in a git repository")?;
     let slug = format!("T{}-{}", task.seq, safe(name));
     let path = root.join(".worktrees").join(&slug);
+    // Beside the run branch, not under it: git cannot hold both
+    // `fleet/x` and `fleet/x/T1-y`.
     let branch = format!(
-        "{}/T{}-{}",
+        "{}-T{}-{}",
         run.run_branch.as_deref().unwrap_or("fleet"),
         task.seq,
         safe(name)
@@ -370,7 +372,7 @@ pub struct FinishReport {
 
 /// The tree the branch holds now: what a step judges.
 fn tree_of(git: &Git, dir: &Path) -> Option<String> {
-    git.rev(dir, "HEAD^{tree}").ok()
+    git.tree(dir).ok()
 }
 
 /// Run the finish steps of the worker's task.
