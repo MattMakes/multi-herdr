@@ -20,6 +20,13 @@ The task ledger changes the direction of work:
 
 Orchestrators and workers both use 1 CLI: `horch ledger ...` (section 6).
 
+The goal behind it: the operator talks with the orchestrator about new
+ideas. A vetted idea becomes a spec and tickets, and its tickets join the
+queue. Meanwhile workers take tasks from the queue, eager to finish them,
+and rigid about the finish: no task ends until its work has passed the
+sweeps, landed on the run branch, appeared in the run's pull request, and
+its worktree is gone from disk without losing a commit (section 5.5).
+
 ## 2. Where the database lives
 
 One SQLite file for every project on the machine:
@@ -53,6 +60,7 @@ projects ─< runs ─< tasks ─< task_deps
                       ├─< workers ─< checks
                       │      └─< stops
                       ├─< worktrees
+                      ├─< task_steps
                       └─< events
 ```
 
@@ -68,6 +76,7 @@ projects ─< runs ─< tasks ─< task_deps
 | `stops` | 1 signal sent to 1 exact PID | `horch ledger stop` |
 | `worktrees` | 1 git worktree, from create to deleted from disk | `horch ledger worktree ...` |
 | `events` | 1 line of history (note, question, claim, land ...) | everyone |
+| `task_steps` | 1 finish step of 1 attempt, with its evidence | `horch ledger finish` |
 
 A worker never stays alive after its task. So 1 `workers` row is also
 "1 attempt at 1 task". When a worker dies and the task is retried, the old
@@ -96,7 +105,11 @@ answer.
 | `slug` | TEXT | human name, e.g. `design-skills`; matches `ai_docs/plans/<slug>/` |
 | `orchestrator_worker_id` | TEXT FK workers | the orchestrator's own process row (it has a PID and session too) |
 | `workspace_id` | TEXT | the herdr workspace; scopes panes |
-| `base_branch` | TEXT | default branch tasks land on |
+| `base_branch` | TEXT | the repository's main branch, e.g. `main`. The run branch starts from it and the run's PR targets it. |
+| `run_branch` | TEXT | the integration branch the orchestrator creates for the run, e.g. `fleet/<slug>`. Every task lands here. |
+| `remote` | TEXT | the git remote the run branch is pushed to, e.g. `origin` |
+| `pr_number`, `pr_url` | INTEGER NULL, TEXT NULL | the 1 pull request from `run_branch` into `base_branch`. Created by the first task that lands; updated by every later one. |
+| `finish_steps` | TEXT (JSON array) | the ordered finish pipeline every task of the run runs (section 5.5). Default: `["check", "code-sweep", "complexity-sweep", "recheck", "land", "pr", "cleanup"]`. |
 | `check_every_s` | INTEGER | progress check interval. Default 600 (10 min). |
 | `stall_rounds` | INTEGER | checks in a row without progress before a worker is declared dead. Default 3. |
 | `heartbeat_every_s` | INTEGER | how often `horch worker` writes `last_checkin_at`. Default 30. |
@@ -121,6 +134,8 @@ contract; the row is the routing and state around it.
 | `run_id` | TEXT FK | which run |
 | `seq` | INTEGER | `T-1`, `T-2` ... in the order added |
 | `title` | TEXT | 1 line, for `ledger status` |
+| `issue_url` | TEXT NULL | the tracker issue of the ticket, when it was published. The run's PR names it ("Closes #n"). |
+| `spec_ref` | TEXT NULL | the spec the ticket came from (issue URL or path), so the orchestrator can trace a task back to the idea |
 | `task_file` | TEXT | path of the ticket the spec/ticket writer made, e.g. `ai_docs/tickets/x/03-parser.md`. The claiming worker reads this file and nothing else for its instructions. |
 | `primary_persona` | TEXT | teammate name, e.g. `sonnet-feature`. **Only a worker of this persona may claim the task.** |
 | `fallback_persona` | TEXT NULL | the teammate to use when the primary cannot run (quota refused, harness missing). |
@@ -131,7 +146,7 @@ contract; the row is the routing and state around it.
 | `priority` | INTEGER | lower runs first among claimable tasks. Default 100. A requeued task gets its old priority minus 1000, so a retry goes first. |
 | `wave` | INTEGER NULL | copied from `MAP.md`, for display only. Order comes from `task_deps`. |
 | `worktree_mode` | TEXT | `shared` (single-branch mode) or `worktree` (own branch and worktree) |
-| `land_check` | TEXT NULL | the gate command `ledger land` runs before it fast-forwards, e.g. `cargo test -p horch-core` |
+| `land_check` | TEXT NULL | the gate command the `check`, `recheck` and `land` finish steps run, e.g. `cargo test -p horch-core` |
 | `status` | TEXT | see below |
 | `attempts` | INTEGER | how many `workers` rows have claimed it. Starts 0. |
 | `current_worker_id` | TEXT NULL FK | the worker that holds it now |
@@ -144,8 +159,8 @@ contract; the row is the routing and state around it.
 |---|---|---|
 | `queued` | waiting for a worker | `ledger add`, reap |
 | `running` | a worker claimed it | `ledger claim` |
-| `landing` | the worker ran `ledger land`; the gate is running | `ledger land` |
-| `done` | landed (or no worktree), worktree cleaned, summary in | `ledger done` |
+| `landing` | the worker ran `ledger finish`; the finish steps are running | `ledger finish` |
+| `done` | every finish step passed, summary in | `ledger done` |
 | `cancelled` | the orchestrator dropped it | `ledger cancel` |
 
 "Blocked" is not stored. A task is **claimable** when all of these hold:
@@ -318,8 +333,30 @@ here, so `ledger status` shows them.
 | `at` | TEXT | when |
 | `run_id`, `task_id`, `worker_id` | TEXT NULL | what it is about |
 | `actor` | TEXT | `orchestrator`, `worker`, `supervisor`, `watchdog`, `horch` |
-| `kind` | TEXT | `added`, `claimed`, `no_task`, `progress`, `note`, `question`, `blocked`, `answered`, `fallback`, `land_started`, `land_red`, `landed`, `cleaned`, `cleanup_failed`, `done`, `reaped`, `requeued`, `stopped`, `session`, `cancelled` |
+| `kind` | TEXT | `added`, `step_started`, `step_passed`, `step_failed`, `pr_updated`, `claimed`, `no_task`, `progress`, `note`, `question`, `blocked`, `answered`, `fallback`, `land_started`, `land_red`, `landed`, `cleaned`, `cleanup_failed`, `done`, `reaped`, `requeued`, `stopped`, `session`, `cancelled` |
 | `text` | TEXT | 1 STE sentence or more |
+
+### 4.11 `task_steps`
+
+1 row per finish step per attempt. A worker cannot skip a step, run them
+out of order, or mark one passed by saying so: horch checks the evidence.
+
+| field | type | used for |
+|---|---|---|
+| `task_id`, `worker_id` | TEXT FK | the task and the attempt |
+| `seq` | INTEGER | position in `runs.finish_steps`, from 1 |
+| `name` | TEXT | `check`, `code-sweep`, `complexity-sweep`, `recheck`, `land`, `pr`, `cleanup` |
+| `status` | TEXT | `pending`, `running`, `passed`, `failed`, `not_applicable` |
+| `rounds` | INTEGER | how many times the step ran: a sweep runs, the worker fixes, the sweep runs again |
+| `evidence_path` | TEXT NULL | the report, the analysis JSON or the check log that proves the result |
+| `verdict` | TEXT NULL | the parsed result, e.g. `PASS`, `WARN`, `0 violations`, `exit 0` |
+| `review_task_ids` | TEXT NULL (JSON array) | for `code-sweep`: the reviewer tasks it queued (5.5 step 2) |
+| `started_at`, `ended_at` | TEXT | audit |
+| `note` | TEXT NULL | why `failed` or `not_applicable` |
+
+PK (`task_id`, `worker_id`, `seq`). `not_applicable` is set only by horch,
+from facts (for example: the diff has no file in a language
+`complexity-sweep` reads), never by the worker.
 
 ## 5. How the fields are used: the flows
 
@@ -429,27 +466,80 @@ orchestrator can run it too). In this order:
 The new worker gets its own `worker_id`, PIDs, session id and transcript.
 The old row is never reused.
 
-### 5.5 Land and clean up (worker)
+### 5.5 The finish pipeline (worker)
 
-1. Worktree mode: `horch ledger worktree new` creates the worktree and the
-   row (`open`). Shared mode has no row.
-2. When the work is complete the worker runs `horch ledger land`. It sets
-   `landing`, rebases on `base`, runs `land_check`, fast-forwards `base`,
-   writes `landed_commit`, `landed_at`, status `landed`.
-   (This is the current `Landing::land`, driven from the ledger.)
-3. In the same command: measure `bytes_on_disk`, run
-   `git worktree remove <path>` and `git branch -d <branch>`, then confirm
-   that `path` no longer exists. Status `cleaned`, `cleaned_at`.
-4. If removal fails: status `cleanup_failed` with `reason`. The land is
-   still good. The watchdog retries cleanup every check until `cleaned`.
-   Today a failure here is silent and the folder stays on disk.
-5. A red gate: status back to `open`, `check_output_path` set, an
-   `events` row `land_red`. The worker fixes and lands again.
-6. `horch ledger done "<summary>"` refuses while the task has a worktree
-   that is not `cleaned` - unless `--unlanded "<reason>"`, which sets
-   `unlanded` and tells the orchestrator.
-7. Cleanup only ever deletes a `path` that is in this table. It never
-   globs `.worktrees/*`.
+A worker in worktree mode works in its own worktree, made with
+`horch ledger worktree new`, on a branch from `runs.run_branch`. When the
+work is complete it runs `horch ledger finish`. `finish` runs the steps of
+`runs.finish_steps` in order and stops at the first that does not pass.
+The worker fixes the cause and runs `finish` again; passed steps are not
+repeated unless a later fix changed the files they judged.
+
+1. **check** - runs the task's `land_check` in the worktree. Passes on
+   exit 0. Evidence: the check log.
+2. **code-sweep** - the `code-sweep` skill's review, on the branch diff
+   against `run_branch`. A worker may not start subagents, so the review
+   runs through the ledger: `finish` picks the reviewers by the skill's
+   triage rules and queues 1 reviewer task per reviewer
+   (`parallel`, persona `codex-reviewer` for Claude-built work and
+   `architect-reviewer` for Codex-built work, `blocked_by` nothing). Each
+   reviewer writes its findings file and ends. `finish` merges them into
+   the report with the skill's verdict rules. The author worker fixes every
+   Critical and Important finding, or answers it in the report with a
+   reason, then runs `finish` again, which re-reviews the changed files.
+   Passes when the verdict is `PASS`, or `WARN` with every Important
+   finding answered. Evidence: the report.
+3. **complexity-sweep** - the worker runs the `complexity-sweep` skill
+   itself on the changed files and refactors what it flags. Passes when
+   the analysis JSON has 0 violations in functions the branch changed.
+   Evidence: the analysis JSON. `not_applicable` when no changed file is in
+   a language the analyser reads.
+4. **recheck** - the `land_check` again, because steps 2 and 3 changed code.
+5. **land** - rebases on `run_branch`, runs `land_check`, fast-forwards
+   `run_branch`, pushes it to `remote`, writes `landed_commit`. Concurrent
+   lands queue on the landing lock. A red gate fails the step; the branch,
+   the worktree and `run_branch` stay unchanged.
+6. **pr** - makes sure the run's PR exists (creates it from `run_branch`
+   into `base_branch` if `runs.pr_number` is empty) and updates its
+   description: 1 section per task between markers
+   `<!-- horch:task T-<n> -->`, holding the title, the summary, "Closes
+   #<n>" when `issue_url` is set, and the sweep verdicts. Updates run under
+   the landing lock, so 2 workers never overwrite each other's section.
+   Passes when the PR's head contains `landed_commit`.
+7. **cleanup** - removes the worktree only when no work can be lost. All of
+   these must hold first; if one does not, the step fails and nothing is
+   deleted:
+   - `run_branch` on `remote` contains `landed_commit`;
+   - the worktree has no modified, staged or untracked files (ignored
+     files, such as build output, may go);
+   - no stash entry names the branch;
+   - the branch has no commit that `run_branch` does not contain.
+   Then it measures `bytes_on_disk`, runs `git worktree remove <path>`
+   (never `--force`) and `git branch -d <branch>` (never `-D`), checks
+   that `path` is gone, and writes `cleaned`. A removal error after the
+   checks writes `cleanup_failed`; the watchdog retries it every check.
+   Cleanup only ever deletes a `path` that is in the `worktrees` table. It
+   never globs `.worktrees/*`.
+
+`horch ledger done "<summary>"` refuses until every step of the attempt is
+`passed` or `not_applicable`. The only way past a step is
+`--unlanded "<reason>"`, which keeps the branch and worktree, sets
+`unlanded`, and tells the orchestrator; the task shows in
+`ledger unfinished` until someone lands or dismisses it.
+
+A worker in shared mode (no worktree) runs the same steps; `land` is a
+pathspec commit plus push, and `cleanup` is `not_applicable`.
+
+### 5.5a Ideas become queued tasks
+
+1. The operator and the orchestrator discuss an idea until it is vetted.
+2. The orchestrator writes the brief and queues a spec-writer task, then a
+   ticket-writer task, through the ledger like any other work.
+3. The ticket writer's `MAP.md` lists each ticket with its blockers,
+   persona, fallback and parallel flag. `horch ledger add-map <MAP.md>`
+   queues every ticket of it in 1 transaction, with `spec_ref` and
+   `issue_url` set. A run stays `active` while the operator keeps adding
+   ideas.
 
 ### 5.6 Done and "is the run done?"
 
@@ -477,8 +567,11 @@ All under `horch ledger`. `--json` on every read command.
 | `claim` | worker | take the next matching task, or record `no_task` |
 | `progress "<text>"` | worker | a milestone; moves `last_progress_at` |
 | `note "<text>"` | worker | same as today's `horch note` |
-| `worktree new <name>` | worker | create the worktree and its row |
-| `land` | worker | gate, fast-forward, remove the worktree, verify it is gone |
+| `worktree new <name>` | worker | create the worktree and its row, branched from the run branch |
+| `finish` | worker | run the finish pipeline from the first step not passed (5.5) |
+| `steps [<task>]` | anyone | the finish steps of a task with their evidence |
+| `add-map <MAP.md>` | orchestrator | queue every ticket of a ticket map (5.5a) |
+| `run new <slug>` | orchestrator | create the run and its run branch from the main branch |
 | `done "<summary>" [--unlanded "<reason>"]` | worker | finish the task |
 | `checkin` | `horch worker` (internal) | write `last_checkin_at = now` |
 | `watch` | the watchdog (internal) | the check loop of 5.3 |
@@ -667,3 +760,7 @@ Kinds:
 | Prior transcript for a replacement | always a file path; the worker reads it in chunks |
 | Quota | a warning to the operator only; spawning goes on unless redirected |
 | Database | SQLite at `~/.horch/ledger.sqlite3` on every OS |
+| Where work lands | the run branch the orchestrator created; 1 PR from it into the main branch, updated by every task |
+| Finish steps | check, code-sweep, complexity-sweep, recheck, land, pr, cleanup - in order, evidence-checked, none skippable (5.5) |
+| code-sweep reviewers | ledger reviewer tasks, not subagents: workers never start subagents |
+| Cleanup safety | never `--force`, never `-D`; refuse unless the remote has the commit and the worktree is clean |
