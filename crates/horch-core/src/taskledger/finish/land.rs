@@ -288,9 +288,6 @@ pub fn unsafe_to_remove(
     if !dir.exists() {
         return Ok(None);
     }
-    let Some(landed) = wt.landed_commit.as_deref() else {
-        return Ok(Some("the worktree has not landed".into()));
-    };
     let dirty = git.dirty(dir)?;
     if !dirty.is_empty() {
         return Ok(Some(format!(
@@ -311,7 +308,7 @@ pub fn unsafe_to_remove(
             wt.branch
         )));
     }
-    if let Some(remote) = remote {
+    if let (Some(remote), Some(landed)) = (remote, wt.landed_commit.as_deref()) {
         let _ = git.try_run(root, &["fetch", remote, run_branch]);
         let remote_ref = format!("refs/remotes/{remote}/{run_branch}");
         if git.rev(root, &remote_ref).is_err() || !git.is_ancestor(root, landed, &remote_ref) {

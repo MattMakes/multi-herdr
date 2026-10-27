@@ -1018,3 +1018,165 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
     );
     assert!(horch_core::procid::signal_same(p2, s2, 9), "teardown");
 }
+
+#[test]
+fn the_import_finds_work_that_never_landed() {
+    let h = world("tl-import");
+    let proj = h.project.clone();
+    let wtdir = proj.join(".worktrees");
+    std::fs::create_dir_all(&wtdir).unwrap();
+    let mk = |name: &str| {
+        let p = wtdir.join(name);
+        git_in(
+            &h,
+            &proj,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                name,
+                &p.to_string_lossy(),
+                "main",
+            ],
+        );
+        p
+    };
+    // Unlanded: 2 commits ahead of main.
+    let un = mk("w-unlanded");
+    for n in 0..2 {
+        std::fs::write(un.join(format!("f{n}.txt")), "x\n").unwrap();
+        git_in(&h, &un, &["add", "."]);
+        git_in(
+            &h,
+            &un,
+            &["commit", "--quiet", "--no-gpg-sign", "-m", &format!("c{n}")],
+        );
+    }
+    // Dirty: an uncommitted file, nothing ahead.
+    let dirty = mk("w-dirty");
+    std::fs::write(dirty.join("wip.txt"), "wip\n").unwrap();
+    // Orphan: git knows it, no claim names it.
+    mk("w-orphan");
+    let landed = wtdir.join("w-landed"); // gone from disk
+    let p = proj.to_string_lossy();
+    let ledger = format!(
+        r#"[
+ {{"record_id":"r1","session_id":null,"agent":"claude","tier":"opus","model":"opus","role":"opus-1","status":"done","task":"Old done work","history":[{{"at":"2026-10-01T00:00:00Z","event":"done","text":"Did it"}}],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z","project":"{p}"}},
+ {{"record_id":"r2","agent":"codex","tier":"codex-terra","model":"gpt","role":"codex-terra-1","status":"working","task":"Crashed work","history":[],"created_at":"2026-10-02T00:00:00Z","updated_at":"2026-10-02T00:00:00Z","project":"{p}","workspace_id":"w9"}},
+ {{"record_id":"r3","agent":"claude","tier":"opus","model":"opus","role":"opus-2","status":"done","task":"No project field","history":[],"created_at":"x","updated_at":"x"}}
+]"#
+    );
+    std::fs::write(h.state.join("old-project.json"), ledger).unwrap();
+    std::fs::create_dir_all(h.state.join("worktrees")).unwrap();
+    let claim = |id: &str, path: &Path, branch: &str, state: &str, record: &str| {
+        format!(
+            r#"{{"id":"{id}","name":"{id}","role":"x","record_id":"{record}","path":"{}","branch":"{branch}","base":"main","base_commit":"0","created_at":"2026-10-01T00:00:00Z","state":"{state}","landed_commit":null,"reason":null}}"#,
+            path.display()
+        )
+    };
+    std::fs::write(
+        h.state.join("worktrees/repo.json"),
+        format!(
+            "[{},{},{}]",
+            claim("c1", &landed, "w-landed", "landed", "r1"),
+            claim("c2", &un, "w-unlanded", "open", "r1"),
+            claim("c3", &dirty, "w-dirty", "open", "r2")
+        ),
+    )
+    .unwrap();
+
+    let dry = json_of(&h, &["ledger", "import", "--dry-run", "--json"]);
+    assert_eq!(dry["dry_run"], true);
+    assert_eq!(
+        json_of(&h, &["ledger", "unfinished", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "a dry run keeps nothing"
+    );
+
+    let r = json_of(&h, &["ledger", "import", "--json"]);
+    assert_eq!(r["raw_added"], 6, "{r}");
+    assert_eq!(
+        r["map_errors"], 1,
+        "the record with no project keeps its raw row: {r}"
+    );
+    let f = &r["findings"];
+    assert_eq!(f["worktree_unlanded"], 1, "{r}");
+    assert_eq!(
+        f["done_not_landed"], 1,
+        "r1 is done but its claim c2 did not land: {r}"
+    );
+    assert_eq!(f["dirty_worktree"], 1, "{r}");
+    assert_eq!(f["worktree_orphan"], 1, "{r}");
+    assert_eq!(f["ended_without_done"], 1, "{r}");
+
+    let again = json_of(&h, &["ledger", "import", "--json"]);
+    assert_eq!(again["raw_added"], 0);
+    assert_eq!(again["raw_skipped"], 6);
+    assert!(again["findings"].as_object().unwrap().is_empty(), "{again}");
+
+    let list = json_of(&h, &["ledger", "unfinished", "--json"]);
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 5);
+    let orphan = list
+        .iter()
+        .find(|f| f["kind"] == "worktree_orphan")
+        .unwrap();
+    let o = h.run(&[
+        "ledger",
+        "dismiss",
+        &orphan["finding_id"].to_string(),
+        "x",
+        "--cleanup",
+    ]);
+    assert!(
+        !o.status.success() && text(&o).contains("no recorded worktree"),
+        "{}",
+        text(&o)
+    );
+    assert!(
+        wtdir.join("w-orphan").exists(),
+        "an orphan is never removed"
+    );
+    // An unlanded worktree is not removed: its commits are not on main.
+    let unl = list
+        .iter()
+        .find(|f| f["kind"] == "worktree_unlanded")
+        .unwrap();
+    let o = h.run(&[
+        "ledger",
+        "dismiss",
+        &unl["finding_id"].to_string(),
+        "x",
+        "--cleanup",
+    ]);
+    assert!(
+        !o.status.success() && text(&o).contains("not on main"),
+        "{}",
+        text(&o)
+    );
+    assert!(un.exists());
+
+    // Reopen it: the new task's claim gets the old worktree.
+    ok(&h, &["ledger", "run", "new", "again"]);
+    let t = ticket(&h, "finish-it", "# Finish the unlanded work\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "reopen",
+            &unl["finding_id"].to_string(),
+            "--file",
+            &t.to_string_lossy(),
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    let c = ok_as(&h, &w, &["ledger", "claim"]);
+    assert!(c.contains("Reopened from unfinished past work"), "{c}");
+    assert!(c.contains(&format!("Worktree: {}", un.display())), "{c}");
+}

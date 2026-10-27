@@ -6,6 +6,7 @@
 
 pub mod finish;
 pub mod git;
+pub mod import;
 pub mod map;
 pub mod model;
 pub mod runs;

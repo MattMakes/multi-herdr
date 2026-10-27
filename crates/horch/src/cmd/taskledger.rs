@@ -11,8 +11,9 @@ use std::process::ExitCode;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::finish;
+use horch_core::taskledger::finish::{self, land};
 use horch_core::taskledger::git::Git;
+use horch_core::taskledger::import;
 use horch_core::taskledger::map;
 use horch_core::taskledger::model::StopRequester;
 use horch_core::taskledger::model::{
@@ -151,6 +152,47 @@ pub enum LedgerCommand {
         force: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Import every old JSON session ledger and worktree registry (raw first,
+    /// typed after), and record what never landed.
+    Import {
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Past work that did not finish as intended: worktrees that never
+    /// landed, work marked done that did not land, workers that ended
+    /// without done. Newest first.
+    Unfinished {
+        /// Only this project (default: the current one; `all` for every one).
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Queue a task for an unfinished finding; its claim gets the old
+    /// branch, worktree and transcript.
+    Reopen {
+        finding: i64,
+        #[arg(long = "file")]
+        file: PathBuf,
+        #[arg(long)]
+        primary: String,
+        #[arg(long)]
+        fallback: Option<String>,
+        #[arg(long)]
+        check: Option<String>,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Close a finding with a reason. `--cleanup` removes its 1 recorded
+    /// worktree, only when no work can be lost.
+    Dismiss {
+        finding: i64,
+        reason: String,
+        #[arg(long)]
+        cleanup: bool,
     },
     /// Worker rows (plumbing for tests and debugging).
     #[command(hide = true)]
@@ -503,6 +545,124 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         LedgerCommand::Progress { text } => progress(ctx, &mut store, EventKind::Progress, &text),
         LedgerCommand::Note { text } => progress(ctx, &mut store, EventKind::Note, &text),
         LedgerCommand::Worker { command } => worker_cmd(ctx, &mut store, command),
+        LedgerCommand::Import {
+            dry_run,
+            json: as_json,
+        } => {
+            let git = Git::new(&ctx.bins.harness.git);
+            let r = import::import(&mut store, &git, &ctx.paths.state_root, dry_run)?;
+            if as_json {
+                json(&r)?;
+            } else {
+                output::println(&format!(
+                    "{}{} files: {} records copied ({} already there); {} workers, {} tasks, {} worktrees mapped; {} could not be mapped.",
+                    if r.dry_run { "Dry run, nothing kept. " } else { "" },
+                    r.files.len(),
+                    r.raw_added,
+                    r.raw_skipped,
+                    r.workers,
+                    r.tasks,
+                    r.worktrees,
+                    r.map_errors
+                ));
+                for (k, n) in &r.findings {
+                    output::println(&format!("  {k}: {n}"));
+                }
+                if !r.findings.is_empty() {
+                    output::println("Read them with: horch ledger unfinished");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Unfinished {
+            project,
+            json: as_json,
+        } => {
+            let root = match project.as_deref() {
+                Some("all") => None,
+                Some(p) => Some(PathBuf::from(p)),
+                None => Some(project_root(ctx)?),
+            };
+            let list = store.immediate(|tx| import::unfinished(tx, root.as_deref()))?;
+            if as_json {
+                json(&list)?;
+            } else if list.is_empty() {
+                output::println("No unfinished work.");
+            } else {
+                for f in &list {
+                    output::println(&format!(
+                        "F{} {} [{}]: {}",
+                        f.finding_id,
+                        f.kind,
+                        f.run.as_deref().unwrap_or("-"),
+                        f.detail
+                    ));
+                }
+                output::println("Reopen 1: horch ledger reopen <id> --file <ticket> --primary <persona>. Close 1: horch ledger dismiss <id> \"<reason>\"");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Reopen {
+            finding,
+            file,
+            primary,
+            fallback,
+            check,
+            run,
+        } => {
+            let root = project_root(ctx)?;
+            let cwd = ctx.paths.current_dir().unwrap_or_else(|_| root.clone());
+            let ticket = ticket_path(&root, &file, &cwd)?;
+            let r = resolve_run(ctx, &store, &run)?;
+            let f = import::get_finding(store.conn(), finding)?;
+            let mut t = NewTask::work(&ticket_title(&root.join(&ticket)), &ticket, &primary);
+            t.fallback = fallback;
+            t.land_check = check;
+            t.spec_ref = Some(format!("finding F{finding}"));
+            let task = store.immediate(|tx| {
+                let task = tasks::add(tx, &r, &t, Actor::Orchestrator)?;
+                import::decide(tx, finding, "requeued", "orchestrator", &task.task_id)?;
+                // The old worktree, when it is still on disk, is this task's now.
+                if let Some(wt) = &f.worktree_id {
+                    let w = finish::worktree(tx, wt)?;
+                    if Path::new(&w.path).exists() && w.status != "cleaned" {
+                        tx.execute(
+                            "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = 'open' WHERE worktree_id = ?1",
+                            [wt, &task.task_id],
+                        )?;
+                    }
+                }
+                Ok(task)
+            })?;
+            output::println(&format!(
+                "{} queued for {} from finding F{finding}.",
+                task.short(),
+                primary
+            ));
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Dismiss {
+            finding,
+            reason,
+            cleanup,
+        } => {
+            let f = import::get_finding(store.conn(), finding)?;
+            if cleanup {
+                let Some(wt) = &f.worktree_id else {
+                    bail!("finding F{finding} has no recorded worktree; --cleanup removes only a recorded path");
+                };
+                let w = finish::worktree(store.conn(), wt)?;
+                let git = Git::new(&ctx.bins.harness.git);
+                let o = land::remove(&store, &git, &w, &w.base, None)?;
+                if !o.status.is_through() {
+                    bail!("{}", o.note);
+                }
+                output::println(&o.note);
+            }
+            import::decide(store.conn(), finding, "dismissed", "orchestrator", &reason)?;
+            output::println(&format!("Finding F{finding} dismissed."));
+            Ok(ExitCode::SUCCESS)
+        }
         LedgerCommand::Watch {
             run,
             once,
@@ -1166,6 +1326,11 @@ pub fn render_claim(c: &Claimed) -> String {
             slug(&t.title)
         )),
         (None, false) => out.push_str("Work in the shared checkout.\n"),
+    }
+    if let Some(from) = &c.reopened_from {
+        out.push_str(&format!(
+            "Reopened from unfinished past work:\n    {from}\nUse what you can of it. Read each earlier transcript in chunks first.\n"
+        ));
     }
     if !c.prior.is_empty() {
         out.push_str("Earlier attempts, oldest first:\n");

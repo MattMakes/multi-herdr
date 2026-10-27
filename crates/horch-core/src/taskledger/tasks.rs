@@ -643,6 +643,8 @@ pub struct Claimed {
     pub prior: Vec<PriorAttempt>,
     /// The open worktree from an earlier attempt, now this worker's.
     pub worktree: Option<String>,
+    /// The unfinished past work this task was reopened from.
+    pub reopened_from: Option<String>,
     pub worktree_branch: Option<String>,
 }
 
@@ -803,6 +805,7 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
         attempt: w.attempt.unwrap_or(task.attempts),
         prior,
         worktree: wt.as_ref().map(|(p, _)| p.clone()),
+        reopened_from: super::import::reopened_from(conn, &task.task_id)?,
         worktree_branch: wt.map(|(_, b)| b),
         task,
     })
