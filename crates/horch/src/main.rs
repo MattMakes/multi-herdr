@@ -413,10 +413,11 @@ enum Command {
         settle_ms: u64,
     },
 
-    /// Low-level session ledger access.
+    /// The task ledger: queue tasks, claim them, finish them, and read the
+    /// board. `horch ledger legacy` holds the old session-ledger plumbing.
     Ledger {
         #[command(subcommand)]
-        command: cmd::ledgercmd::LedgerCommand,
+        command: cmd::taskledger::LedgerCommand,
     },
 
     /// Inspect the integrated skill catalog and estimated context cost.
@@ -903,7 +904,7 @@ fn dispatch(
             dry_run,
             settle_ms,
         )?,
-        Command::Ledger { command } => return cmd::ledgercmd::run(ctx, command),
+        Command::Ledger { command } => return cmd::taskledger::run(ctx, command),
         Command::Marketplace { command } => return cmd::marketplacecmd::run(ctx, command),
         Command::Doctor => cmd::doctor::doctor(ctx)?,
         Command::Install { dir } => cmd::install::install(ctx, dir.as_deref())?,

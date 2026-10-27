@@ -211,7 +211,7 @@ fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
         return Err(refuse(format!(
             "session {session_id} is still marked working{pane} (a live worker may own it); \
              refusing to resume. If that pane is open, tell its worker instead. \
-             If you know the pane is gone, run: horch ledger done {} \"{PANE_CLOSED}\"",
+             If you know the pane is gone, run: horch ledger legacy done {} \"{PANE_CLOSED}\"",
             record.record_id
         )));
     }
@@ -554,7 +554,7 @@ mod tests {
         let err = draft_resume("r1", &req, &inputs).err().unwrap().to_string();
         assert!(err.contains("in pane w1:p5"), "{err}");
         assert!(
-            err.contains("horch ledger done r1 \"pane closed without horch done\""),
+            err.contains("horch ledger legacy done r1 \"pane closed without horch done\""),
             "{err}"
         );
     }

@@ -781,7 +781,7 @@ cold. Workers close their own pane when done, but their sessions stay resumable.
 ```bash
 horch sessions              # readable summary, newest first
 horch sessions --json       # the raw records
-horch ledger path           # where the file lives
+horch ledger legacy path           # where the file lives
 ```
 
 The ledger lives at `$HORCH_STATE_DIR`, else

@@ -58,11 +58,23 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
 }
 
 fn tell_outcome(ctx: &RuntimeContext, role: &str, text: &str) -> Result<ReportStatus> {
+    let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
+    tell_as(ctx, sender, role, text)
+}
+
+/// [`tell`] with an explicit sender tag. horch itself sends as `horch` (the
+/// task ledger's wakes): a tagged message to the orchestrator is durable
+/// mail, redelivered until `horch inbox` acknowledges it.
+pub fn tell_as(
+    ctx: &RuntimeContext,
+    sender: Option<String>,
+    role: &str,
+    text: &str,
+) -> Result<ReportStatus> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
 
-    let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
     let text = match &sender {
         Some(me) => message::ensure_tag(text, me),
         None => text.to_string(),
