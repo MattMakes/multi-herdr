@@ -836,9 +836,9 @@ junction, so an update never overwrites a running `herdr.exe`.
 ## Updating the agent CLIs
 
 `horch fleet` and `horch orchestration` update every installed agent CLI
-before the first pane starts, so each fleet starts on the latest builds. Each
-CLI runs its own update command, which knows how it was installed (native,
-Homebrew, npm):
+before the first pane starts, to its newest release that is at least 7 days
+old (see [Release cooldown](#release-cooldown)). Each CLI runs its own update
+command, which knows how it was installed (native, Homebrew, npm):
 
 | harness     | update command        |
 |-------------|-----------------------|
@@ -874,6 +874,38 @@ server, which closes every pane, a running fleet included. `horch update herdr`
 prints that warning and runs `herdr update` attached to your terminal, so you
 answer herdr's question yourself.
 
+### Release cooldown
+
+A hijacked package does its harm in the first days after its release, before
+it is caught and pulled. So the update step installs no release younger than
+7 days (`HORCH_UPDATE_COOLDOWN_DAYS`):
+
+- Before an updater runs, horch reads the publish time of the CLI's newest
+  release from the npm registry: `@anthropic-ai/claude-code`, `@openai/codex`,
+  `opencode-ai` and `@earendil-works/pi-coding-agent`. The native and
+  Homebrew builds carry the same version numbers. A release younger than the
+  cooldown holds the updater back, and the CLI keeps the build it has:
+  `update: claude: 2.1.311 is 1 day old, under the 7-day cooldown (skipped)`.
+- Antigravity and Prime publish no release dates horch can read, so the
+  cooldown cannot pass and their updaters do not run:
+  `update: prime: no release dates to check against the 7-day cooldown (skipped)`.
+  Update them yourself (`agy update`, `prime-agent update`) when you have
+  checked a release.
+- An updater that runs gets the same cooldown for the package managers it
+  may call, so it installs no dependency younger than 7 days either:
+  `npm_config_before` (npm), `PNPM_CONFIG_MINIMUM_RELEASE_AGE` (pnpm),
+  `YARN_NPM_MINIMAL_AGE_GATE` (yarn), `UV_EXCLUDE_NEWER` (uv) and
+  `PIP_UPLOADED_PRIOR_TO` (pip). These replace your own values for the
+  updater only. bun reads its cooldown only from `bunfig.toml`
+  (`[install] minimumReleaseAge = 604800`), and Homebrew and the native
+  installers have none, so the release check above is what guards them.
+- When the registry cannot be reached, nothing updates: each CLI prints 1
+  `horch: NOTE: update:` line, and the fleet starts on the builds it has.
+
+Fast-moving CLIs often have a release younger than 7 days, so they update
+less often: only when their newest release has been out for a week.
+`HORCH_UPDATE_COOLDOWN_DAYS=0` turns the cooldown off.
+
 ## Environment
 
 | variable             | effect                                                        |
@@ -892,6 +924,7 @@ answer herdr's question yourself.
 | `HORCH_QUOTA_FILE`   | Read pool states from this file and never probe (tests, drills) |
 | `HORCH_NO_UPDATE`    | `1` skips the agent CLI update step of `horch fleet`, like `--no-update` |
 | `HORCH_UPDATE_TIMEOUT_MS` | The time limit of 1 agent CLI updater. Defaults to 180000 |
+| `HORCH_UPDATE_COOLDOWN_DAYS` | How old an agent CLI release must be before the update step installs it. Defaults to 7; `0` turns the cooldown off |
 | `HORCH_HERDR_BIN`    | Which herdr CLI to drive. Defaults to `herdr`                  |
 | `HORCH_SQLITE3_BIN`  | Which `sqlite3` reads OpenCode's database                       |
 | `HORCH_OLLAMA_BIN`   | Which `ollama` the local-pool check asks                       |
