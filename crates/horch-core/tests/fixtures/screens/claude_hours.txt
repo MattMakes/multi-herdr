@@ -1,0 +1,15 @@
+⏺ Update Todos
+  ⎿  ☒ Add the migration
+     ☒ Port the importer
+     ☐ Run the full workspace suite
+     ☐ Write the PR description
+
+⏺ Bash(cargo test --workspace)
+  ⎿  Running…
+
+✢ Brewing… (1h 2m 3s · ↓ 12k tokens · esc to interrupt)
+
+╭─────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                           │
+╰─────────────────────────────────────────────────────────────────────────────╯
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

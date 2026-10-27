@@ -1,0 +1,11 @@
+• Ran cargo test -p horch-core
+  └ test result: ok. 312 passed; 0 failed; 2 ignored
+
+─ Worked for 12m 30s ───────────────────────────────────────────────────────
+
+• All tests pass. I changed `claim` to stamp `claimed_at` from the ledger
+  clock and added a test for an expired claim.
+
+› Ask Codex to do anything
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit   55% context left

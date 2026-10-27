@@ -1,0 +1,15 @@
+user
+Fix the failing test in crates/horch/tests/cli.rs
+
+codex
+I'll start by running the test to see the failure.
+
+⚡ Ran command cargo test -p horch --test cli
+  ⎯ thread 'boot_prints_notice' panicked at crates/horch/tests/cli.rs:88:5:
+    assertion failed: out.contains("update available")
+
+Thinking (7m 05s · esc to interrupt)
+╭──────────────────────────────────────────────────────────────────────────╮
+│ send a message                                                           │
+╰──────────────────────────────────────────────────────────────────────────╯
+  send q or ctrl+c to exit | send "/clear" to reset | send "/help" for commands

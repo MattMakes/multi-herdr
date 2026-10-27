@@ -1,0 +1,15 @@
+• Updated Plan
+  └ ✔ Add the schema migration
+    ✔ Write the claim query
+    □ Wire the watchdog
+    □ Run the full suite
+
+• Ran cargo clippy --workspace -- -D warnings
+  └     Checking horch-core v0.2.0
+        Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.20s
+
+• Working (1h 02m 03s • esc to interrupt)
+
+› Ask Codex to do anything
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit   18% context left

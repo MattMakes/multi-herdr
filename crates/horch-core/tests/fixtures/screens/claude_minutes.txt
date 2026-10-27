@@ -1,0 +1,19 @@
+⏺ Bash(cargo test -p horch-core --lib taskledger)
+  ⎿     Compiling horch-core v0.2.0 (/home/user/multi-herdr/crates/horch-core)
+         Finished `test` profile [unoptimized + debuginfo] target(s) in 18.04s
+          Running unittests src/lib.rs
+     … +26 lines (ctrl+r to expand)
+
+⏺ Update(crates/horch-core/src/taskledger/runs.rs)
+  ⎿  Updated crates/horch-core/src/taskledger/runs.rs with 4 additions
+       88        let row = tx.query_row(SQL_LAST_RUN, params![task], read_run)?;
+       89 +      if row.finished_at.is_some() {
+       90 +          return Ok(None);
+       91 +      }
+
+✻ Thinking… (12m 30s · ↑ 4.2k tokens · esc to interrupt)
+
+╭─────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                           │
+╰─────────────────────────────────────────────────────────────────────────────╯
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                ◯ IDE disconnected

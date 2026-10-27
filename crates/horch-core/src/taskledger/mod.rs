@@ -12,6 +12,7 @@ pub mod schema;
 pub mod status;
 pub mod store;
 pub mod tasks;
+pub mod timer;
 pub mod util;
 pub mod workers;
 
