@@ -102,6 +102,8 @@ answer.
 | `heartbeat_every_s` | INTEGER | how often `horch worker` writes `last_checkin_at`. Default 30. |
 | `heartbeat_stale_s` | INTEGER | a checkin older than this is "missed". Default 120. |
 | `timer_tolerance_s` | INTEGER | slack when comparing a screen timer with the clock. Default 60. |
+| `watchdog_pid`, `watchdog_started` | INTEGER NULL | the watchdog process, so it can be checked and stopped exactly |
+| `watchdog_checkin_at` | TEXT NULL | the watchdog's own heartbeat (section 10) |
 | `status` | TEXT | `active`, `done`, `abandoned` |
 | `started_at`, `ended_at` | TEXT | audit |
 
@@ -375,7 +377,8 @@ courier) checks each `working` worker every `check_every_s` and writes 1
 
 1. **Process gone.** `pid_alive = 0`, or `checkin_age_s > heartbeat_stale_s`
    and the supervisor PID is gone: verdict `dead`. Go to 5.4 at once - a
-   process that does not exist cannot resume.
+   process that does not exist cannot resume. Rounds are only for a
+   process that lives but shows no progress.
 2. **Agent progress.** `last_progress_at` moved since the last check:
    verdict `progress`, `stall_rounds = 0`.
 3. **Proxy checkin.** The agent made no ledger call, but 1 of these moved:
@@ -417,7 +420,8 @@ orchestrator can run it too). In this order:
 5. An `events` row `reaped` and `requeued`.
 6. The orchestrator spawns 1 new worker of `claimable_by`. The spawn sets
    `previous_worker_id` on the new row. Its claim takes that task first and
-   prints the previous `transcript_path`, `summary` and worktree, with the
+   prints the previous `transcript_path` (a path, never the content; the
+   worker reads it in chunks), `summary` and worktree, with the
    instruction: use what you can of the previous work; read the transcript
    to learn what went wrong before you continue. `worktrees.worker_id` moves
    to the new worker.
@@ -478,6 +482,10 @@ All under `horch ledger`. `--json` on every read command.
 | `done "<summary>" [--unlanded "<reason>"]` | worker | finish the task |
 | `checkin` | `horch worker` (internal) | write `last_checkin_at = now` |
 | `watch` | the watchdog (internal) | the check loop of 5.3 |
+| `import [--dry-run]` | operator, once | section 11 |
+| `unfinished [--json]` | orchestrator | open findings: work that never landed |
+| `reopen <finding> --file <ticket> --primary <p>` | orchestrator | queue a task for a finding |
+| `dismiss <finding> "<reason>" [--cleanup]` | orchestrator | close a finding |
 | `reap <worker>` | watchdog, orchestrator | 5.4 |
 | `stop <worker> "<reason>"` | orchestrator | stop 1 worker by its recorded PIDs and pane |
 
@@ -518,19 +526,144 @@ retired: assignment is the claim.
 8. The briefings: `fleet-orchestrator.md`, `fleet-worker.md` and the
    `orchestrate` skill move from "assign and tell" to "add, spawn, claim".
 9. The ban test of section 7.
+10. The import of section 11 and `ledger unfinished`.
+11. The wake events of section 9, through the existing channel relay.
 
-## 9. Open questions
+## 9. The orchestrator's place
 
-1. **Migration.** Keep today's JSON session ledger and worktree registry
-   read-only for old records, or import them into SQLite once?
-2. **A dead PID.** Section 5.3 step 1 reaps at once when the process is
-   gone, without 3 rounds. The 3 rounds apply only to a process that lives
-   but makes no progress. Is that what you want?
-3. **Grandchildren.** An agent starts child processes (tool commands, MCP
-   servers). The plan stops them by closing the exact pane, not by a
-   process-group signal. Is a pane close acceptable for these, or do you
-   want each child PID recorded too?
-4. **The orchestrator's own row.** Should the orchestrator heartbeat and be
-   watched too, so a dead orchestrator is visible to the operator?
-5. **Transcript size.** A transcript can be many MB. Give the replacement
-   worker the path only, or a trimmed copy (last N turns plus every error)?
+- The operator watches the orchestrator. Nothing watches it for progress:
+  it has a `workers` row (`kind = orchestrator`) with PIDs, so it can be
+  stopped exactly, but the watchdog never runs stall checks on it.
+- Once the work is queued and the workers are spawned, the orchestrator
+  ends its turn and waits. It wakes on 1 of these, sent by horch:
+  - a `[<role>] QUESTION:` or `BLOCKED:` from a worker;
+  - a watchdog verdict change (`no_progress`, `dead`, a reap);
+  - newly claimable tasks (a blocker went `done`), so it spawns more
+    workers;
+  - `ledger status` turning complete, so it verifies and tells the
+    operator the work is done.
+- It never polls the ledger and never sleeps. It answers questions for
+  itself or for workers by asking the operator.
+
+## 10. Nobody works silently
+
+The aim of sections 5.3 and 5.4: no worker can stop and stay "working" in
+the ledger for days while the orchestrator gives it room.
+
+- A worker whose process is gone is reaped at the next check. It does not
+  wait 3 rounds: a process that does not exist cannot resume.
+- A live worker with no progress is dead after `stall_rounds` checks:
+  30 min with the defaults, never longer.
+- Processes an agent started (tool commands, MCP servers) are not tracked
+  one by one. When the agent is dead they are dead too, and the exact pane
+  close ends them.
+- The watchdog itself writes a heartbeat (`watchdog_checkin_at` on the
+  `runs` row). Every `horch` command checks it. If it is older than 2 x
+  `check_every_s` while a task is `running`, the command restarts the
+  watchdog and prints a warning, so a dead watchdog cannot hide dead
+  workers.
+- `ledger status` marks any `working` worker whose last `checks` row is
+  older than 2 x `check_every_s` as `UNWATCHED`.
+
+## 11. Importing the old ledgers
+
+The JSON session ledgers and worktree registries are imported once, in 2
+stages. Old records have missing and odd fields, so the import is loose
+and strict typing applies only after it.
+
+### 11.1 Stage 1: raw copy
+
+Every source record becomes 1 `import_raw` row, unchanged:
+
+| field | type | used for |
+|---|---|---|
+| `raw_id` | INTEGER PK | key |
+| `source_kind` | TEXT | `session_ledger` (`<state>/<project>.json`), `worktree_claims` (`<state>/worktrees/<hash>.json`), `pending_mail` |
+| `source_path` | TEXT | the file it came from |
+| `source_key` | TEXT | `record_id`, claim `id` or mail `id` |
+| `raw_json` | TEXT | the record exactly as read |
+| `imported_at` | TEXT | when |
+| `mapped_to` | TEXT NULL | `tasks:<id>`, `workers:<id>`, `worktrees:<id>` |
+| `map_error` | TEXT NULL | why it could not be mapped; the row stays for a human |
+
+The source files are not deleted or changed. A second import skips a
+(`source_kind`, `source_key`) pair it already has.
+
+### 11.2 Stage 2: typed rows
+
+- Every typed table gets `origin TEXT` (`native` or `import`) and
+  `import_raw_id INTEGER NULL`.
+- Required fields are enforced only for native rows:
+  `CHECK (origin = 'import' OR <field> IS NOT NULL)`. An imported row may
+  have no PID, no session, no task file.
+- 1 synthetic `runs` row per old orchestrator workspace (or 1 per project
+  when no workspace is known), `status = done`, slug `imported-<date>`.
+- 1 old worker record becomes 1 `workers` row and 1 `tasks` row: the task
+  text becomes `title`, the plan slug becomes `task_file` when the file
+  still exists, the tier becomes `primary_persona`.
+- Old states map like this:
+
+| old record | imported `workers.status` | imported `tasks.status` |
+|---|---|---|
+| `done` with a `done` event | `done` | `done` |
+| `done` from an exit, no `done` event | `incomplete` | `queued` is wrong for old work, so `cancelled` with `summary = "imported: ended without horch done"` |
+| `working`, pane gone | `incomplete` | the same `cancelled` rule |
+| `failed`, `launch_failed` | `launch_failed` or `incomplete` | the same `cancelled` rule |
+
+- Old claims become `worktrees` rows. The import then looks at disk: does
+  the path exist, how many commits is the branch ahead of its base, how
+  many files are dirty, how many bytes. Each fact goes in
+  `import_findings`.
+
+### 11.3 `import_findings`: work that never landed
+
+| field | type | used for |
+|---|---|---|
+| `finding_id` | INTEGER PK | key |
+| `kind` | TEXT | see below |
+| `task_id`, `worker_id`, `worktree_id` | TEXT NULL | what it is about |
+| `detail` | TEXT | facts: branch, ahead count, dirty files, bytes, the old summary |
+| `status` | TEXT | `open`, `requeued`, `dismissed` |
+| `decided_by`, `decided_at`, `decision_note` | TEXT NULL | who chose what, and why |
+
+Kinds:
+
+- `worktree_unlanded`: the claim is `open` or `unlanded` and the branch
+  has commits not on its base.
+- `worktree_orphan`: a folder under `.worktrees/` that git knows but no
+  claim names. It is reported, never deleted by the import.
+- `done_not_landed`: the record says `done` but its claim did not land,
+  or the summary has `UNLANDED:`.
+- `ended_without_done`: the agent exited or the pane vanished before
+  `horch done`.
+- `dirty_worktree`: uncommitted files in a worktree.
+- `disk_heavy`: a worktree over 1 GB.
+
+### 11.4 Talking with the orchestrator about it
+
+- `horch ledger unfinished [--project <path>] [--json]` lists every open
+  finding with its facts, grouped by run, newest first.
+- The orchestrator reads it and discusses each item with the operator:
+  what was meant to land, what is still worth doing.
+- `horch ledger reopen <finding> --file <ticket> --primary <persona>`
+  queues a native task for it. The finding becomes `requeued`, and the
+  new task's claim prints the old worktree, branch and transcript path so
+  the worker can build on them.
+- `horch ledger dismiss <finding> "<reason>"` closes it. Dismissing a
+  `worktree_unlanded` finding offers `--cleanup`, which removes that 1
+  registered path only.
+- Native runs feed the same command: a native task that ends `cancelled`
+  with an open worktree, or a reaped worker whose replacement never
+  finished, shows up in `ledger unfinished` too.
+
+## 12. Decisions
+
+| question | decision |
+|---|---|
+| A worker process is gone | reap at the next check; no 3-round wait (section 10) |
+| Child processes of an agent | not tracked; the exact pane close ends them (section 10) |
+| Old JSON ledgers | imported: raw first, typed after, findings for unlanded work (section 11) |
+| Watching the orchestrator | the operator watches it; it waits silently for horch to wake it (section 9) |
+| Prior transcript for a replacement | always a file path; the worker reads it in chunks |
+| Quota | a warning to the operator only; spawning goes on unless redirected |
+| Database | SQLite at `~/.horch/ledger.sqlite3` on every OS |
