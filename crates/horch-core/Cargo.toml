@@ -13,6 +13,7 @@ serde_yaml.workspace = true
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
+rusqlite.workspace = true
 
 # Only for SIGTERM to a Prime Agent daemon this process started. Spawning
 # `kill(1)` would work too, but a process spawn to stop a process - on a path
