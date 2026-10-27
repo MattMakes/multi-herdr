@@ -645,7 +645,8 @@ fn show(
         .with_context(|| format!("'{key}' is neither a task nor a worker of run {}", run.slug))?;
     let events = status::events(conn, "worker_id", &w.worker_id)?;
     if as_json {
-        json(&serde_json::json!({ "worker": w, "events": events }))?;
+        let stops = status::stops(conn, &w.worker_id)?;
+        json(&serde_json::json!({ "worker": w, "events": events, "stops": stops }))?;
     } else {
         output::println(&format!(
             "{} {} ({}), persona {}.",

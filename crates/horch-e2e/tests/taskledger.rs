@@ -763,3 +763,101 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
     );
     assert_eq!(r["steps"][0]["verdict"], "WARN");
 }
+
+#[test]
+fn stopping_one_of_three_workers_leaves_the_others_running() {
+    let mut h = fleet("tl-stop", "exec,stay");
+    h.set("HORCH_STOP_GRACE_MS", "2000");
+    ok(
+        &h,
+        &["ledger", "run", "new", "delta", "--heartbeat-every", "1"],
+    );
+    for n in 0..3 {
+        let p = ticket(&h, &format!("t{n}"), &format!("# T{n}\n"));
+        ok(
+            &h,
+            &[
+                "ledger",
+                "add",
+                "--file",
+                &p.to_string_lossy(),
+                "--primary",
+                "codex-terra",
+            ],
+        );
+    }
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let o = h.run(&[
+            "spawn",
+            "codex-terra",
+            "--from-pane",
+            "w1:p1",
+            "--no-tile",
+            "--force",
+        ]);
+        assert!(o.status.success(), "{}", text(&o));
+    }
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    for w in st["workers"].as_array().unwrap() {
+        if w["worker"]["kind"] == "worker" {
+            ids.push(w["worker"]["worker_id"].as_str().unwrap().to_string());
+        }
+    }
+    assert_eq!(ids.len(), 3);
+    let pids: Vec<(u32, u64)> = ids
+        .iter()
+        .map(|id| {
+            let w = wait_for("the agent PID", || {
+                let w = worker_json(&h, id);
+                w["agent_started"].is_i64().then_some(w)
+            });
+            (
+                w["agent_pid"].as_i64().unwrap() as u32,
+                w["agent_started"].as_i64().unwrap() as u64,
+            )
+        })
+        .collect();
+    for id in &ids {
+        ok_as(&h, id, &["ledger", "claim"]);
+    }
+    let o = ok(&h, &["ledger", "stop", &ids[0], "the operator dropped it"]);
+    assert!(o.contains("Stopped"), "{o}");
+    assert!(
+        !horch_core::procid::alive(pids[0].0, Some(pids[0].1)),
+        "the stopped agent is gone"
+    );
+    assert!(horch_core::procid::alive(pids[1].0, Some(pids[1].1)));
+    assert!(horch_core::procid::alive(pids[2].0, Some(pids[2].1)));
+    let shown = json_of(&h, &["ledger", "show", &ids[0], "--json"]);
+    assert_eq!(shown["worker"]["status"], "stopped");
+    let stops = shown["stops"].as_array().unwrap();
+    let agent = stops.iter().find(|s| s["target"] == "agent").unwrap();
+    assert_eq!(agent["pid"].as_i64().unwrap() as u32, pids[0].0);
+    assert_eq!(agent["pid_started"].as_i64().unwrap() as u64, pids[0].1);
+    assert_eq!(agent["signal"], "TERM");
+    assert_eq!(agent["result"], "sent");
+    assert!(
+        stops
+            .iter()
+            .any(|s| s["target"] == "pane" && s["result"] == "pane_closed"),
+        "{shown}"
+    );
+    // Its task is queued again; the others still run.
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    assert_eq!(st["counts"]["queued"], 1);
+    assert_eq!(st["counts"]["running"], 2);
+    // A second stop finds the processes gone and sends nothing.
+    let o = json_of(&h, &["ledger", "stop", &ids[0], "again", "--json"]);
+    assert!(
+        o["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["result"] != "sent"),
+        "{o}"
+    );
+    for id in &ids[1..] {
+        ok(&h, &["ledger", "stop", id, "test teardown"]);
+    }
+}

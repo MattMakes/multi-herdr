@@ -317,3 +317,41 @@ pub fn events(conn: &Connection, column: &str, id: &str) -> Result<Vec<EventLine
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
+
+/// 1 recorded stop step.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StopLine {
+    pub at: String,
+    pub requested_by: String,
+    pub reason: String,
+    pub target: String,
+    pub pid: Option<i64>,
+    pub pid_started: Option<i64>,
+    pub signal: Option<String>,
+    pub pane_id: Option<String>,
+    pub result: String,
+}
+
+/// The stops of 1 worker, oldest first.
+pub fn stops(conn: &Connection, worker_id: &str) -> Result<Vec<StopLine>> {
+    let mut stmt = conn.prepare(
+        "SELECT at, requested_by, reason, target, pid, pid_started, signal, pane_id, result
+         FROM stops WHERE worker_id = ?1 ORDER BY stop_id",
+    )?;
+    let rows = stmt
+        .query_map([worker_id], |r| {
+            Ok(StopLine {
+                at: r.get(0)?,
+                requested_by: r.get(1)?,
+                reason: r.get(2)?,
+                target: r.get(3)?,
+                pid: r.get(4)?,
+                pid_started: r.get(5)?,
+                signal: r.get(6)?,
+                pane_id: r.get(7)?,
+                result: r.get(8)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
