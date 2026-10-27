@@ -342,6 +342,7 @@ pub fn assign(ctx: &RuntimeContext, role: &str, task: &str) -> Result<()> {
 pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
     let record_id = require_env("HORCH_RECORD_ID", worker_var(ctx, |w| &w.record_id))?;
     Ledger::open_in(ctx)?.note(&record_id, text)?;
+    super::taskledger::note_from_worker(ctx, text);
     if let Some(line) = quiet_note_check(ctx, &record_id) {
         println!("{line}");
     }

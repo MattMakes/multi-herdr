@@ -79,9 +79,11 @@ ssh_remote_deploy/host="user@host_ip"
 ssh_remote_deploy/port="22"
 ssh_remote_deploy/extra_args_ssh=""
 ssh_remote_deploy/extra_args_scp=""
-ssh_remote_deploy/run_script="#!/usr/bin/env bash\nexport DISPLAY=:0\n\"{temp_dir}/{exe_name}\" {cmd_args}"
-ssh_remote_deploy/cleanup_script="#!/usr/bin/env bash\nkill $(pgrep -x -f \"{temp_dir}/{exe_name} {cmd_args}\")\nrm -rf \"{temp_dir}\""
+ssh_remote_deploy/run_script="#!/usr/bin/env bash\nexport DISPLAY=:0\n\"{temp_dir}/{exe_name}\" {cmd_args} &\necho $! > \"{temp_dir}/game.pid\"\nwait"
+ssh_remote_deploy/cleanup_script="#!/usr/bin/env bash\nkill \"$(cat \"{temp_dir}/game.pid\")\"\nrm -rf \"{temp_dir}\""
 ```
+
+> The run script saves the game's PID, and the cleanup script stops that 1 PID. Godot's default cleanup stops the game by a command-line match instead; never stop a process by a name or a pattern.
 
 > Godot regenerates `export_presets.cfg` on every editor save. Do not hand-edit it while the editor is open.
 

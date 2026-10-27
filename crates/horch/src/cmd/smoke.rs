@@ -191,6 +191,7 @@ fn fleet(ctx: &RuntimeContext) -> Result<ExitCode> {
             // The smoke fake spends nothing; never gate it on usage limits.
             exact: false,
             force: true,
+            replaces: None,
         },
     )?;
 
@@ -654,6 +655,7 @@ fn tile(ctx: &RuntimeContext) -> Result<ExitCode> {
             // The smoke fake spends nothing; never gate it on usage limits.
             exact: false,
             force: true,
+            replaces: None,
         },
     )?;
 

@@ -210,6 +210,23 @@ pub fn set_pane(conn: &Connection, worker_id: &str, pane_id: &str) -> Result<()>
     Ok(())
 }
 
+/// What spawn launched: role, harness, model and effort.
+pub fn set_launch(
+    conn: &Connection,
+    worker_id: &str,
+    role: &str,
+    harness: &str,
+    model: &str,
+    effort: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE workers SET role = COALESCE(role, ?2), harness = ?3, model = ?4, effort = ?5
+         WHERE worker_id = ?1",
+        params![worker_id, role, harness, model, effort],
+    )?;
+    Ok(())
+}
+
 /// The spawn failed before `horch worker` ran.
 pub fn launch_failed(conn: &Connection, worker_id: &str, reason: &str) -> Result<()> {
     conn.execute(

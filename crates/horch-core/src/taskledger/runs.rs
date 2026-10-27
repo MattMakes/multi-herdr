@@ -112,6 +112,18 @@ pub struct NewRun {
     pub remote: Option<String>,
     /// Empty means the default pipeline.
     pub finish_steps: Vec<StepName>,
+    /// Thresholds; `None` keeps the spec's default.
+    pub thresholds: Thresholds,
+}
+
+/// The watchdog's and the supervisor's timing (section 4.2).
+#[derive(Debug, Clone, Default)]
+pub struct Thresholds {
+    pub check_every_s: Option<i64>,
+    pub stall_rounds: Option<i64>,
+    pub heartbeat_every_s: Option<i64>,
+    pub heartbeat_stale_s: Option<i64>,
+    pub timer_tolerance_s: Option<i64>,
 }
 
 /// Create a run in project `root`. Refuses a second active run with the
@@ -155,6 +167,24 @@ pub fn create(conn: &Connection, root: &Path, new: &NewRun) -> Result<Run> {
             RunStatus::Active.as_str(),
             Origin::Native.as_str(),
             util::now(),
+        ],
+    )?;
+    let t = &new.thresholds;
+    conn.execute(
+        "UPDATE runs SET
+            check_every_s = COALESCE(?2, check_every_s),
+            stall_rounds = COALESCE(?3, stall_rounds),
+            heartbeat_every_s = COALESCE(?4, heartbeat_every_s),
+            heartbeat_stale_s = COALESCE(?5, heartbeat_stale_s),
+            timer_tolerance_s = COALESCE(?6, timer_tolerance_s)
+         WHERE run_id = ?1",
+        params![
+            id,
+            t.check_every_s,
+            t.stall_rounds,
+            t.heartbeat_every_s,
+            t.heartbeat_stale_s,
+            t.timer_tolerance_s
         ],
     )?;
     util::event(

@@ -11,6 +11,11 @@ answer across projects.
 
 ## Consequences
 
+- `rusqlite` (bundled) is the 1 SQLite crate, an exception to NFR-05 and
+  NFR-09, which banned it. The operator approved SQLite for this ledger on
+  2026-10-27; it is synchronous, so NFR-09's intent (no async runtime)
+  holds.
+
 - The file must be on a local disk; SQLite locking is unsafe on a network
   share.
 - The JSON session ledger stays for its current readers (sessions, cost,

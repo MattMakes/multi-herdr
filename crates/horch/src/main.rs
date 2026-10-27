@@ -303,6 +303,10 @@ enum Command {
         /// Spawn even when every usage pool that could serve it is exhausted.
         #[arg(long)]
         force: bool,
+        /// The dead worker (task ledger id) this one replaces: its claim
+        /// takes that worker's task and gets its transcript and worktree.
+        #[arg(long, value_name = "WORKER")]
+        replaces: Option<String>,
     },
 
     /// Where the tokens went: every pane on this machine, from the telemetry
@@ -744,7 +748,12 @@ fn dispatch(
             );
         }
         Command::Done { summary, unlanded } => {
-            cmd::messaging::done(ctx, &joined(&summary), unlanded.as_deref())?
+            if cmd::taskledger::is_ledger_worker(ctx) {
+                let store = horch_core::taskledger::open(ctx)?;
+                cmd::taskledger::done_cmd(ctx, store, &joined(&summary), unlanded.as_deref())?
+            } else {
+                cmd::messaging::done(ctx, &joined(&summary), unlanded.as_deref())?
+            }
         }
         Command::Worktree { command } => match command {
             WorktreeSubcommand::New { name } => cmd::worktree::new(ctx, &name)?,
@@ -770,6 +779,7 @@ fn dispatch(
             untiled,
             exact,
             force,
+            replaces,
         } => {
             let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())?;
             let pane = cmd::spawn::spawn(
@@ -786,6 +796,7 @@ fn dispatch(
                     tiling: TilingMode::from_no_tile(untiled),
                     exact,
                     force,
+                    replaces,
                 },
             )?;
             output::println(&pane);

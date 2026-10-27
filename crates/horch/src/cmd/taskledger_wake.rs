@@ -123,3 +123,27 @@ pub fn nudge_startable(ctx: &RuntimeContext, store: &Store, run: &Run) {
         ),
     );
 }
+
+/// After a reap: tell the orchestrator which persona to spawn, and how.
+pub fn after_reap(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    report: &horch_core::taskledger::stop::ReapReport,
+) {
+    let who = report
+        .stop
+        .role
+        .as_deref()
+        .unwrap_or(&report.stop.worker_id);
+    let persona = report.persona.as_deref().unwrap_or("the same persona");
+    wake(
+        ctx,
+        store,
+        run,
+        &format!(
+            "NOTE: {who} was reaped and its task is queued again. Spawn: horch spawn {persona} --replaces {}",
+            report.stop.worker_id
+        ),
+    );
+}

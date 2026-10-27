@@ -61,6 +61,8 @@ pub struct SpawnArgs {
     pub exact: bool,
     /// Never refuse over usage limits.
     pub force: bool,
+    /// The dead task-ledger worker this spawn replaces.
+    pub replaces: Option<String>,
 }
 
 /// Split `horch spawn`'s positional arguments into a teammate and a task.
@@ -92,7 +94,13 @@ pub fn resolve_positionals(
 
 /// Spawn a worker pane, returning its pane id so callers can chain splits.
 /// A refusal is a [`SpawnError::Refused`]; its REFUSED line is on stdout.
-pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
+pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
+    // The task ledger: when this project has an active run, the worker gets
+    // a row, and a spawn with no task tells it to claim one.
+    let ledger = super::taskledger_spawn::prepare(ctx, &args)?;
+    if ledger.is_some() && args.task.trim().is_empty() && args.resume.is_none() {
+        args.task = super::taskledger_spawn::CLAIM_TASK.to_string();
+    }
     let mut req = SpawnRequest::worker(
         args.teammate
             .as_deref()
@@ -214,10 +222,28 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         workspace: &herdr,
         mailbox: &mailbox,
         tile: &tile,
+        ledger_worker: ledger.as_ref().map(|l| l.worker_id.as_str()),
     };
     let started = SystemTime::now();
-    let out = service.spawn(plan, args.role.as_deref())?;
+    let out = match service.spawn(plan, args.role.as_deref()) {
+        Ok(out) => out,
+        Err(e) => {
+            if let Some(l) = &ledger {
+                l.launch_failed(&format!("{e:#}"));
+            }
+            return Err(e.into());
+        }
+    };
     let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
+    if let Some(l) = &ledger {
+        l.spawned(
+            role.as_str(),
+            pane,
+            launch.teammate.agent.as_str(),
+            &launch.model,
+            out.plan.execution.effort.as_deref(),
+        );
+    }
     // The record has its pane, and the spawn has run the ledger recovery.
     fleet_facts(ctx, &store, &project, &out.plan.execution);
     // A pane line starts with `exec`, so a worker that fails at startup
@@ -249,6 +275,9 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
                 // this close is for a pane that did neither.
                 let _ = herdr.pane_close(pane);
                 mailbox.unregister(role.as_str());
+                if let Some(l) = &ledger {
+                    l.launch_failed(&error);
+                }
                 bail!("worker {role} (pane {pane}) failed to start: {error}");
             }
             WorkerStart::Waiting => eprintln!(

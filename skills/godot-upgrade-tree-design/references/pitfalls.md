@@ -28,7 +28,7 @@ This file belongs to the `godot-upgrade-tree-design` skill. The terms (diag tree
 | A skill wall was really a resource wall | The bot always ran out of fuel or health first | Read the failure reasons before you exclude a boss or plan a coach |
 | All panel playthroughs failed | zsh did not split a list variable | Use an array or an explicit list; delete the failed rows |
 | A wait loop ended at once | Its process pattern matched nothing | Test the pattern with `pgrep -fl` first |
-| A `pkill -f` killed your own monitor | The pattern matched the monitor command | A narrow pattern such as `tune[.]py --configs` |
+| A pattern kill stopped your own monitor | The pattern matched the monitor command | Never stop a process by a name or a pattern. Save `pid=$!` when you start the job and stop only that PID |
 | A task notice came, but the play still ran | The notice came from a short wrapper | Wait for the watcher of the real job |
 | Progress showed 0 for a long time | The log printed in job order | Count finished result files |
 | The notes held wrong claims | Claims written from memory | Recompute each claim from the result data before you report |

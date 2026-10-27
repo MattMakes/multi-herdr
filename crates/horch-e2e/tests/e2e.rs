@@ -1218,13 +1218,17 @@ fn bal_05_resume_uses_via() {
     assert!(h
         .run(&[
             "ledger",
+            "legacy",
             "set-session",
             &id,
             "01d0e61c-d73e-74a3-837c-b5aade8b1c38"
         ])
         .status
         .success());
-    assert!(h.run(&["ledger", "done", &id, "finished"]).status.success());
+    assert!(h
+        .run(&["ledger", "legacy", "done", &id, "finished"])
+        .status
+        .success());
     // Now claude is fine again: a resume still runs on codex, ungated.
     h.set("HORCH_QUOTA_FILE", quota_fixture("all-ok"));
     let out = h.run(&[

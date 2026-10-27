@@ -11,13 +11,16 @@ use std::process::ExitCode;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use horch_core::runtime::RuntimeContext;
+use horch_core::taskledger::finish;
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::map;
+use horch_core::taskledger::model::StopRequester;
 use horch_core::taskledger::model::{
     Actor, EventKind, ProgressSource, StepName, TaskKind, WorkerKind, WorktreeMode,
 };
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::status;
+use horch_core::taskledger::stop;
 use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{self, Store};
@@ -85,10 +88,57 @@ pub enum LedgerCommand {
         #[arg(long)]
         json: bool,
     },
+    /// (worker) Your worktree, on a branch from the run branch.
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommand,
+    },
+    /// (worker) Run the finish steps in order: check, code-sweep,
+    /// complexity-sweep, recheck, land, pr, cleanup. Stops at the first
+    /// that does not pass; fix it and run finish again.
+    Finish {
+        #[arg(long)]
+        json: bool,
+    },
+    /// The finish steps of a task (default: this worker's) with evidence.
+    Steps {
+        task: Option<String>,
+        #[command(flatten)]
+        run: RunArg,
+        #[arg(long)]
+        json: bool,
+    },
+    /// (worker) Finish the task. Refuses until every finish step passed.
+    Done {
+        summary: Vec<String>,
+        /// Last resort: the work cannot land. Keeps the branch and worktree.
+        #[arg(long, value_name = "REASON")]
+        unlanded: Option<String>,
+    },
     /// (worker) Record a milestone; it counts as progress.
     Progress { text: String },
     /// (worker) Record a note; it counts as progress.
     Note { text: String },
+    /// Stop 1 worker by the PIDs and pane its row records. Takes only a
+    /// worker id or role: never a PID, a name or a pattern.
+    Stop {
+        worker: String,
+        reason: String,
+        #[command(flatten)]
+        run: RunArg,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reap a dead worker: stop it by its recorded PIDs, end its attempt
+    /// incomplete, and queue its task again, first in line.
+    Reap {
+        worker: String,
+        reason: String,
+        #[command(flatten)]
+        run: RunArg,
+        #[arg(long)]
+        json: bool,
+    },
     /// Worker rows (plumbing for tests and debugging).
     #[command(hide = true)]
     Worker {
@@ -102,6 +152,12 @@ pub enum LedgerCommand {
     },
     /// Print the task ledger's file path.
     Path,
+}
+
+#[derive(Subcommand)]
+pub enum WorktreeCommand {
+    /// Create this worker's worktree (or get the task's existing one back).
+    New { name: String },
 }
 
 #[derive(Subcommand)]
@@ -123,6 +179,21 @@ pub enum RunCommand {
         /// The finish steps, comma-separated; default all 7.
         #[arg(long, value_delimiter = ',')]
         steps: Vec<String>,
+        /// Seconds between watchdog checks (default 600).
+        #[arg(long, hide = true)]
+        check_every: Option<i64>,
+        /// Checks in a row without progress before a worker is dead (default 3).
+        #[arg(long, hide = true)]
+        stall_rounds: Option<i64>,
+        /// Seconds between supervisor checkins (default 30).
+        #[arg(long, hide = true)]
+        heartbeat_every: Option<i64>,
+        /// Seconds after which a checkin is missed (default 120).
+        #[arg(long, hide = true)]
+        heartbeat_stale: Option<i64>,
+        /// Slack, in seconds, when a screen timer is compared with the clock.
+        #[arg(long, hide = true)]
+        timer_tolerance: Option<i64>,
     },
     /// Every run of this project.
     List {
@@ -324,9 +395,151 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         LedgerCommand::Claim { json: as_json } => claim(ctx, &mut store, as_json),
+        LedgerCommand::Worktree {
+            command: WorktreeCommand::New { name },
+        } => {
+            let wid = worker_id(ctx)?;
+            let git = Git::new(&ctx.bins.harness.git);
+            let wt = finish::worktree_new(&mut store, &git, &wid, &name)?;
+            output::println(&format!("path: {}", wt.path));
+            output::println(&format!("branch: {}", wt.branch));
+            output::println(&format!(
+                "Work and commit in {}. When the work is complete, run: horch ledger finish",
+                wt.path
+            ));
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Finish { json: as_json } => {
+            let wid = worker_id(ctx)?;
+            let tools = tools(ctx);
+            let report = finish::finish(&mut store, &tools, &wid)?;
+            if !report.queued_reviews.is_empty() {
+                let w = workers::get(store.conn(), &wid)?;
+                if let Some(r) = &w.run_id {
+                    let run = runs::get(store.conn(), r)?;
+                    super::taskledger_wake::nudge_startable(ctx, &store, &run);
+                }
+            }
+            if as_json {
+                json(&report)?;
+            } else {
+                for st in &report.steps {
+                    output::println(&format!(
+                        "{:<2} {:<17} {:<15} {}",
+                        st.seq,
+                        st.name,
+                        st.status,
+                        st.verdict.as_deref().unwrap_or("")
+                    ));
+                }
+                output::println(&report.message);
+            }
+            Ok(if report.complete {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(EXIT_NOT_COMPLETE)
+            })
+        }
+        LedgerCommand::Steps {
+            task,
+            run,
+            json: as_json,
+        } => {
+            let (task_id, worker) = match task {
+                Some(key) => {
+                    let r = resolve_run(ctx, &store, &run)?;
+                    let t = tasks::resolve(store.conn(), &r.run_id, &key)?;
+                    let w = t
+                        .current_worker_id
+                        .clone()
+                        .or_else(|| {
+                            workers::attempts_at(store.conn(), &t.task_id)
+                                .ok()
+                                .and_then(|a| a.last().map(|w| w.worker_id.clone()))
+                        })
+                        .context("no attempt at this task yet")?;
+                    (t.task_id, w)
+                }
+                None => {
+                    let wid = worker_id(ctx)?;
+                    let w = workers::get(store.conn(), &wid)?;
+                    (w.task_id.context("this worker holds no task")?, wid)
+                }
+            };
+            let steps = finish::steps_of(store.conn(), &task_id, &worker)?;
+            if as_json {
+                json(&steps)?;
+            } else {
+                for st in steps {
+                    output::println(&format!(
+                        "{:<2} {:<17} {:<15} {:<16} {}",
+                        st.seq,
+                        st.name,
+                        st.status,
+                        st.verdict.as_deref().unwrap_or("-"),
+                        st.evidence_path.as_deref().unwrap_or("")
+                    ));
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Done { summary, unlanded } => {
+            done_cmd(ctx, store, &summary.join(" "), unlanded.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
         LedgerCommand::Progress { text } => progress(ctx, &mut store, EventKind::Progress, &text),
         LedgerCommand::Note { text } => progress(ctx, &mut store, EventKind::Note, &text),
         LedgerCommand::Worker { command } => worker_cmd(ctx, &mut store, command),
+        LedgerCommand::Stop {
+            worker,
+            reason,
+            run,
+            json: as_json,
+        } => {
+            let r = resolve_run(ctx, &store, &run)?;
+            let w = workers::resolve(store.conn(), &r.run_id, &worker)?;
+            let herdr = HerdrPanes::new(ctx);
+            let report = stop::stop_worker(
+                &mut store,
+                &w.worker_id,
+                StopRequester::Orchestrator,
+                &reason,
+                &herdr,
+                &stop::Os,
+                &stop::StopOptions {
+                    grace: stop_grace(),
+                    ..Default::default()
+                },
+            )?;
+            print_stop(&report, as_json)?;
+            if let Some(t) = &report.requeued {
+                super::taskledger_wake::nudge_startable(ctx, &store, &r);
+                eprintln!("horch ledger: {t} is queued again.");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Reap {
+            worker,
+            reason,
+            run,
+            json: as_json,
+        } => {
+            let r = resolve_run(ctx, &store, &run)?;
+            let w = workers::resolve(store.conn(), &r.run_id, &worker)?;
+            let herdr = HerdrPanes::new(ctx);
+            let report = stop::reap(
+                &mut store,
+                &w.worker_id,
+                StopRequester::Orchestrator,
+                &reason,
+                &herdr,
+                &stop::Os,
+                stop_grace(),
+            )?;
+            print_stop(&report.stop, as_json)?;
+            super::taskledger_wake::after_reap(ctx, &store, &r, &report);
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -472,6 +685,58 @@ fn show(
     Ok(ExitCode::SUCCESS)
 }
 
+/// The grace between TERM and KILL: 10 s, or `HORCH_STOP_GRACE_MS`.
+pub fn stop_grace() -> std::time::Duration {
+    std::env::var("HORCH_STOP_GRACE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(std::time::Duration::from_secs(10))
+}
+
+/// herdr as the stop's pane closer: 1 pane, by its id.
+pub struct HerdrPanes(horch_core::workspace::herdr::Herdr);
+
+impl HerdrPanes {
+    pub fn new(ctx: &RuntimeContext) -> HerdrPanes {
+        HerdrPanes(horch_core::workspace::herdr::Herdr::with_bin(
+            &ctx.bins.harness.herdr,
+        ))
+    }
+}
+
+impl stop::Panes for HerdrPanes {
+    fn exists(&self, pane: &str) -> bool {
+        self.0.pane_exists(pane)
+    }
+    fn close(&self, pane: &str) -> Result<()> {
+        self.0.pane_close(pane)
+    }
+}
+
+fn print_stop(r: &stop::StopReport, as_json: bool) -> Result<()> {
+    if as_json {
+        return json(r);
+    }
+    output::println(&format!(
+        "Stopped {}:",
+        r.role.as_deref().unwrap_or(&r.worker_id)
+    ));
+    for s in &r.steps {
+        output::println(&format!(
+            "  {:<10} {:<8} {:<5} {}",
+            s.target,
+            s.pid
+                .map(|p| p.to_string())
+                .or(s.pane_id.clone())
+                .unwrap_or_else(|| "-".into()),
+            s.signal.as_deref().unwrap_or("-"),
+            s.result
+        ));
+    }
+    Ok(())
+}
+
 fn opt(v: Option<i64>) -> String {
     v.map(|v| v.to_string()).unwrap_or_else(|| "-".into())
 }
@@ -505,6 +770,11 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
             base,
             remote,
             steps,
+            check_every,
+            stall_rounds,
+            heartbeat_every,
+            heartbeat_stale,
+            timer_tolerance,
         } => {
             let steps: Vec<StepName> = steps
                 .iter()
@@ -546,8 +816,38 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                 run_branch: is_repo.then_some(run_branch),
                 remote,
                 finish_steps: steps,
+                thresholds: runs::Thresholds {
+                    check_every_s: check_every,
+                    stall_rounds,
+                    heartbeat_every_s: heartbeat_every,
+                    heartbeat_stale_s: heartbeat_stale,
+                    timer_tolerance_s: timer_tolerance,
+                },
             };
-            let r = store.immediate(|tx| runs::create(tx, &root, &new))?;
+            let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
+            let r = store.immediate(|tx| {
+                let r = runs::create(tx, &root, &new)?;
+                // The orchestrator's own row: the pane it runs in. It is
+                // never watched for progress (section 9).
+                let id = workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: r.run_id.clone(),
+                        kind: Some(WorkerKind::Orchestrator),
+                        persona: "orchestrator".into(),
+                        role: Some("orchestrator".into()),
+                        workspace_id: new.workspace_id.clone(),
+                        pane_id: pane.clone(),
+                        ..Default::default()
+                    },
+                )?;
+                tx.execute(
+                    "UPDATE workers SET status = 'working', started_at = spawned_at WHERE worker_id = ?1",
+                    [&id],
+                )?;
+                runs::set_orchestrator(tx, &r.run_id, &id)?;
+                runs::get(tx, &r.run_id)
+            })?;
             output::println(&format!(
                 "Run {} created ({}). Run branch: {}. Finish steps: {}.",
                 r.slug,
@@ -681,6 +981,132 @@ fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitC
         ClaimOutcome::Claimed(c) => output::print(&render_claim(&c)),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The finish steps' tools: git, gh, node, the sweep skills.
+pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
+    let env = |k: &str| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    let roots = [
+        ctx.paths.home.join(".claude").join("plugins"),
+        ctx.paths.data_root.clone(),
+    ];
+    let code_sweep_dir = env("HORCH_CODE_SWEEP_DIR").or_else(|| {
+        find_dir(&roots, |p| {
+            p.file_name().is_some_and(|n| n == "code-sweep") && p.join("reviewers").is_dir()
+        })
+    });
+    let complexity_cli = env("HORCH_COMPLEXITY_CLI").or_else(|| {
+        find_dir(&roots, |p| {
+            p.file_name().is_some_and(|n| n == "complexity-sweep")
+                && p.join("code/cli/dist/index.js").is_file()
+        })
+        .map(|d| d.join("code/cli/dist/index.js"))
+    });
+    finish::Tools {
+        git: Git::new(&ctx.bins.harness.git),
+        gh: env("HORCH_GH_BIN").unwrap_or_else(|| PathBuf::from("gh")),
+        node: env("HORCH_NODE_BIN").unwrap_or_else(|| PathBuf::from("node")),
+        complexity_cli,
+        code_sweep_dir,
+        evidence_root: ctx
+            .paths
+            .ledger_db
+            .parent()
+            .map(|p| p.join("evidence"))
+            .unwrap_or_else(|| PathBuf::from("evidence")),
+        shell: PathBuf::from("sh"),
+    }
+}
+
+/// The first directory under `roots` (at most 10 levels down) that `want`
+/// accepts.
+fn find_dir(roots: &[PathBuf], want: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    fn walk(dir: &Path, depth: usize, want: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+        if depth > 10 {
+            return None;
+        }
+        let rd = std::fs::read_dir(dir).ok()?;
+        let mut subs: Vec<PathBuf> = rd
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.path())
+            .filter(|p| {
+                !p.file_name()
+                    .is_some_and(|n| n == "node_modules" || n == ".git")
+            })
+            .collect();
+        subs.sort();
+        for p in &subs {
+            if want(p) {
+                return Some(p.clone());
+            }
+        }
+        subs.into_iter().find_map(|p| walk(&p, depth + 1, want))
+    }
+    roots.iter().find_map(|r| walk(r, 0, &want))
+}
+
+/// `horch ledger done` (and `horch done` from a ledger worker): record the
+/// finish, wake whoever must act on it, then report and close the pane.
+pub fn done_cmd(
+    ctx: &RuntimeContext,
+    mut store: Store,
+    summary: &str,
+    unlanded: Option<&str>,
+) -> Result<()> {
+    let wid = worker_id(ctx)?;
+    let c = finish::complete(&mut store, &wid, summary, unlanded)?;
+    let run = runs::get(store.conn(), &c.run_id)?;
+    if !c.already {
+        if let Some((parent, role)) = &c.reviews_in_for {
+            if let Some(role) = role {
+                let line = format!(
+                    "[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish."
+                );
+                if let Err(e) = super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
+                    eprintln!("horch ledger: could not tell {role}: {e:#}");
+                }
+            }
+        }
+        super::taskledger_wake::after_done(ctx, &store, &run);
+    }
+    output::println(&format!(
+        "{} {}.",
+        c.task,
+        if c.unlanded {
+            "parked as UNLANDED"
+        } else {
+            "done"
+        }
+    ));
+    drop(store);
+    // The report to the orchestrator and the pane close: `horch done`'s
+    // machinery, when this runs in a worker pane.
+    let in_pane = ctx.herdr.pane.is_some()
+        && ctx
+            .worker
+            .as_ref()
+            .is_some_and(|w| w.record_id.is_some() && w.role.is_some());
+    if in_pane {
+        super::messaging::done(ctx, summary, unlanded)?;
+    }
+    Ok(())
+}
+
+/// Whether this process is a task-ledger worker that holds (or held) a task:
+/// `horch done` then goes through [`done_cmd`].
+pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
+    let Some(wid) = worker_id_opt(ctx) else {
+        return false;
+    };
+    taskledger::open(ctx)
+        .ok()
+        .and_then(|s| workers::find(s.conn(), &wid).ok().flatten())
+        .is_some_and(|w| w.task_id.is_some())
 }
 
 /// The text a worker reads after a claim.

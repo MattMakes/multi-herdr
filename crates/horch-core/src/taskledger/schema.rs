@@ -228,6 +228,7 @@ CREATE TABLE task_steps (
     evidence_path TEXT,
     verdict TEXT,
     review_task_ids TEXT,
+    judged_rev TEXT,
     started_at TEXT,
     ended_at TEXT,
     note TEXT,

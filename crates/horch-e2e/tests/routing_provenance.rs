@@ -98,13 +98,17 @@ fn arc_14_provenance_on_spawn_substitute_resume() {
     assert!(h
         .run(&[
             "ledger",
+            "legacy",
             "set-session",
             &id,
             "01d0e61c-d73e-74a3-837c-b5aade8b1c38"
         ])
         .status
         .success());
-    assert!(h.run(&["ledger", "done", &id, "finished"]).status.success());
+    assert!(h
+        .run(&["ledger", "legacy", "done", &id, "finished"])
+        .status
+        .success());
     h.set("HORCH_QUOTA_FILE", quota_fixture("all-ok"));
     spawn(&h, &["--resume", &id, "more", "--role", "researcher-9"]);
     let resumed = record(&h, "researcher-9");
