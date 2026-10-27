@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.2.1 - 2026-10-27
+
 - The agent CLI update step waits out a 7-day release cooldown: a CLI updates
   only once its newest release is at least 7 days old, and the package
   managers its updater calls (npm, pnpm, yarn, uv, pip) get the same cutoff.
