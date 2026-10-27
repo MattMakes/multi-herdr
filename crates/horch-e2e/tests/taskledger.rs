@@ -29,6 +29,7 @@ fn world(name: &str) -> Harness {
     let db = h.root.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
+    h.set("HORCH_NO_WATCHDOG", "1");
     h
 }
 
@@ -860,4 +861,160 @@ fn stopping_one_of_three_workers_leaves_the_others_running() {
     for id in &ids[1..] {
         ok(&h, &["ledger", "stop", id, "test teardown"]);
     }
+}
+
+#[test]
+fn three_checks_without_progress_reap_the_worker_by_its_pid() {
+    let mut h = fleet("tl-watch", "exec,stay");
+    h.set("HORCH_STOP_GRACE_MS", "2000");
+    ok(
+        &h,
+        &["ledger", "run", "new", "eps", "--heartbeat-every", "1"],
+    );
+    let p = ticket(&h, "t0", "# T0\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "codex-terra",
+        ],
+    );
+    let o = h.run(&[
+        "spawn",
+        "codex-terra",
+        "--from-pane",
+        "w1:p1",
+        "--no-tile",
+        "--force",
+    ]);
+    assert!(o.status.success(), "{}", text(&o));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    let id = st["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["worker"]["kind"] == "worker")
+        .unwrap()["worker"]["worker_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let w = wait_for("the agent PID", || {
+        let w = worker_json(&h, &id);
+        w["agent_started"].is_i64().then_some(w)
+    });
+    let (pid, started) = (
+        w["agent_pid"].as_i64().unwrap() as u32,
+        w["agent_started"].as_i64().unwrap() as u64,
+    );
+    ok_as(&h, &id, &["ledger", "claim"]);
+    // The fake agent runs, but shows no timer and writes nothing more.
+    let mut verdicts = Vec::new();
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(1100));
+        let v = json_of(&h, &["ledger", "watch", "--once", "--force", "--json"]);
+        verdicts.push(v[0]["verdict"].as_str().unwrap().to_string());
+    }
+    // The first check may still see the session's transcript appear.
+    assert_eq!(verdicts.last().unwrap(), "dead", "{verdicts:?}");
+    assert!(
+        !horch_core::procid::alive(pid, Some(started)),
+        "the agent was stopped"
+    );
+    let shown = json_of(&h, &["ledger", "show", &id, "--json"]);
+    assert_eq!(shown["worker"]["status"], "incomplete");
+    let stops = shown["stops"].as_array().unwrap();
+    assert!(
+        stops.iter().all(|s| s["requested_by"] == "watchdog"),
+        "{shown}"
+    );
+    assert!(stops
+        .iter()
+        .any(|s| s["target"] == "agent" && s["pid"].as_i64() == Some(pid as i64)));
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["status"], "queued");
+    // The replacement claims the same task and gets the old transcript path.
+    let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
+    assert_eq!(plan[0]["replaces"][0], id.as_str(), "{plan}");
+    let r = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "codex-terra",
+            "--replaces",
+            &id,
+        ],
+    );
+    let rid = r.trim().to_string();
+    let claim: Value =
+        serde_json::from_str(&ok_as(&h, &rid, &["ledger", "claim", "--json"])).unwrap();
+    assert_eq!(claim["task"]["seq"], 1);
+    assert_eq!(claim["prior"][0]["worker_id"], id.as_str());
+    assert_eq!(claim["attempt"], 2);
+}
+
+#[test]
+fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
+    let mut h = world("tl-wdog");
+    h.unset("HORCH_NO_WATCHDOG");
+    ok(&h, &["ledger", "run", "new", "zeta", "--check-every", "1"]);
+    let p = ticket(&h, "t0", "# T0\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    // The first horch command after a task runs starts the missing watchdog.
+    let mut cmd = h.horch(&["ledger", "claim"]);
+    cmd.env("HORCH_WORKER_ID", &w);
+    let o = cmd.output().unwrap();
+    assert!(
+        text(&o).contains("the watchdog of run zeta was not running; started it"),
+        "{}",
+        text(&o)
+    );
+    let run = || json_of(&h, &["ledger", "status", "--json"])["run"].clone();
+    let r = wait_for("the watchdog's checkin", || {
+        let r = run();
+        r["watchdog_pid"].is_i64().then_some(r)
+    });
+    let pid = r["watchdog_pid"].as_i64().unwrap() as u32;
+    let started = r["watchdog_started"].as_i64().unwrap() as u64;
+    // A second watchdog for the run is refused.
+    let o = h.run(&["ledger", "watch"]);
+    assert!(
+        !o.status.success() && text(&o).contains("already runs"),
+        "{}",
+        text(&o)
+    );
+    // Stop it by its recorded PID; the next command restarts it.
+    assert!(horch_core::procid::signal_same(pid, started, 9));
+    wait_for("the watchdog to end", || {
+        (!horch_core::procid::alive(pid, Some(started))).then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(2100));
+    let o = h.run(&["ledger", "status"]);
+    assert!(text(&o).contains("started it"), "{}", text(&o));
+    let r2 = wait_for("the new watchdog", || {
+        let r = run();
+        (r["watchdog_pid"].as_i64() != Some(pid as i64) && r["watchdog_pid"].is_i64()).then_some(r)
+    });
+    let (p2, s2) = (
+        r2["watchdog_pid"].as_i64().unwrap() as u32,
+        r2["watchdog_started"].as_i64().unwrap() as u64,
+    );
+    assert!(horch_core::procid::signal_same(p2, s2, 9), "teardown");
 }

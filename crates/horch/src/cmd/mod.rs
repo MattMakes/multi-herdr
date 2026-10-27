@@ -22,6 +22,7 @@ pub mod spawn;
 pub mod taskledger;
 pub mod taskledger_spawn;
 pub mod taskledger_wake;
+pub mod taskledger_watch;
 pub mod teammatescmd;
 pub mod telemetry;
 pub mod tilecmd;

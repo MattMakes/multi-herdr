@@ -17,6 +17,7 @@ pub mod supervisor;
 pub mod tasks;
 pub mod timer;
 pub mod util;
+pub mod watchdog;
 pub mod workers;
 
 pub use store::Store;

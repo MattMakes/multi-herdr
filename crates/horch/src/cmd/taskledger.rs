@@ -139,6 +139,19 @@ pub enum LedgerCommand {
         #[arg(long)]
         json: bool,
     },
+    /// The watchdog: check every working worker every check interval, reap
+    /// the dead, wake the orchestrator on a verdict change. `--once` runs 1
+    /// pass (every worker, due or not, with `--force`).
+    Watch {
+        #[command(flatten)]
+        run: RunArg,
+        #[arg(long)]
+        once: bool,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Worker rows (plumbing for tests and debugging).
     #[command(hide = true)]
     Worker {
@@ -490,6 +503,15 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         LedgerCommand::Progress { text } => progress(ctx, &mut store, EventKind::Progress, &text),
         LedgerCommand::Note { text } => progress(ctx, &mut store, EventKind::Note, &text),
         LedgerCommand::Worker { command } => worker_cmd(ctx, &mut store, command),
+        LedgerCommand::Watch {
+            run,
+            once,
+            force,
+            json: as_json,
+        } => {
+            let r = resolve_run(ctx, &store, &run)?;
+            super::taskledger_watch::watch(ctx, store, &r, once, force, as_json)
+        }
         LedgerCommand::Stop {
             worker,
             reason,

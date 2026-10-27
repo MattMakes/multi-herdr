@@ -667,9 +667,20 @@ fn run() -> Result<std::process::ExitCode> {
             | Command::Balance { .. }
             | Command::Inbox
     );
+    let watched = !matches!(
+        &cli.command,
+        Command::Worker { .. }
+            | Command::Ledger {
+                command: cmd::taskledger::LedgerCommand::Watch { .. }
+            }
+    );
     let result = dispatch(&mut ctx, cli.command);
     if remind {
         cmd::messaging::remind_pending(&ctx);
+    }
+    // No dead watchdog hides dead workers: any horch command restarts it.
+    if watched {
+        cmd::taskledger_watch::ensure(&ctx);
     }
     result
 }
