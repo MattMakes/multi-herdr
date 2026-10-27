@@ -12,9 +12,16 @@
 //!
 //! The start time is opaque: compare it for equality, never for order across
 //! platforms. macOS gives microseconds since the epoch (`proc_pidinfo`),
-//! Linux gives clock ticks since boot (`/proc/<pid>/stat` field 22). Other
-//! platforms, Windows among them, have no start time here: [`start_time`] is
-//! `None` and [`alive`] falls back to "the pid exists".
+//! Linux gives clock ticks since boot (`/proc/<pid>/stat` field 22),
+//! Windows gives the creation time from `GetProcessTimes` (a `FILETIME`:
+//! 100 ns ticks since 1601-01-01). Other platforms have no start time here:
+//! [`start_time`] is `None` and [`alive`] falls back to "the pid exists".
+//!
+//! [`stop_same`] stops a process only while it has its recorded start time.
+//! On Unix it sends `SIGTERM` or `SIGKILL` through `signal_same`. Windows
+//! has no polite stop for an arbitrary process, so [`Stop::Term`] and
+//! [`Stop::Kill`] both call `TerminateProcess` with exit code 1, on the same
+//! handle the start time was read through.
 
 /// The start time of `pid`, or `None` when it does not run or this platform
 /// cannot read it.
@@ -119,6 +126,56 @@ pub fn signal_same(pid: u32, started: u64, signal: i32) -> bool {
     }
     // SAFETY: plain syscall on a pid checked to be positive.
     is_same(pid, started) && unsafe { libc::kill(os, signal) } == 0
+}
+
+/// How hard a stop is. On Unix [`Stop::Term`] is `SIGTERM`, which the
+/// process can catch to clean up, and [`Stop::Kill`] is `SIGKILL`. Windows
+/// has no polite stop for an arbitrary process: both are `TerminateProcess`
+/// with exit code 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Term,
+    Kill,
+}
+
+/// Stop `pid` only while it runs with start time `started`, and say whether
+/// a stop was sent.
+///
+/// On Unix this is `signal_same` with `SIGTERM` or `SIGKILL`. On Windows
+/// one handle is opened with `PROCESS_TERMINATE` and
+/// `PROCESS_QUERY_LIMITED_INFORMATION`, the creation time is read through
+/// that handle, and only on a match is `TerminateProcess` called on the same
+/// handle. The handle names the process that had the pid when it was opened
+/// and keeps that pid from being given out, so a reused pid can never be hit
+/// between the check and the stop. Both kinds of stop end the process at
+/// once there, with exit code 1. Other platforms send nothing.
+pub fn stop_same(pid: u32, started: u64, how: Stop) -> bool {
+    #[cfg(unix)]
+    {
+        let signal = match how {
+            Stop::Term => libc::SIGTERM,
+            Stop::Kill => libc::SIGKILL,
+        };
+        signal_same(pid, started, signal)
+    }
+    #[cfg(windows)]
+    {
+        let _ = how;
+        raw(pid).is_some_and(|os| imp::terminate_same(os, started))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (pid, started, how);
+        false
+    }
+}
+
+/// Whether `pid` names a process that has not exited, for
+/// [`crate::fsx::pid_alive`] on Windows. A process this user may not open
+/// exists all the same.
+#[cfg(windows)]
+pub(crate) fn windows_running(pid: i32) -> bool {
+    imp::running(pid)
 }
 
 #[cfg(target_os = "macos")]
@@ -271,7 +328,122 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+#[cfg(windows)]
+mod imp {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, FILETIME, HANDLE, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, TerminateProcess, PROCESS_ACCESS_RIGHTS,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+
+    /// `FILETIME` ticks (100 ns) from 1601-01-01 to 1970-01-01.
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    const TICKS_PER_SEC: u64 = 10_000_000;
+
+    /// A process handle, closed on drop.
+    struct Process(HANDLE);
+
+    impl Process {
+        fn open(pid: i32, access: PROCESS_ACCESS_RIGHTS) -> Option<Self> {
+            // SAFETY: plain call; a failure answers a null handle.
+            let h = unsafe { OpenProcess(access, 0, pid as u32) };
+            (!h.is_null()).then_some(Self(h))
+        }
+
+        /// Whether the process has not exited. A handle can outlive its
+        /// process (a parent holds one until it drops the child), so an
+        /// open handle alone does not prove it runs. A process that exited
+        /// with code 259 (`STILL_ACTIVE`) itself reads as running.
+        fn running(&self) -> bool {
+            let mut code = 0u32;
+            // SAFETY: the handle is open and `code` is a valid u32 to fill.
+            (unsafe { GetExitCodeProcess(self.0, &mut code) }) != 0 && code == STILL_ACTIVE as u32
+        }
+
+        /// The creation time as a u64 of `FILETIME` ticks, while the process
+        /// has not exited.
+        fn start_time(&self) -> Option<u64> {
+            if !self.running() {
+                return None;
+            }
+            let zero = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+            // SAFETY: the handle is open and every pointer is a FILETIME.
+            let ok = unsafe {
+                GetProcessTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user)
+            };
+            (ok != 0).then(|| {
+                (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
+            })
+        }
+    }
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            // SAFETY: the handle is open and closed only here.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    pub(super) fn start_time(pid: i32) -> Option<u64> {
+        Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?.start_time()
+    }
+
+    /// The start time is 100 ns ticks since 1601-01-01.
+    pub(super) fn started_at(pid: i32) -> Option<std::time::SystemTime> {
+        Some(filetime_to_system(start_time(pid)?))
+    }
+
+    pub(super) fn filetime_to_system(ticks: u64) -> std::time::SystemTime {
+        use std::time::{Duration, UNIX_EPOCH};
+        let span = |t: u64| Duration::new(t / TICKS_PER_SEC, ((t % TICKS_PER_SEC) * 100) as u32);
+        match ticks.checked_sub(UNIX_EPOCH_TICKS) {
+            Some(after) => UNIX_EPOCH + span(after),
+            None => UNIX_EPOCH - span(UNIX_EPOCH_TICKS - ticks),
+        }
+    }
+
+    pub(super) fn started_by(pid: i32, t: std::time::SystemTime) -> Option<bool> {
+        Some(started_at(pid)? <= t)
+    }
+
+    pub(super) fn group_members(_pgid: i32) -> Vec<u32> {
+        Vec::new()
+    }
+
+    /// Whether `pid` names a process that has not exited. One this user
+    /// may not open exists all the same, as `EPERM` does on Unix.
+    pub(super) fn running(pid: i32) -> bool {
+        match Process::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
+            Some(p) => p.running(),
+            // SAFETY: plain call reading this thread's last error.
+            None => (unsafe { GetLastError() }) == ERROR_ACCESS_DENIED,
+        }
+    }
+
+    /// Open one handle that may both read the creation time and terminate,
+    /// and terminate through it only when the creation time is `started`.
+    pub(super) fn terminate_same(pid: i32, started: u64) -> bool {
+        let access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION;
+        let Some(p) = Process::open(pid, access) else {
+            return false;
+        };
+        // SAFETY: the handle is open with PROCESS_TERMINATE.
+        p.start_time() == Some(started) && unsafe { TerminateProcess(p.0, 1) } != 0
+    }
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "android",
+    windows
+)))]
 mod imp {
     pub(super) fn start_time(_pid: i32) -> Option<u64> {
         None
@@ -426,6 +598,100 @@ mod tests {
         child.wait().unwrap();
         assert!(!started_by(pid, after), "gone");
         assert!(!started_by(0, after));
+    }
+
+    /// `stop_same` stops only the process with the recorded start time.
+    #[cfg(unix)]
+    #[test]
+    fn stop_same_stops_only_the_recorded_process() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let started = start_time(pid).unwrap();
+        assert!(!stop_same(pid, started + 1, Stop::Term), "a reused pid");
+        assert!(!stop_same(pid, started + 1, Stop::Kill), "a reused pid");
+        assert_eq!(child.try_wait().unwrap(), None, "the child still runs");
+        assert!(!stop_same(0, started, Stop::Kill));
+        assert!(!stop_same(u32::MAX, started, Stop::Kill));
+        assert!(stop_same(pid, started, Stop::Term));
+        let status = child.wait().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+        assert!(!stop_same(pid, started, Stop::Kill), "gone");
+    }
+
+    #[cfg(windows)]
+    fn long_child() -> std::process::Child {
+        std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// A child has a start time while it runs and none once it has ended,
+    /// even while this process still holds a handle to it.
+    #[cfg(windows)]
+    #[test]
+    fn windows_child_identity_ends_with_it() {
+        use std::time::{Duration, SystemTime};
+        let before = SystemTime::now();
+        let mut child = long_child();
+        let pid = child.id();
+        let started = start_time(pid).expect("the child runs");
+        assert_eq!(start_time(pid), Some(started), "stable across reads");
+        assert!(is_same(pid, started));
+        assert!(!is_same(pid, started + 1));
+        assert!(alive(pid, Some(started)));
+        assert!(!alive(pid, Some(started + 1)), "a reused pid is dead");
+        let at = started_at(pid).expect("the child runs");
+        assert!(at + Duration::from_secs(1) >= before, "{at:?} {before:?}");
+        assert!(at <= SystemTime::now() + Duration::from_secs(1));
+        assert!(started_by(pid, SystemTime::now() + Duration::from_secs(1)));
+        assert!(group_members(pid).is_empty());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(start_time(pid), None, "ended");
+        assert!(!is_same(pid, started));
+        assert!(!alive(pid, Some(started)));
+        assert!(!crate::fsx::pid_alive(pid));
+        assert!(!stop_same(pid, started, Stop::Kill), "gone");
+    }
+
+    /// `stop_same` terminates only the process with the recorded start time.
+    #[cfg(windows)]
+    #[test]
+    fn windows_stop_same_stops_only_the_recorded_process() {
+        let mut child = long_child();
+        let pid = child.id();
+        let started = start_time(pid).expect("the child runs");
+        assert!(crate::fsx::pid_alive(pid));
+        assert!(!stop_same(pid, started + 1, Stop::Term), "a reused pid");
+        assert!(!stop_same(pid, started + 1, Stop::Kill), "a reused pid");
+        assert_eq!(child.try_wait().unwrap(), None, "the child still runs");
+        assert!(!stop_same(0, started, Stop::Kill));
+        assert!(!stop_same(u32::MAX, started, Stop::Kill));
+        assert!(stop_same(pid, started, Stop::Term));
+        assert_eq!(child.wait().unwrap().code(), Some(1), "terminated");
+        assert!(!stop_same(pid, started, Stop::Kill), "gone");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn filetime_counts_from_1601() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(imp::filetime_to_system(116_444_736_000_000_000), UNIX_EPOCH);
+        assert_eq!(
+            imp::filetime_to_system(116_444_736_000_000_000 + 10_000_015),
+            UNIX_EPOCH + Duration::new(1, 1_500)
+        );
+        assert_eq!(
+            imp::filetime_to_system(116_444_736_000_000_000 - 10_000_000),
+            UNIX_EPOCH - Duration::from_secs(1)
+        );
     }
 
     #[cfg(target_os = "linux")]

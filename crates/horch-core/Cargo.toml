@@ -22,6 +22,11 @@ rusqlite.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Process identity on Windows: the creation time, and a terminate on the
+# handle that read it (`procid`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 # `build.rs` digests the bundled skill catalog once at build time, so no
 # process digests the 8 MB of compiled-in files at run time.
 [build-dependencies]
