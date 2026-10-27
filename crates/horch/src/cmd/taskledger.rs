@@ -205,6 +205,13 @@ pub enum LedgerCommand {
         #[command(subcommand)]
         command: LegacyCommand,
     },
+    /// The run's history: every event, oldest first (wakes included).
+    Events {
+        #[command(flatten)]
+        run: RunArg,
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the task ledger's file path.
     Path,
 }
@@ -545,6 +552,21 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         LedgerCommand::Progress { text } => progress(ctx, &mut store, EventKind::Progress, &text),
         LedgerCommand::Note { text } => progress(ctx, &mut store, EventKind::Note, &text),
         LedgerCommand::Worker { command } => worker_cmd(ctx, &mut store, command),
+        LedgerCommand::Events { run, json: as_json } => {
+            let r = resolve_run(ctx, &store, &run)?;
+            let ev = status::events(store.conn(), "run_id", &r.run_id)?;
+            if as_json {
+                json(&ev)?;
+            } else {
+                for e in ev {
+                    output::println(&format!(
+                        "{} {:<12} {:<13} {}",
+                        e.at, e.actor, e.kind, e.text
+                    ));
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         LedgerCommand::Import {
             dry_run,
             json: as_json,

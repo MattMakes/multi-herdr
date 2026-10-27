@@ -300,6 +300,7 @@ pub struct EventLine {
 pub fn events(conn: &Connection, column: &str, id: &str) -> Result<Vec<EventLine>> {
     let column = match column {
         "task_id" => "task_id",
+        "run_id" => "run_id",
         _ => "worker_id",
     };
     let mut stmt = conn.prepare(&format!(

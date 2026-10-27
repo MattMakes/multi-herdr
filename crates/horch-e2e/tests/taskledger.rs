@@ -1194,3 +1194,238 @@ fn assign_refuses_in_a_ledger_run() {
         text(&o)
     );
 }
+
+/// Review every queued reviewer task of a finish round with `findings`.
+fn review_all(h: &Harness, n: usize, findings: &str) {
+    for _ in 0..n {
+        let rw = worker_new(h, "codex-reviewer");
+        let c: Value =
+            serde_json::from_str(&ok_as(h, &rw, &["ledger", "claim", "--json"])).unwrap();
+        assert_eq!(c["outcome"], "claimed", "{c}");
+        let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
+        std::fs::write(&f, findings).unwrap();
+        ok_as(h, &rw, &["ledger", "done", "reviewed"]);
+    }
+}
+
+/// A claimed task's worktree, with 1 committed file, finished through every
+/// step. Returns the finish report.
+fn work_and_finish(h: &Harness, w: &str, name: &str) -> Value {
+    let wt = ok_as(h, w, &["ledger", "worktree", "new", name]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(
+        path.join(format!("{name}.rs")),
+        format!("fn {name}() {{}}\n"),
+    )
+    .unwrap();
+    git_in(h, &path, &["add", "."]);
+    git_in(
+        h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", name],
+    );
+    let (code, r) = finish_json(h, w);
+    assert_eq!(code, Some(1), "round 1 waits for reviews: {r}");
+    let n = r["queued_reviews"].as_array().unwrap().len();
+    review_all(
+        h,
+        n,
+        "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
+    );
+    let (code, r) = finish_json(h, w);
+    assert_eq!(code, Some(0), "{r}");
+    assert!(!path.exists(), "{name}: the worktree is gone");
+    r
+}
+
+#[test]
+fn the_whole_flow_on_the_fake_herdr() {
+    let mut h = finish_world("tl-e2e");
+    let quota = fixtures().join("quota/all-ok.json");
+    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    h.set("HORCH_FAKE_SCENARIO", "exec,stay");
+    h.set("HORCH_STOP_GRACE_MS", "2000");
+    let mut create = std::process::Command::new(h.bin.join("herdr"));
+    h.seal(&mut create);
+    assert!(create
+        .args(["workspace", "create", "--label", "e2e"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    // 1. The orchestrator queues 3 tasks: A and B parallel, C blocked by A.
+    ok(
+        &h,
+        &["ledger", "run", "new", "alpha", "--heartbeat-every", "1"],
+    );
+    for (n, t, persona) in [
+        ("a", "A", "opus"),
+        ("b", "B", "codex-terra"),
+        ("c", "C", "opus"),
+    ] {
+        ticket(
+            &h,
+            n,
+            &format!("# {t}\n\n**Persona:** primary `{persona}`\n"),
+        );
+    }
+    std::fs::write(
+        h.project.join("tickets/MAP.md"),
+        "| # | Title | Blocked by |\n|---|---|---|\n| [1](a.md) | A | - |\n| [2](b.md) | B | - |\n| [3](c.md) | C | 1 |\n",
+    )
+    .unwrap();
+    ok(&h, &["ledger", "add-map", "tickets/MAP.md"]);
+
+    // 2. plan-workers says 2: 1 opus (A) and 1 codex-terra (B).
+    let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
+    let spawn: i64 = plan
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["spawn"].as_i64().unwrap())
+        .sum();
+    assert_eq!(spawn, 2, "{plan}");
+    let wa = worker_new(&h, "opus");
+    assert!(ok_as(&h, &wa, &["ledger", "claim"]).contains("Claimed T-1"));
+    // B runs in a real pane: its agent is the fake codex that stays.
+    let o = h.run(&[
+        "spawn",
+        "codex-terra",
+        "--from-pane",
+        "w1:p1",
+        "--no-tile",
+        "--force",
+    ]);
+    assert!(o.status.success(), "{}", text(&o));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    let wb = st["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["worker"]["persona"] == "codex-terra")
+        .unwrap()["worker"]["worker_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = wait_for("B's agent PID", || {
+        let w = worker_json(&h, &wb);
+        w["agent_started"].is_i64().then_some(w)
+    });
+    let (bpid, bstart) = (
+        b["agent_pid"].as_i64().unwrap() as u32,
+        b["agent_started"].as_i64().unwrap() as u64,
+    );
+    assert!(ok_as(&h, &wb, &["ledger", "claim"]).contains("Claimed T-2"));
+
+    // 3. B stops making progress: its fake agent runs, but shows no timer
+    // and writes nothing.
+    // 4. A lands: every step passes, its folder is gone, and C can start.
+    work_and_finish(&h, &wa, "alpha_a");
+    ok_as(&h, &wa, &["ledger", "done", "A done."]);
+    let events = json_of(&h, &["ledger", "events", "--json"]);
+    assert!(
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "woke"
+                && e["text"].as_str().unwrap().contains("Tasks can start: T-3")),
+        "the orchestrator is woken for C: {events}"
+    );
+    // 5. After 3 checks the watchdog reaps B's worker by its PIDs; A's and
+    // C's workers are untouched.
+    let mut last = String::new();
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(1100));
+        let v = json_of(&h, &["ledger", "watch", "--once", "--force", "--json"]);
+        last = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["worker_id"] == wb.as_str())
+            .map(|c| c["verdict"].as_str().unwrap().to_string())
+            .unwrap_or(last);
+    }
+    assert_eq!(last, "dead");
+    assert!(!horch_core::procid::alive(bpid, Some(bstart)));
+    // C is claimed now (a worker row without a live process would be judged
+    // dead by the checks above).
+    let wc = worker_new(&h, "opus");
+    assert!(ok_as(&h, &wc, &["ledger", "claim"]).contains("Claimed T-3"));
+    let rb = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "codex-terra",
+            "--replaces",
+            &wb,
+        ],
+    )
+    .trim()
+    .to_string();
+    let claim: Value =
+        serde_json::from_str(&ok_as(&h, &rb, &["ledger", "claim", "--json"])).unwrap();
+    assert_eq!(claim["task"]["seq"], 2);
+    assert_eq!(claim["prior"][0]["worker_id"], wb.as_str());
+    assert!(
+        claim["prior"][0]["transcript_path"].is_string(),
+        "the old transcript path is handed over: {claim}"
+    );
+
+    // 6. A spare worker finds no task and names its PID.
+    let spare = worker_new(&h, "opus");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "pid",
+            &spare,
+            "--supervisor",
+            &std::process::id().to_string(),
+        ],
+    );
+    let none = ok_as(&h, &spare, &["ledger", "claim"]);
+    assert!(
+        none.contains(&format!(
+            "No task for opus. I exit. PID {}.",
+            std::process::id()
+        )),
+        "{none}"
+    );
+
+    // 7. B (replaced) and C finish; everything is done and cleaned.
+    work_and_finish(&h, &rb, "alpha_b");
+    ok_as(&h, &rb, &["ledger", "done", "B done by the replacement."]);
+    work_and_finish(&h, &wc, "alpha_c");
+    ok_as(&h, &wc, &["ledger", "done", "C done."]);
+    let o = h.run(&["ledger", "status"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    assert!(
+        st["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["status"] == "cleaned"),
+        "{st}"
+    );
+    let body = std::fs::read_to_string(h.root.join("gh/body")).unwrap();
+    for t in ["T-1", "T-2", "T-3"] {
+        assert!(
+            body.contains(&format!("<!-- horch:task {t} -->")),
+            "{t} in the PR: {body}"
+        );
+    }
+    // Every recorded stop names an exact PID or pane.
+    let shown = json_of(&h, &["ledger", "show", &wb, "--json"]);
+    for s in shown["stops"].as_array().unwrap() {
+        assert!(s["pid"].is_i64() || s["pane_id"].is_string(), "{s}");
+    }
+    assert!(events.as_array().is_some());
+}
