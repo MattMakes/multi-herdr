@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+- The task ledger: `horch ledger` is now a queue the orchestrator and its
+  workers share (`~/.horch/ledger.sqlite3`). The orchestrator queues tickets
+  (`run new`, `add-map`, `plan-workers`) and spawns workers with no task;
+  each worker claims its own, and cannot finish until `horch ledger finish`
+  has run the review and complexity sweeps, landed the work on the run
+  branch, updated the run's pull request and safely removed its worktree.
+- Workers check in every 30 s, and a watchdog replaces a worker that stops
+  making progress. A worker is stopped only by the process IDs the ledger
+  recorded (`horch ledger stop`); nothing stops processes by name any more.
+- `horch ledger import` brings in the old session ledgers, and
+  `horch ledger unfinished` lists past work that never landed.
+- The old ledger plumbing moved to `horch ledger legacy`. In a ledger run,
+  `horch assign` refuses: queue work with `horch ledger add` instead.
+
 ## v0.2.1 - 2026-10-27
 
 - The agent CLI update step waits out a 7-day release cooldown: a CLI updates
