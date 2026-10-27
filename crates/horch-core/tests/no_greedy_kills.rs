@@ -17,6 +17,21 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "forbids the pattern kill",
     ),
     (
+        "teammates/_base/fleet-worker.md",
+        "Never run pkill or killall.",
+        "forbids the pattern kill",
+    ),
+    (
+        "teammates/_base/fleet-orchestrator.md",
+        "Never run pkill, killall",
+        "forbids the pattern kill",
+    ),
+    (
+        "crates/horch-core/tests/golden_prompts.rs",
+        "Never run pkill",
+        "pins the briefing lines that forbid the pattern kill",
+    ),
+    (
         "crates/horch-core/tests/no_greedy_kills.rs",
         "",
         "this test names the patterns it bans",

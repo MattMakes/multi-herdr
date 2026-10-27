@@ -196,6 +196,28 @@ Without `agy` the probe fails, the pool is `unknown`, and those teammates run
 on their fallback. `horch cost` cannot price an Antigravity session: `agy`
 writes no local usage file.
 
+## 2b. The task ledger
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator
+    participant L as Task ledger (~/.horch/ledger.sqlite3)
+    participant W as Worker (horch worker + agent)
+    participant D as Watchdog
+
+    O->>L: ledger run new / add-map
+    O->>L: ledger plan-workers
+    O->>W: horch spawn <persona> (no task)
+    W->>L: supervisor + agent PIDs, checkin every 30 s
+    W->>L: ledger claim (BEGIN IMMEDIATE)
+    W->>L: ledger progress
+    D->>L: every 10 min: 1 check row per working worker
+    D->>W: dead: ledger stop by recorded PID, requeue
+    W->>L: ledger finish: check, code-sweep, complexity-sweep, recheck, land, pr, cleanup
+    W->>L: ledger done
+    L-->>O: wake: tasks can start / all done
+```
+
 ## 3. A dataset round
 
 ```mermaid

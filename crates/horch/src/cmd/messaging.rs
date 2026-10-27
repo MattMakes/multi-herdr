@@ -324,6 +324,13 @@ fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
 /// ([`Ledger::live_for_role`], review finding 13): 2 fleets of 1 project can
 /// both have the role.
 pub fn assign(ctx: &RuntimeContext, role: &str, task: &str) -> Result<()> {
+    if let Some(run) = super::taskledger::active_run_slug(ctx) {
+        bail!(
+            "run {run} uses the task ledger: assignment is queue plus claim. Queue the work with \
+             horch ledger add --file <ticket> --primary <persona>, then spawn the workers \
+             horch ledger plan-workers names"
+        );
+    }
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch assign must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;

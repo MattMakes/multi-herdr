@@ -789,6 +789,20 @@ The ledger lives at `$HORCH_STATE_DIR`, else
 format is unchanged from the previous bash implementation, so existing ledgers
 stay readable and their sessions stay resumable.
 
+## The task ledger
+
+`horch ledger` is the queue an orchestrator and its workers share: 1 SQLite
+file per machine at `~/.horch/ledger.sqlite3` (`HORCH_LEDGER_DB` overrides
+it). The orchestrator queues tickets (`horch ledger run new`, `add-map`,
+`plan-workers`) and spawns workers with no task; each worker claims its own
+(`horch ledger claim`), reports (`progress`), and cannot finish until
+`horch ledger finish` has run every step: check, code-sweep,
+complexity-sweep, recheck, land on the run branch, the run's PR, and a
+cleanup that refuses to lose work. Workers check in every 30 s, a watchdog
+reaps a worker that stops making progress, and workers are stopped only by
+the PIDs the ledger recorded (`horch ledger stop`). See
+[docs/specs/task-ledger.md](docs/specs/task-ledger.md).
+
 ## Skills, domain teams and the contributor handbook
 
 The roster has domain teams for Unreal Engine (Git LFS, UE 5.8), Swift and

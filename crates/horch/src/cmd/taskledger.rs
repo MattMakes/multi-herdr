@@ -1281,6 +1281,21 @@ pub fn done_cmd(
     Ok(())
 }
 
+/// The slug of this project's active task-ledger run, if it has one. Never
+/// creates the ledger file.
+pub fn active_run_slug(ctx: &RuntimeContext) -> Option<String> {
+    if !ctx.paths.ledger_db.exists() {
+        return None;
+    }
+    let store = taskledger::open(ctx).ok()?;
+    let root = project_root(ctx).ok()?;
+    runs::of_project(store.conn(), &root)
+        .ok()?
+        .into_iter()
+        .find(|r| r.status == "active")
+        .map(|r| r.slug)
+}
+
 /// Whether this process is a task-ledger worker that holds (or held) a task:
 /// `horch done` then goes through [`done_cmd`].
 pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {

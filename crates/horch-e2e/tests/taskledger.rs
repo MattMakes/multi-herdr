@@ -1180,3 +1180,17 @@ fn the_import_finds_work_that_never_landed() {
     assert!(c.contains("Reopened from unfinished past work"), "{c}");
     assert!(c.contains(&format!("Worktree: {}", un.display())), "{c}");
 }
+
+#[test]
+fn assign_refuses_in_a_ledger_run() {
+    let mut h = fleet("tl-assign", "default");
+    h.set("HORCH_NO_WATCHDOG", "1");
+    ok(&h, &["ledger", "run", "new", "eta"]);
+    let o = h.run(&["assign", "opus-1", "do it"]);
+    assert!(!o.status.success());
+    assert!(
+        text(&o).contains("assignment is queue plus claim"),
+        "{}",
+        text(&o)
+    );
+}
