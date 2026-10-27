@@ -486,6 +486,16 @@ fn orphans(conn: &Connection, git: &Git, report: &mut ImportReport) -> Result<()
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
+    // Compare canonical paths: git can report a worktree through a different
+    // spelling than its claim (macOS `/tmp` is `/private/tmp`).
+    let canon = |p: &str| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+    let known: std::collections::HashSet<PathBuf> = {
+        let mut stmt = conn.prepare("SELECT path FROM worktrees")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.iter().map(|p| canon(p)).collect()
+    };
     for (pid, root) in roots {
         let root = PathBuf::from(root);
         let Ok(out) = git.try_run(&root, &["worktree", "list", "--porcelain"]) else {
@@ -501,16 +511,12 @@ fn orphans(conn: &Connection, git: &Git, report: &mut ImportReport) -> Result<()
             if !p.contains("/.worktrees/") {
                 continue;
             }
-            let known: i64 =
-                conn.query_row("SELECT count(*) FROM worktrees WHERE path = ?1", [p], |r| {
-                    r.get(0)
-                })?;
             let reported: i64 = conn.query_row(
                 "SELECT count(*) FROM import_findings WHERE kind = 'worktree_orphan' AND detail LIKE ?1",
                 [format!("{p} %")],
                 |r| r.get(0),
             )?;
-            if known == 0 && reported == 0 {
+            if !known.contains(&canon(p)) && reported == 0 {
                 let bytes = dir_bytes(Path::new(p));
                 finding(
                     conn,

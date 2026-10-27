@@ -1005,9 +1005,12 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
     wait_for("the watchdog to end", || {
         (!horch_core::procid::alive(pid, Some(started))).then_some(())
     });
-    std::thread::sleep(Duration::from_millis(2100));
-    let o = h.run(&["ledger", "status"]);
-    assert!(text(&o).contains("started it"), "{}", text(&o));
+    // Checkin stamps are whole seconds, so the 2-interval staleness can take
+    // up to 3 s to show; poll instead of guessing a sleep.
+    wait_for("the restart", || {
+        let o = h.run(&["ledger", "status"]);
+        text(&o).contains("started it").then_some(())
+    });
     let r2 = wait_for("the new watchdog", || {
         let r = run();
         (r["watchdog_pid"].as_i64() != Some(pid as i64) && r["watchdog_pid"].is_i64()).then_some(r)
@@ -1069,7 +1072,13 @@ fn the_import_finds_work_that_never_landed() {
     );
     std::fs::write(h.state.join("old-project.json"), ledger).unwrap();
     std::fs::create_dir_all(h.state.join("worktrees")).unwrap();
+    // The claims spell each path through a symlink, as macOS spells `/tmp`
+    // for `/private/tmp`; git lists the real paths, and the import must still
+    // match them.
+    let link = h.root.join("proj-link");
+    std::os::unix::fs::symlink(&proj, &link).unwrap();
     let claim = |id: &str, path: &Path, branch: &str, state: &str, record: &str| {
+        let path = link.join(path.strip_prefix(&proj).unwrap());
         format!(
             r#"{{"id":"{id}","name":"{id}","role":"x","record_id":"{record}","path":"{}","branch":"{branch}","base":"main","base_commit":"0","created_at":"2026-10-01T00:00:00Z","state":"{state}","landed_commit":null,"reason":null}}"#,
             path.display()
@@ -1178,7 +1187,11 @@ fn the_import_finds_work_that_never_landed() {
     let w = worker_new(&h, "opus");
     let c = ok_as(&h, &w, &["ledger", "claim"]);
     assert!(c.contains("Reopened from unfinished past work"), "{c}");
-    assert!(c.contains(&format!("Worktree: {}", un.display())), "{c}");
+    let un_claimed = link.join(un.strip_prefix(&proj).unwrap());
+    assert!(
+        c.contains(&format!("Worktree: {}", un_claimed.display())),
+        "{c}"
+    );
 }
 
 #[test]
