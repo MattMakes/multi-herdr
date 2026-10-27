@@ -1268,14 +1268,11 @@ pub fn done_cmd(
     let c = finish::complete(&mut store, &wid, summary, unlanded)?;
     let run = runs::get(store.conn(), &c.run_id)?;
     if !c.already {
-        if let Some((parent, role)) = &c.reviews_in_for {
-            if let Some(role) = role {
-                let line = format!(
-                    "[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish."
-                );
-                if let Err(e) = super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
-                    eprintln!("horch ledger: could not tell {role}: {e:#}");
-                }
+        if let Some((parent, Some(role))) = &c.reviews_in_for {
+            let line =
+                format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
+            if let Err(e) = super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
+                eprintln!("horch ledger: could not tell {role}: {e:#}");
             }
         }
         super::taskledger_wake::after_done(ctx, &store, &run);

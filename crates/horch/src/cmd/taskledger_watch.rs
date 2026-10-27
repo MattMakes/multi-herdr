@@ -245,17 +245,6 @@ fn start_detached(ctx: &RuntimeContext, run: &Run, root: &Path) -> Result<u32> {
     if let Some(ws) = &run.workspace_id {
         cmd.env("HORCH_WORKSPACE_ID", ws);
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: setsid in the child before exec; it touches no memory.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
-    let child = cmd.spawn()?;
+    let child = horch_core::runtime::process::spawn_detached(&mut cmd)?;
     Ok(child.id())
 }

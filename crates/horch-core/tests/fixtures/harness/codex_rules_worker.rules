@@ -18,3 +18,8 @@ prefix_rule(
     decision = "allow",
     justification = "herdr-fleet: mark session done and close own pane",
 )
+prefix_rule(
+    pattern = ["horch", "ledger"],
+    decision = "allow",
+    justification = "herdr-fleet: claim, report and finish tasks through the task ledger",
+)

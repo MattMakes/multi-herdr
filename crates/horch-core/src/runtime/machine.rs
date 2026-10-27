@@ -140,6 +140,19 @@ struct Parts {
 
 #[cfg(unix)]
 mod sys {
+    /// The OS host name (gethostname), if it has one.
+    pub(super) fn host_name() -> Option<String> {
+        let mut buf = [0u8; 256];
+        // SAFETY: the buffer is 256 bytes and gethostname writes at most that.
+        let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+        if rc != 0 {
+            return None;
+        }
+        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+        let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
+        (!name.is_empty()).then_some(name)
+    }
+
     use std::ffi::CString;
     use std::io::Read;
     use std::os::unix::ffi::OsStrExt;
@@ -297,6 +310,11 @@ mod sys {
 
 #[cfg(not(unix))]
 mod sys {
+    /// No gethostname here: the caller reads `COMPUTERNAME`.
+    pub(super) fn host_name() -> Option<String> {
+        None
+    }
+
     use std::path::Path;
 
     use super::{GpuClass, Parts, ProbeBins};
@@ -344,6 +362,24 @@ fn parse_meminfo(text: &str, key: &str) -> Option<u64> {
         .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?;
     let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
     Some(kb * 1024)
+}
+
+/// This machine's name: `$HORCH_HOSTNAME` (tests), else the OS host name,
+/// else `COMPUTERNAME` or `HOSTNAME`, else `localhost`. The task ledger
+/// records it beside every PID: a PID names a process only on its host.
+pub fn host_name() -> String {
+    if let Some(h) = std::env::var_os("HORCH_HOSTNAME").filter(|v| !v.is_empty()) {
+        return h.to_string_lossy().into_owned();
+    }
+    if let Some(name) = sys::host_name() {
+        return name;
+    }
+    for key in ["COMPUTERNAME", "HOSTNAME"] {
+        if let Some(v) = std::env::var_os(key).filter(|v| !v.is_empty()) {
+            return v.to_string_lossy().into_owned();
+        }
+    }
+    "localhost".to_string()
 }
 
 #[cfg(test)]
@@ -481,32 +517,4 @@ mod tests {
         assert_eq!(snap.disk_free_bytes, Known::Unknown);
         assert_eq!(snap.arch, std::env::consts::ARCH);
     }
-}
-
-/// This machine's name: `$HORCH_HOSTNAME` (tests), else the OS host name,
-/// else `COMPUTERNAME` or `HOSTNAME`, else `localhost`. The task ledger
-/// records it beside every PID: a PID names a process only on its host.
-pub fn host_name() -> String {
-    if let Some(h) = std::env::var_os("HORCH_HOSTNAME").filter(|v| !v.is_empty()) {
-        return h.to_string_lossy().into_owned();
-    }
-    #[cfg(unix)]
-    {
-        let mut buf = [0u8; 256];
-        // SAFETY: the buffer is 256 bytes and gethostname writes at most that.
-        let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-        if rc == 0 {
-            let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-            let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
-            if !name.is_empty() {
-                return name;
-            }
-        }
-    }
-    for key in ["COMPUTERNAME", "HOSTNAME"] {
-        if let Some(v) = std::env::var_os(key).filter(|v| !v.is_empty()) {
-            return v.to_string_lossy().into_owned();
-        }
-    }
-    "localhost".to_string()
 }

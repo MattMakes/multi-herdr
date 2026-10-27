@@ -333,11 +333,11 @@ fn map_session(
     Ok(format!("workers:{worker_id}"))
 }
 
+/// (worker id, task id, run id, worker status) of an imported record.
+type MappedRecord = (String, String, String, Option<String>);
+
 /// The task and worker an imported record became, by its legacy record id.
-fn mapped_record(
-    conn: &Connection,
-    record_id: &str,
-) -> Result<Option<(String, String, String, Option<String>)>> {
+fn mapped_record(conn: &Connection, record_id: &str) -> Result<Option<MappedRecord>> {
     optional(conn.query_row(
         "SELECT w.worker_id, w.task_id, w.run_id, w.status FROM workers w WHERE w.legacy_record_id = ?1",
         [record_id],
