@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- The agent CLI update step waits out a 7-day release cooldown: a CLI updates
+  only once its newest release is at least 7 days old, and the package
+  managers its updater calls (npm, pnpm, yarn, uv, pip) get the same cutoff.
+  Antigravity and Prime, whose release dates horch cannot read, no longer
+  update automatically. `HORCH_UPDATE_COOLDOWN_DAYS` sets the cooldown.
+
 ## v0.2.0 - 2026-10-25
 
 - Codex workers and the Codex orchestrator start with `--approve-for-me`:

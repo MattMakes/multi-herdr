@@ -1,7 +1,12 @@
 //! `horch update`, and the update step of `horch fleet` and
-//! `horch orchestration` (ARC-32 to ARC-35).
+//! `horch orchestration` (ARC-32 to ARC-36).
+
+use std::io::{BufRead, BufReader, Read};
+use std::time::Duration;
 
 use anyhow::Result;
+use flate2::read::GzDecoder;
+use horch_core::harness::cooldown::{self, Packument};
 use horch_core::harness::update::{self, Outcome, UpdateResult};
 use horch_core::harness::HarnessKind;
 use horch_core::runtime::RuntimeContext;
@@ -17,6 +22,13 @@ pub const NAMES: [&str; 7] = [
     "herdr",
 ];
 
+/// The time limit of 1 registry lookup of the release cooldown.
+const REGISTRY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The most bytes horch reads of 1 registry document, before and after
+/// gzip. The largest today, `opencode-ai`'s, is 25 MB.
+const MAX_PACKUMENT_BYTES: u64 = 256 * 1024 * 1024;
+
 /// The warning `horch update herdr` prints before herdr runs.
 const HERDR_WARNING: &str = "horch: NOTE: herdr update can stop the herdr server. \
                              That closes every pane, a running fleet included.";
@@ -25,7 +37,7 @@ const HERDR_WARNING: &str = "horch: NOTE: herdr update can stop the herdr server
 /// updater failed or timed out.
 pub fn run_step(ctx: &RuntimeContext, harnesses: &[HarnessKind]) -> bool {
     println!("Updating agent CLIs (horch fleet --no-update skips this)...");
-    let results = update::update_all(ctx, harnesses);
+    let results = update::update_all(ctx, harnesses, &npm_packument);
     // A NOTE goes to stderr, as every other `horch: NOTE:` line does.
     for result in &results {
         if result.failed() {
@@ -80,12 +92,65 @@ pub fn update(ctx: &RuntimeContext, names: &[String]) -> Result<std::process::Ex
     })
 }
 
+/// `HORCH_NPM_REGISTRY` replaces [`cooldown::NPM_REGISTRY`]. It is for tests
+/// only, which point it at a local server.
+fn npm_registry() -> String {
+    std::env::var("HORCH_NPM_REGISTRY")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| cooldown::NPM_REGISTRY.to_string())
+}
+
+/// Read `package`'s registry document, which holds the publish time of each
+/// release. It asks for gzip: the largest document shrinks from 25 MB to 4.
+pub fn npm_packument(package: &str) -> Result<Packument, String> {
+    let url = cooldown::packument_url(&npm_registry(), package);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(REGISTRY_TIMEOUT))
+        .build()
+        .into();
+    let response = agent
+        .get(&url)
+        .header(
+            "User-Agent",
+            &format!("horch/{}", super::selfupdate::CURRENT),
+        )
+        .header("Accept", "application/json")
+        .header("Accept-Encoding", "gzip")
+        .call()
+        .map_err(|e| format!("cannot reach {url}: {e}"))?;
+    let raw = response.into_body().into_reader().take(MAX_PACKUMENT_BYTES);
+    read_packument(raw).map_err(|e| format!("reading {url}: {e}"))
+}
+
+/// Parse a registry document, gzipped or plain. The gzip magic bytes decide,
+/// not a header, as JSON never starts with them. The decoded stream stops at
+/// [`MAX_PACKUMENT_BYTES`] too.
+pub fn read_packument(raw: impl Read) -> std::io::Result<Packument> {
+    let mut raw = BufReader::new(raw);
+    let gzipped = raw.fill_buf()?.starts_with(&[0x1f, 0x8b]);
+    let doc = if gzipped {
+        let plain = GzDecoder::new(raw).take(MAX_PACKUMENT_BYTES);
+        serde_json::from_reader(BufReader::new(plain))
+    } else {
+        serde_json::from_reader(raw)
+    };
+    doc.map_err(std::io::Error::other)
+}
+
 /// The line that reports 1 result.
 pub fn line(result: &UpdateResult) -> String {
     let name = result.harness.as_str();
     match &result.outcome {
         Outcome::NotInstalled => format!("update: {name}: not installed (skipped)"),
         Outcome::Failed { reason } => format!("horch: NOTE: update: {name}: {reason}"),
+        Outcome::Cooldown { version, age, days } => format!(
+            "update: {name}: {version} is {}, under the {days}-day cooldown (skipped)",
+            cooldown::age_text(*age)
+        ),
+        Outcome::NoReleaseDates { days } => format!(
+            "update: {name}: no release dates to check against the {days}-day cooldown (skipped)"
+        ),
         Outcome::Updated { before, after } => {
             let shown = |v: &Option<String>| v.clone().unwrap_or_else(|| "(no version)".into());
             if before == after {
@@ -136,5 +201,43 @@ mod tests {
             )),
             "horch: NOTE: update: opencode: timed out after 5 s"
         );
+        assert_eq!(
+            line(&result(
+                HarnessKind::Claude,
+                Outcome::Cooldown {
+                    version: "2.1.311".into(),
+                    age: chrono::TimeDelta::hours(30),
+                    days: 7,
+                }
+            )),
+            "update: claude: 2.1.311 is 1 day old, under the 7-day cooldown (skipped)"
+        );
+        assert_eq!(
+            line(&result(
+                HarnessKind::Prime,
+                Outcome::NoReleaseDates { days: 7 }
+            )),
+            "update: prime: no release dates to check against the 7-day cooldown (skipped)"
+        );
+    }
+
+    #[test]
+    fn arc_36_a_registry_document_reads_plain_or_gzipped() {
+        use std::io::Write;
+        let json = br#"{"name":"x","dist-tags":{"latest":"1.0.0"},
+            "versions":{"1.0.0":{"big":"skipped"}},
+            "time":{"1.0.0":"2026-10-01T00:00:00.000Z"}}"#;
+        let plain = read_packument(&json[..]).unwrap();
+        assert_eq!(plain.dist_tags["latest"], "1.0.0");
+
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(json).unwrap();
+        let zipped = gz.finish().unwrap();
+        let doc = read_packument(&zipped[..]).unwrap();
+        assert_eq!(doc.dist_tags, plain.dist_tags);
+        assert_eq!(doc.time, plain.time);
+
+        assert!(read_packument(&b"<html>busy</html>"[..]).is_err());
+        assert!(read_packument(&b""[..]).is_err());
     }
 }

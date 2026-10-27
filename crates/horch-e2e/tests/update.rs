@@ -1,7 +1,11 @@
 //! The agent CLI update step (ARC-32 to ARC-35): `horch fleet` and
 //! `horch orchestration` run each CLI's own update command once before the
-//! first pane starts, and `horch update` does the same on demand.
+//! first pane starts, and `horch update` does the same on demand. Each
+//! updater runs only once its CLI's newest release is past the release
+//! cooldown (ARC-36), whose dates come from a local fake npm registry.
 
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
@@ -16,43 +20,128 @@ fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// Each agent fake as its log names it, its program name, and the update
-/// command horch must run, in the order of the result lines.
-const UPDATERS: [(&str, &str, &[&str]); 6] = [
+/// Each agent fake with an npm package as its log names it, its program
+/// name, and the update command horch must run, in the order of the result
+/// lines. The cooldown can pass for these, so their updaters run.
+const UPDATERS: [(&str, &str, &[&str]); 4] = [
     ("claude", "claude", &["update"]),
     ("codex", "codex", &["update"]),
     ("opencode", "opencode", &["upgrade"]),
-    ("antigravity", "agy", &["update"]),
     ("pi", "pi", &["update", "--self"]),
+];
+
+/// The agent fakes whose release dates horch cannot read: the cooldown
+/// holds them back, and their updaters never run while it is on.
+const UNDATED: [(&str, &str, &[&str]); 2] = [
+    ("antigravity", "agy", &["update"]),
     ("prime", "prime-agent", &["update"]),
 ];
 
-/// The result lines of a run where every fake updates and nothing changes.
+/// The npm package of each fake in [`UPDATERS`].
+const PACKAGES: [&str; 4] = [
+    "@anthropic-ai/claude-code",
+    "@openai/codex",
+    "opencode-ai",
+    "@earendil-works/pi-coding-agent",
+];
+
+/// A publish time far past any cooldown.
+const LONG_AGO: &str = "2020-01-01T00:00:00.000Z";
+
+/// The variables that carry the cooldown to the package managers.
+const COOLDOWN_ENV: [&str; 5] = [
+    "npm_config_before",
+    "PNPM_CONFIG_MINIMUM_RELEASE_AGE",
+    "YARN_NPM_MINIMAL_AGE_GATE",
+    "UV_EXCLUDE_NEWER",
+    "PIP_UPLOADED_PRIOR_TO",
+];
+
+/// The result lines of a run where every dated fake updates and nothing
+/// changes, and the undated ones are held back.
 const NO_CHANGE: [&str; 6] = [
     "update: claude: 2.1.284 (Claude Code) (no change)",
     "update: codex: codex-cli 0.158.0 (no change)",
     "update: opencode: 1.18.33 (no change)",
-    "update: antigravity: 1.1.3 (no change)",
+    "update: antigravity: no release dates to check against the 7-day cooldown (skipped)",
     "update: pi: 0.85.1 (no change)",
-    "update: prime: 0.10.0 (no change)",
+    "update: prime: no release dates to check against the 7-day cooldown (skipped)",
 ];
 
 const HEADER: &str = "Updating agent CLIs (horch fleet --no-update skips this)...";
 
 /// A harness that lets the fleet update, with every fake warmed: macOS scans
-/// each new executable at its first exec, and that takes 14 to 35 s.
+/// each new executable at its first exec, and that takes 14 to 35 s. Every
+/// npm package's newest release is long past the cooldown.
 fn harness(name: &str) -> Harness {
+    let releases: Vec<(&str, &str, &str)> =
+        PACKAGES.iter().map(|p| (*p, "9.9.9", LONG_AGO)).collect();
+    harness_with(name, &releases)
+}
+
+/// [`harness`], with a fake registry that offers `releases`: (package,
+/// newest version, its publish time).
+fn harness_with(name: &str, releases: &[(&str, &str, &str)]) -> Harness {
     let mut h = Harness::new(name);
     h.allow_updates();
+    h.set("HORCH_NPM_REGISTRY", serve_registry(releases));
     warm(&h);
     h
 }
 
 fn warm(h: &Harness) {
-    for (_, program, _) in UPDATERS {
+    for (_, program, _) in UPDATERS.iter().chain(&UNDATED) {
         run_fake(h, program, &["--version"]);
     }
     run_fake(h, "herdr", &["--version"]);
+}
+
+/// Serve 1 registry document per package of `releases` until the test ends,
+/// and 404 for any other. Returns the registry URL.
+fn serve_registry(releases: &[(&str, &str, &str)]) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let docs: Vec<(String, String)> = releases
+        .iter()
+        .map(|(package, version, published)| {
+            let doc = serde_json::json!({
+                "name": package,
+                "dist-tags": {"latest": version},
+                "versions": {*version: {"name": package, "version": version}},
+                "time": {"created": LONG_AGO, *version: published},
+            });
+            (format!("/{}", package.replace('/', "%2f")), doc.to_string())
+        })
+        .collect();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            let _ = reader.read_line(&mut request);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 2 {
+                line.clear();
+            }
+            let path = request.split_whitespace().nth(1).unwrap_or("");
+            let found = docs
+                .iter()
+                .find(|(p, _)| p.eq_ignore_ascii_case(path))
+                .map(|(_, doc)| doc.clone());
+            let (status, body) = match found {
+                Some(doc) => ("200 OK", doc),
+                None => ("404 Not Found", "{}".to_string()),
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+        }
+    });
+    base
 }
 
 fn run_fake(h: &Harness, program: &str, args: &[&str]) -> Output {
@@ -114,6 +203,9 @@ fn arc_32_fleet_updates_each_cli_once_before_the_orchestrator_pane() {
     for (fake, _, args) in UPDATERS {
         assert_eq!(update_calls(&h, fake, args).len(), 1, "{fake} {args:?}");
     }
+    for (fake, _, args) in UNDATED {
+        assert!(update_calls(&h, fake, args).is_empty(), "{fake} updated");
+    }
     // Every updater ran before herdr created the workspace of the
     // orchestrator pane.
     let calls = h.calls();
@@ -150,6 +242,9 @@ fn arc_32_orchestration_updates_before_its_panes() {
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
     for (fake, _, args) in UPDATERS {
         assert_eq!(update_calls(&h, fake, args).len(), 1, "{fake} {args:?}");
+    }
+    for (fake, _, args) in UNDATED {
+        assert!(update_calls(&h, fake, args).is_empty(), "{fake} updated");
     }
     assert_eq!(result_lines(&out), NO_CHANGE, "{}", stdout(&out));
     assert!(workspace_created(&h));
@@ -246,6 +341,137 @@ fn arc_33_no_updater_gets_anthropic_api_key() {
         );
         assert_eq!(calls[0]["violations"], serde_json::json!([]), "{fake}");
     }
+}
+
+/// A CLI whose newest release is younger than the cooldown keeps its build:
+/// its updater does not run, its line says why, and the step still passes.
+#[test]
+fn arc_36_a_release_younger_than_the_cooldown_is_held_back() {
+    let mut h = harness_with(
+        "arc36-young",
+        &[
+            (PACKAGES[0], "2.1.300", "2026-01-08T00:00:00.000Z"),
+            (PACKAGES[1], "9.9.9", LONG_AGO),
+            (PACKAGES[2], "1.19.0", "2026-01-03T00:00:00.000Z"),
+            (PACKAGES[3], "9.9.9", LONG_AGO),
+        ],
+    );
+    h.set("HORCH_NOW", "2026-01-10T00:00:00Z");
+    let out = h.run(&["update"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+
+    // 2 days old: held. Exactly 7 days old: past the cooldown.
+    assert!(update_calls(&h, "claude", &["update"]).is_empty());
+    assert_eq!(update_calls(&h, "opencode", &["upgrade"]).len(), 1);
+    assert_eq!(update_calls(&h, "codex", &["update"]).len(), 1);
+    let lines = result_lines(&out);
+    assert_eq!(
+        lines[0], "update: claude: 2.1.300 is 2 days old, under the 7-day cooldown (skipped)",
+        "{lines:?}"
+    );
+    assert_eq!(lines[1..], NO_CHANGE[1..], "{lines:?}");
+    assert!(notes(&out).is_empty(), "{}", stderr(&out));
+
+    // A longer cooldown holds opencode back too.
+    h.set("HORCH_UPDATE_COOLDOWN_DAYS", "30");
+    let out = h.run(&["update", "opencode"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        result_lines(&out),
+        ["update: opencode: 1.19.0 is 7 days old, under the 30-day cooldown (skipped)"],
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(update_calls(&h, "opencode", &["upgrade"]).len(), 1);
+}
+
+/// Every updater that runs gets the cooldown for the package managers it
+/// may call.
+#[test]
+fn arc_36_each_updater_gets_the_package_manager_cooldown() {
+    let h = harness("arc36-env");
+    let out = h.run(&["update"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    for (fake, _, args) in UPDATERS {
+        let calls = update_calls(&h, fake, args);
+        assert_eq!(calls.len(), 1, "{fake}");
+        let keys: Vec<String> = serde_json::from_value(calls[0]["env_keys"].clone()).unwrap();
+        for key in COOLDOWN_ENV {
+            assert!(
+                keys.iter().any(|k| k == key),
+                "{fake} lacks {key}: {keys:?}"
+            );
+        }
+    }
+}
+
+/// A registry horch cannot reach updates nothing: each dated CLI gets 1
+/// NOTE, `horch update` exits 1, and a fleet still starts.
+#[test]
+fn arc_36_an_unreachable_registry_updates_nothing() {
+    let mut h = harness("arc36-down");
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    h.set("HORCH_NPM_REGISTRY", url);
+
+    let out = h.run(&["update"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let notes = notes(&out);
+    assert_eq!(notes.len(), 4, "{notes:?}");
+    for ((fake, _, _), note) in UPDATERS.iter().zip(&notes) {
+        assert!(
+            note.starts_with(&format!(
+                "horch: NOTE: update: {fake}: release date check: cannot reach"
+            )),
+            "{note}"
+        );
+    }
+    for (fake, _, args) in UPDATERS.iter().chain(&UNDATED) {
+        assert!(update_calls(&h, fake, args).is_empty(), "{fake} updated");
+    }
+
+    let out = fleet(&h, &[]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    assert!(workspace_created(&h));
+}
+
+/// `HORCH_UPDATE_COOLDOWN_DAYS=0` turns the cooldown off: no registry
+/// lookup, every updater runs, and none gets the cooldown variables.
+#[test]
+fn arc_36_a_zero_day_cooldown_runs_every_updater() {
+    let mut h = harness("arc36-off");
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    h.set("HORCH_NPM_REGISTRY", url);
+    h.set("HORCH_UPDATE_COOLDOWN_DAYS", "0");
+
+    let out = h.run(&["update"]);
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
+    assert!(notes(&out).is_empty(), "{}", stderr(&out));
+    for (fake, _, args) in UPDATERS.iter().chain(&UNDATED) {
+        let calls = update_calls(&h, fake, args);
+        assert_eq!(calls.len(), 1, "{fake}");
+        let keys: Vec<String> = serde_json::from_value(calls[0]["env_keys"].clone()).unwrap();
+        assert!(
+            !keys.iter().any(|k| COOLDOWN_ENV.contains(&k.as_str())),
+            "{fake}: {keys:?}"
+        );
+    }
+    assert_eq!(
+        result_lines(&out),
+        [
+            NO_CHANGE[0],
+            NO_CHANGE[1],
+            NO_CHANGE[2],
+            "update: antigravity: 1.1.3 (no change)",
+            NO_CHANGE[4],
+            "update: prime: 0.10.0 (no change)",
+        ],
+        "{}",
+        stdout(&out)
+    );
 }
 
 #[test]
