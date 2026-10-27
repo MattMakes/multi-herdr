@@ -684,7 +684,7 @@ pub fn unfinished(conn: &Connection, root: Option<&Path>) -> Result<Vec<Unfinish
          ORDER BY r.started_at DESC, f.finding_id DESC",
     )?;
     let rows = stmt
-        .query_map([root.map(|r| r.to_string_lossy().into_owned())], |r| {
+        .query_map([root.map(runs::root_key)], |r| {
             Ok(Unfinished {
                 finding_id: r.get(0)?,
                 kind: r.get(1)?,

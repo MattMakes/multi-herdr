@@ -84,9 +84,18 @@ impl Run {
 const SELECT: &str =
     "SELECT r.*, p.root FROM runs r JOIN projects p ON p.project_id = r.project_id";
 
+/// The 1 spelling a project root is stored and matched by: canonical when the
+/// folder exists (macOS `/tmp` is `/private/tmp`), else as given.
+pub fn root_key(root: &Path) -> String {
+    std::fs::canonicalize(root)
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// The project row for `root`, created when missing.
 pub fn ensure_project(conn: &Connection, root: &Path) -> Result<String> {
-    let root = root.to_string_lossy().into_owned();
+    let root = root_key(root);
     if let Some(id) = optional(conn.query_row(
         "SELECT project_id FROM projects WHERE root = ?1",
         [&root],
@@ -220,7 +229,7 @@ pub fn of_project(conn: &Connection, root: &Path) -> Result<Vec<Run>> {
         "{SELECT} WHERE p.root = ?1 ORDER BY r.started_at DESC, r.rowid DESC"
     ))?;
     let rows = stmt
-        .query_map([root.to_string_lossy()], Run::from_row)?
+        .query_map([root_key(root)], Run::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }

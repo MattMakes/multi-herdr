@@ -1062,7 +1062,12 @@ fn the_import_finds_work_that_never_landed() {
     // Orphan: git knows it, no claim names it.
     mk("w-orphan");
     let landed = wtdir.join("w-landed"); // gone from disk
-    let p = proj.to_string_lossy();
+                                         // The old records spell each path through a symlink, as macOS spells `/tmp`
+                                         // for `/private/tmp`; git lists the real paths, and the import must still
+                                         // match them.
+    let link = h.root.join("proj-link");
+    std::os::unix::fs::symlink(&proj, &link).unwrap();
+    let p = link.to_string_lossy();
     let ledger = format!(
         r#"[
  {{"record_id":"r1","session_id":null,"agent":"claude","tier":"opus","model":"opus","role":"opus-1","status":"done","task":"Old done work","history":[{{"at":"2026-10-01T00:00:00Z","event":"done","text":"Did it"}}],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z","project":"{p}"}},
@@ -1072,11 +1077,6 @@ fn the_import_finds_work_that_never_landed() {
     );
     std::fs::write(h.state.join("old-project.json"), ledger).unwrap();
     std::fs::create_dir_all(h.state.join("worktrees")).unwrap();
-    // The claims spell each path through a symlink, as macOS spells `/tmp`
-    // for `/private/tmp`; git lists the real paths, and the import must still
-    // match them.
-    let link = h.root.join("proj-link");
-    std::os::unix::fs::symlink(&proj, &link).unwrap();
     let claim = |id: &str, path: &Path, branch: &str, state: &str, record: &str| {
         let path = link.join(path.strip_prefix(&proj).unwrap());
         format!(
