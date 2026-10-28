@@ -1245,13 +1245,40 @@ mod tests {
             .collect()
     }
 
-    /// A launch with a daemon listening on its socket and an agent dir.
+    /// A socket file at `path` that nobody listens on. A child process binds
+    /// it and ends, so the test process never holds the socket's fd: a
+    /// listener dropped here stays alive in any process that another test
+    /// forks before its `exec`, and a connect to it still succeeds.
     #[cfg(unix)]
-    fn running(state: &Path, bin: &Path) -> (Daemon, std::os::unix::net::UnixListener) {
-        let daemon = Daemon::install(state, bin).unwrap();
-        std::fs::create_dir_all(daemon.agent_dir().join("daemon-workers")).unwrap();
-        let listener = std::os::unix::net::UnixListener::bind(daemon.socket()).unwrap();
-        (daemon, listener)
+    fn stale_socket(path: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        // SAFETY: an all-zero `sockaddr_un` is a valid value.
+        let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        let bytes = path.as_os_str().as_bytes();
+        assert!(bytes.len() < addr.sun_path.len(), "{}", path.display());
+        for (dst, src) in addr.sun_path.iter_mut().zip(bytes) {
+            *dst = *src as libc::c_char;
+        }
+        // SAFETY: the child calls only `socket`, `bind` and `_exit`, which
+        // are async-signal-safe; the parent waits for it.
+        unsafe {
+            match libc::fork() {
+                -1 => panic!("fork: {}", std::io::Error::last_os_error()),
+                0 => {
+                    let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+                    let size = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+                    let bound = fd >= 0
+                        && libc::bind(fd, (&addr as *const libc::sockaddr_un).cast(), size) == 0;
+                    libc::_exit(if bound { 0 } else { 1 });
+                }
+                child => {
+                    let mut status = 0;
+                    assert_eq!(libc::waitpid(child, &mut status, 0), child);
+                    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+                }
+            }
+        }
     }
 
     /// `finish` stops the daemon with `prime-agent shutdown --force --json`
@@ -1391,11 +1418,11 @@ mod tests {
         let tmp = short_tempdir();
         let (bin, log) = fake_bin(tmp.path(), "{}", "[]");
         for stale_file in [true, false] {
-            let (daemon, listener) = running(&tmp.path().join("state"), &bin);
-            // Bound, then closed: the socket file stays, nobody listens.
-            drop(listener);
-            if !stale_file {
-                std::fs::remove_file(daemon.socket()).unwrap();
+            let daemon = Daemon::install(&tmp.path().join("state"), &bin).unwrap();
+            std::fs::create_dir_all(daemon.agent_dir().join("daemon-workers")).unwrap();
+            // A socket file nobody listens on, or no file.
+            if stale_file {
+                stale_socket(daemon.socket());
             }
             assert_eq!(daemon.stop(), None);
             assert!(std::fs::symlink_metadata(daemon.socket()).is_err());
