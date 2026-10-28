@@ -741,9 +741,14 @@ Codex write mode (`auto`, `acceptEdits`) launches in a per-launch permissions
 profile, `fleet_write`, selected with `-c default_permissions="fleet_write"`,
 plus `-a never` and `--search`:
 
-- The folder the pane starts in is writable throughout, including `.git`,
-  `.codex`, `.agents` and `.aws`, so a Codex worker can commit and make
-  worktrees.
+- The folder the pane starts in is writable, `.agents` too, but `.git`,
+  `.codex` and `.aws` stay read-only. So a Codex worker runs no git write and
+  cannot run `horch worktree new` or `horch worktree land`. It commits only
+  with `horch ledger commit` in a claimed ledger task that has a worktree,
+  and `horch ledger finish` lands that work. It cannot rebase: on a land
+  conflict it sends `BLOCKED:`. Route other commit and worktree work to a
+  Claude worker. `horch ledger commit` needs git 2.41 or later, and
+  `horch doctor` warns when it is missing.
 - Everything outside it is read-only, `/tmp` and the system temp dir too. The
   one extra writable folder is horch's state dir, where `horch note`,
   `horch done` and `horch tell` write, and where the pane's own `TMPDIR`

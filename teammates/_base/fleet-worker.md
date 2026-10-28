@@ -101,9 +101,9 @@ work. These commands are on your PATH:
 
 == Worktrees ==
 - Work in the shared checkout unless your plan tells you to use a worktree.
-- To make a worktree, run: horch worktree new <name>. Work in the path that
-  it prints. Do not run git worktree add. Do not use a worktree tool of
-  your harness.
+- To make a worktree (not a Codex worker), run: horch worktree new <name>.
+  Work in the path that it prints. Do not run git worktree add. Do not use
+  a worktree tool of your harness.
 - Commit your work in the worktree. Commit exact files, not directories.
 - A Codex worker commits only in a claimed ledger task with a worktree:
   horch ledger commit -m "<message>" -- <files>
@@ -114,7 +114,7 @@ work. These commands are on your PATH:
   sandbox refuses git writes. In a ledger task, horch ledger finish lands
   the work. Otherwise it sends BLOCKED: to the orchestrator.
 - You land your own work. Do not wait for the orchestrator to merge it.
-  Run: horch worktree land --check "<the check command of your plan>".
+  Not a Codex worker: run horch worktree land --check "<the check command of your plan>".
   It rebases your branch on the branch that it came from, runs the check,
   fast-forwards that branch, and then removes your worktree.
 - If land reports a conflict and you are not a Codex worker, resolve it

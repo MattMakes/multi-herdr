@@ -1086,11 +1086,6 @@ fn a_path_that_becomes_a_nested_repository_after_the_checks_is_never_committed()
     std::fs::remove_file(wt.join("d")).unwrap();
     let marker = h.root.join("monitor-ran");
     let monitor = h.root.join("monitor");
-    std::fs::write(
-        &monitor,
-        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
-    )
-    .unwrap();
     // Between the checks and git add, the deleted path becomes a nested
     // repository whose fsmonitor a later plain git status would run.
     let real = h.git_bin().expect("the harness has git").to_path_buf();
@@ -1103,20 +1098,13 @@ fn a_path_that_becomes_a_nested_repository_after_the_checks_is_never_committed()
         d = nested.display(),
         monitor = monitor.display()
     );
-    let fake = h.root.join("racing-git");
-    std::fs::write(
-        &fake,
-        format!(
-            "#!/bin/sh\ncase \" $* \" in *\" check-attr \"*) {swap} >/dev/null 2>&1;; esac\n\
-             exec '{}' \"$@\"\n",
-            real.display()
-        ),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    for f in [&fake, &monitor] {
-        std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let fake = git_with_hook(
+        &h,
+        "racing-git",
+        "check-attr",
+        &format!("{{ {swap}; }} >/dev/null 2>&1"),
+    );
+    script(&monitor, &format!("touch '{}'", marker.display()));
     std::fs::write(wt.join("a.txt"), "a\n").unwrap();
     let before = head(&h, &wt);
     let mut cmd = h.horch(&["ledger", "commit", "-m", "x"]);
@@ -1236,4 +1224,128 @@ fn a_lock_of_a_running_process_is_not_called_stale() {
         text(&o)
     );
     assert!(lock.exists(), "the lock stays");
+}
+
+/// An executable `body` script at `path`.
+fn script(path: &Path, body: &str) {
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A git at `h.root/<name>` that runs `hook` once, the first time its
+/// arguments contain `word`, and then the real git.
+fn git_with_hook(h: &Harness, name: &str, word: &str, hook: &str) -> PathBuf {
+    let real = h.git_bin().expect("the harness has git").to_path_buf();
+    let fake = h.root.join(name);
+    let once = h.root.join(format!("{name}.ran"));
+    script(
+        &fake,
+        &format!(
+            "case \" $* \" in *\"{word}\"*) if [ ! -e '{once}' ]; then touch '{once}'; {hook}; fi;; esac\n\
+             exec '{real}' \"$@\"",
+            once = once.display(),
+            real = real.display()
+        ),
+    );
+    fake
+}
+
+#[test]
+fn a_failed_head_lookup_refuses_and_deletes_no_file() {
+    let (h, w, wt) = claimed("lc-head");
+    let tracked = git_in(&h, &wt, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert!(!tracked.is_empty());
+    let fake = git_with_hook(&h, "flaky-git", "HEAD^{commit}", "exit 128");
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+    let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .env("HORCH_GIT_BIN", &fake)
+        .current_dir(&wt);
+    let o = cmd.output().unwrap();
+    assert!(
+        !o.status.success() && text(&o).contains("cannot read the HEAD commit"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+    assert_eq!(
+        git_in(&h, &wt, &["ls-tree", "-r", "--name-only", "HEAD"]),
+        tracked
+    );
+}
+
+#[test]
+fn a_filter_from_info_attributes_or_core_attributes_file_never_runs() {
+    let (h, w, wt) = claimed("lc-info-attr");
+    let marker = h.root.join("filter-ran");
+    // The filter program is a worktree script: the worker can write it.
+    let program = wt.join("clean.sh");
+    script(&program, &format!("touch '{}'; cat", marker.display()));
+    let project = h.project.clone();
+    let clean = program.to_string_lossy().into_owned();
+    git_in(&h, &project, &["config", "filter.evil.clean", &clean]);
+    let info = project.join(".git/info");
+    std::fs::create_dir_all(&info).unwrap();
+    let attributes = h.root.join("attributes");
+    std::fs::write(&attributes, "b.txt filter=evil\n").unwrap();
+    let attributes = attributes.to_string_lossy().into_owned();
+    for (file, set) in [
+        ("a.txt", (info.join("attributes"), "a.txt filter=evil\n")),
+        ("b.txt", (PathBuf::new(), "")),
+    ] {
+        if file == "a.txt" {
+            std::fs::write(&set.0, set.1).unwrap();
+        } else {
+            std::fs::remove_file(info.join("attributes")).unwrap();
+            git_in(
+                &h,
+                &project,
+                &["config", "core.attributesFile", &attributes],
+            );
+        }
+        std::fs::write(wt.join(file), "x\n").unwrap();
+        let before = head(&h, &wt);
+        let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", file]);
+        assert!(
+            !o.status.success() && text(&o).contains(&format!("filter on {file} (filter=evil)")),
+            "{file}: {}",
+            text(&o)
+        );
+        assert_eq!(head(&h, &wt), before, "{file}: nothing is committed");
+        assert!(!marker.exists(), "{file}: the filter must not run");
+    }
+}
+
+#[test]
+fn a_checked_file_that_becomes_a_folder_is_never_committed() {
+    let (h, w, wt) = claimed("lc-folder-race");
+    std::fs::write(wt.join("d"), "d\n").unwrap();
+    git_in(&h, &wt, &["add", "d"]);
+    git_in(&h, &wt, &["commit", "--quiet", "--no-verify", "-m", "d"]);
+    std::fs::write(wt.join("d"), "changed\n").unwrap();
+    let d = wt.join("d");
+    let swap = format!(
+        "rm -f '{d}'; mkdir '{d}'; echo big > '{d}/x'",
+        d = d.display()
+    );
+    let fake = git_with_hook(&h, "racing-git", "check-attr", &swap);
+    let before = head(&h, &wt);
+    let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "d"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .env("HORCH_GIT_BIN", &fake)
+        .current_dir(&wt);
+    let o = cmd.output().unwrap();
+    assert!(d.is_dir(), "the race ran");
+    assert!(
+        !o.status.success() && text(&o).contains("d/x changed after the checks"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+    assert!(
+        git_in(&h, &wt, &["diff", "--cached", "--name-only"]).is_empty(),
+        "nothing is staged"
+    );
 }

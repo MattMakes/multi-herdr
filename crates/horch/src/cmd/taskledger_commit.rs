@@ -103,6 +103,10 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
             root.display()
         );
     }
+    // Before any per-path work: a path named twice counts twice.
+    if args.paths.len() > MAX_PATHS {
+        bail!("{}", too_many_paths());
+    }
     let paths = args
         .paths
         .iter()
@@ -119,6 +123,7 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
     let stage = paths_to_stage(&git, &paths)?;
     refuse_large_files(&root, &stage.add)?;
     refuse_required_filters(&git, &stage.add)?;
+    refuse_staging_filters(&git, &stage.add)?;
     let id = commit(&git, &args.message, &stage)?;
     // The commit exists now: print its id first, and never fail on the
     // bookkeeping after it, or a retry finds nothing to commit.
@@ -311,11 +316,14 @@ fn write_list(list: &Path, names: &[OsString]) -> Result<()> {
 /// A copy of the index at `scratch`, a new file; nothing when there is no
 /// index yet (git then starts an empty one).
 fn copy_index(index: &Path, scratch: &Path) -> Result<()> {
-    let mut source = match std::fs::File::open(index) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", index.display())),
-    };
+    let source = std::fs::File::open(index);
+    if source
+        .as_ref()
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Ok(());
+    }
+    let mut source = source.with_context(|| format!("reading {}", index.display()))?;
     let mut copy = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -339,6 +347,8 @@ fn stage_and_commit(
     message: &str,
     stage: &Stage,
 ) -> Result<String> {
+    // A ledger worktree always has a HEAD: a failed lookup is an error,
+    // never an empty base that would commit the deletion of every file.
     let head = git
         .run(&[
             "rev-parse".into(),
@@ -346,14 +356,12 @@ fn stage_and_commit(
             "--quiet".into(),
             "HEAD^{commit}".into(),
         ])
-        .ok();
+        .context("refused: cannot read the HEAD commit of the worktree")?;
     let staging = git.with_index(scratch);
     if stage.only {
         // Only the named paths, on top of HEAD: an earlier attempt's
         // staged paths stay out of this commit.
-        if let Some(head) = &head {
-            staging.run(&["read-tree".into(), head.into()])?;
-        }
+        staging.run(&["read-tree".into(), head.as_str().into()])?;
     } else {
         copy_index(index, scratch)?;
     }
@@ -367,11 +375,7 @@ fn stage_and_commit(
             "--pathspec-file-nul".into(),
         ])?;
     }
-    refuse_unchecked_entries(
-        &staging,
-        head.as_deref().unwrap_or(git.tree),
-        &stage.allowed,
-    )?;
+    refuse_unchecked_entries(&staging, &head, &stage.allowed)?;
     // Quiet: the summary lists every file, past the bound of 1 record.
     staging.run(&[
         "commit".into(),
@@ -471,7 +475,7 @@ fn paths_to_stage(git: &Trusted, paths: &[PathBuf]) -> Result<Stage> {
             only: true,
         }
     };
-    if stage.allowed.len() > MAX_PATHS {
+    if stage.add.len().max(stage.allowed.len()) > MAX_PATHS {
         bail!("{}", too_many_paths());
     }
     Ok(stage)
@@ -532,7 +536,7 @@ fn refuse_required_filters(git: &Trusted, names: &[OsString]) -> Result<()> {
         return Ok(());
     }
     let required = required_filters(git)?;
-    let refused: Vec<String> = path_filters(git, names)?
+    let refused: Vec<String> = path_filters(git, attribute_git(&git.bin), names)?
         .into_iter()
         .filter(|(_, filter)| required.contains(filter))
         .map(|(path, filter)| format!("{} (filter={filter})", path.to_string_lossy()))
@@ -543,6 +547,30 @@ fn refuse_required_filters(git: &Trusted, names: &[OsString]) -> Result<()> {
              whose filter is required. Ask the orchestrator for a Claude worker to commit \
              these paths.",
             refused.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Refused when the staging git itself would apply a filter to a path.
+/// Attributes from the empty tree hide `.gitattributes` files, not
+/// `$GIT_DIR/info/attributes` or `core.attributesFile`, and a filter's
+/// program can be a worktree script that the worker wrote. So the check
+/// uses the exact staging command, and refuses every filter it selects.
+fn refuse_staging_filters(git: &Trusted, names: &[OsString]) -> Result<()> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let selected: Vec<String> = path_filters(git, clean_git(&git.bin, git.tree), names)?
+        .into_iter()
+        .map(|(path, filter)| format!("{} (filter={filter})", path.to_string_lossy()))
+        .collect();
+    if !selected.is_empty() {
+        bail!(
+            "refused: git add would run a filter on {}, selected by $GIT_DIR/info/attributes \
+             or core.attributesFile. horch ledger commit runs no filter: ask the orchestrator \
+             to remove that attribute, or for a Claude worker to commit these paths.",
+            selected.join(", ")
         );
     }
     Ok(())
@@ -597,9 +625,14 @@ fn changed_paths(git: &Trusted) -> Result<Stage> {
 
 /// Each of `names` with its `filter` attribute, when it has one. Read with
 /// `git check-attr`, which reads attributes and never runs a filter.
-/// The names go on stdin, NUL-ended: on the command line, 10000 long paths
-/// pass the system's argument limit.
-fn path_filters(git: &Trusted, names: &[OsString]) -> Result<Vec<(OsString, String)>> {
+/// `base` is the git that reads the attributes. The names go on stdin,
+/// NUL-ended: on the command line, 10000 long paths pass the system's
+/// argument limit.
+fn path_filters(
+    git: &Trusted,
+    base: Command,
+    names: &[OsString],
+) -> Result<Vec<(OsString, String)>> {
     let expected = 3 * names.len();
     let args: [OsString; 4] = [
         "check-attr".into(),
@@ -612,12 +645,7 @@ fn path_filters(git: &Trusted, names: &[OsString]) -> Result<Vec<(OsString, Stri
         input.extend_from_slice(name.as_encoded_bytes());
         input.push(0);
     }
-    let out = run_until(
-        git.command(attribute_git(&git.bin), &args),
-        input,
-        expected,
-        GIT_DEADLINE,
-    )?;
+    let out = run_until(git.command(base, &args), input, expected, GIT_DEADLINE)?;
     if !out.complete || !out.status.success() {
         bail!("git check-attr failed: {}", out.status);
     }
@@ -767,6 +795,8 @@ fn run_until(mut cmd: Command, input: Vec<u8>, max: usize, limit: Duration) -> R
         .stderr(Stdio::piped())
         .spawn()
         .context("running git")?;
+    // Names git's group after git is reaped (see `stop_group`).
+    let started = horch_core::procid::start_time(child.id()).unwrap_or(0);
     // A writer thread, so a full stdout pipe never blocks the input. It
     // ends when the input is written or git closes the pipe (a kill).
     if let Some(mut pipe) = child.stdin.take() {
@@ -779,8 +809,10 @@ fn run_until(mut cmd: Command, input: Vec<u8>, max: usize, limit: Duration) -> R
     }));
     let errors = std::thread::spawn(move || read_stderr(stderr));
     let mut read = None;
+    // The last time a pipe reader may take: `end`, or 1 grace after a kill.
+    let mut join_end = end;
     let status = loop {
-        if let Some(status) = child.try_wait().context("waiting for git")? {
+        if let Some(status) = poll_exit(&mut child)? {
             break status;
         }
         if reader.as_ref().is_some_and(JoinHandle::is_finished) {
@@ -796,23 +828,74 @@ fn run_until(mut cmd: Command, input: Vec<u8>, max: usize, limit: Duration) -> R
                     limit.as_secs_f32()
                 );
             }
+            join_end = Instant::now() + REAP_GRACE;
             break status;
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    let read = match read {
-        Some(read) => read,
-        None => reader.and_then(|h| join_by(h, end)).with_context(|| {
-            format!("git output was still open after {} s", limit.as_secs_f32())
-        })?,
+    // git is reaped. A pipe still open is a helper in its group: stop the
+    // group, so nothing it started outlives this call, and join again.
+    let read = match (read, reader) {
+        (Some(read), _) => Ok(read),
+        (None, Some(reader)) => join_by(reader, join_end),
+        // The reader ended without a result: treat it as an open pipe.
+        (None, None) => Err(()),
+    };
+    let errors = join_by(errors, join_end);
+    let (Ok(read), Ok(stderr)) = (read, errors) else {
+        #[cfg(unix)]
+        stop_group(child.id(), started);
+        #[cfg(not(unix))]
+        let _ = started;
+        bail!(
+            "git output was still open after {} s: the helpers in git's process group \
+             were stopped",
+            limit.as_secs_f32()
+        );
     };
     let (records, complete) = read?;
     Ok(Records {
         status,
         records,
         complete,
-        stderr: join_by(errors, end).unwrap_or_default(),
+        stderr,
     })
+}
+
+/// git's exit status once it has exited. A failed wait stops git first, so
+/// the error never leaves git running.
+fn poll_exit(child: &mut Child) -> Result<Option<ExitStatus>> {
+    child
+        .try_wait()
+        .inspect_err(|_| {
+            let _ = kill_and_reap(child);
+        })
+        .context("waiting for git")
+}
+
+/// Stop what is left of git's process group after git is reaped: TERM, up
+/// to [`REAP_GRACE`] for the group to empty, then KILL. Each signal is sent
+/// only while the group is still git's: a member still holds the id, or
+/// the id names a process with git's start time `started`
+/// ([`horch_core::procid::is_same_group`]).
+#[cfg(unix)]
+fn stop_group(pgid: u32, started: u64) {
+    let ours = || horch_core::procid::is_same_group(pgid, started);
+    let Ok(group) = libc::pid_t::try_from(pgid) else {
+        return;
+    };
+    if ours() {
+        // SAFETY: `kill` only signals, and `ours` checked the group.
+        unsafe { libc::kill(-group, libc::SIGTERM) };
+    }
+    let until = Instant::now() + REAP_GRACE;
+    while ours() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if ours() {
+        // SAFETY: as above.
+        unsafe { libc::kill(-group, libc::SIGKILL) };
+    }
 }
 
 /// Stop git and its process group, then reap git: TERM first, so git
@@ -867,15 +950,16 @@ fn reap_within(child: &mut Child, grace: Duration) -> Result<ExitStatus> {
     }
 }
 
-/// The result of `handle`, or `None` when it is not done at `end`.
-fn join_by<T>(handle: JoinHandle<T>, end: Instant) -> Option<T> {
+/// The result of `handle`, or `Err` when it is not done at `end`. A reader
+/// that is not done is detached: the group stop closes its pipe, so it ends.
+fn join_by<T>(handle: JoinHandle<T>, end: Instant) -> std::result::Result<T, ()> {
     while !handle.is_finished() {
         if Instant::now() >= end {
-            return None;
+            return Err(());
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    handle.join().ok()
+    handle.join().map_err(drop)
 }
 
 /// The first [`MAX_STDERR`] bytes of `stderr`; the rest is read and dropped,
@@ -883,7 +967,8 @@ fn join_by<T>(handle: JoinHandle<T>, end: Instant) -> Option<T> {
 fn read_stderr(mut stderr: impl Read) -> Vec<u8> {
     let mut kept = Vec::new();
     let _ = stderr.by_ref().take(MAX_STDERR).read_to_end(&mut kept);
-    let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+    let mut dropped = [0u8; 4096];
+    while stderr.read(&mut dropped).is_ok_and(|n| n > 0) {}
     kept
 }
 
@@ -1510,6 +1595,44 @@ mod tests {
                 "helper {pid} survived"
             );
             std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_that_holds_a_pipe_after_git_exits_is_stopped() {
+        // A helper that holds stdout, and one that holds only stderr.
+        for redirect in ["", ">/dev/null"] {
+            let dir = tempfile::tempdir().unwrap();
+            let pid_file = dir.path().join("helper.pid");
+            let script = format!(
+                "sleep 30 {redirect} & echo $! > '{}'; exit 0",
+                pid_file.display()
+            );
+            let limit = Duration::from_millis(300);
+            let started = Instant::now();
+            let e = run_until(sh(&script), Vec::new(), 5, limit).unwrap_err();
+            assert!(e.to_string().contains("still open"), "{redirect}: {e}");
+            assert!(
+                started.elapsed() < limit + 2 * REAP_GRACE + Duration::from_millis(500),
+                "{redirect}: {:?}",
+                started.elapsed()
+            );
+            let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            // Dead at the return; reparented, it is reaped soon after.
+            let returned = Instant::now();
+            // SAFETY: signal 0 only checks that the pid exists.
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                assert!(
+                    returned.elapsed() < Duration::from_secs(1),
+                    "{redirect}: helper {pid} survived"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
     }
 

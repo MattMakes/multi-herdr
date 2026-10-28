@@ -223,9 +223,9 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
     // own worktree. The section also preserves work when landing cannot finish.
     let worktrees = "== Worktrees ==\n\
         - Work in the shared checkout unless your plan tells you to use a worktree.\n\
-        - To make a worktree, run: horch worktree new <name>. Work in the path that\n\
-        \x20 it prints. Do not run git worktree add. Do not use a worktree tool of\n\
-        \x20 your harness.\n\
+        - To make a worktree (not a Codex worker), run: horch worktree new <name>.\n\
+        \x20 Work in the path that it prints. Do not run git worktree add. Do not use\n\
+        \x20 a worktree tool of your harness.\n\
         - Commit your work in the worktree. Commit exact files, not directories.\n\
         - A Codex worker commits only in a claimed ledger task with a worktree:\n\
         \x20 horch ledger commit -m \"<message>\" -- <files>\n\
@@ -236,7 +236,7 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
         \x20 sandbox refuses git writes. In a ledger task, horch ledger finish lands\n\
         \x20 the work. Otherwise it sends BLOCKED: to the orchestrator.\n\
         - You land your own work. Do not wait for the orchestrator to merge it.\n\
-        \x20 Run: horch worktree land --check \"<the check command of your plan>\".\n\
+        \x20 Not a Codex worker: run horch worktree land --check \"<the check command of your plan>\".\n\
         \x20 It rebases your branch on the branch that it came from, runs the check,\n\
         \x20 fast-forwards that branch, and then removes your worktree.\n\
         - If land reports a conflict and you are not a Codex worker, resolve it\n\
