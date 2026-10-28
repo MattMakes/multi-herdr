@@ -65,21 +65,27 @@ pub fn send_line_with(
     if ws.agent_prompt(pane, message).is_ok() {
         return Ok(());
     }
-    // Typing needs its full settle, or a busy TUI splits the line. With the
-    // push budget spent, type nothing: the line waits in the mail.
-    if push_time_left().is_some_and(|left| left.is_zero()) {
-        bail!("the push budget is spent, so the line was not typed");
+    let settle = if message.len() > 1500 {
+        timing.settle_long
+    } else {
+        timing.settle_short
+    };
+    // Typing needs its full settle, or a busy TUI splits the line, so the
+    // push budget keeps the longer of the two waits after the tail poll.
+    // Without that much left, type nothing: the line waits in the mail.
+    let reserve = settle.max(timing.second_enter);
+    let mut timing = *timing;
+    if let Some(left) = push_time_left() {
+        if left < reserve {
+            bail!("the push budget is spent, so the line was not typed");
+        }
+        timing.tail_timeout = timing.tail_timeout.min(left - reserve);
     }
     ws.pane_send_text(pane, message)?;
-    let landed = wait_for_tail(ws, pane, message, timing);
+    let landed = wait_for_tail(ws, pane, message, &timing);
     if !landed {
         // Could not see it land (wrapped past recognition, or the pane
         // redraws oddly). Keep the old length-scaled settle as a last resort.
-        let settle = if message.len() > 1500 {
-            timing.settle_long
-        } else {
-            timing.settle_short
-        };
         std::thread::sleep(settle);
     }
     ws.pane_send_keys(pane, "enter")?;
@@ -346,6 +352,43 @@ mod tests {
 
         drop(guard);
         assert_eq!(push_time_left(), None, "the budget ends with its guard");
+    }
+
+    /// #67: typed text keeps its full settle inside the budget. A tail that
+    /// never shows ends early enough for the settle; a budget too short for
+    /// the settle types nothing.
+    #[test]
+    fn a_typed_line_keeps_its_settle_inside_the_budget() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let timing = Timing {
+            settle_short: Duration::from_millis(100),
+            second_enter: Duration::from_millis(100),
+            ..Timing::DEFAULT
+        };
+        let budget = Duration::from_millis(400);
+        let started = Instant::now();
+        let guard = start_push_budget(budget).expect("no budget runs yet");
+        ws.fail_next("agent_prompt", "no agent");
+        send_line_with(&ws, &pane, "[r] DONE: x", &timing).unwrap();
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(250),
+            "the tail poll ran: {took:?}"
+        );
+        assert!(took < budget + Duration::from_millis(100), "{took:?}");
+        drop(guard);
+
+        let short = start_push_budget(Duration::from_millis(50)).expect("the guard ended");
+        ws.fail_next("agent_prompt", "no agent");
+        let before = ws.calls().len();
+        assert!(send_line_with(&ws, &pane, "[r] DONE: y", &timing).is_err());
+        let after = ws.calls();
+        assert!(
+            !after[before..].iter().any(|c| c.method == "pane_send_text"),
+            "nothing is typed"
+        );
+        drop(short);
     }
 
     #[test]
