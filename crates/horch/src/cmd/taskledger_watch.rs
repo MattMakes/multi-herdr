@@ -21,12 +21,15 @@ use super::taskledger::{stop_grace, HerdrPanes};
 use super::taskledger_wake;
 use crate::output;
 
-/// What the watchdog reads: herdr for the pane, the disk for the transcript.
-struct Live {
+/// What the watchdog reads: herdr for the pane, the disk for the transcript
+/// and the open-question record.
+struct Live<'a> {
     herdr: Herdr,
+    state_root: &'a Path,
+    run: &'a Run,
 }
 
-impl Observer for Live {
+impl Observer for Live<'_> {
     fn observe(&self, w: &Worker) -> Observation {
         let agent_alive = match (w.agent_pid, w.agent_started) {
             (Some(p), Some(s)) => horch_core::procid::is_same(p as u32, s as u64),
@@ -54,6 +57,7 @@ impl Observer for Live {
                 .and_then(|m| m.modified().ok())
                 .map(|t| horch_core::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
             screen,
+            open_question: watchdog::open_question(self.state_root, self.run, w),
         }
     }
 }
@@ -93,6 +97,8 @@ fn pass(
     )?;
     let live = Live {
         herdr: Herdr::with_bin(&ctx.bins.harness.herdr),
+        state_root: &ctx.paths.state_root,
+        run,
     };
     let checked = watchdog::check_run(store, run, &live, force)?;
     for c in &checked {

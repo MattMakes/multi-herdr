@@ -36,7 +36,11 @@ fn world(name: &str) -> Harness {
 /// A harness in workspace `w1` (root pane `w1:p1`) whose panes run their
 /// commands, like `horch fleet` leaves it.
 fn fleet(name: &str, scenario: &str) -> Harness {
-    let mut h = world(name);
+    into_fleet(world(name), name, scenario)
+}
+
+/// [`fleet`] on a harness made elsewhere.
+fn into_fleet(mut h: Harness, name: &str, scenario: &str) -> Harness {
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
     h.set("HORCH_WORKSPACE_ID", "w1");
@@ -1521,4 +1525,199 @@ fn the_whole_flow_on_the_fake_herdr() {
         assert!(s["pid"].is_i64() || s["pane_id"].is_string(), "{s}");
     }
     assert!(events.as_array().is_some());
+}
+
+/// A pinned clock stamp `min` minutes after 2027-06-01T00:00:00Z, after any
+/// real file time: a transcript the fake agent wrote never looks new.
+fn pinned(min: u32) -> String {
+    assert!(min < 24 * 60);
+    format!("2027-06-01T{:02}:{:02}:00Z", min / 60, min % 60)
+}
+
+/// Spawn a codex-terra worker for the 1 queued task and claim it. Returns
+/// its worker id and role.
+fn spawn_and_claim(h: &Harness) -> (String, String) {
+    let o = h.run(&[
+        "spawn",
+        "codex-terra",
+        "--from-pane",
+        "w1:p1",
+        "--no-tile",
+        "--force",
+    ]);
+    assert!(o.status.success(), "{}", text(&o));
+    let st = json_of(h, &["ledger", "status", "--json"]);
+    let w = st["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["worker"]["kind"] == "worker")
+        .unwrap()["worker"]
+        .clone();
+    let id = w["worker_id"].as_str().unwrap().to_string();
+    let role = w["role"].as_str().unwrap().to_string();
+    wait_for("the agent PID", || {
+        worker_json(h, &id)["agent_started"].is_i64().then_some(())
+    });
+    ok_as(h, &id, &["ledger", "claim"]);
+    (id, role)
+}
+
+/// 1 watchdog pass at pinned minute `min`: the worker's verdict and note.
+fn watch_at(h: &mut Harness, min: u32) -> (String, String) {
+    h.set("HORCH_NOW", pinned(min));
+    let v = json_of(h, &["ledger", "watch", "--once", "--json"]);
+    assert_eq!(v.as_array().map(Vec::len), Some(1), "minute {min}: {v}");
+    (
+        v[0]["verdict"].as_str().unwrap().to_string(),
+        v[0]["note"].as_str().unwrap().to_string(),
+    )
+}
+
+/// 3 idle checks, 10 minutes apart from minute `from`, reap the worker.
+fn assert_reaped_by_3_idle_checks(h: &mut Harness, from: u32) {
+    let verdicts: Vec<_> = (1..=3).map(|i| watch_at(h, from + 10 * i)).collect();
+    let names: Vec<_> = verdicts.iter().map(|(v, _)| v.as_str()).collect();
+    assert_eq!(
+        names,
+        ["no_progress", "no_progress", "dead"],
+        "{verdicts:?}"
+    );
+}
+
+/// #70: a worker waiting on reviewer tasks for 60 minutes is not reaped,
+/// and is reaped as usual when it stays idle after the reviews are in.
+#[test]
+fn a_worker_waiting_on_reviewer_tasks_is_not_reaped_until_they_are_in() {
+    let mut h = into_fleet(
+        finish_world("tl-wait-review"),
+        "tl-wait-review",
+        "exec,stay",
+    );
+    h.set("HORCH_STOP_GRACE_MS", "2000");
+    h.set("HORCH_NOW", pinned(0));
+    ok(
+        &h,
+        &["ledger", "run", "new", "alpha", "--steps", "code-sweep"],
+    );
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "codex-terra",
+        ],
+    );
+    let (w, role) = spawn_and_claim(&h);
+    let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(path.join("a.txt"), "1\n").unwrap();
+    git_in(&h, &path, &["add", "a.txt"]);
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "a"],
+    );
+    let (_, r) = finish_json(&h, &w);
+    let reviews = r["queued_reviews"].as_array().unwrap().len();
+    assert!(reviews > 0, "{r}");
+
+    // 60 minutes of checks while the reviews run.
+    for min in (10..=60).step_by(10) {
+        let (verdict, note) = watch_at(&mut h, min);
+        assert_eq!(verdict, "progress", "minute {min}: {note}");
+        assert!(note.starts_with("waiting on reviewer tasks"), "{note}");
+    }
+    let st = out(&h.run(&["ledger", "status"]));
+    let line = st
+        .lines()
+        .find(|l| l.contains(&role) && l.contains("working"))
+        .unwrap();
+    assert!(
+        line.contains("WAITING on reviewer tasks") && line.ends_with("for 1h0m"),
+        "{st}"
+    );
+
+    // The reviews come in at minute 65; the worker stays idle.
+    h.set("HORCH_NOW", pinned(65));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    let personas: Vec<String> = st["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["task"]["kind"] == "review")
+        .map(|t| t["task"]["claimable_by"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(personas.len(), reviews, "{st}");
+    for persona in &personas {
+        let rw = worker_new(&h, persona);
+        let c: Value =
+            serde_json::from_str(&ok_as(&h, &rw, &["ledger", "claim", "--json"])).unwrap();
+        let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
+        std::fs::write(
+            &f,
+            "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
+        )
+        .unwrap();
+        ok_as(&h, &rw, &["ledger", "done", "reviewed"]);
+    }
+    assert!(!out(&h.run(&["ledger", "status"])).contains("WAITING"));
+    assert_reaped_by_3_idle_checks(&mut h, 60);
+    let shown = json_of(&h, &["ledger", "show", &w, "--json"]);
+    assert_eq!(shown["worker"]["status"], "incomplete", "{shown}");
+}
+
+/// #70: a worker that sent `QUESTION:` is not reaped while no reply has
+/// come. After the orchestrator's reply, 3 idle checks reap it.
+#[test]
+fn a_worker_with_an_open_question_is_not_reaped_until_the_reply() {
+    let mut h = fleet("tl-wait-question", "exec,stay");
+    h.set("HORCH_STOP_GRACE_MS", "2000");
+    h.set("HORCH_NOW", pinned(0));
+    ok(&h, &["ledger", "run", "new", "beta"]);
+    let p = ticket(&h, "01-a", "# 01: A\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "codex-terra",
+        ],
+    );
+    let (w, role) = spawn_and_claim(&h);
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    h.set("HORCH_NOW", pinned(1));
+    let mut ask = h.horch(&["tell", "orchestrator", "QUESTION: May I edit x?"]);
+    ask.env("HORCH_ROLE", &role).env("HORCH_WORKER_ID", &w);
+    let o = ask.output().unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+
+    for min in (10..=60).step_by(10) {
+        let (verdict, note) = watch_at(&mut h, min);
+        assert_eq!(verdict, "progress", "minute {min}: {note}");
+        assert!(
+            note.starts_with("waiting on an answer from the orchestrator"),
+            "{note}"
+        );
+    }
+    let st = out(&h.run(&["ledger", "status"]));
+    assert!(
+        st.lines().any(|l| l.contains(&role)
+            && l.contains("WAITING on an answer from the orchestrator for 59m")),
+        "{st}"
+    );
+
+    // The orchestrator replies at minute 65.
+    h.set("HORCH_NOW", pinned(65));
+    ok(&h, &["tell", &role, "Yes, edit x."]);
+    assert!(!out(&h.run(&["ledger", "status"])).contains("WAITING"));
+    assert_reaped_by_3_idle_checks(&mut h, 60);
 }

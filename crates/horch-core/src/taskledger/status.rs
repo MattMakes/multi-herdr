@@ -1,6 +1,7 @@
 //! `horch ledger status` and `show`: the board of a run (section 5.6).
 
 use std::fmt::Write as _;
+use std::path::Path;
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
@@ -9,6 +10,7 @@ use serde::Serialize;
 use super::runs::Run;
 use super::tasks::{self, Task};
 use super::util;
+use super::watchdog::{self, Wait};
 use super::workers::{self, Worker};
 
 /// 1 worktree line.
@@ -42,6 +44,8 @@ pub struct WorkerLine {
     pub progress_age_s: Option<i64>,
     /// A working worker with no check in the last 2 check intervals.
     pub unwatched: bool,
+    /// The wait that keeps a working worker from counting as stalled (#70).
+    pub waiting: Option<Wait>,
 }
 
 /// The board of 1 run.
@@ -98,8 +102,9 @@ fn last_check_at(conn: &Connection, worker_id: &str) -> Result<Option<String>> {
     ))
 }
 
-/// Build the board of `run`.
-pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
+/// Build the board of `run`. `state_root` holds the open-question record;
+/// without it, no worker waits on an answer.
+pub fn report(conn: &Connection, run: &Run, state_root: Option<&Path>) -> Result<Report> {
     let now = util::now();
     let all = tasks::of_run(conn, &run.run_id)?;
     let waits = tasks::waits(conn, &run.run_id)?;
@@ -143,6 +148,12 @@ pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
             .last_progress_at
             .as_deref()
             .and_then(|t| util::seconds_between(t, &now));
+        let waiting = if w.status == "working" && w.kind == "worker" {
+            let question = state_root.and_then(|root| watchdog::open_question(root, run, &w));
+            watchdog::wait_of(conn, &w, question.as_ref(), &now)?
+        } else {
+            None
+        };
         let unwatched = if w.status == "working" {
             let since = last_check_at(conn, &w.worker_id)?.or_else(|| w.claimed_at.clone());
             since
@@ -164,6 +175,7 @@ pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
             checkin_age_s,
             progress_age_s,
             unwatched,
+            waiting,
         });
     }
     let wts = worktrees(conn, &run.run_id)?;
@@ -193,6 +205,7 @@ fn age(s: Option<i64>) -> String {
 /// The text form of a board.
 pub fn render(r: &Report) -> String {
     let mut out = String::new();
+    let now = util::now();
     let run = &r.run;
     let _ = writeln!(
         out,
@@ -235,7 +248,7 @@ pub fn render(r: &Report) -> String {
     if !live.is_empty() {
         let _ = writeln!(out, "Live workers:");
         for w in live {
-            let _ = writeln!(
+            let _ = write!(
                 out,
                 "  {:<20} {:<9} {:<5} checkin {} ago, progress {} ago{}",
                 w.worker.label(),
@@ -245,6 +258,15 @@ pub fn render(r: &Report) -> String {
                 age(w.progress_age_s),
                 if w.unwatched { "  UNWATCHED" } else { "" }
             );
+            if let Some(wait) = &w.waiting {
+                let _ = write!(
+                    out,
+                    "  WAITING on {} for {}",
+                    wait.reason,
+                    age(util::seconds_between(&wait.since, &now))
+                );
+            }
+            let _ = writeln!(out);
         }
     }
     let open: Vec<&WorktreeLine> = r

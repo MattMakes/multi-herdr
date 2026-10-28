@@ -766,7 +766,7 @@ fn status_cmd(
         return Ok(ExitCode::SUCCESS);
     }
     let run = resolve_run(ctx, store, arg)?;
-    let report = status::report(store.conn(), &run)?;
+    let report = status::report(store.conn(), &run, Some(&ctx.paths.state_root))?;
     if as_json {
         json(&report)?;
     } else {

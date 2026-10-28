@@ -910,3 +910,36 @@ fn t11_followup_done_warns_when_the_registration_stays() {
         text(&panes)
     );
 }
+
+/// #70: the open-question record works in a fleet with no task-ledger run.
+/// A worker's `QUESTION:` opens it; the orchestrator's next `tell` to that
+/// role answers it.
+#[test]
+fn a_question_is_open_until_the_orchestrator_tells_that_role_without_a_ledger_run() {
+    let h = fleet("open-question", "exec,stay");
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
+    let ask = as_worker(
+        &h,
+        &["tell", "orchestrator", "QUESTION: May I edit x?"],
+        "w1:p2",
+        "sonnet-1",
+        "r1",
+    );
+    assert!(ask.status.success(), "{}", text(&ask));
+    let record = h.state.join("questions/w1/sonnet-1.json");
+    let read =
+        || -> Value { serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap() };
+    let open = read();
+    assert_eq!(open["role"], "sonnet-1");
+    assert_eq!(open["text"], "[sonnet-1] QUESTION: May I edit x?");
+    assert_eq!(open["asked_at"], NOW);
+    assert!(open["answered_at"].is_null(), "{open}");
+
+    let reply = h.run(&["tell", "sonnet-1", "Yes."]);
+    assert!(reply.status.success(), "{}", text(&reply));
+    let answered = read();
+    assert_eq!(answered["answered_at"], NOW, "{answered}");
+}

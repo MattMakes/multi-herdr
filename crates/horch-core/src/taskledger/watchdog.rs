@@ -15,11 +15,20 @@
 //! 5. Nothing moved: `no_progress`, and 1 more stall round. At the run's
 //!    `stall_rounds` the worker is `dead`.
 //!
+//! A worker that waits for something horch knows about (#70) is not
+//! stalled while the wait holds and its deadline has not passed: its check
+//! is `progress` with a note that starts "waiting", and the stall count
+//! starts fresh. The waits, in order: reviewer tasks its `finish` queued, an
+//! open question it sent the orchestrator, a `horch ledger progress
+//! "waiting: ..."` for a background command. A gone process is still `dead`.
+//!
 //! This module decides and records; the caller reaps and wakes.
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::Serialize;
+
+use crate::messaging::questions::OpenQuestion;
 
 use super::model::{EventKind, ProgressSource, Verdict};
 use super::runs::Run;
@@ -39,6 +48,132 @@ pub struct Observation {
     pub transcript_mtime: Option<String>,
     /// The visible pane text, for the working timer.
     pub screen: Option<String>,
+    /// The worker's open question to the orchestrator, if any.
+    pub open_question: Option<OpenQuestion>,
+}
+
+/// How long each wait holds at most, from its start.
+pub const REVIEW_WAIT_S: i64 = 3 * 3600;
+pub const QUESTION_WAIT_S: i64 = 2 * 3600;
+pub const BACKGROUND_WAIT_S: i64 = 3600;
+
+/// The `horch ledger progress` text that starts a background wait.
+const BACKGROUND_PREFIX: &str = "waiting:";
+
+/// A wait that holds now.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Wait {
+    pub reason: String,
+    pub since: String,
+    pub deadline: String,
+}
+
+impl Wait {
+    fn new(reason: String, since: &str, limit_s: i64) -> Option<Wait> {
+        let at = crate::clock::parse(since)?;
+        Some(Wait {
+            reason,
+            since: since.to_string(),
+            deadline: crate::clock::stamp(at + chrono::Duration::seconds(limit_s)),
+        })
+    }
+
+    fn holds(&self, now: &str) -> bool {
+        now < self.deadline.as_str()
+    }
+}
+
+/// The wait of worker `w` that holds at `now`, if any. `question` is its
+/// open question (from [`crate::messaging::questions`]); one asked before
+/// this worker claimed its task belongs to an earlier worker of the role.
+pub fn wait_of(
+    conn: &Connection,
+    w: &Worker,
+    question: Option<&OpenQuestion>,
+    now: &str,
+) -> Result<Option<Wait>> {
+    let mut waits = Vec::new();
+    waits.extend(review_wait(conn, w)?);
+    let start = w.claimed_at.as_deref().or(w.spawned_at.as_deref());
+    if let Some(q) = question.filter(|q| start.is_none_or(|s| q.asked_at.as_str() >= s)) {
+        waits.extend(Wait::new(
+            "an answer from the orchestrator".into(),
+            &q.asked_at,
+            QUESTION_WAIT_S,
+        ));
+    }
+    waits.extend(background_wait(conn, w)?);
+    Ok(waits.into_iter().find(|wait| wait.holds(now)))
+}
+
+/// The open question of worker `w` in the record under `state_root`: by its
+/// role, in its workspace (else the run's).
+pub fn open_question(state_root: &std::path::Path, run: &Run, w: &Worker) -> Option<OpenQuestion> {
+    let ws = w.workspace_id.as_deref().or(run.workspace_id.as_deref())?;
+    let role = w.role.as_deref()?;
+    crate::messaging::questions::Questions::under(state_root, ws)
+        .open_for(role)
+        .ok()
+        .flatten()
+}
+
+/// The reviewer tasks of the worker's waiting finish step that are not in.
+fn review_wait(conn: &Connection, w: &Worker) -> Result<Option<Wait>> {
+    let ids: Option<String> = optional(conn.query_row(
+        "SELECT review_task_ids FROM task_steps
+         WHERE worker_id = ?1 AND status = 'running' AND verdict = 'waiting'
+         ORDER BY seq DESC LIMIT 1",
+        [&w.worker_id],
+        |r| r.get(0),
+    ))?
+    .flatten();
+    let mut pending = Vec::new();
+    let mut since: Option<String> = None;
+    for id in util::parse_json_list(ids.as_deref()) {
+        let Ok(t) = super::tasks::get(conn, &id) else {
+            continue;
+        };
+        if matches!(t.status.as_str(), "done" | "cancelled") {
+            continue;
+        }
+        if since.as_ref().is_none_or(|s| t.created_at < *s) {
+            since = Some(t.created_at.clone());
+        }
+        pending.push(t.short());
+    }
+    Ok(since.and_then(|s| {
+        Wait::new(
+            format!("reviewer tasks {}", pending.join(", ")),
+            &s,
+            REVIEW_WAIT_S,
+        )
+    }))
+}
+
+/// The worker's last own event, when it is a `waiting: ...` progress line.
+fn background_wait(conn: &Connection, w: &Worker) -> Result<Option<Wait>> {
+    let last: Option<(String, String, String)> = optional(conn.query_row(
+        "SELECT at, kind, text FROM events WHERE worker_id = ?1 AND actor = 'worker'
+         ORDER BY event_id DESC LIMIT 1",
+        [&w.worker_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    ))?;
+    Ok(last.and_then(|(at, kind, text)| {
+        let t = text.trim_start();
+        let waiting = kind == EventKind::Progress.as_str()
+            && t.get(..BACKGROUND_PREFIX.len())
+                .is_some_and(|h| h.eq_ignore_ascii_case(BACKGROUND_PREFIX));
+        waiting.then(|| {
+            Wait::new(
+                format!(
+                    "a background command ({})",
+                    t[BACKGROUND_PREFIX.len()..].trim()
+                ),
+                &at,
+                BACKGROUND_WAIT_S,
+            )
+        })?
+    }))
 }
 
 /// How the watchdog looks at a worker; the CLI asks herdr and the disk.
@@ -106,7 +241,18 @@ pub fn check_run(
     observer: &dyn Observer,
     force: bool,
 ) -> Result<Vec<Checked>> {
-    let now = util::now();
+    check_run_at(store, run, observer, force, &util::now())
+}
+
+/// [`check_run`] as of `now`, a ledger stamp.
+pub fn check_run_at(
+    store: &mut Store,
+    run: &Run,
+    observer: &dyn Observer,
+    force: bool,
+    now: &str,
+) -> Result<Vec<Checked>> {
+    let now = now.to_string();
     let mut out = Vec::new();
     for w in workers::of_run(store.conn(), &run.run_id)? {
         if w.kind != "worker" || w.status != "working" {
@@ -223,6 +369,17 @@ pub fn check_run(
                 None,
             )
         };
+        if verdict == Verdict::NoProgress {
+            if let Some(wait) = wait_of(store.conn(), &w, o.open_question.as_ref(), &now)? {
+                verdict = Verdict::Progress;
+                note = format!(
+                    "waiting on {} for {}s (deadline {}), so the stall count does not run: {note}",
+                    wait.reason,
+                    util::seconds_between(&wait.since, &now).unwrap_or(0),
+                    wait.deadline
+                );
+            }
+        }
         let mut round = match verdict {
             Verdict::NoProgress => w.stall_rounds + 1,
             Verdict::Dead => w.stall_rounds,
@@ -410,105 +567,319 @@ mod tests {
         }
     }
 
-    /// Back-date the worker's last check (or claim) by `secs`, as if that
-    /// much time had passed.
-    fn pass_time(s: &Store, w: &str, secs: i64) {
-        let t = |col: &str| {
-            format!(
-            "UPDATE {col} SET at = strftime('%Y-%m-%dT%H:%M:%SZ', at, '-{secs} seconds') WHERE worker_id = ?1"
-        )
-        };
-        s.conn().execute(&t("checks"), [w]).unwrap();
-        s.conn()
-            .execute(
-                &format!("UPDATE workers SET claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', claimed_at, '-{secs} seconds'), last_progress_at = strftime('%Y-%m-%dT%H:%M:%SZ', last_progress_at, '-{secs} seconds') WHERE worker_id = ?1"),
-                [w],
+    /// The test clock: it starts at the claim and moves only by
+    /// [`Clock::pass`]. A check reads it, not the wall clock, so a second
+    /// that ticks during a test changes no elapsed time.
+    struct Clock(String);
+    impl Clock {
+        fn at_claim(s: &Store, w: &str) -> Clock {
+            Clock(workers::get(s.conn(), w).unwrap().claimed_at.unwrap())
+        }
+        fn pass(&mut self, secs: i64) {
+            let t = crate::clock::parse(&self.0).unwrap() + chrono::Duration::seconds(secs);
+            self.0 = crate::clock::stamp(t);
+        }
+        /// A stamp `secs` before now (after it, for a negative `secs`).
+        fn ago(&self, secs: i64) -> String {
+            crate::clock::stamp(
+                crate::clock::parse(&self.0).unwrap() - chrono::Duration::seconds(secs),
             )
-            .unwrap();
+        }
+        fn check(&mut self, s: &mut Store, run: &Run, obs: &dyn Observer) -> Vec<Checked> {
+            check_run_at(s, run, obs, false, &self.0).unwrap()
+        }
+        /// Pass 1 check interval, then check.
+        fn next(&mut self, s: &mut Store, run: &Run, obs: &dyn Observer) -> Checked {
+            self.pass(run.check_every_s);
+            let r = self.check(s, run, obs);
+            assert_eq!(r.len(), 1, "{r:?}");
+            r.into_iter().next().unwrap()
+        }
+    }
+
+    /// An observer that sees the same live, idle pane every time.
+    struct Idle(Option<OpenQuestion>);
+    impl Observer for Idle {
+        fn observe(&self, _: &Worker) -> Observation {
+            Observation {
+                open_question: self.0.clone(),
+                ..live(None, "idle")
+            }
+        }
     }
 
     #[test]
     fn a_timer_that_ran_the_whole_interval_is_a_proxy_checkin() {
         let (_d, mut s, run, w) = setup();
-        pass_time(&s, &w, 600);
+        let mut c = Clock::at_claim(&s, &w);
         let obs = Script(RefCell::new(vec![
             live(screen(10), "working"),
             live(screen(20), "working"),
         ]));
-        let r = check_run(&mut s, &run, &obs, false).unwrap();
-        assert_eq!(r[0].verdict, "proxy_checkin", "{r:?}");
-        pass_time(&s, &w, 600);
-        let r = check_run(&mut s, &run, &obs, false).unwrap();
-        assert_eq!(r[0].verdict, "proxy_checkin", "{r:?}");
+        let r = c.next(&mut s, &run, &obs);
+        assert_eq!(r.verdict, "proxy_checkin", "{r:?}");
+        let r = c.next(&mut s, &run, &obs);
+        assert_eq!(r.verdict, "proxy_checkin", "{r:?}");
         assert_eq!(workers::get(s.conn(), &w).unwrap().stall_rounds, 0);
     }
 
     #[test]
     fn a_timer_that_ran_less_than_the_clock_and_an_idle_pane_is_no_progress() {
         let (_d, mut s, run, w) = setup();
-        pass_time(&s, &w, 600);
+        let mut c = Clock::at_claim(&s, &w);
         let obs = Script(RefCell::new(vec![
             live(screen(10), "working"),
             live(screen(15), "idle"),
         ]));
-        check_run(&mut s, &run, &obs, false).unwrap();
-        pass_time(&s, &w, 600);
-        let r = check_run(&mut s, &run, &obs, false).unwrap();
-        assert_eq!(r[0].verdict, "no_progress", "{r:?}");
-        assert!(
-            r[0].note.contains("stopped about 300s ago"),
-            "{}",
-            r[0].note
-        );
-        assert!(r[0].first_stall);
+        c.next(&mut s, &run, &obs);
+        let r = c.next(&mut s, &run, &obs);
+        assert_eq!(r.verdict, "no_progress", "{r:?}");
+        assert!(r.note.contains("stopped about 300s ago"), "{}", r.note);
+        assert!(r.first_stall);
     }
 
     #[test]
     fn a_gone_process_is_dead_at_once() {
         let (_d, mut s, run, w) = setup();
-        pass_time(&s, &w, 600);
+        let mut c = Clock::at_claim(&s, &w);
         let obs = Script(RefCell::new(vec![Observation::default()]));
-        let r = check_run(&mut s, &run, &obs, false).unwrap();
-        assert_eq!(r[0].verdict, "dead");
+        assert_eq!(c.next(&mut s, &run, &obs).verdict, "dead");
     }
 
     #[test]
     fn three_stalled_checks_are_dead_and_progress_resets_the_count() {
         let (_d, mut s, run, w) = setup();
-        let idle = || live(None, "idle");
-        let obs = Script(RefCell::new(vec![idle(), idle(), idle(), idle(), idle()]));
+        let mut c = Clock::at_claim(&s, &w);
+        let obs = Idle(None);
         for want in ["no_progress", "no_progress"] {
-            pass_time(&s, &w, 600);
-            assert_eq!(
-                check_run(&mut s, &run, &obs, false).unwrap()[0].verdict,
-                want
-            );
+            assert_eq!(c.next(&mut s, &run, &obs).verdict, want);
         }
         // The agent records progress: the count resets.
         s.immediate(|tx| {
             workers::progress(tx, &w, ProgressSource::Agent, EventKind::Progress, "x")
         })
         .unwrap();
-        pass_time(&s, &w, 600);
-        s.conn().execute("UPDATE workers SET last_progress_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 seconds') WHERE worker_id = ?1", [&w]).unwrap();
-        let obs2 = Script(RefCell::new(vec![idle()]));
-        assert_eq!(
-            check_run(&mut s, &run, &obs2, false).unwrap()[0].verdict,
-            "progress"
-        );
+        c.pass(run.check_every_s);
+        s.conn()
+            .execute(
+                "UPDATE workers SET last_progress_at = ?2 WHERE worker_id = ?1",
+                params![w, c.ago(10)],
+            )
+            .unwrap();
+        assert_eq!(c.check(&mut s, &run, &obs)[0].verdict, "progress");
         for want in ["no_progress", "no_progress", "dead"] {
-            pass_time(&s, &w, 600);
-            assert_eq!(
-                check_run(&mut s, &run, &obs, false).unwrap()[0].verdict,
-                want
-            );
+            assert_eq!(c.next(&mut s, &run, &obs).verdict, want);
         }
     }
 
     #[test]
     fn a_worker_not_due_is_not_checked() {
-        let (_d, mut s, run, _w) = setup();
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
         let obs = Script(RefCell::new(vec![]));
-        assert!(check_run(&mut s, &run, &obs, false).unwrap().is_empty());
+        assert!(c.check(&mut s, &run, &obs).is_empty());
+    }
+
+    /// Queue 1 reviewer task and a waiting code-sweep step that names it.
+    fn waiting_on_review(s: &mut Store, run: &Run, w: &str) -> String {
+        s.immediate(|tx| {
+            let t = tasks::add(
+                tx,
+                run,
+                &NewTask::work("review", "r.md", "codex-terra"),
+                Actor::Worker,
+            )?;
+            let wk = workers::get(tx, w)?;
+            tx.execute(
+                "INSERT INTO task_steps (task_id, worker_id, seq, name, status, verdict, review_task_ids)
+                 VALUES (?1, ?2, 1, 'code-sweep', 'running', 'waiting', ?3)",
+                params![wk.task_id, w, util::json_list(std::slice::from_ref(&t.task_id))],
+            )?;
+            Ok(t.task_id)
+        })
+        .unwrap()
+    }
+
+    /// The stall count starts fresh: 3 idle checks reap the worker, as for
+    /// one that never waited.
+    fn assert_reaped_after_3_idle_checks(
+        c: &mut Clock,
+        s: &mut Store,
+        run: &Run,
+        obs: &dyn Observer,
+    ) {
+        for (i, want) in ["no_progress", "no_progress", "dead"]
+            .into_iter()
+            .enumerate()
+        {
+            let r = c.next(s, run, obs);
+            assert_eq!(r.verdict, want, "{r:?}");
+            assert_eq!(r.first_stall, i == 0, "{r:?}");
+        }
+    }
+
+    #[test]
+    fn a_worker_waiting_on_reviewer_tasks_for_60_minutes_is_not_reaped_and_is_after_they_are_in() {
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        let review = waiting_on_review(&mut s, &run, &w);
+        let obs = Idle(None);
+        for _ in 0..6 {
+            let r = c.next(&mut s, &run, &obs);
+            assert_eq!(r.verdict, "progress", "{r:?}");
+            assert!(
+                r.note.starts_with("waiting on reviewer tasks T-2"),
+                "{}",
+                r.note
+            );
+            assert_eq!(r.round, 0);
+        }
+        assert_eq!(workers::get(s.conn(), &w).unwrap().stall_rounds, 0);
+        s.conn()
+            .execute(
+                "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
+                [&review],
+            )
+            .unwrap();
+        assert_reaped_after_3_idle_checks(&mut c, &mut s, &run, &obs);
+    }
+
+    #[test]
+    fn a_review_wait_ends_at_its_deadline() {
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        waiting_on_review(&mut s, &run, &w);
+        let obs = Idle(None);
+        c.pass(REVIEW_WAIT_S - run.check_every_s);
+        assert_eq!(c.next(&mut s, &run, &obs).verdict, "no_progress");
+    }
+
+    #[test]
+    fn a_worker_with_an_open_question_is_not_reaped_until_the_reply_then_3_idle_checks_reap_it() {
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        let q = OpenQuestion {
+            role: "codex-terra-1".into(),
+            text: "[codex-terra-1] QUESTION: x?".into(),
+            asked_at: c.ago(-60),
+        };
+        let asking = Idle(Some(q));
+        for _ in 0..6 {
+            let r = c.next(&mut s, &run, &asking);
+            assert_eq!(r.verdict, "progress", "{r:?}");
+            assert!(r.note.starts_with("waiting on an answer"), "{}", r.note);
+        }
+        // The orchestrator replied: the record shows no open question.
+        assert_reaped_after_3_idle_checks(&mut c, &mut s, &run, &Idle(None));
+    }
+
+    #[test]
+    fn a_question_wait_ends_at_its_deadline() {
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        let asking = Idle(Some(OpenQuestion {
+            role: "r".into(),
+            text: "[r] QUESTION: x?".into(),
+            asked_at: c.0.clone(),
+        }));
+        c.pass(QUESTION_WAIT_S - run.check_every_s);
+        assert_eq!(c.next(&mut s, &run, &asking).verdict, "no_progress");
+    }
+
+    #[test]
+    fn a_question_from_before_the_claim_is_not_this_workers_wait() {
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        let asking = Idle(Some(OpenQuestion {
+            role: "r".into(),
+            text: "[r] QUESTION: x?".into(),
+            asked_at: c.ago(60),
+        }));
+        assert_eq!(c.next(&mut s, &run, &asking).verdict, "no_progress");
+    }
+
+    #[test]
+    fn a_waiting_progress_line_holds_for_the_default_deadline_and_any_later_line_ends_it() {
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        s.immediate(|tx| {
+            workers::progress(
+                tx,
+                &w,
+                ProgressSource::Agent,
+                EventKind::Progress,
+                "waiting: cargo test",
+            )
+        })
+        .unwrap();
+        let at = c.0.clone();
+        s.conn()
+            .execute(
+                "UPDATE events SET at = ?2 WHERE worker_id = ?1",
+                params![w, at],
+            )
+            .unwrap();
+        s.conn()
+            .execute(
+                "UPDATE workers SET last_progress_at = ?2 WHERE worker_id = ?1",
+                params![w, at],
+            )
+            .unwrap();
+        let obs = Idle(None);
+        // The progress line itself, then waits up to 60 min.
+        assert_eq!(c.next(&mut s, &run, &obs).verdict, "progress");
+        for _ in 0..4 {
+            let r = c.next(&mut s, &run, &obs);
+            assert_eq!(r.verdict, "progress", "{r:?}");
+            assert!(
+                r.note
+                    .starts_with("waiting on a background command (cargo test)"),
+                "{}",
+                r.note
+            );
+        }
+        assert_eq!(
+            c.next(&mut s, &run, &obs).verdict,
+            "no_progress",
+            "the deadline passed"
+        );
+
+        // A later note from the worker ends the wait.
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        s.immediate(|tx| {
+            workers::progress(
+                tx,
+                &w,
+                ProgressSource::Agent,
+                EventKind::Progress,
+                "waiting: x",
+            )?;
+            workers::progress(tx, &w, ProgressSource::Agent, EventKind::Note, "back")
+        })
+        .unwrap();
+        s.conn()
+            .execute(
+                "UPDATE workers SET last_progress_at = ?2 WHERE worker_id = ?1",
+                params![w, c.ago(1)],
+            )
+            .unwrap();
+        assert_eq!(c.next(&mut s, &run, &obs).verdict, "no_progress");
+    }
+
+    #[test]
+    fn a_gone_process_is_dead_at_once_while_it_waits() {
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        waiting_on_review(&mut s, &run, &w);
+        let gone = Script(RefCell::new(vec![Observation {
+            open_question: Some(OpenQuestion {
+                role: "r".into(),
+                text: "[r] QUESTION: x?".into(),
+                asked_at: c.0.clone(),
+            }),
+            ..Observation::default()
+        }]));
+        assert_eq!(c.next(&mut s, &run, &gone).verdict, "dead");
     }
 }
