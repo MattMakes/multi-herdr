@@ -1,6 +1,6 @@
 ---
 name: codex-reviewer
-brief_description: Cross-vendor Codex Sol review. Reports only. Network on, so its sandbox cannot stop git push. Never edits or commits.
+brief_description: Cross-vendor Codex Sol review. Reports findings. Network on; sandbox cannot stop git push. Never edits or commits.
 base: fleet-worker
 agent: codex
 phase: validation

@@ -41,6 +41,9 @@ const SAFE_CONFIG: [&str; 4] = [
     "gpg.program=/usr/bin/false",
 ];
 
+/// git's empty tree id.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 /// Plain data that names the author and committer; never a program.
 const IDENTITY_VARS: [&str; 6] = [
     "GIT_AUTHOR_NAME",
@@ -87,8 +90,10 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
         .map(|p| checked_path(&root, &cwd, p))
         .collect::<Result<Vec<_>>>()?;
 
-    let gitdir = trusted_gitdir(Path::new(&wt.repo_root), &root)?;
-    let git = Trusted::new(&ctx.bins.harness.git, &root, &gitdir);
+    let bin = &ctx.bins.harness.git;
+    check_git_version(bin)?;
+    let gitdir = trusted_gitdir(bin, Path::new(&wt.repo_root), Path::new(&wt.path), &root)?;
+    let git = Trusted::new(bin, &root, &gitdir);
     let mut add: Vec<OsString> = vec!["add".into()];
     if paths.is_empty() {
         add.push("-A".into());
@@ -119,59 +124,73 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The worktree's git dir, from state the sandbox cannot write: the entry
-/// under the main repository's `.git/worktrees/` whose `gitdir` file names
-/// `<root>/.git`. Refused when the worktree's own `.git` file no longer
-/// points at it.
-fn trusted_gitdir(repo_root: &Path, root: &Path) -> Result<PathBuf> {
-    let common = std::fs::canonicalize(repo_root.join(".git"))
-        .with_context(|| format!("refused: no git dir in {}", repo_root.display()))?;
-    if !common.is_dir() {
-        bail!("refused: {} is not a main repository", repo_root.display());
+/// The worktree's git dir, from trusted metadata only: the common dir that
+/// `git rev-parse` reports in the main checkout the ledger recorded, joined
+/// with `worktrees/<name>` from the ledger's worktree path. Refused unless
+/// the worktree's `.git` is a file that says exactly `gitdir: <that path>`:
+/// the sandbox can rewrite it, and git would read the config it points at.
+fn trusted_gitdir(bin: &Path, repo_root: &Path, worktree: &Path, root: &Path) -> Result<PathBuf> {
+    let mut cmd = clean_git(bin);
+    cmd.arg("-C").arg(repo_root);
+    for pair in SAFE_CONFIG {
+        cmd.args(["-c", pair]);
     }
-    let entries = std::fs::read_dir(common.join("worktrees"))
-        .with_context(|| format!("refused: {} has no linked worktrees", repo_root.display()))?;
-    let names_root = |entry: &Path| {
-        let Ok(text) = std::fs::read_to_string(entry.join("gitdir")) else {
-            return false;
-        };
-        let dotgit = Path::new(text.trim());
-        dotgit.file_name().is_some_and(|n| n == ".git")
-            && dotgit
-                .parent()
-                .and_then(|p| std::fs::canonicalize(p).ok())
-                .is_some_and(|p| p == root)
-    };
-    let Some(gitdir) = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|e| names_root(e))
-    else {
+    let out = cmd
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .with_context(|| format!("running {}", bin.display()))?;
+    if !out.status.success() {
+        bail!("refused: {} is not a git checkout", repo_root.display());
+    }
+    let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let Some(name) = worktree.file_name() else {
         bail!(
-            "refused: {} lists no worktree at {}",
-            repo_root.display(),
-            root.display()
+            "refused: the ledger's worktree path {} has no name",
+            worktree.display()
         );
     };
-    let gitdir = std::fs::canonicalize(gitdir)?;
+    let gitdir = common.join("worktrees").join(name);
     let dotgit = root.join(".git");
-    let points_back = std::fs::symlink_metadata(&dotgit).is_ok_and(|m| m.is_file())
-        && std::fs::read_to_string(&dotgit)
-            .ok()
-            .and_then(|t| {
-                t.trim()
-                    .strip_prefix("gitdir:")
-                    .map(|p| p.trim().to_string())
-            })
-            .and_then(|p| std::fs::canonicalize(p).ok())
-            .is_some_and(|p| p == gitdir);
-    if !points_back {
+    let text = std::fs::symlink_metadata(&dotgit)
+        .ok()
+        .filter(|m| m.is_file())
+        .and_then(|_| std::fs::read_to_string(&dotgit).ok())
+        .unwrap_or_default();
+    let line = text.strip_suffix('\n').unwrap_or(&text);
+    // git may have written the canonical or the given form of the path.
+    let canonical = std::fs::canonicalize(&gitdir).unwrap_or_else(|_| gitdir.clone());
+    let exact = [&gitdir, &canonical]
+        .iter()
+        .any(|p| line == format!("gitdir: {}", p.display()));
+    if !exact || !gitdir.is_dir() {
         bail!(
-            "refused: {} was changed; it must point at {}",
+            "refused: {} was changed; it must say exactly: gitdir: {}",
             dotgit.display(),
             gitdir.display()
         );
     }
     Ok(gitdir)
+}
+
+/// Refused unless git is 2.40 or later: older git ignores `GIT_ATTR_SOURCE`,
+/// so a `.gitattributes` file could select a filter.
+fn check_git_version(bin: &Path) -> Result<()> {
+    let out = git_without_env(bin)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("running {}", bin.display()))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let version = text.split_whitespace().nth(2).unwrap_or_default();
+    let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    if (major, minor) < (2, 40) {
+        bail!(
+            "refused: {} is git {version}. horch ledger commit needs git 2.40 or later \
+             (GIT_ATTR_SOURCE), so that no .gitattributes file can select a filter.",
+            bin.display()
+        );
+    }
+    Ok(())
 }
 
 /// `arg` as an absolute path inside `root`, or a refusal. Symlinks in the
@@ -268,10 +287,8 @@ impl Trusted {
         // worktree's `.git` file, which the sandbox can rewrite.
         cmd.arg("-C")
             .arg(&self.root)
-            .arg("--git-dir")
-            .arg(&self.gitdir)
-            .arg("--work-tree")
-            .arg(&self.root);
+            .env("GIT_DIR", &self.gitdir)
+            .env("GIT_WORK_TREE", &self.root);
         for pair in SAFE_CONFIG {
             cmd.args(["-c", pair]);
         }
@@ -306,6 +323,11 @@ fn clean_git(bin: &Path) -> Command {
     let mut cmd = git_without_env(bin);
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        // Attributes come from the empty tree: no `.gitattributes` file
+        // selects a filter.
+        .env("GIT_ATTR_SOURCE", EMPTY_TREE)
+        .env("GIT_PAGER", "cat")
+        .env("GIT_EDITOR", "true")
         .env("GIT_TERMINAL_PROMPT", "0");
     cmd
 }

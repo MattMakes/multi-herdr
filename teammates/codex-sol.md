@@ -1,6 +1,6 @@
 ---
 name: codex-sol
-brief_description: Codex worker for complex builds. Network on, so its sandbox cannot stop git push. Commits via horch ledger commit.
+brief_description: Codex Sol, complex builds. Network on; sandbox cannot stop git push. Not a primary for non-ledger work that commits.
 generic: true
 base: fleet-worker
 agent: codex

@@ -746,7 +746,9 @@ fn execpolicy_blocks_are_unchanged() {
     }
     assert_eq!(r.exec_rules().len(), 5);
     assert!(
-        r.exec_rules().iter().all(|rule| !rule.pattern.starts_with("\"git\"")),
+        r.exec_rules()
+            .iter()
+            .all(|rule| !rule.pattern.starts_with("\"git\"")),
         "no execpolicy rule may allow a raw git command"
     );
 }

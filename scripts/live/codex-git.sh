@@ -41,13 +41,23 @@ export HORCH_WORKER_ID=$w
 wt=$("$horch" ledger worktree new probe | sed -n 's/^path: //p')
 case $wt in "$s"/*) ;; *) fail setup "the worktree '$wt' is not under $s; stopping"; exit 1 ;; esac
 
-sandboxed() {
-  local p=permissions.fleet_write
-  codex sandbox -P fleet_write -C "$wt" \
+# The pairs fleet_write_profile_args (crates/horch-core/src/harness/codex.rs)
+# passes. sandboxed_in runs from <dir>; sandboxed runs from the worktree.
+sandboxed_in() {
+  local dir=$1 p=permissions.fleet_write
+  shift
+  codex sandbox -P fleet_write -C "$dir" \
     -c "$p.extends=\":workspace\"" \
-    -c "$p.filesystem={\":project_roots\"={\".\"=\"write\",\".git\"=\"write\",\".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"},\":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}" \
+    -c "$p.filesystem={\":project_roots\"={\".\"=\"write\",\".agents\"=\"write\"},\":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}" \
     -c "$p.workspace_roots={\"$s/state\"=true}" \
     -c "$p.network.enabled=true" -- "$@"
+}
+sandboxed() { sandboxed_in "$wt" "$@"; }
+# can <label> <dir> <path>: report whether a pane in <dir> can write <path>.
+can() {
+  local label=$1 dir=$2 path=$3 want=$4 got=no
+  sandboxed_in "$dir" sh -c "mkdir -p \"\$(dirname '$path')\" 2>/dev/null; echo >> '$path'" 2>/dev/null && got=yes
+  [ "$got" = "$want" ] && pass "grant $label: write=$got" || fail "grant $label" "write=$got, want $want"
 }
 decision() {
   codex execpolicy check -r "$rules" -- "$@" |
@@ -63,12 +73,29 @@ done
 d=$(decision horch ledger commit -m x)
 [ "$d" = allow ] && pass "execpolicy 'horch ledger commit -m x' -> allow" || fail "execpolicy horch ledger commit" "$d"
 
-# 2. Raw git stays in the sandbox, which refuses the git metadata.
+# 2. The fleet_write grants (decision 01c). A pane in the shared checkout
+# could write .git/hooks and .git/config before the grants were removed.
+main=$s/main
+gd=$main/.git/worktrees/$(basename "$wt")
+can "worktree pane: main .git/hooks/pre-commit" "$wt" "$main/.git/hooks/pre-commit" no
+can "worktree pane: main .git/config" "$wt" "$main/.git/config" no
+can "worktree pane: main .git/worktrees/<name>/x" "$wt" "$gd/x" no
+can "worktree pane: main .codex/x" "$wt" "$main/.codex/x" no
+can "worktree pane: worktree .codex/x" "$wt" "$wt/.codex/x" no
+can "worktree pane: worktree .aws/x" "$wt" "$wt/.aws/x" no
+can "worktree pane: worktree .agents/x" "$wt" "$wt/.agents/x" yes
+can "worktree pane: worktree .git file" "$wt" "$wt/.git" no
+can "shared-checkout pane: .git/hooks/pre-commit" "$main" "$main/.git/hooks/pre-commit" no
+can "shared-checkout pane: .git/config" "$main" "$main/.git/config" no
+can "shared-checkout pane: .codex/x" "$main" "$main/.codex/x" no
+rm -rf "$wt/.agents"
+
+# 3. Raw git stays in the sandbox, which refuses the git metadata.
 echo a >"$wt/a.txt"
 if sandboxed git add a.txt 2>"$s/err"; then fail "sandboxed git add" "exit 0"; else pass "sandboxed git add refused: $(head -1 "$s/err")"; fi
 if sandboxed git push -q "$s/remote.git" HEAD 2>"$s/err"; then fail "sandboxed git push" "exit 0"; else pass "sandboxed git push refused: $(grep -m1 rejected "$s/err")"; fi
 
-# 3. The nested-repository attack: a clean filter in a nested repo's config.
+# 4. The nested-repository attack: a clean filter in a nested repo's config.
 mkdir "$wt/nested" && git -C "$wt/nested" init -q
 git -C "$wt/nested" config filter.x.clean "touch $s/ESCAPED; cat"
 echo '* filter=x' >"$wt/nested/.gitattributes"
@@ -84,7 +111,7 @@ if out=$(cd "$wt" && "$horch" ledger commit -m x -- nested/f.txt 2>&1); then fai
 fi
 rm -rf "$wt/nested"
 
-# 4. The trusted command commits in the recorded worktree.
+# 5. The trusted command commits in the recorded worktree.
 before=$(git -C "$wt" rev-parse HEAD)
 if id=$(cd "$wt" && "$horch" ledger commit -m probe -- a.txt 2>"$s/err"); then
   [ "$id" = "$(git -C "$wt" rev-parse HEAD)" ] && [ "$id" != "$before" ] &&

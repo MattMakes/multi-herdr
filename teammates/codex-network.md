@@ -1,6 +1,6 @@
 ---
 name: codex-network
-brief_description: Codex Sol for installs and downloads. Network on, so its sandbox cannot stop git push. Commits via horch ledger commit.
+brief_description: Codex Sol, installs/fetches. Network on; sandbox cannot stop git push. Not a primary for non-ledger work that commits.
 generic: true
 base: fleet-worker
 agent: codex

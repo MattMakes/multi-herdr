@@ -935,9 +935,13 @@ pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
 
 /// The `-c` pairs that define [`FLEET_WRITE_PROFILE`]:
 ///
-/// - The pane's folder (codex's project roots) is writable throughout,
-///   `.git`, `.codex`, `.agents` and `.aws` too, which `:workspace` keeps
-///   read-only. So a Codex worker can commit and make worktrees.
+/// - The pane's folder (codex's project roots) is writable, except what
+///   `:workspace` keeps read-only: `.git`, `.codex` and `.aws`. A writable
+///   `.git` let a pane in the shared checkout plant a hook or config that
+///   runs later outside any sandbox (docs/live-checks/codex-git.md). A Codex
+///   worker commits only in a ledger task, through `horch ledger commit`.
+/// - `.agents` is writable: godot-tech-lead and ue-tech-lead fall back to
+///   codex-sol and write `.agents/<engine>-project-context.md` there.
 /// - Everything else stays read-only: `/tmp` and the system temp dir as
 ///   well. `state_root` is the one extra writable root: `horch note` and
 ///   `horch done` write the ledger in it, and the pane's `TMPDIR` lives
@@ -952,9 +956,8 @@ fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
     [
         format!("permissions.{p}.extends=\":workspace\""),
         format!(
-            "permissions.{p}.filesystem={{\":project_roots\"={{\".\"=\"write\",\".git\"=\"write\",\
-             \".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"}},\
-             \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}}"
+            "permissions.{p}.filesystem={{\":project_roots\"={{\".\"=\"write\",\
+             \".agents\"=\"write\"}},\":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}}"
         ),
         format!(
             "permissions.{p}.workspace_roots={{{}=true}}",
@@ -2170,8 +2173,7 @@ mod tests {
                 vec![
                     "permissions.fleet_write.extends=\":workspace\"".to_string(),
                     "permissions.fleet_write.filesystem={\":project_roots\"={\".\"=\"write\",\
-                     \".git\"=\"write\",\".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"},\
-                     \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}"
+                     \".agents\"=\"write\"},\":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}"
                         .to_string(),
                     format!("permissions.fleet_write.workspace_roots={{\"{state}\"=true}}"),
                     "permissions.fleet_write.network.enabled=true".to_string(),

@@ -268,3 +268,40 @@ fn a_rewritten_worktree_git_file_is_refused_and_its_config_never_runs() {
     let main_head = git_in(&h, &h.project, &["rev-parse", "fleet/alpha-T1-feature"]);
     assert_eq!(main_head, before, "nothing is committed");
 }
+
+#[test]
+fn an_attribute_filter_never_runs_and_the_commit_still_lands() {
+    let (h, w, wt) = claimed("lc-filter");
+    let marker = h.root.join("filter-ran");
+    let project = h.project.clone();
+    git_in(
+        &h,
+        &project,
+        &[
+            "config",
+            "filter.evil.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ],
+    );
+    std::fs::write(wt.join(".gitattributes"), "* filter=evil\n").unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+
+    let o = as_worker(
+        &h,
+        &w,
+        &wt,
+        &[
+            "ledger",
+            "commit",
+            "-m",
+            "x",
+            "--",
+            ".gitattributes",
+            "a.txt",
+        ],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!marker.exists(), "the clean filter must not run");
+    let files = git_in(&h, &wt, &["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(files, ".gitattributes\na.txt");
+}
