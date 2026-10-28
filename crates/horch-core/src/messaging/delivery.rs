@@ -71,29 +71,40 @@ pub fn send_line_with(
         timing.settle_short
     };
     // Typing needs its full settle, or a busy TUI splits the line, so the
-    // push budget keeps the longer of the two waits after the tail poll.
-    // Without that much left, type nothing: the line waits in the mail.
-    let reserve = settle.max(timing.second_enter);
-    let mut timing = *timing;
-    if let Some(left) = push_time_left() {
-        if left < reserve {
-            bail!("the push budget is spent, so the line was not typed");
-        }
-        timing.tail_timeout = timing.tail_timeout.min(left - reserve);
+    // push budget keeps the longer of the two waits after the tail poll,
+    // and time for the Enter calls. Without that much left, type nothing:
+    // the line waits in the mail.
+    let reserve = settle.max(timing.second_enter) + ENTER_CALLS;
+    if push_time_left().is_some_and(|left| left < reserve) {
+        bail!("the push budget is spent, so the line was not typed");
     }
     ws.pane_send_text(pane, message)?;
+    // Typing takes time too, so the tail poll gets only what is left now.
+    let mut timing = *timing;
+    if let Some(left) = push_time_left() {
+        timing.tail_timeout = timing.tail_timeout.min(left.saturating_sub(reserve));
+    }
     let landed = wait_for_tail(ws, pane, message, &timing);
     if !landed {
         // Could not see it land (wrapped past recognition, or the pane
         // redraws oddly). Keep the old length-scaled settle as a last resort.
-        std::thread::sleep(settle);
+        std::thread::sleep(before_enter(settle));
     }
     ws.pane_send_keys(pane, "enter")?;
     if landed {
-        std::thread::sleep(timing.second_enter);
+        std::thread::sleep(before_enter(timing.second_enter));
         ws.pane_send_keys(pane, "enter")?;
     }
     Ok(())
+}
+
+/// The time a push budget keeps for the herdr Enter calls after typing.
+const ENTER_CALLS: Duration = Duration::from_millis(250);
+
+/// `wait`, cut so the push budget still has [`ENTER_CALLS`] after it: typed
+/// text that is not submitted would join the next line typed into the pane.
+fn before_enter(wait: Duration) -> Duration {
+    push_time_left().map_or(wait, |left| wait.min(left.saturating_sub(ENTER_CALLS)))
 }
 
 /// How long a delivery waits for an agent that is still starting, and how
@@ -311,6 +322,7 @@ fn tail_needle(message: &str) -> String {
 mod tests {
     use super::*;
 
+    use crate::workspace::model::{Direction, NewWorkspace};
     use crate::workspace::testing::FakeWorkspace;
 
     /// #67: one budget bounds every phase of a push. An agent that shows
@@ -378,7 +390,8 @@ mod tests {
             second_enter: Duration::from_millis(100),
             ..Timing::DEFAULT
         };
-        let budget = Duration::from_millis(400);
+        // 600 ms: the settle and the Enter calls keep 350, the poll gets 250.
+        let budget = Duration::from_millis(600);
         let started = Instant::now();
         let guard = start_push_budget(budget).expect("no budget runs yet");
         ws.fail_next("agent_prompt", "no agent");
@@ -401,6 +414,91 @@ mod tests {
             "nothing is typed"
         );
         drop(short);
+    }
+
+    /// A workspace whose `pane_send_text` is slow, and that records when
+    /// each Enter arrives. Every other call goes to the fake.
+    struct SlowTyping {
+        fake: FakeWorkspace,
+        typing: Duration,
+        enters: std::cell::RefCell<Vec<Instant>>,
+    }
+
+    impl WorkspaceClient for SlowTyping {
+        fn pane_get(&self, pane: &str) -> Result<Pane> {
+            self.fake.pane_get(pane)
+        }
+        fn pane_list(&self, workspace: &str) -> Result<Vec<Pane>> {
+            self.fake.pane_list(workspace)
+        }
+        fn pane_split(&self, from: &str, direction: Direction) -> Result<String> {
+            self.fake.pane_split(from, direction)
+        }
+        fn pane_run(&self, pane: &str, command: &str) -> Result<()> {
+            self.fake.pane_run(pane, command)
+        }
+        fn pane_close(&self, pane: &str) -> Result<()> {
+            self.fake.pane_close(pane)
+        }
+        fn agent_prompt(&self, _: &str, _: &str) -> Result<()> {
+            bail!("no agent")
+        }
+        fn pane_send_text(&self, pane: &str, text: &str) -> Result<()> {
+            std::thread::sleep(self.typing);
+            self.fake.pane_send_text(pane, text)
+        }
+        fn pane_send_keys(&self, pane: &str, keys: &str) -> Result<()> {
+            self.enters.borrow_mut().push(Instant::now());
+            self.fake.pane_send_keys(pane, keys)
+        }
+        fn pane_read(&self, pane: &str, source: &str) -> Result<String> {
+            self.fake.pane_read(pane, source)
+        }
+        fn workspace_create(
+            &self,
+            label: &str,
+            cwd: Option<&str>,
+            focus: bool,
+        ) -> Result<NewWorkspace> {
+            self.fake.workspace_create(label, cwd, focus)
+        }
+        fn workspace_close(&self, workspace: &str) -> Result<()> {
+            self.fake.workspace_close(workspace)
+        }
+        fn server_reachable(&self) -> bool {
+            self.fake.server_reachable()
+        }
+    }
+
+    /// #67: typing that takes most of the budget still leaves time for the
+    /// Enter calls, so typed text is never left unsubmitted at the deadline.
+    #[test]
+    fn slow_typing_still_presses_enter_inside_the_budget() {
+        let ws = SlowTyping {
+            fake: FakeWorkspace::new(),
+            typing: Duration::from_millis(300),
+            enters: Default::default(),
+        };
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let timing = Timing {
+            settle_short: Duration::from_millis(100),
+            second_enter: Duration::from_millis(100),
+            ..Timing::DEFAULT
+        };
+        let budget = Duration::from_millis(600);
+        let guard = start_push_budget(budget).expect("no budget runs yet");
+        let deadline = push_deadline().expect("the budget runs");
+        send_line_with(&ws, &pane, "[r] DONE: x", &timing).unwrap();
+        drop(guard);
+        let enters = ws.enters.borrow();
+        assert!(!enters.is_empty(), "the typed line is submitted");
+        for enter in enters.iter() {
+            assert!(
+                *enter + ENTER_CALLS / 2 <= deadline,
+                "an Enter left too little time: {:?} before the deadline",
+                deadline.saturating_duration_since(*enter)
+            );
+        }
     }
 
     #[test]
