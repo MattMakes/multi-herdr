@@ -1184,8 +1184,11 @@ fn bal_05_substituted_record_fields() {
     );
     assert_eq!(r["plan"], "p");
     let brief: Value = serde_json::from_str(
-        &std::fs::read_to_string(h.state.join("herdr-orchestration-w1/researcher-1.brief.json"))
-            .unwrap(),
+        &std::fs::read_to_string(
+            h.state
+                .join("herdr-orchestration-w1/researcher-1.brief.json"),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(brief["resolved"]["agent"], "codex");
@@ -1248,8 +1251,11 @@ fn bal_05_resume_uses_via() {
         "a resume is not gated"
     );
     let brief: Value = serde_json::from_str(
-        &std::fs::read_to_string(h.state.join("herdr-orchestration-w1/researcher-9.brief.json"))
-            .unwrap(),
+        &std::fs::read_to_string(
+            h.state
+                .join("herdr-orchestration-w1/researcher-9.brief.json"),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(brief["resolved"]["agent"], "codex");

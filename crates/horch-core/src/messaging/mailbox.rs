@@ -4,7 +4,7 @@
 //! Lives under horch's state folder keyed by workspace id, so the OS cannot
 //! clear it from under an idle fleet. A fleet started before that move still
 //! has its registry in the system temp dir; reads fall back to it, writes
-//! never go there.
+//! never go there, and only [`Mailbox::unregister`] deletes from it.
 
 use std::path::{Path, PathBuf};
 
@@ -42,6 +42,7 @@ pub struct RoleEntry {
 pub struct Mailbox {
     dir: PathBuf,
     /// The pre-upgrade mailbox in the temp dir, read when `dir` lacks a file.
+    /// Nothing is written to it; `unregister` removes a role's files from it.
     legacy_dir: Option<PathBuf>,
     workspace_id: String,
 }
@@ -68,7 +69,7 @@ impl Mailbox {
     }
 
     /// [`Mailbox::under`] the context's state folder, with its temp dir as
-    /// the read-only fallback.
+    /// the fallback for reads and for removing a role.
     pub fn in_context(ctx: &RuntimeContext, workspace_id: &str) -> Self {
         Self::under(&ctx.paths.state_root, workspace_id).with_legacy_root(&ctx.paths.temp_root)
     }
@@ -136,12 +137,20 @@ impl Mailbox {
         }
     }
 
-    fn id_path(&self, role: &str) -> PathBuf {
-        self.read_path(&format!("{role}.id"))
+    fn id_file(role: &str) -> String {
+        format!("{role}.id")
     }
 
-    fn brief_path(&self, role: &str) -> PathBuf {
-        self.read_path(&format!("{role}.brief.json"))
+    fn brief_file(role: &str) -> String {
+        format!("{role}.brief.json")
+    }
+
+    fn id_read_path(&self, role: &str) -> PathBuf {
+        self.read_path(&Self::id_file(role))
+    }
+
+    fn brief_read_path(&self, role: &str) -> PathBuf {
+        self.read_path(&Self::brief_file(role))
     }
 
     /// Record this pane's public id under `role` so other panes can address it.
@@ -168,7 +177,7 @@ impl Mailbox {
         let mailbox = Self::under(state_root, &ws).with_legacy_root(temp_root);
         std::fs::create_dir_all(&mailbox.dir)
             .with_context(|| format!("creating mailbox {}", mailbox.dir.display()))?;
-        std::fs::write(mailbox.dir.join(format!("{role}.id")), &pane.pane_id)
+        std::fs::write(mailbox.dir.join(Self::id_file(role)), &pane.pane_id)
             .with_context(|| format!("registering role '{role}'"))?;
         Ok((mailbox, pane.pane_id))
     }
@@ -195,14 +204,17 @@ impl Mailbox {
 
     /// The pane id registered for `role`, if any.
     pub fn pane_for(&self, role: &str) -> Option<String> {
-        let raw = std::fs::read_to_string(self.id_path(role)).ok()?;
+        let raw = std::fs::read_to_string(self.id_read_path(role)).ok()?;
         let trimmed = raw.trim().to_string();
         (!trimmed.is_empty()).then_some(trimmed)
     }
 
     /// When `role` registered: the modification time of its id file.
     pub fn registered_at(&self, role: &str) -> Option<std::time::SystemTime> {
-        std::fs::metadata(self.id_path(role)).ok()?.modified().ok()
+        std::fs::metadata(self.id_read_path(role))
+            .ok()?
+            .modified()
+            .ok()
     }
 
     /// Every registered `(role, pane_id)`, sorted by role.
@@ -210,7 +222,7 @@ impl Mailbox {
         let mut out = Self::roles_in(&self.dir);
         if let Some(legacy) = &self.legacy_dir {
             for (role, pane) in Self::roles_in(legacy) {
-                if !self.dir.join(format!("{role}.id")).exists() {
+                if !self.dir.join(Self::id_file(&role)).exists() {
                     out.push((role, pane));
                 }
             }
@@ -269,14 +281,14 @@ impl Mailbox {
     pub fn write_brief(&self, brief: &Brief) -> Result<()> {
         std::fs::create_dir_all(&self.dir)
             .with_context(|| format!("creating mailbox {}", self.dir.display()))?;
-        let path = self.dir.join(format!("{}.brief.json", brief.role));
+        let path = self.dir.join(Self::brief_file(&brief.role));
         let json = serde_json::to_string_pretty(brief)?;
         crate::fsx::write_atomic(&path, json.as_bytes(), BRIEF_MODE)
             .with_context(|| format!("writing brief {}", path.display()))
     }
 
     pub fn read_brief(&self, role: &str) -> Result<Brief> {
-        let path = self.brief_path(role);
+        let path = self.brief_read_path(role);
         let raw = std::fs::read_to_string(&path).with_context(|| {
             format!(
                 "no brief at {} (spawn this worker with `horch spawn`)",
@@ -288,22 +300,33 @@ impl Mailbox {
 
     /// True when anything already claims this role in this workspace.
     pub fn role_taken(&self, role: &str) -> bool {
-        self.id_path(role).exists() || self.brief_path(role).exists()
+        self.id_read_path(role).exists() || self.brief_read_path(role).exists()
     }
 
     /// Drop a role's registration and brief, so the role name frees up.
     pub fn unregister(&self, role: &str) {
         for dir in std::iter::once(&self.dir).chain(&self.legacy_dir) {
-            let _ = std::fs::remove_file(dir.join(format!("{role}.id")));
-            let _ = std::fs::remove_file(dir.join(format!("{role}.brief.json")));
+            for file in [Self::id_file(role), Self::brief_file(role)] {
+                let path = dir.join(file);
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => eprintln!(
+                        "horch: removing {} failed: {e}; role '{role}' stays registered",
+                        path.display()
+                    ),
+                }
+            }
         }
     }
 
     /// Next per-teammate ordinal for auto-naming a role `<teammate>-<n>`.
     pub(crate) fn next_seq(&self, teammate: &str) -> Result<u32> {
         std::fs::create_dir_all(&self.dir)?;
-        let path = self.dir.join(format!(".seq-{teammate}"));
-        let current: u32 = std::fs::read_to_string(&path)
+        let file = format!(".seq-{teammate}");
+        let path = self.dir.join(&file);
+        // The first count after the upgrade continues the old fleet's count.
+        let current: u32 = std::fs::read_to_string(self.read_path(&file))
             .ok()
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0);
@@ -316,6 +339,12 @@ impl Mailbox {
     /// created after this worker launched.
     pub(crate) fn launch_marker(&self, role: &str) -> PathBuf {
         self.dir.join(format!(".{role}.launch-marker"))
+    }
+
+    /// The marker to read: a worker launched before the upgrade left its
+    /// marker in the old temp location.
+    pub(crate) fn launch_marker_read(&self, role: &str) -> PathBuf {
+        self.read_path(&format!(".{role}.launch-marker"))
     }
 
     pub(crate) fn harvest_log(&self, role: &str) -> PathBuf {
@@ -466,7 +495,6 @@ mod tests {
         let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
         std::fs::write(legacy.join("sonnet-1.id"), "old-pane").unwrap();
         mb.write_brief(&brief("sonnet-2")).unwrap();
-        std::fs::create_dir_all(mb.dir()).unwrap();
         std::fs::write(mb.dir().join("sonnet-1.id"), "new-pane").unwrap();
 
         assert_eq!(mb.pane_for("sonnet-1").as_deref(), Some("new-pane"));
@@ -478,6 +506,78 @@ mod tests {
         assert!(!legacy.join("sonnet-2.brief.json").exists());
         assert_eq!(mb.next_seq("sonnet").unwrap(), 1);
         assert!(!legacy.join(".seq-sonnet").exists());
+    }
+
+    #[test]
+    fn roles_merge_across_the_state_and_old_locations() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
+        std::fs::write(legacy.join("old-1.id"), "w1-2").unwrap();
+        std::fs::create_dir_all(mb.dir()).unwrap();
+        std::fs::write(mb.dir().join("new-1.id"), "w1-3").unwrap();
+
+        assert_eq!(
+            mb.roles(),
+            vec![
+                ("new-1".to_string(), "w1-3".to_string()),
+                ("old-1".to_string(), "w1-2".to_string()),
+            ]
+        );
+        assert_eq!(mb.pane_for("old-1").as_deref(), Some("w1-2"));
+        assert_eq!(mb.pane_for("new-1").as_deref(), Some("w1-3"));
+    }
+
+    #[test]
+    fn unregister_removes_a_role_held_in_both_locations() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
+        std::fs::write(legacy.join("sonnet-1.id"), "old-pane").unwrap();
+        std::fs::create_dir_all(mb.dir()).unwrap();
+        std::fs::write(mb.dir().join("sonnet-1.id"), "new-pane").unwrap();
+        mb.write_brief(&brief("sonnet-1")).unwrap();
+
+        mb.unregister("sonnet-1");
+
+        assert!(!legacy.join("sonnet-1.id").exists());
+        assert!(!mb.dir().join("sonnet-1.id").exists());
+        assert_eq!(mb.pane_for("sonnet-1"), None);
+        assert!(!mb.role_taken("sonnet-1"));
+    }
+
+    /// An upgraded fleet keeps counting from its old counter, so the next
+    /// auto-name does not collide with a role that is still registered.
+    #[test]
+    fn seq_counter_continues_from_the_old_location() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
+        std::fs::write(legacy.join(".seq-sonnet"), "4").unwrap();
+
+        assert_eq!(mb.next_seq("sonnet").unwrap(), 5);
+        assert_eq!(mb.next_seq("sonnet").unwrap(), 6);
+        assert_eq!(
+            std::fs::read_to_string(legacy.join(".seq-sonnet")).unwrap(),
+            "4"
+        );
+    }
+
+    #[test]
+    fn launch_marker_read_finds_the_old_location() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
+        std::fs::write(legacy.join(".sonnet-1.launch-marker"), "").unwrap();
+
+        assert_eq!(
+            mb.launch_marker_read("sonnet-1"),
+            legacy.join(".sonnet-1.launch-marker")
+        );
+        assert_eq!(
+            mb.launch_marker("sonnet-1"),
+            mb.dir().join(".sonnet-1.launch-marker")
+        );
     }
 
     #[test]

@@ -590,7 +590,7 @@ fn registries_in(dir: &std::path::Path) -> Vec<String> {
 #[test]
 fn p09_registry_lives_in_the_state_folder() {
     let h = fleet("p09-state", "exec,stay");
-    let (pane, role, _id) = running_worker(&h);
+    let (_pane, role, _id) = running_worker(&h);
 
     assert!(h
         .state
@@ -604,7 +604,11 @@ fn p09_registry_lives_in_the_state_folder() {
 
     for entry in std::fs::read_dir(&h.tmp).unwrap() {
         let path = entry.unwrap().path();
-        let _ = std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path));
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
     }
 
     let inbox = h.run(&["inbox"]);
@@ -618,7 +622,6 @@ fn p09_registry_lives_in_the_state_folder() {
     );
     let tell = h.run(&["tell", &role, "NOTE: still there"]);
     assert!(tell.status.success(), "{}", text(&tell));
-    let _ = pane;
 }
 
 /// P09: a registry that exists only in the old temp location is still found
@@ -627,9 +630,9 @@ fn p09_registry_lives_in_the_state_folder() {
 fn p09_registry_in_the_old_temp_location_still_resolves() {
     let h = fleet("p09-legacy", "exec,stay");
     let (pane, role, id) = running_worker(&h);
-    let new = h.state.join("herdr-orchestration-w1");
-    let old = h.tmp.join("herdr-orchestration-w1");
-    std::fs::rename(&new, &old).unwrap();
+    let state_mailbox = h.state.join("herdr-orchestration-w1");
+    let legacy_mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::rename(&state_mailbox, &legacy_mailbox).unwrap();
 
     let inbox = h.run(&["inbox"]);
     assert!(inbox.status.success(), "{}", text(&inbox));
@@ -645,6 +648,6 @@ fn p09_registry_in_the_old_temp_location_still_resolves() {
 
     done(&h, &pane, &role, &id);
     assert_eq!(record(&h, &id)["status"], "done");
-    assert!(!old.join(format!("{role}.id")).exists());
-    assert!(!new.join(format!("{role}.id")).exists());
+    assert!(!legacy_mailbox.join(format!("{role}.id")).exists());
+    assert!(!state_mailbox.join(format!("{role}.id")).exists());
 }
