@@ -26,7 +26,7 @@ libc = "0.2"
 # handle that read it (`procid`). Job Objects end the whole herdr process
 # tree on a timeout (`workspace::herdr`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 # `build.rs` digests the bundled skill catalog once at build time, so no
 # process digests the 8 MB of compiled-in files at run time.

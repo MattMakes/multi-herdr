@@ -562,7 +562,8 @@ fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
 }
 
 /// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
-/// reader is never joined: it ends when the pipe closes or the cap is hit.
+/// reader ends when the pipe closes or the cap is hit; a caller waits for it
+/// only for [`READER_GRACE`].
 fn read_capped(
     pipe: Option<impl Read + Send + 'static>,
 ) -> std::io::Result<(mpsc::Receiver<std::io::Result<Vec<u8>>>, JoinHandle<()>)> {
@@ -637,16 +638,63 @@ impl Drop for Job {
     }
 }
 
-/// Wait for the reader threads. On Windows the tree is dead by now, so the
-/// pipes are closed and each thread ends. On Unix the threads stay detached:
-/// a descendant in a new session can still hold a pipe.
+/// The most a finished call waits for its reader threads after the child is
+/// killed. A reader still blocked then is left to end with its pipe: a
+/// descendant that escaped containment can hold the pipe open.
+const READER_GRACE: Duration = Duration::from_millis(200);
+
 fn join_readers(handles: Vec<JoinHandle<()>>) {
-    #[cfg(windows)]
+    let until = Instant::now() + READER_GRACE;
     for handle in handles {
-        let _ = handle.join();
+        while !handle.is_finished() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if handle.is_finished() {
+            let _ = handle.join();
+        }
     }
-    #[cfg(not(windows))]
-    drop(handles);
+}
+
+/// Let the suspended `child` run: resume its only thread. std keeps the main
+/// thread handle to itself, so find the thread by its owner process.
+#[cfg(windows)]
+fn resume_main_thread(child: &Child) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    // SAFETY: a snapshot of all threads; the handle is closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: an all-zero entry is valid; `dwSize` is set before use.
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+    let mut resumed = false;
+    // SAFETY: `snapshot` is live and `entry` is sized.
+    let mut more = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+    while more {
+        if entry.th32OwnerProcessID == child.id() {
+            // SAFETY: opens the thread for resume only; closed right after.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if !thread.is_null() {
+                // SAFETY: `thread` is a live handle we own.
+                resumed |= unsafe { ResumeThread(thread) } != u32::MAX;
+                unsafe { CloseHandle(thread) };
+            }
+        }
+        // SAFETY: as above.
+        more = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: closing the snapshot we own.
+    unsafe { CloseHandle(snapshot) };
+    if resumed {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("could not resume herdr"))
+    }
 }
 
 /// Kill and reap `child`. A failure of either is a warning, not an error:
@@ -702,8 +750,9 @@ fn has_exited(child: &mut Child) -> std::io::Result<bool> {
 
 /// Run `command` with one `timeout` for the exit and for both pipes. On the
 /// deadline, or when either pipe passes the cap, the child is killed and the
-/// call fails. On Windows the whole process tree is killed and the readers
-/// are joined; on Unix the readers stay detached.
+/// call fails. On Windows the child starts suspended inside a job, and the
+/// whole tree is killed. Every platform then waits at most [`READER_GRACE`]
+/// for the readers.
 fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
     command
         .stdin(Stdio::null())
@@ -712,11 +761,18 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "herdr timeout is too large")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "herdr timeout is too large",
+        )
     })?;
+    // The child starts suspended, so it cannot start a descendant before the
+    // job holds it.
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0000_0004);
     let mut child = command.spawn()?;
     #[cfg(windows)]
-    let job = match Job::contain(&child) {
+    let job = match Job::contain(&child).and_then(|job| resume_main_thread(&child).map(|()| job)) {
         Ok(job) => job,
         Err(error) => {
             kill_and_reap(&mut child);
