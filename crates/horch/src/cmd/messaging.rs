@@ -240,15 +240,22 @@ fn no_orchestrator_hint(role: &str, sender: Option<&str>) -> &'static str {
 pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
-    let roles = mailbox.role_states(&herdr);
-    if roles.is_empty() {
-        output::println("no roles registered yet");
-    } else {
-        if roles.iter().any(|r| r.state == PaneState::Unknown) {
-            eprintln!("horch inbox: herdr did not answer, so pane states are unknown");
+    // A herdr that accepts the pane-list call and never answers must not
+    // keep pending mail from printing: wait a bounded time, then go on.
+    let roles = {
+        let (herdr, mailbox) = (herdr.clone(), mailbox.clone());
+        bounded(PANE_LIST_TIMEOUT, move || mailbox.role_states(&herdr))
+    };
+    match roles {
+        None => eprintln!("horch inbox: herdr did not answer, so the role list is skipped"),
+        Some(roles) if roles.is_empty() => output::println("no roles registered yet"),
+        Some(roles) => {
+            if roles.iter().any(|r| r.state == PaneState::Unknown) {
+                eprintln!("horch inbox: herdr did not answer, so pane states are unknown");
+            }
+            let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
+            output::print(&inbox_listing(&roles, channel::is_live(&socket)));
         }
-        let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
-        output::print(&inbox_listing(&roles, channel::is_live(&socket)));
     }
     let is_worker = ctx
         .worker
@@ -276,6 +283,21 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
         output::println(&format!("{count} {noun} acknowledged"));
     }
     Ok(())
+}
+
+const PANE_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `work` on its own thread and give up on it after `timeout`. The
+/// abandoned thread ends with the process.
+fn bounded<T: Send + 'static>(
+    timeout: std::time::Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(work());
+    });
+    receiver.recv_timeout(timeout).ok()
 }
 
 /// Tell an orchestrator that durable mail still waits for explicit acknowledgement.
@@ -740,6 +762,17 @@ mod tests {
     use super::*;
     use horch_core::execution::legacy::Record;
     use std::time::Duration;
+
+    #[test]
+    fn a_stalled_lookup_is_given_up_on_after_the_timeout() {
+        use std::time::Duration;
+        let stalled = bounded(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(5));
+            1
+        });
+        assert_eq!(stalled, None);
+        assert_eq!(bounded(Duration::from_secs(5), || 2), Some(2));
+    }
 
     #[test]
     fn inbox_listing_marks_closed_panes() {

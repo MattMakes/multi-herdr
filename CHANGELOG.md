@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+- `horch inbox` now prints the role list first, then pending messages, and
+  ends with `N messages acknowledged`. It used to print messages first.
+  `horch inbox --roles` prints only the roles and leaves mail pending.
+  `horch inbox --peek` prints mail and leaves it pending. A script that read
+  the role list from `horch inbox` should use `--roles`. A script that must
+  not acknowledge mail should use `--peek`. The reminder other commands print
+  now reads "N messages are not acknowledged", without "worker". If herdr
+  does not answer for 5 seconds, `inbox` skips the role list and still
+  prints mail.
 - `horch fleet` and `horch orchestration` install a newer multi-herdr
   release before the fleet starts, then restart on it. `--no-update` or
   `HORCH_NO_UPDATE=1` skips it; a failed update starts the fleet on the
