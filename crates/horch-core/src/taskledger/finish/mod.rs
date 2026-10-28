@@ -43,6 +43,10 @@ pub struct Tools {
     pub evidence_root: PathBuf,
     /// The shell that runs a check command.
     pub shell: PathBuf,
+    /// `codex`: a Codex worker's check runs in its `codex sandbox`.
+    pub codex: PathBuf,
+    /// horch's state root, the 1 extra writable root of that sandbox.
+    pub state_root: PathBuf,
 }
 
 /// 1 step row.

@@ -8,6 +8,8 @@ use anyhow::{bail, Context, Result};
 use rusqlite::params;
 
 use super::{set_worktree, worktree_of, Ctx, Outcome, WorktreeRow};
+use crate::harness::codex::fleet_write_sandbox;
+use crate::harness::HarnessKind;
 use crate::taskledger::git::{dir_bytes, Git};
 use crate::taskledger::model::{Actor, EventKind, StepName, WorktreeStatus};
 use crate::taskledger::store::Store;
@@ -16,16 +18,38 @@ use crate::taskledger::util::{self, About};
 /// How long a land waits for another land of the same repository.
 pub const LAND_LOCK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-/// Run `command` in `dir` with the shell; the log goes to `log`.
-fn run_check(shell: &Path, dir: &Path, command: &str, log: &Path) -> Result<bool> {
-    let out = Command::new(shell)
+/// Run `command` in `dir` with the shell; the log goes to `log`. When the
+/// worker that holds the claim runs on Codex, the check runs in the same
+/// `codex sandbox` its pane has: the committed code is the worker's, and
+/// outside a sandbox it would run with the operator's rights. The harness
+/// comes from the ledger's worker row, which spawn wrote, never from the
+/// worker's environment.
+fn run_check(cx: &Ctx<'_>, dir: &Path, command: &str, log: &Path) -> Result<bool> {
+    let sandboxed = cx.worker.harness.as_deref() == Some(HarnessKind::Codex.as_str());
+    let mut cmd = if sandboxed {
+        // /tmp is read-only in the sandbox: a private temp dir in the state
+        // root, as a pane has.
+        let tmp = cx
+            .tools
+            .state_root
+            .join("tmp")
+            .join(format!("check-{}", cx.worker.worker_id));
+        std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        let mut cmd = fleet_write_sandbox(&cx.tools.codex, &cx.tools.state_root, dir);
+        cmd.arg(&cx.tools.shell).env("TMPDIR", tmp);
+        cmd
+    } else {
+        Command::new(&cx.tools.shell)
+    };
+    let out = cmd
         .arg("-c")
         .arg(command)
         .current_dir(dir)
         .env_remove("ANTHROPIC_API_KEY")
         .output()
         .with_context(|| format!("running the check `{command}`"))?;
-    let mut text = format!("$ {command}\n# in {}\n", dir.display());
+    let place = if sandboxed { " (codex sandbox)" } else { "" };
+    let mut text = format!("$ {command}\n# in {}{place}\n", dir.display());
     text.push_str(&String::from_utf8_lossy(&out.stdout));
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     text.push_str(&format!("\n# exit: {:?}\n", out.status.code()));
@@ -66,7 +90,7 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
         .evidence_dir
         .join(format!("{}-{}.log", cx.seq, name.as_str()));
     let tree = cx.tools.git.tree(&cx.dir).ok();
-    if run_check(&cx.tools.shell, &cx.dir, cmd, &log)? {
+    if run_check(cx, &cx.dir, cmd, &log)? {
         Ok(Outcome::pass("exit 0", Some(log), &format!("`{cmd}` passed")).judged(tree))
     } else {
         Ok(Outcome::fail(
@@ -167,7 +191,7 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         .as_deref()
         .filter(|c| !c.trim().is_empty())
     {
-        if !run_check(&cx.tools.shell, &dir, cmd, &log)? {
+        if !run_check(cx, &dir, cmd, &log)? {
             return red(
                 store,
                 format!("`{cmd}` failed after the rebase; read {}", log.display()),

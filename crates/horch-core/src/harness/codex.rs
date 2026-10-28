@@ -970,6 +970,18 @@ fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
     .collect()
 }
 
+/// `codex sandbox` in [`FLEET_WRITE_PROFILE`], run from `dir`: the same
+/// sandbox a Codex write pane in `dir` has. Add the program and its
+/// arguments after the returned command's `--`.
+pub fn fleet_write_sandbox(codex: &Path, state_root: &Path, dir: &Path) -> Command {
+    let mut cmd = Command::new(codex);
+    cmd.args(["sandbox", "-P", FLEET_WRITE_PROFILE, "-C"])
+        .arg(dir)
+        .args(fleet_write_profile_args(&state_root.to_string_lossy()))
+        .arg("--");
+    cmd
+}
+
 /// The pane's private temp dir, `<state root>/tmp/<role>`: `/tmp` and the
 /// system temp dir are read-only in [`FLEET_WRITE_PROFILE`].
 fn pane_tmpdir(state_root: &Path, role: &str) -> PathBuf {

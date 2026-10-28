@@ -1613,3 +1613,89 @@ fn the_whole_flow_on_the_fake_herdr() {
     }
     assert!(events.as_array().is_some());
 }
+
+/// The real `codex` on `PATH`, for a test of its sandbox. Without one the
+/// test is skipped, unless `HORCH_REQUIRE_CODEX` is set.
+fn real_codex() -> Option<PathBuf> {
+    let found = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("codex"))
+            .find(|c| c.is_file())
+    });
+    if found.is_none() {
+        assert!(
+            std::env::var_os("HORCH_REQUIRE_CODEX").is_none(),
+            "HORCH_REQUIRE_CODEX is set but no codex is on PATH"
+        );
+    }
+    found
+}
+
+/// What spawn records for `worker`: the finish steps read its harness.
+fn record_launch(h: &Harness, worker: &str, harness: &str) {
+    let mut store = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    store
+        .immediate(|tx| {
+            horch_core::taskledger::workers::set_launch(tx, worker, "opus", harness, "m", None)
+        })
+        .unwrap();
+}
+
+/// The log of the first finish step in `r`, or "".
+fn first_step_log(r: &Value) -> String {
+    r["steps"][0]["evidence_path"]
+        .as_str()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_codex_held_check_runs_in_the_codex_sandbox() {
+    let Some(codex) = real_codex() else {
+        return;
+    };
+    for (harness, sandboxed) in [("codex", true), ("claude", false)] {
+        let mut h = finish_world(&format!("tl-sbx-{harness}"));
+        h.set("HORCH_CODEX_BIN", codex.to_string_lossy());
+        ok(&h, &["ledger", "run", "new", "alpha"]);
+        // Outside the checkout and the state root.
+        let outside = h.root.join("outside.txt");
+        // Shell redirections: the harness PATH has no `touch`.
+        let check = format!(": > inside.txt && : > '{}'", outside.display());
+        let p = ticket(&h, "01-a", "# 01: Feature\n");
+        ok(
+            &h,
+            &[
+                "ledger",
+                "add",
+                "--file",
+                &p.to_string_lossy(),
+                "--primary",
+                "opus",
+                "--check",
+                &check,
+            ],
+        );
+        let w = worker_new(&h, "opus");
+        record_launch(&h, &w, harness);
+        ok_as(&h, &w, &["ledger", "claim"]);
+        let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feature"]);
+        let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+        let (_, r) = finish_json(&h, &w);
+        assert!(
+            path.join("inside.txt").exists(),
+            "{harness}: the check ran: {}",
+            first_step_log(&r)
+        );
+        if sandboxed {
+            assert_eq!(r["stopped_at"], "check", "{harness}: {r}");
+            assert!(
+                !outside.exists(),
+                "{harness}: the sandbox let the write out"
+            );
+        } else {
+            assert_ne!(r["stopped_at"], "check", "{harness}: {r}");
+            assert!(outside.exists(), "{harness}: the check runs as before");
+        }
+    }
+}

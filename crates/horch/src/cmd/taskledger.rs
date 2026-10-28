@@ -1267,6 +1267,8 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             .unwrap_or_else(|| PathBuf::from("evidence")),
         // An absolute shell: a pane's PATH may not reach one.
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
+        codex: ctx.bins.harness.codex.clone(),
+        state_root: ctx.paths.state_root.clone(),
     }
 }
 
