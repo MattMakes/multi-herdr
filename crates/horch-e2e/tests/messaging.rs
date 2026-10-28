@@ -387,8 +387,9 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
     let stdout = String::from_utf8_lossy(&inbox.stdout);
     let first = stdout.find("[sonnet-1] NOTE: first").unwrap();
     let second = stdout.find("[sonnet-1] DONE: second").unwrap();
-    let roles = stdout.find("orchestrator").unwrap();
-    assert!(first < second && second < roles, "{stdout}");
+    let roles = stdout.find("orchestrator ").unwrap();
+    assert!(roles < first && first < second, "{stdout}");
+    assert_eq!(stdout.lines().last(), Some("2 messages acknowledged"));
     assert_eq!(
         std::fs::read_dir(h.state.join("mail/w1/pending"))
             .unwrap()
@@ -401,6 +402,80 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
             .count(),
         2
     );
+}
+
+/// Queue 3 worker messages for the orchestrator and return the harness.
+fn inbox_fleet_with_three_messages(name: &str) -> Harness {
+    let h = fleet(name, "exec,stay");
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
+    for message in ["NOTE: one", "NOTE: two", "DONE: three"] {
+        let tell = as_worker(
+            &h,
+            &["tell", "orchestrator", message],
+            "w1:p2",
+            "sonnet-1",
+            "r1",
+        );
+        assert!(tell.status.success(), "{}", text(&tell));
+    }
+    h
+}
+
+fn pending_count(h: &Harness) -> usize {
+    std::fs::read_dir(h.state.join("mail/w1/pending"))
+        .unwrap()
+        .count()
+}
+
+#[test]
+fn inbox_ends_with_the_acknowledged_count_after_the_roles() {
+    let h = inbox_fleet_with_three_messages("inbox-count");
+
+    let inbox = h.run(&["inbox"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    assert_eq!(stdout.lines().last(), Some("3 messages acknowledged"));
+    assert!(
+        stdout.find("orchestrator ").unwrap() < stdout.find("NOTE: one").unwrap(),
+        "{stdout}"
+    );
+    assert_eq!(pending_count(&h), 0);
+}
+
+#[test]
+fn inbox_roles_prints_no_mail_and_leaves_it_pending() {
+    let h = inbox_fleet_with_three_messages("inbox-roles");
+
+    let inbox = h.run(&["inbox", "--roles"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    assert!(stdout.contains("orchestrator "), "{stdout}");
+    assert!(
+        !stdout.contains("NOTE:") && !stdout.contains("DONE:"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("acknowledged"), "{stdout}");
+    assert_eq!(pending_count(&h), 3);
+}
+
+#[test]
+fn inbox_peek_prints_mail_and_leaves_it_pending() {
+    let h = inbox_fleet_with_three_messages("inbox-peek");
+
+    let inbox = h.run(&["inbox", "--peek"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    for message in ["NOTE: one", "NOTE: two", "DONE: three"] {
+        assert!(stdout.contains(message), "{stdout}");
+    }
+    assert!(!stdout.contains("messages acknowledged"), "{stdout}");
+    assert_eq!(pending_count(&h), 3);
 }
 
 #[test]
@@ -456,7 +531,7 @@ fn mail_u1_orchestrator_command_reminds_without_acking() {
     assert!(sessions.status.success(), "{}", text(&sessions));
     assert!(
         String::from_utf8_lossy(&sessions.stderr)
-            .contains("horch: 2 worker messages are not acknowledged; run horch inbox"),
+            .contains("horch: 2 messages are not acknowledged; run horch inbox"),
         "{}",
         text(&sessions)
     );

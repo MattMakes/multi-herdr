@@ -231,36 +231,50 @@ fn no_orchestrator_hint(role: &str, sender: Option<&str>) -> &'static str {
 }
 
 /// List roles registered in this workspace, and mark each one whose pane
-/// herdr no longer has.
+/// herdr no longer has. An orchestrator then gets its pending mail: `--roles`
+/// skips the mail, and `--peek` prints it without acknowledging it.
 ///
 /// A closed role stays in the list, marked, rather than hidden: its id file
 /// is still there, and a reader who sees why `horch tell` to it fails does
 /// not have to guess where the role went.
-pub fn inbox(ctx: &RuntimeContext) -> Result<()> {
+pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
-    if ctx
-        .worker
-        .as_ref()
-        .and_then(|worker| worker.role.as_ref())
-        .is_none()
-    {
-        let mail = Mail::under(&ctx.paths.state_root, mailbox.workspace_id());
-        for message in mail.pending()? {
-            println!("{}", message.text);
-            mail.ack(&message.id)?;
-        }
-    }
     let roles = mailbox.role_states(&herdr);
     if roles.is_empty() {
         println!("no roles registered yet");
+    } else {
+        if roles.iter().any(|r| r.state == PaneState::Unknown) {
+            eprintln!("horch inbox: herdr did not answer, so pane states are unknown");
+        }
+        let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
+        output::print(&inbox_listing(&roles, channel::is_live(&socket)));
+    }
+    let is_worker = ctx
+        .worker
+        .as_ref()
+        .and_then(|worker| worker.role.as_ref())
+        .is_some();
+    if roles_only || is_worker {
         return Ok(());
     }
-    if roles.iter().any(|r| r.state == PaneState::Unknown) {
-        eprintln!("horch inbox: herdr did not answer, so pane states are unknown");
+    // The mail comes after the roles, and the count comes last: a reader
+    // that pipes this output into `tail` still sees how many it acknowledged.
+    let mail = Mail::under(&ctx.paths.state_root, mailbox.workspace_id());
+    let pending = mail.pending()?;
+    for message in &pending {
+        println!("{}", message.text);
+        if !peek {
+            mail.ack(&message.id)?;
+        }
     }
-    let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
-    output::print(&inbox_listing(&roles, channel::is_live(&socket)));
+    let count = pending.len();
+    let noun = if count == 1 { "message" } else { "messages" };
+    if peek {
+        println!("{count} {noun} pending, not acknowledged");
+    } else {
+        println!("{count} {noun} acknowledged");
+    }
     Ok(())
 }
 
@@ -292,7 +306,7 @@ pub fn remind_pending(ctx: &RuntimeContext) {
     } else {
         ("messages", "are")
     };
-    eprintln!("horch: {count} worker {message} {verb} not acknowledged; run horch inbox");
+    eprintln!("horch: {count} {message} {verb} not acknowledged; run horch inbox");
 }
 
 /// One line for each role: name, pane, and `(pane closed)` when herdr does

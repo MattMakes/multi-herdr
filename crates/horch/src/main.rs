@@ -109,8 +109,15 @@ enum Command {
         message: Vec<String>,
     },
 
-    /// List the roles registered in this workspace.
-    Inbox,
+    /// List the roles registered in this workspace, then print and acknowledge pending mail.
+    Inbox {
+        /// Print only the role list; leave mail pending.
+        #[arg(long, conflicts_with = "peek")]
+        roles: bool,
+        /// Print pending mail without acknowledging it.
+        #[arg(long)]
+        peek: bool,
+    },
 
     /// Give a task to a live worker: record it on the ledger, then deliver it.
     Assign {
@@ -665,7 +672,7 @@ fn run() -> Result<std::process::ExitCode> {
             | Command::Worker { .. }
             | Command::Tile { .. }
             | Command::Balance { .. }
-            | Command::Inbox
+            | Command::Inbox { .. }
     );
     let watched = !matches!(
         &cli.command,
@@ -716,7 +723,7 @@ fn dispatch(
         }
         Command::Update { names } => return cmd::update::update(ctx, &names),
         Command::Tell { role, message } => cmd::messaging::tell(ctx, &role, &joined(&message))?,
-        Command::Inbox => cmd::messaging::inbox(ctx)?,
+        Command::Inbox { roles, peek } => cmd::messaging::inbox(ctx, roles, peek)?,
         Command::Assign { role, task } => cmd::messaging::assign(ctx, &role, &joined(&task))?,
         Command::Note { text } => cmd::messaging::note(ctx, &joined(&text))?,
         Command::Context {

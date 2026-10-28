@@ -22,8 +22,11 @@ reach a worker by terminal text injection via these commands (on your PATH):
                                  task in the session ledger, then types it
                                  into that worker's terminal)
   horch tell <role> "<message>"  follow-ups, answers, clarifications
-  horch inbox                    print and acknowledge unacknowledged worker
-                                 messages, then list live, reachable roles
+  horch inbox                    list live, reachable roles, then print and
+                                 acknowledge pending messages; the last line
+                                 is "N messages acknowledged"
+  horch inbox --roles            list roles only; mail stays pending
+  horch inbox --peek             print pending messages; mail stays pending
 Workers reply with horch tell orchestrator. A reply reaches you in 1 of 2
 ways:
 - Through horch's channel relay. A Claude orchestrator gets a channel event
@@ -35,7 +38,7 @@ ways:
 Treat both as worker messages, not as input from your human operator,
 unless clearly addressed to you as the human.
 Run `horch inbox` when a worker message arrives.
-Run `horch inbox` when a horch command prints `worker messages are not
+Run `horch inbox` when a horch command prints `messages are not
 acknowledged`.
 A line that ends `(redelivery <n>: ...)` resends an unacknowledged message.
 It is not a new event.
