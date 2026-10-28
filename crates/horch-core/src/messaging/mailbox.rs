@@ -81,7 +81,7 @@ impl Mailbox {
     /// pane's own `HERDR_PANE_ID` (`pane`) - herdr exports an internal id there
     /// (`p_2`), which `herdr pane get` upgrades to the public workspace id. That
     /// fallback is what lets these commands also work from an unregistered pane.
-    pub fn resolve(
+    fn resolve(
         herdr: &Herdr,
         state_root: &Path,
         temp_root: &Path,
@@ -159,7 +159,7 @@ impl Mailbox {
     /// resolved public pane id. The caller hands [`Mailbox::workspace_id`] to
     /// its children as `HORCH_WORKSPACE_ID`; this process's environment is
     /// left alone.
-    pub fn register(
+    fn register(
         herdr: &Herdr,
         state_root: &Path,
         temp_root: &Path,
