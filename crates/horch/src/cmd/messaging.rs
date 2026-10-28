@@ -71,6 +71,33 @@ pub fn tell_as(
     role: &str,
     text: &str,
 ) -> Result<ReportStatus> {
+    match queue_as(ctx, sender, role, text)? {
+        Some(outgoing) => outgoing.push(),
+        None => Ok(ReportStatus::Delivered),
+    }
+}
+
+/// A line [`queue_as`] made ready (and durable, for the orchestrator) that
+/// is not pushed yet.
+struct Outgoing<'a> {
+    ctx: &'a RuntimeContext,
+    herdr: Herdr,
+    mailbox: Mailbox,
+    role: String,
+    sender: Option<String>,
+    target: Option<String>,
+    line: String,
+    durable: bool,
+}
+
+/// The first half of [`tell_as`]: an error here means nothing was sent or
+/// queued. `None`: the line went already, as there was nothing to queue.
+fn queue_as<'a>(
+    ctx: &'a RuntimeContext,
+    sender: Option<String>,
+    role: &str,
+    text: &str,
+) -> Result<Option<Outgoing<'a>>> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
@@ -110,31 +137,48 @@ pub fn tell_as(
             line,
             false,
         )?;
-        return Ok(ReportStatus::Delivered);
+        return Ok(None);
     }
     if durable {
         Mail::under(&ctx.paths.state_root, mailbox.workspace_id())
             .enqueue(sender.as_deref().expect("durable mail has a sender"), &line)?;
     }
-    let pushed = push_line(
+    Ok(Some(Outgoing {
         ctx,
-        &herdr,
-        &mailbox,
-        role,
-        sender.as_deref(),
+        herdr,
+        mailbox,
+        role: role.to_string(),
+        sender,
         target,
         line,
-        true,
-    );
-    if durable {
-        super::mail::start_courier(ctx, mailbox.workspace_id());
-        return Ok(match pushed {
-            Ok(()) => ReportStatus::Delivered,
-            Err(error) => ReportStatus::Queued(format!("{error:#}")),
-        });
+        durable,
+    }))
+}
+
+impl Outgoing<'_> {
+    /// The second half of [`tell_as`]: type the line. A durable line that
+    /// does not land is queued, not an error: the courier delivers it.
+    fn push(self) -> Result<ReportStatus> {
+        let pushed = push_line(
+            self.ctx,
+            &self.herdr,
+            &self.mailbox,
+            &self.role,
+            self.sender.as_deref(),
+            self.target,
+            self.line,
+            true,
+        );
+        if self.durable {
+            super::mail::start_courier(self.ctx, self.mailbox.workspace_id());
+            return Ok(match pushed {
+                Ok(()) => ReportStatus::Delivered,
+                Err(error) => ReportStatus::Queued(format!("{error:#}")),
+            });
+        }
+        pushed?;
+        Ok(ReportStatus::Delivered)
     }
-    pushed?;
-    Ok(ReportStatus::Delivered)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -148,7 +192,12 @@ fn push_line(
     mut line: String,
     relay: bool,
 ) -> Result<()> {
-    if role == "orchestrator" && relay {
+    // `horch done` caps all its pushes at one budget; a spent budget skips
+    // the relay and waits no more, so only an idle agent still gets the line.
+    let capped =
+        |wait: std::time::Duration| delivery::push_time_left().map_or(wait, |left| wait.min(left));
+    let spent = delivery::push_time_left().is_some_and(|left| left.is_zero());
+    if role == "orchestrator" && relay && !spent {
         let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
         let from = sender.unwrap_or("orchestrator");
         let send_timeout = if cfg!(debug_assertions) {
@@ -160,6 +209,7 @@ fn push_line(
         } else {
             channel::SEND_TIMEOUT
         };
+        let send_timeout = capped(send_timeout);
         match channel::send(&socket, from, &line, send_timeout) {
             Ok(()) => return Ok(()),
             Err(channel::SendError::NotDelivered(error)) if socket.exists() => eprintln!(
@@ -202,13 +252,21 @@ fn push_line(
     // role that registered just now may not show its agent yet.
     let grace = ctx.settings.tell_grace.unwrap_or(delivery::TELL_GRACE);
     let age = mailbox.registered_at(role).and_then(|at| at.elapsed().ok());
+    let readiness = delivery::Readiness {
+        timeout: capped(delivery::Readiness::DEFAULT.timeout),
+        ..delivery::Readiness::DEFAULT
+    };
+    let timing = delivery::Timing {
+        tail_timeout: capped(delivery::Timing::DEFAULT.tail_timeout),
+        ..delivery::Timing::DEFAULT
+    };
     delivery::send_line_when_ready(
         herdr,
         &target,
         &line,
-        grace_left(age, grace),
-        &delivery::Readiness::DEFAULT,
-        &delivery::Timing::DEFAULT,
+        capped(grace_left(age, grace)),
+        &readiness,
+        &timing,
     )
 }
 
@@ -462,6 +520,10 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
     )
     .context("horch done must run inside a herdr pane")?;
     let workspace = ctx.herdr.workspace.as_ref().map(|w| w.to_string());
+    // `horch ledger done` started the budget and printed the line already.
+    if delivery::start_push_budget(delivery::DONE_PUSH_BUDGET) {
+        output::println(CLOSING);
+    }
 
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let ledger = Ledger::open_in(ctx)?;
@@ -470,6 +532,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
         &CliDone {
             ctx,
             settle: !coordinator_owns_layout(&ledger, &record_id),
+            outgoing: std::cell::RefCell::new(None),
         },
         &DoneRequest {
             record_id: &record_id,
@@ -527,12 +590,17 @@ fn coordinator_owns_layout(ledger: &Ledger, record_id: &str) -> bool {
 const NO_ORCHESTRATOR: &str = "horch done: no orchestrator is registered in this workspace, \
      so nobody is told; the summary is recorded";
 
+/// The first line `horch done` prints, so the worker sees progress at once.
+pub const CLOSING: &str = "closing: reporting to the orchestrator";
+
 /// The `done` steps against this process's ledger, mailbox and workspace.
 struct CliDone<'a> {
     ctx: &'a RuntimeContext,
     /// `false` when the coordinator owns the layout: see
     /// [`coordinator_owns_layout`].
     settle: bool,
+    /// The report [`DoneSteps::report`] queued, for [`DoneSteps::push`].
+    outgoing: std::cell::RefCell<Option<Outgoing<'a>>>,
 }
 
 impl DoneSteps for CliDone<'_> {
@@ -635,7 +703,8 @@ impl DoneSteps for CliDone<'_> {
         }
     }
 
-    /// Tell the orchestrator. A workspace with no registered orchestrator
+    /// Queue the report to the orchestrator; [`DoneSteps::push`] types it.
+    /// A workspace with no registered orchestrator
     /// (a scratch workspace, a worker spawned by hand) has nobody to tell:
     /// that is not a failure, so `done` goes on and exits 0. A live channel
     /// relay is an orchestrator too, with or without a registered pane.
@@ -654,7 +723,17 @@ impl DoneSteps for CliDone<'_> {
             eprintln!("{NO_ORCHESTRATOR}");
             return Ok(ReportStatus::Delivered);
         }
-        tell_outcome(self.ctx, "orchestrator", line)
+        let sender = self.ctx.worker.as_ref().and_then(|w| w.role.clone());
+        *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line)?;
+        Ok(ReportStatus::Delivered)
+    }
+
+    fn push(&self) -> ReportStatus {
+        match self.outgoing.borrow_mut().take().map(Outgoing::push) {
+            None | Some(Ok(ReportStatus::Delivered)) => ReportStatus::Delivered,
+            Some(Ok(queued @ ReportStatus::Queued(_))) => queued,
+            Some(Err(error)) => ReportStatus::Queued(format!("{error:#}")),
+        }
     }
 
     fn unregister(&self, workspace: &str, role: &str) {

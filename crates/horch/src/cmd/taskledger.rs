@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, land};
 use horch_core::taskledger::git::Git;
@@ -1265,6 +1266,18 @@ pub fn done_cmd(
     unlanded: Option<&str>,
 ) -> Result<()> {
     let wid = worker_id(ctx)?;
+    // The report to the orchestrator and the pane close: `horch done`'s
+    // machinery, when this runs in a worker pane.
+    let in_pane = ctx.herdr.pane.is_some()
+        && ctx
+            .worker
+            .as_ref()
+            .is_some_and(|w| w.record_id.is_some() && w.role.is_some());
+    // One push budget for the wakes and the report, inside the agent's
+    // command timeout (#67).
+    if delivery::start_push_budget(delivery::DONE_PUSH_BUDGET) && in_pane {
+        output::println(super::messaging::CLOSING);
+    }
     let c = finish::complete(&mut store, &wid, summary, unlanded)?;
     let run = runs::get(store.conn(), &c.run_id)?;
     if !c.already {
@@ -1287,13 +1300,6 @@ pub fn done_cmd(
         }
     ));
     drop(store);
-    // The report to the orchestrator and the pane close: `horch done`'s
-    // machinery, when this runs in a worker pane.
-    let in_pane = ctx.herdr.pane.is_some()
-        && ctx
-            .worker
-            .as_ref()
-            .is_some_and(|w| w.record_id.is_some() && w.role.is_some());
     if in_pane {
         super::messaging::done(ctx, summary, unlanded)?;
     }

@@ -73,7 +73,15 @@ pub trait DoneSteps {
         Ok(Vec::new())
     }
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()>;
+    /// Make the report durable, or fail as nothing changed. A push that
+    /// can take long belongs in [`DoneSteps::push`], after the record is done.
     fn report(&self, line: &str) -> Result<ReportStatus>;
+    /// Push what [`DoneSteps::report`] queued, after the record is done, so
+    /// a push killed by the agent's command timeout leaves the work done.
+    /// Best effort; the default has nothing to push.
+    fn push(&self) -> ReportStatus {
+        ReportStatus::Delivered
+    }
     /// Whether an earlier `done` of this record reported and recorded its
     /// summary, so a retry only closes the pane. The default says no.
     fn recorded(&self, _record_id: &str) -> Result<bool> {
@@ -108,8 +116,9 @@ pub trait DoneSteps {
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
 /// while waiting on a question).
 ///
-/// The order is fixed: report to the orchestrator, mark the claims unlanded,
-/// mark done in the ledger, record a session id still undiscovered,
+/// The order is fixed: queue the report to the orchestrator, mark the claims
+/// unlanded, mark done in the ledger, push the report (best effort, within
+/// the push budget), record a session id still undiscovered,
 /// unregister the mailbox entry, settle the grid, write the fleet run row,
 /// close the pane. Everything happens BEFORE the pane close, because closing
 /// the pane kills this very process tree. The underlying agent session stays
@@ -181,15 +190,10 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     for entry in unregistered {
         summary.push_str(&format!(" | UNREGISTERED: {entry}"));
     }
-    if req.report_to == ReportTarget::Orchestrator {
+    let report = req.report_to == ReportTarget::Orchestrator;
+    if report {
         match steps.report(&format!("[{role}] DONE: {summary}")) {
-            Ok(ReportStatus::Delivered) => {}
-            Ok(ReportStatus::Queued(cause)) => {
-                eprintln!(
-                    "horch done: the push did not land ({cause}); the courier will redeliver it"
-                );
-                steps.report_queued(req.record_id, &cause);
-            }
+            Ok(status) => note_queued(steps, req, status),
             Err(e) => {
                 steps.report_failed(req.record_id, &format!("{e:#}"));
                 // A context, not a new error: the CLI's sandbox hint looks for
@@ -210,7 +214,19 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     if let Some(reason) = req.unlanded {
         steps.mark_unlanded(req.record_id, reason)?;
     }
-    steps.mark_done(req.record_id, &summary)
+    steps.mark_done(req.record_id, &summary)?;
+    if report {
+        note_queued(steps, req, steps.push());
+    }
+    Ok(())
+}
+
+/// Say so when a push did not land: the report waits in the mail.
+fn note_queued(steps: &dyn DoneSteps, req: &DoneRequest, status: ReportStatus) {
+    if let ReportStatus::Queued(cause) = status {
+        eprintln!("horch done: the push did not land ({cause}); the courier will redeliver it");
+        steps.report_queued(req.record_id, &cause);
+    }
 }
 
 /// The steps of [`done`] after the summary is in the ledger: the pane closes.
@@ -947,6 +963,11 @@ mod tests {
         recorded: bool,
         fail_report: bool,
         report_failures: RefCell<Vec<String>>,
+        /// How many summaries were marked done at each push.
+        done_at_push: RefCell<Vec<usize>>,
+        /// `Some(cause)`: the push does not land.
+        push_misses: Option<String>,
+        queued: RefCell<Vec<String>>,
     }
 
     impl Default for ClaimSteps {
@@ -960,6 +981,9 @@ mod tests {
                 recorded: false,
                 fail_report: false,
                 report_failures: RefCell::new(Vec::new()),
+                done_at_push: RefCell::new(Vec::new()),
+                push_misses: None,
+                queued: RefCell::new(Vec::new()),
             }
         }
     }
@@ -1015,6 +1039,20 @@ mod tests {
 
         fn report_failed(&self, _: &str, error: &str) {
             self.report_failures.borrow_mut().push(error.into());
+        }
+
+        fn push(&self) -> ReportStatus {
+            self.done_at_push
+                .borrow_mut()
+                .push(self.marked_done.borrow().len());
+            match &self.push_misses {
+                Some(cause) => ReportStatus::Queued(cause.clone()),
+                None => ReportStatus::Delivered,
+            }
+        }
+
+        fn report_queued(&self, _: &str, error: &str) {
+            self.queued.borrow_mut().push(error.into());
         }
 
         fn unregister(&self, _: &str, _: &str) {}
@@ -1103,6 +1141,36 @@ mod tests {
         assert_eq!(&*retry.marked_unlanded.borrow(), &["cannot rebase"]);
         assert_eq!(retry.marked_done.borrow().len(), 1);
         assert!(ws.pane_ids().is_empty(), "the retry closes the pane");
+    }
+
+    /// #67: the record is done before the push, so a push the agent's
+    /// command timeout kills leaves the work done. A push that does not
+    /// land is noted, and `done` still closes the pane.
+    #[test]
+    fn done_marks_the_record_before_the_push() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps {
+            push_misses: Some("the push budget ran out".into()),
+            ..ClaimSteps::default()
+        };
+        done(&ws, &steps, &claim_request(&pane, None)).unwrap();
+        assert_eq!(&*steps.done_at_push.borrow(), &[1], "done, then 1 push");
+        assert_eq!(&*steps.queued.borrow(), &["the push budget ran out"]);
+        assert!(ws.pane_ids().is_empty(), "the pane is closed");
+    }
+
+    /// #67: a report that fails to queue is not pushed.
+    #[test]
+    fn done_does_not_push_a_report_that_failed() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps {
+            fail_report: true,
+            ..ClaimSteps::default()
+        };
+        done(&ws, &steps, &claim_request(&pane, None)).unwrap_err();
+        assert!(steps.done_at_push.borrow().is_empty());
     }
 
     /// W2: a record that an earlier `done` reported and marked is not

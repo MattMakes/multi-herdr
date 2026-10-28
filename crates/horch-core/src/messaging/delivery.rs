@@ -195,6 +195,26 @@ pub fn send_line_when_ready(
     send_line_with(ws, pane, message, timing)
 }
 
+/// The total time `horch done` lets all its pushes take: the report and the
+/// ledger's wake lines. Claude Code kills a command after 120 s (P18).
+pub const DONE_PUSH_BUDGET: Duration = Duration::from_secs(20);
+
+static PUSH_DEADLINE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Cap every later push of this process at `total` from now. True the first
+/// time; a later call keeps the first deadline and returns false.
+pub fn start_push_budget(total: Duration) -> bool {
+    PUSH_DEADLINE.set(Instant::now() + total).is_ok()
+}
+
+/// What is left of this process's push budget. `None`: no budget started,
+/// so a push waits as long as it always has.
+pub fn push_time_left() -> Option<Duration> {
+    PUSH_DEADLINE
+        .get()
+        .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+}
+
 /// Poll the pane until the last characters of `message` show in it.
 fn wait_for_tail(ws: &dyn WorkspaceClient, pane: &str, message: &str, timing: &Timing) -> bool {
     let needle = tail_needle(message);
