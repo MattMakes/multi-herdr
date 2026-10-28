@@ -545,6 +545,8 @@ pub struct PaneWorker<'a> {
     path: Option<std::ffi::OsString>,
     /// The agent ran: [`WorkerSteps::launch`] returned its exit.
     launched: bool,
+    /// The task ledger file and this worker's row in it, from the brief.
+    ledger: Option<(PathBuf, String)>,
 }
 
 impl<'a> PaneWorker<'a> {
@@ -560,6 +562,7 @@ impl<'a> PaneWorker<'a> {
             mailbox: None,
             path: None,
             launched: false,
+            ledger: None,
         }
     }
 
@@ -593,6 +596,13 @@ impl WorkerSteps for PaneWorker<'_> {
         // spawner's herdr.
         let project = PathBuf::from(&brief.project_dir);
         self.ctx.paths.project_dir = Some(project.clone());
+        if let Some(db) = &brief.ledger_db {
+            self.ctx.paths.ledger_db = PathBuf::from(db);
+            self.ctx.paths.ledger_override = Some(PathBuf::from(db));
+        }
+        if let Some(id) = &brief.worker_id {
+            self.ledger = Some((self.ctx.paths.ledger_db.clone(), id.clone()));
+        }
         if let Some(state_dir) = &brief.state_dir {
             self.ctx.paths.set_state_dir(state_dir);
         }
@@ -619,6 +629,14 @@ impl WorkerSteps for PaneWorker<'_> {
     }
 
     fn set_running(&mut self, brief: &Brief) -> Result<()> {
+        if let Some((db, id)) = &self.ledger {
+            if let Err(e) = crate::taskledger::supervisor::started(db, id, &brief.role) {
+                eprintln!(
+                    "horch worker[{}]: the task ledger did not record the start: {e:#}",
+                    brief.role
+                );
+            }
+        }
         self.store()?.mark_running(&brief.record_id)
     }
 
@@ -654,8 +672,33 @@ impl WorkerSteps for PaneWorker<'_> {
                 .with_context(|| format!("entering workdir {workdir}"))?;
         }
         let env = child_env(mailbox, brief, self.path.clone());
+        // The task ledger gets the agent's PID the moment it starts, and a
+        // checkin from this process while the agent runs.
+        let checkins = self.ledger.clone().map(|(db, id)| {
+            let (obs_db, obs_id, role) = (db.clone(), id.clone(), brief.role.clone());
+            launch::observe_agent_start(move |pid| {
+                if let Err(e) = crate::taskledger::supervisor::agent_started(&obs_db, &obs_id, pid)
+                {
+                    eprintln!(
+                        "horch worker[{role}]: the task ledger did not record the agent PID: {e:#}"
+                    );
+                }
+            });
+            let every = crate::taskledger::supervisor::interval(&db, &id);
+            let lookup = session_lookup(
+                self.ctx.clone(),
+                brief.record_id.clone(),
+                brief.agent.clone(),
+            );
+            crate::taskledger::supervisor::start_checkins(db, id, every, lookup)
+        });
         if teammate.agent == HarnessKind::None {
-            return run_smoke(&env).map(|()| Some(0));
+            if let Some((db, id)) = &self.ledger {
+                let _ = crate::taskledger::supervisor::agent_started(db, id, std::process::id());
+            }
+            let out = run_smoke(&env).map(|()| Some(0));
+            drop(checkins);
+            return out;
         }
         // Every flag comes from the teammate file, and every harness
         // difference (codex rules, the Prime daemon, session discovery) from
@@ -680,7 +723,11 @@ impl WorkerSteps for PaneWorker<'_> {
                     .fleet_window(&teammate, teammate.model.as_deref().unwrap_or_default()),
                 briefing_skill: None,
             },
-        )?;
+        );
+        if let Some(c) = checkins {
+            c.stop();
+        }
+        let code = code?;
         self.launched = true;
         Ok(code)
     }
@@ -691,6 +738,25 @@ impl WorkerSteps for PaneWorker<'_> {
     /// tells the orchestrator. Only after an agent ran: a startup failure is
     /// `horch spawn`'s to report. A failed tell is printed.
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()> {
+        let requeued = match &self.ledger {
+            Some((db, id)) => match crate::taskledger::supervisor::agent_exited(db, id, code) {
+                Ok(crate::taskledger::supervisor::Ended::Requeued { task, persona }) => {
+                    Some(format!(
+                        " The task ledger queued {task} again. Spawn {persona} with: \
+                         horch spawn {persona} --replaces {id}"
+                    ))
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    eprintln!(
+                        "horch worker[{}]: the task ledger did not record the exit: {e:#}",
+                        brief.role
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
         let store = self.store()?;
         let ended = store.record_exit(&brief.record_id, code)?;
         if !(ended && self.launched) {
@@ -699,10 +765,11 @@ impl WorkerSteps for PaneWorker<'_> {
         record_early_exit(&store, &brief.record_id, code)?;
         if brief.report_to == ReportTarget::Orchestrator {
             let env = child_env(self.mailbox()?, brief, self.path.clone());
-            if let Err(e) = run_horch(
-                &env,
-                &["tell", "orchestrator", &early_exit_line(brief, code)],
-            ) {
+            let mut line = early_exit_line(brief, code);
+            if let Some(extra) = &requeued {
+                line.push_str(extra);
+            }
+            if let Err(e) = run_horch(&env, &["tell", "orchestrator", &line]) {
                 eprintln!(
                     "horch worker[{}]: could not tell the orchestrator about the exit: {e:#}",
                     brief.role
@@ -727,8 +794,43 @@ impl WorkerSteps for PaneWorker<'_> {
             .pane
             .as_ref()
             .context("HERDR_PANE_ID is not set")?;
-        self.herdr().pane_close(pane.as_ref())
+        // herdr gives the pane its internal id; close it by its public id,
+        // the one the ledgers record.
+        let herdr = self.herdr();
+        let public = herdr
+            .pane_get(pane.as_ref())
+            .map(|p| p.pane_id)
+            .unwrap_or_else(|_| pane.as_ref().to_string());
+        let out = herdr.pane_close(&public);
+        if let Some((db, id)) = &self.ledger {
+            let _ = crate::taskledger::supervisor::closed_own_pane(db, id, &public, &out);
+        }
+        out
     }
+}
+
+/// Read the session id the launch recorded in the session ledger, and find
+/// its transcript, for the task ledger's worker row.
+fn session_lookup(
+    ctx: RuntimeContext,
+    record_id: String,
+    agent: String,
+) -> crate::taskledger::supervisor::SessionLookup {
+    Box::new(move || {
+        let sid = ExecutionStore::open_in(&ctx)
+            .ok()
+            .and_then(|s| s.get(&record_id).ok())
+            .and_then(|r| r.session_id)
+            .filter(|s| !s.is_empty());
+        let transcript = sid.as_deref().and_then(|sid| {
+            crate::competition::observe::TelemetryUsage {
+                locations: crate::usage::Locations::from_context(&ctx),
+            }
+            .transcript(&agent, Some(sid))
+            .map(|p| p.to_string_lossy().into_owned())
+        });
+        (sid, transcript)
+    })
 }
 
 /// What the agent inherits on top of this process's environment: the brief's
@@ -1065,6 +1167,8 @@ mod tests {
             workdir: None,
             bin_overrides: BinOverrides::default(),
             report_to: crate::execution::ReportTarget::Orchestrator,
+            worker_id: None,
+            ledger_db: None,
         };
         let mut env = MapEnv::new("/");
         for key in BinOverrides::VARS {
@@ -1432,6 +1536,8 @@ mod tests {
                     workdir: None,
                     bin_overrides: BinOverrides::default(),
                     report_to: ReportTarget::Orchestrator,
+                    worker_id: None,
+                    ledger_db: None,
                 }
             }
         }

@@ -1,4 +1,4 @@
-//! `horch sessions` and `horch ledger` - the port of `bin/horch-ledger` and
+//! `horch sessions` and `horch ledger legacy` - the port of `bin/horch-ledger` and
 //! `bin/horch-sessions`.
 //!
 //! The `ledger` subcommands mirror the bash CLI one for one; they are the
@@ -16,7 +16,7 @@ use horch_core::runtime::RuntimeContext;
 use crate::output;
 
 #[derive(Subcommand)]
-pub enum LedgerCommand {
+pub enum LegacyCommand {
     /// Record a freshly spawned session.
     Add {
         #[arg(long)]
@@ -104,10 +104,10 @@ fn print_list(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
+pub fn run(ctx: &RuntimeContext, command: LegacyCommand) -> Result<ExitCode> {
     let ledger = Ledger::open_in(ctx)?;
     match command {
-        LedgerCommand::Add {
+        LegacyCommand::Add {
             record_id,
             agent,
             tier,
@@ -124,25 +124,25 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             session_id.as_deref(),
             task.as_deref().unwrap_or_default(),
         )?,
-        LedgerCommand::SetSession { key, session_id } => ledger.set_session(&key, &session_id)?,
-        LedgerCommand::HasSession { session_id } => {
+        LegacyCommand::SetSession { key, session_id } => ledger.set_session(&key, &session_id)?,
+        LegacyCommand::HasSession { session_id } => {
             return Ok(if ledger.has_session(&session_id)? {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
             })
         }
-        LedgerCommand::Resume { key, role, task } => {
+        LegacyCommand::Resume { key, role, task } => {
             ledger.resume(&key, &role, task.as_deref().unwrap_or_default())?
         }
-        LedgerCommand::Assign { role, task } => ledger.assign(&role, &task)?,
-        LedgerCommand::Note { key, text } => ledger.note(&key, &text)?,
-        LedgerCommand::Done { key, summary } => ledger.done(&key, &summary)?,
-        LedgerCommand::Get { key } => {
+        LegacyCommand::Assign { role, task } => ledger.assign(&role, &task)?,
+        LegacyCommand::Note { key, text } => ledger.note(&key, &text)?,
+        LegacyCommand::Done { key, summary } => ledger.done(&key, &summary)?,
+        LegacyCommand::Get { key } => {
             output::println(&serde_json::to_string_pretty(&ledger.get(&key)?)?)
         }
-        LedgerCommand::List { json } => print_list(ctx, json, true)?,
-        LedgerCommand::Path => output::println(&ledger.path().display().to_string()),
+        LegacyCommand::List { json } => print_list(ctx, json, true)?,
+        LegacyCommand::Path => output::println(&ledger.path().display().to_string()),
     }
     Ok(ExitCode::SUCCESS)
 }

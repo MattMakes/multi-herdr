@@ -303,6 +303,10 @@ enum Command {
         /// Spawn even when every usage pool that could serve it is exhausted.
         #[arg(long)]
         force: bool,
+        /// The dead worker (task ledger id) this one replaces: its claim
+        /// takes that worker's task and gets its transcript and worktree.
+        #[arg(long, value_name = "WORKER")]
+        replaces: Option<String>,
     },
 
     /// Where the tokens went: every pane on this machine, from the telemetry
@@ -413,10 +417,11 @@ enum Command {
         settle_ms: u64,
     },
 
-    /// Low-level session ledger access.
+    /// The task ledger: queue tasks, claim them, finish them, and read the
+    /// board. `horch ledger legacy` holds the old session-ledger plumbing.
     Ledger {
         #[command(subcommand)]
-        command: cmd::ledgercmd::LedgerCommand,
+        command: cmd::taskledger::LedgerCommand,
     },
 
     /// Inspect the integrated skill catalog and estimated context cost.
@@ -662,9 +667,20 @@ fn run() -> Result<std::process::ExitCode> {
             | Command::Balance { .. }
             | Command::Inbox
     );
+    let watched = !matches!(
+        &cli.command,
+        Command::Worker { .. }
+            | Command::Ledger {
+                command: cmd::taskledger::LedgerCommand::Watch { .. }
+            }
+    );
     let result = dispatch(&mut ctx, cli.command);
     if remind {
         cmd::messaging::remind_pending(&ctx);
+    }
+    // No dead watchdog hides dead workers: any horch command restarts it.
+    if watched {
+        cmd::taskledger_watch::ensure(&ctx);
     }
     result
 }
@@ -743,7 +759,12 @@ fn dispatch(
             );
         }
         Command::Done { summary, unlanded } => {
-            cmd::messaging::done(ctx, &joined(&summary), unlanded.as_deref())?
+            if cmd::taskledger::is_ledger_worker(ctx) {
+                let store = horch_core::taskledger::open(ctx)?;
+                cmd::taskledger::done_cmd(ctx, store, &joined(&summary), unlanded.as_deref())?
+            } else {
+                cmd::messaging::done(ctx, &joined(&summary), unlanded.as_deref())?
+            }
         }
         Command::Worktree { command } => match command {
             WorktreeSubcommand::New { name } => cmd::worktree::new(ctx, &name)?,
@@ -769,6 +790,7 @@ fn dispatch(
             untiled,
             exact,
             force,
+            replaces,
         } => {
             let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())?;
             let pane = cmd::spawn::spawn(
@@ -785,6 +807,7 @@ fn dispatch(
                     tiling: TilingMode::from_no_tile(untiled),
                     exact,
                     force,
+                    replaces,
                 },
             )?;
             output::println(&pane);
@@ -903,7 +926,7 @@ fn dispatch(
             dry_run,
             settle_ms,
         )?,
-        Command::Ledger { command } => return cmd::ledgercmd::run(ctx, command),
+        Command::Ledger { command } => return cmd::taskledger::run(ctx, command),
         Command::Marketplace { command } => return cmd::marketplacecmd::run(ctx, command),
         Command::Doctor => cmd::doctor::doctor(ctx)?,
         Command::Install { dir } => cmd::install::install(ctx, dir.as_deref())?,

@@ -93,6 +93,8 @@ pub struct ExecutionService<'a> {
     pub mailbox: &'a Mailbox,
     /// Lay the grid out around a new pane. Called last; must not fail.
     pub tile: &'a dyn Fn(&str, TilingMode),
+    /// The worker's task ledger row, written into its brief.
+    pub ledger_worker: Option<&'a str>,
 }
 
 impl ExecutionService<'_> {
@@ -225,8 +227,12 @@ impl ExecutionService<'_> {
             workdir: text(e.workdir.as_deref()),
             bin_overrides: Default::default(),
             report_to: plan.report_to,
+            worker_id: None,
+            ledger_db: None,
         };
         brief.set_overrides(ctx.bins.overrides.clone());
+        brief.worker_id = self.ledger_worker.map(str::to_string);
+        brief.ledger_db = text(ctx.paths.ledger_override.as_deref());
         self.mailbox.write_brief(&brief)
     }
 

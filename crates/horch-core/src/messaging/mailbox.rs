@@ -303,6 +303,8 @@ mod tests {
             workdir: None,
             bin_overrides: BinOverrides::default(),
             report_to: crate::execution::ReportTarget::Orchestrator,
+            worker_id: None,
+            ledger_db: None,
         }
     }
 

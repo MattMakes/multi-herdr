@@ -305,6 +305,8 @@ pub struct WorkerEnv {
     pub resume: Option<String>,
     /// `HORCH_TASK`.
     pub task: Option<String>,
+    /// `HORCH_WORKER_ID`: this worker's row in the task ledger.
+    pub worker_id: Option<String>,
 }
 
 impl WorkerEnv {
@@ -321,6 +323,7 @@ impl WorkerEnv {
             session_id: nonempty("HORCH_SESSION_ID"),
             resume: nonempty("HORCH_RESUME"),
             task: nonempty("HORCH_TASK"),
+            worker_id: nonempty("HORCH_WORKER_ID"),
         };
         (w != WorkerEnv::default()).then_some(w)
     }

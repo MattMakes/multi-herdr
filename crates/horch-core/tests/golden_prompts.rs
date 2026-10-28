@@ -253,6 +253,37 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
         \x20 turn. The reply arrives as your next message. Do not poll, sleep, or call a\n\
         \x20 wait tool to wait for it. Never shut down while your question is unanswered.\n";
     let old_scope_wait = "  orchestrator, then wait.\n";
+    // Twentieth sanctioned change: the task ledger (#28, #44). Workers spawned
+    // with the task "Run horch ledger claim." claim, report and finish through
+    // the ledger. Inserted whole, directly before the scope block.
+    let task_ledger = r#"== Task ledger ==
+When your task is "Run horch ledger claim.", the task ledger holds your
+work. These commands are on your PATH:
+- horch ledger claim - take your task. Read the ticket file it prints in
+  full and follow it exactly. If it prints that there is no task for you,
+  send the line it prints, then end your turn.
+- If the claim lists earlier attempts, read each transcript in chunks
+  before you continue. Use what you can of the earlier work.
+- horch ledger worktree new <name> - make your worktree when the claim says
+  so. Work and commit there.
+- horch ledger progress "<milestone>" - record each milestone. horch checks
+  every working worker every 10 minutes. A worker without progress for 3
+  checks is stopped, and its task goes to another worker.
+- horch ledger finish - run it when the work is complete and committed. It
+  runs the finish steps in order: check, code-sweep, complexity-sweep,
+  recheck, land, pr, cleanup. It stops at the first step that does not
+  pass. Fix the cause, commit, and run it again. Never skip a step.
+- When code-sweep queues reviewer tasks, end your turn. horch tells you when
+  the reviews are in. Fix each Critical and Important finding, or answer an
+  Important finding in the answers file it names.
+- When complexity-sweep names functions, use the complexity-sweep skill to
+  reduce their complexity. Commit, then run finish again.
+- horch ledger done "<summary>" - run it when finish prints that every step
+  passed. It reports to the orchestrator and closes your pane. horch done
+  does the same for a ledger task.
+- Never stop a process by a name or a pattern. Never run pkill or killall.
+
+"#;
     let new_scope_wait = "  orchestrator, then end your turn.\n";
     // No `fable` here: the generic Fable worker was removed when Fable became
     // the orchestrator's reserved model. Its goldens went with it.
@@ -293,7 +324,7 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
                     .replace(
                         lifecycle_end,
                         &format!(
-                        "gotchas, current state.\n{done_summary}\n{scope}{worktrees}{context_compaction}{ste}"
+                        "gotchas, current state.\n{done_summary}\n{task_ledger}{scope}{worktrees}{context_compaction}{ste}"
                     )
                     )
                     .replace(old_wait_words, new_wait_words)
@@ -600,13 +631,45 @@ Both writers talk only in file paths: read the file, not the message.
     // briefing ends with the instruction to acknowledge and wait.
     let await_line = "\nAcknowledge and await further instruction.";
 
+    // Nineteenth: the task ledger (#28, #44). The orchestrator queues tasks,
+    // spawns the workers plan-workers names, and waits to be woken. Inserted
+    // whole, directly before the session ledger section.
+    let task_ledger = r#"== Task ledger ==
+The task ledger holds the work. You queue tasks. Workers claim them.
+- At the start of a run, read horch ledger unfinished. Discuss each item
+  with the operator: what was meant to land, and what is still worth doing.
+- Discuss each new idea with the operator until it is vetted. Then make the
+  spec and the tickets (see "From a rough idea to tickets").
+- horch ledger run new <slug> - create the run and its run branch, once.
+- horch ledger add-map <MAP.md> - queue every ticket of a map. To queue 1:
+  horch ledger add --file <ticket> --primary <persona> [--fallback
+  <persona>] [--blocked-by T-<n>] [--exclusive] [--own <path>] [--check
+  "<command>"].
+- horch ledger plan-workers - then spawn exactly that many workers of each
+  persona, with no task: horch spawn <persona>. Each worker claims its task.
+- A worker that died is replaced with: horch spawn <persona> --replaces
+  <worker>. Its replacement gets the earlier transcript and worktree.
+- Then end your turn. horch wakes you when a worker asks a question, when a
+  worker stalls or dies, when tasks can start, and when all tasks are done.
+  Do not poll.
+- horch ledger status - the board. It exits 0 only when all work is done.
+- horch ledger fallback T-<n> "<reason>" - let the fallback persona claim.
+- A usage limit is a warning to the operator, not a stop. Tell the operator
+  and go on, unless the operator redirects you.
+- Stop a worker only with: horch ledger stop <worker> "<reason>".
+  Never run pkill, killall, or a kill by a name or a pattern.
+- Use horch tell for questions and answers only. In a ledger run, horch
+  assign refuses: assignment is horch ledger add plus a claim.
+
+"#;
+
     let expected = was
         .replace(old_channel, new_channel)
         .replace(old_block, &new_block)
         .replace(old_fleet, new_fleet)
         .replace(old_spawning, new_spawning)
         .replace(lifecycle, &format!("{only_fable}{lifecycle}"))
-        .replace(ledger, &format!("{ste}{ledger}"))
+        .replace(ledger, &format!("{ste}{task_ledger}{ledger}"))
         .replace(spawn_sentence, workers_only)
         .replace(old_placement, new_placement)
         .replace(
@@ -674,7 +737,7 @@ fn execpolicy_blocks_are_unchanged() {
             "{name} drifted"
         );
     }
-    assert_eq!(r.exec_rules().len(), 4);
+    assert_eq!(r.exec_rules().len(), 5);
 }
 
 /// The Codex flavor shares the whole orchestrator briefing and differs only in

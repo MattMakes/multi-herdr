@@ -1031,6 +1031,7 @@ impl<G: GitClient> Coordinator<'_, G> {
             workspace: self.workspace,
             mailbox: &mailbox,
             tile: &|_, _| {},
+            ledger_worker: None,
         };
         match service.spawn(plan, Some(&candidate_role(label))) {
             Ok(out) => {

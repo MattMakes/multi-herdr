@@ -1,0 +1,19 @@
+╭───────────────────────────────────────────────────╮
+│ ✻ Welcome to Claude Code!                         │
+│                                                   │
+│   cwd: /home/user/multi-herdr                     │
+╰───────────────────────────────────────────────────╯
+
+> Read the task ledger spec and list the open questions.
+
+⏺ I'll read the spec first.
+
+⏺ Read(docs/specs/task-ledger.md)
+  ⎿  Read 412 lines (ctrl+r to expand)
+
+· Pondering… (45s · esc to interrupt)
+
+╭─────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                           │
+╰─────────────────────────────────────────────────────────────────────────────╯
+  ⏵⏵ accept edits on (shift+tab to cycle)

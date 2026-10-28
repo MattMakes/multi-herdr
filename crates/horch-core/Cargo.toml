@@ -13,6 +13,7 @@ serde_yaml.workspace = true
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 uuid = { version = "1", features = ["v4"] }
+rusqlite.workspace = true
 
 # Only for SIGTERM to a Prime Agent daemon this process started. Spawning
 # `kill(1)` would work too, but a process spawn to stop a process - on a path
@@ -20,6 +21,11 @@ uuid = { version = "1", features = ["v4"] }
 # crate.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Process identity on Windows: the creation time, and a terminate on the
+# handle that read it (`procid`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 # `build.rs` digests the bundled skill catalog once at build time, so no
 # process digests the 8 MB of compiled-in files at run time.
