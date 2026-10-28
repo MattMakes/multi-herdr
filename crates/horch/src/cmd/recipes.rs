@@ -688,13 +688,19 @@ pub fn pane_launch(
     let (mailbox, _pane) = Mailbox::register_in(&herdr, ctx, role)?;
     // What the agent inherits on top of this process's environment. A pane
     // is a fresh shell, so everything `horch fleet` knew travels here.
-    let mut child_env: Vec<(String, String)> = vec![(
-        "HORCH_WORKSPACE_ID".into(),
-        mailbox.workspace_id().to_string(),
-    )];
-    if let Some(dir) = &identity.state_dir {
-        child_env.push(("HORCH_STATE_DIR".into(), dir.clone()));
-    }
+    // The state folder is the effective one, whether `--state-dir`, the
+    // environment or `XDG_STATE_HOME` chose it, so the agent's `horch` finds
+    // this pane's mailbox even when its harness strips ambient variables.
+    let mut child_env: Vec<(String, String)> = vec![
+        (
+            "HORCH_WORKSPACE_ID".into(),
+            mailbox.workspace_id().to_string(),
+        ),
+        (
+            "HORCH_STATE_DIR".into(),
+            ctx.paths.state_root.to_string_lossy().into_owned(),
+        ),
+    ];
     // Like a worker, the orchestrator knows its own record.
     if let Some(record_id) = &identity.record_id {
         child_env.push(("HORCH_RECORD_ID".into(), record_id.clone()));
