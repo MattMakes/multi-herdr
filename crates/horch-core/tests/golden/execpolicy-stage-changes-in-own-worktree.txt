@@ -1,5 +1,0 @@
-prefix_rule(
-    pattern = ["git", "add"],
-    decision = "allow",
-    justification = "herdr-fleet: stage changes in own worktree",
-)

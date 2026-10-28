@@ -1,6 +1,6 @@
 ---
 name: codex-swift-reviewer
-brief_description: Codex Sol Swift review. Reports, never edits. Network on. Sandboxed to its worktree; git add/commit run outside.
+brief_description: Codex Sol Swift review. Reports findings. Network on, so its sandbox cannot stop git push. Never edits or commits.
 base: fleet-worker
 agent: codex
 phase: validation

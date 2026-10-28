@@ -1,142 +1,108 @@
 # Live check: a Codex worker commits in a linked worktree
 
 Run 2026-10-28 on macOS (Darwin 25.5.0), `codex-cli 0.165.0`, by `opus-1`
-for ticket T-10 (fleet-reliability 01). No model session started: every
-step used `codex sandbox` (Seatbelt, no model) or `codex execpolicy check`.
+for ticket T-10 (fleet-reliability 01, decision 01b). No model session
+started: every step used `codex sandbox` (Seatbelt, no model) or
+`codex execpolicy check`.
 
 ## How to run
 
-No script: the steps are manual and take about 2 minutes. Use a scratch
-folder `$S` under `/private/tmp` (the shipped profile keeps `/tmp`
-read-only, so the main repository is outside every writable root, as in a
-real fleet).
+    cargo build -p horch
+    scripts/live/codex-git.sh
 
-    git init -q $S/main && git -C $S/main commit -q --allow-empty -m init
-    git -C $S/main worktree add -q $S/wt -b feat
-    git init -q --bare $S/remote.git && git -C $S/wt remote add origin $S/remote.git
-    mkdir $S/state
+The script makes a scratch repository with a linked worktree under
+`/private/tmp`, with its own ledger file and state folder, and no remote. It
+unsets every `HORCH_*` variable first: a worker pane sets
+`HORCH_PROJECT_DIR`, and without the unset `horch ledger` makes its run
+branch and worktree in that project. The script stops if the worktree is not
+under its scratch folder. Each check prints `PASS`, `FAIL` or `SKIP`; the
+exit code is 1 when any check fails.
 
-1. Run each "sandboxed" row below with the `codex sandbox` line under Setup.
-   For candidate b, add the roots to `workspace_roots` as `<EXTRA>`.
-2. Run each "execpolicy" row with
-   `codex execpolicy check -r crates/horch-core/tests/fixtures/harness/codex_rules_worker.rules -- <command>`.
-   Put `--` before the command, or codex reads `-m` and `--hard` as its own
-   options.
-3. Run each "outside the sandbox" row with plain `git` in `$S/wt`: an
-   execpolicy `allow` runs the command exactly so.
+The sandbox is the profile a Codex write pane launches in, `fleet_write`
+(`fleet_write_profile_args` in `crates/horch-core/src/harness/codex.rs`):
 
-## Setup
-
-A scratch repository `main` with a linked worktree `wt` on branch `feat`,
-the same shape as a fleet worktree. In `wt`, `.git` is a file:
-`gitdir: <main>/.git/worktrees/wt`. The git common dir is `<main>/.git`.
-
-Each sandboxed command ran in the profile a Codex write pane launches in,
-`fleet_write` (see `fleet_write_profile_args` in
-`crates/horch-core/src/harness/codex.rs`), with `-C <wt>` and a scratch
-state root:
-
-    codex sandbox -P fleet_write -C <wt> \
+    codex sandbox -P fleet_write -C <worktree> \
       -c 'permissions.fleet_write.extends=":workspace"' \
       -c 'permissions.fleet_write.filesystem={":project_roots"={"."="write",".git"="write",".codex"="write",".agents"="write",".aws"="write"},":slash_tmp"="read",":tmpdir"="read"}' \
-      -c 'permissions.fleet_write.workspace_roots={"<state>"=true<EXTRA>}' \
+      -c 'permissions.fleet_write.workspace_roots={"<state>"=true}' \
       -c 'permissions.fleet_write.network.enabled=true' -- <command>
 
-## Results
+## Result: shipped design (scripts/live/codex-git.sh, exit 0)
 
-| Candidate | Command | Exit | Error text |
-|---|---|---|---|
-| baseline (shipped profile) | `git add a.txt` | 128 | `Unable to create '<main>/.git/worktrees/wt/index.lock': Operation not permitted` |
-| baseline | `touch <main>/.git/probe` | 1 | `Operation not permitted` |
-| b1: root `<main>/.git/worktrees/wt` | `git add a.txt` | 128 | `unable to create temporary file` (objects live in the common dir) |
-| b2: root `<main>/.git` (common dir) | `git add a.txt` | 128 | `Unable to create '<main>/.git/worktrees/wt/index.lock'` |
-| b2 | `touch <main>/.git/{probe,objects/probe,refs/probe,worktrees/probe}` | 0 | - |
-| b2 | `touch <main>/.git/worktrees/wt/probe` | 1 | denied: Codex resolves the project root's `.git` pointer and keeps that gitdir read-only |
-| b4: roots common dir + `<main>/.git/worktrees/wt` | `git add a.txt`, then `git commit -m b4` | 0, 0 | - |
-| b4 | `git branch -D victim` (a branch of another checkout) | 0 | - (the sandbox deletes any branch) |
-| a: `prefix_rule` allow `["git","add"]`, `["git","commit"]` | `codex execpolicy check -- git add a.txt` | - | `decision: allow` |
-| a | `codex execpolicy check -- git commit -m x` | - | `decision: allow` |
-| a | the command an `allow` runs: `git add c.txt`, then `git commit -m a-allow` outside the sandbox | 0, 0 | - |
-| a | `codex execpolicy check -- git push origin feat` | - | no match: runs sandboxed |
-| a | `codex execpolicy check -- git reset --hard`, `git clean -fd`, `git checkout -- a.txt`, `git branch -D feat`, `git worktree remove ../wt` | - | no match for each |
-| a | `codex execpolicy check -- git -C . commit -m x` | - | no match |
-| a | `codex execpolicy check -- bash -lc "git add a.txt && git commit -m x"` | - | no match |
-| a (shipped profile, no rule) | `git push origin feat` to a local bare remote | 1 | `! [remote rejected] feat -> feat (unpacker error)` |
-
-Shipped rule set, after the code sweep (round 1, finding F10):
-`codex execpolicy check -r crates/horch-core/tests/fixtures/harness/codex_rules_worker.rules`
-(the rendered rules of every Codex worker pane):
-
-| Command | Decision |
+| Check | Result |
 |---|---|
-| `git add a.txt` | allow |
-| `git -c core.hooksPath=/dev/null commit -m x -- d.txt` | allow |
-| `git commit -m x` | no match: sandboxed, refused as in the baseline row |
-| `git push origin feat` | no match: sandboxed, refused as above |
-| `git reset --hard` | no match |
-| `git branch -D feat` | no match |
+| `codex execpolicy check` on the shipped worker rules: `git add a.txt`, `git commit -m x`, `git -c core.hooksPath=/dev/null commit -m x`, `git push origin HEAD` | no match for each: they run sandboxed |
+| `codex execpolicy check`: `horch ledger commit -m x` | allow (the existing `["horch", "ledger"]` rule) |
+| sandboxed `git add a.txt` in the linked worktree | refused: `Unable to create '<main>/.git/worktrees/T1-probe/index.lock': Operation not permitted` |
+| sandboxed `git push <local bare repo> HEAD` | refused: `! [remote rejected] HEAD -> fleet/codexgit-T1-probe (unpacker error)` |
+| nested repository with `filter.x.clean = "touch <scratch>/ESCAPED; cat"` in its `.git/config`: plain `git add` | the filter ran: the attack on a raw `git add` allow rule is real |
+| the same nested `git add`, sandboxed | the filter could not write outside the sandbox |
+| `horch ledger commit -m x -- nested/f.txt` | refused: `nested repository` |
+| `horch ledger commit -m probe -- a.txt` in the worktree | exit 0; prints the commit id; HEAD on `fleet/codexgit-T1-probe` moved to it |
 
-Hooks and staged paths, outside the sandbox in `$S/wt`, with
-`core.hooksPath=.hooks` holding a `pre-commit` and a `post-commit` hook that
-each touch a marker file, and `d.txt` and `e.txt` both staged:
+The network is on in `fleet_write`: sandboxed `curl https://example.com` gave
+HTTP 200, and 000 with `network.enabled=false`. A sandboxed write to `$HOME`
+gave `Operation not permitted`; a write to the state root exited 0.
 
-| Command | Exit | Result |
-|---|---|---|
-| `git commit -m base -- e.txt` | 0 | both markers written: a plain commit runs worktree-controlled hooks outside the sandbox |
-| `git -c core.hooksPath=/dev/null commit -m f10 -- d.txt` | 0 | no marker written; the commit holds `d.txt` only; `e.txt` stays staged |
+## Push to a network remote: the sandbox does not stop it
 
-The sandbox itself keeps the network on (`fleet_write` sets
-`network.enabled=true`): `curl https://example.com` gave HTTP 200, and 000
-with `network.enabled=false`. A write to `$HOME` gave `Operation not
-permitted`; a write to the state root exited 0.
+An earlier run of the script, before it unset `HORCH_PROJECT_DIR`, used the
+real `multi-herdr` repository by mistake. Its sandboxed
+`git push origin HEAD` reached GitHub over SSH and exited 0. It created the
+branch `fleet/codexgit-T1-probe` on `origin` at the main commit, and
+`horch ledger run new` pushed `fleet/codexgit`. No new commit left the
+machine. The script now has no remote and pushes only to a local bare
+repository by path.
 
-An execpolicy `allow` lifts the sandbox for the matching command only. This
-is the mechanism the existing `horch tell`, `horch note`, `horch done` and
-`horch ledger` rules use (see the `prepare` comment in `codex.rs`: a
-command with a redirection or a `;` runs sandboxed).
+So: the exec policy does not lift the sandbox for `git push`, but with the
+network on, the `fleet_write` sandbox does not stop a push to a network
+remote when SSH credentials are reachable. The sandbox refuses a push only
+when the remote is a local path outside its writable roots. The Codex
+teammate descriptions say this.
 
-## Decision
+## Decision (01b)
 
-Candidate a, narrowed: 2 `prefix_rule`s with `decision = "allow"` in
-`teammates/_base/codex-execpolicy.md`:
+- No `prefix_rule` allows a raw `git` command. A Codex worker commits with
+  `horch ledger commit -m "<message>" [-- <path>...]`, which the existing
+  `["horch", "ledger"]` rule runs outside the sandbox.
+- `horch ledger commit` (`crates/horch/src/cmd/taskledger_commit.rs`):
+  - takes the worker from `HORCH_WORKER_ID`, and refuses a worker with no
+    claimed task or with a review task;
+  - takes the worktree from the ledger row of that task, and refuses when
+    the current folder is outside it;
+  - runs git with `-C <worktree>`, every `GIT_*` variable removed except the
+    author and committer name, email and date, `GIT_CONFIG_NOSYSTEM=1` and
+    `GIT_CONFIG_GLOBAL=/dev/null`; `user.name` and `user.email` come from the
+    operator's global config as values;
+  - passes `-c core.hooksPath=/dev/null -c core.fsmonitor=false
+    -c commit.gpgsign=false -c gpg.program=/usr/bin/false` to every call;
+  - refuses a path outside the worktree, inside `.git`, or in a nested
+    repository (a folder below the worktree root with its own `.git`);
+  - stages with `git add -- <paths>` (or `git add -A`), commits with
+    `git commit -m <message> -- <paths>` (only the named files) or
+    `git commit -m <message>`, prints the commit id, and records the
+    progress event `commit <short id>`.
+- End-to-end tests: `crates/horch-e2e/tests/ledger_commit.rs`.
 
-- `["git", "add"]`.
-- `["git", "-c", "core.hooksPath=/dev/null", "commit"]`. A plain
-  `["git", "commit"]` ran hooks outside the sandbox, and a worker can write
-  hooks that `core.hooksPath` names inside its worktree (for example
-  `.husky/`). With the hooks path fixed to `/dev/null`, no hook runs.
-- `_base/fleet-worker.md` tells every worker to commit with
-  `git -c core.hooksPath=/dev/null commit -m "<message>" -- <files>`. The
-  `-- <files>` form commits only the named files, so paths staged by an
-  earlier attempt stay out of the commit.
-- `git push`, `git reset`, `git clean`, `git checkout --`, `git branch -D`
-  and `git worktree remove` match no rule, so they stay in the sandbox, and
-  the sandbox refuses their writes to the git metadata. `horch ledger finish`
-  does landing and cleanup.
+## Earlier candidates (rejected)
 
-Rejected:
+From the first runs of this check, sandboxed in `fleet_write`:
 
-- b1 and b2: each alone does not let `git add` succeed.
-- b4: it works, but it needs 2 extra roots and it opens every local git
-  command on the whole common dir. A sandboxed `git branch -D` deleted a
-  branch of another checkout.
-- A bare `["git"]` prefix: it allows push, reset and every other subcommand.
-- A plain `["git", "commit"]` prefix: it runs hooks outside the sandbox.
+| Candidate | Result |
+|---|---|
+| extra root: per-worktree gitdir `<main>/.git/worktrees/wt` | `git add` 128: objects live in the common dir |
+| extra root: git common dir `<main>/.git` | `git add` 128: Codex keeps the worktree's gitdir read-only |
+| both roots | `git add` and `git commit` 0, but a sandboxed `git branch -D` deleted a branch of another checkout |
+| `prefix_rule` allow `["git", "add"]`, `["git", "commit"]` | works, but a plain `git commit` ran worktree-controlled hooks outside the sandbox |
+| `prefix_rule` allow `["git", "-c", "core.hooksPath=/dev/null", "commit"]` | no hooks, but a raw `git add` in a nested repository runs that repository's filters outside the sandbox (round-2 Critical finding) |
 
 ## Limits that remain
 
-- The rules match only a plain `git add ...` or
-  `git -c core.hooksPath=/dev/null commit ...`. A compound line, a
-  redirection, or another option before the subcommand (`git -C dir commit`)
-  runs sandboxed and fails. Workers run the 2 commands separately.
-- The rules do not check the working directory. An allowed `git add` or
-  commit can write the git metadata of any repository the worker names by
-  `cd`. A check of the task worktree needs a `horch` commit command, which
-  this ticket does not add.
+- A Codex worker can push to a network remote from its sandbox (see above).
+  Only the briefing and `horch ledger finish` keep pushes in the fleet flow.
+- `git add -A` (no paths) stages every change in the worktree. A nested
+  repository there is staged as a gitlink (mode 160000). Checked with the
+  same git flags: the nested repository's clean filter and
+  `core.fsmonitor` did not run.
 - Commits skip the repository's own hooks. `horch ledger finish` runs the
   ticket's check before it lands.
-- `git push` is refused only by the sandbox's filesystem limits. The check
-  pushed to a local bare repository. It did not push to a network remote,
-  and the network is on in `fleet_write`, so a push to a network remote with
-  reachable credentials is not proven refused. The teammate descriptions do
-  not claim that a push is impossible.

@@ -105,9 +105,9 @@ work. These commands are on your PATH:
   it prints. Do not run git worktree add. Do not use a worktree tool of
   your harness.
 - Commit your work in the worktree. Commit exact files, not directories.
-- Commit with 2 separate commands. First: git add <files>. Then:
-  git -c core.hooksPath=/dev/null commit -m "<message>" -- <files>
-  Do not join them with && or ;.
+- Commit with: horch ledger commit -m "<message>" -- <files>
+  It stages and commits only those files. A Codex worker must commit this
+  way: its sandbox refuses git writes. A Claude worker can also use git.
 - You land your own work. Do not wait for the orchestrator to merge it.
   Run: horch worktree land --check "<the check command of your plan>".
   It rebases your branch on the branch that it came from, runs the check,

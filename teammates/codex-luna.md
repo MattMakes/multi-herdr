@@ -1,6 +1,6 @@
 ---
 name: codex-luna
-brief_description: Cheapest Codex worker - commands, renames, reruns. Network on. Sandboxed to its worktree; git add/commit run outside.
+brief_description: Cheapest Codex worker for rote runs. Network on, so its sandbox cannot stop git push. Commits via horch ledger commit.
 generic: true
 base: fleet-worker
 agent: codex

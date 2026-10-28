@@ -119,6 +119,8 @@ pub enum LedgerCommand {
     },
     /// (worker) Record a milestone; it counts as progress.
     Progress { text: String },
+    /// (worker) Stage and commit in this task's worktree, outside the sandbox.
+    Commit(super::taskledger_commit::CommitArgs),
     /// (worker) Record a note; it counts as progress.
     Note { text: String },
     /// Stop 1 worker by the PIDs and pane its row records. Takes only a
@@ -551,6 +553,7 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         LedgerCommand::Progress { text } => progress(ctx, &mut store, EventKind::Progress, &text),
+        LedgerCommand::Commit(args) => super::taskledger_commit::run(ctx, args),
         LedgerCommand::Note { text } => progress(ctx, &mut store, EventKind::Note, &text),
         LedgerCommand::Worker { command } => worker_cmd(ctx, &mut store, command),
         LedgerCommand::Events { run, json: as_json } => {

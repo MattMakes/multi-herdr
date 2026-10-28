@@ -227,9 +227,9 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
         \x20 it prints. Do not run git worktree add. Do not use a worktree tool of\n\
         \x20 your harness.\n\
         - Commit your work in the worktree. Commit exact files, not directories.\n\
-        - Commit with 2 separate commands. First: git add <files>. Then:\n\
-        \x20 git -c core.hooksPath=/dev/null commit -m \"<message>\" -- <files>\n\
-        \x20 Do not join them with && or ;.\n\
+        - Commit with: horch ledger commit -m \"<message>\" -- <files>\n\
+        \x20 It stages and commits only those files. A Codex worker must commit this\n\
+        \x20 way: its sandbox refuses git writes. A Claude worker can also use git.\n\
         - You land your own work. Do not wait for the orchestrator to merge it.\n\
         \x20 Run: horch worktree land --check \"<the check command of your plan>\".\n\
         \x20 It rebases your branch on the branch that it came from, runs the check,\n\
@@ -720,9 +720,9 @@ fn bal_07_usage_limits_block_sanctioned() {
 /// Execpolicy rules render exactly as they did, so an existing
 /// `~/.codex/execpolicy` is not duplicated on upgrade. The
 /// `horch skills read` rule (SKL-09) is a sanctioned addition: it has no
-/// golden, its block is pinned here. The other 6 rules each have a golden:
-/// the 4 old blocks stay unchanged, and the `git add` and hook-free
-/// `git commit` rules (T-10) are additions.
+/// golden, its block is pinned here, and the 4 old blocks stay unchanged.
+/// No rule allows a raw `git` command: a Codex worker commits through
+/// `horch ledger commit` (T-10).
 #[test]
 fn execpolicy_blocks_are_unchanged() {
     const SKILLS_READ: &str = "read a catalog skill that the bundle does not hold";
@@ -744,7 +744,11 @@ fn execpolicy_blocks_are_unchanged() {
             "{name} drifted"
         );
     }
-    assert_eq!(r.exec_rules().len(), 7);
+    assert_eq!(r.exec_rules().len(), 5);
+    assert!(
+        r.exec_rules().iter().all(|rule| !rule.pattern.starts_with("\"git\"")),
+        "no execpolicy rule may allow a raw git command"
+    );
 }
 
 /// The Codex flavor shares the whole orchestrator briefing and differs only in

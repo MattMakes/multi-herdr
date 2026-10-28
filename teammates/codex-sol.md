@@ -1,6 +1,6 @@
 ---
 name: codex-sol
-brief_description: Generic Codex worker. Complex implementation work. Network on. Sandboxed to its worktree; git add/commit run outside.
+brief_description: Codex worker for complex builds. Network on, so its sandbox cannot stop git push. Commits via horch ledger commit.
 generic: true
 base: fleet-worker
 agent: codex
