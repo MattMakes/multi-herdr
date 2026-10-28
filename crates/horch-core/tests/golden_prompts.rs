@@ -227,6 +227,8 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
         \x20 it prints. Do not run git worktree add. Do not use a worktree tool of\n\
         \x20 your harness.\n\
         - Commit your work in the worktree. Commit exact files, not directories.\n\
+        - Commit with 2 separate commands: git add <files>, then\n\
+        \x20 git commit -m \"<message>\". Do not join them with && or ;.\n\
         - You land your own work. Do not wait for the orchestrator to merge it.\n\
         \x20 Run: horch worktree land --check \"<the check command of your plan>\".\n\
         \x20 It rebases your branch on the branch that it came from, runs the check,\n\
@@ -739,7 +741,7 @@ fn execpolicy_blocks_are_unchanged() {
             "{name} drifted"
         );
     }
-    assert_eq!(r.exec_rules().len(), 5);
+    assert_eq!(r.exec_rules().len(), 7);
 }
 
 /// The Codex flavor shares the whole orchestrator briefing and differs only in

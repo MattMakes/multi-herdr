@@ -23,3 +23,13 @@ prefix_rule(
     decision = "allow",
     justification = "herdr-fleet: claim, report and finish tasks through the task ledger",
 )
+prefix_rule(
+    pattern = ["git", "add"],
+    decision = "allow",
+    justification = "herdr-fleet: stage changes in own worktree",
+)
+prefix_rule(
+    pattern = ["git", "commit"],
+    decision = "allow",
+    justification = "herdr-fleet: commit own work in own worktree",
+)

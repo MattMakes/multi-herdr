@@ -1,6 +1,6 @@
 ---
 name: codex-terra
-brief_description: Generic worker, Codex flavor. Straightforward grunt work; executes exactly what is asked.
+brief_description: Generic Codex worker. Grunt work, exactly as asked. Network on. Writes its worktree only. Commits, never pushes.
 generic: true
 base: fleet-worker
 agent: codex

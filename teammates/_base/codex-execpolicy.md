@@ -18,6 +18,10 @@ rules:
     justification: mark session done and close own pane
   - pattern: '"horch", "ledger"'
     justification: claim, report and finish tasks through the task ledger
+  - pattern: '"git", "add"'
+    justification: stage changes in own worktree
+  - pattern: '"git", "commit"'
+    justification: commit own work in own worktree
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a
 private `CODEX_HOME` that lives only as long as the pane, as:

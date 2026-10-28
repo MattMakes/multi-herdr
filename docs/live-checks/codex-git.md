@@ -42,6 +42,22 @@ state root:
 | a | `codex execpolicy check -- bash -lc "git add a.txt && git commit -m x"` | - | no match |
 | a (shipped profile, no rule) | `git push origin feat` to a local bare remote | 1 | `! [remote rejected] feat -> feat (unpacker error)` |
 
+Shipped rule set: `codex execpolicy check -r crates/horch-core/tests/fixtures/harness/codex_rules_worker.rules`
+(the rendered rules of every Codex worker pane) after the change:
+
+| Command | Decision |
+|---|---|
+| `git add a.txt` | allow |
+| `git commit -m x` | allow |
+| `git push origin feat` | no match: sandboxed, refused as above |
+| `git reset --hard` | no match |
+| `git branch -D feat` | no match |
+
+The sandbox itself keeps the network on (`fleet_write` sets
+`network.enabled=true`): `curl https://example.com` gave HTTP 200, and 000
+with `network.enabled=false`. A write to `$HOME` gave `Operation not
+permitted`; a write to the state root exited 0.
+
 An execpolicy `allow` lifts the sandbox for the matching command only. This
 is the mechanism the existing `horch tell`, `horch note`, `horch done` and
 `horch ledger` rules use (see the `prepare` comment in `codex.rs`: a

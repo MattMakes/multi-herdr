@@ -1,6 +1,6 @@
 ---
 name: codex-swift-reviewer
-brief_description: Cross-vendor Swift review on Codex Sol - concurrency and modern SwiftUI. Use on Claude-built Swift changes.
+brief_description: Codex Sol Swift review - concurrency, modern SwiftUI. Network on. Writes its worktree only. Commits, never pushes.
 base: fleet-worker
 agent: codex
 phase: validation

@@ -1,6 +1,6 @@
 ---
 name: codex-luna
-brief_description: Cheapest worker, Codex flavor. Mechanical runs - commands, renames, lookups, test reruns. No judgement.
+brief_description: Cheapest Codex worker - commands, renames, lookups, reruns. Network on. Writes its worktree only. Commits, never pushes.
 generic: true
 base: fleet-worker
 agent: codex

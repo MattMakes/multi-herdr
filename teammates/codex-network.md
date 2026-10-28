@@ -1,6 +1,6 @@
 ---
 name: codex-network
-brief_description: Codex Sol WITH network access. Only for work that must reach the network - installs, downloads, live API checks.
+brief_description: Codex Sol for installs, downloads, live API checks. Network on. Writes its worktree only. Commits, never pushes.
 generic: true
 base: fleet-worker
 agent: codex
