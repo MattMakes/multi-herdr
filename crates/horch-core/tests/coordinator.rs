@@ -540,12 +540,12 @@ fn arc_24_candidates_are_ordinary_executions() {
     );
 
     // No second registry: the state root holds the ledger, its lock and the
-    // dataset dir, nothing else.
+    // dataset dir and the mailbox, nothing else.
     let mut entries: Vec<String> = std::fs::read_dir(&w.ctx.paths.state_root)
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| !n.ends_with(".lock"))
+        .filter(|n| !n.ends_with(".lock") && !n.starts_with("herdr-orchestration-"))
         .collect();
     entries.sort();
     let ledger = store
