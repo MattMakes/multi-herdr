@@ -606,9 +606,12 @@ fn a_failed_commit_leaves_the_index_as_it_was() {
         .unwrap()
         .flat_map(|e| std::fs::read_dir(e.unwrap().path()).unwrap())
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with("index.horch-"))
+        .filter(|n| n == "index.horch" || n == "index.lock")
         .collect();
-    assert!(left.is_empty(), "the index copy is removed: {left:?}");
+    assert!(
+        left.is_empty(),
+        "the index copy and lock are removed: {left:?}"
+    );
 }
 
 #[test]
@@ -759,7 +762,7 @@ fn more_paths_than_the_cap_are_refused() {
     let (h, w, wt) = claimed("lc-cap");
     let dir = wt.join("many");
     std::fs::create_dir_all(&dir).unwrap();
-    for n in 0..10_001 {
+    for n in 0..10_050 {
         std::fs::write(dir.join(format!("{n}.txt")), "").unwrap();
     }
     let before = head(&h, &wt);
@@ -769,5 +772,83 @@ fn more_paths_than_the_cap_are_refused() {
         "{}",
         text(&o)
     );
+    // git is stopped at the cap: horch never counts every change.
+    assert!(!text(&o).contains("10050"), "{}", text(&o));
     assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+/// The worktree's admin dir under the main checkout's `.git/worktrees`.
+fn admin_dir(h: &Harness) -> PathBuf {
+    let entries: Vec<PathBuf> = std::fs::read_dir(h.project.join(".git/worktrees"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    entries[0].clone()
+}
+
+#[test]
+fn a_held_index_lock_refuses_the_commit_and_stays() {
+    let (h, w, wt) = claimed("lc-lock");
+    let lock = admin_dir(&h).join("index.lock");
+    std::fs::write(&lock, "").unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    assert!(
+        !o.status.success() && text(&o).contains("another git command"),
+        "{}",
+        text(&o)
+    );
+    assert!(lock.exists(), "the lock of the other command stays");
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+#[test]
+fn a_required_flag_that_is_not_a_boolean_refuses_the_commit() {
+    let (h, w, wt) = claimed("lc-lfs-bad");
+    let marker = h.root.join("lfs-ran");
+    lfs_filter(&h, &wt, &marker);
+    let project = h.project.clone();
+    git_in(&h, &project, &["config", "filter.lfs.required", "maybe"]);
+    std::fs::write(wt.join("big.bin"), "large\n").unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+    let o = as_worker(
+        &h,
+        &w,
+        &wt,
+        &["ledger", "commit", "-m", "x", "--", "big.bin"],
+    );
+    assert!(
+        !o.status.success() && text(&o).contains("cannot read filter.<name>.required"),
+        "{}",
+        text(&o)
+    );
+    // With no paths, git status itself refuses the bad value first.
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(!marker.exists(), "the filter must not run");
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+#[test]
+fn a_worktree_with_relative_links_still_commits() {
+    let (h, w, wt) = claimed_after("lc-relative", |h| {
+        let project = h.project.clone();
+        git_in(
+            h,
+            &project,
+            &["config", "worktree.useRelativePaths", "true"],
+        );
+    });
+    let dotgit = std::fs::read_to_string(wt.join(".git")).unwrap();
+    assert!(
+        dotgit.starts_with("gitdir: ../"),
+        "git wrote a relative link: {dotgit}"
+    );
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(out(&o).trim(), head(&h, &wt));
 }

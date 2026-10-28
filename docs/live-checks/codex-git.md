@@ -158,17 +158,28 @@ teammate descriptions say this.
     `filter.<name>.required=true` in the repository or global config (Git
     LFS sets it): with no filters, git would store the raw content. It reads
     the attribute with `git check-attr`, which runs no filter. A path with
-    another filter is committed unfiltered. It reads `git status -z` as
-    bytes, so a name that is not UTF-8 is checked as itself, and it looks up
-    each filter name once. It refuses more than 10000 paths in 1 commit;
-  - stages into a copy of the index (`GIT_INDEX_FILE`), which replaces the
-    index only after the commit succeeds: a failed commit leaves the index
-    as it was. It stages with `git add -- <paths>` (or `git add -A`), commits with
+    another filter is committed unfiltered. It reads every
+    `filter.*.required` value with 1 `git config --get-regexp --type=bool`
+    per config (repository, then global). A missing key means "not
+    required"; a failed lookup or a value that is not a boolean refuses the
+    commit. It reads `git status -z`, `git check-attr -z` and the config
+    output as bytes, record by record: at most 10000 records (a rename or
+    copy counts 2) of at most 4099 bytes each. git is killed at the first
+    record past either bound, so worker-controlled output never grows horch
+    past them. A name that is not UTF-8 is checked as itself;
+  - holds git's own `index.lock` for the whole command (refused when it is
+    held), and stages into a copy of the index, `index.horch`
+    (`GIT_INDEX_FILE`). The copy replaces the index only after the commit
+    succeeds: a failed commit leaves the index as it was. Both files are made
+    with `create_new`, which never follows a planted link. When the commit
+    exists but the index update fails, it warns and still exits 0;
+  - accepts the relative links that git writes with
+    `worktree.useRelativePaths` when each one resolves to the trusted entry. It stages with `git add -- <paths>` (or `git add -A`), commits with
     `git commit -m <message> -- <paths>` (only the named files) or
     `git commit -m <message>`, prints the commit id, and records the
     progress event `commit <short id>`. A failed ledger write after the
     commit prints a warning and still exits 0: the commit exists.
-- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 20 tests): a
+- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 23 tests): a
   commit lands without hooks; refused paths; refused for a review task or no
   task; a rewritten `.git` file is refused and its config never runs; a
   `* filter=evil` attribute with `filter.evil.clean` in the repository
@@ -185,7 +196,11 @@ teammate descriptions say this.
   refused too; a name that is not UTF-8 keeps its required filter (Linux
   only: APFS refuses such a name, and the test returns early); a SHA-256
   repository commits without running filters; a git in the main checkout
-  never runs; more than 10000 paths are refused.
+  never runs; more than 10000 paths are refused, and git is stopped at the
+  cap; a held `index.lock` refuses the commit and stays; a `required` value
+  that is not a boolean refuses the commit; a worktree with relative links
+  still commits. Unit tests in `taskledger_commit.rs` check the record
+  bounds and the config entry parser.
 - SHA-256: `scripts/live/codex-git.sh`, run with both scratch repositories
   made by `git init --object-format=sha256`, passed every check (exit 0).
 - The caller cannot steer the command through its environment.

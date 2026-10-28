@@ -9,10 +9,11 @@
 //! `.git/config` the worker can write
 //! (docs/live-checks/codex-git.md, T-10 decision 01b).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, ExitStatus, Stdio};
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -52,6 +53,10 @@ const EMPTY_TREE_SHA256: &str = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b
 /// The most paths 1 commit takes: a bound on the `git status` and
 /// `check-attr` output that horch reads outside the sandbox.
 const MAX_PATHS: usize = 10_000;
+
+/// The most bytes of 1 NUL-ended record of git output that horch reads: a
+/// 3-byte status code and a path of `PATH_MAX` (4096) bytes.
+const MAX_RECORD: usize = 4099;
 
 /// Plain data that names the author and committer; never a program.
 const IDENTITY_VARS: [&str; 6] = [
@@ -142,26 +147,72 @@ fn owned_worktree(store: &Store, wid: &str) -> Result<(String, WorktreeRow)> {
 }
 
 /// Stage and commit `paths` (every change when empty); the new commit id.
-/// git stages into a copy of the index, which replaces the index only when
-/// the commit succeeds: a failed commit leaves the index as it was.
+/// git's own `index.lock` is held for the whole command, so a second commit
+/// or a git command that writes the index is refused and no index update is
+/// lost. Both files are made with `create_new`, which never follows a
+/// planted link.
 fn commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
-    let index = git.gitdir.join("index");
-    let scratch = git
-        .gitdir
-        .join(format!("index.horch-{}", std::process::id()));
-    if index.exists() {
-        std::fs::copy(&index, &scratch).with_context(|| format!("copying {}", index.display()))?;
-    }
-    let staged = git.with_index(&scratch);
-    let result = stage_and_commit(&staged, message, paths);
-    match result {
-        Ok(_) => std::fs::rename(&scratch, &index)
-            .with_context(|| format!("replacing {}", index.display()))?,
-        Err(_) => {
-            let _ = std::fs::remove_file(&scratch);
-        }
-    }
+    let lock = git.gitdir.join("index.lock");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+        .with_context(|| {
+            format!(
+                "refused: {} exists: another git command is using the index of this worktree",
+                lock.display()
+            )
+        })?;
+    let result = commit_locked(git, message, paths);
+    let _ = std::fs::remove_file(&lock);
     result
+}
+
+/// [`commit`] under the index lock. git stages into `index.horch`, which
+/// replaces the index only when the commit succeeds: a failed commit leaves
+/// the index as it was.
+fn commit_locked(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
+    let index = git.gitdir.join("index");
+    let scratch = git.gitdir.join("index.horch");
+    // A copy that a crashed run left: under the lock, nothing else writes it.
+    let _ = std::fs::remove_file(&scratch);
+    let staged = copy_index(&index, &scratch)
+        .and_then(|()| stage_and_commit(&git.with_index(&scratch), message, paths));
+    let id = match staged {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = std::fs::remove_file(&scratch);
+            return Err(e);
+        }
+    };
+    // The commit exists: a failed index update is a warning, or a retry
+    // finds nothing to commit.
+    if let Err(e) = std::fs::rename(&scratch, &index) {
+        eprintln!(
+            "horch: committed {id}, but could not update {}: {e}. The index still shows the old HEAD.",
+            index.display()
+        );
+        let _ = std::fs::remove_file(&scratch);
+    }
+    Ok(id)
+}
+
+/// A copy of the index at `scratch`, a new file; nothing when there is no
+/// index yet (git then starts an empty one).
+fn copy_index(index: &Path, scratch: &Path) -> Result<()> {
+    let mut source = match std::fs::File::open(index) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", index.display())),
+    };
+    let mut copy = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(scratch)
+        .with_context(|| format!("creating {}", scratch.display()))?;
+    std::io::copy(&mut source, &mut copy)
+        .with_context(|| format!("copying {}", index.display()))?;
+    Ok(())
 }
 
 fn stage_and_commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
@@ -185,37 +236,80 @@ fn stage_and_commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<S
 /// Refused when a path to commit has a required `filter` attribute (Git
 /// LFS, for one): with attributes from the empty tree, git would store its
 /// raw content. With no paths, the paths are every change `git status`
-/// lists, read as bytes: a name that is not UTF-8 stays the same name.
+/// lists.
 fn refuse_required_filters(git: &Trusted, paths: &[PathBuf]) -> Result<()> {
-    let mut names: Vec<OsString> = paths.iter().map(|p| p.as_os_str().to_owned()).collect();
-    if names.is_empty() {
-        let status = git.run_bytes(&[
-            "status".into(),
-            "--porcelain=v1".into(),
-            "-z".into(),
-            "--untracked-files=all".into(),
-        ])?;
-        let mut entries = status.split(|b| *b == 0).filter(|e| !e.is_empty());
-        while let Some(entry) = entries.next() {
-            if let Some(path) = entry.get(3..) {
-                names.push(os_name(path));
-            }
-            // A rename or copy is followed by its old path.
-            if matches!(entry.first(), Some(b'R' | b'C')) {
-                entries.next();
-            }
-        }
-    }
+    let names = if paths.is_empty() {
+        changed_paths(git)?
+    } else {
+        paths.iter().map(|p| p.as_os_str().to_owned()).collect()
+    };
     if names.is_empty() {
         return Ok(());
     }
     if names.len() > MAX_PATHS {
+        bail!("{}", too_many_paths());
+    }
+    let required = required_filters(git)?;
+    let refused: Vec<String> = path_filters(git, names)?
+        .into_iter()
+        .filter(|(_, filter)| required.contains(filter))
+        .map(|(path, filter)| format!("{} (filter={filter})", path.to_string_lossy()))
+        .collect();
+    if !refused.is_empty() {
         bail!(
-            "refused: {} paths to commit; horch ledger commit takes at most {MAX_PATHS}. \
-             Commit them in parts with -- <files>.",
-            names.len()
+            "refused: horch ledger commit runs no git filters, so it cannot commit {}, \
+             whose filter is required. Ask the orchestrator for a Claude worker to commit \
+             these paths.",
+            refused.join(", ")
         );
     }
+    Ok(())
+}
+
+fn too_many_paths() -> String {
+    format!(
+        "refused: horch ledger commit takes at most {MAX_PATHS} paths (a rename or copy \
+         counts 2). Commit them in parts with -- <files>."
+    )
+}
+
+/// Every change `git status` lists, read as bytes: a name that is not UTF-8
+/// stays the same name. git is stopped at the first record past the cap.
+fn changed_paths(git: &Trusted) -> Result<Vec<OsString>> {
+    let args: [OsString; 4] = [
+        "status".into(),
+        "--porcelain=v1".into(),
+        "-z".into(),
+        "--untracked-files=all".into(),
+    ];
+    let out = bounded_records(git.command(clean_git(&git.bin, git.tree), &args), MAX_PATHS)?;
+    if !out.complete {
+        bail!("{}", too_many_paths());
+    }
+    if !out.status.success() {
+        bail!("git status failed: {}", out.status);
+    }
+    let mut names = Vec::new();
+    let mut records = out.records.iter().filter(|r| !r.is_empty());
+    while let Some(record) = records.next() {
+        if let Some(path) = record.get(3..) {
+            names.push(os_name(path));
+        }
+        // A rename or copy is followed by its old path.
+        if record
+            .get(..2)
+            .is_some_and(|xy| xy.iter().any(|b| matches!(b, b'R' | b'C')))
+        {
+            records.next();
+        }
+    }
+    Ok(names)
+}
+
+/// Each of `names` with its `filter` attribute, when it has one. Read with
+/// `git check-attr`, which reads attributes and never runs a filter.
+fn path_filters(git: &Trusted, names: Vec<OsString>) -> Result<Vec<(OsString, String)>> {
+    let expected = 3 * names.len();
     let mut args: Vec<OsString> = vec![
         "check-attr".into(),
         "-z".into(),
@@ -223,48 +317,132 @@ fn refuse_required_filters(git: &Trusted, paths: &[PathBuf]) -> Result<()> {
         "--".into(),
     ];
     args.extend(names);
-    let out = git.run_with_attributes(&args)?;
-    let fields: Vec<&[u8]> = out.split(|b| *b == 0).collect();
-    // Only a required filter refuses: git itself fails without it, and
-    // `git lfs install` sets `filter.lfs.required`. Another filter's path is
-    // committed unfiltered. 1 config lookup per filter, not per path.
-    let mut required: HashMap<String, bool> = HashMap::new();
-    let mut filtered = Vec::new();
-    for c in fields.chunks(3).filter(|c| c.len() == 3) {
-        let filter = String::from_utf8_lossy(c[2]).into_owned();
-        if matches!(filter.as_str(), "unspecified" | "unset") {
-            continue;
-        }
-        let is_required = *required
-            .entry(filter.clone())
-            .or_insert_with(|| required_filter(git, &filter));
-        if is_required {
-            filtered.push(format!(
-                "{} (filter={filter})",
-                String::from_utf8_lossy(c[0])
-            ));
-        }
+    let out = bounded_records(git.command(attribute_git(&git.bin), &args), expected)?;
+    if !out.complete || !out.status.success() {
+        bail!("git check-attr failed: {}", out.status);
     }
-    if !filtered.is_empty() {
-        bail!(
-            "refused: horch ledger commit runs no git filters, so it cannot commit {}, \
-             whose filter is required. Ask the orchestrator for a Claude worker to commit \
-             these paths.",
-            filtered.join(", ")
-        );
-    }
-    Ok(())
+    Ok(out
+        .records
+        .chunks(3)
+        .filter(|c| c.len() == 3)
+        .map(|c| (os_name(&c[0]), String::from_utf8_lossy(&c[2]).into_owned()))
+        .filter(|(_, filter)| !matches!(filter.as_str(), "unspecified" | "unset"))
+        .collect())
 }
 
-/// Whether `filter.<name>.required` is true in the repository config or the
-/// operator's global config (where `git lfs install` writes it).
-fn required_filter(git: &Trusted, name: &str) -> bool {
-    let key = format!("filter.{name}.required");
-    let repo = git
-        .run(&["config".into(), "--get".into(), key.as_str().into()])
-        .ok();
-    let value = repo.or_else(|| global_config(&git.bin, &key));
-    value.is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "on" | "1"))
+/// The filters whose `filter.<name>.required` is true: git itself fails
+/// without them, and `git lfs install` sets `filter.lfs.required` in the
+/// operator's global config. The repository config wins over the global
+/// one. 1 lookup per config, not per path or filter. A failed lookup or a
+/// value that is not a boolean refuses the commit: horch never guesses.
+fn required_filters(git: &Trusted) -> Result<HashSet<String>> {
+    const QUERY: [&str; 4] = [
+        "--null",
+        "--type=bool",
+        "--get-regexp",
+        r"^filter\..*\.required$",
+    ];
+    let mut global = global_git(&git.bin);
+    global.args(["config", "--global"]).args(QUERY);
+    let mut values = config_values(global, "global")?;
+    let mut args: Vec<OsString> = vec!["config".into()];
+    args.extend(QUERY.iter().map(OsString::from));
+    let repo = git.command(clean_git(&git.bin, git.tree), &args);
+    values.extend(config_values(repo, "repository")?);
+    Ok(values
+        .into_iter()
+        .filter(|(_, required)| *required)
+        .map(|(name, _)| name)
+        .collect())
+}
+
+/// Filter name to `required`, from 1 `git config --get-regexp` run. Exit 1
+/// with no output means the config sets none.
+fn config_values(cmd: Command, scope: &str) -> Result<HashMap<String, bool>> {
+    let out = bounded_records(cmd, MAX_PATHS)?;
+    match out.status.code() {
+        Some(0) if out.complete => {}
+        Some(1) if out.records.is_empty() => return Ok(HashMap::new()),
+        _ => bail!(
+            "refused: cannot read filter.<name>.required from the {scope} git config ({}). \
+             horch ledger commit does not guess whether a filter is required.",
+            out.status
+        ),
+    }
+    out.records.iter().map(|r| config_entry(r, scope)).collect()
+}
+
+/// `filter.<name>.required\n<true|false>` as `(name, required)`.
+fn config_entry(record: &[u8], scope: &str) -> Result<(String, bool)> {
+    let text = String::from_utf8_lossy(record);
+    let entry = text.split_once('\n').and_then(|(key, value)| {
+        let name = key.strip_prefix("filter.")?.strip_suffix(".required")?;
+        let required = match value {
+            "true" => true,
+            "false" => false,
+            _ => return None,
+        };
+        Some((name.to_string(), required))
+    });
+    entry.with_context(|| format!("refused: unreadable {scope} git config entry {text:?}"))
+}
+
+/// The NUL-ended stdout records of 1 git run, and how it ended.
+struct Records {
+    status: ExitStatus,
+    records: Vec<Vec<u8>>,
+    /// False when git printed more than the cap: it was stopped there.
+    complete: bool,
+}
+
+/// Run `cmd` and read at most `max` NUL-ended stdout records of at most
+/// [`MAX_RECORD`] bytes each. git is killed at the first record past either
+/// bound, so its output never grows horch past them. stderr is dropped.
+fn bounded_records(mut cmd: Command, max: usize) -> Result<Records> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("running git")?;
+    let stdout = child.stdout.take().context("git has no stdout")?;
+    let read = read_records(BufReader::new(stdout), max);
+    if !matches!(read, Ok((_, true))) {
+        let _ = child.kill();
+    }
+    let status = child.wait().context("waiting for git")?;
+    let (records, complete) = read?;
+    Ok(Records {
+        status,
+        records,
+        complete,
+    })
+}
+
+/// At most `max` NUL-ended records from `reader`, and whether it ended
+/// within them. A record longer than [`MAX_RECORD`] is an error.
+fn read_records(mut reader: impl BufRead, max: usize) -> Result<(Vec<Vec<u8>>, bool)> {
+    let mut records = Vec::new();
+    loop {
+        let mut record = Vec::new();
+        reader
+            .by_ref()
+            .take(MAX_RECORD as u64 + 1)
+            .read_until(0, &mut record)
+            .context("reading git output")?;
+        if record.is_empty() {
+            return Ok((records, true));
+        }
+        if record.last() == Some(&0) {
+            record.pop();
+        } else if record.len() > MAX_RECORD {
+            bail!("refused: git printed a record longer than {MAX_RECORD} bytes");
+        }
+        if records.len() == max {
+            return Ok((records, false));
+        }
+        records.push(record);
+    }
 }
 
 /// The worktree's git dir, from trusted metadata only: the 1 entry under
@@ -328,7 +506,10 @@ fn worktree_entry(common: &Path, worktree: &Path, root: &Path) -> Result<PathBuf
     let names_worktree = |entry: &Path| {
         std::fs::read_to_string(entry.join("gitdir")).is_ok_and(|t| {
             let t = t.trim();
-            t == recorded || std::fs::canonicalize(t).is_ok_and(|p| p == root.join(".git"))
+            // With `worktree.useRelativePaths`, git writes the path relative
+            // to the entry; `join` keeps an absolute path as it is.
+            t == recorded
+                || std::fs::canonicalize(entry.join(t)).is_ok_and(|p| p == root.join(".git"))
         })
     };
     let matches: Vec<PathBuf> = std::fs::read_dir(common.join("worktrees"))
@@ -350,7 +531,8 @@ fn worktree_entry(common: &Path, worktree: &Path, root: &Path) -> Result<PathBuf
 }
 
 /// Refused unless the worktree's `.git` is a file that says exactly
-/// `gitdir: <gitdir>`.
+/// `gitdir: <gitdir>`, or a relative path from the worktree to it (git
+/// writes that with `worktree.useRelativePaths`).
 fn check_dotgit(root: &Path, gitdir: &Path) -> Result<()> {
     let dotgit = root.join(".git");
     let text = std::fs::symlink_metadata(&dotgit)
@@ -365,6 +547,12 @@ fn check_dotgit(root: &Path, gitdir: &Path) -> Result<()> {
         .iter()
         .any(|p| line == format!("gitdir: {}", p.display()))
     {
+        return Ok(());
+    }
+    let relative = line.strip_prefix("gitdir: ").map(Path::new);
+    if relative.is_some_and(|r| {
+        r.is_relative() && std::fs::canonicalize(root.join(r)).is_ok_and(|p| p == canonical)
+    }) {
         return Ok(());
     }
     bail!(
@@ -559,23 +747,26 @@ impl Trusted {
         }
     }
 
+    /// git `args` with attributes from the empty tree; its trimmed stdout.
     fn run(&self, args: &[OsString]) -> Result<String> {
-        let out = self.run_bytes(args)?;
-        Ok(String::from_utf8_lossy(&out).trim().to_string())
+        let out = self
+            .command(clean_git(&self.bin, self.tree), args)
+            .output()
+            .with_context(|| format!("running {}", self.bin.display()))?;
+        if !out.status.success() {
+            bail!(
+                "git {} failed: {}",
+                args.first()
+                    .map(|a| a.to_string_lossy())
+                    .unwrap_or_default(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// `run`, with stdout as git printed it: `-z` output keeps its bytes.
-    fn run_bytes(&self, args: &[OsString]) -> Result<Vec<u8>> {
-        self.output(clean_git(&self.bin, self.tree), args)
-    }
-
-    /// `run_bytes`, with the attributes of the worktree: only for
-    /// `check-attr`, which reads attributes and never runs a filter.
-    fn run_with_attributes(&self, args: &[OsString]) -> Result<Vec<u8>> {
-        self.output(attribute_git(&self.bin), args)
-    }
-
-    fn output(&self, mut cmd: Command, args: &[OsString]) -> Result<Vec<u8>> {
+    /// `cmd` with `args`, pinned to the recorded worktree and git dir.
+    fn command(&self, mut cmd: Command, args: &[OsString]) -> Command {
         // The git dir is named, never discovered: discovery would follow the
         // worktree's `.git` file, which the sandbox can rewrite.
         cmd.arg("-C")
@@ -596,20 +787,8 @@ impl Trusted {
                 cmd.env(var, v);
             }
         }
-        let out = cmd
-            .args(args)
-            .output()
-            .with_context(|| format!("running {}", self.bin.display()))?;
-        if !out.status.success() {
-            bail!(
-                "git {} failed: {}",
-                args.first()
-                    .map(|a| a.to_string_lossy())
-                    .unwrap_or_default(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(out.stdout)
+        cmd.args(args);
+        cmd
     }
 }
 
@@ -665,14 +844,19 @@ fn global_identity(bin: &Path) -> Vec<(String, String)> {
 
 /// 1 value from the operator's global config, read as a value only.
 fn global_config(bin: &Path, key: &str) -> Option<String> {
-    let out = git_without_env(bin, Some(EMPTY_TREE_SHA1))
-        .current_dir("/")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
+    let out = global_git(bin)
         .args(["config", "--global", "--get", key])
         .output()
         .ok()?;
     let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !value.is_empty()).then_some(value)
+}
+
+/// git outside any repository that reads the operator's global config only.
+fn global_git(bin: &Path) -> Command {
+    let mut cmd = git_without_env(bin, Some(EMPTY_TREE_SHA1));
+    cmd.current_dir("/").env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd
 }
 
 /// A git command with every `GIT_*` variable removed, and attributes from
@@ -692,4 +876,66 @@ fn git_without_env(bin: &Path, tree: Option<&str>) -> Command {
     cmd.env_remove("ANTHROPIC_API_KEY")
         .env("PATH", "/usr/bin:/bin");
     cmd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn records_end_within_the_cap() {
+        let (records, complete) = read_records(Cursor::new(b"a\0bb\0c".to_vec()), 3).unwrap();
+        assert!(complete);
+        assert_eq!(records, vec![b"a".to_vec(), b"bb".to_vec(), b"c".to_vec()]);
+    }
+
+    #[test]
+    fn reading_stops_at_the_first_record_past_the_cap() {
+        let input: Vec<u8> = (0..50)
+            .flat_map(|n| format!("{n}\0").into_bytes())
+            .collect();
+        let mut reader = Cursor::new(input);
+        let (records, complete) = read_records(&mut reader, 10).unwrap();
+        assert!(!complete);
+        assert_eq!(records.len(), 10);
+        // Only 1 record past the cap was read: the rest stays unread.
+        assert_eq!(
+            reader.position(),
+            b"0\x001\x002\x003\x004\x005\x006\x007\x008\x009\x0010\0".len() as u64
+        );
+    }
+
+    #[test]
+    fn a_record_longer_than_the_bound_is_refused_before_it_is_stored() {
+        let mut long = vec![b'x'; MAX_RECORD + 1];
+        long.push(0);
+        let mut reader = Cursor::new(long);
+        let e = read_records(&mut reader, 10).unwrap_err();
+        assert!(e.to_string().contains("longer than 4099 bytes"), "{e}");
+        assert_eq!(reader.position(), MAX_RECORD as u64 + 1);
+        let mut exact = vec![b'x'; MAX_RECORD];
+        exact.push(0);
+        let (records, complete) = read_records(Cursor::new(exact), 10).unwrap();
+        assert!(complete && records[0].len() == MAX_RECORD);
+    }
+
+    #[test]
+    fn config_entries_parse_or_refuse() {
+        assert_eq!(
+            config_entry(b"filter.lfs.required\ntrue", "global").unwrap(),
+            ("lfs".to_string(), true)
+        );
+        assert_eq!(
+            config_entry(b"filter.a.b.required\nfalse", "global").unwrap(),
+            ("a.b".to_string(), false)
+        );
+        for bad in [
+            &b"filter.lfs.required"[..],
+            b"filter.lfs.required\nmaybe",
+            b"core.x\ntrue",
+        ] {
+            assert!(config_entry(bad, "global").is_err(), "{bad:?}");
+        }
+    }
 }
