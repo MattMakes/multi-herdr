@@ -54,6 +54,11 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
 /// and the worktree path. The project's git config runs a `pre-commit` hook
 /// from the worktree that writes `hook-ran` in the harness root.
 fn claimed(name: &str) -> (Harness, String, PathBuf) {
+    claimed_after(name, |_| {})
+}
+
+/// [`claimed`], with `before` run just before the worktree is made.
+fn claimed_after(name: &str, before: impl FnOnce(&Harness)) -> (Harness, String, PathBuf) {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
@@ -91,6 +96,7 @@ fn claimed(name: &str) -> (Harness, String, PathBuf) {
         .trim()
         .to_string();
     ok_as(&h, &w, &["ledger", "claim"]);
+    before(&h);
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feature"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
 
@@ -356,4 +362,78 @@ fn a_stopped_worker_cannot_commit() {
         text(&o)
     );
     assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+#[test]
+fn a_fake_git_on_path_never_runs() {
+    let (h, w, wt) = claimed("lc-path");
+    let bin = wt.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let marker = h.root.join("fake-git-ran");
+    let fake = bin.join("git");
+    std::fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+
+    // No HORCH_GIT_BIN: horch ledger commit takes git from its fixed list.
+    let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .env_remove("HORCH_GIT_BIN")
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .current_dir(&wt);
+    let o = cmd.output().unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!marker.exists(), "the git on PATH must not run");
+    assert_eq!(out(&o).trim(), head(&h, &wt));
+
+    // A git inside the worktree is refused even when named.
+    std::fs::write(wt.join("b.txt"), "b\n").unwrap();
+    let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "b.txt"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .env("HORCH_GIT_BIN", &fake)
+        .current_dir(&wt);
+    let o = cmd.output().unwrap();
+    assert!(
+        !o.status.success() && text(&o).contains("inside the worktree or the state root"),
+        "{}",
+        text(&o)
+    );
+    assert!(!marker.exists(), "the named fake git must not run");
+}
+
+#[test]
+fn a_worktree_whose_admin_name_is_taken_still_commits() {
+    // Another worktree already holds the admin name T1-feature, so git
+    // names this one's entry T1-feature1.
+    let (h, w, wt) = claimed_after("lc-collide", |h| {
+        let other = h.root.join("elsewhere").join("T1-feature");
+        let project = h.project.clone();
+        git_in(
+            h,
+            &project,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "other",
+                &other.to_string_lossy(),
+            ],
+        );
+    });
+    let project = h.project.clone();
+    let common = git_in(
+        &h,
+        &project,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    );
+    assert!(
+        Path::new(&common).join("worktrees/T1-feature1").is_dir(),
+        "the collision must happen"
+    );
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(out(&o).trim(), head(&h, &wt));
 }

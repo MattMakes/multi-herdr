@@ -29,6 +29,9 @@ A script:
 - writes only under `.worktrees/_scratch/live-<family>/` (git-ignored,
   inside the trusted folder; never `/tmp`), and removes large artifacts at
   the end.
+  One exception: `codex-git` writes under `/private/tmp`. Its main
+  repository must sit outside every writable root of the `fleet_write`
+  sandbox, and that profile keeps `/tmp` read-only.
 - never reads, prints or sets `ANTHROPIC_API_KEY`, and starts every
   `claude` with `env -u ANTHROPIC_API_KEY`.
 

@@ -63,6 +63,10 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     for p in &tool_problems {
         eprintln!("warning: {p}");
     }
+    // Not fatal: only Codex workers commit through `horch ledger commit`.
+    if let Err(e) = super::taskledger_commit::commit_git(ctx) {
+        eprintln!("warning: Codex workers cannot commit: {e:#}");
+    }
     if let Some(p) = antigravity_problem(
         &roster,
         ctx.inherited.path.as_deref(),

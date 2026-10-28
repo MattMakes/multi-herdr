@@ -75,8 +75,7 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
         .map(|p| checked_path(&root, &cwd, p))
         .collect::<Result<Vec<_>>>()?;
 
-    let bin = &ctx.bins.harness.git;
-    check_git_version(bin)?;
+    let bin = &trusted_git(&ctx.bins.harness.git, &root, &ctx.paths.state_root)?;
     let gitdir = trusted_gitdir(bin, Path::new(&wt.repo_root), Path::new(&wt.path), &root)?;
     let id = commit(&Trusted::new(bin, &root, &gitdir), &args.message, &paths)?;
     // The commit exists now: print its id first, and never fail on the
@@ -148,11 +147,11 @@ fn commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
     git.run(&["rev-parse".into(), "HEAD".into()])
 }
 
-/// The worktree's git dir, from trusted metadata only: the common dir that
-/// `git rev-parse` reports in the main checkout the ledger recorded, joined
-/// with `worktrees/<name>` from the ledger's worktree path. Refused unless
-/// the worktree's `.git` is a file that says exactly `gitdir: <that path>`:
-/// the sandbox can rewrite it, and git would read the config it points at.
+/// The worktree's git dir, from trusted metadata only: the 1 entry under
+/// the common dir (from `git rev-parse` in the main checkout the ledger
+/// recorded) whose `gitdir` file names the recorded worktree. Not its folder
+/// name: git appends a number when that name is taken. Refused unless the
+/// worktree's `.git` is a file that says exactly `gitdir: <that entry>`.
 fn trusted_gitdir(bin: &Path, repo_root: &Path, worktree: &Path, root: &Path) -> Result<PathBuf> {
     let mut cmd = clean_git(bin);
     cmd.arg("-C").arg(repo_root);
@@ -167,13 +166,28 @@ fn trusted_gitdir(bin: &Path, repo_root: &Path, worktree: &Path, root: &Path) ->
         bail!("refused: {} is not a git checkout", repo_root.display());
     }
     let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    let Some(name) = worktree.file_name() else {
+    let recorded = format!("{}/.git", worktree.display());
+    let names_worktree = |entry: &Path| {
+        std::fs::read_to_string(entry.join("gitdir")).is_ok_and(|t| {
+            let t = t.trim();
+            t == recorded || std::fs::canonicalize(t).is_ok_and(|p| p == root.join(".git"))
+        })
+    };
+    let matches: Vec<PathBuf> = std::fs::read_dir(common.join("worktrees"))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|e| names_worktree(e))
+                .collect()
+        })
+        .unwrap_or_default();
+    let [gitdir] = matches.as_slice() else {
         bail!(
-            "refused: the ledger's worktree path {} has no name",
+            "refused: {} entries under {} name the worktree {}; expected exactly 1",
+            matches.len(),
+            common.join("worktrees").display(),
             worktree.display()
         );
     };
-    let gitdir = common.join("worktrees").join(name);
     let dotgit = root.join(".git");
     let text = std::fs::symlink_metadata(&dotgit)
         .ok()
@@ -182,44 +196,87 @@ fn trusted_gitdir(bin: &Path, repo_root: &Path, worktree: &Path, root: &Path) ->
         .unwrap_or_default();
     let line = text.strip_suffix('\n').unwrap_or(&text);
     // git may have written the canonical or the given form of the path.
-    let canonical = std::fs::canonicalize(&gitdir).unwrap_or_else(|_| gitdir.clone());
-    let exact = [&gitdir, &canonical]
+    let canonical = std::fs::canonicalize(gitdir).unwrap_or_else(|_| gitdir.clone());
+    if ![gitdir, &canonical]
         .iter()
-        .any(|p| line == format!("gitdir: {}", p.display()));
-    // And the entry must name this worktree back.
-    let names_root = std::fs::read_to_string(gitdir.join("gitdir"))
-        .ok()
-        .and_then(|t| std::fs::canonicalize(t.trim()).ok())
-        .is_some_and(|p| p == root.join(".git"));
-    if !exact || !gitdir.is_dir() || !names_root {
+        .any(|p| line == format!("gitdir: {}", p.display()))
+    {
         bail!(
             "refused: {} was changed; it must say exactly: gitdir: {}",
             dotgit.display(),
             gitdir.display()
         );
     }
-    Ok(gitdir)
+    Ok(gitdir.clone())
 }
 
-/// Refused unless git is 2.40 or later: older git ignores `GIT_ATTR_SOURCE`,
-/// so a `.gitattributes` file could select a filter.
-fn check_git_version(bin: &Path) -> Result<()> {
-    let out = git_without_env(bin)
-        .arg("--version")
-        .output()
-        .with_context(|| format!("running {}", bin.display()))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let version = text.split_whitespace().nth(2).unwrap_or_default();
-    let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
-    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-    if (major, minor) < (2, 40) {
-        bail!(
-            "refused: {} is git {version}. horch ledger commit needs git 2.40 or later \
-             (GIT_ATTR_SOURCE), so that no .gitattributes file can select a filter.",
-            bin.display()
-        );
+/// Absolute git paths `horch ledger commit` tries in order when
+/// `HORCH_GIT_BIN` is not absolute. Never a lookup through `PATH`: a
+/// worker-writable folder on it would run a fake git outside the sandbox.
+const TRUSTED_GITS: [&str; 3] = [
+    "/usr/bin/git",
+    "/opt/homebrew/bin/git",
+    "/usr/local/bin/git",
+];
+
+/// The git to run: `configured` when absolute, else the first of
+/// [`TRUSTED_GITS`] at 2.40 or later. Refused inside the worktree or the
+/// state root (the sandbox writes both), and below 2.40, which ignores
+/// `GIT_ATTR_SOURCE`, so a `.gitattributes` file could select a filter.
+fn trusted_git(configured: &Path, root: &Path, state_root: &Path) -> Result<PathBuf> {
+    let candidates: Vec<PathBuf> = if configured.is_absolute() {
+        vec![configured.to_path_buf()]
+    } else {
+        TRUSTED_GITS
+            .iter()
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .collect()
+    };
+    let state = std::fs::canonicalize(state_root).unwrap_or_else(|_| state_root.to_path_buf());
+    let mut too_old = Vec::new();
+    for candidate in candidates {
+        let real = std::fs::canonicalize(&candidate)
+            .with_context(|| format!("refused: no git at {}", candidate.display()))?;
+        if real.starts_with(root) || real.starts_with(&state) {
+            bail!(
+                "refused: git {} is inside the worktree or the state root",
+                real.display()
+            );
+        }
+        match git_version(&real) {
+            Some(v) if v >= (2, 40) => return Ok(real),
+            v => too_old.push(format!("{} ({v:?})", real.display())),
+        }
     }
-    Ok(())
+    bail!(
+        "refused: horch ledger commit needs git 2.40 or later (GIT_ATTR_SOURCE), \
+         at HORCH_GIT_BIN or one of {}. Found: {}",
+        TRUSTED_GITS.join(", "),
+        if too_old.is_empty() {
+            "none".to_string()
+        } else {
+            too_old.join(", ")
+        }
+    )
+}
+
+/// The git `horch ledger commit` would run, for `horch doctor`: refused when
+/// there is no git 2.40 or later at `HORCH_GIT_BIN` or a [`TRUSTED_GITS`] path.
+pub fn commit_git(ctx: &RuntimeContext) -> Result<PathBuf> {
+    trusted_git(
+        &ctx.bins.harness.git,
+        Path::new("/nonexistent/worktree"),
+        &ctx.paths.state_root,
+    )
+}
+
+/// `(major, minor)` of the git at `bin`, run with a clean environment.
+fn git_version(bin: &Path) -> Option<(u32, u32)> {
+    let out = git_without_env(bin).arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.split_whitespace().nth(2)?.split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
 /// `arg` as an absolute path inside `root`, or a refusal. Symlinks in the
@@ -396,6 +453,7 @@ fn git_without_env(bin: &Path) -> Command {
             cmd.env_remove(key);
         }
     }
-    cmd.env_remove("ANTHROPIC_API_KEY");
+    cmd.env_remove("ANTHROPIC_API_KEY")
+        .env("PATH", "/usr/bin:/bin");
     cmd
 }

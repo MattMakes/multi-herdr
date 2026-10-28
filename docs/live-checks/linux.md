@@ -56,6 +56,11 @@ Host: macOS 26.5.1 (arm64), colima 0.10.3 (`vz`, 4 CPU, 4 GiB), docker CLI
 23.0.1. Container: Linux 6.8.0-117-generic aarch64, Debian bookworm,
 rustc 1.99.0, git 2.39.5, sqlite3 3.40.1.
 
+Note (2026-10-28, T-10): `horch ledger commit` needs git 2.40 or later
+(`GIT_ATTR_SOURCE`) and refuses to run on git 2.39.5; `horch doctor` warns
+about it. Until the image has git 2.40 or later, the
+`crates/horch-e2e/tests/ledger_commit.rs` tests fail in this container.
+
 | Step | Claim it proves | Tool version | Result | Evidence |
 |------|-----------------|--------------|--------|----------|
 | colima | The script starts and stops colima. | colima 0.10.3 | PASS | `just test-linux` from a stopped colima: `PASS colima: started`, and at exit `colima stopped`. Run time 19 min 43 s. |

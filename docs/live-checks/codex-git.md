@@ -119,12 +119,19 @@ teammate descriptions say this.
     requeued worker keeps its old task id;
   - takes the worktree from the ledger row of that task, and refuses when
     the current folder is outside it;
-  - takes the git dir from trusted metadata only:
-    `git rev-parse --path-format=absolute --git-common-dir` in the main
-    checkout the ledger recorded, joined with `worktrees/<name>` from the
-    ledger's worktree path. It refuses unless `<worktree>/.git` is a file
-    that says exactly `gitdir: <that path>`, and that entry's own `gitdir`
-    file names `<worktree>/.git` back;
+  - runs an absolute git only: `HORCH_GIT_BIN` when it is absolute, else
+    the first of `/usr/bin/git`, `/opt/homebrew/bin/git` and
+    `/usr/local/bin/git` at 2.40 or later. Never a lookup through `PATH`:
+    a worker-writable folder on it would run a fake git. It refuses a git
+    inside the worktree or the state root, and every git child gets
+    `PATH=/usr/bin:/bin`. `horch doctor` warns when no such git exists;
+  - takes the git dir from trusted metadata only: the 1 entry under the
+    common dir (`git rev-parse --path-format=absolute --git-common-dir` in
+    the main checkout the ledger recorded) whose `gitdir` file names the
+    recorded worktree. Not the worktree's folder name: git appends a number
+    when that admin name is taken. It refuses on 0 or 2 or more entries, and
+    unless `<worktree>/.git` is a file that says exactly
+    `gitdir: <that entry>`;
   - runs every git call with `GIT_DIR=<that git dir>` and
     `GIT_WORK_TREE=<worktree>`, every other `GIT_*` variable removed except
     the author and committer name, email and date, `GIT_CONFIG_NOSYSTEM=1`,
@@ -144,13 +151,14 @@ teammate descriptions say this.
     `git commit -m <message>`, prints the commit id, and records the
     progress event `commit <short id>`. A failed ledger write after the
     commit prints a warning and still exits 0: the commit exists.
-- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 7 tests): a
+- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 9 tests): a
   commit lands without hooks; refused paths; refused for a review task or no
   task; a rewritten `.git` file is refused and its config never runs; a
   `* filter=evil` attribute with `filter.evil.clean` in the repository
   config does not run the filter, and the commit lands; a symlink is
   committed as the link, and links that lead outside are refused; a stopped
-  worker cannot commit.
+  worker cannot commit; a fake git first on `PATH`, or named inside the
+  worktree, never runs; a worktree whose admin name is taken still commits.
 - The caller cannot steer the command through its environment.
   `codex execpolicy check` on the shipped rules gives no match for
   `HORCH_GIT_BIN=x horch ledger commit -m x`, for
