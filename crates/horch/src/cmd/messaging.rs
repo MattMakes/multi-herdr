@@ -142,6 +142,10 @@ fn queue_as<'a>(
     if durable {
         Mail::under(&ctx.paths.state_root, mailbox.workspace_id())
             .enqueue(sender.as_deref().expect("durable mail has a sender"), &line)?;
+        // The courier now, before `done` marks the record done: a process
+        // killed after that leaves the mail with a courier. Its first
+        // redelivery is 30 s after the enqueue, after any push budget.
+        super::mail::start_courier(ctx, mailbox.workspace_id());
     }
     Ok(Some(Outgoing {
         ctx,
@@ -159,12 +163,6 @@ impl Outgoing<'_> {
     /// The second half of [`tell_as`]: type the line. A durable line that
     /// does not land is queued, not an error: the courier delivers it.
     fn push(self) -> Result<ReportStatus> {
-        // The courier first: a push killed by the agent's command timeout
-        // leaves the mail with a courier. Its first redelivery is 30 s after
-        // the enqueue, after any push budget.
-        if self.durable {
-            super::mail::start_courier(self.ctx, self.mailbox.workspace_id());
-        }
         let pushed = push_line(
             self.ctx,
             &self.herdr,
@@ -516,7 +514,8 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
     .context("horch done must run inside a herdr pane")?;
     let workspace = ctx.herdr.workspace.as_ref().map(|w| w.to_string());
     // `horch ledger done` started the budget and printed the line already.
-    if delivery::start_push_budget(delivery::DONE_PUSH_BUDGET) {
+    let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
+    if budget.is_some() {
         output::println(CLOSING);
     }
 

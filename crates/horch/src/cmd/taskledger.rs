@@ -1275,7 +1275,8 @@ pub fn done_cmd(
             .is_some_and(|w| w.record_id.is_some() && w.role.is_some());
     // One push budget for the wakes and the report, inside the agent's
     // command timeout (#67).
-    if delivery::start_push_budget(delivery::DONE_PUSH_BUDGET) && in_pane {
+    let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
+    if budget.is_some() && in_pane {
         output::println(super::messaging::CLOSING);
     }
     let c = finish::complete(&mut store, &wid, summary, unlanded)?;

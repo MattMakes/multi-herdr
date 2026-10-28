@@ -970,6 +970,7 @@ mod tests {
         queued: RefCell<Vec<String>>,
         /// `mark_done`, `push` and `unregister`, in the order they ran.
         order: RefCell<Vec<&'static str>>,
+        fail_mark_done: bool,
     }
 
     impl Default for ClaimSteps {
@@ -987,6 +988,7 @@ mod tests {
                 push_misses: None,
                 queued: RefCell::new(Vec::new()),
                 order: RefCell::new(Vec::new()),
+                fail_mark_done: false,
             }
         }
     }
@@ -1026,6 +1028,9 @@ mod tests {
         fn mark_done(&self, _: &str, summary: &str) -> Result<()> {
             self.marked_done.borrow_mut().push(summary.into());
             self.order.borrow_mut().push("mark_done");
+            if self.fail_mark_done {
+                bail!("the ledger is locked");
+            }
             Ok(())
         }
 
@@ -1185,6 +1190,25 @@ mod tests {
         };
         done(&ws, &silent, &req).unwrap();
         assert_eq!(&*silent.order.borrow(), &["mark_done", "unregister"]);
+    }
+
+    /// #67: a ledger write that fails after the report is queued stops
+    /// `done` before the push and the close. The queued mail stays for the
+    /// courier; the retry queues the report again (as before #67, where a
+    /// report was delivered before the same write).
+    #[test]
+    fn done_stops_before_the_push_when_the_record_is_not_written() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps {
+            fail_mark_done: true,
+            ..ClaimSteps::default()
+        };
+        let error = done(&ws, &steps, &claim_request(&pane, None)).unwrap_err();
+        assert_eq!(error.to_string(), "the ledger is locked");
+        assert_eq!(steps.reports.borrow().len(), 1, "the report is queued");
+        assert_eq!(&*steps.order.borrow(), &["mark_done"], "no push, no close");
+        assert_eq!(ws.pane_ids(), vec![pane], "the pane stays open");
     }
 
     /// #67: a report that fails to queue is not pushed.

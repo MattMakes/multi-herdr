@@ -65,6 +65,11 @@ pub fn send_line_with(
     if ws.agent_prompt(pane, message).is_ok() {
         return Ok(());
     }
+    // Typing needs its full settle, or a busy TUI splits the line. With the
+    // push budget spent, type nothing: the line waits in the mail.
+    if push_time_left().is_some_and(|left| left.is_zero()) {
+        bail!("the push budget is spent, so the line was not typed");
+    }
     ws.pane_send_text(pane, message)?;
     let landed = wait_for_tail(ws, pane, message, timing);
     if !landed {
@@ -75,11 +80,11 @@ pub fn send_line_with(
         } else {
             timing.settle_short
         };
-        std::thread::sleep(capped(settle));
+        std::thread::sleep(settle);
     }
     ws.pane_send_keys(pane, "enter")?;
     if landed {
-        std::thread::sleep(capped(timing.second_enter));
+        std::thread::sleep(timing.second_enter);
         ws.pane_send_keys(pane, "enter")?;
     }
     Ok(())
@@ -206,16 +211,27 @@ thread_local! {
     static PUSH_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
 }
 
-/// Cap every later push on this thread at `total` from now: every wait and
-/// settle of a delivery ends by then. True the first time; a later call
-/// keeps the first deadline and returns false.
-pub fn start_push_budget(total: Duration) -> bool {
+/// The push budget of one `horch done`, from [`start_push_budget`].
+/// Dropping it ends the budget: later deliveries wait as they always have.
+#[must_use = "the budget ends when this is dropped"]
+pub struct PushBudget(());
+
+impl Drop for PushBudget {
+    fn drop(&mut self) {
+        PUSH_DEADLINE.with(|deadline| deadline.set(None));
+    }
+}
+
+/// Cap every push on this thread at `total` from now, while the returned
+/// [`PushBudget`] lives: every wait of a delivery ends by then. `None` when
+/// a budget runs already; the first one stays.
+pub fn start_push_budget(total: Duration) -> Option<PushBudget> {
     PUSH_DEADLINE.with(|deadline| {
-        let first = deadline.get().is_none();
-        if first {
-            deadline.set(Some(Instant::now() + total));
+        if deadline.get().is_some() {
+            return None;
         }
-        first
+        deadline.set(Some(Instant::now() + total));
+        Some(PushBudget(()))
     })
 }
 
@@ -299,9 +315,9 @@ mod tests {
         states.push(starting);
         ws.set_agent_states(&pane, &states);
         let started = Instant::now();
-        assert!(start_push_budget(budget));
+        let guard = start_push_budget(budget).expect("no budget runs yet");
         assert!(
-            !start_push_budget(Duration::from_secs(60)),
+            start_push_budget(Duration::from_secs(60)).is_none(),
             "the first budget stays"
         );
         let grace = Duration::from_secs(30);
@@ -314,15 +330,21 @@ mod tests {
             started.elapsed()
         );
 
-        // The budget is spent: a tail that never shows costs nothing more.
+        // The budget is spent: a line that would need typing is not typed,
+        // since a typed line needs its full settle.
         ws.fail_next("agent_prompt", "no agent");
         let spent = Instant::now();
-        send_line_with(&ws, &pane, "[r] DONE: x", &Timing::DEFAULT).unwrap();
+        let typed = send_line_with(&ws, &pane, "[r] DONE: x", &Timing::DEFAULT);
+        assert!(typed.is_err(), "nothing is typed");
+        assert!(!ws.calls().iter().any(|c| c.method == "pane_send_text"));
         assert!(
             spent.elapsed() < Duration::from_millis(300),
             "{:?}",
             spent.elapsed()
         );
+
+        drop(guard);
+        assert_eq!(push_time_left(), None, "the budget ends with its guard");
     }
 
     #[test]
