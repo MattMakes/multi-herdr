@@ -446,6 +446,10 @@ fn inbox_ends_with_the_acknowledged_count_after_the_roles() {
     assert_eq!(pending_count(&h), 0);
 }
 
+/// Stands for the pidfile path inside a `pane list` body.
+#[cfg(unix)]
+const PIDFILE_TOKEN: &str = "@PIDFILE@";
+
 /// Run `horch inbox` with a `pane list` that misbehaves as `on_pane_list`
 /// says, and check that the mail still prints. Returns the stalled pid, if any.
 #[cfg(unix)]
@@ -457,8 +461,9 @@ fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String>
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nif [ \"$1 $2\" = \"pane list\" ]; then echo $$ > {pid}; {on_pane_list}; fi\nexec {fake} \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1 $2\" = \"pane list\" ]; then echo $$ > {pid}; {body}; fi\nexec {fake} \"$@\"\n",
             pid = pidfile.display(),
+            body = on_pane_list.replace(PIDFILE_TOKEN, &pidfile.to_string_lossy()),
             fake = h.bin.join("herdr").display()
         ),
     )
@@ -483,20 +488,39 @@ fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String>
 }
 
 #[cfg(unix)]
-#[test]
-fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
-    let pid = inbox_with_broken_pane_list("inbox-stall", "exec sleep 60").unwrap();
-    let alive = std::process::Command::new("kill")
-        .args(["-0", pid.trim()])
-        .output()
-        .unwrap();
-    assert!(!alive.status.success(), "herdr {pid} is still running");
+fn assert_process_gone(pid: &str) {
+    let gone = (0..40).any(|_| {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        if alive {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        !alive
+    });
+    assert!(gone, "process {pid} is still running");
 }
 
 #[cfg(unix)]
 #[test]
-fn inbox_prints_mail_when_a_descendant_holds_the_pane_list_pipe_open() {
-    inbox_with_broken_pane_list("inbox-open-pipe", "sleep 3 &\nexit 0");
+fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
+    let pid = inbox_with_broken_pane_list("inbox-stall", "exec sleep 60").unwrap();
+    assert_process_gone(&pid);
+}
+
+#[cfg(unix)]
+#[test]
+fn inbox_prints_mail_and_kills_a_descendant_that_holds_the_pane_list_pipe() {
+    // The pidfile ends up holding the descendant's pid, not the script's.
+    let pid = inbox_with_broken_pane_list(
+        "inbox-open-pipe",
+        &format!("sleep 30 &\necho $! > {PIDFILE_TOKEN}\nexit 0"),
+    )
+    .unwrap();
+    assert_process_gone(&pid);
 }
 
 #[cfg(unix)]

@@ -575,6 +575,13 @@ fn read_capped(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u
 /// Kill and reap `child`. A failure of either is a warning, not an error:
 /// the call has already failed and the caller goes on.
 fn kill_and_reap(child: &mut Child) {
+    // The child leads its own process group, so one signal also ends every
+    // descendant that holds a pipe.
+    #[cfg(unix)]
+    // SAFETY: `kill` only signals; the pid is a child of this process.
+    unsafe {
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+    }
     if let Err(e) = child.kill() {
         eprintln!("horch: could not kill herdr: {e}");
     }
@@ -591,6 +598,8 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn()?;
     let readers = [
         read_capped(child.stdout.take()),
@@ -664,6 +673,37 @@ mod tests {
         let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1000));
         assert!(herdr.pane_list("w1").is_err());
         assert!(started.elapsed() < Duration::from_secs(3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_descendant_holding_stdout_is_killed_with_the_call() {
+        let (dir, script) = script_in(
+            "descendant",
+            &format!(
+                "sleep 30 &\necho $! > {}/pid\nexit 0",
+                std::env::temp_dir()
+                    .join(format!("herdr-descendant-{}", std::process::id()))
+                    .display()
+            ),
+        );
+        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1500));
+        assert!(herdr.pane_list("w1").is_err());
+        let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
+        let gone = (0..40).any(|_| {
+            let dead = !Command::new("kill")
+                .args(["-0", pid.trim()])
+                .output()
+                .unwrap()
+                .status
+                .success();
+            if !dead {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            dead
+        });
+        assert!(gone, "descendant {pid} is still running");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

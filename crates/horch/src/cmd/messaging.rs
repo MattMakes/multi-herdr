@@ -238,12 +238,12 @@ fn no_orchestrator_hint(role: &str, sender: Option<&str>) -> &'static str {
 /// is still there, and a reader who sees why `horch tell` to it fails does
 /// not have to guess where the role went.
 pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    // A herdr that accepts a call and never answers must not keep pending
+    // mail from printing: each call is killed at the deadline, and every
+    // pane reads as unknown.
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(pane_list_timeout());
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
-    // A herdr that accepts the pane-list call and never answers must not
-    // keep pending mail from printing: the call is killed at the deadline
-    // and every pane reads as unknown.
-    let roles = mailbox.role_states(&herdr.clone().with_timeout(pane_list_timeout()));
+    let roles = mailbox.role_states(&herdr);
     if roles.is_empty() {
         output::println("no roles registered yet");
     } else if roles.iter().any(|r| r.state == PaneState::Unknown) {
