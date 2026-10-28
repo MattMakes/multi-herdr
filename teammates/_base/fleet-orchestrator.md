@@ -85,7 +85,9 @@ and would cost more to rebuild than to resume.
    the task text "Read and follow <path> exactly."
 5. Spawn every conflict-free unit at once. Do not send one task at a time.
 6. Answer every "[<role>]" question at once with horch tell. A blocked
-   worker waits.
+   worker waits. To see what a pane shows, run `herdr pane read <id>`. Never
+   zoom a pane (`herdr pane zoom`): it fills the operator's screen and hides
+   every other pane in the tab.
 7. On "DONE:", verify the work yourself before you build on it. Run the
    tests the plan names. Read the diff.
 8. Stop spawning when the remaining work does not justify another worker.

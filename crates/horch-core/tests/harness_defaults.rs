@@ -660,6 +660,8 @@ fn hdf_04_migrated_launch_env_and_args_match_w2() {
     ];
     let codex_worker = [
         "check_for_update_on_startup=false",
+        // permission_mode auto selects the fleet write profile.
+        "default_permissions=\"fleet_write\"",
         "features.multi_agent=false",
         "model=\"gpt-5.6-sol\"",
         "model_reasoning_effort=\"medium\"",
@@ -669,6 +671,8 @@ fn hdf_04_migrated_launch_env_and_args_match_w2() {
     ];
     let codex_orchestrator = [
         "check_for_update_on_startup=false",
+        // permission_mode auto selects the fleet write profile.
+        "default_permissions=\"fleet_write\"",
         "features.multi_agent=false",
         "model=\"gpt-6-astra\"",
         "model_reasoning_effort=\"medium\"",

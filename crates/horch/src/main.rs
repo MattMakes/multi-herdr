@@ -61,8 +61,8 @@ enum Command {
         /// Project directory the fleet works in. Defaults to the current directory.
         #[arg(long)]
         cwd: Option<String>,
-        /// Do not update the agent CLIs before the first pane starts.
-        /// `HORCH_NO_UPDATE=1` does the same.
+        /// Do not install a newer multi-herdr release or update the agent
+        /// CLIs before the first pane starts. `HORCH_NO_UPDATE=1` does the same.
         #[arg(long)]
         no_update: bool,
         /// Resume an earlier orchestrator session by its session id instead of
@@ -77,8 +77,8 @@ enum Command {
         /// Project directory. Defaults to the current directory.
         #[arg(long)]
         cwd: Option<String>,
-        /// Do not update the agent CLIs before the first pane starts.
-        /// `HORCH_NO_UPDATE=1` does the same.
+        /// Do not install a newer multi-herdr release or update the agent
+        /// CLIs before the first pane starts. `HORCH_NO_UPDATE=1` does the same.
         #[arg(long)]
         no_update: bool,
     },

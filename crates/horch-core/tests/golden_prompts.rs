@@ -502,7 +502,9 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
         \x20  the task text \"Read and follow <path> exactly.\"\n\
         5. Spawn every conflict-free unit at once. Do not send one task at a time.\n\
         6. Answer every \"[<role>]\" question at once with horch tell. A blocked\n\
-        \x20  worker waits.\n\
+        \x20  worker waits. To see what a pane shows, run `herdr pane read <id>`. Never\n\
+        \x20  zoom a pane (`herdr pane zoom`): it fills the operator's screen and hides\n\
+        \x20  every other pane in the tab.\n\
         7. On \"DONE:\", verify the work yourself before you build on it. Run the\n\
         \x20  tests the plan names. Read the diff.\n\
         8. Stop spawning when the remaining work does not justify another worker.\n\

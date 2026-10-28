@@ -233,13 +233,14 @@ worker_channel: false
 # claude -> --permission-mode <value>
 #           acceptEdits | auto | bypassPermissions | manual | dontAsk | plan
 # codex  -> no single equivalent; mapped onto its sandbox + approval flags:
-#           plan               -s read-only -a on-request
-#                              -c approvals_reviewer="auto_review"
-#           acceptEdits, auto  --approve-for-me (workspace-write; approval
-#                              requests go to Codex's automatic reviewer)
+#           plan               -c default_permissions=":read-only"
+#                              -a on-request
+#           acceptEdits, auto  -c default_permissions="fleet_write" -a never:
+#                              the start folder writable (.git too), the
+#                              rest read-only, network on (README, Codex)
 #           bypassPermissions  --dangerously-bypass-approvals-and-sandbox
-#           When args set their own sandbox, --approve-for-me is spelled out
-#           as -a on-request -c approvals_reviewer="auto_review".
+#           Every mode adds --search. When args set their own sandbox (-s),
+#           plan and the write modes fall back to -s read-only/workspace-write.
 #           manual, dontAsk    no equivalent -> load-time error
 permission_mode: acceptEdits
 

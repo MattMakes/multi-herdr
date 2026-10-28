@@ -2,15 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Codex's flag for workspace-write with approvals sent to its automatic
-/// reviewer (Codex 0.147+). It conflicts with `-s` and
-/// `--dangerously-bypass-approvals-and-sandbox`.
-pub(crate) const CODEX_APPROVE_FOR_ME: &str = "--approve-for-me";
-
-/// The `-c` pair that turns on Codex's automatic approval reviewer, which
-/// `--approve-for-me` sets along with its sandbox.
-pub(crate) const CODEX_AUTO_REVIEWER: &str = "approvals_reviewer=\"auto_review\"";
-
 /// How much a teammate may do without stopping to ask.
 ///
 /// Claude takes these directly. Codex has no single equivalent, so
@@ -81,25 +72,20 @@ impl PermissionMode {
 
     /// Codex sandbox + approval flags for this mode.
     ///
-    /// The write modes use `--approve-for-me`: workspace-write, and approval
-    /// requests go to Codex's automatic reviewer instead of a person or a
-    /// refusal. The flag always means workspace-write, so `Plan` keeps
-    /// read-only and turns on the same reviewer with its config key.
+    /// The write modes never ask: a command the sandbox refuses fails back
+    /// to the agent, so nothing outside the pane's folder can be granted.
+    /// This is the plain form; the codex adapter swaps the write modes for
+    /// its fleet permissions profile (`harness::codex::permission_args`).
     ///
     /// `Manual` and `DontAsk` have no codex analogue. Returning `None` lets the
     /// caller raise an error rather than silently downgrade a teammate to
     /// something more permissive than its file asked for.
     pub(crate) fn codex_args(self) -> Option<Vec<String>> {
         let pair: &[&str] = match self {
-            PermissionMode::Plan => &[
-                "-s",
-                "read-only",
-                "-a",
-                "on-request",
-                "-c",
-                CODEX_AUTO_REVIEWER,
-            ],
-            PermissionMode::AcceptEdits | PermissionMode::Auto => &[CODEX_APPROVE_FOR_ME],
+            PermissionMode::Plan => &["-s", "read-only", "-a", "on-request"],
+            PermissionMode::AcceptEdits | PermissionMode::Auto => {
+                &["-s", "workspace-write", "-a", "never"]
+            }
             PermissionMode::BypassPermissions => &["--dangerously-bypass-approvals-and-sandbox"],
             PermissionMode::Manual | PermissionMode::DontAsk => return None,
         };

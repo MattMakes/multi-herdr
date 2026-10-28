@@ -14,8 +14,8 @@ offer_when: ["project.godot"]
 requires: [godot]
 # codex-sol: proven on Godot 4.7.2 by docs/live-checks/godot-codex.md
 # (2026-10-07). godot-build-verify's scripts/godot-run.sh applies the
-# sandbox settings. A Codex pane cannot write .git; the orchestrator
-# commits its files.
+# sandbox settings. A Codex pane can commit: its folder, .git included,
+# is writable in the fleet_write profile.
 fallbacks: [codex-sol]
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high

@@ -84,8 +84,8 @@ checkout is the main checkout and the branch is `design-skills`.
   gate back to the worker whose commit broke it. See
   [testing-and-gates.md](testing-and-gates.md).
 - Warning: never run tests or the gate under `git rebase -x` or a git hook.
-- A Codex worker's sandbox cannot write `.git`, so units that commit go to
-  Claude teammates.
+- A Codex worker can commit: its folder, `.git` included, is writable in the
+  `fleet_write` profile. Writes outside that folder still fail.
 
 The worker reports with `[<role>] NOTE: COMMITTED <short-sha>. Targeted checks
 green.` and then runs `horch done`.

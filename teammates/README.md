@@ -362,14 +362,13 @@ the work. They are named after the tier or the harness on purpose, so
 orchestrator briefing all keep meaning the same thing. There is no `fable` and
 no `astra` generic: those tiers belong to the orchestrator.
 
-`codex-network` is the only Codex worker whose sandbox reaches the network
-(`-c sandbox_workspace_write.network_access=true`). Every other Codex
-teammate keeps the network off, so a command that needs it must ask and
-Codex's automatic reviewer (`--approve-for-me`) decides. `codex-network` runs
-`acceptEdits` instead, and `horch teammates --check` fails
-any Codex teammate that pairs network access with `auto` or
-`bypassPermissions`. Claude workers need no switch: no Claude sandbox is
-configured, so their Bash and WebFetch already reach the network.
+Every Codex write pane reaches the network and has live web search: the
+`fleet_write` permissions profile turns the network on, and the launch passes
+`--search`. Its writes stay inside the folder it starts in (see the README's
+Codex section). `codex-network` predates this and is now the same as
+`codex-sol` apart from its name and brief. Claude workers need no switch: no
+Claude sandbox is configured, so their Bash and WebFetch already reach the
+network.
 
 They are not one ladder but three, and the orchestrator is choosing on cost and
 confidentiality as much as on capability:

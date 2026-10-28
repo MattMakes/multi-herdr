@@ -391,25 +391,6 @@ impl Roster {
                 }
             }
         }
-        // Network access and "never ask" do not go together: a codex
-        // worker with both can send code out, or pull code in and run it,
-        // and nothing stops it. `codex-network` pairs the network with
-        // acceptEdits (-a on-request).
-        if t.agent == HarnessKind::Codex
-            && t.args
-                .iter()
-                .any(|a| a.replace(' ', "") == "sandbox_workspace_write.network_access=true")
-            && matches!(
-                t.permission_mode,
-                Some(PermissionMode::Auto) | Some(PermissionMode::BypassPermissions)
-            )
-        {
-            problems.push(format!(
-                "{who}: network access with permission_mode '{}' never asks before \
-                 it sends or fetches; use acceptEdits",
-                t.permission_mode.unwrap().as_str()
-            ));
-        }
         // Orchestrator-only capabilities stay with the orchestrator.
         if !FLEET_ORCHESTRATORS.contains(&who.as_str()) {
             for skill in ORCHESTRATOR_ONLY_SKILLS {
@@ -1674,45 +1655,49 @@ mod spawnable_tests {
         );
     }
 
-    /// Only `codex-network` opens the codex sandbox's network, and it is not
-    /// allowed to pair that with "never ask": `--approve-for-me` asks
-    /// (on-request), and Codex's reviewer answers.
+    /// Every bundled Codex write pane launches in the fleet write profile
+    /// (its folder writable, the network on), never asks, and can search
+    /// the web.
     #[test]
-    fn codex_network_access_is_contained() {
-        let mut r = Roster::builtin().unwrap();
-        let net = "sandbox_workspace_write.network_access=true";
+    fn codex_write_panes_run_the_fleet_profile() {
+        let r = Roster::builtin().unwrap();
+        let mut checked = 0;
         for name in r.names() {
             let t = r.require(name).unwrap();
-            let has = t.args.iter().any(|a| a == net);
-            assert_eq!(has, name == "codex-network", "{name}");
+            if t.agent != HarnessKind::Codex
+                || !matches!(
+                    t.permission_mode,
+                    Some(PermissionMode::Auto | PermissionMode::AcceptEdits)
+                )
+            {
+                continue;
+            }
+            let cmd = crate::harness::launch::command_in(
+                &crate::harness::launch::LaunchEnv::for_test(),
+                t,
+                crate::harness::launch::Session::Unmanaged,
+                "p",
+                None,
+            )
+            .unwrap();
+            let a: Vec<String> = cmd
+                .get_args()
+                .map(|x| x.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                a.windows(2)
+                    .any(|w| w == ["-c", "default_permissions=\"fleet_write\""]),
+                "{name}: {a:?}"
+            );
+            assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{name}: {a:?}");
+            assert!(a.iter().any(|x| x == "--search"), "{name}: {a:?}");
+            assert!(
+                !a.iter().any(|x| x == "-s" || x == "--approve-for-me"),
+                "{name}: {a:?}"
+            );
+            checked += 1;
         }
-        let cmd = crate::harness::launch::command_in(
-            &crate::harness::launch::LaunchEnv::for_test(),
-            r.require("codex-network").unwrap(),
-            crate::harness::launch::Session::Unmanaged,
-            "p",
-            None,
-        )
-        .unwrap();
-        let a: Vec<String> = cmd
-            .get_args()
-            .map(|x| x.to_string_lossy().into_owned())
-            .collect();
-        assert!(a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
-        assert!(!a.windows(2).any(|w| w == ["-a", "never"]), "{a:?}");
-        assert!(a.windows(2).any(|w| w == ["-c", net]), "{a:?}");
-
-        r.teammates
-            .get_mut("codex-network")
-            .unwrap()
-            .permission_mode = Some(PermissionMode::Auto);
-        assert!(
-            r.check().iter().any(|p| p.starts_with(
-                "codex-network: network access with permission_mode 'auto'"
-            )),
-            "{:?}",
-            r.check()
-        );
+        assert!(checked >= 5, "only {checked} codex write panes");
     }
 
     /// `sandbox:` is Claude only, cannot pair with a settings file, and

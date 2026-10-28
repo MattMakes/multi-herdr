@@ -28,7 +28,8 @@ pub fn new(ctx: &RuntimeContext, name: &str) -> Result<()> {
         .map_err(|error| {
             let text = format!("{error:#}");
             if text.contains("Operation not permitted") {
-                anyhow!("{text}\nA Codex sandbox cannot write .git. Worktree mode needs a Claude worker.")
+                anyhow!("{text}\nThe sandbox cannot write .git here. A Codex pane writes .git only in its \
+                         own folder, under permission_mode auto or acceptEdits (the fleet_write profile).")
             } else {
                 error
             }
