@@ -1,6 +1,6 @@
 ---
 name: codex-sol
-brief_description: Codex Sol, complex builds. Network on; sandbox cannot stop git push. Not primary for commits outside a ledger worktree.
+brief_description: Codex Sol, complex builds. Network on; sandbox cannot stop git push. Commits only in a ledger worktree, with git 2.41+.
 generic: true
 base: fleet-worker
 agent: codex

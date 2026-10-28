@@ -896,3 +896,21 @@ fn paths_past_the_total_size_limit_are_refused() {
     );
     assert_eq!(head(&h, &wt), before, "nothing is committed");
 }
+
+#[test]
+fn doctor_warns_about_a_git_inside_the_main_checkout() {
+    let (h, _w, wt) = claimed("lc-doctor");
+    let fake = h.project.join("tools-git");
+    std::fs::write(&fake, "#!/bin/sh\necho 'git version 2.50.0'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut cmd = h.horch(&["doctor"]);
+    cmd.env("HORCH_GIT_BIN", &fake).current_dir(&h.project);
+    let o = cmd.output().unwrap();
+    assert!(
+        text(&o).contains("Codex workers cannot commit")
+            && text(&o).contains("inside the worktree, the main checkout or the state root"),
+        "{}",
+        text(&o)
+    );
+}

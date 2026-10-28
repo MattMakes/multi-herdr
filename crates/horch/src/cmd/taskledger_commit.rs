@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -68,6 +68,9 @@ const MAX_TOTAL_BYTES: u64 = 1 << 30;
 
 /// The longest 1 git child runs before horch kills it.
 const GIT_DEADLINE: Duration = Duration::from_secs(120);
+
+/// The most time a killed git child gets to be reaped.
+const REAP_GRACE: Duration = Duration::from_secs(1);
 
 /// The most bytes of git's stderr kept for an error message.
 const MAX_STDERR: u64 = 4096;
@@ -492,6 +495,10 @@ fn run_git(cmd: Command, max: usize) -> Result<Records> {
 /// grows horch's memory or time past them.
 fn run_until(mut cmd: Command, max: usize, limit: Duration) -> Result<Records> {
     let end = Instant::now() + limit;
+    // git leads its own process group, so the kill also reaches a filter or
+    // helper that holds a pipe.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -515,8 +522,7 @@ fn run_until(mut cmd: Command, max: usize, limit: Duration) -> Result<Records> {
         let capped = read.as_ref().is_some_and(|r| !matches!(r, Ok((_, true))));
         let late = Instant::now() >= end;
         if capped || late {
-            let _ = child.kill();
-            let status = child.wait().context("waiting for git")?;
+            let status = kill_and_reap(&mut child)?;
             if !capped {
                 bail!(
                     "git ran longer than {} s and was stopped",
@@ -540,6 +546,39 @@ fn run_until(mut cmd: Command, max: usize, limit: Duration) -> Result<Records> {
         complete,
         stderr: join_by(errors, end).unwrap_or_default(),
     })
+}
+
+/// Kill git and its process group, then reap git within [`REAP_GRACE`].
+/// A git that is not reaped by then is an error: no wait here blocks.
+///
+/// git is still unreaped here, so its pid cannot belong to another process:
+/// the group signal reaches only this call's descendants.
+fn kill_and_reap(child: &mut Child) -> Result<ExitStatus> {
+    #[cfg(unix)]
+    // SAFETY: `kill` only signals; git is unreaped, so the group is ours.
+    let killed = unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) } == 0;
+    #[cfg(not(unix))]
+    let killed = child.kill().is_ok();
+    let kill_error = (!killed).then(std::io::Error::last_os_error);
+    reap_within(child, REAP_GRACE).with_context(|| match &kill_error {
+        Some(e) => format!("could not kill git: {e}"),
+        None => "git was killed".to_string(),
+    })
+}
+
+/// Reap `child` by polling, never by a blocking wait: a child that does not
+/// exit within `grace` is an error, so the call still returns.
+fn reap_within(child: &mut Child, grace: Duration) -> Result<ExitStatus> {
+    let until = Instant::now() + grace;
+    loop {
+        if let Some(status) = child.try_wait().context("waiting for git")? {
+            return Ok(status);
+        }
+        if Instant::now() >= until {
+            bail!("git did not exit within {} ms", grace.as_millis());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The result of `handle`, or `None` when it is not done at `end`.
@@ -757,9 +796,14 @@ fn trusted_git(configured: &Path, writable: &[&Path]) -> Result<PathBuf> {
 }
 
 /// The git `horch ledger commit` would run, for `horch doctor`: refused when
-/// there is no git 2.41 or later at `HORCH_GIT_BIN` or a [`TRUSTED_GITS`] path.
+/// there is no git 2.41 or later at `HORCH_GIT_BIN` or a [`TRUSTED_GITS`] path,
+/// or when it is inside the main checkout (which holds every ledger worktree)
+/// or the state root.
 pub fn commit_git(ctx: &RuntimeContext) -> Result<PathBuf> {
-    trusted_git(&ctx.bins.harness.git, &[ctx.paths.state_root.as_path()])
+    let project = ctx.paths.project().ok();
+    let mut writable = vec![ctx.paths.state_root.as_path()];
+    writable.extend(project.as_deref());
+    trusted_git(&ctx.bins.harness.git, &writable)
 }
 
 /// `(major, minor)` of the git at `bin`, run with a clean environment.
@@ -1097,6 +1141,46 @@ mod tests {
         assert_eq!(out.status.code(), Some(3));
         let e = out.text("x").unwrap_err();
         assert!(e.to_string().contains("oops"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaping_a_child_that_does_not_exit_returns_inside_the_grace() {
+        let mut cmd = sh("exec sleep 30");
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        let mut child = cmd.spawn().unwrap();
+        let started = Instant::now();
+        let e = reap_within(&mut child, Duration::from_millis(200)).unwrap_err();
+        assert!(e.to_string().contains("did not exit within 200 ms"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(kill_and_reap(&mut child).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_deadline_kill_also_ends_a_helper_that_git_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("helper.pid");
+        let script = format!(
+            "sleep 30 & echo $! > '{}'; exec sleep 30",
+            pid_file.display()
+        );
+        let started = Instant::now();
+        run_until(sh(&script), 1, Duration::from_millis(300)).unwrap_err();
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The helper is reparented and reaped once it is dead.
+        // SAFETY: signal 0 only checks that the pid exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "helper {pid} survived"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]

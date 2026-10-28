@@ -142,8 +142,10 @@ the operator asks for it.
 When a unit is complete, the worker runs
 `horch worktree land --check "<gate command>"`. The command rebases the
 branch, runs the gate, fast-forwards the integration branch, and removes the
-worktree. On a conflict, the worker rebases, runs the check, and runs the land
-command again. `horch done` refuses while the worker has an open claim.
+worktree. On a conflict, a non-Codex worker rebases, runs the check, and runs
+the land command again. A Codex worker cannot rebase (its `.git` is
+read-only), so it sends `BLOCKED:` to the orchestrator with the conflict.
+`horch done` refuses while the worker has an open claim.
 `horch done --unlanded "<reason>" "<summary>"` is the last resort. It keeps
 the branch and reports it to the orchestrator.
 
