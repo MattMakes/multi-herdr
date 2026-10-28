@@ -31,7 +31,13 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/MattMakes/multi-herdr/main/scripts/install.ps1 | iex
 ```
 
-Update later with `horch self-update`.
+`horch fleet` and `horch orchestration` keep it current: before the first
+pane starts, they check for a newer release (at most once a day), install
+it, and restart on it. `--no-update` or `HORCH_NO_UPDATE=1` skips this, and
+a failed update starts the fleet on the version you have. You can also
+update by hand with `horch self-update`. A horch run from a cargo `target/`
+folder gets a notice instead. A `just install` copy is updated like a release
+one, but only when a release is newer than its version.
 
 If you download an archive in a browser on macOS, clear the quarantine flag
 before you run it: `xattr -d com.apple.quarantine horch multi-herdr-dataset herdr-install`.
@@ -730,15 +736,29 @@ your global Codex configuration. Verified with Codex CLI 0.154.0; see the
 [official CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
-The bundled Codex workers and orchestrator use `permission_mode: auto`, and
-every Codex write mode (`auto`, `acceptEdits`) launches with
-`--approve-for-me` (Codex 0.147+): the workspace-write sandbox, with approval
-requests sent to Codex's automatic reviewer instead of waiting for a person.
-Commands allowed by the sandbox or explicit rules run; anything else, such as
-network access or a write outside the workspace, runs only when the reviewer
-approves it. A `plan` pane stays read-only with the same reviewer
-(`-c approvals_reviewer="auto_review"`). It does not use
-`--dangerously-bypass-approvals-and-sandbox`. Custom teammates can still choose
+The bundled Codex workers and orchestrator use `permission_mode: auto`. Every
+Codex write mode (`auto`, `acceptEdits`) launches in a per-launch permissions
+profile, `fleet_write`, selected with `-c default_permissions="fleet_write"`,
+plus `-a never` and `--search`:
+
+- The folder the pane starts in is writable throughout, including `.git`,
+  `.codex`, `.agents` and `.aws`, so a Codex worker can commit and make
+  worktrees.
+- Everything outside it is read-only, `/tmp` and the system temp dir too. The
+  one extra writable folder is horch's state dir, where `horch note`,
+  `horch done` and `horch tell` write, and where the pane's own `TMPDIR`
+  lives (`<state>/tmp/<role>`, removed when the pane exits).
+- The network is on, and `--search` turns on Codex's live web search.
+- A command can signal only processes in its own sandbox, that is processes
+  it started (macOS Seatbelt `same-sandbox`; a PID namespace on Linux).
+- `-a never`: a command the sandbox refuses fails back to the agent. Nothing
+  outside the folder can be granted.
+
+A `plan` pane stays read-only (`-c default_permissions=":read-only"`,
+`-a on-request`) and defines the same profile, so `horch mode <role> write`
+can switch to it. A teammate whose own args pass `-s` keeps that sandbox.
+Nothing uses `--dangerously-bypass-approvals-and-sandbox` unless a teammate
+asks for `bypassPermissions`. Verified with Codex CLI 0.164.0. Custom teammates can still choose
 an interactive permission mode. Authentication and any required first-run
 setup must already be complete before launching unattended panes.
 

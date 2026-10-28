@@ -13,11 +13,10 @@ fallbacks: [opus]
 effort: medium
 compact_window: 200000
 compact_at: 160000
-# Network on is the risk this teammate exists to contain. Every other codex
-# teammate keeps the sandbox's network off: a command that needs the network
-# must ask, and Codex's automatic reviewer decides. This one has the network
-# open in the sandbox itself. acceptEdits maps to `--approve-for-me`
-# (workspace-write, on-request, approvals_reviewer = auto_review).
+# Every codex write pane now runs the fleet_write profile, which has the
+# network on and keeps writes inside the pane's folder, so this teammate no
+# longer differs from codex-sol in what it can reach. acceptEdits maps to
+# `-c default_permissions="fleet_write" -a never`.
 permission_mode: acceptEdits
 # Fleet rule: no subagents. Ask the orchestrator for more workers.
 # `sandbox_workspace_write.network_access=true` opens the network inside the

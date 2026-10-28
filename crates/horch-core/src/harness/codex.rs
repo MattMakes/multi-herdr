@@ -34,7 +34,6 @@ use super::{
 use crate::compaction::window::OperatorWindow;
 use crate::fsx;
 use crate::prompts;
-use crate::roster::permission::{CODEX_APPROVE_FOR_ME, CODEX_AUTO_REVIEWER};
 use crate::roster::{ExecRule, HarnessDefault, PermissionMode, Teammate};
 use crate::runtime::RuntimeContext;
 
@@ -544,13 +543,14 @@ impl Harness for Codex {
     /// A private `CODEX_HOME` holding only this pane's rules, with the
     /// skills bundle linked in. Finished once the CLI has exited.
     ///
-    /// The state root is the pane's one extra writable root (`--add-dir`):
-    /// `horch note` and `horch done` lock and replace the ledger directly in
-    /// it. An execpolicy `allow` lifts the sandbox only for a command that
-    /// matches its prefix, so `horch note x 2>&1; echo $?` ran sandboxed and
-    /// failed on the lock (live check B2). `horch tell` writes under the
-    /// temp dir, which the sandbox already allows; the data dir is only read.
-    /// Only a `workspace-write` launch (or codex's default) gets the root:
+    /// The state root is the pane's one extra writable root: `horch note`
+    /// and `horch done` lock and replace the ledger directly in it, and
+    /// `horch tell` spools long messages there. An execpolicy `allow` lifts
+    /// the sandbox only for a command that matches its prefix, so
+    /// `horch note x 2>&1; echo $?` ran sandboxed and failed on the lock
+    /// (live check B2). A write or plan pane gets the root inside
+    /// [`FLEET_WRITE_PROFILE`]. Otherwise only a `workspace-write` launch
+    /// (or codex's default) gets it, as `--add-dir`:
     /// a `read-only` one exits at launch on `--add-dir`, so it gets the root
     /// as a `sandbox_workspace_write.writable_roots` pair for a later
     /// switch; full access needs none.
@@ -574,22 +574,28 @@ impl Harness for Codex {
         // ("the effective permissions do not allow additional writable
         // roots"), and full access needs no extra root.
         let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
+        let profile_form = write_profile_form(req.teammate) || plan_profile_form(req.teammate);
         match sandbox.as_deref() {
+            // A write pane runs the fleet write profile; a plan pane defines
+            // it for `horch mode <role> write` (X6 repro 5). The profile holds
+            // the state root and the pane's own TMPDIR.
+            _ if profile_form => {
+                let tmpdir = pane_tmpdir(&ctx.paths.state_root, req.role);
+                std::fs::create_dir_all(&tmpdir)
+                    .with_context(|| format!("creating {}", tmpdir.display()))?;
+                prepared.extra_args = fleet_write_profile_args(&state_root);
+                let value =
+                    serde_json::to_string(&tmpdir.to_string_lossy()).context("encoding TMPDIR")?;
+                prepared.extra_args.push("-c".into());
+                prepared
+                    .extra_args
+                    .push(format!("shell_environment_policy.set.TMPDIR={value}"));
+                prepared.on_finish(move || {
+                    let _ = std::fs::remove_dir_all(&tmpdir);
+                });
+            }
             None | Some(WORKSPACE_WRITE) => {
                 prepared.extra_args = vec!["--add-dir".into(), state_root];
-            }
-            // A plan pane: the fleet write profile holds the root, and
-            // `horch mode <role> write` selects it (X6 repro 5).
-            Some(READ_ONLY) if plan_profile_form(req.teammate) => {
-                prepared.extra_args = vec![
-                    "-c".into(),
-                    format!("permissions.{FLEET_WRITE_PROFILE}.extends=\":workspace\""),
-                    "-c".into(),
-                    format!(
-                        "permissions.{FLEET_WRITE_PROFILE}.workspace_roots={{{}=true}}",
-                        toml_string(&state_root)
-                    ),
-                ];
             }
             // Another read-only launch names it as a workspace-write root:
             // codex reads it only after a switch to workspace-write, and
@@ -922,9 +928,70 @@ fn profile_sandbox(profile: &str) -> String {
     }
 }
 
-/// The fleet's write profile of a plan pane: `:workspace` plus the state
-/// root. `horch mode <role> write` selects it in `/permissions` (X6 repro 5).
+/// The fleet's write profile. A write pane launches in it; a plan pane
+/// defines it so `horch mode <role> write` can select it in `/permissions`
+/// (X6 repro 5). See [`fleet_write_profile_args`].
 pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
+
+/// The `-c` pairs that define [`FLEET_WRITE_PROFILE`]:
+///
+/// - The pane's folder (codex's project roots) is writable throughout,
+///   `.git`, `.codex`, `.agents` and `.aws` too, which `:workspace` keeps
+///   read-only. So a Codex worker can commit and make worktrees.
+/// - Everything else stays read-only: `/tmp` and the system temp dir as
+///   well. `state_root` is the one extra writable root: `horch note` and
+///   `horch done` write the ledger in it, and the pane's `TMPDIR` lives
+///   under it ([`pane_tmpdir`]).
+/// - The network is on.
+///
+/// The sandbox itself keeps processes apart: a sandboxed command can signal
+/// only processes in its own sandbox (Seatbelt `signal (target
+/// same-sandbox)`; a PID namespace on Linux).
+fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
+    let p = FLEET_WRITE_PROFILE;
+    [
+        format!("permissions.{p}.extends=\":workspace\""),
+        format!(
+            "permissions.{p}.filesystem={{\":project_roots\"={{\".\"=\"write\",\".git\"=\"write\",\
+             \".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"}},\
+             \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}}"
+        ),
+        format!(
+            "permissions.{p}.workspace_roots={{{}=true}}",
+            toml_string(state_root)
+        ),
+        format!("permissions.{p}.network.enabled=true"),
+    ]
+    .into_iter()
+    .flat_map(|pair| ["-c".to_string(), pair])
+    .collect()
+}
+
+/// The pane's private temp dir, `<state root>/tmp/<role>`: `/tmp` and the
+/// system temp dir are read-only in [`FLEET_WRITE_PROFILE`].
+fn pane_tmpdir(state_root: &Path, role: &str) -> PathBuf {
+    let safe: String = role
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    state_root.join("tmp").join(safe)
+}
+
+/// Whether a write teammate launches in [`FLEET_WRITE_PROFILE`]: its own
+/// args set no sandbox and no profile (Codex refuses `sandbox_mode` and
+/// `default_permissions` together).
+fn write_profile_form(teammate: &Teammate) -> bool {
+    matches!(
+        teammate.permission_mode,
+        Some(PermissionMode::Auto | PermissionMode::AcceptEdits)
+    ) && !sets_own_sandbox(teammate)
+}
 
 /// Whether a plan teammate launches in the profile form: its own args set
 /// no sandbox and no profile (Codex refuses `sandbox_mode` and
@@ -960,27 +1027,33 @@ fn sets_own_sandbox(teammate: &Teammate) -> bool {
 /// <role> plan` can switch back (X6 repro 3). `None`: no mode, or no codex
 /// equivalent.
 ///
-/// Codex refuses `--approve-for-me` next to a sandbox flag, and the flag's
-/// own `sandbox_mode` next to `default_permissions`. So when the teammate's
-/// args choose a sandbox, the flag is spelled out as the approval and
-/// reviewer pairs it stands for, and the teammate's sandbox wins.
+/// A write pane selects [`FLEET_WRITE_PROFILE`] (defined in `prepare`, which
+/// knows the state root) and never asks. A teammate whose own args choose a
+/// sandbox gets the plain flags, and its own args, later in the argv, win.
+/// Every mode gets `--search`,
+/// codex's live web search tool.
 fn permission_args(teammate: &Teammate) -> Option<Vec<String>> {
-    if plan_profile_form(teammate) {
-        let args = [
+    let mut args: Vec<String> = if plan_profile_form(teammate) {
+        [
             "-c",
             "default_permissions=\":read-only\"",
             "-a",
             "on-request",
-            "-c",
-            CODEX_AUTO_REVIEWER,
-        ];
-        return Some(args.iter().map(|s| s.to_string()).collect());
-    }
-    let args = teammate.permission_mode?.codex_args()?;
-    if args == [CODEX_APPROVE_FOR_ME] && sets_own_sandbox(teammate) {
-        let spelled = ["-a", "on-request", "-c", CODEX_AUTO_REVIEWER];
-        return Some(spelled.iter().map(|s| s.to_string()).collect());
-    }
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    } else if write_profile_form(teammate) {
+        vec![
+            "-c".into(),
+            format!("default_permissions=\"{FLEET_WRITE_PROFILE}\""),
+            "-a".into(),
+            "never".into(),
+        ]
+    } else {
+        teammate.permission_mode?.codex_args()?
+    };
+    args.push("--search".into());
     Some(args)
 }
 
@@ -2020,11 +2093,16 @@ mod tests {
             }
         }
         let (_, prepared) = prepare_in(tmp.path(), teammate);
+        let roots = format!("permissions.{FLEET_WRITE_PROFILE}.workspace_roots=");
         prepared
             .extra_args
             .windows(2)
-            .filter(|w| w[0] == "--add-dir")
-            .map(|w| w[1].clone())
+            .filter_map(|w| match w[0].as_str() {
+                "--add-dir" => Some(w[1].clone()),
+                // The profile's root counts only when the pane runs in it.
+                "-c" if write_profile_form(teammate) => w[1].strip_prefix(&roots).map(String::from),
+                _ => None,
+            })
             .collect()
     }
 
@@ -2070,27 +2148,39 @@ mod tests {
         (ctx.paths.state_root.to_string_lossy().into_owned(), pairs)
     }
 
-    /// A plan pane cannot take `--add-dir`, so it gets the fleet write
-    /// profile: `:workspace` plus the state root. `horch mode <role> write`
-    /// selects it; writes worked under it and failed again under Read Only
-    /// (X6 repro 5c, 5d). No other mode gets it.
+    /// Write and plan panes define the fleet write profile. A plan pane
+    /// cannot take `--add-dir`, and `horch mode <role> write` selects the
+    /// profile; writes worked under it and failed again under Read Only (X6
+    /// repro 5c, 5d). A write pane runs in it. The folder is writable with
+    /// its metadata dirs, `/tmp` and the system temp dir are read-only, the
+    /// state root is the extra root, the network is on, and `TMPDIR` is the
+    /// pane's own dir under the state root.
     #[cfg(unix)]
     #[test]
-    fn a_plan_launch_defines_the_fleet_write_profile_with_the_state_root() {
+    fn write_and_plan_launches_define_the_fleet_write_profile() {
         use crate::roster::PermissionMode::*;
-        let plan = Teammate {
-            permission_mode: Some(Plan),
-            ..Default::default()
-        };
-        let (state, got) = config_pairs(&plan);
-        assert_eq!(
-            got,
-            vec![
-                "permissions.fleet_write.extends=\":workspace\"".to_string(),
-                format!("permissions.fleet_write.workspace_roots={{\"{state}\"=true}}"),
-            ]
-        );
-        for mode in [Some(AcceptEdits), Some(Auto), Some(BypassPermissions), None] {
+        for mode in [Plan, AcceptEdits, Auto] {
+            let teammate = Teammate {
+                permission_mode: Some(mode),
+                ..Default::default()
+            };
+            let (state, got) = config_pairs(&teammate);
+            assert_eq!(
+                got,
+                vec![
+                    "permissions.fleet_write.extends=\":workspace\"".to_string(),
+                    "permissions.fleet_write.filesystem={\":project_roots\"={\".\"=\"write\",\
+                     \".git\"=\"write\",\".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"},\
+                     \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}"
+                        .to_string(),
+                    format!("permissions.fleet_write.workspace_roots={{\"{state}\"=true}}"),
+                    "permissions.fleet_write.network.enabled=true".to_string(),
+                    format!("shell_environment_policy.set.TMPDIR=\"{state}/tmp/codex-1\""),
+                ],
+                "permission_mode {mode:?}"
+            );
+        }
+        for mode in [Some(BypassPermissions), None] {
             let teammate = Teammate {
                 permission_mode: mode,
                 ..Default::default()
@@ -2100,6 +2190,25 @@ mod tests {
                 "permission_mode {mode:?}"
             );
         }
+    }
+
+    /// A pane's TMPDIR exists before codex starts, and a role name cannot
+    /// leave `<state root>/tmp`.
+    #[test]
+    fn the_pane_tmpdir_is_made_and_stays_under_the_state_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ctx, _prepared) = prepare_in(
+            tmp.path(),
+            &Teammate {
+                permission_mode: Some(crate::roster::PermissionMode::Auto),
+                ..Default::default()
+            },
+        );
+        assert!(ctx.paths.state_root.join("tmp/codex-1").is_dir());
+        assert_eq!(
+            pane_tmpdir(Path::new("/s"), "../a b/c"),
+            PathBuf::from("/s/tmp/___a_b_c")
+        );
     }
 
     /// A read-only launch outside the profile form (the teammate sets its

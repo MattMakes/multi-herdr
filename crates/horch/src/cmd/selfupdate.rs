@@ -257,6 +257,95 @@ pub fn notice(ctx: &RuntimeContext, no_update: bool) {
     }
 }
 
+/// Set on the horch that [`update_before_fleet`] restarts into, so the new
+/// process does not update again.
+const UPDATED_ENV: &str = "HORCH_SELF_UPDATED";
+
+/// The update step of `horch fleet` and `horch orchestration`, before
+/// anything else runs: when a newer release is out, install it over this
+/// horch and restart the same command on it. Skipped like the boot notice
+/// (`--no-update`, `HORCH_NO_UPDATE=1`, `HORCH_NO_SELF_CHECK=1`, no
+/// terminal) and in the process it restarted. A source build gets the
+/// notice instead. A failed update never stops the fleet: it starts on this
+/// version.
+pub fn update_before_fleet(ctx: &RuntimeContext, no_update: bool) {
+    if no_update
+        || ctx.settings.no_update
+        || ctx.settings.no_self_check
+        || std::env::var_os(UPDATED_ENV).is_some()
+        || !std::io::stderr().is_terminal()
+    {
+        return;
+    }
+    let fetch = || fetch_latest(BOOT_TIMEOUT);
+    let Some(notice) = boot_notice(&ctx.paths.state_root, clock::now(), CURRENT, fetch) else {
+        return;
+    };
+    let dir = match target_dir(ctx) {
+        Ok(dir) => dir,
+        Err(_) => {
+            // A source build: `git pull` and `just install` update it.
+            eprintln!("{notice}");
+            return;
+        }
+    };
+    eprintln!(
+        "horch: a newer multi-herdr is out; installing it before the fleet starts \
+         (--no-update skips this)..."
+    );
+    let installed = fetch_latest(DOWNLOAD_TIMEOUT)
+        .and_then(|release| release.context("the release went away"))
+        .and_then(|release| install_release(ctx, &release, &dir).map(|()| release));
+    match installed {
+        Ok(release) => {
+            eprintln!("horch: updated v{CURRENT} -> {}; restarting", release.tag);
+            let error = restart(&dir);
+            eprintln!(
+                "horch: NOTE: cannot start the new horch ({error}); continuing on v{CURRENT}"
+            );
+        }
+        Err(error) => {
+            eprintln!("horch: NOTE: the update failed ({error:#}); continuing on v{CURRENT}");
+        }
+    }
+}
+
+/// Run `<dir>/horch` with this process's arguments and [`UPDATED_ENV`]. On
+/// unix it replaces this process; elsewhere it waits and exits with the
+/// child's code. Returns only the error of a start that failed.
+fn restart(dir: &Path) -> std::io::Error {
+    use std::io::Write;
+    let exe = dir.join(format!("horch{}", std::env::consts::EXE_SUFFIX));
+    let mut cmd = Command::new(&exe);
+    cmd.args(std::env::args_os().skip(1)).env(UPDATED_ENV, "1");
+    let _ = std::io::stdout().flush();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.exec()
+    }
+    #[cfg(not(unix))]
+    {
+        match cmd.status() {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(error) => error,
+        }
+    }
+}
+
+/// The directory a release installs into. `HORCH_SELF_UPDATE_DIR` is for
+/// tests only: the test binary lives under `target/`, which `install_dir`
+/// refuses.
+fn target_dir(ctx: &RuntimeContext) -> Result<PathBuf> {
+    match std::env::var_os("HORCH_SELF_UPDATE_DIR").filter(|v| !v.is_empty()) {
+        Some(dir) => Ok(PathBuf::from(dir)),
+        None => install_dir(
+            ctx.bins.current_exe.as_deref(),
+            &super::install::default_dir(ctx),
+        ),
+    }
+}
+
 /// `horch self-update [--check]`.
 pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
     let Some(release) = fetch_latest(DOWNLOAD_TIMEOUT)? else {
@@ -275,16 +364,15 @@ pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    // `HORCH_SELF_UPDATE_DIR` is for tests only: the test binary lives under
-    // `target/`, which `install_dir` refuses.
-    let dir = match std::env::var_os("HORCH_SELF_UPDATE_DIR").filter(|v| !v.is_empty()) {
-        Some(dir) => PathBuf::from(dir),
-        None => install_dir(
-            ctx.bins.current_exe.as_deref(),
-            &super::install::default_dir(ctx),
-        )?,
-    };
+    let dir = target_dir(ctx)?;
+    install_release(ctx, &release, &dir)?;
+    println!("updated horch v{CURRENT} -> {}", release.tag);
+    Ok(ExitCode::SUCCESS)
+}
 
+/// Download `release` for this target, check its digest and its binaries,
+/// and run its `horch install --dir <dir>`. Clears the boot check's cache.
+fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Result<()> {
     let name = archive_name(&release.tag, TARGET);
     let missing = |what: &str| {
         anyhow::anyhow!(
@@ -322,17 +410,17 @@ pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
     let status = Command::new(&new_horch)
         .arg("install")
         .arg("--dir")
-        .arg(&dir)
+        .arg(dir)
         .status()
         .with_context(|| format!("cannot run {}", new_horch.display()))?;
     if !status.success() {
-        let code = status.code().unwrap_or(1).clamp(1, 255) as u8;
-        return Ok(ExitCode::from(code));
+        bail!(
+            "the new horch install exited with {}",
+            status.code().unwrap_or(1)
+        );
     }
-
     let _ = std::fs::remove_file(cache_path(&ctx.paths.state_root));
-    println!("updated horch v{CURRENT} -> {}", release.tag);
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 // The network code below is the twin of `crates/herdr-install/src/net.rs`.

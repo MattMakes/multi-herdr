@@ -1444,8 +1444,10 @@ mod tests {
         assert!(a.contains(&"rid".to_string()));
     }
 
+    /// A write pane runs the fleet write profile: its folder writable, never
+    /// asks, the network and web search on.
     #[test]
-    fn codex_permission_mode_becomes_approve_for_me() {
+    fn codex_write_mode_selects_the_fleet_write_profile() {
         let r = Roster::builtin().unwrap();
         let cmd = command_in(
             &LaunchEnv::for_test(),
@@ -1456,54 +1458,55 @@ mod tests {
         )
         .unwrap();
         let a = argv(&cmd);
-        assert_eq!(
-            a.iter().filter(|x| *x == "--approve-for-me").count(),
-            1,
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["-c", "default_permissions=\"fleet_write\""]),
             "{a:?}"
         );
-        // Codex refuses `--approve-for-me` next to `-s`.
+        assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{a:?}");
+        assert!(a.iter().any(|x| x == "--search"), "{a:?}");
+        // `-s` would switch codex back to the legacy sandbox and drop the profile.
         assert!(!a.iter().any(|x| x == "-s" || x == "--sandbox"), "{a:?}");
+        assert!(!a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
     }
 
-    /// A plan pane stays read-only: `--approve-for-me` would make it
-    /// workspace-write, so only its reviewer is turned on.
+    /// A plan pane stays read-only and asks; no reviewer answers for it.
     #[test]
-    fn codex_plan_pane_gets_the_reviewer_not_the_flag() {
+    fn codex_plan_pane_stays_read_only_without_a_reviewer() {
         let r = Roster::builtin().unwrap();
         let mut t = r.require("codex-terra").unwrap().clone();
         t.permission_mode = Some(crate::roster::PermissionMode::Plan);
         let a =
             argv(&command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap());
-        assert!(!a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
         assert!(
             a.windows(2)
                 .any(|w| w == ["-c", "default_permissions=\":read-only\""]),
             "{a:?}"
         );
+        assert!(a.windows(2).any(|w| w == ["-a", "on-request"]), "{a:?}");
         assert!(
-            a.windows(2)
-                .any(|w| w == ["-c", "approvals_reviewer=\"auto_review\""]),
+            !a.iter().any(|x| x.starts_with("approvals_reviewer")),
             "{a:?}"
         );
     }
 
-    /// A teammate whose own args choose the sandbox gets the flag spelled out,
-    /// since Codex refuses `--approve-for-me` next to `-s`.
+    /// A teammate whose own args choose the sandbox keeps it: the plain
+    /// flags come first and its own `-s`, later, wins.
     #[test]
-    fn codex_own_sandbox_spells_out_approve_for_me() {
+    fn codex_own_sandbox_keeps_the_plain_flags() {
         let r = Roster::builtin().unwrap();
         let mut t = r.require("codex-terra").unwrap().clone();
         t.args.extend(["-s".into(), "read-only".into()]);
         let a =
             argv(&command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap());
-        assert!(!a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
-        assert!(a.windows(2).any(|w| w == ["-a", "on-request"]), "{a:?}");
         assert!(
-            a.windows(2)
-                .any(|w| w == ["-c", "approvals_reviewer=\"auto_review\""]),
+            !a.iter().any(|x| x.starts_with("default_permissions")),
             "{a:?}"
         );
-        assert!(a.windows(2).any(|w| w == ["-s", "read-only"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{a:?}");
+        let own = a.windows(2).rposition(|w| w == ["-s", "read-only"]);
+        let plain = a.windows(2).position(|w| w == ["-s", "workspace-write"]);
+        assert!(own > plain, "{a:?}");
     }
 
     #[test]
@@ -1522,8 +1525,12 @@ mod tests {
             )
             .unwrap(),
         );
-        assert!(a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
-        assert!(!a.iter().any(|x| x == "-a"), "{a:?}");
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["-c", "default_permissions=\"fleet_write\""]),
+            "{a:?}"
+        );
+        assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{a:?}");
     }
 
     #[test]
@@ -1589,7 +1596,12 @@ mod tests {
                     1,
                     "{name}: {a:?}"
                 );
-                assert!(a.iter().any(|x| x == "--approve-for-me"), "{name}: {a:?}");
+                assert!(
+                    a.windows(2)
+                        .any(|w| w == ["-c", "default_permissions=\"fleet_write\""]),
+                    "{name}: {a:?}"
+                );
+                assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{name}: {a:?}");
                 assert!(!a.iter().any(|x| x == "-s"), "{name}: {a:?}");
                 assert!(!a.iter().any(|arg| {
                     arg == "--dangerously-bypass-approvals-and-sandbox"
@@ -1622,7 +1634,11 @@ mod tests {
             a.contains(&r#"model_reasoning_effort="medium""#.to_string()),
             "{a:?}"
         );
-        assert!(a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["-c", "default_permissions=\"fleet_write\""]),
+            "{a:?}"
+        );
         assert_eq!(a.last().unwrap(), "BRIEFING");
         assert_ne!(a[0], "resume", "a fresh orchestrator is not a resume");
     }
@@ -2259,8 +2275,11 @@ mod tests {
             "{a:?}"
         );
         assert!(
-            a.windows(2)
-                .any(|w| w == ["--disallowedTools", "Agent,RemoteTrigger"]),
+            a.windows(2).any(|w| w
+                == [
+                    "--disallowedTools",
+                    "Agent,RemoteTrigger,Bash(herdr pane zoom),Bash(herdr pane zoom *)"
+                ]),
             "{a:?}"
         );
     }

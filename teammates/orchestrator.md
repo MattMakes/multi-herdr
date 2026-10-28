@@ -42,7 +42,14 @@ mcp_servers: {}
 # Fleet rule: no subagents and no background agents. Workers are the only
 # way to delegate. Agent starts a subagent (and a background one with
 # run_in_background); RemoteTrigger starts a cloud agent.
-disallowed_tools: [Agent, RemoteTrigger]
+# No pane zoom: a zoomed pane fills the operator's screen and hides the rest
+# of the tab, and `herdr pane zoom <id>` toggles, so a check that zooms and
+# unzooms leaves panes zoomed. `herdr pane read <id>` needs no zoom.
+disallowed_tools:
+  - Agent
+  - RemoteTrigger
+  - "Bash(herdr pane zoom)"
+  - "Bash(herdr pane zoom *)"
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
 ---

@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- `horch fleet` and `horch orchestration` install a newer multi-herdr
+  release before the fleet starts, then restart on it. `--no-update` or
+  `HORCH_NO_UPDATE=1` skips it; a failed update starts the fleet on the
+  version you have.
+- Codex workers and the Codex orchestrator can write anywhere in the folder
+  they start in, `.git` included, so they can commit and make worktrees.
+  Outside that folder everything is read-only, `/tmp` too, and a worker can
+  stop only processes it started. They now have the network and live web
+  search. `--approve-for-me` is gone: a command the sandbox refuses fails.
+
 ## v0.3.0 - 2026-10-28
 
 - The task ledger: `horch ledger` is now a queue the orchestrator and its
