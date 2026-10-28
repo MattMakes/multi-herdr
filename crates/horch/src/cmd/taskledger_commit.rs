@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
 use std::thread::JoinHandle;
@@ -40,12 +40,17 @@ pub struct CommitArgs {
     pub paths: Vec<PathBuf>,
 }
 
-/// Config pairs on every git call: no hook, no fsmonitor, no signing program.
-const SAFE_CONFIG: [&str; 4] = [
+/// Config pairs on every git call: no hook, no fsmonitor, no signing
+/// program, no git started in a gitlink (it would read that repository's
+/// worker-writable config), and no detached maintenance after a commit.
+const SAFE_CONFIG: [&str; 7] = [
     "core.hooksPath=/dev/null",
     "core.fsmonitor=false",
     "commit.gpgsign=false",
     "gpg.program=/usr/bin/false",
+    "diff.ignoreSubmodules=all",
+    "submodule.recurse=false",
+    "maintenance.auto=false",
 ];
 
 /// git's empty tree id in a SHA-1 repository, and in a SHA-256 one.
@@ -113,8 +118,8 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
     let git = Trusted::new(bin, &root, &gitdir, tree);
     let names = paths_to_stage(&git, &paths)?;
     refuse_large_files(&root, &names)?;
-    refuse_required_filters(&git, names)?;
-    let id = commit(&git, &args.message, &paths)?;
+    refuse_required_filters(&git, names.clone())?;
+    let id = commit(&git, &args.message, &paths, &names)?;
     // The commit exists now: print its id first, and never fail on the
     // bookkeeping after it, or a retry finds nothing to commit.
     output::println(&id);
@@ -165,24 +170,22 @@ fn owned_worktree(store: &Store, wid: &str) -> Result<(String, WorktreeRow)> {
     Ok((short, wt))
 }
 
-/// Stage and commit `paths` (every change when empty); the new commit id.
-/// git's own `index.lock` is held for the whole command, so a second commit
-/// or a git command that writes the index is refused and no index update is
-/// lost. Both files are made with `create_new`, which never follows a
-/// planted link.
-fn commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
+/// Stage and commit `paths`, or `names` (every change `git status` listed)
+/// when there are none; the new commit id. git's own `index.lock` is held
+/// for the whole command, so a second commit or a git command that writes
+/// the index is refused and no index update is lost. Every file is made
+/// with `create_new`, which never follows a planted link.
+fn commit(git: &Trusted, message: &str, paths: &[PathBuf], names: &[OsString]) -> Result<String> {
     let lock = git.gitdir.join("index.lock");
-    std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&lock)
-        .with_context(|| {
-            format!(
-                "refused: {} exists: another git command is using the index of this worktree",
-                lock.display()
-            )
-        })?;
-    let result = commit_locked(git, message, paths);
+        .map_err(|e| held_lock(&lock, e))?;
+    // Names this command, so a lock that a killed run left is told apart.
+    let _ = writeln!(file, "{LOCK_OWNER} {}", std::process::id());
+    drop(file);
+    let result = commit_locked(git, message, paths, names);
     if let Err(e) = std::fs::remove_file(&lock) {
         eprintln!(
             "horch: could not remove {}: {e}. horch ledger commit made it and has ended: \
@@ -193,16 +196,78 @@ fn commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
     result
 }
 
+/// The first word of the `index.lock` that horch ledger commit makes; its
+/// pid follows.
+const LOCK_OWNER: &str = "horch ledger commit pid";
+
+/// The refusal for an `index.lock` that exists. It names the lock, and
+/// calls it stale when a horch ledger commit that has ended made it. horch
+/// never removes it: git, in its own process group, can outlive horch.
+fn held_lock(lock: &Path, e: std::io::Error) -> anyhow::Error {
+    let owner = std::fs::read_to_string(lock).ok().and_then(|text| {
+        text.trim()
+            .strip_prefix(LOCK_OWNER)?
+            .trim()
+            .parse::<u32>()
+            .ok()
+    });
+    match owner {
+        Some(pid) if !is_running(pid) => anyhow::anyhow!(
+            "refused: {} is stale: horch ledger commit pid {pid} made it and has ended. \
+             Ask the orchestrator to remove it, then commit again.",
+            lock.display()
+        ),
+        _ => anyhow::anyhow!(
+            "refused: {} exists ({e}): another git command is using the index of this \
+             worktree. If none is running, ask the orchestrator to remove it.",
+            lock.display()
+        ),
+    }
+}
+
+/// False only when no process has `pid`.
+fn is_running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        // SAFETY: signal 0 only checks that the pid exists.
+        let found = unsafe { libc::kill(pid, 0) } == 0;
+        found || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
 /// [`commit`] under the index lock. git stages into `index.horch`, which
 /// replaces the index only when the commit succeeds: a failed commit leaves
 /// the index as it was.
-fn commit_locked(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
+fn commit_locked(
+    git: &Trusted,
+    message: &str,
+    paths: &[PathBuf],
+    names: &[OsString],
+) -> Result<String> {
     let index = git.gitdir.join("index");
     let scratch = git.gitdir.join("index.horch");
-    // A copy that a crashed run left: under the lock, nothing else writes it.
-    let _ = std::fs::remove_file(&scratch);
+    let list = git.gitdir.join("index.horch.paths");
+    // Files that a killed run left, with the lock of a git killed while it
+    // wrote the copy: under the lock, nothing else writes them.
+    let leftovers = [
+        scratch.with_extension("horch.lock"),
+        scratch.clone(),
+        list.clone(),
+    ];
+    for file in &leftovers {
+        let _ = std::fs::remove_file(file);
+    }
     let staged = copy_index(&index, &scratch)
-        .and_then(|()| stage_and_commit(&git.with_index(&scratch), message, paths));
+        .and_then(|()| stage_and_commit(&git.with_index(&scratch), message, paths, names, &list));
+    let _ = std::fs::remove_file(&list);
     let id = match staged {
         Ok(id) => id,
         Err(e) => {
@@ -220,6 +285,21 @@ fn commit_locked(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<Stri
         let _ = std::fs::remove_file(&scratch);
     }
     Ok(id)
+}
+
+/// `names` as a new file at `list`, each name ended by NUL.
+fn write_list(list: &Path, names: &[OsString]) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(list)
+        .with_context(|| format!("creating {}", list.display()))?;
+    for name in names {
+        file.write_all(name.as_encoded_bytes())
+            .and_then(|()| file.write_all(b"\0"))
+            .with_context(|| format!("writing {}", list.display()))?;
+    }
+    Ok(())
 }
 
 /// A copy of the index at `scratch`, a new file; nothing when there is no
@@ -240,7 +320,16 @@ fn copy_index(index: &Path, scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-fn stage_and_commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
+/// Stage `paths`, or with none, exactly `names` through the NUL-ended list
+/// file `list`: `git add -A` of the whole tree would start a git in each
+/// gitlink, which runs that repository's filters.
+fn stage_and_commit(
+    git: &Trusted,
+    message: &str,
+    paths: &[PathBuf],
+    names: &[OsString],
+    list: &Path,
+) -> Result<String> {
     let named = paths.iter().map(|p| p.as_os_str().to_owned());
     let mut add: Vec<OsString> = vec!["add".into()];
     // Quiet: the summary lists every file, past the bound of 1 record.
@@ -251,7 +340,10 @@ fn stage_and_commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<S
         message.into(),
     ];
     if paths.is_empty() {
-        add.push("-A".into());
+        write_list(list, names)?;
+        let mut from = OsString::from("--pathspec-from-file=");
+        from.push(list);
+        add.extend(["-A".into(), from, "--pathspec-file-nul".into()]);
     } else {
         add.push("--".into());
         add.extend(named.clone());
@@ -268,7 +360,9 @@ fn stage_and_commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<S
 /// there are none. At most [`MAX_PATHS`].
 fn paths_to_stage(git: &Trusted, paths: &[PathBuf]) -> Result<Vec<OsString>> {
     let names = if paths.is_empty() {
-        changed_paths(git)?
+        let names = changed_paths(git)?;
+        refuse_nested_repos(&git.root, &names)?;
+        names
     } else {
         paths.iter().map(|p| p.as_os_str().to_owned()).collect()
     };
@@ -276,6 +370,22 @@ fn paths_to_stage(git: &Trusted, paths: &[PathBuf]) -> Result<Vec<OsString>> {
         bail!("{}", too_many_paths());
     }
     Ok(names)
+}
+
+/// Refused when `git status` lists a folder: with `--untracked-files=all`
+/// that is an untracked nested repository, which `git add` stages as a
+/// gitlink.
+fn refuse_nested_repos(root: &Path, names: &[OsString]) -> Result<()> {
+    for name in names {
+        if std::fs::symlink_metadata(root.join(name)).is_ok_and(|m| m.is_dir()) {
+            bail!(
+                "refused: {} is a nested repository; horch ledger commit never stages \
+                 one as a gitlink. Commit the other files with -- <files>.",
+                Path::new(name).display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Refused when a path to stage is longer than [`MAX_FILE_BYTES`], or all
@@ -343,11 +453,12 @@ fn too_many_paths() -> String {
 /// Every change `git status` lists, read as bytes: a name that is not UTF-8
 /// stays the same name. git is stopped at the first record past the cap.
 fn changed_paths(git: &Trusted) -> Result<Vec<OsString>> {
-    let args: [OsString; 4] = [
+    let args: [OsString; 5] = [
         "status".into(),
         "--porcelain=v1".into(),
         "-z".into(),
         "--untracked-files=all".into(),
+        "--ignore-submodules=all".into(),
     ];
     let out = run_git(git.command(clean_git(&git.bin, git.tree), &args), MAX_PATHS)?;
     if !out.complete {
@@ -383,18 +494,36 @@ fn path_filters(git: &Trusted, names: Vec<OsString>) -> Result<Vec<(OsString, St
         "filter".into(),
         "--".into(),
     ];
-    args.extend(names);
+    args.extend(names.iter().cloned());
     let out = run_git(git.command(attribute_git(&git.bin), &args), expected)?;
     if !out.complete || !out.status.success() {
         bail!("git check-attr failed: {}", out.status);
     }
-    Ok(out
-        .records
-        .chunks(3)
-        .filter(|c| c.len() == 3)
-        .map(|c| (os_name(&c[0]), String::from_utf8_lossy(&c[2]).into_owned()))
-        .filter(|(_, filter)| !matches!(filter.as_str(), "unspecified" | "unset"))
-        .collect())
+    filter_records(&out.records, names.len())
+}
+
+/// `git check-attr -z filter` output for `count` paths, as `(path, filter)`
+/// for each path with a filter. Refused unless it is exactly `count`
+/// triples of `<path>, filter, <value>`: a path left out would go unchecked.
+fn filter_records(records: &[Vec<u8>], count: usize) -> Result<Vec<(OsString, String)>> {
+    if records.len() != 3 * count {
+        bail!(
+            "refused: git check-attr printed {} records for {count} paths, not {}",
+            records.len(),
+            3 * count
+        );
+    }
+    let mut filters = Vec::new();
+    for triple in records.as_chunks::<3>().0 {
+        if triple[1] != b"filter" {
+            bail!("refused: unexpected git check-attr output {triple:?}");
+        }
+        let value = String::from_utf8_lossy(&triple[2]).into_owned();
+        if !matches!(value.as_str(), "unspecified" | "unset") {
+            filters.push((os_name(&triple[0]), value));
+        }
+    }
+    Ok(filters)
 }
 
 /// The filters whose `filter.<name>.required` is true: git itself fails
@@ -548,15 +677,23 @@ fn run_until(mut cmd: Command, max: usize, limit: Duration) -> Result<Records> {
     })
 }
 
-/// Kill git and its process group, then reap git within [`REAP_GRACE`].
-/// A git that is not reaped by then is an error: no wait here blocks.
-///
-/// git is still unreaped here, so its pid cannot belong to another process:
-/// the group signal reaches only this call's descendants.
+/// Stop git and its process group, then reap git: TERM first, so git
+/// removes its lock files, and KILL when git is not reaped within
+/// [`REAP_GRACE`]. A git that is not reaped after the KILL either is an
+/// error: no wait here blocks, and the whole stop takes at most 2 graces.
 fn kill_and_reap(child: &mut Child) -> Result<ExitStatus> {
     #[cfg(unix)]
-    // SAFETY: `kill` only signals; git is unreaped, so the group is ours.
-    let killed = unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) } == 0;
+    {
+        signal_group(child, libc::SIGTERM);
+        if let Ok(status) = reap_within(child, REAP_GRACE) {
+            // A helper that ignored the TERM still holds the group id, so
+            // no new process can have it yet.
+            signal_group(child, libc::SIGKILL);
+            return Ok(status);
+        }
+    }
+    #[cfg(unix)]
+    let killed = signal_group(child, libc::SIGKILL);
     #[cfg(not(unix))]
     let killed = child.kill().is_ok();
     let kill_error = (!killed).then(std::io::Error::last_os_error);
@@ -564,6 +701,15 @@ fn kill_and_reap(child: &mut Child) -> Result<ExitStatus> {
         Some(e) => format!("could not kill git: {e}"),
         None => "git was killed".to_string(),
     })
+}
+
+/// Send `signal` to the process group that `child` leads; true when sent.
+/// git is unreaped when this is called first, so its pid cannot belong to
+/// another process: the group signal reaches only this call's descendants.
+#[cfg(unix)]
+fn signal_group(child: &Child, signal: libc::c_int) -> bool {
+    // SAFETY: `kill` only signals; the group is ours (see above).
+    unsafe { libc::kill(-(child.id() as libc::pid_t), signal) == 0 }
 }
 
 /// Reap `child` by polling, never by a blocking wait: a child that does not
@@ -911,14 +1057,27 @@ struct Trusted {
 
 impl Trusted {
     fn new(bin: &Path, root: &Path, gitdir: &Path, tree: &'static str) -> Trusted {
-        Trusted {
+        let mut git = Trusted {
             bin: bin.to_path_buf(),
             root: root.to_path_buf(),
             gitdir: gitdir.to_path_buf(),
             tree,
-            identity: global_identity(bin),
+            identity: Vec::new(),
             index: None,
-        }
+        };
+        // `-c` wins over the repository config: pass only what it lacks.
+        git.identity = global_identity(bin)
+            .into_iter()
+            .filter(|(key, _)| !git.repo_sets(key))
+            .collect();
+        git
+    }
+
+    /// True when the repository config (with the worktree's) sets `key`.
+    fn repo_sets(&self, key: &str) -> bool {
+        let args = ["config".into(), "--get".into(), OsString::from(key)];
+        let out = run_git(self.command(clean_git(&self.bin, self.tree), &args), 1);
+        out.is_ok_and(|o| o.text("config").is_ok_and(|v| !v.is_empty()))
     }
 
     /// This git, with `index` as its index file.
@@ -1181,6 +1340,26 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn check_attr_output_of_the_wrong_shape_is_refused() {
+        let rec = |parts: &[&str]| {
+            parts
+                .iter()
+                .map(|p| p.as_bytes().to_vec())
+                .collect::<Vec<_>>()
+        };
+        let good = rec(&["a", "filter", "lfs", "b", "filter", "unspecified"]);
+        assert_eq!(
+            filter_records(&good, 2).unwrap(),
+            vec![(OsString::from("a"), "lfs".to_string())]
+        );
+        // A short tail is refused, not dropped.
+        assert!(filter_records(&good[..5], 2).is_err());
+        assert!(filter_records(&good, 3).is_err());
+        let wrong = rec(&["a", "diff", "lfs"]);
+        assert!(filter_records(&wrong, 1).is_err());
     }
 
     #[test]

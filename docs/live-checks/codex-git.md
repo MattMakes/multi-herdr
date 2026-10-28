@@ -130,8 +130,11 @@ teammate descriptions say this.
     at most 4099 bytes, and 4 KiB of stderr. git is killed past any bound.
     1 commit stages at most 10000 paths, 100 MiB per file and 1 GiB in
     all, by length (a sparse file counts in full).
+  - No git starts in a gitlink: submodules are ignored, and no
+    maintenance runs after the commit.
   - The index changes only when the commit succeeds, under git's own
-    `index.lock`.
+    `index.lock`. The lock holds horch's pid, so a lock that a killed run
+    left is refused as stale, with its path.
 - SHA-256: `scripts/live/codex-git.sh`, run with both scratch repositories
   made by `git init --object-format=sha256`, passed every check (exit 0).
 - The caller cannot steer the command through its environment.
@@ -161,10 +164,11 @@ pre-01c grants):
   Only the briefing and `horch ledger finish` keep pushes in the fleet flow.
 - A Codex worker cannot commit outside a ledger task with a worktree, and
   cannot rebase: on a land conflict it sends `BLOCKED:` to the orchestrator.
-- `git add -A` (no paths) stages every change in the worktree. A nested
-  repository there is staged as a gitlink (mode 160000). Checked with the
-  same git flags: the nested repository's clean filter and
-  `core.fsmonitor` did not run.
+- With no paths, the command stages exactly the changes `git status`
+  lists, never the whole tree: `git add -A` of the whole tree starts a git
+  in each gitlink, and that git ran the nested repository's clean filter
+  (git 2.55, checked with `GIT_TRACE`). An untracked nested repository is
+  refused, and a moved gitlink is not staged.
 - Commits skip the repository's own hooks and attribute filters. A path
   under a required filter (Git LFS) is refused, not committed raw.
   `horch ledger finish` runs the ticket's check before it lands.

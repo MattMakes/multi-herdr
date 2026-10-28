@@ -110,6 +110,9 @@ work. These commands are on your PATH:
   It stages and commits only those files: the sandbox refuses git writes.
   It cannot rebase, so on a land conflict it sends BLOCKED: to the
   orchestrator. Every other worker commits with plain git.
+- A Codex worker cannot run horch worktree new or horch worktree land: the
+  sandbox refuses git writes. In a ledger task, horch ledger finish lands
+  the work. Otherwise it sends BLOCKED: to the orchestrator.
 - You land your own work. Do not wait for the orchestrator to merge it.
   Run: horch worktree land --check "<the check command of your plan>".
   It rebases your branch on the branch that it came from, runs the check,

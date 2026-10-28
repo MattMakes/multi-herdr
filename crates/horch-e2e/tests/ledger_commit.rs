@@ -447,13 +447,15 @@ fn a_worktree_whose_admin_name_is_taken_still_commits() {
 fn a_git_without_attr_source_fails_closed_and_commits_nothing() {
     let (h, w, wt) = claimed("lc-attrsrc");
     let real = h.git_bin().expect("the harness has git").to_path_buf();
-    // Reports a new version, but rejects `--attr-source` like an older git.
+    // Reports a new version, but rejects `--attr-source` in `git add` like
+    // an older git: the version check passes, and staging must fail closed.
     let fake = h.root.join("old-git");
     std::fs::write(
         &fake,
         format!(
-            "#!/bin/sh\nfor a in \"$@\"; do case $a in --attr-source*) \
-             echo \"unknown option: $a\" >&2; exit 129;; esac; done\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\ncase \" $* \" in *\" add \"*) for a in \"$@\"; do case $a in \
+             --attr-source*) echo \"unknown option: $a\" >&2; exit 129;; esac; done;; \
+             esac\nexec '{}' \"$@\"\n",
             real.display()
         ),
     )
@@ -468,7 +470,13 @@ fn a_git_without_attr_source_fails_closed_and_commits_nothing() {
         .env("HORCH_GIT_BIN", &fake)
         .current_dir(&wt);
     let o = cmd.output().unwrap();
-    assert!(!o.status.success(), "{}", text(&o));
+    assert!(
+        !o.status.success()
+            && text(&o).contains("git add failed")
+            && text(&o).contains("unknown option: --attr-source"),
+        "{}",
+        text(&o)
+    );
     assert_eq!(head(&h, &wt), before, "nothing is committed");
     assert!(
         git_in(&h, &wt, &["diff", "--cached", "--name-only"]).is_empty(),
@@ -899,7 +907,7 @@ fn paths_past_the_total_size_limit_are_refused() {
 
 #[test]
 fn doctor_warns_about_a_git_inside_the_main_checkout() {
-    let (h, _w, wt) = claimed("lc-doctor");
+    let (h, _w, _wt) = claimed("lc-doctor");
     let fake = h.project.join("tools-git");
     std::fs::write(&fake, "#!/bin/sh\necho 'git version 2.50.0'\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -913,4 +921,151 @@ fn doctor_warns_about_a_git_inside_the_main_checkout() {
         "{}",
         text(&o)
     );
+}
+
+/// A nested repository at `wt/<name>` whose own config and
+/// `info/attributes` run a clean filter that touches `marker`: the worker
+/// can write both. Its file is rewritten after the commit, so a git that
+/// checks it hashes it through the filter.
+fn nested_repo(h: &Harness, wt: &Path, name: &str, marker: &Path) -> PathBuf {
+    let nested = wt.join(name);
+    std::fs::create_dir_all(&nested).unwrap();
+    git_in(h, &nested, &["init", "--quiet"]);
+    std::fs::write(nested.join("f.txt"), "f\n").unwrap();
+    git_in(h, &nested, &["add", "f.txt"]);
+    git_in(h, &nested, &["commit", "--quiet", "-m", "n"]);
+    let clean = format!("touch '{}'; cat", marker.display());
+    git_in(h, &nested, &["config", "filter.evil.clean", &clean]);
+    std::fs::write(nested.join(".git/info/attributes"), "* filter=evil\n").unwrap();
+    std::fs::write(nested.join("f.txt"), "f\n").unwrap();
+    nested
+}
+
+#[test]
+fn an_untracked_nested_repository_is_never_staged_as_a_gitlink() {
+    let (h, w, wt) = claimed("lc-gitlink-new");
+    let marker = h.root.join("filter-ran");
+    nested_repo(&h, &wt, "inner", &marker);
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x"]);
+    assert!(
+        !o.status.success() && text(&o).contains("inner/ is a nested repository"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+    assert!(!marker.exists(), "the nested filter must not run");
+}
+
+#[test]
+fn a_tracked_gitlink_starts_no_git_in_it_and_is_never_staged() {
+    let (h, w, wt) = claimed("lc-gitlink-old");
+    let marker = h.root.join("filter-ran");
+    let nested = nested_repo(&h, &wt, "inner", &marker);
+    // The operator committed the gitlink with their own git.
+    git_in(&h, &wt, &["add", "inner"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "gitlink"],
+    );
+    let gitlink = git_in(&h, &wt, &["rev-parse", "HEAD:inner"]);
+    std::fs::write(nested.join("f.txt"), "f\n").unwrap();
+    let _ = std::fs::remove_file(&marker);
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        !marker.exists(),
+        "no git may start in the nested repository"
+    );
+    let names = git_in(&h, &wt, &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(names.lines().any(|n| n == "a.txt"), "{names}");
+
+    // A new commit in the nested repository would move the gitlink: it is
+    // not staged, and the other change still commits.
+    std::fs::write(nested.join("g.txt"), "g\n").unwrap();
+    git_in(&h, &nested, &["add", "g.txt"]);
+    git_in(&h, &nested, &["commit", "--quiet", "-m", "g"]);
+    std::fs::write(nested.join("f.txt"), "f\n").unwrap();
+    let _ = std::fs::remove_file(&marker);
+    std::fs::write(wt.join("b.txt"), "b\n").unwrap();
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "y"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        !marker.exists(),
+        "no git may start in the nested repository"
+    );
+    assert_eq!(git_in(&h, &wt, &["rev-parse", "HEAD:inner"]), gitlink);
+    assert_eq!(
+        git_in(&h, &wt, &["show", "--name-only", "--format=", "HEAD"]),
+        "b.txt"
+    );
+}
+
+#[test]
+fn a_lock_left_by_an_ended_commit_is_named_as_stale() {
+    let (h, w, wt) = claimed("lc-stale-lock");
+    let lock = admin_dir(&h).join("index.lock");
+    let mut ended = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+    let pid = ended.id();
+    ended.wait().unwrap();
+    std::fs::write(&lock, format!("horch ledger commit pid {pid}\n")).unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    assert!(
+        !o.status.success()
+            && text(&o).contains(&format!("{} is stale", lock.display()))
+            && text(&o).contains(&format!("pid {pid}")),
+        "{}",
+        text(&o)
+    );
+    assert!(lock.exists(), "horch never removes a lock it did not make");
+}
+
+#[test]
+fn a_scratch_index_lock_left_by_a_killed_git_does_not_block_the_next_commit() {
+    let (h, w, wt) = claimed("lc-scratch-lock");
+    let admin = admin_dir(&h);
+    std::fs::write(admin.join("index.horch"), "partial").unwrap();
+    std::fs::write(admin.join("index.horch.lock"), "partial").unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!admin.join("index.horch.lock").exists());
+    assert!(!admin.join("index.lock").exists());
+}
+
+#[test]
+fn the_author_is_the_repository_identity_then_the_global_one() {
+    let (h, w, wt) = claimed("lc-identity");
+    std::fs::write(
+        h.home.join(".gitconfig"),
+        "[user]\n\tname = Global Op\n\temail = global@example.com\n",
+    )
+    .unwrap();
+    let commit_as = |file: &str| {
+        std::fs::write(wt.join(file), "x\n").unwrap();
+        let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", file]);
+        cmd.env("HORCH_WORKER_ID", &w).current_dir(&wt);
+        for var in [
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_AUTHOR_DATE",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "GIT_COMMITTER_DATE",
+        ] {
+            cmd.env_remove(var);
+        }
+        let o = cmd.output().unwrap();
+        assert!(o.status.success(), "{}", text(&o));
+        git_in(&h, &wt, &["log", "-1", "--format=%an <%ae>"])
+    };
+    assert_eq!(commit_as("a.txt"), "Global Op <global@example.com>");
+    let project = h.project.clone();
+    git_in(&h, &project, &["config", "user.name", "Repo Op"]);
+    git_in(&h, &project, &["config", "user.email", "repo@example.com"]);
+    assert_eq!(commit_as("b.txt"), "Repo Op <repo@example.com>");
 }

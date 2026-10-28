@@ -232,6 +232,9 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
         \x20 It stages and commits only those files: the sandbox refuses git writes.\n\
         \x20 It cannot rebase, so on a land conflict it sends BLOCKED: to the\n\
         \x20 orchestrator. Every other worker commits with plain git.\n\
+        - A Codex worker cannot run horch worktree new or horch worktree land: the\n\
+        \x20 sandbox refuses git writes. In a ledger task, horch ledger finish lands\n\
+        \x20 the work. Otherwise it sends BLOCKED: to the orchestrator.\n\
         - You land your own work. Do not wait for the orchestrator to merge it.\n\
         \x20 Run: horch worktree land --check \"<the check command of your plan>\".\n\
         \x20 It rebases your branch on the branch that it came from, runs the check,\n\
