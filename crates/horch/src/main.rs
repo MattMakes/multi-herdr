@@ -109,12 +109,12 @@ enum Command {
         message: Vec<String>,
     },
 
-    /// List the roles registered in this workspace, then print and acknowledge pending mail.
+    /// List the roles registered in this workspace. The orchestrator also gets its pending mail, printed last and acknowledged; workers get only the role list.
     Inbox {
         /// Print only the role list; leave mail pending.
         #[arg(long, conflicts_with = "peek")]
         roles: bool,
-        /// Print pending mail without acknowledging it.
+        /// Orchestrator only: print pending mail without acknowledging it. Workers get only the role list.
         #[arg(long)]
         peek: bool,
     },

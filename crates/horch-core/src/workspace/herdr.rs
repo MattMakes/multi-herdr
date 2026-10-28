@@ -641,6 +641,9 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
         .stderr(Stdio::piped());
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "herdr timeout is too large")
+    })?;
     let mut child = command.spawn()?;
     let readers = [
         read_capped(child.stdout.take()),
@@ -648,7 +651,6 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
     ];
     let mut collected: [Option<Vec<u8>>; 2] = [None, None];
     let mut exited = false;
-    let deadline = Instant::now() + timeout;
     let failure = loop {
         let mut read_failure = None;
         for (slot, reader) in collected.iter_mut().zip(&readers) {
@@ -764,6 +766,25 @@ mod tests {
             assert!(error.to_string().contains("more than"), "{error}");
             assert!(started.elapsed() < Duration::from_secs(10));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stalled_herdr_fails_with_timed_out_after_the_deadline() {
+        let (_dir, script) = script_in("exec sleep 30");
+        let started = Instant::now();
+        let error = output_within(Command::new(&script), Duration::from_millis(500)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("did not answer"), "{error}");
+        assert!(started.elapsed() >= Duration::from_millis(400));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_too_large_for_an_instant_is_rejected_before_spawning() {
+        let (_dir, script) = script_in("exit 0");
+        let error = output_within(Command::new(&script), Duration::MAX).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[cfg(unix)]

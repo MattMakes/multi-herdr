@@ -7,7 +7,8 @@
 - `horch inbox` now prints the role list first, then pending messages, and
   ends with `N messages acknowledged`. It used to print messages first.
   `horch inbox --roles` prints only the roles and leaves mail pending.
-  `horch inbox --peek` prints mail and leaves it pending. A script that read
+  `horch inbox --peek` prints mail and leaves it pending. Mail is for the
+  orchestrator only: a worker gets only the role list. A script that read
   the role list from `horch inbox` should use `--roles`. A script that must
   not acknowledge mail should use `--peek`. The reminder other commands print
   now reads "N messages are not acknowledged", without "worker". If herdr
