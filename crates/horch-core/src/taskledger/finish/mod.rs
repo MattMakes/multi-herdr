@@ -444,13 +444,17 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         });
         // Before any other git in the worktree, at each step: a changed
         // `.git` file points git at config the worker wrote.
-        if let Err(e) = verify_worktree(&tools.git, wt.as_ref(), &dir, &root) {
-            let outcome = Outcome::fail("refused", None, &format!("{e:#}"));
-            record(store, &task, &w, seq, *name, &outcome)?;
-            stopped_at = Some(name.as_str().to_string());
-            message = format!("{}: {}", about(name.as_str()), outcome.note);
-            break;
-        }
+        let step_tools = match step_tools(tools, wt.as_ref(), &dir, &root) {
+            Ok(t) => t,
+            Err(e) => {
+                let outcome = Outcome::fail("refused", None, &format!("{e:#}"));
+                record(store, &task, &w, seq, *name, &outcome)?;
+                stopped_at = Some(name.as_str().to_string());
+                message = format!("{}: {}", about(name.as_str()), outcome.note);
+                break;
+            }
+        };
+        let tools = &step_tools;
         let through = StepStatus::parse(&row.status)?.is_through();
         let before_land = land_seq.is_some_and(|ls| seq < ls);
         // A passed step stands while the tree it judged is the tree now,
@@ -520,15 +524,20 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
     })
 }
 
-/// The worktree's `.git` file names its git dir under the main checkout's
-/// common dir; nothing to check when the work is in the shared checkout or
-/// the worktree is gone.
-fn verify_worktree(git: &Git, wt: Option<&WorktreeRow>, dir: &Path, root: &Path) -> Result<()> {
+/// The tools of 1 step. In a worktree, its `.git` file must name its git dir
+/// under the main checkout's common dir, and every git call there is pinned
+/// to that git dir. Nothing to check when the work is in the shared
+/// checkout or the worktree is gone.
+fn step_tools(tools: &Tools, wt: Option<&WorktreeRow>, dir: &Path, root: &Path) -> Result<Tools> {
     match wt {
-        Some(wt) if dir != root => git
-            .verify_worktree(Path::new(&wt.repo_root), dir)
-            .map(|_| ()),
-        _ => Ok(()),
+        Some(wt) if dir != root => {
+            let gitdir = tools.git.verify_worktree(Path::new(&wt.repo_root), dir)?;
+            Ok(Tools {
+                git: tools.git.pinned(dir, &gitdir)?,
+                ..tools.clone()
+            })
+        }
+        _ => Ok(tools.clone()),
     }
 }
 

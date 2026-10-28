@@ -92,16 +92,17 @@ fn wait_for<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
 /// A worker row with the harness spawn records: finish refuses a check for
 /// a worker with no harness.
 fn worker_new(h: &Harness, persona: &str) -> String {
-    let w = bare_worker_new(h, persona);
-    record_launch(h, &w, "claude");
-    w
+    worker_with(h, persona, Some("claude"))
 }
 
-/// A worker row as `horch ledger worker new` writes it: no harness.
-fn bare_worker_new(h: &Harness, persona: &str) -> String {
-    ok(h, &["ledger", "worker", "new", "--persona", persona])
-        .trim()
-        .to_string()
+/// A worker row as `horch ledger worker new` writes it, with `--harness`
+/// when `harness` is set.
+fn worker_with(h: &Harness, persona: &str, harness: Option<&str>) -> String {
+    let mut args = vec!["ledger", "worker", "new", "--persona", persona];
+    if let Some(harness) = harness {
+        args.extend(["--harness", harness]);
+    }
+    ok(h, &args).trim().to_string()
 }
 
 #[test]
@@ -1632,6 +1633,7 @@ fn real_codex() -> Option<PathBuf> {
             .find(|c| c.is_file())
     });
     if found.is_none() {
+        eprintln!("SKIP: no codex on PATH; set HORCH_REQUIRE_CODEX=1 to require it");
         assert!(
             std::env::var_os("HORCH_REQUIRE_CODEX").is_none(),
             "HORCH_REQUIRE_CODEX is set but no codex is on PATH"
@@ -1640,32 +1642,20 @@ fn real_codex() -> Option<PathBuf> {
     found
 }
 
-/// What spawn records for `worker`: the finish steps read its harness.
-fn record_launch(h: &Harness, worker: &str, harness: &str) {
-    let mut store = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
-    store
-        .immediate(|tx| {
-            horch_core::taskledger::workers::set_launch(tx, worker, "opus", harness, "m", None)
-        })
-        .unwrap();
-}
-
-/// The log of the first finish step in `r`, or "".
-fn first_step_log(r: &Value) -> String {
-    r["steps"][0]["evidence_path"]
-        .as_str()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_default()
-}
-
-/// A world with 1 claimed task whose check is `check`, held by a worker
-/// that `make_worker` makes; returns the worker and its worktree.
+/// A run with `steps` (default all 7) and 1 claimed task whose check is
+/// `check`, held by a worker on `harness` (none when `None`); returns the
+/// worker and its worktree.
 fn claimed_with_check(
     h: &Harness,
     check: &str,
-    make_worker: fn(&Harness, &str) -> String,
+    steps: Option<&str>,
+    harness: Option<&str>,
 ) -> (String, PathBuf) {
-    ok(h, &["ledger", "run", "new", "alpha"]);
+    let mut run = vec!["ledger", "run", "new", "alpha"];
+    if let Some(steps) = steps {
+        run.extend(["--steps", steps]);
+    }
+    ok(h, &run);
     let p = ticket(h, "01-a", "# 01: Feature\n");
     ok(
         h,
@@ -1680,7 +1670,7 @@ fn claimed_with_check(
             check,
         ],
     );
-    let w = make_worker(h, "opus");
+    let w = worker_with(h, "opus", harness);
     ok_as(h, &w, &["ledger", "claim"]);
     let wt = ok_as(h, &w, &["ledger", "worktree", "new", "feature"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
@@ -1690,7 +1680,7 @@ fn claimed_with_check(
 #[test]
 fn a_check_for_a_worker_with_no_harness_fails_and_never_runs() {
     let h = finish_world("tl-no-harness");
-    let (w, wt) = claimed_with_check(&h, ": > ran.txt", bare_worker_new);
+    let (w, wt) = claimed_with_check(&h, ": > ran.txt", None, None);
     let (_, r) = finish_json(&h, &w);
     assert_eq!(r["stopped_at"], "check", "{r}");
     assert_eq!(r["steps"][0]["status"], "failed", "{r}");
@@ -1707,7 +1697,7 @@ fn a_check_for_a_worker_with_no_harness_fails_and_never_runs() {
 #[test]
 fn finish_refuses_a_worktree_whose_git_file_points_at_a_planted_git_dir() {
     let h = finish_world("tl-planted-gitdir");
-    let (w, wt) = claimed_with_check(&h, "true", worker_new);
+    let (w, wt) = claimed_with_check(&h, "true", None, Some("claude"));
     // What a Codex pane in the main checkout can do: a git dir of its own,
     // with an fsmonitor that writes a marker outside the sandbox.
     let marker = h.root.join("fsmonitor-ran");
@@ -1741,6 +1731,145 @@ fn finish_refuses_a_worktree_whose_git_file_points_at_a_planted_git_dir() {
     );
 }
 
+/// An executable `sh` script at `path` with `body`.
+fn sh_script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_land_push_runs_the_repository_hooks_and_a_worktree_git_runs_none() {
+    let h = finish_world("tl-hooks");
+    let (w, wt) = claimed_with_check(&h, "true", Some("check,land"), Some("claude"));
+    std::fs::write(wt.join("feature.txt"), "feature\n").unwrap();
+    git_in(&h, &wt, &["add", "feature.txt"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "feature"],
+    );
+    // The run branch moves on, so land's rebase in the worktree has work.
+    let project = h.project.clone();
+    let tree = git_in(&h, &project, &["rev-parse", "fleet/alpha^{tree}"]);
+    let next = git_in(
+        &h,
+        &project,
+        &[
+            "commit-tree",
+            tree.trim(),
+            "-p",
+            "fleet/alpha",
+            "-m",
+            "other",
+        ],
+    );
+    git_in(
+        &h,
+        &project,
+        &["update-ref", "refs/heads/fleet/alpha", next.trim()],
+    );
+    // The main checkout's hooks are the operator's (git-lfs uploads in
+    // pre-push); git in the worktree runs none of them.
+    let pushed = h.root.join("pre-push-ran");
+    let rebased = h.root.join("pre-rebase-ran");
+    let hooks = project.join(".git/hooks");
+    sh_script(
+        &hooks.join("pre-push"),
+        &format!(": > '{}'", pushed.display()),
+    );
+    sh_script(
+        &hooks.join("pre-rebase"),
+        &format!(": > '{}'", rebased.display()),
+    );
+
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    assert!(
+        pushed.exists(),
+        "the push from the main checkout runs pre-push"
+    );
+    assert!(!rebased.exists(), "the rebase in the worktree runs no hook");
+}
+
+#[test]
+fn a_git_file_switched_after_the_check_never_reaches_finish_git() {
+    let mut h = finish_world("tl-gitdir-race");
+    let (w, wt) = claimed_with_check(&h, "true", Some("check"), Some("claude"));
+    // A tracked file that a planted filter would clean.
+    std::fs::write(wt.join(".gitattributes"), "*.txt filter=x\n").unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    git_in(&h, &wt, &["add", ".gitattributes", "a.txt"]);
+    git_in(&h, &wt, &["commit", "--quiet", "--no-verify", "-m", "a"]);
+    // A changed mtime makes git status hash a.txt through its filter.
+    let later = std::time::SystemTime::now() + Duration::from_secs(100);
+    std::fs::File::options()
+        .write(true)
+        .open(wt.join("a.txt"))
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    // The planted git dir: the project's refs, the worktree's index and
+    // branch, and a clean filter that writes a marker.
+    let marker = h.root.join("filter-ran");
+    let clean = h.root.join("clean.sh");
+    sh_script(&clean, &format!(": > '{}'; cat", marker.display()));
+    let evil = h.root.join("evil.git");
+    let project = h.project.clone();
+    let root = h.root.clone();
+    git_in(
+        &h,
+        &root,
+        &[
+            "clone",
+            "--quiet",
+            "--mirror",
+            &project.to_string_lossy(),
+            &evil.to_string_lossy(),
+        ],
+    );
+    let real = std::fs::read_to_string(wt.join(".git")).unwrap();
+    let gitdir = PathBuf::from(real.trim().strip_prefix("gitdir: ").unwrap());
+    std::fs::copy(gitdir.join("index"), evil.join("index")).unwrap();
+    std::fs::copy(gitdir.join("HEAD"), evil.join("HEAD")).unwrap();
+    let gd = format!("--git-dir={}", evil.display());
+    git_in(&h, &root, &[&gd, "config", "core.bare", "false"]);
+    git_in(
+        &h,
+        &root,
+        &[&gd, "config", "filter.x.clean", &clean.to_string_lossy()],
+    );
+    // A git that switches the `.git` file after finish checked it.
+    let swap = h.root.join("swap-git");
+    sh_script(
+        &swap,
+        &format!(
+            "case \" $* \" in *\" status \"*) printf 'gitdir: %s\\n' '{}' > '{}';; esac\nexec '{}' \"$@\"",
+            evil.display(),
+            wt.join(".git").display(),
+            h.git_bin().unwrap().display()
+        ),
+    );
+    h.set("HORCH_GIT_BIN", swap.to_string_lossy());
+
+    let (_, r) = finish_json(&h, &w);
+    assert!(
+        std::fs::read_to_string(wt.join(".git"))
+            .unwrap()
+            .contains("evil.git"),
+        "the switch ran: {r}"
+    );
+    assert!(!marker.exists(), "the planted filter never runs: {r}");
+}
+
+/// The log of the first finish step in `r`, or "".
+fn first_step_log(r: &Value) -> String {
+    r["steps"][0]["evidence_path"]
+        .as_str()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
 /// A fake `codex`: it logs its arguments and `TMPDIR`, then runs the
 /// program after `--`. It tests the sandbox call where no real codex is.
 const FAKE_CODEX: &str = r#"#!/bin/sh
@@ -1760,36 +1889,7 @@ fn a_codex_held_check_and_recheck_call_codex_sandbox_and_a_claude_held_one_does_
         let log = h.root.join("codex.log");
         h.set("HORCH_CODEX_BIN", codex.to_string_lossy());
         h.set("FAKE_CODEX_LOG", log.to_string_lossy());
-        ok(
-            &h,
-            &[
-                "ledger",
-                "run",
-                "new",
-                "alpha",
-                "--steps",
-                "check,recheck,land",
-            ],
-        );
-        let p = ticket(&h, "01-a", "# 01: Feature\n");
-        ok(
-            &h,
-            &[
-                "ledger",
-                "add",
-                "--file",
-                &p.to_string_lossy(),
-                "--primary",
-                "opus",
-                "--check",
-                "true",
-            ],
-        );
-        let w = bare_worker_new(&h, "opus");
-        record_launch(&h, &w, harness);
-        ok_as(&h, &w, &["ledger", "claim"]);
-        let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feature"]);
-        let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+        let (w, path) = claimed_with_check(&h, "true", Some("check,recheck,land"), Some(harness));
         let (code, r) = finish_json(&h, &w);
         assert_eq!(code, Some(0), "{harness}: {r}");
         let lines: Vec<String> = std::fs::read_to_string(&log)
@@ -1819,30 +1919,11 @@ fn a_codex_held_check_runs_in_the_codex_sandbox() {
     for (harness, sandboxed) in [("codex", true), ("claude", false)] {
         let mut h = finish_world(&format!("tl-sbx-{harness}"));
         h.set("HORCH_CODEX_BIN", codex.to_string_lossy());
-        ok(&h, &["ledger", "run", "new", "alpha"]);
         // Outside the checkout and the state root.
         let outside = h.root.join("outside.txt");
         // Shell redirections: the harness PATH has no `touch`.
         let check = format!(": > inside.txt && : > '{}'", outside.display());
-        let p = ticket(&h, "01-a", "# 01: Feature\n");
-        ok(
-            &h,
-            &[
-                "ledger",
-                "add",
-                "--file",
-                &p.to_string_lossy(),
-                "--primary",
-                "opus",
-                "--check",
-                &check,
-            ],
-        );
-        let w = worker_new(&h, "opus");
-        record_launch(&h, &w, harness);
-        ok_as(&h, &w, &["ledger", "claim"]);
-        let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feature"]);
-        let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+        let (w, path) = claimed_with_check(&h, &check, None, Some(harness));
         let (_, r) = finish_json(&h, &w);
         assert!(
             path.join("inside.txt").exists(),

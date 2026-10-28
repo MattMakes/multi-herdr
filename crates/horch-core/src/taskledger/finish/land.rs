@@ -28,30 +28,39 @@ pub const LAND_LOCK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 fn run_check(cx: &Ctx<'_>, dir: &Path, command: &str, log: &Path) -> Result<bool> {
     let sandboxed = match cx.worker.harness.as_deref() {
         Some(h) => h == HarnessKind::Codex.as_str(),
-        None => bail!("the ledger does not record this worker's harness"),
+        None => bail!(
+            "the ledger does not record this worker's harness. The orchestrator \
+             replaces the worker with horch spawn, or records a new row with \
+             horch ledger worker new --harness <claude|codex|...>"
+        ),
     };
-    let mut cmd = if sandboxed {
-        // /tmp is read-only in the sandbox: a private temp dir in the state
-        // root, as a pane has.
-        let tmp = cx
-            .tools
+    // /tmp is read-only in the sandbox: a private temp dir in the state
+    // root, as a pane has, removed after the check.
+    let tmp = sandboxed.then(|| {
+        cx.tools
             .state_root
             .join("tmp")
-            .join(format!("check-{}", cx.worker.worker_id));
-        std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        let mut cmd = fleet_write_sandbox(&cx.tools.codex, &cx.tools.state_root, dir);
-        cmd.arg(&cx.tools.shell).env("TMPDIR", tmp);
-        cmd
-    } else {
-        Command::new(&cx.tools.shell)
+            .join(format!("check-{}", cx.worker.worker_id))
+    });
+    let mut cmd = match &tmp {
+        Some(tmp) => {
+            std::fs::create_dir_all(tmp).with_context(|| format!("creating {}", tmp.display()))?;
+            let mut cmd = fleet_write_sandbox(&cx.tools.codex, &cx.tools.state_root, dir);
+            cmd.arg(&cx.tools.shell).env("TMPDIR", tmp);
+            cmd
+        }
+        None => Command::new(&cx.tools.shell),
     };
     let out = cmd
         .arg("-c")
         .arg(command)
         .current_dir(dir)
         .env_remove("ANTHROPIC_API_KEY")
-        .output()
-        .with_context(|| format!("running the check `{command}`"))?;
+        .output();
+    if let Some(tmp) = &tmp {
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+    let out = out.with_context(|| format!("running the check `{command}`"))?;
     let place = if sandboxed { " (codex sandbox)" } else { "" };
     let mut text = format!("$ {command}\n# in {}{place}\n", dir.display());
     text.push_str(&String::from_utf8_lossy(&out.stdout));

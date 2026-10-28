@@ -9,6 +9,11 @@ model) or `codex execpolicy check`.
 
     cargo build -p horch
     scripts/live/codex-git.sh
+    HORCH_REQUIRE_CODEX=1 cargo test -p horch-e2e --test taskledger a_codex_held_check
+
+The last command runs a Codex-held finish check in the real `codex sandbox`.
+In CI no codex is on `PATH`: the test prints `SKIP` and passes, and only the
+fake-codex test of the sandbox arguments runs.
 
 The script makes a scratch repository under `/private/tmp` in the fleet
 layout (a main checkout and `.worktrees/<name>`), with its own ledger file

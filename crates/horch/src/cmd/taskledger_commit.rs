@@ -22,7 +22,9 @@ use clap::Args;
 use horch_core::competition::preflight::parse_git_version;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, WorktreeRow};
-use horch_core::taskledger::git::worktree_gitdir;
+use horch_core::taskledger::git::{
+    filter_driver_names, filter_overrides, worktree_gitdir, SAFE_CONFIG,
+};
 use horch_core::taskledger::model::{
     EventKind, ProgressSource, TaskStatus, WorkerStatus, WorktreeStatus,
 };
@@ -40,19 +42,6 @@ pub struct CommitArgs {
     #[arg(last = true)]
     pub paths: Vec<PathBuf>,
 }
-
-/// Config pairs on every git call: no hook, no fsmonitor, no signing
-/// program, no git started in a gitlink (it would read that repository's
-/// worker-writable config), and no detached maintenance after a commit.
-const SAFE_CONFIG: [&str; 7] = [
-    "core.hooksPath=/dev/null",
-    "core.fsmonitor=false",
-    "commit.gpgsign=false",
-    "gpg.program=/usr/bin/false",
-    "diff.ignoreSubmodules=all",
-    "submodule.recurse=false",
-    "maintenance.auto=false",
-];
 
 /// git's empty tree id in a SHA-1 repository, and in a SHA-256 one.
 const EMPTY_TREE_SHA1: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -1267,18 +1256,7 @@ impl Trusted {
                 out.status
             );
         }
-        let mut names: Vec<String> = out
-            .records
-            .iter()
-            .filter_map(|r| {
-                let key = String::from_utf8_lossy(r);
-                let (name, _) = key.strip_prefix("filter.")?.rsplit_once('.')?;
-                Some(name.to_string())
-            })
-            .collect();
-        names.sort();
-        names.dedup();
-        Ok(names)
+        Ok(filter_driver_names(&out.records))
     }
 
     /// True when the repository config (with the worktree's) sets `key`.
@@ -1324,9 +1302,8 @@ impl Trusted {
         for (key, value) in &self.identity {
             cmd.arg("-c").arg(format!("{key}={value}"));
         }
-        for name in &self.filters {
-            cmd.arg("-c").arg(format!("filter.{name}.clean="));
-            cmd.arg("-c").arg(format!("filter.{name}.process="));
+        for pair in filter_overrides(&self.filters) {
+            cmd.arg("-c").arg(pair);
         }
         for var in IDENTITY_VARS {
             if let Some(v) = std::env::var_os(var) {

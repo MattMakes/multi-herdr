@@ -28,6 +28,14 @@
   folder everything is read-only, `/tmp` too, and a worker can stop only
   processes it started. They now have the network and live web search.
   `--approve-for-me` is gone: a command the sandbox refuses fails.
+- `horch ledger finish` checks a ledger worktree's `.git` file before each
+  step and runs its git there with that verified git dir: no hook, fsmonitor
+  or filter program runs in the worktree. Its push and merge in the main
+  checkout keep the repository's hooks, so git-lfs still uploads in
+  `pre-push`.
+- `horch ledger finish` refuses the check of a worker whose harness the
+  ledger does not record. `horch ledger worker new --harness <agent>` records
+  it, and `horch spawn` stops and closes the pane when it cannot.
 
 ## v0.3.0 - 2026-10-28
 

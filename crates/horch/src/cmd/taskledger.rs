@@ -277,6 +277,10 @@ pub enum WorkerCommand {
         role: Option<String>,
         #[arg(long)]
         replaces: Option<String>,
+        /// The agent the worker runs on (claude, codex, ...): finish runs a
+        /// Codex worker's check in its sandbox, and refuses a worker with none.
+        #[arg(long)]
+        harness: Option<horch_core::harness::HarnessKind>,
         #[command(flatten)]
         run: RunArg,
     },
@@ -1509,6 +1513,7 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
             persona,
             role,
             replaces,
+            harness,
             run,
         } => {
             let r = resolve_run(ctx, store, &run)?;
@@ -1521,6 +1526,7 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
                         persona,
                         role,
                         previous_worker_id: replaces,
+                        harness: harness.map(|h| h.as_str().to_string()),
                         ..Default::default()
                     },
                 )

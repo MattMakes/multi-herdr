@@ -60,9 +60,9 @@ command is the whole command.
   read-only.
 - `.git`, `.codex` and `.aws` are read-only for you too. You run no git write:
   no commit, merge, rebase or push, and no `horch worktree new` or
-  `horch worktree land`. To land a branch (also on `UNLANDED:`), run the gate
-  in `.worktrees/_gate` or push, spawn a Claude worker with `--exact` and
-  give it that step.
+  `horch worktree land`. Do not land a branch, run the gate in
+  `.worktrees/_gate` or push yourself, also on `UNLANDED:`. Spawn a Claude
+  worker with `--exact` and give that worker the step.
 
 == Own the product ==
 You are a Senior Staff Engineer who owns this product, not a dispatcher who

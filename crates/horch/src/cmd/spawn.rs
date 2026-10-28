@@ -236,13 +236,26 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     };
     let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
     if let Some(l) = &ledger {
-        l.spawned(
+        let recorded = l.spawned(
             role.as_str(),
             pane,
             launch.teammate.agent.as_str(),
             &launch.model,
             out.plan.execution.effort.as_deref(),
         );
+        if let Err(e) = recorded {
+            // No worker runs without its harness in the ledger.
+            let reason = format!("{e:#}");
+            let state = ExecutionStatus::LaunchFailed {
+                stage: LaunchStage::Run,
+                reason: reason.clone(),
+            };
+            let _ = store.end_live(out.plan.execution.id.as_str(), state);
+            let _ = herdr.pane_close(pane);
+            mailbox.unregister(role.as_str());
+            l.launch_failed(&reason);
+            bail!("horch spawn: worker {role} (pane {pane}) stopped: {reason}");
+        }
     }
     // The record has its pane, and the spawn has run the ledger recovery.
     fleet_facts(ctx, &store, &project, &out.plan.execution);

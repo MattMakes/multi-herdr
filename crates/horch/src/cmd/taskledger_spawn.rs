@@ -2,7 +2,7 @@
 //! the pane opens, its id travels in the brief, and the role and pane are
 //! recorded once the split is done.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::model::{RunStatus, WorkerKind};
@@ -86,7 +86,9 @@ pub fn prepare(ctx: &RuntimeContext, args: &SpawnArgs) -> Result<Option<LedgerSp
 }
 
 impl LedgerSpawn {
-    /// The pane is open and runs `horch worker <role>`.
+    /// The pane is open and runs `horch worker <role>`. An error means the
+    /// ledger has no harness for the worker: finish would refuse its check,
+    /// so the caller stops the spawn and closes the pane.
     pub fn spawned(
         &self,
         role: &str,
@@ -94,18 +96,19 @@ impl LedgerSpawn {
         harness: &str,
         model: &str,
         effort: Option<&str>,
-    ) {
-        let r = self.store.borrow_mut().immediate(|tx| {
-            workers::set_pane(tx, &self.worker_id, pane)?;
-            workers::set_launch(tx, &self.worker_id, role, harness, model, effort)
-        });
-        if let Err(e) = r {
-            eprintln!("horch spawn: the task ledger did not record pane {pane}: {e:#}");
-        }
+    ) -> Result<()> {
+        self.store
+            .borrow_mut()
+            .immediate(|tx| {
+                workers::set_pane(tx, &self.worker_id, pane)?;
+                workers::set_launch(tx, &self.worker_id, role, harness, model, effort)
+            })
+            .with_context(|| format!("the task ledger did not record the launch in pane {pane}"))?;
         eprintln!(
             "horch spawn: task ledger worker {} (run {}).",
             self.worker_id, self.run.slug
         );
+        Ok(())
     }
 
     /// The spawn failed before the worker ran.

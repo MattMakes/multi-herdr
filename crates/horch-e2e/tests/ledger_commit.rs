@@ -217,6 +217,46 @@ fn paths_outside_the_worktree_or_in_a_nested_repository_are_refused() {
     assert_eq!(head(&h, &wt), before, "nothing is committed");
 }
 
+/// Run 1 SQL statement on the ledger.
+fn ledger_sql(h: &Harness, sql: &str) {
+    let mut store = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    store
+        .immediate(|tx| {
+            tx.execute(sql, ())?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_commit_is_refused_unless_the_task_runs_and_its_worktree_is_open() {
+    for (case, sql, want) in [
+        (
+            "landed",
+            "UPDATE worktrees SET status = 'landed'",
+            "is landed, not open",
+        ),
+        ("gone", "DELETE FROM worktrees", "has no worktree"),
+        (
+            "done",
+            "UPDATE tasks SET status = 'done'",
+            "is done, not running",
+        ),
+    ] {
+        let (h, w, wt) = claimed(&format!("lc-refuse-{case}"));
+        std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+        let before = head(&h, &wt);
+        ledger_sql(&h, sql);
+        let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+        assert!(
+            !o.status.success() && text(&o).contains(want),
+            "{case}: {}",
+            text(&o)
+        );
+        assert_eq!(head(&h, &wt), before, "{case}: nothing is committed");
+    }
+}
+
 #[test]
 fn a_worker_without_a_task_or_with_a_review_task_cannot_commit() {
     let (h, w, wt) = claimed("lc-review");

@@ -8,10 +8,59 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-/// A git binary.
+/// A git binary, maybe pinned to 1 verified linked worktree.
 #[derive(Debug, Clone)]
 pub struct Git {
     bin: PathBuf,
+    pinned: Option<Pinned>,
+}
+
+/// A linked worktree whose `.git` file was verified, and its git dir.
+#[derive(Debug, Clone)]
+struct Pinned {
+    worktree: PathBuf,
+    gitdir: PathBuf,
+    /// The filter drivers the repository config names.
+    filters: Vec<String>,
+}
+
+/// Config pairs on every git call in a worktree the sandbox can write: no
+/// hook, no fsmonitor, no signing program, no git started in a gitlink (it
+/// would read that repository's worker-writable config), and no detached
+/// maintenance after a commit.
+pub const SAFE_CONFIG: [&str; 7] = [
+    "core.hooksPath=/dev/null",
+    "core.fsmonitor=false",
+    "commit.gpgsign=false",
+    "gpg.program=/usr/bin/false",
+    "diff.ignoreSubmodules=all",
+    "submodule.recurse=false",
+    "maintenance.auto=false",
+];
+
+/// The names of the filter drivers in `git config --null --name-only
+/// --get-regexp '^filter\.'` records, sorted, each once. A name can hold dots.
+pub fn filter_driver_names(records: &[Vec<u8>]) -> Vec<String> {
+    let mut names: Vec<String> = records
+        .iter()
+        .filter_map(|r| {
+            let key = String::from_utf8_lossy(r);
+            let (name, _) = key.strip_prefix("filter.")?.rsplit_once('.')?;
+            Some(name.to_string())
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The `-c` pairs that set each driver's `clean` and `process` empty, so
+/// git runs no filter program.
+pub fn filter_overrides(names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .flat_map(|n| [format!("filter.{n}.clean="), format!("filter.{n}.process=")])
+        .collect()
 }
 
 /// What 1 git call printed.
@@ -24,7 +73,78 @@ pub struct Out {
 
 impl Git {
     pub fn new(bin: impl Into<PathBuf>) -> Git {
-        Git { bin: bin.into() }
+        Git {
+            bin: bin.into(),
+            pinned: None,
+        }
+    }
+
+    /// This git, with every call in `worktree` pinned to `gitdir` (from
+    /// [`Git::verify_worktree`]): git never reads the worktree's `.git` file,
+    /// which the sandbox can rewrite after the check, and runs no hook,
+    /// fsmonitor or filter program. Calls in other folders, the main
+    /// checkout's push and merge, keep the repository's hooks.
+    pub fn pinned(&self, worktree: &Path, gitdir: &Path) -> Result<Git> {
+        let mut git = Git {
+            bin: self.bin.clone(),
+            pinned: Some(Pinned {
+                worktree: worktree.to_path_buf(),
+                gitdir: gitdir.to_path_buf(),
+                filters: Vec::new(),
+            }),
+        };
+        let out = git
+            .command(
+                worktree,
+                &[
+                    "config",
+                    "--null",
+                    "--name-only",
+                    "--get-regexp",
+                    r"^filter\.",
+                ],
+            )
+            .output()
+            .context("listing the filter drivers")?;
+        // Exit 1 with no output: no driver is configured.
+        if !out.status.success() && !(out.status.code() == Some(1) && out.stdout.is_empty()) {
+            bail!(
+                "cannot list the filter drivers of the repository config ({})",
+                out.status
+            );
+        }
+        let records: Vec<Vec<u8>> = out
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|r| !r.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect();
+        if let Some(p) = git.pinned.as_mut() {
+            p.filters = filter_driver_names(&records);
+        }
+        Ok(git)
+    }
+
+    /// git `args` in `dir`, pinned when `dir` is the pinned worktree.
+    fn command(&self, dir: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("-C").arg(dir);
+        if let Some(p) = self
+            .pinned
+            .as_ref()
+            .filter(|p| dir.starts_with(&p.worktree))
+        {
+            cmd.env("GIT_DIR", &p.gitdir)
+                .env("GIT_WORK_TREE", &p.worktree);
+            for pair in SAFE_CONFIG {
+                cmd.args(["-c", pair]);
+            }
+            for pair in filter_overrides(&p.filters) {
+                cmd.arg("-c").arg(pair);
+            }
+        }
+        cmd.args(args).env_remove("ANTHROPIC_API_KEY");
+        cmd
     }
 
     /// Run git in `dir`; never fails on a non-zero exit.
@@ -35,19 +155,8 @@ impl Git {
                 .any(|a| *a == "--force" || *a == "-D" || *a == "-f"),
             "the task ledger never forces git"
         );
-        // A worktree's git dir can be worker-written config: never run its
-        // fsmonitor or its hooks outside the sandbox.
-        let out = Command::new(&self.bin)
-            .arg("-C")
-            .arg(dir)
-            .args([
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "core.hooksPath=/dev/null",
-            ])
-            .args(args)
-            .env_remove("ANTHROPIC_API_KEY")
+        let out = self
+            .command(dir, args)
             .output()
             .with_context(|| format!("running {} {}", self.bin.display(), args.join(" ")))?;
         Ok(Out {
@@ -200,18 +309,22 @@ impl Git {
 
 /// The worktree's git dir, from trusted metadata only: the 1 entry under
 /// `<common>/worktrees` whose `gitdir` file names the recorded `worktree`
-/// (`root` is its canonical path). Not its folder name: git appends a number
+/// (`worktree_canonical` is its canonical path, never the main checkout). Not its folder name: git appends a number
 /// when that name is taken. Refused unless the worktree's `.git` is a file
 /// that says exactly `gitdir: <that entry>`.
-pub fn worktree_gitdir(common: &Path, worktree: &Path, root: &Path) -> Result<PathBuf> {
-    let gitdir = worktree_entry(common, worktree, root)?;
-    check_dotgit(root, &gitdir)?;
+pub fn worktree_gitdir(
+    common: &Path,
+    worktree: &Path,
+    worktree_canonical: &Path,
+) -> Result<PathBuf> {
+    let gitdir = worktree_entry(common, worktree, worktree_canonical)?;
+    check_dotgit(worktree_canonical, &gitdir)?;
     Ok(gitdir)
 }
 
 /// The 1 entry under `<common>/worktrees` whose `gitdir` file names the
 /// recorded worktree.
-fn worktree_entry(common: &Path, worktree: &Path, root: &Path) -> Result<PathBuf> {
+fn worktree_entry(common: &Path, worktree: &Path, worktree_canonical: &Path) -> Result<PathBuf> {
     let recorded = format!("{}/.git", worktree.display());
     let names_worktree = |entry: &Path| {
         std::fs::read_to_string(entry.join("gitdir")).is_ok_and(|t| {
@@ -219,7 +332,8 @@ fn worktree_entry(common: &Path, worktree: &Path, root: &Path) -> Result<PathBuf
             // With `worktree.useRelativePaths`, git writes the path relative
             // to the entry; `join` keeps an absolute path as it is.
             t == recorded
-                || std::fs::canonicalize(entry.join(t)).is_ok_and(|p| p == root.join(".git"))
+                || std::fs::canonicalize(entry.join(t))
+                    .is_ok_and(|p| p == worktree_canonical.join(".git"))
         })
     };
     let matches: Vec<PathBuf> = std::fs::read_dir(common.join("worktrees"))
@@ -243,8 +357,8 @@ fn worktree_entry(common: &Path, worktree: &Path, root: &Path) -> Result<PathBuf
 /// Refused unless the worktree's `.git` is a file that says exactly
 /// `gitdir: <gitdir>`, or a relative path from the worktree to it (git
 /// writes that with `worktree.useRelativePaths`).
-fn check_dotgit(root: &Path, gitdir: &Path) -> Result<()> {
-    let dotgit = root.join(".git");
+fn check_dotgit(worktree_canonical: &Path, gitdir: &Path) -> Result<()> {
+    let dotgit = worktree_canonical.join(".git");
     let text = std::fs::symlink_metadata(&dotgit)
         .ok()
         .filter(|m| m.is_file())
@@ -260,9 +374,10 @@ fn check_dotgit(root: &Path, gitdir: &Path) -> Result<()> {
         return Ok(());
     }
     let relative = line.strip_prefix("gitdir: ").map(Path::new);
-    if relative.is_some_and(|r| {
-        r.is_relative() && std::fs::canonicalize(root.join(r)).is_ok_and(|p| p == canonical)
-    }) {
+    if relative
+        .and_then(|r| lexical_join(worktree_canonical, r))
+        .is_some_and(|p| p == canonical)
+    {
         return Ok(());
     }
     bail!(
@@ -270,6 +385,28 @@ fn check_dotgit(root: &Path, gitdir: &Path) -> Result<()> {
         dotgit.display(),
         gitdir.display()
     )
+}
+
+/// `relative` joined to the canonical `base` with no symlink followed: only
+/// leading `..` components, then plain names. The result names a real path
+/// only when it equals a canonical one, which has no symlink in it.
+fn lexical_join(base: &Path, relative: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut out = base.to_path_buf();
+    let mut names = false;
+    for c in relative.components() {
+        match c {
+            Component::ParentDir if !names => {
+                out.pop();
+            }
+            Component::Normal(n) => {
+                names = true;
+                out.push(n);
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 /// The size of a directory tree in bytes, following no links.
