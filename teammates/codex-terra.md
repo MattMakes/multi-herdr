@@ -1,6 +1,6 @@
 ---
 name: codex-terra
-brief_description: Generic Codex worker. Grunt work, exactly as asked. Network on. Writes its worktree only. Commits, never pushes.
+brief_description: Generic Codex worker. Grunt work, exactly as asked. Network on. Sandboxed to its worktree; git add/commit run outside.
 generic: true
 base: fleet-worker
 agent: codex

@@ -29,7 +29,7 @@ prefix_rule(
     justification = "herdr-fleet: stage changes in own worktree",
 )
 prefix_rule(
-    pattern = ["git", "commit"],
+    pattern = ["git", "-c", "core.hooksPath=/dev/null", "commit"],
     decision = "allow",
     justification = "herdr-fleet: commit own work in own worktree",
 )

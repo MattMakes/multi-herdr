@@ -1,6 +1,6 @@
 ---
 name: codex-reviewer
-brief_description: Cross-vendor review on Codex Sol of Claude-built changes. Network on. Writes its worktree only. Commits, never pushes.
+brief_description: Cross-vendor Codex Sol review. Reports, never edits. Network on. Sandboxed to its worktree; git add/commit run outside.
 base: fleet-worker
 agent: codex
 phase: validation

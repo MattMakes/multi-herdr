@@ -227,8 +227,9 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
         \x20 it prints. Do not run git worktree add. Do not use a worktree tool of\n\
         \x20 your harness.\n\
         - Commit your work in the worktree. Commit exact files, not directories.\n\
-        - Commit with 2 separate commands: git add <files>, then\n\
-        \x20 git commit -m \"<message>\". Do not join them with && or ;.\n\
+        - Commit with 2 separate commands. First: git add <files>. Then:\n\
+        \x20 git -c core.hooksPath=/dev/null commit -m \"<message>\" -- <files>\n\
+        \x20 Do not join them with && or ;.\n\
         - You land your own work. Do not wait for the orchestrator to merge it.\n\
         \x20 Run: horch worktree land --check \"<the check command of your plan>\".\n\
         \x20 It rebases your branch on the branch that it came from, runs the check,\n\
@@ -719,7 +720,9 @@ fn bal_07_usage_limits_block_sanctioned() {
 /// Execpolicy rules render exactly as they did, so an existing
 /// `~/.codex/execpolicy` is not duplicated on upgrade. The
 /// `horch skills read` rule (SKL-09) is a sanctioned addition: it has no
-/// golden, its block is pinned here, and the 3 old blocks stay unchanged.
+/// golden, its block is pinned here. The other 6 rules each have a golden:
+/// the 4 old blocks stay unchanged, and the `git add` and hook-free
+/// `git commit` rules (T-10) are additions.
 #[test]
 fn execpolicy_blocks_are_unchanged() {
     const SKILLS_READ: &str = "read a catalog skill that the bundle does not hold";

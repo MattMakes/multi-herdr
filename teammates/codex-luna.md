@@ -1,6 +1,6 @@
 ---
 name: codex-luna
-brief_description: Cheapest Codex worker - commands, renames, lookups, reruns. Network on. Writes its worktree only. Commits, never pushes.
+brief_description: Cheapest Codex worker - commands, renames, reruns. Network on. Sandboxed to its worktree; git add/commit run outside.
 generic: true
 base: fleet-worker
 agent: codex

@@ -1,6 +1,6 @@
 ---
 name: codex-swift-reviewer
-brief_description: Codex Sol Swift review - concurrency, modern SwiftUI. Network on. Writes its worktree only. Commits, never pushes.
+brief_description: Codex Sol Swift review. Reports, never edits. Network on. Sandboxed to its worktree; git add/commit run outside.
 base: fleet-worker
 agent: codex
 phase: validation

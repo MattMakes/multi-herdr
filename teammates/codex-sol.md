@@ -1,6 +1,6 @@
 ---
 name: codex-sol
-brief_description: Generic worker, Codex flavor. Complex implementation work. Network on. Writes its worktree only. Commits, never pushes.
+brief_description: Generic Codex worker. Complex implementation work. Network on. Sandboxed to its worktree; git add/commit run outside.
 generic: true
 base: fleet-worker
 agent: codex
