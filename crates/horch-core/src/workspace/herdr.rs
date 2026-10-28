@@ -769,7 +769,10 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
     // The child starts suspended, so it cannot start a descendant before the
     // job holds it.
     #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0000_0004);
+    std::os::windows::process::CommandExt::creation_flags(
+        &mut command,
+        windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
+    );
     let mut child = command.spawn()?;
     #[cfg(windows)]
     let job = match Job::contain(&child).and_then(|job| resume_main_thread(&child).map(|()| job)) {
