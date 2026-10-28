@@ -111,8 +111,10 @@ impl Herdr {
         }
     }
 
-    /// The same handle, with every call bounded: a herdr that has not
-    /// answered after `timeout` is killed and the call fails.
+    /// The same handle, with the calls that go through `output` and `json`
+    /// bounded: a herdr that has not answered after `timeout` is killed and
+    /// the call fails. `server_reachable`, `wait_output` and
+    /// `integration_status` are not bounded.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
@@ -742,11 +744,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_herdr_that_prints_more_than_the_cap_fails_the_call() {
-        let (dir, script) = script_in("exec head -c 3000000 /dev/zero");
-        let started = Instant::now();
-        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_secs(5));
-        assert!(herdr.pane_list("w1").is_err());
-        assert!(started.elapsed() < Duration::from_secs(10));
+        for stream in ["", ">&2"] {
+            let (_dir, script) = script_in(&format!("head -c 3000000 /dev/zero {stream}"));
+            let started = Instant::now();
+            let error = output_within(Command::new(&script), Duration::from_secs(5)).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{stream}");
+            assert!(error.to_string().contains("more than"), "{error}");
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
     }
 
     #[cfg(unix)]
