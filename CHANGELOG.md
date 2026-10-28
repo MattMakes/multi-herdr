@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.3.0 - 2026-10-28
+
 - The task ledger: `horch ledger` is now a queue the orchestrator and its
   workers share (`~/.horch/ledger.sqlite3`). The orchestrator queues tickets
   (`run new`, `add-map`, `plan-workers`) and spawns workers with no task;
