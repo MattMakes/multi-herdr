@@ -749,6 +749,9 @@ plus `-a never` and `--search`:
   conflict it sends `BLOCKED:`. Route other commit and worktree work to a
   Claude worker. `horch ledger commit` needs git 2.41 or later, and
   `horch doctor` warns when it is missing.
+- The Codex orchestrator has the same limits: it runs no git write and
+  cannot run `horch worktree land`, the gate in `.worktrees/_gate` or a
+  push. It spawns a Claude worker for each of those steps.
 - Everything outside it is read-only, `/tmp` and the system temp dir too. The
   one extra writable folder is horch's state dir, where `horch note`,
   `horch done` and `horch tell` write, and where the pane's own `TMPDIR`

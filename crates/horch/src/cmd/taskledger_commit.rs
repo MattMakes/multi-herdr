@@ -22,6 +22,7 @@ use clap::Args;
 use horch_core::competition::preflight::parse_git_version;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, WorktreeRow};
+use horch_core::taskledger::git::worktree_gitdir;
 use horch_core::taskledger::model::{
     EventKind, ProgressSource, TaskStatus, WorkerStatus, WorktreeStatus,
 };
@@ -552,11 +553,13 @@ fn refuse_required_filters(git: &Trusted, names: &[OsString]) -> Result<()> {
     Ok(())
 }
 
-/// Refused when the staging git itself would apply a filter to a path.
+/// Refused when the staging command selects a filter for a path.
 /// Attributes from the empty tree hide `.gitattributes` files, not
-/// `$GIT_DIR/info/attributes` or `core.attributesFile`, and a filter's
-/// program can be a worktree script that the worker wrote. So the check
-/// uses the exact staging command, and refuses every filter it selects.
+/// `$GIT_DIR/info/attributes` or `core.attributesFile`. git add runs no
+/// filter ([`Trusted::filter_drivers`] sets each driver empty), so it would
+/// store the raw content where the repository expects filtered content.
+/// The 2 guards are separate: this one refuses a selected filter, and the
+/// overrides keep a path that appears after this check unfiltered.
 fn refuse_staging_filters(git: &Trusted, names: &[OsString]) -> Result<()> {
     if names.is_empty() {
         return Ok(());
@@ -567,9 +570,9 @@ fn refuse_staging_filters(git: &Trusted, names: &[OsString]) -> Result<()> {
         .collect();
     if !selected.is_empty() {
         bail!(
-            "refused: git add would run a filter on {}, selected by $GIT_DIR/info/attributes \
-             or core.attributesFile. horch ledger commit runs no filter: ask the orchestrator \
-             to remove that attribute, or for a Claude worker to commit these paths.",
+            "refused: {} selected by $GIT_DIR/info/attributes or core.attributesFile. \
+             horch ledger commit runs no filter, so git would store the raw content: ask the \
+             orchestrator to remove that attribute, or for a Claude worker to commit these paths.",
             selected.join(", ")
         );
     }
@@ -998,12 +1001,10 @@ fn read_records(mut reader: impl BufRead, max: usize) -> Result<(Vec<Vec<u8>>, b
     }
 }
 
-/// The worktree's git dir, from trusted metadata only: the 1 entry under
-/// the common dir (from `git rev-parse` in the main checkout the ledger
-/// recorded) whose `gitdir` file names the recorded worktree. Not its folder
-/// name: git appends a number when that name is taken. Refused unless the
-/// worktree's `.git` is a file that says exactly `gitdir: <that entry>`.
-/// Also returns the empty tree id of the repository's object format.
+/// The worktree's git dir by the shared rule
+/// ([`horch_core::taskledger::git::worktree_gitdir`]), with the common dir
+/// from `git rev-parse` in the main checkout the ledger recorded. Also
+/// returns the empty tree id of the repository's object format.
 fn trusted_gitdir(
     bin: &Path,
     repo_root: &Path,
@@ -1011,8 +1012,7 @@ fn trusted_gitdir(
     root: &Path,
 ) -> Result<(PathBuf, &'static str)> {
     let (common, tree) = repo_metadata(bin, repo_root)?;
-    let gitdir = worktree_entry(&common, worktree, root)?;
-    check_dotgit(root, &gitdir)?;
+    let gitdir = worktree_gitdir(&common, worktree, root)?;
     Ok((gitdir, tree))
 }
 
@@ -1046,69 +1046,6 @@ fn repo_metadata(bin: &Path, repo_root: &Path) -> Result<(PathBuf, &'static str)
         ),
     };
     Ok((common, tree))
-}
-
-/// The 1 entry under `<common>/worktrees` whose `gitdir` file names the
-/// recorded worktree.
-fn worktree_entry(common: &Path, worktree: &Path, root: &Path) -> Result<PathBuf> {
-    let recorded = format!("{}/.git", worktree.display());
-    let names_worktree = |entry: &Path| {
-        std::fs::read_to_string(entry.join("gitdir")).is_ok_and(|t| {
-            let t = t.trim();
-            // With `worktree.useRelativePaths`, git writes the path relative
-            // to the entry; `join` keeps an absolute path as it is.
-            t == recorded
-                || std::fs::canonicalize(entry.join(t)).is_ok_and(|p| p == root.join(".git"))
-        })
-    };
-    let matches: Vec<PathBuf> = std::fs::read_dir(common.join("worktrees"))
-        .map(|rd| {
-            rd.filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|e| names_worktree(e))
-                .collect()
-        })
-        .unwrap_or_default();
-    let [gitdir] = matches.as_slice() else {
-        bail!(
-            "refused: {} entries under {} name the worktree {}; expected exactly 1",
-            matches.len(),
-            common.join("worktrees").display(),
-            worktree.display()
-        );
-    };
-    Ok(gitdir.clone())
-}
-
-/// Refused unless the worktree's `.git` is a file that says exactly
-/// `gitdir: <gitdir>`, or a relative path from the worktree to it (git
-/// writes that with `worktree.useRelativePaths`).
-fn check_dotgit(root: &Path, gitdir: &Path) -> Result<()> {
-    let dotgit = root.join(".git");
-    let text = std::fs::symlink_metadata(&dotgit)
-        .ok()
-        .filter(|m| m.is_file())
-        .and_then(|_| std::fs::read_to_string(&dotgit).ok())
-        .unwrap_or_default();
-    let line = text.strip_suffix('\n').unwrap_or(&text);
-    // git may have written the canonical or the given form of the path.
-    let canonical = std::fs::canonicalize(gitdir).unwrap_or_else(|_| gitdir.to_path_buf());
-    if [gitdir, &canonical]
-        .iter()
-        .any(|p| line == format!("gitdir: {}", p.display()))
-    {
-        return Ok(());
-    }
-    let relative = line.strip_prefix("gitdir: ").map(Path::new);
-    if relative.is_some_and(|r| {
-        r.is_relative() && std::fs::canonicalize(root.join(r)).is_ok_and(|p| p == canonical)
-    }) {
-        return Ok(());
-    }
-    bail!(
-        "refused: {} was changed; it must say exactly: gitdir: {}",
-        dotgit.display(),
-        gitdir.display()
-    )
 }
 
 /// Absolute git paths `horch ledger commit` tries in order when
@@ -1305,8 +1242,9 @@ impl Trusted {
     }
 
     /// The names of the filter drivers the repository config defines. The
-    /// checks refuse a selected filter before git add, and these overrides
-    /// keep one from running if the worktree changes after the checks.
+    /// checks ([`refuse_staging_filters`]) refuse a selected filter before
+    /// git add, and these overrides keep one from running if the worktree
+    /// changes after the checks.
     fn filter_drivers(&self) -> Result<Vec<String>> {
         let args = [
             "config".into(),

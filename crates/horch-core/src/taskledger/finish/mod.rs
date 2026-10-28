@@ -442,6 +442,15 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
             rows.iter()
                 .any(|r| r.seq == ls && StepStatus::parse(&r.status).is_ok_and(|s| s.is_through()))
         });
+        // Before any other git in the worktree, at each step: a changed
+        // `.git` file points git at config the worker wrote.
+        if let Err(e) = verify_worktree(&tools.git, wt.as_ref(), &dir, &root) {
+            let outcome = Outcome::fail("refused", None, &format!("{e:#}"));
+            record(store, &task, &w, seq, *name, &outcome)?;
+            stopped_at = Some(name.as_str().to_string());
+            message = format!("{}: {}", about(name.as_str()), outcome.note);
+            break;
+        }
         let through = StepStatus::parse(&row.status)?.is_through();
         let before_land = land_seq.is_some_and(|ls| seq < ls);
         // A passed step stands while the tree it judged is the tree now,
@@ -509,6 +518,18 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         message,
         queued_reviews,
     })
+}
+
+/// The worktree's `.git` file names its git dir under the main checkout's
+/// common dir; nothing to check when the work is in the shared checkout or
+/// the worktree is gone.
+fn verify_worktree(git: &Git, wt: Option<&WorktreeRow>, dir: &Path, root: &Path) -> Result<()> {
+    match wt {
+        Some(wt) if dir != root => git
+            .verify_worktree(Path::new(&wt.repo_root), dir)
+            .map(|_| ()),
+        _ => Ok(()),
+    }
 }
 
 fn run_step(store: &mut Store, cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {

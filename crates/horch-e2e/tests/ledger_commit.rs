@@ -106,6 +106,13 @@ fn claimed_in(mut h: Harness, before: impl FnOnce(&Harness)) -> (Harness, String
     let w = ok(&h, &["ledger", "worker", "new", "--persona", "opus"])
         .trim()
         .to_string();
+    // What spawn records: finish refuses a check for a worker with no harness.
+    let mut store = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    store
+        .immediate(|tx| {
+            horch_core::taskledger::workers::set_launch(tx, &w, "opus", "claude", "m", None)
+        })
+        .unwrap();
     ok_as(&h, &w, &["ledger", "claim"]);
     before(&h);
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feature"]);
@@ -1309,7 +1316,7 @@ fn a_filter_from_info_attributes_or_core_attributes_file_never_runs() {
         let before = head(&h, &wt);
         let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", file]);
         assert!(
-            !o.status.success() && text(&o).contains(&format!("filter on {file} (filter=evil)")),
+            !o.status.success() && text(&o).contains(&format!("{file} (filter=evil) selected by")),
             "{file}: {}",
             text(&o)
         );
@@ -1352,35 +1359,42 @@ fn a_checked_file_that_becomes_a_folder_is_never_committed() {
 
 #[test]
 fn a_filter_never_runs_on_a_file_that_appears_after_the_checks() {
-    let (h, w, wt) = claimed("lc-filter-race");
-    let marker = h.root.join("filter-ran");
-    let program = wt.join("clean.sh");
-    script(&program, &format!("touch '{}'; cat", marker.display()));
-    let project = h.project.clone();
-    let clean = program.to_string_lossy().into_owned();
-    git_in(&h, &project, &["config", "filter.evil.clean", &clean]);
-    // `d` itself has no filter, so the checks pass; `d/x` would.
-    let info = project.join(".git/info");
-    std::fs::create_dir_all(&info).unwrap();
-    std::fs::write(info.join("attributes"), "d/* filter=evil\n").unwrap();
-    std::fs::write(wt.join("d"), "d\n").unwrap();
-    git_in(&h, &wt, &["-c", "filter.evil.clean=cat", "add", "d"]);
-    git_in(&h, &wt, &["commit", "--quiet", "--no-verify", "-m", "d"]);
-    std::fs::write(wt.join("d"), "changed\n").unwrap();
-    let d = wt.join("d");
-    let swap = format!(
-        "rm -f '{d}'; mkdir '{d}'; echo x > '{d}/x'",
-        d = d.display()
-    );
-    let fake = git_with_hook(&h, "racing-git", "check-attr", &swap);
-    let before = head(&h, &wt);
-    let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "d"]);
-    cmd.env("HORCH_WORKER_ID", &w)
-        .env("HORCH_GIT_BIN", &fake)
-        .current_dir(&wt);
-    let o = cmd.output().unwrap();
-    assert!(d.is_dir(), "the race ran");
-    assert!(!o.status.success(), "{}", text(&o));
-    assert_eq!(head(&h, &wt), before, "nothing is committed");
-    assert!(!marker.exists(), "the filter must not run");
+    // A `process` filter is a long-running program: its override is pinned too.
+    for key in ["clean", "process"] {
+        let (h, w, wt) = claimed(&format!("lc-filter-race-{key}"));
+        let marker = h.root.join("filter-ran");
+        let program = wt.join("clean.sh");
+        script(&program, &format!("touch '{}'; cat", marker.display()));
+        let project = h.project.clone();
+        let clean = program.to_string_lossy().into_owned();
+        git_in(
+            &h,
+            &project,
+            &["config", &format!("filter.evil.{key}"), &clean],
+        );
+        // `d` itself has no filter, so the checks pass; `d/x` would.
+        let info = project.join(".git/info");
+        std::fs::create_dir_all(&info).unwrap();
+        std::fs::write(info.join("attributes"), "d/* filter=evil\n").unwrap();
+        std::fs::write(wt.join("d"), "d\n").unwrap();
+        git_in(&h, &wt, &["-c", "filter.evil.clean=cat", "add", "d"]);
+        git_in(&h, &wt, &["commit", "--quiet", "--no-verify", "-m", "d"]);
+        std::fs::write(wt.join("d"), "changed\n").unwrap();
+        let d = wt.join("d");
+        let swap = format!(
+            "rm -f '{d}'; mkdir '{d}'; echo x > '{d}/x'",
+            d = d.display()
+        );
+        let fake = git_with_hook(&h, "racing-git", "check-attr", &swap);
+        let before = head(&h, &wt);
+        let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "d"]);
+        cmd.env("HORCH_WORKER_ID", &w)
+            .env("HORCH_GIT_BIN", &fake)
+            .current_dir(&wt);
+        let o = cmd.output().unwrap();
+        assert!(d.is_dir(), "the race ran");
+        assert!(!o.status.success(), "{}", text(&o));
+        assert_eq!(head(&h, &wt), before, "nothing is committed");
+        assert!(!marker.exists(), "the {key} filter must not run");
+    }
 }

@@ -23,9 +23,13 @@ pub const LAND_LOCK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// `codex sandbox` its pane has: the committed code is the worker's, and
 /// outside a sandbox it would run with the operator's rights. The harness
 /// comes from the ledger's worker row, which spawn wrote, never from the
-/// worker's environment.
+/// worker's environment. A row with no harness fails: the check would run
+/// unsandboxed for a worker that may be on Codex.
 fn run_check(cx: &Ctx<'_>, dir: &Path, command: &str, log: &Path) -> Result<bool> {
-    let sandboxed = cx.worker.harness.as_deref() == Some(HarnessKind::Codex.as_str());
+    let sandboxed = match cx.worker.harness.as_deref() {
+        Some(h) => h == HarnessKind::Codex.as_str(),
+        None => bail!("the ledger does not record this worker's harness"),
+    };
     let mut cmd = if sandboxed {
         // /tmp is read-only in the sandbox: a private temp dir in the state
         // root, as a pane has.

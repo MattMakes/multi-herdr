@@ -19,10 +19,15 @@
   `HORCH_NO_UPDATE=1` skips it; a failed update starts the fleet on the
   version you have.
 - Codex workers and the Codex orchestrator can write anywhere in the folder
-  they start in, `.git` included, so they can commit and make worktrees.
-  Outside that folder everything is read-only, `/tmp` too, and a worker can
-  stop only processes it started. They now have the network and live web
-  search. `--approve-for-me` is gone: a command the sandbox refuses fails.
+  they start in, but `.git`, `.codex` and `.aws` are read-only. A Codex
+  worker commits only with the new `horch ledger commit`, in a claimed ledger
+  task that has a worktree, and `horch ledger finish` lands that work.
+  `horch ledger commit` needs git 2.41 or later. Codex workers and the Codex
+  orchestrator cannot run `horch worktree new` or `horch worktree land`: give
+  that work, and every other git write, to a Claude worker. Outside the
+  folder everything is read-only, `/tmp` too, and a worker can stop only
+  processes it started. They now have the network and live web search.
+  `--approve-for-me` is gone: a command the sandbox refuses fails.
 
 ## v0.3.0 - 2026-10-28
 

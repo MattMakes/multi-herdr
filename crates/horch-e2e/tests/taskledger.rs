@@ -89,7 +89,16 @@ fn wait_for<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     panic!("timed out waiting for {what}");
 }
 
+/// A worker row with the harness spawn records: finish refuses a check for
+/// a worker with no harness.
 fn worker_new(h: &Harness, persona: &str) -> String {
+    let w = bare_worker_new(h, persona);
+    record_launch(h, &w, "claude");
+    w
+}
+
+/// A worker row as `horch ledger worker new` writes it: no harness.
+fn bare_worker_new(h: &Harness, persona: &str) -> String {
     ok(h, &["ledger", "worker", "new", "--persona", persona])
         .trim()
         .to_string()
@@ -1647,6 +1656,159 @@ fn first_step_log(r: &Value) -> String {
         .as_str()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default()
+}
+
+/// A world with 1 claimed task whose check is `check`, held by a worker
+/// that `make_worker` makes; returns the worker and its worktree.
+fn claimed_with_check(
+    h: &Harness,
+    check: &str,
+    make_worker: fn(&Harness, &str) -> String,
+) -> (String, PathBuf) {
+    ok(h, &["ledger", "run", "new", "alpha"]);
+    let p = ticket(h, "01-a", "# 01: Feature\n");
+    ok(
+        h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+            "--check",
+            check,
+        ],
+    );
+    let w = make_worker(h, "opus");
+    ok_as(h, &w, &["ledger", "claim"]);
+    let wt = ok_as(h, &w, &["ledger", "worktree", "new", "feature"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    (w, path)
+}
+
+#[test]
+fn a_check_for_a_worker_with_no_harness_fails_and_never_runs() {
+    let h = finish_world("tl-no-harness");
+    let (w, wt) = claimed_with_check(&h, ": > ran.txt", bare_worker_new);
+    let (_, r) = finish_json(&h, &w);
+    assert_eq!(r["stopped_at"], "check", "{r}");
+    assert_eq!(r["steps"][0]["status"], "failed", "{r}");
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .contains("the ledger does not record this worker's harness"),
+        "{r}"
+    );
+    assert!(!wt.join("ran.txt").exists(), "the check never runs");
+}
+
+#[test]
+fn finish_refuses_a_worktree_whose_git_file_points_at_a_planted_git_dir() {
+    let h = finish_world("tl-planted-gitdir");
+    let (w, wt) = claimed_with_check(&h, "true", worker_new);
+    // What a Codex pane in the main checkout can do: a git dir of its own,
+    // with an fsmonitor that writes a marker outside the sandbox.
+    let marker = h.root.join("fsmonitor-ran");
+    let monitor = h.root.join("monitor.sh");
+    std::fs::write(&monitor, format!("#!/bin/sh\n: > '{}'\n", marker.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&monitor, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let evil = h.root.join("evil.git");
+    let root = h.root.clone();
+    git_in(
+        &h,
+        &root,
+        &["init", "--quiet", "--bare", &evil.to_string_lossy()],
+    );
+    let gd = format!("--git-dir={}", evil.display());
+    git_in(&h, &root, &[&gd, "config", "core.bare", "false"]);
+    git_in(
+        &h,
+        &root,
+        &[&gd, "config", "core.fsmonitor", &monitor.to_string_lossy()],
+    );
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", evil.display())).unwrap();
+
+    let (_, r) = finish_json(&h, &w);
+    assert!(!marker.exists(), "the planted fsmonitor never runs");
+    assert_eq!(r["stopped_at"], "check", "{r}");
+    assert_eq!(r["steps"][0]["verdict"], "refused", "{r}");
+    assert!(
+        r["message"].as_str().unwrap().contains("was changed"),
+        "{r}"
+    );
+}
+
+/// A fake `codex`: it logs its arguments and `TMPDIR`, then runs the
+/// program after `--`. It tests the sandbox call where no real codex is.
+const FAKE_CODEX: &str = r#"#!/bin/sh
+printf 'TMPDIR=%s ARGS=%s\n' "$TMPDIR" "$*" >> "$FAKE_CODEX_LOG"
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+"#;
+
+#[test]
+fn a_codex_held_check_and_recheck_call_codex_sandbox_and_a_claude_held_one_does_not() {
+    // 3 calls: the check step, the recheck step, and land's check after
+    // the rebase.
+    for (harness, calls) in [("codex", 3), ("claude", 0)] {
+        let mut h = finish_world(&format!("tl-fake-codex-{harness}"));
+        let codex = h.write_bin("codex", FAKE_CODEX.as_bytes());
+        let log = h.root.join("codex.log");
+        h.set("HORCH_CODEX_BIN", codex.to_string_lossy());
+        h.set("FAKE_CODEX_LOG", log.to_string_lossy());
+        ok(
+            &h,
+            &[
+                "ledger",
+                "run",
+                "new",
+                "alpha",
+                "--steps",
+                "check,recheck,land",
+            ],
+        );
+        let p = ticket(&h, "01-a", "# 01: Feature\n");
+        ok(
+            &h,
+            &[
+                "ledger",
+                "add",
+                "--file",
+                &p.to_string_lossy(),
+                "--primary",
+                "opus",
+                "--check",
+                "true",
+            ],
+        );
+        let w = bare_worker_new(&h, "opus");
+        record_launch(&h, &w, harness);
+        ok_as(&h, &w, &["ledger", "claim"]);
+        let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feature"]);
+        let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+        let (code, r) = finish_json(&h, &w);
+        assert_eq!(code, Some(0), "{harness}: {r}");
+        let lines: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(lines.len(), calls, "{harness}: {lines:?}");
+        let tmp = h.root.join(format!("state/tmp/check-{w}"));
+        let args = format!("ARGS=sandbox -P fleet_write -C {} ", path.display());
+        for line in &lines {
+            let tmp_ok = line.starts_with(&format!("TMPDIR={} ", tmp.display()));
+            assert!(tmp_ok && line.contains(&args), "{harness}: {line}");
+            assert!(line.ends_with(" -- /bin/sh -c true"), "{harness}: {line}");
+        }
+        if calls > 0 {
+            assert!(first_step_log(&r).contains("(codex sandbox)"), "{r}");
+        }
+    }
 }
 
 #[test]
