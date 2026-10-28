@@ -1043,9 +1043,21 @@ fn exit_code(code: Option<i32>) -> ExitCode {
     }
 }
 
+/// Called with the agent child's PID right after it starts.
+type AgentObserver = Box<dyn Fn(u32) + Send + Sync>;
+
+static AGENT_OBSERVER: std::sync::Mutex<Option<AgentObserver>> = std::sync::Mutex::new(None);
+
+/// Have the next agent launches in this process report the child's PID to
+/// `f` (the worker records it in the task ledger: the only way to stop the
+/// agent is by that PID and its start time).
+pub fn observe_agent_start(f: impl Fn(u32) + Send + Sync + 'static) {
+    *AGENT_OBSERVER.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(f));
+}
+
 /// Run the agent as a child process and return its exit status.
 fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
-    let status = cmd.status().map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             anyhow::anyhow!(
                 "agent CLI '{name}' not found on PATH. Set HORCH_CLAUDE_BIN or \
@@ -1055,6 +1067,16 @@ fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
             anyhow::Error::new(e).context(format!("launching {name}"))
         }
     })?;
+    if let Some(f) = AGENT_OBSERVER
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+    {
+        f(child.id());
+    }
+    let status = child
+        .wait()
+        .with_context(|| format!("waiting for {name}"))?;
     Ok(status.code())
 }
 

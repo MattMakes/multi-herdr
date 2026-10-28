@@ -24,6 +24,32 @@ The operator starts the orchestrator with no task. Its briefing ends with
 and waits for the operator's first message. A worker always gets its task at
 spawn.
 
+## Task ledger runs
+
+A run can be driven by the task ledger (`docs/specs/task-ledger.md`). Then
+the orchestrator only queues work, and workers claim it:
+
+| step | who | command |
+|---|---|---|
+| create the run and its run branch | orchestrator | `horch ledger run new <slug>` |
+| queue the tickets | orchestrator | `horch ledger add-map <MAP.md>` or `horch ledger add --file <ticket> --primary <persona>` |
+| spawn exactly the workers needed | orchestrator | `horch ledger plan-workers`, then `horch spawn <persona>` with no task |
+| take a task | worker | `horch ledger claim` |
+| record milestones | worker | `horch ledger progress "<text>"` |
+| finish: check, code-sweep, complexity-sweep, recheck, land, pr, cleanup | worker | `horch ledger finish` (again after each fix) |
+| close the task | worker | `horch ledger done "<summary>"` |
+| read the board | anyone | `horch ledger status` (exit 0 = all done) |
+
+`horch worker` records the supervisor's and the agent's PIDs and checks in
+every 30 s. A watchdog checks every working worker every 10 minutes and
+reaps a worker whose process is gone or that shows no progress for 3
+checks; its task is queued again first, and the replacement
+(`horch spawn <persona> --replaces <worker>`) gets the dead worker's
+transcript path and worktree. `horch ledger stop` is the only way to stop a
+worker. `horch ledger unfinished` lists past work that never landed,
+including the history imported from the old JSON ledgers
+(`horch ledger import`).
+
 ## Plan files
 
 `ai_docs/` is local scratch. It is not in git (no commit holds it), so a

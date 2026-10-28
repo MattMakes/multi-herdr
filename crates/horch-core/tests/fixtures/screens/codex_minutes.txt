@@ -1,0 +1,16 @@
+• Ran cargo test -p horch-core --lib taskledger
+  └ running 24 tests
+    test taskledger::store::tests::open_creates_schema ... ok
+    test taskledger::tasks::tests::claim_is_exclusive ... ok
+    … +18 lines
+    test result: ok. 24 passed; 0 failed; 0 ignored
+
+• Edited crates/horch-core/src/taskledger/tasks.rs (+12 -3)
+    41     pub fn claim(&self, worker: &WorkerId) -> Result<Option<Task>> {
+    42 +       let now = self.clock.now();
+
+• Working (12m 30s • esc to interrupt)
+
+› Ask Codex to do anything
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit   61% context left

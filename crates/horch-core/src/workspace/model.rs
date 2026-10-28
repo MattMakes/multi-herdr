@@ -36,6 +36,10 @@ pub struct Pane {
     /// typed into it then is lost.
     #[serde(default)]
     pub agent_status: Option<String>,
+    /// herdr's counter of this pane's state changes, when it reports one:
+    /// a change between 2 watchdog checks is progress.
+    #[serde(default)]
+    pub state_change_seq: Option<i64>,
 }
 
 /// True when herdr's `agent_status` says the agent waits at its prompt for

@@ -78,6 +78,14 @@ pub struct Brief {
     /// nobody.
     #[serde(default = "report_to_orchestrator")]
     pub report_to: ReportTarget,
+    /// This worker's row in the task ledger, when the project has an active
+    /// run. The worker records its PIDs, checkins and session there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    /// The task ledger file, when the spawner overrode it
+    /// (`HORCH_LEDGER_DB`). A pane does not inherit the variable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_db: Option<String>,
 }
 
 fn report_to_orchestrator() -> ReportTarget {
@@ -151,6 +159,12 @@ impl Brief {
         .collect();
         if let Some(dir) = &self.state_dir {
             out.push(("HORCH_STATE_DIR".into(), dir.clone()));
+        }
+        if let Some(id) = &self.worker_id {
+            out.push(("HORCH_WORKER_ID".into(), id.clone()));
+        }
+        if let Some(db) = &self.ledger_db {
+            out.push(("HORCH_LEDGER_DB".into(), db.clone()));
         }
         // The agent runs `horch spawn` and `horch done` from inside this pane;
         // they must resolve the same roster this worker was briefed from.
@@ -226,6 +240,8 @@ mod tests {
             workdir: None,
             bin_overrides: BinOverrides::default(),
             report_to: crate::execution::ReportTarget::Orchestrator,
+            worker_id: None,
+            ledger_db: None,
         }
     }
 

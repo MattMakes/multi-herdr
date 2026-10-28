@@ -310,12 +310,9 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        let _ = os;
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-            .unwrap_or(false)
+        // A process handle, not `tasklist`: no spawn, and no text match that
+        // could find the pid inside another number.
+        crate::procid::windows_running(os)
     }
     #[cfg(not(any(unix, windows)))]
     {

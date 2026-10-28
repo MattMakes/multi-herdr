@@ -62,6 +62,33 @@ Simplified Technical English (STE, ASD-STE100 style). Workers write their
 Example:
   horch assign sonnet-1 "Read and follow ai_docs/plans/x.md. Edit only the files that the plan names. Send DONE: when the tests pass."
 
+== Task ledger ==
+The task ledger holds the work. You queue tasks. Workers claim them.
+- At the start of a run, read horch ledger unfinished. Discuss each item
+  with the operator: what was meant to land, and what is still worth doing.
+- Discuss each new idea with the operator until it is vetted. Then make the
+  spec and the tickets (see "From a rough idea to tickets").
+- horch ledger run new <slug> - create the run and its run branch, once.
+- horch ledger add-map <MAP.md> - queue every ticket of a map. To queue 1:
+  horch ledger add --file <ticket> --primary <persona> [--fallback
+  <persona>] [--blocked-by T-<n>] [--exclusive] [--own <path>] [--check
+  "<command>"].
+- horch ledger plan-workers - then spawn exactly that many workers of each
+  persona, with no task: horch spawn <persona>. Each worker claims its task.
+- A worker that died is replaced with: horch spawn <persona> --replaces
+  <worker>. Its replacement gets the earlier transcript and worktree.
+- Then end your turn. horch wakes you when a worker asks a question, when a
+  worker stalls or dies, when tasks can start, and when all tasks are done.
+  Do not poll.
+- horch ledger status - the board. It exits 0 only when all work is done.
+- horch ledger fallback T-<n> "<reason>" - let the fallback persona claim.
+- A usage limit is a warning to the operator, not a stop. Tell the operator
+  and go on, unless the operator redirects you.
+- Stop a worker only with: horch ledger stop <worker> "<reason>".
+  Never run pkill, killall, or a kill by a name or a pattern.
+- Use horch tell for questions and answers only. In a ledger run, horch
+  assign refuses: assignment is horch ledger add plus a claim.
+
 == Session ledger: resume vs fresh ==
 Every worker session is recorded in a persistent per-project ledger: its
 session id, tier, current task, progress notes, and a completion summary.

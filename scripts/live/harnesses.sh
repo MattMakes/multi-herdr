@@ -246,14 +246,25 @@ else
   sessions() {
     (cd "$REPO" && opencode session list --format json 2>/dev/null) | python3 -c 'import json,sys; t=sys.stdin.read().strip() or "[]"; [print(r["id"]) for r in json.loads(t) if r.get("directory")==sys.argv[1]]' "$REPO"
   }
-  # tui_stop <args...>: stop the TUI that tui started with these args.
-  # `script` ends first and leaves opencode running, so match opencode's argv.
-  tui_stop() { pkill -f "opencode --pure -m $OC_MODEL $*" 2>/dev/null || true; }
-  # tui <seconds> <args...>: the TUI in a pseudo-terminal for <seconds>, then stopped.
+  # tui <seconds> <args...>: the TUI in a pseudo-terminal for <seconds>, then
+  # stopped. `script` ends first and leaves opencode running, so the PID of
+  # opencode (the 1 child of this `script`) is read while `script` runs, and
+  # that 1 PID is stopped. Never stop a process by a name or a pattern
+  # (docs/adr/0002).
   tui() {
     local s="$1"; shift
-    (cd "$REPO" && clean "$s" script -q /dev/null opencode --pure -m "$OC_MODEL" "$@" </dev/null >/dev/null 2>&1) || true
-    tui_stop "$@"
+    local sp oc=""
+    cd "$REPO" || return 0
+    clean "$s" script -q /dev/null opencode --pure -m "$OC_MODEL" "$@" </dev/null >/dev/null 2>&1 &
+    sp=$!
+    cd - >/dev/null || true
+    for _ in $(seq 1 50); do
+      oc="$(pgrep -P "$sp" 2>/dev/null | head -1)"
+      [ -n "$oc" ] && break
+      sleep 0.2
+    done
+    wait "$sp" 2>/dev/null || true
+    if [ -n "$oc" ]; then kill "$oc" 2>/dev/null || true; fi
   }
 
   (cd "$REPO" && clean 120 opencode run --pure -m "$OC_MODEL" "Reply with the single word PONG." </dev/null >"$SCR/opencode-run.log" 2>&1) || true
@@ -322,7 +333,10 @@ else
   for _ in $(seq 1 30); do [ -S "$PSOCK" ] && break; sleep 1; done
   PST="$(TMPDIR="$PDIR/" prime-agent status --json 2>&1 || true)"
   PSTOP="$(TMPDIR="$PDIR/" clean 30 prime-agent shutdown --force --json 2>&1 || true)"
-  pkill -f -- "--daemon-socket $PSOCK" 2>/dev/null || true
+  # A daemon the scoped shutdown left: its PID is in the scoped status above.
+  # Stop that 1 PID, never a pattern (docs/adr/0002).
+  PDPID="$(printf '%s' "$PST" | sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' | head -1)"
+  if [ -n "$PDPID" ]; then kill "$PDPID" 2>/dev/null || true; fi
   kill "$PTUI" 2>/dev/null || true
   wait "$PTUI" 2>/dev/null || true
   if ! [ -S "$PSOCK" ]; then

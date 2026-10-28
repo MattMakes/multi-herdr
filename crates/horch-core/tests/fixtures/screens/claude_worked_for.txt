@@ -1,0 +1,12 @@
+⏺ Bash(cargo test -p horch-core)
+  ⎿  test result: ok. 312 passed; 0 failed; 2 ignored
+
+⏺ All 312 tests pass. The claim query now stamps `claimed_at` from the ledger
+  clock, and an expired claim is released on the next poll.
+
+✻ Worked for 12m 30s
+
+╭─────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                           │
+╰─────────────────────────────────────────────────────────────────────────────╯
+  ⏵⏵ accept edits on (shift+tab to cycle)

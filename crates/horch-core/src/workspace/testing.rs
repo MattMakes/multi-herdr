@@ -117,6 +117,7 @@ impl FakeWorkspace {
             agent_session: None,
             agent,
             agent_status,
+            state_change_seq: None,
         }
     }
 

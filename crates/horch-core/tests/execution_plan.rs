@@ -763,6 +763,7 @@ impl World {
             workspace: &self.fake,
             mailbox: &self.mailbox,
             tile: &tile,
+            ledger_worker: None,
         };
         let out = service.spawn(p, None).map(|o| o.pane);
         (out, tiled.into_inner())
@@ -963,6 +964,7 @@ fn arc_16_mark_starting_keeps_what_the_worker_recorded() {
             workspace: &fast,
             mailbox: &w.mailbox,
             tile: &|_, _| {},
+            ledger_worker: None,
         };
         let pane = service
             .spawn(plan(&req, "all-ok", None).unwrap(), None)
@@ -1094,6 +1096,8 @@ fn brief(record_id: &str) -> Brief {
         workdir: None,
         bin_overrides: Default::default(),
         report_to: horch_core::execution::ReportTarget::Orchestrator,
+        worker_id: None,
+        ledger_db: None,
     }
 }
 

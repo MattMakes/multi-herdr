@@ -56,6 +56,7 @@ pub mod roster;
 pub mod routing;
 pub mod runtime;
 pub mod skills;
+pub mod taskledger;
 pub mod teacher;
 pub mod telemetry;
 pub mod usage;

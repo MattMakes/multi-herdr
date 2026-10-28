@@ -53,3 +53,8 @@ prefix_rule(
     decision = "allow",
     justification = "herdr-fleet: switch a read-only Codex worker to write and back",
 )
+prefix_rule(
+    pattern = ["horch", "ledger"],
+    decision = "allow",
+    justification = "herdr-fleet: queue, plan, stop and reap tasks through the task ledger",
+)

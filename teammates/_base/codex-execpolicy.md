@@ -16,6 +16,8 @@ rules:
     justification: read a catalog skill that the bundle does not hold
   - pattern: '"horch", "done"'
     justification: mark session done and close own pane
+  - pattern: '"horch", "ledger"'
+    justification: claim, report and finish tasks through the task ledger
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a
 private `CODEX_HOME` that lives only as long as the pane, as:

@@ -26,6 +26,12 @@ pub struct Paths {
     /// A pane does not inherit this process's environment, so a pane command
     /// sets `HORCH_DATA_DIR` to this value.
     pub data_root: PathBuf,
+    /// The task ledger: `$HORCH_LEDGER_DB`, else `<home>/.horch/ledger.sqlite3`
+    /// on every OS (docs/adr/0001).
+    pub ledger_db: PathBuf,
+    /// The explicit `$HORCH_LEDGER_DB`, if any. A pane does not inherit this
+    /// process's environment, so it travels in the brief.
+    pub ledger_override: Option<PathBuf>,
     /// The system temp dir; the workspace mailboxes live under it.
     pub temp_root: PathBuf,
     /// `$HOME` (`%USERPROFILE%` on Windows), else `.`.
@@ -54,6 +60,9 @@ impl Paths {
             state_root: state_root(env, &home),
             state_override: nonempty_path(env, "HORCH_STATE_DIR"),
             data_root: data_root(env, &home),
+            ledger_db: nonempty_path(env, "HORCH_LEDGER_DB")
+                .unwrap_or_else(|| crate::taskledger::store::default_path(&home)),
+            ledger_override: nonempty_path(env, "HORCH_LEDGER_DB"),
             temp_root: env.temp_dir(),
             home,
             claude_managed_settings: nonempty_path(env, "HORCH_CLAUDE_MANAGED_SETTINGS")

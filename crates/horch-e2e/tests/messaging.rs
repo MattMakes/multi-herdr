@@ -194,7 +194,7 @@ fn g5_resume_after_a_closed_pane() {
     ]);
     assert!(!out.status.success(), "the pane is open: {}", text(&out));
     assert!(
-        text(&out).contains(&format!("horch ledger done {id}")),
+        text(&out).contains(&format!("horch ledger legacy done {id}")),
         "{}",
         text(&out)
     );

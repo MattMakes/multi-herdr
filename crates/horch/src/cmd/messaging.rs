@@ -58,11 +58,23 @@ pub fn tell(ctx: &RuntimeContext, role: &str, text: &str) -> Result<()> {
 }
 
 fn tell_outcome(ctx: &RuntimeContext, role: &str, text: &str) -> Result<ReportStatus> {
+    let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
+    tell_as(ctx, sender, role, text)
+}
+
+/// [`tell`] with an explicit sender tag. horch itself sends as `horch` (the
+/// task ledger's wakes): a tagged message to the orchestrator is durable
+/// mail, redelivered until `horch inbox` acknowledges it.
+pub fn tell_as(
+    ctx: &RuntimeContext,
+    sender: Option<String>,
+    role: &str,
+    text: &str,
+) -> Result<ReportStatus> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
 
-    let sender = ctx.worker.as_ref().and_then(|w| w.role.clone());
     let text = match &sender {
         Some(me) => message::ensure_tag(text, me),
         None => text.to_string(),
@@ -312,6 +324,13 @@ fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
 /// ([`Ledger::live_for_role`], review finding 13): 2 fleets of 1 project can
 /// both have the role.
 pub fn assign(ctx: &RuntimeContext, role: &str, task: &str) -> Result<()> {
+    if let Some(run) = super::taskledger::active_run_slug(ctx) {
+        bail!(
+            "run {run} uses the task ledger: assignment is queue plus claim. Queue the work with \
+             horch ledger add --file <ticket> --primary <persona>, then spawn the workers \
+             horch ledger plan-workers names"
+        );
+    }
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch assign must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
@@ -330,6 +349,7 @@ pub fn assign(ctx: &RuntimeContext, role: &str, task: &str) -> Result<()> {
 pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
     let record_id = require_env("HORCH_RECORD_ID", worker_var(ctx, |w| &w.record_id))?;
     Ledger::open_in(ctx)?.note(&record_id, text)?;
+    super::taskledger::note_from_worker(ctx, text);
     if let Some(line) = quiet_note_check(ctx, &record_id) {
         println!("{line}");
     }

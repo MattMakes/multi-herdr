@@ -134,7 +134,7 @@ environment), `crates/horch/src/exit.rs` (exit codes), `crates/horch/src/output.
 | skill bundles per launch | `<state root>/skill-bundles/<execution id>/` | `skills.rs`, `harness/launch.rs` |
 | marketplace skills (data root) | `$HORCH_DATA_DIR`, else `${XDG_DATA_HOME:-~/.local/share}/horch/` | `runtime/paths.rs` `data_root` |
 
-`horch ledger path` prints the ledger path for the current project.
+`horch ledger legacy path` prints the ledger path for the current project.
 
 A herdr pane does not inherit the environment of the `horch` that split it.
 So every horch process in a fleet gets the spawner's data root this way:

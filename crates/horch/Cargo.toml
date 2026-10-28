@@ -30,6 +30,9 @@ ratatui = { version = "0.29", default-features = false, features = ["crossterm"]
 # and the digest check. herdr-install uses the same 2 crates.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.10"
+# Unpacks the unix release archive of `horch self-update` (a `.tar.gz`), and
+# the gzipped npm registry documents the update cooldown reads.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 # `git::scrub_repo_env` and `git::repo_state` for the test git helpers.
@@ -40,7 +43,6 @@ serde_yaml.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 # `horch self-update` unpacks the unix release archive, a `.tar.gz`.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tar = { version = "0.4", default-features = false }
 
 # `horch self-update` unpacks the windows release archive, a `.zip`.

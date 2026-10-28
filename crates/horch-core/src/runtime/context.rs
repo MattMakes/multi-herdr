@@ -176,6 +176,11 @@ pub struct Settings {
     /// `HORCH_UPDATE_TIMEOUT_MS`: the time limit of 1 agent CLI updater.
     /// [`DEFAULT_UPDATE_TIMEOUT`] when unset or not a number.
     pub update_timeout: Duration,
+    /// `HORCH_UPDATE_COOLDOWN_DAYS`: how old an agent CLI release must be
+    /// before the update step installs it. `0` turns the cooldown off.
+    /// [`DEFAULT_DAYS`](crate::harness::cooldown::DEFAULT_DAYS) when unset or
+    /// not a number.
+    pub update_cooldown_days: u32,
     /// `HORCH_FAULT`.
     pub faults: Faults,
 }
@@ -300,6 +305,8 @@ pub struct WorkerEnv {
     pub resume: Option<String>,
     /// `HORCH_TASK`.
     pub task: Option<String>,
+    /// `HORCH_WORKER_ID`: this worker's row in the task ledger.
+    pub worker_id: Option<String>,
 }
 
 impl WorkerEnv {
@@ -316,6 +323,7 @@ impl WorkerEnv {
             session_id: nonempty("HORCH_SESSION_ID"),
             resume: nonempty("HORCH_RESUME"),
             task: nonempty("HORCH_TASK"),
+            worker_id: nonempty("HORCH_WORKER_ID"),
         };
         (w != WorkerEnv::default()).then_some(w)
     }
@@ -385,6 +393,9 @@ impl RuntimeContext {
             update_timeout: nonempty("HORCH_UPDATE_TIMEOUT_MS")
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map_or(DEFAULT_UPDATE_TIMEOUT, Duration::from_millis),
+            update_cooldown_days: nonempty("HORCH_UPDATE_COOLDOWN_DAYS")
+                .and_then(|days| days.trim().parse::<u32>().ok())
+                .unwrap_or(crate::harness::cooldown::DEFAULT_DAYS),
             faults: Faults::parse(env.var("HORCH_FAULT").as_deref()),
         };
 
@@ -632,6 +643,27 @@ mod tests {
         .unwrap();
         assert!(!ctx.settings.no_update);
         assert_eq!(ctx.settings.update_timeout, DEFAULT_UPDATE_TIMEOUT);
+    }
+
+    /// `HORCH_UPDATE_COOLDOWN_DAYS` sets the release cooldown, else 7 days.
+    #[test]
+    fn arc_36_the_cooldown_reads_its_variable_and_the_default() {
+        let days = |value: Option<&str>| {
+            let mut env = MapEnv::new("/");
+            if let Some(v) = value {
+                env = env.with("HORCH_UPDATE_COOLDOWN_DAYS", v);
+            }
+            RuntimeContext::from_env(&env)
+                .unwrap()
+                .settings
+                .update_cooldown_days
+        };
+        assert_eq!(days(None), 7);
+        assert_eq!(days(Some("14")), 14);
+        assert_eq!(days(Some("0")), 0);
+        assert_eq!(days(Some("")), 7);
+        assert_eq!(days(Some("-1")), 7);
+        assert_eq!(days(Some("a week")), 7);
     }
 
     /// `HORCH_NO_SELF_CHECK=1` skips the release check; any other value does not.

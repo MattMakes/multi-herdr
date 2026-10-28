@@ -7,6 +7,10 @@
 //! themselves keep their auto-update switched off, so a fleet runs 1 build of
 //! each CLI from start to end.
 //!
+//! Every updater waits out the release cooldown first ([`super::cooldown`]):
+//! a CLI whose newest release is younger than it, or whose release dates
+//! horch cannot read, is held back and keeps the build it has.
+//!
 //! herdr is not in the default list: `herdr update` can stop the herdr
 //! server, and that closes every pane. [`run_herdr_update`] runs it only on
 //! the operator's request, attached to the operator's terminal.
@@ -19,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
+use super::cooldown::{self, Packument, Verdict};
 use super::HarnessKind;
 use crate::routing::quota_probe::probe_version;
 use crate::runtime::{process, RuntimeContext};
@@ -50,9 +55,22 @@ pub enum Outcome {
         before: Option<String>,
         after: Option<String>,
     },
-    /// The updater failed or timed out: why.
+    /// The newest release is younger than the cooldown. Nothing ran.
+    Cooldown {
+        version: String,
+        age: chrono::TimeDelta,
+        days: u32,
+    },
+    /// horch cannot read when the CLI's releases were published, so the
+    /// cooldown cannot pass. Nothing ran.
+    NoReleaseDates { days: u32 },
+    /// The updater failed or timed out, or the release dates could not be
+    /// read: why.
     Failed { reason: String },
 }
+
+/// Read the npm registry document of a package: `Err` is why it could not.
+pub type ReleaseLookup<'a> = dyn Fn(&str) -> Result<Packument, String> + Sync + 'a;
 
 /// The update step's result for 1 harness.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,9 +103,14 @@ pub fn update_args(kind: HarnessKind) -> Option<&'static [&'static str]> {
 }
 
 /// Update every harness in `harnesses` at the same time, each within
-/// `ctx.settings.update_timeout`. The results come in [`ORDER`], 1 per
-/// harness, whatever the order of `harnesses`.
-pub fn update_all(ctx: &RuntimeContext, harnesses: &[HarnessKind]) -> Vec<UpdateResult> {
+/// `ctx.settings.update_timeout` and only past the release cooldown, whose
+/// dates `releases` reads. The results come in [`ORDER`], 1 per harness,
+/// whatever the order of `harnesses`.
+pub fn update_all(
+    ctx: &RuntimeContext,
+    harnesses: &[HarnessKind],
+    releases: &ReleaseLookup<'_>,
+) -> Vec<UpdateResult> {
     let timeout = ctx.settings.update_timeout;
     let wanted: Vec<HarnessKind> = ORDER
         .iter()
@@ -97,7 +120,12 @@ pub fn update_all(ctx: &RuntimeContext, harnesses: &[HarnessKind]) -> Vec<Update
     std::thread::scope(|s| {
         let handles: Vec<_> = wanted
             .iter()
-            .map(|&kind| (kind, s.spawn(move || update_one(ctx, kind, timeout))))
+            .map(|&kind| {
+                (
+                    kind,
+                    s.spawn(move || update_one(ctx, kind, timeout, releases)),
+                )
+            })
             .collect();
         handles
             .into_iter()
@@ -114,7 +142,12 @@ pub fn update_all(ctx: &RuntimeContext, harnesses: &[HarnessKind]) -> Vec<Update
     })
 }
 
-fn update_one(ctx: &RuntimeContext, kind: HarnessKind, timeout: Duration) -> UpdateResult {
+fn update_one(
+    ctx: &RuntimeContext,
+    kind: HarnessKind,
+    timeout: Duration,
+    releases: &ReleaseLookup<'_>,
+) -> UpdateResult {
     let not_installed = UpdateResult {
         harness: kind,
         bin: None,
@@ -126,9 +159,23 @@ fn update_one(ctx: &RuntimeContext, kind: HarnessKind, timeout: Duration) -> Upd
     let Some(bin) = resolve(ctx, &update_bin(kind, &launched)) else {
         return not_installed;
     };
+    let days = ctx.settings.update_cooldown_days;
+    let now = crate::clock::now();
+    if days > 0 {
+        if let Some(held) = hold(kind, now, days, releases) {
+            return UpdateResult {
+                harness: kind,
+                bin: Some(bin),
+                outcome: held,
+            };
+        }
+    }
     let before = probe_version(&bin).version();
     let mut cmd = Command::new(&bin);
     cmd.args(args);
+    if days > 0 {
+        cmd.envs(cooldown::child_env(now, days));
+    }
     let outcome = match run_updater(cmd, timeout) {
         Ok(()) => Outcome::Updated {
             before,
@@ -140,6 +187,34 @@ fn update_one(ctx: &RuntimeContext, kind: HarnessKind, timeout: Duration) -> Upd
         harness: kind,
         bin: Some(bin),
         outcome,
+    }
+}
+
+/// What keeps `kind`'s updater from running under a cooldown of `days` at
+/// `now`, if anything does.
+pub fn hold(
+    kind: HarnessKind,
+    now: chrono::DateTime<chrono::Utc>,
+    days: u32,
+    releases: &ReleaseLookup<'_>,
+) -> Option<Outcome> {
+    let Some(package) = cooldown::npm_package(kind) else {
+        return Some(Outcome::NoReleaseDates { days });
+    };
+    let doc = match releases(package) {
+        Ok(doc) => doc,
+        Err(e) => {
+            return Some(Outcome::Failed {
+                reason: cut(&format!("release date check: {e}")),
+            })
+        }
+    };
+    match cooldown::judge(&doc, now, days) {
+        Verdict::Clear => None,
+        Verdict::TooNew { version, age } => Some(Outcome::Cooldown { version, age, days }),
+        Verdict::Unknown { reason } => Some(Outcome::Failed {
+            reason: cut(&format!("release date check: {reason}")),
+        }),
     }
 }
 
@@ -350,6 +425,61 @@ mod tests {
         let long = "é".repeat(250);
         let reason = reason_line(&long).unwrap();
         assert_eq!(reason.chars().count(), 200);
+    }
+
+    fn packument(latest: &str, published: &str) -> Packument {
+        serde_json::from_value(serde_json::json!({
+            "dist-tags": {"latest": latest},
+            "time": {latest: published},
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn arc_36_hold_keeps_back_a_young_or_undated_release() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-27T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let old = |_: &str| -> Result<Packument, String> {
+            Ok(packument("2.0.0", "2026-10-01T00:00:00Z"))
+        };
+        let young = |_: &str| -> Result<Packument, String> {
+            Ok(packument("2.1.0", "2026-10-25T00:00:00Z"))
+        };
+        let down = |_: &str| -> Result<Packument, String> { Err("network down".into()) };
+        let asked = std::sync::Mutex::new(Vec::new());
+        let record = |p: &str| -> Result<Packument, String> {
+            asked.lock().unwrap().push(p.to_string());
+            Ok(packument("2.0.0", "2026-10-01T00:00:00Z"))
+        };
+
+        assert_eq!(hold(HarnessKind::Claude, now, 7, &old), None);
+        assert_eq!(
+            hold(HarnessKind::Codex, now, 7, &young),
+            Some(Outcome::Cooldown {
+                version: "2.1.0".into(),
+                age: chrono::TimeDelta::days(2),
+                days: 7,
+            })
+        );
+        assert_eq!(
+            hold(HarnessKind::Pi, now, 7, &down),
+            Some(Outcome::Failed {
+                reason: "release date check: network down".into()
+            })
+        );
+        // No npm package: no lookup, and no update.
+        assert_eq!(
+            hold(HarnessKind::Antigravity, now, 7, &record),
+            Some(Outcome::NoReleaseDates { days: 7 })
+        );
+        assert_eq!(
+            hold(HarnessKind::Prime, now, 7, &record),
+            Some(Outcome::NoReleaseDates { days: 7 })
+        );
+        assert!(asked.lock().unwrap().is_empty());
+        assert_eq!(hold(HarnessKind::OpenCode, now, 7, &record), None);
+        assert_eq!(*asked.lock().unwrap(), ["opencode-ai"]);
     }
 
     #[test]

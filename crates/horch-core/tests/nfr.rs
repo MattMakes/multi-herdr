@@ -106,6 +106,11 @@ fn nfr_05_no_new_runtime_crates() {
         "libc",
         "sha2",
         "horch-marketplace",
+        // The task ledger (operator decision, 2026-10-27, docs/adr/0001):
+        // SQLite, bundled, for atomic claims across many processes.
+        "rusqlite",
+        // Exact process identity on Windows (#29), as libc is on unix.
+        "windows-sys",
     ];
     for d in deps(&repo().join("crates/horch-core/Cargo.toml")) {
         assert!(
@@ -221,7 +226,8 @@ fn nfr_09_no_async_runtime_deps() {
             "async-std",
             "smol",
             "futures",
-            "rusqlite",
+            // rusqlite is allowed for the task ledger (operator decision,
+            // 2026-10-27, docs/adr/0001); it is synchronous.
             "sqlx",
             "diesel",
         ],
