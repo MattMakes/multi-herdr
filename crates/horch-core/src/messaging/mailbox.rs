@@ -343,7 +343,7 @@ impl Mailbox {
 
     /// The marker to read: a worker launched before the upgrade left its
     /// marker in the old temp location.
-    pub(crate) fn launch_marker_read(&self, role: &str) -> PathBuf {
+    pub(crate) fn launch_marker_read_path(&self, role: &str) -> PathBuf {
         self.read_path(&format!(".{role}.launch-marker"))
     }
 
@@ -563,15 +563,30 @@ mod tests {
         );
     }
 
+    /// A removal that fails for a reason other than "missing" does not panic
+    /// and leaves the role registered, so the warning is the only signal.
     #[test]
-    fn launch_marker_read_finds_the_old_location() {
+    fn unregister_survives_a_removal_that_fails() {
+        let state = tempfile::tempdir().unwrap();
+        let mb = Mailbox::under(state.path(), "w1");
+        let id = mb.dir().join("sonnet-1.id");
+        std::fs::create_dir_all(id.join("not-a-file")).unwrap();
+
+        mb.unregister("sonnet-1");
+
+        assert!(id.exists());
+        assert!(mb.role_taken("sonnet-1"));
+    }
+
+    #[test]
+    fn launch_marker_read_path_finds_the_old_location() {
         let state = tempfile::tempdir().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
         std::fs::write(legacy.join(".sonnet-1.launch-marker"), "").unwrap();
 
         assert_eq!(
-            mb.launch_marker_read("sonnet-1"),
+            mb.launch_marker_read_path("sonnet-1"),
             legacy.join(".sonnet-1.launch-marker")
         );
         assert_eq!(

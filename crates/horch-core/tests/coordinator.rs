@@ -539,8 +539,8 @@ fn arc_24_candidates_are_ordinary_executions() {
         projection.anomalies
     );
 
-    // No second registry: the state root holds the ledger, its lock and the
-    // dataset dir and the mailbox, nothing else.
+    // No second registry: apart from locks and the mailbox, the state root
+    // holds the ledger and the dataset dir, nothing else.
     let mut entries: Vec<String> = std::fs::read_dir(&w.ctx.paths.state_root)
         .unwrap()
         .flatten()

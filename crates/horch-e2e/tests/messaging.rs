@@ -575,15 +575,6 @@ fn r1_long_tell_spools_under_its_own_workspace() {
     );
 }
 
-/// Names under `dir` that start with `herdr-orchestration-`.
-fn registries_in(dir: &std::path::Path) -> Vec<String> {
-    std::fs::read_dir(dir)
-        .unwrap()
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|n| n.starts_with("herdr-orchestration-"))
-        .collect()
-}
-
 /// P09: a spawn writes the registry under the state folder and nothing under
 /// the temp folder. With the temp folder emptied, `inbox` still lists the
 /// role and `tell` still reaches it.
@@ -600,7 +591,7 @@ fn p09_registry_lives_in_the_state_folder() {
         .state
         .join(format!("herdr-orchestration-w1/{role}.brief.json"))
         .exists());
-    assert_eq!(registries_in(&h.tmp), Vec::<String>::new());
+    assert!(!h.tmp.join("herdr-orchestration-w1").exists());
 
     for entry in std::fs::read_dir(&h.tmp).unwrap() {
         let path = entry.unwrap().path();
