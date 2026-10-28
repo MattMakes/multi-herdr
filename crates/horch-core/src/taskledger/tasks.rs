@@ -1,7 +1,7 @@
 //! Tasks: queueing, the claimable rule and the claim (sections 4.3 to 4.5,
 //! 5.1, 5.2).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
@@ -598,24 +598,18 @@ pub fn startable(conn: &Connection, run_id: &str) -> Result<Vec<Task>> {
     Ok(board.startable().into_iter().cloned().collect())
 }
 
-/// Why each queued task that cannot start now waits.
+/// Why each queued task that cannot start now waits. Each task is checked
+/// against the running tasks and the startable ones before it, as
+/// [`Board::startable`] does.
 pub fn waits(conn: &Connection, run_id: &str) -> Result<Vec<(Task, Wait)>> {
     let board = Board::load(conn, run_id)?;
-    let active: Vec<&Task> = board.tasks.iter().filter(|t| Board::is_active(t)).collect();
-    let startable: BTreeSet<String> = board
-        .startable()
-        .iter()
-        .map(|t| t.task_id.clone())
-        .collect();
+    let mut active: Vec<&Task> = board.tasks.iter().filter(|t| Board::is_active(t)).collect();
     let mut out = Vec::new();
     for t in board.queued() {
-        if startable.contains(&t.task_id) {
-            continue;
+        match board.wait(t, &active) {
+            Some(w) => out.push((t.clone(), w)),
+            None => active.push(t),
         }
-        let w = board.wait(t, &active).unwrap_or(Wait::Exclusive {
-            running: "a task queued ahead of it".into(),
-        });
-        out.push((t.clone(), w));
     }
     Ok(out)
 }

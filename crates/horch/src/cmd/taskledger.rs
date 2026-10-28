@@ -1172,7 +1172,10 @@ fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -
 
 fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
-    let outcome = store.immediate(|tx| tasks::claim(tx, &wid))?;
+    let mut outcome = store.immediate(|tx| tasks::claim(tx, &wid))?;
+    if let ClaimOutcome::Claimed(c) = &mut outcome {
+        absolute_ticket_if_missing(ctx, &store, c);
+    }
     if as_json {
         json(&outcome)?;
         return Ok(ExitCode::SUCCESS);
@@ -1187,6 +1190,43 @@ fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitC
         ClaimOutcome::Claimed(c) => output::print(&render_claim(&c)),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// A ticket queued from an ignored folder is not in the worker's worktree.
+/// Then the claim names the ticket by its absolute path in the project root.
+/// A tracked ticket keeps its relative path.
+fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claimed) {
+    let Some(file) = c.task.task_file.clone() else {
+        return;
+    };
+    if Path::new(&file).is_absolute() {
+        return;
+    }
+    let Ok(root) = project_root(ctx) else {
+        return;
+    };
+    let in_root = root.join(&file);
+    if !in_root.is_file() {
+        return;
+    }
+    let in_worktree = match (&c.worktree, c.task.uses_worktree()) {
+        (Some(w), _) => Path::new(w).join(&file).is_file(),
+        (None, true) => {
+            let branch = runs::get(store.conn(), &c.task.run_id)
+                .ok()
+                .and_then(|r| r.run_branch);
+            match branch {
+                Some(b) => Git::new(&ctx.bins.harness.git)
+                    .try_run(&root, &["cat-file", "-e", &format!("{b}:{file}")])
+                    .is_ok_and(|o| o.ok),
+                None => true,
+            }
+        }
+        (None, false) => true,
+    };
+    if !in_worktree {
+        c.task.task_file = Some(in_root.to_string_lossy().into_owned());
+    }
 }
 
 /// The finish steps' tools: git, gh, node, the sweep skills.

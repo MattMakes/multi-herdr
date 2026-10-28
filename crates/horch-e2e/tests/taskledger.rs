@@ -185,7 +185,11 @@ fn queue_claim_and_status_through_the_cli() {
     let w1 = worker_new(&h, "opus");
     let claim = ok_as(&h, &w1, &["ledger", "claim"]);
     assert!(claim.contains("Claimed T-1 (attempt 1): Parser"), "{claim}");
-    assert!(claim.contains("Ticket: tickets/01-a.md"), "{claim}");
+    // This ticket is not committed, so a worktree would not hold it: the
+    // claim names it by its absolute path.
+    let ticket = ticket_line(&claim);
+    assert!(Path::new(&ticket).is_absolute(), "{claim}");
+    assert!(ticket.ends_with("tickets/01-a.md"), "{claim}");
     assert!(claim.contains("Own: src/parse"), "{claim}");
     assert!(
         claim.contains("horch ledger worktree new parser"),
@@ -213,6 +217,88 @@ fn queue_claim_and_status_through_the_cli() {
     let st = json_of(&h, &["ledger", "status", "--json"]);
     assert_eq!(st["counts"]["cancelled"], 1);
     assert_eq!(st["complete"], false);
+}
+
+/// Write `rel` under the project, with `body`.
+fn project_file(h: &Harness, rel: &str, body: &str) {
+    let p = h.project.join(rel);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, body).unwrap();
+}
+
+fn git_commit_all(h: &Harness, message: &str) {
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", message][..]] {
+        let o = h.git_cmd(args).current_dir(&h.project).output().unwrap();
+        assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
+    }
+}
+
+/// The path on the claim's `Ticket:` line.
+fn ticket_line(claim: &str) -> String {
+    let line = claim
+        .lines()
+        .find_map(|l| l.strip_prefix("Ticket: "))
+        .unwrap_or_else(|| panic!("no Ticket line: {claim}"));
+    line.strip_suffix(". Read it in full and follow it exactly.")
+        .unwrap_or(line)
+        .to_string()
+}
+
+#[test]
+fn a_claim_names_an_ignored_ticket_by_a_path_that_exists_in_the_worktree() {
+    let h = world("tl-ignored");
+    project_file(&h, ".gitignore", "ai_docs/\n");
+    git_commit_all(&h, "ignore ai_docs");
+    ok(&h, &["ledger", "run", "new", "gamma"]);
+    project_file(&h, "ai_docs/tickets/01-x.md", "# 01: Ignored\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            "ai_docs/tickets/01-x.md",
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    let claim = ok_as(&h, &w, &["ledger", "claim"]);
+    let ticket = ticket_line(&claim);
+    let made = ok_as(&h, &w, &["ledger", "worktree", "new", "ignored"]);
+    let worktree = made
+        .lines()
+        .find_map(|l| l.strip_prefix("path: "))
+        .unwrap_or_else(|| panic!("no worktree path: {made}"));
+    let worktree = Path::new(worktree.trim());
+    assert!(
+        !worktree.join("ai_docs/tickets/01-x.md").exists(),
+        "the ignored ticket is not in the worktree"
+    );
+    let opened = worktree.join(&ticket);
+    assert!(opened.is_file(), "Ticket {ticket} from {}: {claim}", worktree.display());
+}
+
+#[test]
+fn a_claim_names_a_tracked_ticket_by_its_relative_path() {
+    let h = world("tl-tracked");
+    project_file(&h, "tickets/01-t.md", "# 01: Tracked\n");
+    git_commit_all(&h, "add a ticket");
+    ok(&h, &["ledger", "run", "new", "delta"]);
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            "tickets/01-t.md",
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    let claim = ok_as(&h, &w, &["ledger", "claim"]);
+    assert_eq!(ticket_line(&claim), "tickets/01-t.md", "{claim}");
 }
 
 #[test]
