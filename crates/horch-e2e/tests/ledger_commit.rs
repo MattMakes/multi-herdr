@@ -305,3 +305,55 @@ fn an_attribute_filter_never_runs_and_the_commit_still_lands() {
     let files = git_in(&h, &wt, &["show", "--name-only", "--format=", "HEAD"]);
     assert_eq!(files, ".gitattributes\na.txt");
 }
+
+#[test]
+fn a_symlink_is_committed_as_the_link_and_escapes_through_links_are_refused() {
+    let (h, w, wt) = claimed("lc-links");
+    std::fs::write(wt.join("target.txt"), "t\n").unwrap();
+    std::os::unix::fs::symlink("target.txt", wt.join("link.txt")).unwrap();
+    std::fs::write(h.root.join("outside.txt"), "x\n").unwrap();
+    std::os::unix::fs::symlink(h.root.join("outside.txt"), wt.join("out-link.txt")).unwrap();
+    std::os::unix::fs::symlink(&h.root, wt.join("out-dir")).unwrap();
+
+    let before = head(&h, &wt);
+    for (path, why) in [
+        ("out-link.txt", "is outside the worktree"),
+        ("out-dir/new.txt", "is outside the worktree"),
+        (".git", "inside git metadata"),
+    ] {
+        let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", path]);
+        assert!(
+            !o.status.success() && text(&o).contains(why),
+            "{path}: {}",
+            text(&o)
+        );
+    }
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+
+    let o = as_worker(
+        &h,
+        &w,
+        &wt,
+        &["ledger", "commit", "-m", "link", "--", "link.txt"],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    let tree = git_in(&h, &wt, &["ls-tree", "HEAD", "link.txt"]);
+    assert!(tree.starts_with("120000 "), "the link itself: {tree}");
+    let files = git_in(&h, &wt, &["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(files, "link.txt", "not its target");
+}
+
+#[test]
+fn a_stopped_worker_cannot_commit() {
+    let (h, w, wt) = claimed("lc-stopped");
+    ok(&h, &["ledger", "stop", &w, "test"]);
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    assert!(
+        !o.status.success() && text(&o).contains("does not own"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}

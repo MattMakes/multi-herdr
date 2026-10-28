@@ -113,14 +113,18 @@ teammate descriptions say this.
   `["horch", "ledger"]` rule runs outside the sandbox.
 - `horch ledger commit` (`crates/horch/src/cmd/taskledger_commit.rs`):
   - takes the worker from `HORCH_WORKER_ID`, and refuses a worker with no
-    claimed task or with a review task;
+    claimed task or with a review task. It also refuses unless the worker is
+    `working`, the task names it as its current worker, the task is
+    `running` or `landing`, and the worktree is `open`: a reaped or
+    requeued worker keeps its old task id;
   - takes the worktree from the ledger row of that task, and refuses when
     the current folder is outside it;
   - takes the git dir from trusted metadata only:
     `git rev-parse --path-format=absolute --git-common-dir` in the main
     checkout the ledger recorded, joined with `worktrees/<name>` from the
     ledger's worktree path. It refuses unless `<worktree>/.git` is a file
-    that says exactly `gitdir: <that path>`;
+    that says exactly `gitdir: <that path>`, and that entry's own `gitdir`
+    file names `<worktree>/.git` back;
   - runs every git call with `GIT_DIR=<that git dir>` and
     `GIT_WORK_TREE=<worktree>`, every other `GIT_*` variable removed except
     the author and committer name, email and date, `GIT_CONFIG_NOSYSTEM=1`,
@@ -132,16 +136,21 @@ teammate descriptions say this.
   - passes `-c core.hooksPath=/dev/null -c core.fsmonitor=false
     -c commit.gpgsign=false -c gpg.program=/usr/bin/false` to every call;
   - refuses a path outside the worktree, inside `.git`, or in a nested
-    repository (a folder below the worktree root with its own `.git`);
+    repository (a folder below the worktree root with its own `.git`). It
+    checks the path as given and its resolved target, and gives git the
+    path as given, so a symlink is committed as the link itself;
   - stages with `git add -- <paths>` (or `git add -A`), commits with
     `git commit -m <message> -- <paths>` (only the named files) or
     `git commit -m <message>`, prints the commit id, and records the
-    progress event `commit <short id>`.
-- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 5 tests): a
+    progress event `commit <short id>`. A failed ledger write after the
+    commit prints a warning and still exits 0: the commit exists.
+- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 7 tests): a
   commit lands without hooks; refused paths; refused for a review task or no
   task; a rewritten `.git` file is refused and its config never runs; a
   `* filter=evil` attribute with `filter.evil.clean` in the repository
-  config does not run the filter, and the commit lands.
+  config does not run the filter, and the commit lands; a symlink is
+  committed as the link, and links that lead outside are refused; a stopped
+  worker cannot commit.
 - The caller cannot steer the command through its environment.
   `codex execpolicy check` on the shipped rules gives no match for
   `HORCH_GIT_BIN=x horch ledger commit -m x`, for

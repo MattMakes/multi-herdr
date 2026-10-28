@@ -16,9 +16,11 @@ use std::process::{Command, ExitCode};
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::finish;
-use horch_core::taskledger::model::{EventKind, ProgressSource};
-use horch_core::taskledger::{self, tasks, workers};
+use horch_core::taskledger::finish::{self, WorktreeRow};
+use horch_core::taskledger::model::{
+    EventKind, ProgressSource, TaskStatus, WorkerStatus, WorktreeStatus,
+};
+use horch_core::taskledger::{self, tasks, workers, Store};
 
 use super::taskledger::worker_id;
 use crate::output;
@@ -57,30 +59,13 @@ const IDENTITY_VARS: [&str; 6] = [
 pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
     let mut store = taskledger::open(ctx)?;
-    let worker = workers::get(store.conn(), &wid)?;
-    let Some(task_id) = worker.task_id else {
-        bail!("refused: worker {wid} has no claimed task. Run horch ledger claim first.");
-    };
-    let task = tasks::get(store.conn(), &task_id)?;
-    if task.is_review() {
-        bail!(
-            "refused: {} is a review task. A reviewer reports findings and never commits.",
-            task.short()
-        );
-    }
-    let Some(wt) = finish::worktree_of(store.conn(), &task_id)? else {
-        bail!(
-            "refused: {} has no worktree. Run horch ledger worktree new <name> first.",
-            task.short()
-        );
-    };
+    let (task, wt) = owned_worktree(&store, &wid)?;
     let root = std::fs::canonicalize(&wt.path)
         .with_context(|| format!("refused: the worktree {} does not exist", wt.path))?;
     let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
     if !cwd.starts_with(&root) {
         bail!(
-            "refused: run horch ledger commit inside the worktree of {}: {}",
-            task.short(),
+            "refused: run horch ledger commit inside the worktree of {task}: {}",
             root.display()
         );
     }
@@ -93,25 +78,12 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
     let bin = &ctx.bins.harness.git;
     check_git_version(bin)?;
     let gitdir = trusted_gitdir(bin, Path::new(&wt.repo_root), Path::new(&wt.path), &root)?;
-    let git = Trusted::new(bin, &root, &gitdir);
-    let mut add: Vec<OsString> = vec!["add".into()];
-    if paths.is_empty() {
-        add.push("-A".into());
-    } else {
-        add.push("--".into());
-        add.extend(paths.iter().map(|p| p.as_os_str().to_owned()));
-    }
-    git.run(&add)?;
-    let mut commit: Vec<OsString> = vec!["commit".into(), "-m".into(), (&args.message).into()];
-    if !paths.is_empty() {
-        // Only the named files: paths an earlier attempt staged stay out.
-        commit.push("--".into());
-        commit.extend(paths.iter().map(|p| p.as_os_str().to_owned()));
-    }
-    git.run(&commit)?;
-    let id = git.run(&["rev-parse".into(), "HEAD".into()])?;
+    let id = commit(&Trusted::new(bin, &root, &gitdir), &args.message, &paths)?;
+    // The commit exists now: print its id first, and never fail on the
+    // bookkeeping after it, or a retry finds nothing to commit.
+    output::println(&id);
     let short: String = id.chars().take(12).collect();
-    store.immediate(|tx| {
+    let recorded = store.immediate(|tx| {
         workers::progress(
             tx,
             &wid,
@@ -119,9 +91,61 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
             EventKind::Progress,
             &format!("commit {short}"),
         )
-    })?;
-    output::println(&id);
+    });
+    if let Err(e) = recorded {
+        eprintln!("horch: committed {short}, but the task ledger did not record it: {e:#}");
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The short name of the task this worker owns now, and its open worktree,
+/// or a refusal. A reaped or requeued worker keeps its old `task_id`, so the
+/// task must still name this worker, and a landed worktree takes no commit.
+fn owned_worktree(store: &Store, wid: &str) -> Result<(String, WorktreeRow)> {
+    let worker = workers::get(store.conn(), wid)?;
+    let Some(task_id) = worker.task_id.clone() else {
+        bail!("refused: worker {wid} has no claimed task. Run horch ledger claim first.");
+    };
+    let task = tasks::get(store.conn(), &task_id)?;
+    let short = task.short();
+    if task.is_review() {
+        bail!("refused: {short} is a review task. A reviewer reports findings and never commits.");
+    }
+    if worker.status()? != WorkerStatus::Working || task.current_worker_id.as_deref() != Some(wid) {
+        bail!("refused: worker {wid} does not own {short} now.");
+    }
+    if !matches!(task.status()?, TaskStatus::Running | TaskStatus::Landing) {
+        bail!("refused: {short} is {}, not running.", task.status);
+    }
+    let Some(wt) = finish::worktree_of(store.conn(), &task_id)? else {
+        bail!("refused: {short} has no worktree. Run horch ledger worktree new <name> first.");
+    };
+    if wt.status != WorktreeStatus::Open.as_str() {
+        bail!(
+            "refused: the worktree of {short} is {}, not open.",
+            wt.status
+        );
+    }
+    Ok((short, wt))
+}
+
+/// Stage and commit `paths` (every change when empty); the new commit id.
+fn commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
+    let named = paths.iter().map(|p| p.as_os_str().to_owned());
+    let mut add: Vec<OsString> = vec!["add".into()];
+    let mut commit: Vec<OsString> = vec!["commit".into(), "-m".into(), message.into()];
+    if paths.is_empty() {
+        add.push("-A".into());
+    } else {
+        add.push("--".into());
+        add.extend(named.clone());
+        // Only the named files: paths an earlier attempt staged stay out.
+        commit.push("--".into());
+        commit.extend(named);
+    }
+    git.run(&add)?;
+    git.run(&commit)?;
+    git.run(&["rev-parse".into(), "HEAD".into()])
 }
 
 /// The worktree's git dir, from trusted metadata only: the common dir that
@@ -162,7 +186,12 @@ fn trusted_gitdir(bin: &Path, repo_root: &Path, worktree: &Path, root: &Path) ->
     let exact = [&gitdir, &canonical]
         .iter()
         .any(|p| line == format!("gitdir: {}", p.display()));
-    if !exact || !gitdir.is_dir() {
+    // And the entry must name this worktree back.
+    let names_root = std::fs::read_to_string(gitdir.join("gitdir"))
+        .ok()
+        .and_then(|t| std::fs::canonicalize(t.trim()).ok())
+        .is_some_and(|p| p == root.join(".git"));
+    if !exact || !gitdir.is_dir() || !names_root {
         bail!(
             "refused: {} was changed; it must say exactly: gitdir: {}",
             dotgit.display(),
@@ -198,20 +227,29 @@ fn check_git_version(bin: &Path) -> Result<()> {
 fn checked_path(root: &Path, cwd: &Path, arg: &Path) -> Result<PathBuf> {
     let joined = normalize(&cwd.join(arg));
     let resolved = resolve_existing(&joined);
-    if !resolved.starts_with(root) {
+    // git gets `joined`, so a symlink is committed as the link itself; both
+    // it and its target must pass every check.
+    for path in [&joined, &resolved] {
+        check_inside(root, arg, path)?;
+    }
+    Ok(joined)
+}
+
+fn check_inside(root: &Path, arg: &Path, path: &Path) -> Result<()> {
+    if !path.starts_with(root) {
         bail!(
             "refused: {} is outside the worktree {}",
             arg.display(),
             root.display()
         );
     }
-    let inside = resolved.strip_prefix(root).unwrap_or(Path::new(""));
+    let inside = path.strip_prefix(root).unwrap_or(Path::new(""));
     if inside.components().any(|c| c.as_os_str() == ".git") {
         bail!("refused: {} is inside git metadata", arg.display());
     }
     // A folder below the root that holds its own `.git` is a nested
     // repository: git would read its config, which the worker can write.
-    let mut dir = Some(resolved.as_path());
+    let mut dir = Some(path);
     while let Some(d) = dir {
         if d == root {
             break;
@@ -225,7 +263,7 @@ fn checked_path(root: &Path, cwd: &Path, arg: &Path) -> Result<PathBuf> {
         }
         dir = d.parent();
     }
-    Ok(resolved)
+    Ok(())
 }
 
 /// `.` and `..` removed without touching the disk.
