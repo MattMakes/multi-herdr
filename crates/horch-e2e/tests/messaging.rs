@@ -474,7 +474,10 @@ fn inbox_peek_prints_mail_and_leaves_it_pending() {
     for message in ["NOTE: one", "NOTE: two", "DONE: three"] {
         assert!(stdout.contains(message), "{stdout}");
     }
-    assert!(!stdout.contains("messages acknowledged"), "{stdout}");
+    assert_eq!(
+        stdout.lines().last(),
+        Some("3 messages pending, not acknowledged")
+    );
     assert_eq!(pending_count(&h), 3);
 }
 

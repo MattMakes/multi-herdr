@@ -242,7 +242,7 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
     let roles = mailbox.role_states(&herdr);
     if roles.is_empty() {
-        println!("no roles registered yet");
+        output::println("no roles registered yet");
     } else {
         if roles.iter().any(|r| r.state == PaneState::Unknown) {
             eprintln!("horch inbox: herdr did not answer, so pane states are unknown");
@@ -263,7 +263,7 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     let mail = Mail::under(&ctx.paths.state_root, mailbox.workspace_id());
     let pending = mail.pending()?;
     for message in &pending {
-        println!("{}", message.text);
+        output::println(&message.text);
         if !peek {
             mail.ack(&message.id)?;
         }
@@ -271,9 +271,9 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     let count = pending.len();
     let noun = if count == 1 { "message" } else { "messages" };
     if peek {
-        println!("{count} {noun} pending, not acknowledged");
+        output::println(&format!("{count} {noun} pending, not acknowledged"));
     } else {
-        println!("{count} {noun} acknowledged");
+        output::println(&format!("{count} {noun} acknowledged"));
     }
     Ok(())
 }

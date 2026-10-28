@@ -348,7 +348,7 @@ fn the_orchestration_recipe_briefings_differ_only_by_the_await_line() {
     let r = roster();
     let old_inbox =
         "Run `horch inbox` at any time to see which roles have registered and are\nreachable.";
-    let new_inbox = "Run `horch inbox` at any time to print and acknowledge pending worker\nmessages, then see which roles are registered and reachable. Run it when a\nworker message arrives or a horch command names unacknowledged worker\nmessages.";
+    let new_inbox = "Run `horch inbox` at any time to see which roles are registered and\nreachable, then print and acknowledge pending messages. It ends with \"N messages\nacknowledged\". `--roles` lists roles only. `--peek` prints mail and leaves it\npending. Run it when a worker message arrives or a horch command names\nunacknowledged messages.";
     assert_eq!(
         golden("orchestration-orchestrator")
             .matches(old_inbox)

@@ -34,10 +34,11 @@ which will show up as a new line typed directly into YOUR terminal. Treat
 any such incoming line as a message from a worker, not from your human
 operator, unless it is clearly addressed to you as the human.
 
-Run `horch inbox` at any time to print and acknowledge pending worker
-messages, then see which roles are registered and reachable. Run it when a
-worker message arrives or a horch command names unacknowledged worker
-messages. There is no other channel: no shared memory, no automatic result
+Run `horch inbox` at any time to see which roles are registered and
+reachable, then print and acknowledge pending messages. It ends with "N messages
+acknowledged". `--roles` lists roles only. `--peek` prints mail and leaves it
+pending. Run it when a worker message arrives or a horch command names
+unacknowledged messages. There is no other channel: no shared memory, no automatic result
 relay. You must explicitly delegate via `horch tell` and workers must
 explicitly reply via `horch tell`.
 
