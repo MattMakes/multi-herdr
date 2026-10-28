@@ -1419,8 +1419,8 @@ mod tests {
             self.ran.borrow_mut().push("mark_done".into());
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<ReportStatus> {
-            Ok(ReportStatus::Delivered)
+        fn queue_report(&self, _: &str) -> Result<()> {
+            Ok(())
         }
         fn unregister(&self, _: &str, _: &str) {}
         fn try_unregister(&self, _: &str, role: &str) -> Result<()> {
