@@ -84,9 +84,14 @@ pub trait DoneSteps {
     fn report_failed(&self, _record_id: &str, _error: &str) {}
     /// Note that a durable report awaits redelivery. Best effort.
     fn report_queued(&self, _record_id: &str, _error: &str) {}
-    /// Free the role's mailbox entry. An error names the role and the file
-    /// that stayed; `done` warns about it and still closes the pane.
-    fn unregister(&self, workspace: &str, role: &str) -> Result<()>;
+    fn unregister(&self, workspace: &str, role: &str);
+    /// [`DoneSteps::unregister`], where a removal that fails is returned. The
+    /// error names the role and the file that stayed; `done` warns about it
+    /// and still closes the pane. The default cannot fail.
+    fn try_unregister(&self, workspace: &str, role: &str) -> Result<()> {
+        self.unregister(workspace, role);
+        Ok(())
+    }
     fn settle(&self, workspace: &str);
     /// One last session discovery, before the pane close ends the discovery
     /// thread. Best effort; the default does nothing.
@@ -248,7 +253,7 @@ fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> 
             eprintln!("horch done: could not record the session id ({e:#}); shutting down anyway");
         }
 
-        if let Err(e) = steps.unregister(workspace, role) {
+        if let Err(e) = steps.try_unregister(workspace, role) {
             eprintln!("horch done: {e:#}");
         }
 
@@ -1012,9 +1017,7 @@ mod tests {
             self.report_failures.borrow_mut().push(error.into());
         }
 
-        fn unregister(&self, _: &str, _: &str) -> Result<()> {
-            Ok(())
-        }
+        fn unregister(&self, _: &str, _: &str) {}
         fn settle(&self, _: &str) {}
     }
 
@@ -1247,9 +1250,7 @@ mod tests {
         fn report(&self, _: &str) -> Result<ReportStatus> {
             Ok(ReportStatus::Delivered)
         }
-        fn unregister(&self, _: &str, _: &str) -> Result<()> {
-            Ok(())
-        }
+        fn unregister(&self, _: &str, _: &str) {}
         fn settle(&self, _: &str) {
             if !self.pane.is_empty() {
                 self.ws.pane_close(&self.pane).unwrap();
@@ -1310,7 +1311,8 @@ mod tests {
         fn report(&self, _: &str) -> Result<ReportStatus> {
             Ok(ReportStatus::Delivered)
         }
-        fn unregister(&self, _: &str, role: &str) -> Result<()> {
+        fn unregister(&self, _: &str, _: &str) {}
+        fn try_unregister(&self, _: &str, role: &str) -> Result<()> {
             self.ran.borrow_mut().push(format!("unregister {role}"));
             bail!("removing /state/{role}.id failed; role '{role}' stays registered")
         }
@@ -1386,11 +1388,10 @@ mod tests {
                 .push(format!("record_session {workspace}"));
             Ok(())
         }
-        fn unregister(&self, workspace: &str, _: &str) -> Result<()> {
+        fn unregister(&self, workspace: &str, _: &str) {
             self.ran
                 .borrow_mut()
                 .push(format!("unregister {workspace}"));
-            Ok(())
         }
         fn settle(&self, workspace: &str) {
             self.ran.borrow_mut().push(format!("settle {workspace}"));
@@ -1498,12 +1499,11 @@ mod tests {
                 .push(format!("record_session {workspace}"));
             Ok(())
         }
-        fn unregister(&self, workspace: &str, _: &str) -> Result<()> {
+        fn unregister(&self, workspace: &str, _: &str) {
             self.at(Step::Unregister);
             self.ran
                 .borrow_mut()
                 .push(format!("unregister {workspace}"));
-            Ok(())
         }
         fn settle(&self, workspace: &str) {
             self.at(Step::Settle);

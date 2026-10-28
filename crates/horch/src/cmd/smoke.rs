@@ -780,29 +780,31 @@ mod tests {
     use super::*;
 
     /// A smoke pane is a fresh shell: its `horch` line names the state folder
-    /// the checks read, for each shell.
+    /// the checks read, for each shell, however the parent chose it.
     #[test]
     fn horch_line_carries_the_state_folder() {
-        let ctx = RuntimeContext::from_env(
-            &horch_core::runtime::MapEnv::new("/")
-                .with_exe("/opt/horch/bin/horch")
-                .with("HORCH_STATE_DIR", "/smoke-state"),
-        )
-        .unwrap();
-        for (shell, set) in [
-            (PaneShell::Posix, " 'HORCH_STATE_DIR=/smoke-state' "),
-            (
-                PaneShell::PowerShell,
-                "$env:HORCH_STATE_DIR = '/smoke-state'; ",
-            ),
+        for (variable, root, state) in [
+            ("HORCH_STATE_DIR", "/smoke-state", "/smoke-state"),
+            ("XDG_STATE_HOME", "/xdg-state", "/xdg-state/horch"),
         ] {
-            let line = horch_line(
-                &ctx,
-                shell,
-                Path::new("/opt/horch/bin/horch"),
-                &["register", "a"],
-            );
-            assert!(line.contains(set), "{line}");
+            let ctx = RuntimeContext::from_env(
+                &horch_core::runtime::MapEnv::new("/")
+                    .with_exe("/opt/horch/bin/horch")
+                    .with(variable, root),
+            )
+            .unwrap();
+            let state = Path::new(state).display();
+            for (shell, set) in [
+                (PaneShell::Posix, format!(" 'HORCH_STATE_DIR={state}' ")),
+                (
+                    PaneShell::PowerShell,
+                    format!("$env:HORCH_STATE_DIR = '{state}'; "),
+                ),
+            ] {
+                let exe = Path::new("/opt/horch/bin/horch");
+                let line = horch_line(&ctx, shell, exe, &["register", "a"]);
+                assert!(line.contains(&set), "{variable}: {line}");
+            }
         }
     }
 
