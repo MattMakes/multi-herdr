@@ -85,8 +85,11 @@ pub struct HerdrFailed {
 
 impl std::fmt::Display for HerdrFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "herdr {} failed ({}): ", self.command, self.status)?;
-        f.write_str(&self.stderr)
+        write!(
+            f,
+            "herdr {} failed ({}): {}",
+            self.command, self.status, self.stderr
+        )
     }
 }
 
