@@ -245,7 +245,7 @@ fn ticket_line(claim: &str) -> String {
 }
 
 #[test]
-fn a_claim_names_an_ignored_ticket_by_a_path_that_exists_in_the_worktree() {
+fn a_claim_names_an_ignored_ticket_by_an_absolute_path_that_opens_from_the_worktree() {
     let h = world("tl-ignored");
     project_file(&h, ".gitignore", "ai_docs/\n");
     git_commit_all(&h, "ignore ai_docs");
@@ -1354,6 +1354,11 @@ fn the_import_finds_work_that_never_landed() {
         c.contains(&format!("Worktree: {}", un_claimed.display())),
         "{c}"
     );
+    // The inherited worktree lacks the untracked ticket: the claim names it
+    // by its absolute path.
+    let ticket = ticket_line(&c);
+    assert!(Path::new(&ticket).is_absolute(), "{c}");
+    assert!(ticket.ends_with("tickets/finish-it.md"), "{c}");
 }
 
 #[test]

@@ -576,19 +576,29 @@ impl Board {
         q
     }
 
-    /// The queued tasks that can all start now, chosen greedily in claim
-    /// order: each one is checked against the running tasks and the ones
-    /// chosen before it.
-    fn startable(&self) -> Vec<&Task> {
+    /// Every queued task in claim order, with why it cannot start (`None`
+    /// when it can). The tasks are chosen greedily: each one is checked
+    /// against the running tasks and the startable ones before it.
+    fn plan(&self) -> Vec<(&Task, Option<Wait>)> {
         let mut active: Vec<&Task> = self.tasks.iter().filter(|t| Self::is_active(t)).collect();
         let mut out = Vec::new();
         for t in self.queued() {
-            if self.wait(t, &active).is_none() {
+            let w = self.wait(t, &active);
+            if w.is_none() {
                 active.push(t);
-                out.push(t);
             }
+            out.push((t, w));
         }
         out
+    }
+
+    /// The queued tasks that can all start now.
+    fn startable(&self) -> Vec<&Task> {
+        self.plan()
+            .into_iter()
+            .filter(|(_, w)| w.is_none())
+            .map(|(t, _)| t)
+            .collect()
     }
 }
 
@@ -598,20 +608,14 @@ pub fn startable(conn: &Connection, run_id: &str) -> Result<Vec<Task>> {
     Ok(board.startable().into_iter().cloned().collect())
 }
 
-/// Why each queued task that cannot start now waits. Each task is checked
-/// against the running tasks and the startable ones before it, as
-/// [`Board::startable`] does.
+/// Why each queued task that cannot start now waits.
 pub fn waits(conn: &Connection, run_id: &str) -> Result<Vec<(Task, Wait)>> {
     let board = Board::load(conn, run_id)?;
-    let mut active: Vec<&Task> = board.tasks.iter().filter(|t| Board::is_active(t)).collect();
-    let mut out = Vec::new();
-    for t in board.queued() {
-        match board.wait(t, &active) {
-            Some(w) => out.push((t.clone(), w)),
-            None => active.push(t),
-        }
-    }
-    Ok(out)
+    Ok(board
+        .plan()
+        .into_iter()
+        .filter_map(|(t, w)| w.map(|w| (t.clone(), w)))
+        .collect())
 }
 
 /// 1 earlier attempt, as a claim hands it to the next worker.
