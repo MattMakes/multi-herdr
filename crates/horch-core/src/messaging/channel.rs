@@ -272,18 +272,19 @@ fn wait_ready(
         revents: 0,
     };
     // SAFETY: `poll` points to 1 valid pollfd for the length of the call.
-    match unsafe { libc::poll(&mut poll, 1, millis) } {
-        0 => Err(std::io::ErrorKind::TimedOut.into()),
-        ready if ready > 0 => Ok(()),
-        _ => {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::Interrupted {
-                Ok(())
-            } else {
-                Err(error)
-            }
-        }
+    let ready = unsafe { libc::poll(&mut poll, 1, millis) };
+    if ready > 0 {
+        return Ok(());
     }
+    if ready == 0 {
+        return Err(std::io::ErrorKind::TimedOut.into());
+    }
+    // An interrupted poll is not ready; the caller's next try polls again.
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::Interrupted {
+        return Ok(());
+    }
+    Err(error)
 }
 
 /// Run the MCP stdio server until `input` reaches EOF.
@@ -1053,21 +1054,23 @@ mod tests {
         let socket = socket_path(&temp_root(), name);
         fs::create_dir_all(socket.parent().expect("socket parent")).expect("create parent");
         let listener = UnixListener::bind(&socket).expect("bind test listener");
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept request");
-            let mut buffer = vec![0; chunk.max(1)];
-            loop {
-                thread::sleep(pause);
-                if chunk == 0 {
-                    continue;
-                }
-                match stream.read(&mut buffer) {
-                    Ok(0) | Err(_) => return,
-                    Ok(_) => {}
-                }
-            }
-        });
+        let server = thread::spawn(move || read_slowly(listener, chunk, pause));
         (socket, server)
+    }
+
+    /// The body of [`stalled_relay`]: read until the sender hangs up.
+    fn read_slowly(listener: UnixListener, chunk: usize, pause: Duration) {
+        let (mut stream, _) = listener.accept().expect("accept request");
+        let mut buffer = vec![0; chunk.max(1)];
+        loop {
+            thread::sleep(pause);
+            if chunk == 0 {
+                continue;
+            }
+            if matches!(stream.read(&mut buffer), Ok(0) | Err(_)) {
+                return;
+            }
+        }
     }
 
     /// #67: a relay that accepts and never reads or answers costs the push

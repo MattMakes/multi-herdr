@@ -156,10 +156,8 @@ fn due_at(created_at: SystemTime, attempt: usize) -> Option<SystemTime> {
 
 fn test_duration(name: &str, default: Duration) -> Duration {
     #[cfg(debug_assertions)]
-    if let Ok(milliseconds) = std::env::var(name) {
-        if let Ok(milliseconds) = milliseconds.parse() {
-            return Duration::from_millis(milliseconds);
-        }
+    if let Some(milliseconds) = std::env::var(name).ok().and_then(|v| v.parse().ok()) {
+        return Duration::from_millis(milliseconds);
     }
     let _ = name;
     default

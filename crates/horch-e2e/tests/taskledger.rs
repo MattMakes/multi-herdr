@@ -1153,19 +1153,21 @@ fn the_import_finds_work_that_never_landed() {
     std::fs::create_dir_all(h.state.join("worktrees")).unwrap();
     let claim = |id: &str, path: &Path, branch: &str, state: &str, record: &str| {
         let path = link.join(path.strip_prefix(&proj).unwrap());
-        format!(
-            r#"{{"id":"{id}","name":"{id}","role":"x","record_id":"{record}","path":"{}","branch":"{branch}","base":"main","base_commit":"0","created_at":"2026-10-01T00:00:00Z","state":"{state}","landed_commit":null,"reason":null}}"#,
-            path.display()
-        )
+        serde_json::json!({
+            "id": id, "name": id, "role": "x", "record_id": record,
+            "path": path.display().to_string(), "branch": branch, "base": "main",
+            "base_commit": "0", "created_at": "2026-10-01T00:00:00Z", "state": state,
+            "landed_commit": null, "reason": null,
+        })
     };
     std::fs::write(
         h.state.join("worktrees/repo.json"),
-        format!(
-            "[{},{},{}]",
+        serde_json::json!([
             claim("c1", &landed, "w-landed", "landed", "r1"),
             claim("c2", &un, "w-unlanded", "open", "r1"),
-            claim("c3", &dirty, "w-dirty", "open", "r2")
-        ),
+            claim("c3", &dirty, "w-dirty", "open", "r2"),
+        ])
+        .to_string(),
     )
     .unwrap();
 
