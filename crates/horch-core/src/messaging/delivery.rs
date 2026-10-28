@@ -75,11 +75,11 @@ pub fn send_line_with(
         } else {
             timing.settle_short
         };
-        std::thread::sleep(settle);
+        std::thread::sleep(capped(settle));
     }
     ws.pane_send_keys(pane, "enter")?;
     if landed {
-        std::thread::sleep(timing.second_enter);
+        std::thread::sleep(capped(timing.second_enter));
         ws.pane_send_keys(pane, "enter")?;
     }
     Ok(())
@@ -118,7 +118,7 @@ fn wait_for(
     wait: &Readiness,
     ready: impl Fn(&Pane) -> bool,
 ) -> bool {
-    let deadline = Instant::now() + wait.timeout;
+    let deadline = within_budget(Instant::now() + wait.timeout);
     loop {
         if ws.pane_get(pane).is_ok_and(|p| ready(&p)) {
             return true;
@@ -126,7 +126,10 @@ fn wait_for(
         if Instant::now() >= deadline {
             return false;
         }
-        std::thread::sleep(wait.poll);
+        std::thread::sleep(
+            wait.poll
+                .min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
 }
 
@@ -199,20 +202,41 @@ pub fn send_line_when_ready(
 /// ledger's wake lines. Claude Code kills a command after 120 s (P18).
 pub const DONE_PUSH_BUDGET: Duration = Duration::from_secs(20);
 
-static PUSH_DEADLINE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-
-/// Cap every later push of this process at `total` from now. True the first
-/// time; a later call keeps the first deadline and returns false.
-pub fn start_push_budget(total: Duration) -> bool {
-    PUSH_DEADLINE.set(Instant::now() + total).is_ok()
+thread_local! {
+    static PUSH_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
 }
 
-/// What is left of this process's push budget. `None`: no budget started,
+/// Cap every later push on this thread at `total` from now: every wait and
+/// settle of a delivery ends by then. True the first time; a later call
+/// keeps the first deadline and returns false.
+pub fn start_push_budget(total: Duration) -> bool {
+    PUSH_DEADLINE.with(|deadline| {
+        let first = deadline.get().is_none();
+        if first {
+            deadline.set(Some(Instant::now() + total));
+        }
+        first
+    })
+}
+
+/// What is left of this thread's push budget. `None`: no budget started,
 /// so a push waits as long as it always has.
 pub fn push_time_left() -> Option<Duration> {
-    PUSH_DEADLINE
-        .get()
-        .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    PUSH_DEADLINE.with(|deadline| {
+        deadline
+            .get()
+            .map(|at| at.saturating_duration_since(Instant::now()))
+    })
+}
+
+/// `wait`, cut to what is left of the push budget.
+pub fn capped(wait: Duration) -> Duration {
+    push_time_left().map_or(wait, |left| wait.min(left))
+}
+
+/// `deadline`, moved up to the end of the push budget.
+fn within_budget(deadline: Instant) -> Instant {
+    PUSH_DEADLINE.with(|budget| budget.get().map_or(deadline, |end| deadline.min(end)))
 }
 
 /// Poll the pane until the last characters of `message` show in it.
@@ -221,7 +245,7 @@ fn wait_for_tail(ws: &dyn WorkspaceClient, pane: &str, message: &str, timing: &T
     if needle.is_empty() {
         return true;
     }
-    let deadline = Instant::now() + timing.tail_timeout;
+    let deadline = within_budget(Instant::now() + timing.tail_timeout);
     let mut delay = timing.poll_start;
     loop {
         if let Ok(screen) = ws.pane_read(pane, "visible") {
@@ -232,7 +256,7 @@ fn wait_for_tail(ws: &dyn WorkspaceClient, pane: &str, message: &str, timing: &T
         if Instant::now() >= deadline {
             return false;
         }
-        std::thread::sleep(delay);
+        std::thread::sleep(delay.min(deadline.saturating_duration_since(Instant::now())));
         delay = (delay * 2).min(timing.poll_max);
     }
 }
@@ -255,6 +279,51 @@ fn tail_needle(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::workspace::testing::FakeWorkspace;
+
+    /// #67: one budget bounds every phase of a push. An agent that shows
+    /// late in the grace and stays `unknown`, then a typed line whose tail
+    /// never shows: each phase alone could wait its full timeout.
+    #[test]
+    fn the_push_budget_bounds_every_phase_together() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let budget = Duration::from_millis(600);
+        let wait = Readiness {
+            timeout: Duration::from_secs(120),
+            poll: Duration::from_millis(20),
+        };
+        let starting = (Some("claude"), Some("unknown"));
+        let mut states = vec![(None, None); 20];
+        states.push(starting);
+        ws.set_agent_states(&pane, &states);
+        let started = Instant::now();
+        assert!(start_push_budget(budget));
+        assert!(
+            !start_push_budget(Duration::from_secs(60)),
+            "the first budget stays"
+        );
+        let grace = Duration::from_secs(30);
+        let result =
+            send_line_when_ready(&ws, &pane, "[r] DONE: x", grace, &wait, &Timing::DEFAULT);
+        assert!(result.is_err(), "the agent never stopped starting");
+        assert!(
+            started.elapsed() < budget + Duration::from_millis(300),
+            "{:?}",
+            started.elapsed()
+        );
+
+        // The budget is spent: a tail that never shows costs nothing more.
+        ws.fail_next("agent_prompt", "no agent");
+        let spent = Instant::now();
+        send_line_with(&ws, &pane, "[r] DONE: x", &Timing::DEFAULT).unwrap();
+        assert!(
+            spent.elapsed() < Duration::from_millis(300),
+            "{:?}",
+            spent.elapsed()
+        );
+    }
 
     #[test]
     fn tail_needle_survives_a_soft_wrap_inside_a_box() {

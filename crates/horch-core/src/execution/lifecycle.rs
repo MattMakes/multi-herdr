@@ -968,6 +968,8 @@ mod tests {
         /// `Some(cause)`: the push does not land.
         push_misses: Option<String>,
         queued: RefCell<Vec<String>>,
+        /// `mark_done`, `push` and `unregister`, in the order they ran.
+        order: RefCell<Vec<&'static str>>,
     }
 
     impl Default for ClaimSteps {
@@ -984,6 +986,7 @@ mod tests {
                 done_at_push: RefCell::new(Vec::new()),
                 push_misses: None,
                 queued: RefCell::new(Vec::new()),
+                order: RefCell::new(Vec::new()),
             }
         }
     }
@@ -1022,6 +1025,7 @@ mod tests {
 
         fn mark_done(&self, _: &str, summary: &str) -> Result<()> {
             self.marked_done.borrow_mut().push(summary.into());
+            self.order.borrow_mut().push("mark_done");
             Ok(())
         }
 
@@ -1042,6 +1046,7 @@ mod tests {
         }
 
         fn push(&self) -> ReportStatus {
+            self.order.borrow_mut().push("push");
             self.done_at_push
                 .borrow_mut()
                 .push(self.marked_done.borrow().len());
@@ -1055,7 +1060,9 @@ mod tests {
             self.queued.borrow_mut().push(error.into());
         }
 
-        fn unregister(&self, _: &str, _: &str) {}
+        fn unregister(&self, _: &str, _: &str) {
+            self.order.borrow_mut().push("unregister");
+        }
         fn settle(&self, _: &str) {}
     }
 
@@ -1158,6 +1165,26 @@ mod tests {
         assert_eq!(&*steps.done_at_push.borrow(), &[1], "done, then 1 push");
         assert_eq!(&*steps.queued.borrow(), &["the push budget ran out"]);
         assert!(ws.pane_ids().is_empty(), "the pane is closed");
+    }
+
+    /// #67: the push runs after the record is done and before the pane's
+    /// closing steps; a worker that reports to nobody pushes nothing.
+    #[test]
+    fn done_pushes_between_the_record_and_the_close() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps::default();
+        done(&ws, &steps, &claim_request(&pane, None)).unwrap();
+        assert_eq!(&*steps.order.borrow(), &["mark_done", "push", "unregister"]);
+
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let silent = ClaimSteps::default();
+        let req = DoneRequest {
+            report_to: ReportTarget::None,
+            ..claim_request(&pane, None)
+        };
+        done(&ws, &silent, &req).unwrap();
+        assert_eq!(&*silent.order.borrow(), &["mark_done", "unregister"]);
     }
 
     /// #67: a report that fails to queue is not pushed.

@@ -262,6 +262,17 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
         !worker_pane_closed(&h),
         "the killed done left its pane open"
     );
+    // The courier started before the push, so the killed push's mail is
+    // still redelivered.
+    let lock_path = h.state.join(format!("mail/{WORKSPACE}/courier.lock"));
+    wait_for("a courier for the pending report", || {
+        let lock = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .ok()?;
+        lock.try_lock().is_err().then_some(())
+    });
 
     let o = as_worker(&h, &["done", "finished the work"])
         .output()

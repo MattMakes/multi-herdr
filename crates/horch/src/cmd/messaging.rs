@@ -159,6 +159,12 @@ impl Outgoing<'_> {
     /// The second half of [`tell_as`]: type the line. A durable line that
     /// does not land is queued, not an error: the courier delivers it.
     fn push(self) -> Result<ReportStatus> {
+        // The courier first: a push killed by the agent's command timeout
+        // leaves the mail with a courier. Its first redelivery is 30 s after
+        // the enqueue, after any push budget.
+        if self.durable {
+            super::mail::start_courier(self.ctx, self.mailbox.workspace_id());
+        }
         let pushed = push_line(
             self.ctx,
             &self.herdr,
@@ -170,7 +176,6 @@ impl Outgoing<'_> {
             true,
         );
         if self.durable {
-            super::mail::start_courier(self.ctx, self.mailbox.workspace_id());
             return Ok(match pushed {
                 Ok(()) => ReportStatus::Delivered,
                 Err(error) => ReportStatus::Queued(format!("{error:#}")),
@@ -194,8 +199,6 @@ fn push_line(
 ) -> Result<()> {
     // `horch done` caps all its pushes at one budget; a spent budget skips
     // the relay and waits no more, so only an idle agent still gets the line.
-    let capped =
-        |wait: std::time::Duration| delivery::push_time_left().map_or(wait, |left| wait.min(left));
     let spent = delivery::push_time_left().is_some_and(|left| left.is_zero());
     if role == "orchestrator" && relay && !spent {
         let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
@@ -209,7 +212,7 @@ fn push_line(
         } else {
             channel::SEND_TIMEOUT
         };
-        let send_timeout = capped(send_timeout);
+        let send_timeout = delivery::capped(send_timeout);
         match channel::send(&socket, from, &line, send_timeout) {
             Ok(()) => return Ok(()),
             Err(channel::SendError::NotDelivered(error)) if socket.exists() => eprintln!(
@@ -252,21 +255,13 @@ fn push_line(
     // role that registered just now may not show its agent yet.
     let grace = ctx.settings.tell_grace.unwrap_or(delivery::TELL_GRACE);
     let age = mailbox.registered_at(role).and_then(|at| at.elapsed().ok());
-    let readiness = delivery::Readiness {
-        timeout: capped(delivery::Readiness::DEFAULT.timeout),
-        ..delivery::Readiness::DEFAULT
-    };
-    let timing = delivery::Timing {
-        tail_timeout: capped(delivery::Timing::DEFAULT.tail_timeout),
-        ..delivery::Timing::DEFAULT
-    };
     delivery::send_line_when_ready(
         herdr,
         &target,
         &line,
-        capped(grace_left(age, grace)),
-        &readiness,
-        &timing,
+        grace_left(age, grace),
+        &delivery::Readiness::DEFAULT,
+        &delivery::Timing::DEFAULT,
     )
 }
 
