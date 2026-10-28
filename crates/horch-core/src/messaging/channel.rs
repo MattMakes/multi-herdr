@@ -162,27 +162,67 @@ fn time_left(deadline: Instant) -> std::io::Result<Duration> {
     Ok(left)
 }
 
-/// `UnixStream::connect` has no timeout, and it blocks while the relay's
-/// backlog is full. Connect on a helper thread and stop waiting at
-/// `deadline`; a late connect is dropped when it ends.
+/// `UnixStream::connect` has no timeout, and it can block while the relay's
+/// backlog is full. Connect a nonblocking socket instead, and wait for it
+/// only until `deadline`. No helper thread outlives the request.
 #[cfg(unix)]
 fn connect_by(socket: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let socket = socket.to_path_buf();
-    thread::spawn(move || {
-        let _ = sender.send(UnixStream::connect(socket));
-    });
-    receiver
-        .recv_timeout(time_left(deadline)?)
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))?
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    // SAFETY: sockaddr_un is plain data; all zeroes is a valid value.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let path = socket.as_os_str().as_bytes();
+    if path.len() >= address.sun_path.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "socket path is too long",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (to, from) in address.sun_path.iter_mut().zip(path) {
+        *to = *from as libc::c_char;
+    }
+    // SAFETY: plain syscall; a negative answer is checked before use.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a new socket that nothing else owns.
+    let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    // SAFETY: plain syscall on the socket that `stream` owns.
+    if unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    stream.set_nonblocking(true)?;
+    let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // SAFETY: `address` is a valid sockaddr_un of `length` bytes.
+    let connected = unsafe {
+        libc::connect(
+            stream.as_raw_fd(),
+            (&address as *const libc::sockaddr_un).cast(),
+            length,
+        )
+    };
+    if connected == 0 {
+        return Ok(stream);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::EINPROGRESS) {
+        return Err(error);
+    }
+    wait_ready(&stream, libc::POLLOUT, deadline)?;
+    match stream.take_error()? {
+        Some(error) => Err(error),
+        None => Ok(stream),
+    }
 }
 
 /// A blocking socket write keeps going while a slow reader frees space, past
-/// any write timeout (macOS). So the stream is nonblocking, and `poll` waits
-/// only for the time that is left.
+/// any write timeout (macOS). So the stream from [`connect_by`] is
+/// nonblocking, and `poll` waits only for the time that is left.
 #[cfg(unix)]
 fn write_by(stream: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> std::io::Result<()> {
-    stream.set_nonblocking(true)?;
     while !bytes.is_empty() {
         match stream.write(bytes) {
             Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
@@ -200,7 +240,6 @@ fn write_by(stream: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> std
 /// One answer line, up to and with its newline, or what came before EOF.
 #[cfg(unix)]
 fn read_line_by(stream: &mut UnixStream, deadline: Instant) -> std::io::Result<String> {
-    stream.set_nonblocking(true)?;
     let mut answer = Vec::new();
     let mut buffer = [0; 256];
     while !answer.contains(&b'\n') && answer.len() < MAX_LINE_BYTES {

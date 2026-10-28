@@ -98,8 +98,10 @@ pub fn send_line_with(
     Ok(())
 }
 
-/// The time a push budget keeps for the herdr Enter calls after typing.
-const ENTER_CALLS: Duration = Duration::from_millis(250);
+/// The time a push budget keeps for the herdr Enter calls after typing. The
+/// push deadline ends a herdr call, and an Enter cut off leaves typed text
+/// in the pane, so this covers 2 calls on a loaded machine, not a quick one.
+const ENTER_CALLS: Duration = Duration::from_secs(1);
 
 /// `wait`, cut so the push budget still has [`ENTER_CALLS`] after it: typed
 /// text that is not submitted would join the next line typed into the pane.
@@ -390,8 +392,8 @@ mod tests {
             second_enter: Duration::from_millis(100),
             ..Timing::DEFAULT
         };
-        // 600 ms: the settle and the Enter calls keep 350, the poll gets 250.
-        let budget = Duration::from_millis(600);
+        // The settle and the Enter calls keep their part; the poll gets 250 ms.
+        let budget = Duration::from_millis(350) + ENTER_CALLS;
         let started = Instant::now();
         let guard = start_push_budget(budget).expect("no budget runs yet");
         ws.fail_next("agent_prompt", "no agent");
@@ -476,7 +478,7 @@ mod tests {
     fn slow_typing_still_presses_enter_inside_the_budget() {
         let ws = SlowTyping {
             fake: FakeWorkspace::new(),
-            typing: Duration::from_millis(300),
+            typing: Duration::from_millis(400),
             enters: Default::default(),
         };
         let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
@@ -485,7 +487,8 @@ mod tests {
             second_enter: Duration::from_millis(100),
             ..Timing::DEFAULT
         };
-        let budget = Duration::from_millis(600);
+        // Enough to start typing, but typing eats into the reserve.
+        let budget = Duration::from_millis(300) + ENTER_CALLS;
         let guard = start_push_budget(budget).expect("no budget runs yet");
         let deadline = push_deadline().expect("the budget runs");
         send_line_with(&ws, &pane, "[r] DONE: x", &timing).unwrap();

@@ -89,9 +89,9 @@ sequenceDiagram
     H->>W: text arrives in the worker pane
 
     W->>H: horch done "summary"
-    H->>M: write pending worker report
-    H->>O: DONE message
+    H->>M: write pending worker report, start the courier
     H->>L: Done + summary
+    H->>O: DONE message (all pushes share 1 20 s budget)
     H->>W: start a detached re-tile, close the pane
 ```
 
@@ -107,10 +107,14 @@ pending report, oldest first, acknowledges it, and ends with
 - If the pending-mail write fails, `horch done` fails as a failed report.
   The ledger gets a `report-failed` event. The record stays live, and the
   pane stays open.
+- If the courier cannot start, `horch done` takes the report back out of
+  pending mail and fails as a failed report. The record stays live, and the
+  pane stays open.
 - If the write succeeds and the push fails, `horch done` records and closes.
   It prints that the courier will redeliver the report. The ledger gets a
   `report-queued` event with the cause.
-- The courier starts after each queued report. It checks pending mail every
+- Inside `horch done`, the courier starts before the push. Otherwise it
+  starts after each queued report. It checks pending mail every
   5 s. When the orchestrator pane is ready, it resends each due report with
   `(redelivery <n>: not acknowledged; run horch inbox)`.
 - The courier waits 30 s, 1 min, 2 min, 4 min, then 5 min between retries.
