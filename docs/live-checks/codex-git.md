@@ -132,6 +132,10 @@ teammate descriptions say this.
     all, by length (a sparse file counts in full).
   - No git starts in a gitlink: submodules are ignored, and no
     maintenance runs after the commit.
+  - What is committed is what was checked: after git add, the staged
+    index is compared with HEAD, and a new gitlink or a path that was not
+    checked refuses the commit. git commit takes no pathspec, so it never
+    stages from the worktree again.
   - The index changes only when the commit succeeds, under git's own
     `index.lock`. The lock holds horch's pid, so a lock that a killed run
     left is refused as stale, with its path.

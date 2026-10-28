@@ -35,6 +35,13 @@ fn ok_as(h: &Harness, worker: &str, args: &[&str]) -> String {
     out(&o)
 }
 
+/// [`ok_as`] from `dir`.
+fn ok_in(h: &Harness, worker: &str, dir: &Path, args: &[&str]) -> String {
+    let o = as_worker(h, worker, dir, args);
+    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
+    out(&o)
+}
+
 /// `horch <args>` as `worker`, from `dir`.
 fn as_worker(h: &Harness, worker: &str, dir: &Path, args: &[&str]) -> Output {
     let mut cmd = h.horch(args);
@@ -1068,4 +1075,165 @@ fn the_author_is_the_repository_identity_then_the_global_one() {
     git_in(&h, &project, &["config", "user.name", "Repo Op"]);
     git_in(&h, &project, &["config", "user.email", "repo@example.com"]);
     assert_eq!(commit_as("b.txt"), "Repo Op <repo@example.com>");
+}
+
+#[test]
+fn a_path_that_becomes_a_nested_repository_after_the_checks_is_never_committed() {
+    let (h, w, wt) = claimed("lc-race");
+    std::fs::write(wt.join("d"), "d\n").unwrap();
+    git_in(&h, &wt, &["add", "d"]);
+    git_in(&h, &wt, &["commit", "--quiet", "--no-verify", "-m", "d"]);
+    std::fs::remove_file(wt.join("d")).unwrap();
+    let marker = h.root.join("monitor-ran");
+    let monitor = h.root.join("monitor");
+    std::fs::write(
+        &monitor,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
+    // Between the checks and git add, the deleted path becomes a nested
+    // repository whose fsmonitor a later plain git status would run.
+    let real = h.git_bin().expect("the harness has git").to_path_buf();
+    let nested = wt.join("d");
+    let swap = format!(
+        "g() {{ env -i PATH=/usr/bin:/bin '{real}' -c user.name=x -c user.email=x@x \"$@\"; }}\n\
+         g init -q '{d}' && echo n > '{d}/n' && g -C '{d}' add n && g -C '{d}' commit -qm n \
+         && g -C '{d}' config core.fsmonitor '{monitor}'",
+        real = real.display(),
+        d = nested.display(),
+        monitor = monitor.display()
+    );
+    let fake = h.root.join("racing-git");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" check-attr \"*) {swap} >/dev/null 2>&1;; esac\n\
+             exec '{}' \"$@\"\n",
+            real.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    for f in [&fake, &monitor] {
+        std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+    let mut cmd = h.horch(&["ledger", "commit", "-m", "x"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .env("HORCH_GIT_BIN", &fake)
+        .current_dir(&wt);
+    let o = cmd.output().unwrap();
+    assert!(nested.join(".git").exists(), "the race ran");
+    assert!(
+        !o.status.success() && text(&o).contains("d became a gitlink"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+    // The plain git status that horch ledger finish runs.
+    git_in(&h, &wt, &["status", "--porcelain"]);
+    assert!(
+        !marker.exists(),
+        "no git may start in the nested repository"
+    );
+}
+
+#[test]
+fn with_nothing_listed_no_git_add_runs_and_a_moved_gitlink_stays_out() {
+    let (h, w, wt) = claimed("lc-empty");
+    let marker = h.root.join("filter-ran");
+    let nested = nested_repo(&h, &wt, "inner", &marker);
+    git_in(&h, &wt, &["add", "inner"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "gitlink"],
+    );
+    let gitlink = git_in(&h, &wt, &["rev-parse", "HEAD:inner"]);
+    // Commit every other change, so git status lists nothing after it.
+    ok_in(&h, &w, &wt, &["ledger", "commit", "-m", "rest"]);
+    git_in(
+        &h,
+        &nested,
+        &["commit", "--quiet", "--allow-empty", "-m", "moved"],
+    );
+    std::fs::write(nested.join("f.txt"), "f\n").unwrap();
+    let _ = std::fs::remove_file(&marker);
+    let before = head(&h, &wt);
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+    assert_eq!(git_in(&h, &wt, &["rev-parse", "HEAD:inner"]), gitlink);
+    assert!(
+        !marker.exists(),
+        "no git may start in the nested repository"
+    );
+}
+
+#[test]
+fn every_kind_of_change_commits_with_no_paths() {
+    let (h, w, wt) = claimed("lc-kinds");
+    for f in ["mod.txt", "del.txt", "gone.txt", "old.txt"] {
+        std::fs::write(wt.join(f), "1\n").unwrap();
+    }
+    git_in(
+        &h,
+        &wt,
+        &["add", "mod.txt", "del.txt", "gone.txt", "old.txt"],
+    );
+    git_in(&h, &wt, &["commit", "--quiet", "--no-verify", "-m", "base"]);
+    std::fs::write(wt.join("mod.txt"), "2\n").unwrap();
+    std::fs::remove_file(wt.join("del.txt")).unwrap();
+    // A staged deletion: in neither the index nor the worktree.
+    git_in(&h, &wt, &["rm", "--quiet", "gone.txt"]);
+    git_in(&h, &wt, &["mv", "old.txt", "new.txt"]);
+    std::fs::write(wt.join("sp ace.txt"), "s\n").unwrap();
+    std::fs::write(wt.join("line\nbreak.txt"), "n\n").unwrap();
+    ok_in(&h, &w, &wt, &["ledger", "commit", "-m", "kinds"]);
+    assert_eq!(git_in(&h, &wt, &["status", "--porcelain"]), "");
+    let changed = git_in(
+        &h,
+        &wt,
+        &[
+            "show",
+            "--name-status",
+            "--no-renames",
+            "-z",
+            "--format=",
+            "HEAD",
+        ],
+    );
+    for entry in [
+        "M\0mod.txt",
+        "D\0del.txt",
+        "D\0gone.txt",
+        "D\0old.txt",
+        "A\0new.txt",
+        "A\0sp ace.txt",
+        "A\0line\nbreak.txt",
+    ] {
+        assert!(changed.contains(entry), "{entry:?} in {changed:?}");
+    }
+}
+
+#[test]
+fn a_lock_of_a_running_process_is_not_called_stale() {
+    let (h, w, wt) = claimed("lc-live-lock");
+    let lock = admin_dir(&h).join("index.lock");
+    std::fs::write(
+        &lock,
+        format!("horch ledger commit pid {}\n", std::process::id()),
+    )
+    .unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    assert!(
+        !o.status.success()
+            && text(&o).contains("another git command")
+            && !text(&o).contains("is stale"),
+        "{}",
+        text(&o)
+    );
+    assert!(lock.exists(), "the lock stays");
 }
