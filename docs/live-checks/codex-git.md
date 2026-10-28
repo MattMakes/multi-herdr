@@ -121,7 +121,7 @@ teammate descriptions say this.
     the current folder is outside it;
   - runs an absolute git only: `HORCH_GIT_BIN` when it is absolute, else
     the first of `/usr/bin/git`, `/opt/homebrew/bin/git` and
-    `/usr/local/bin/git` at 2.40 or later. Never a lookup through `PATH`:
+    `/usr/local/bin/git` at 2.41 or later. Never a lookup through `PATH`:
     a worker-writable folder on it would run a fake git. It refuses a git
     inside the worktree or the state root, and every git child gets
     `PATH=/usr/bin:/bin`. `horch doctor` warns when no such git exists;
@@ -135,10 +135,13 @@ teammate descriptions say this.
   - runs every git call with `GIT_DIR=<that git dir>` and
     `GIT_WORK_TREE=<worktree>`, every other `GIT_*` variable removed except
     the author and committer name, email and date, `GIT_CONFIG_NOSYSTEM=1`,
-    `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_SOURCE=<empty tree>` (so no
+    `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_SOURCE=<empty tree>` (the
+    empty tree of the repository's object format, SHA-1 or SHA-256, so no
     `.gitattributes` file selects a filter), `GIT_PAGER=cat`,
     `GIT_EDITOR=true` and `GIT_TERMINAL_PROMPT=0`. It refuses to run on git
-    older than 2.40, which ignores `GIT_ATTR_SOURCE`. `user.name` and
+    older than 2.41, which has no `GIT_ATTR_SOURCE`. Every git call also
+    passes the global option `--attr-source=<empty tree>`: fail-closed, a git
+    that does not know it exits with an error instead of ignoring it. `user.name` and
     `user.email` come from the operator's global config as values;
   - passes `-c core.hooksPath=/dev/null -c core.fsmonitor=false
     -c commit.gpgsign=false -c gpg.program=/usr/bin/false` to every call;
@@ -146,19 +149,30 @@ teammate descriptions say this.
     repository (a folder below the worktree root with its own `.git`). It
     checks the path as given and its resolved target, and gives git the
     path as given, so a symlink is committed as the link itself;
+  - refuses a path whose `filter` attribute names a driver with
+    `filter.<name>.required=true` in the repository or global config (Git
+    LFS sets it): with no filters, git would store the raw content. It reads
+    the attribute with `git check-attr`, which runs no filter. A path with
+    another filter is committed unfiltered;
   - stages with `git add -- <paths>` (or `git add -A`), commits with
     `git commit -m <message> -- <paths>` (only the named files) or
     `git commit -m <message>`, prints the commit id, and records the
     progress event `commit <short id>`. A failed ledger write after the
     commit prints a warning and still exits 0: the commit exists.
-- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 9 tests): a
+- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 13 tests): a
   commit lands without hooks; refused paths; refused for a review task or no
   task; a rewritten `.git` file is refused and its config never runs; a
   `* filter=evil` attribute with `filter.evil.clean` in the repository
   config does not run the filter, and the commit lands; a symlink is
   committed as the link, and links that lead outside are refused; a stopped
   worker cannot commit; a fake git first on `PATH`, or named inside the
-  worktree, never runs; a worktree whose admin name is taken still commits.
+  worktree, never runs; a worktree whose admin name is taken still commits;
+  a git that rejects `--attr-source` fails closed and commits nothing; a
+  required (LFS-like) filter is refused and never runs; hostile `GIT_DIR`,
+  `GIT_WORK_TREE` and `GIT_CONFIG_*` variables are ignored; git 2.40, bad
+  version output and a failing `git --version` are refused.
+- SHA-256: `scripts/live/codex-git.sh`, run with both scratch repositories
+  made by `git init --object-format=sha256`, passed every check (exit 0).
 - The caller cannot steer the command through its environment.
   `codex execpolicy check` on the shipped rules gives no match for
   `HORCH_GIT_BIN=x horch ledger commit -m x`, for
@@ -184,10 +198,12 @@ pre-01c grants):
 
 - A Codex worker can push to a network remote from its sandbox (see above).
   Only the briefing and `horch ledger finish` keep pushes in the fleet flow.
-- A Codex worker cannot commit outside a ledger task.
+- A Codex worker cannot commit outside a ledger task with a worktree, and
+  cannot rebase: on a land conflict it sends `BLOCKED:` to the orchestrator.
 - `git add -A` (no paths) stages every change in the worktree. A nested
   repository there is staged as a gitlink (mode 160000). Checked with the
   same git flags: the nested repository's clean filter and
   `core.fsmonitor` did not run.
-- Commits skip the repository's own hooks and attribute filters (Git LFS
-  too). `horch ledger finish` runs the ticket's check before it lands.
+- Commits skip the repository's own hooks and attribute filters. A path
+  under a required filter (Git LFS) is refused, not committed raw.
+  `horch ledger finish` runs the ticket's check before it lands.

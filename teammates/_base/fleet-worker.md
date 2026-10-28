@@ -105,10 +105,11 @@ work. These commands are on your PATH:
   it prints. Do not run git worktree add. Do not use a worktree tool of
   your harness.
 - Commit your work in the worktree. Commit exact files, not directories.
-- A Codex worker commits only in a claimed ledger task, with:
+- A Codex worker commits only in a claimed ledger task with a worktree:
   horch ledger commit -m "<message>" -- <files>
   It stages and commits only those files: the sandbox refuses git writes.
-  Every other worker commits with plain git.
+  It cannot rebase, so on a land conflict it sends BLOCKED: to the
+  orchestrator. Every other worker commits with plain git.
 - You land your own work. Do not wait for the orchestrator to merge it.
   Run: horch worktree land --check "<the check command of your plan>".
   It rebases your branch on the branch that it came from, runs the check,

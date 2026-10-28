@@ -1,6 +1,6 @@
 ---
 name: codex-luna
-brief_description: Cheapest Codex, rote runs. Network on; sandbox cannot stop git push. Not a primary for non-ledger work that commits.
+brief_description: Cheapest Codex, rote runs. Network on; sandbox cannot stop git push. Not primary for commits outside a ledger worktree.
 generic: true
 base: fleet-worker
 agent: codex

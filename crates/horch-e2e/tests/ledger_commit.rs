@@ -437,3 +437,130 @@ fn a_worktree_whose_admin_name_is_taken_still_commits() {
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(out(&o).trim(), head(&h, &wt));
 }
+
+#[test]
+fn a_git_without_attr_source_fails_closed_and_commits_nothing() {
+    let (h, w, wt) = claimed("lc-attrsrc");
+    let real = h.git_bin().expect("the harness has git").to_path_buf();
+    // Reports a new version, but rejects `--attr-source` like an older git.
+    let fake = h.root.join("old-git");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do case $a in --attr-source*) \
+             echo \"unknown option: $a\" >&2; exit 129;; esac; done\nexec '{}' \"$@\"\n",
+            real.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+
+    let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .env("HORCH_GIT_BIN", &fake)
+        .current_dir(&wt);
+    let o = cmd.output().unwrap();
+    assert!(!o.status.success(), "{}", text(&o));
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+    assert!(
+        git_in(&h, &wt, &["diff", "--cached", "--name-only"]).is_empty(),
+        "nothing is staged"
+    );
+}
+
+#[test]
+fn a_path_with_a_required_filter_is_refused_and_the_filter_never_runs() {
+    let (h, w, wt) = claimed("lc-lfs");
+    let marker = h.root.join("lfs-ran");
+    let project = h.project.clone();
+    git_in(
+        &h,
+        &project,
+        &[
+            "config",
+            "filter.lfs.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ],
+    );
+    git_in(&h, &project, &["config", "filter.lfs.required", "true"]);
+    std::fs::write(wt.join(".gitattributes"), "*.bin filter=lfs\n").unwrap();
+    std::fs::write(wt.join("big.bin"), "large\n").unwrap();
+    let before = head(&h, &wt);
+    for args in [
+        vec!["ledger", "commit", "-m", "x", "--", "big.bin"],
+        vec!["ledger", "commit", "-m", "x"],
+    ] {
+        let o = as_worker(&h, &w, &wt, &args);
+        assert!(
+            !o.status.success() && text(&o).contains("big.bin (filter=lfs)"),
+            "{}",
+            text(&o)
+        );
+    }
+    assert!(!marker.exists(), "the filter must not run");
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+#[test]
+fn hostile_git_variables_from_the_caller_are_ignored() {
+    let (h, w, wt) = claimed("lc-env");
+    let marker = h.root.join("env-ran");
+    let evil = h.root.join("evil.git");
+    let root = h.root.clone();
+    git_in(
+        &h,
+        &root,
+        &["init", "--quiet", "--bare", &evil.to_string_lossy()],
+    );
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let hook = format!("touch '{}'", marker.display());
+    let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .env("GIT_DIR", &evil)
+        .env("GIT_WORK_TREE", &h.root)
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_0", &hook)
+        .env("GIT_CONFIG_KEY_1", "gpg.program")
+        .env("GIT_CONFIG_VALUE_1", &hook)
+        .current_dir(&wt);
+    let o = cmd.output().unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(
+        out(&o).trim(),
+        head(&h, &wt),
+        "the commit is in the worktree"
+    );
+    assert!(!marker.exists(), "no configured program may run");
+}
+
+#[test]
+fn a_git_older_than_2_41_or_with_bad_version_output_is_refused() {
+    let (h, w, wt) = claimed("lc-version");
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+    use std::os::unix::fs::PermissionsExt;
+    for (name, body) in [
+        ("git-2-40", "echo 'git version 2.40.9'"),
+        ("git-garbage", "echo 'not a version'"),
+        ("git-fails", "exit 1"),
+    ] {
+        let fake = h.root.join(name);
+        std::fs::write(&fake, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "a.txt"]);
+        cmd.env("HORCH_WORKER_ID", &w)
+            .env("HORCH_GIT_BIN", &fake)
+            .current_dir(&wt);
+        let o = cmd.output().unwrap();
+        assert!(
+            !o.status.success() && text(&o).contains("needs git 2.41 or later"),
+            "{name}: {}",
+            text(&o)
+        );
+    }
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}

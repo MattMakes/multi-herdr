@@ -43,8 +43,9 @@ const SAFE_CONFIG: [&str; 4] = [
     "gpg.program=/usr/bin/false",
 ];
 
-/// git's empty tree id.
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/// git's empty tree id in a SHA-1 repository, and in a SHA-256 one.
+const EMPTY_TREE_SHA1: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const EMPTY_TREE_SHA256: &str = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321";
 
 /// Plain data that names the author and committer; never a program.
 const IDENTITY_VARS: [&str; 6] = [
@@ -76,8 +77,10 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
         .collect::<Result<Vec<_>>>()?;
 
     let bin = &trusted_git(&ctx.bins.harness.git, &root, &ctx.paths.state_root)?;
-    let gitdir = trusted_gitdir(bin, Path::new(&wt.repo_root), Path::new(&wt.path), &root)?;
-    let id = commit(&Trusted::new(bin, &root, &gitdir), &args.message, &paths)?;
+    let (gitdir, tree) = trusted_gitdir(bin, Path::new(&wt.repo_root), Path::new(&wt.path), &root)?;
+    let git = Trusted::new(bin, &root, &gitdir, tree);
+    refuse_filtered(&git, &paths)?;
+    let id = commit(&git, &args.message, &paths)?;
     // The commit exists now: print its id first, and never fail on the
     // bookkeeping after it, or a retry finds nothing to commit.
     output::println(&id);
@@ -147,25 +150,114 @@ fn commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
     git.run(&["rev-parse".into(), "HEAD".into()])
 }
 
+/// Refused when a path to commit has a `filter` attribute (Git LFS, for
+/// one): with attributes from the empty tree, git would store its raw
+/// content. With no paths, the paths are every change `git status` lists.
+fn refuse_filtered(git: &Trusted, paths: &[PathBuf]) -> Result<()> {
+    let mut names: Vec<OsString> = paths.iter().map(|p| p.as_os_str().to_owned()).collect();
+    if names.is_empty() {
+        let status = git.run_raw(&[
+            "status".into(),
+            "--porcelain=v1".into(),
+            "-z".into(),
+            "--untracked-files=all".into(),
+        ])?;
+        let mut entries = status.split('\0').filter(|e| !e.is_empty());
+        while let Some(entry) = entries.next() {
+            if let Some(path) = entry.get(3..) {
+                names.push(path.into());
+            }
+            // A rename or copy is followed by its old path.
+            if matches!(entry.as_bytes().first(), Some(b'R' | b'C')) {
+                entries.next();
+            }
+        }
+    }
+    if names.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<OsString> = vec![
+        "check-attr".into(),
+        "-z".into(),
+        "filter".into(),
+        "--".into(),
+    ];
+    args.extend(names);
+    let out = git.run_with_attributes(&args)?;
+    let fields: Vec<&str> = out.split('\0').collect();
+    // Only a required filter refuses: git itself fails without it, and
+    // `git lfs install` sets `filter.lfs.required`. Another filter's path is
+    // committed unfiltered.
+    let filtered: Vec<String> = fields
+        .chunks(3)
+        .filter(|c| c.len() == 3 && !matches!(c[2], "unspecified" | "unset"))
+        .filter(|c| required_filter(git, c[2]))
+        .map(|c| format!("{} (filter={})", c[0], c[2]))
+        .collect();
+    if !filtered.is_empty() {
+        bail!(
+            "refused: horch ledger commit runs no git filters, so it cannot commit {}, \
+             whose filter is required. Ask the orchestrator for a Claude worker to commit \
+             these paths.",
+            filtered.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Whether `filter.<name>.required` is true in the repository config or the
+/// operator's global config (where `git lfs install` writes it).
+fn required_filter(git: &Trusted, name: &str) -> bool {
+    let key = format!("filter.{name}.required");
+    let repo = git
+        .run(&["config".into(), "--get".into(), key.as_str().into()])
+        .ok();
+    let value = repo.or_else(|| global_config(&git.bin, &key));
+    value.is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "on" | "1"))
+}
+
 /// The worktree's git dir, from trusted metadata only: the 1 entry under
 /// the common dir (from `git rev-parse` in the main checkout the ledger
 /// recorded) whose `gitdir` file names the recorded worktree. Not its folder
 /// name: git appends a number when that name is taken. Refused unless the
 /// worktree's `.git` is a file that says exactly `gitdir: <that entry>`.
-fn trusted_gitdir(bin: &Path, repo_root: &Path, worktree: &Path, root: &Path) -> Result<PathBuf> {
-    let mut cmd = clean_git(bin);
+/// Also returns the empty tree id of the repository's object format.
+fn trusted_gitdir(
+    bin: &Path,
+    repo_root: &Path,
+    worktree: &Path,
+    root: &Path,
+) -> Result<(PathBuf, &'static str)> {
+    // The attribute source is read only when attributes are: a SHA-1 id is
+    // safe here in a SHA-256 repository too.
+    let mut cmd = clean_git(bin, EMPTY_TREE_SHA1);
     cmd.arg("-C").arg(repo_root);
     for pair in SAFE_CONFIG {
         cmd.args(["-c", pair]);
     }
     let out = cmd
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+            "--show-object-format",
+        ])
         .output()
         .with_context(|| format!("running {}", bin.display()))?;
     if !out.status.success() {
         bail!("refused: {} is not a git checkout", repo_root.display());
     }
-    let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let common = PathBuf::from(lines.next().unwrap_or_default().trim());
+    let tree = match lines.next().map(str::trim) {
+        Some("sha1") => EMPTY_TREE_SHA1,
+        Some("sha256") => EMPTY_TREE_SHA256,
+        other => bail!(
+            "refused: {} has an unknown object format {other:?}",
+            repo_root.display()
+        ),
+    };
     let recorded = format!("{}/.git", worktree.display());
     let names_worktree = |entry: &Path| {
         std::fs::read_to_string(entry.join("gitdir")).is_ok_and(|t| {
@@ -207,7 +299,7 @@ fn trusted_gitdir(bin: &Path, repo_root: &Path, worktree: &Path, root: &Path) ->
             gitdir.display()
         );
     }
-    Ok(gitdir.clone())
+    Ok((gitdir.clone(), tree))
 }
 
 /// Absolute git paths `horch ledger commit` tries in order when
@@ -220,8 +312,8 @@ const TRUSTED_GITS: [&str; 3] = [
 ];
 
 /// The git to run: `configured` when absolute, else the first of
-/// [`TRUSTED_GITS`] at 2.40 or later. Refused inside the worktree or the
-/// state root (the sandbox writes both), and below 2.40, which ignores
+/// [`TRUSTED_GITS`] at 2.41 or later. Refused inside the worktree or the
+/// state root (the sandbox writes both), and below 2.41, which has no
 /// `GIT_ATTR_SOURCE`, so a `.gitattributes` file could select a filter.
 fn trusted_git(configured: &Path, root: &Path, state_root: &Path) -> Result<PathBuf> {
     let candidates: Vec<PathBuf> = if configured.is_absolute() {
@@ -245,13 +337,14 @@ fn trusted_git(configured: &Path, root: &Path, state_root: &Path) -> Result<Path
             );
         }
         match git_version(&real) {
-            Some(v) if v >= (2, 40) => return Ok(real),
+            Some(v) if v >= (2, 41) => return Ok(real),
             v => too_old.push(format!("{} ({v:?})", real.display())),
         }
     }
     bail!(
-        "refused: horch ledger commit needs git 2.40 or later (GIT_ATTR_SOURCE), \
-         at HORCH_GIT_BIN or one of {}. Found: {}",
+        "refused: horch ledger commit needs git 2.41 or later, at HORCH_GIT_BIN or \
+         one of {}: older git has no attribute source, so a worker's .gitattributes \
+         could select a filter that runs outside the sandbox. Found: {}",
         TRUSTED_GITS.join(", "),
         if too_old.is_empty() {
             "none".to_string()
@@ -262,7 +355,7 @@ fn trusted_git(configured: &Path, root: &Path, state_root: &Path) -> Result<Path
 }
 
 /// The git `horch ledger commit` would run, for `horch doctor`: refused when
-/// there is no git 2.40 or later at `HORCH_GIT_BIN` or a [`TRUSTED_GITS`] path.
+/// there is no git 2.41 or later at `HORCH_GIT_BIN` or a [`TRUSTED_GITS`] path.
 pub fn commit_git(ctx: &RuntimeContext) -> Result<PathBuf> {
     trusted_git(
         &ctx.bins.harness.git,
@@ -273,7 +366,10 @@ pub fn commit_git(ctx: &RuntimeContext) -> Result<PathBuf> {
 
 /// `(major, minor)` of the git at `bin`, run with a clean environment.
 fn git_version(bin: &Path) -> Option<(u32, u32)> {
-    let out = git_without_env(bin).arg("--version").output().ok()?;
+    let out = git_without_env(bin, Some(EMPTY_TREE_SHA1))
+        .arg("--version")
+        .output()
+        .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut parts = text.split_whitespace().nth(2)?.split('.');
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
@@ -363,21 +459,37 @@ struct Trusted {
     bin: PathBuf,
     root: PathBuf,
     gitdir: PathBuf,
+    tree: &'static str,
     identity: Vec<(String, String)>,
 }
 
 impl Trusted {
-    fn new(bin: &Path, root: &Path, gitdir: &Path) -> Trusted {
+    fn new(bin: &Path, root: &Path, gitdir: &Path, tree: &'static str) -> Trusted {
         Trusted {
             bin: bin.to_path_buf(),
             root: root.to_path_buf(),
             gitdir: gitdir.to_path_buf(),
+            tree,
             identity: global_identity(bin),
         }
     }
 
     fn run(&self, args: &[OsString]) -> Result<String> {
-        let mut cmd = clean_git(&self.bin);
+        Ok(self.run_raw(args)?.trim().to_string())
+    }
+
+    /// `run`, with stdout as git printed it: `-z` output keeps its spaces.
+    fn run_raw(&self, args: &[OsString]) -> Result<String> {
+        self.output(clean_git(&self.bin, self.tree), args)
+    }
+
+    /// `run`, with the attributes of the worktree: only for `check-attr`,
+    /// which reads attributes and never runs a filter.
+    fn run_with_attributes(&self, args: &[OsString]) -> Result<String> {
+        self.output(attribute_git(&self.bin), args)
+    }
+
+    fn output(&self, mut cmd: Command, args: &[OsString]) -> Result<String> {
         // The git dir is named, never discovered: discovery would follow the
         // worktree's `.git` file, which the sandbox can rewrite.
         cmd.arg("-C")
@@ -408,23 +520,34 @@ impl Trusted {
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 }
 
 /// A git command with every `GIT_*` variable removed, no system config and
-/// no global config.
-fn clean_git(bin: &Path) -> Command {
-    let mut cmd = git_without_env(bin);
+/// no global config, and attributes from the empty tree `tree`.
+fn clean_git(bin: &Path, tree: &str) -> Command {
+    let mut cmd = git_without_env(bin, Some(tree));
+    // Attributes come from the empty tree: no `.gitattributes` file selects
+    // a filter.
+    cmd.env("GIT_ATTR_SOURCE", tree);
+    pinned_env(&mut cmd);
+    cmd
+}
+
+/// [`clean_git`] that reads the worktree's attributes: for `check-attr`.
+fn attribute_git(bin: &Path) -> Command {
+    let mut cmd = git_without_env(bin, None);
+    pinned_env(&mut cmd);
+    cmd
+}
+
+fn pinned_env(cmd: &mut Command) {
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        // Attributes come from the empty tree: no `.gitattributes` file
-        // selects a filter.
-        .env("GIT_ATTR_SOURCE", EMPTY_TREE)
         .env("GIT_PAGER", "cat")
         .env("GIT_EDITOR", "true")
         .env("GIT_TERMINAL_PROMPT", "0");
-    cmd
 }
 
 /// `user.name` and `user.email` from the operator's global config, read as
@@ -432,22 +555,31 @@ fn clean_git(bin: &Path) -> Command {
 fn global_identity(bin: &Path) -> Vec<(String, String)> {
     ["user.name", "user.email"]
         .into_iter()
-        .filter_map(|key| {
-            let out = git_without_env(bin)
-                .current_dir("/")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .args(["config", "--global", "--get", key])
-                .output()
-                .ok()?;
-            let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            (out.status.success() && !value.is_empty()).then(|| (key.to_string(), value))
-        })
+        .filter_map(|key| Some((key.to_string(), global_config(bin, key)?)))
         .collect()
 }
 
-/// A git command with every `GIT_*` variable removed.
-fn git_without_env(bin: &Path) -> Command {
+/// 1 value from the operator's global config, read as a value only.
+fn global_config(bin: &Path, key: &str) -> Option<String> {
+    let out = git_without_env(bin, Some(EMPTY_TREE_SHA1))
+        .current_dir("/")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["config", "--global", "--get", key])
+        .output()
+        .ok()?;
+    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !value.is_empty()).then_some(value)
+}
+
+/// A git command with every `GIT_*` variable removed, and attributes from
+/// the empty tree `tree` as a global option. Fail-closed: a git that does
+/// not know `--attr-source` exits with an error, where it would ignore
+/// `GIT_ATTR_SOURCE` and let a `.gitattributes` file select a filter.
+fn git_without_env(bin: &Path, tree: Option<&str>) -> Command {
     let mut cmd = Command::new(bin);
+    if let Some(tree) = tree {
+        cmd.arg(format!("--attr-source={tree}"));
+    }
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("GIT_") {
             cmd.env_remove(key);

@@ -227,10 +227,11 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
         \x20 it prints. Do not run git worktree add. Do not use a worktree tool of\n\
         \x20 your harness.\n\
         - Commit your work in the worktree. Commit exact files, not directories.\n\
-        - A Codex worker commits only in a claimed ledger task, with:\n\
+        - A Codex worker commits only in a claimed ledger task with a worktree:\n\
         \x20 horch ledger commit -m \"<message>\" -- <files>\n\
         \x20 It stages and commits only those files: the sandbox refuses git writes.\n\
-        \x20 Every other worker commits with plain git.\n\
+        \x20 It cannot rebase, so on a land conflict it sends BLOCKED: to the\n\
+        \x20 orchestrator. Every other worker commits with plain git.\n\
         - You land your own work. Do not wait for the orchestrator to merge it.\n\
         \x20 Run: horch worktree land --check \"<the check command of your plan>\".\n\
         \x20 It rebases your branch on the branch that it came from, runs the check,\n\
