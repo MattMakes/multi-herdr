@@ -672,7 +672,7 @@ fn run() -> Result<std::process::ExitCode> {
             | Command::Worker { .. }
             | Command::Tile { .. }
             | Command::Balance { .. }
-            | Command::Inbox { .. }
+            | Command::Inbox { roles: false, .. }
     );
     let watched = !matches!(
         &cli.command,

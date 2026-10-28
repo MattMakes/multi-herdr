@@ -633,6 +633,22 @@ fn mail_u1_orchestrator_command_reminds_without_acking() {
     );
 }
 
+#[test]
+fn inbox_roles_still_reminds_about_pending_mail() {
+    let h = inbox_fleet_with_three_messages("inbox-roles-remind");
+
+    let inbox = h.run(&["inbox", "--roles"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        String::from_utf8_lossy(&inbox.stderr)
+            .contains("horch: 3 messages are not acknowledged; run horch inbox"),
+        "{}",
+        text(&inbox)
+    );
+    assert_eq!(pending_count(&h), 3);
+}
+
 /// W2: the codex agent exits 0 at once, without `horch done` (as Codex
 /// can at a usage limit or a crash). The record ends with an `exited` event,
 /// and the worker types a `BLOCKED:` line into the orchestrator's pane.
