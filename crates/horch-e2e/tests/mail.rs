@@ -27,7 +27,7 @@ fn fleet() -> Harness {
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", text(&output));
-    let mailbox = harness.tmp.join("herdr-orchestration-w1");
+    let mailbox = harness.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     harness
@@ -95,7 +95,7 @@ fn mail_u1_courier_redelivers_to_an_idle_orchestrator_until_inbox_acks() {
 fn mail_u1_courier_exits_when_the_orchestrator_pane_is_gone() {
     let mut harness = fleet();
     harness.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "1000");
-    let mailbox = harness.tmp.join("herdr-orchestration-w1");
+    let mailbox = harness.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p9").unwrap();
     let mut tell = harness.horch(&["tell", "orchestrator", "NOTE: still here"]);
     tell.env("HERDR_PANE_ID", "w1:p2")

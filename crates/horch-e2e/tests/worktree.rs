@@ -75,7 +75,7 @@ fn create_target_pane(h: &Harness) -> String {
 
 fn prepare_done(h: &mut Harness) -> String {
     let pane = create_target_pane(h);
-    let mailbox = h.tmp.join(format!("herdr-orchestration-{WORKSPACE}"));
+    let mailbox = h.state.join(format!("herdr-orchestration-{WORKSPACE}"));
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), &pane).unwrap();
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);

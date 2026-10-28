@@ -243,7 +243,7 @@ fn g5_resume_after_a_closed_pane() {
 fn mail_u1_done_stays_open_when_enqueue_fails() {
     let h = fleet("mail-enqueue", "exec,stay");
     let (pane, role, id) = running_worker(&h);
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     std::fs::create_dir_all(h.state.join("mail/w1")).unwrap();
     std::fs::write(h.state.join("mail/w1/pending"), "not a directory").unwrap();
@@ -303,7 +303,7 @@ fn mail_u1_done_stays_open_when_enqueue_fails() {
 fn mail_u1_done_push_failure_records_queued_and_closes() {
     let h = fleet("mail-done", "exec,stay,fail_typing");
     let (pane, role, id) = running_worker(&h);
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
 
     let done = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
@@ -333,7 +333,7 @@ fn mail_u1_done_push_failure_records_queued_and_closes() {
 #[test]
 fn mail_u1_tell_push_failure_leaves_pending_mail() {
     let h = fleet("mail-tell", "exec,stay,fail_typing");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
 
@@ -366,7 +366,7 @@ fn mail_u1_tell_push_failure_leaves_pending_mail() {
 #[test]
 fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
     let h = fleet("mail-inbox", "exec,stay");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
@@ -406,7 +406,7 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
 #[test]
 fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
     let h = fleet("mail-worker", "exec,stay");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     let tell = as_worker(
@@ -437,7 +437,7 @@ fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
 #[test]
 fn mail_u1_orchestrator_command_reminds_without_acking() {
     let h = fleet("mail-remind", "exec,stay");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     for message in ["NOTE: first", "NOTE: second"] {
@@ -474,7 +474,7 @@ fn mail_u1_orchestrator_command_reminds_without_acking() {
 #[test]
 fn w2_agent_exit_before_done_tells_the_orchestrator() {
     let h = fleet("w2-early-exit", "exec");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     let pane = spawn(&h, &["codex-sol", "build the thing"]);
@@ -517,7 +517,7 @@ fn w2_agent_exit_before_done_tells_the_orchestrator() {
 #[test]
 fn r1_long_tell_spools_under_its_own_workspace() {
     let h = fleet("r1-spool", "exec");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
 
@@ -573,4 +573,78 @@ fn r1_long_tell_spools_under_its_own_workspace() {
         spooled[0].display(),
         typed[0]
     );
+}
+
+/// Names under `dir` that start with `herdr-orchestration-`.
+fn registries_in(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with("herdr-orchestration-"))
+        .collect()
+}
+
+/// P09: a spawn writes the registry under the state folder and nothing under
+/// the temp folder. With the temp folder emptied, `inbox` still lists the
+/// role and `tell` still reaches it.
+#[test]
+fn p09_registry_lives_in_the_state_folder() {
+    let h = fleet("p09-state", "exec,stay");
+    let (pane, role, _id) = running_worker(&h);
+
+    assert!(h
+        .state
+        .join(format!("herdr-orchestration-w1/{role}.id"))
+        .exists());
+    assert!(h
+        .state
+        .join(format!("herdr-orchestration-w1/{role}.brief.json"))
+        .exists());
+    assert_eq!(registries_in(&h.tmp), Vec::<String>::new());
+
+    for entry in std::fs::read_dir(&h.tmp).unwrap() {
+        let path = entry.unwrap().path();
+        let _ = std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path));
+    }
+
+    let inbox = h.run(&["inbox"]);
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        String::from_utf8_lossy(&inbox.stdout)
+            .lines()
+            .any(|l| l.starts_with(&role)),
+        "{}",
+        text(&inbox)
+    );
+    let tell = h.run(&["tell", &role, "NOTE: still there"]);
+    assert!(tell.status.success(), "{}", text(&tell));
+    let _ = pane;
+}
+
+/// P09: a registry that exists only in the old temp location is still found
+/// by `inbox`, `tell` and `done`, and nothing is written back to it.
+#[test]
+fn p09_registry_in_the_old_temp_location_still_resolves() {
+    let h = fleet("p09-legacy", "exec,stay");
+    let (pane, role, id) = running_worker(&h);
+    let new = h.state.join("herdr-orchestration-w1");
+    let old = h.tmp.join("herdr-orchestration-w1");
+    std::fs::rename(&new, &old).unwrap();
+
+    let inbox = h.run(&["inbox"]);
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        String::from_utf8_lossy(&inbox.stdout)
+            .lines()
+            .any(|l| l.starts_with(&role)),
+        "{}",
+        text(&inbox)
+    );
+    let tell = h.run(&["tell", &role, "NOTE: old registry"]);
+    assert!(tell.status.success(), "{}", text(&tell));
+
+    done(&h, &pane, &role, &id);
+    assert_eq!(record(&h, &id)["status"], "done");
+    assert!(!old.join(format!("{role}.id")).exists());
+    assert!(!new.join(format!("{role}.id")).exists());
 }

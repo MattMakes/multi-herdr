@@ -53,7 +53,7 @@ fn arc_07_e2e_bin_overrides_reach_worker() {
         .to_string();
 
     // The brief on disk: schema 2, every override, the v1 keys kept.
-    let brief_path = h.tmp.join("herdr-orchestration-w1/sonnet-1.brief.json");
+    let brief_path = h.state.join("herdr-orchestration-w1/sonnet-1.brief.json");
     let brief: Value =
         serde_json::from_str(&std::fs::read_to_string(&brief_path).unwrap()).unwrap();
     assert_eq!(brief["schema"], 2);

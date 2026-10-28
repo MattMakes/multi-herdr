@@ -1,8 +1,10 @@
 //! Per-workspace mailbox: the role -> pane-id registry that makes `horch tell`
 //! possible, plus the brief a spawned worker reads to learn who it is.
 //!
-//! Lives under the system temp dir keyed by workspace id, so it dies with the
-//! machine but survives individual pane restarts.
+//! Lives under horch's state folder keyed by workspace id, so the OS cannot
+//! clear it from under an idle fleet. A fleet started before that move still
+//! has its registry in the system temp dir; reads fall back to it, writes
+//! never go there.
 
 use std::path::{Path, PathBuf};
 
@@ -39,24 +41,36 @@ pub struct RoleEntry {
 #[derive(Debug, Clone)]
 pub struct Mailbox {
     dir: PathBuf,
+    /// The pre-upgrade mailbox in the temp dir, read when `dir` lacks a file.
+    legacy_dir: Option<PathBuf>,
     workspace_id: String,
 }
 
 impl Mailbox {
-    /// A mailbox handle for `workspace_id` under the system temp dir
-    /// (`RuntimeContext::paths.temp_root`).
-    pub fn under(temp_root: impl AsRef<Path>, workspace_id: &str) -> Self {
+    /// A mailbox handle for `workspace_id` under the state folder
+    /// (`RuntimeContext::paths.state_root`).
+    pub fn under(state_root: impl AsRef<Path>, workspace_id: &str) -> Self {
         Self {
-            dir: temp_root
-                .as_ref()
-                .join(format!("herdr-orchestration-{workspace_id}")),
+            dir: Self::dir_in(state_root.as_ref(), workspace_id),
+            legacy_dir: None,
             workspace_id: workspace_id.to_string(),
         }
     }
 
-    /// [`Mailbox::under`] the context's temp dir.
+    fn dir_in(root: &Path, workspace_id: &str) -> PathBuf {
+        root.join(format!("herdr-orchestration-{workspace_id}"))
+    }
+
+    /// Also read the registry that an older horch left under `temp_root`.
+    pub fn with_legacy_root(mut self, temp_root: impl AsRef<Path>) -> Self {
+        self.legacy_dir = Some(Self::dir_in(temp_root.as_ref(), &self.workspace_id));
+        self
+    }
+
+    /// [`Mailbox::under`] the context's state folder, with its temp dir as
+    /// the read-only fallback.
     pub fn in_context(ctx: &RuntimeContext, workspace_id: &str) -> Self {
-        Self::under(&ctx.paths.temp_root, workspace_id)
+        Self::under(&ctx.paths.state_root, workspace_id).with_legacy_root(&ctx.paths.temp_root)
     }
 
     /// Resolve the workspace this process belongs to, then open its mailbox.
@@ -68,12 +82,14 @@ impl Mailbox {
     /// fallback is what lets these commands also work from an unregistered pane.
     pub fn resolve(
         herdr: &Herdr,
+        state_root: &Path,
         temp_root: &Path,
         workspace: Option<&str>,
         pane: Option<&str>,
     ) -> Result<Self> {
+        let open = |ws: &str| Self::under(state_root, ws).with_legacy_root(temp_root);
         if let Some(ws) = workspace.filter(|ws| !ws.is_empty()) {
-            return Ok(Self::under(temp_root, ws));
+            return Ok(open(ws));
         }
         let Some(pane_id) = pane.filter(|p| !p.is_empty()) else {
             bail!(
@@ -84,13 +100,14 @@ impl Mailbox {
         let ws = pane
             .workspace_id
             .with_context(|| format!("herdr did not report a workspace_id for pane {pane_id}"))?;
-        Ok(Self::under(temp_root, &ws))
+        Ok(open(&ws))
     }
 
-    /// [`Mailbox::resolve`] with the context's temp dir, workspace and pane.
+    /// [`Mailbox::resolve`] with the context's dirs, workspace and pane.
     pub fn resolve_in(herdr: &Herdr, ctx: &RuntimeContext) -> Result<Self> {
         Self::resolve(
             herdr,
+            &ctx.paths.state_root,
             &ctx.paths.temp_root,
             ctx.herdr.workspace.as_ref().map(|w| w.as_str()),
             ctx.herdr.pane.as_ref().map(|p| p.as_str()),
@@ -106,15 +123,25 @@ impl Mailbox {
     }
 
     pub fn exists(&self) -> bool {
-        self.dir.is_dir()
+        self.dir.is_dir() || self.legacy_dir.as_ref().is_some_and(|d| d.is_dir())
+    }
+
+    /// Where to read `file`: the state folder, else the old temp location
+    /// when only that has it. Writes use `self.dir` directly.
+    fn read_path(&self, file: &str) -> PathBuf {
+        let path = self.dir.join(file);
+        match &self.legacy_dir {
+            Some(legacy) if !path.exists() && legacy.join(file).exists() => legacy.join(file),
+            _ => path,
+        }
     }
 
     fn id_path(&self, role: &str) -> PathBuf {
-        self.dir.join(format!("{role}.id"))
+        self.read_path(&format!("{role}.id"))
     }
 
     fn brief_path(&self, role: &str) -> PathBuf {
-        self.dir.join(format!("{role}.brief.json"))
+        self.read_path(&format!("{role}.brief.json"))
     }
 
     /// Record this pane's public id under `role` so other panes can address it.
@@ -125,6 +152,7 @@ impl Mailbox {
     /// left alone.
     pub fn register(
         herdr: &Herdr,
+        state_root: &Path,
         temp_root: &Path,
         pane: Option<&str>,
         role: &str,
@@ -137,10 +165,10 @@ impl Mailbox {
             .workspace_id
             .clone()
             .with_context(|| format!("herdr did not report a workspace_id for pane {internal}"))?;
-        let mailbox = Self::under(temp_root, &ws);
+        let mailbox = Self::under(state_root, &ws).with_legacy_root(temp_root);
         std::fs::create_dir_all(&mailbox.dir)
             .with_context(|| format!("creating mailbox {}", mailbox.dir.display()))?;
-        std::fs::write(mailbox.id_path(role), &pane.pane_id)
+        std::fs::write(mailbox.dir.join(format!("{role}.id")), &pane.pane_id)
             .with_context(|| format!("registering role '{role}'"))?;
         Ok((mailbox, pane.pane_id))
     }
@@ -154,8 +182,13 @@ impl Mailbox {
         role: &str,
     ) -> Result<(Self, String)> {
         let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
-        let (mailbox, pane_id) =
-            Self::register(herdr, &ctx.paths.temp_root, pane.as_deref(), role)?;
+        let (mailbox, pane_id) = Self::register(
+            herdr,
+            &ctx.paths.state_root,
+            &ctx.paths.temp_root,
+            pane.as_deref(),
+            role,
+        )?;
         ctx.herdr.workspace = Some(crate::ids::WorkspaceId::new(mailbox.workspace_id())?);
         Ok((mailbox, pane_id))
     }
@@ -174,10 +207,23 @@ impl Mailbox {
 
     /// Every registered `(role, pane_id)`, sorted by role.
     pub fn roles(&self) -> Vec<(String, String)> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+        let mut out = Self::roles_in(&self.dir);
+        if let Some(legacy) = &self.legacy_dir {
+            for (role, pane) in Self::roles_in(legacy) {
+                if !self.dir.join(format!("{role}.id")).exists() {
+                    out.push((role, pane));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    fn roles_in(dir: &Path) -> Vec<(String, String)> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
-        let mut out: Vec<(String, String)> = entries
+        entries
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let path = e.path();
@@ -188,9 +234,7 @@ impl Mailbox {
                 let pane = std::fs::read_to_string(&path).ok()?.trim().to_string();
                 (!pane.is_empty()).then_some((role, pane))
             })
-            .collect();
-        out.sort();
-        out
+            .collect()
     }
 
     /// Every registered role with whether herdr still has its pane, from one
@@ -225,7 +269,7 @@ impl Mailbox {
     pub fn write_brief(&self, brief: &Brief) -> Result<()> {
         std::fs::create_dir_all(&self.dir)
             .with_context(|| format!("creating mailbox {}", self.dir.display()))?;
-        let path = self.brief_path(&brief.role);
+        let path = self.dir.join(format!("{}.brief.json", brief.role));
         let json = serde_json::to_string_pretty(brief)?;
         crate::fsx::write_atomic(&path, json.as_bytes(), BRIEF_MODE)
             .with_context(|| format!("writing brief {}", path.display()))
@@ -249,8 +293,10 @@ impl Mailbox {
 
     /// Drop a role's registration and brief, so the role name frees up.
     pub fn unregister(&self, role: &str) {
-        let _ = std::fs::remove_file(self.id_path(role));
-        let _ = std::fs::remove_file(self.brief_path(role));
+        for dir in std::iter::once(&self.dir).chain(&self.legacy_dir) {
+            let _ = std::fs::remove_file(dir.join(format!("{role}.id")));
+            let _ = std::fs::remove_file(dir.join(format!("{role}.brief.json")));
+        }
     }
 
     /// Next per-teammate ordinal for auto-naming a role `<teammate>-<n>`.
@@ -375,8 +421,78 @@ mod tests {
 
     #[test]
     fn mailbox_dir_is_keyed_by_workspace() {
-        let mb = Mailbox::under("/tmp", "w42");
-        assert_eq!(mb.dir(), Path::new("/tmp/herdr-orchestration-w42"));
+        let mb = Mailbox::under("/state", "w42");
+        assert_eq!(mb.dir(), Path::new("/state/herdr-orchestration-w42"));
+    }
+
+    /// A fleet started before the upgrade keeps its registry in the temp dir.
+    fn legacy_mailbox(state: &Path, temp: &Path) -> (Mailbox, PathBuf) {
+        let legacy = temp.join("herdr-orchestration-w1");
+        std::fs::create_dir_all(&legacy).unwrap();
+        (Mailbox::under(state, "w1").with_legacy_root(temp), legacy)
+    }
+
+    #[test]
+    fn registry_found_only_in_the_old_temp_location() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
+        std::fs::write(legacy.join("orchestrator.id"), "w1-1").unwrap();
+        std::fs::write(legacy.join("sonnet-1.id"), "w1-2").unwrap();
+        let mut b = brief("sonnet-1");
+        b.task = "old task".into();
+        std::fs::write(
+            legacy.join("sonnet-1.brief.json"),
+            serde_json::to_string(&b).unwrap(),
+        )
+        .unwrap();
+
+        assert!(mb.exists());
+        assert_eq!(mb.pane_for("sonnet-1").as_deref(), Some("w1-2"));
+        assert!(mb.registered_at("sonnet-1").is_some());
+        assert_eq!(mb.roles().len(), 2);
+        assert_eq!(mb.read_brief("sonnet-1").unwrap().task, "old task");
+        assert!(mb.role_taken("sonnet-1"));
+
+        mb.unregister("sonnet-1");
+        assert_eq!(mb.pane_for("sonnet-1"), None);
+        assert!(!mb.role_taken("sonnet-1"));
+    }
+
+    #[test]
+    fn writes_go_only_to_the_state_dir_and_win_over_the_old_location() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
+        std::fs::write(legacy.join("sonnet-1.id"), "old-pane").unwrap();
+        mb.write_brief(&brief("sonnet-2")).unwrap();
+        std::fs::create_dir_all(mb.dir()).unwrap();
+        std::fs::write(mb.dir().join("sonnet-1.id"), "new-pane").unwrap();
+
+        assert_eq!(mb.pane_for("sonnet-1").as_deref(), Some("new-pane"));
+        assert_eq!(
+            mb.roles(),
+            vec![("sonnet-1".to_string(), "new-pane".to_string())]
+        );
+        assert!(mb.dir().join("sonnet-2.brief.json").exists());
+        assert!(!legacy.join("sonnet-2.brief.json").exists());
+        assert_eq!(mb.next_seq("sonnet").unwrap(), 1);
+        assert!(!legacy.join(".seq-sonnet").exists());
+    }
+
+    #[test]
+    fn context_mailbox_lives_in_the_state_root() {
+        let env = crate::runtime::MapEnv::new("/cwd")
+            .with("HOME", "/home/a")
+            .with("HORCH_STATE_DIR", "/s")
+            .with("TMPDIR", "/t");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let mb = Mailbox::in_context(&ctx, "w1");
+        assert_eq!(mb.dir(), Path::new("/s/herdr-orchestration-w1"));
+        assert_eq!(
+            mb.legacy_dir.as_deref(),
+            Some(Path::new("/t/herdr-orchestration-w1"))
+        );
     }
 
     #[test]

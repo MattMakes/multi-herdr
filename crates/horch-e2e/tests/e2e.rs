@@ -1112,7 +1112,7 @@ fn bal_04_gate_before_side_effects() {
         "no pane split"
     );
     assert!(!h
-        .tmp
+        .state
         .join("herdr-orchestration-w1")
         .join("opus-1.brief.json")
         .exists());
@@ -1184,7 +1184,7 @@ fn bal_05_substituted_record_fields() {
     );
     assert_eq!(r["plan"], "p");
     let brief: Value = serde_json::from_str(
-        &std::fs::read_to_string(h.tmp.join("herdr-orchestration-w1/researcher-1.brief.json"))
+        &std::fs::read_to_string(h.state.join("herdr-orchestration-w1/researcher-1.brief.json"))
             .unwrap(),
     )
     .unwrap();
@@ -1248,7 +1248,7 @@ fn bal_05_resume_uses_via() {
         "a resume is not gated"
     );
     let brief: Value = serde_json::from_str(
-        &std::fs::read_to_string(h.tmp.join("herdr-orchestration-w1/researcher-9.brief.json"))
+        &std::fs::read_to_string(h.state.join("herdr-orchestration-w1/researcher-9.brief.json"))
             .unwrap(),
     )
     .unwrap();

@@ -128,7 +128,7 @@ fn skl_06_e2e_exposure_claude() {
     assert_eq!(strings(&r["flags"]).len(), 2, "1 --plugin-dir: {r}");
     assert_eq!(r["plugins"], serde_json::json!(["horch"]), "{r}");
     // The bundle dir is named for the execution: the brief's record id.
-    let path = h.tmp.join("herdr-orchestration-w1/skl-claude-1.brief.json");
+    let path = h.state.join("herdr-orchestration-w1/skl-claude-1.brief.json");
     let brief: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let record = brief["record_id"].as_str().unwrap();
     assert!(
@@ -378,7 +378,7 @@ fn worker_reads_the_skill_store_its_spawner_read() {
         .unwrap()
         .trim()
         .to_string();
-    let brief_path = h.tmp.join("herdr-orchestration-w1/g3-market-1.brief.json");
+    let brief_path = h.state.join("herdr-orchestration-w1/g3-market-1.brief.json");
     let brief: Value =
         serde_json::from_str(&std::fs::read_to_string(&brief_path).unwrap()).unwrap();
     assert!(brief.get("data_root").is_none(), "{brief}");
