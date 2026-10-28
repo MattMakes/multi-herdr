@@ -62,7 +62,10 @@ fn stick_orchestrator(h: &Harness) {
 /// the legacy ledger holds the worker's record.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
-    h.set("HORCH_LEDGER_DB", h.root.join("ledger.sqlite3").to_string_lossy());
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.root.join("ledger.sqlite3").to_string_lossy(),
+    );
     h.set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
     for label in ["orchestrator", "worker"] {
@@ -134,7 +137,9 @@ fn worker_pane_closed(h: &Harness) -> bool {
 fn done_finishes_in_time_against_a_stuck_orchestrator() {
     let h = world("done-stuck");
     let started = Instant::now();
-    let o = as_worker(&h, &["done", "finished the work"]).output().unwrap();
+    let o = as_worker(&h, &["done", "finished the work"])
+        .output()
+        .unwrap();
     let took = started.elapsed();
     assert!(o.status.success(), "{}", text(&o));
     assert!(took < LIMIT, "done took {took:?}: {}", text(&o));
@@ -151,7 +156,10 @@ fn done_finishes_in_time_against_a_stuck_orchestrator() {
     );
     let mail = pending(&h);
     assert_eq!(mail.len(), 1, "{mail:?}");
-    assert!(mail[0].contains("[opus-1] DONE: finished the work"), "{mail:?}");
+    assert!(
+        mail[0].contains("[opus-1] DONE: finished the work"),
+        "{mail:?}"
+    );
     assert_eq!(record(&h)["status"], "done", "{}", record(&h));
     assert!(worker_pane_closed(&h), "the worker pane closes");
 }
@@ -178,7 +186,14 @@ fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     std::fs::write(&ticket, "# 01: Feature\n").unwrap();
     let file = ticket.to_string_lossy();
     ok(&mut h.horch(&[
-        "ledger", "add", "--file", &file, "--primary", "opus", "--check", "true",
+        "ledger",
+        "add",
+        "--file",
+        &file,
+        "--primary",
+        "opus",
+        "--check",
+        "true",
     ]));
     let worker = ok(&mut h.horch(&["ledger", "worker", "new", "--persona", "opus"]));
     let worker = worker.trim();
@@ -212,11 +227,13 @@ fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     let mail = pending(&h);
     assert_eq!(mail.len(), 2, "{mail:?}");
     assert!(
-        mail.iter().any(|m| m.contains("[horch] NOTE: All tasks are done.")),
+        mail.iter()
+            .any(|m| m.contains("[horch] NOTE: All tasks are done.")),
         "{mail:?}"
     );
     assert!(
-        mail.iter().any(|m| m.contains("[opus-1] DONE: finished the task")),
+        mail.iter()
+            .any(|m| m.contains("[opus-1] DONE: finished the task")),
         "{mail:?}"
     );
     assert_eq!(record(&h)["status"], "done", "{}", record(&h));
@@ -235,13 +252,20 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
         .unwrap();
     // The record is done before the push, and the push waits for the
     // stuck orchestrator: kill `done` there, as Claude Code would.
-    wait_for("the record to be done", || (done_entries(&h) == 1).then_some(()));
+    wait_for("the record to be done", || {
+        (done_entries(&h) == 1).then_some(())
+    });
     assert!(first.try_wait().unwrap().is_none(), "done is still pushing");
     first.kill().unwrap();
     first.wait().unwrap();
-    assert!(!worker_pane_closed(&h), "the killed done left its pane open");
+    assert!(
+        !worker_pane_closed(&h),
+        "the killed done left its pane open"
+    );
 
-    let o = as_worker(&h, &["done", "finished the work"]).output().unwrap();
+    let o = as_worker(&h, &["done", "finished the work"])
+        .output()
+        .unwrap();
     assert!(o.status.success(), "{}", text(&o));
     assert!(
         String::from_utf8_lossy(&o.stderr).contains("an earlier horch done recorded this summary"),
