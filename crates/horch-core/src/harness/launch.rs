@@ -7,7 +7,6 @@
 //! frontmatter; nothing is hard-coded per call site.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -962,6 +961,14 @@ pub(crate) fn type_resumed_prompt(
     false
 }
 
+/// The poll schedule ran out without a session id: nothing keeps the launch
+/// marker or the harvest log, so both go. `horch done`'s last attempt then
+/// finds no marker and does nothing.
+fn end_failed_discovery(marker: &Path, log_path: &Path) {
+    let _ = std::fs::remove_file(marker);
+    let _ = std::fs::remove_file(log_path);
+}
+
 fn start_discovery(
     ctx: &RuntimeContext,
     role: &str,
@@ -1018,17 +1025,7 @@ fn start_discovery(
                 return;
             }
         }
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
-            let _ = writeln!(
-                file,
-                "horch worker[{role}]: could not capture the {agent} session id \
-                 (resume disabled for this session)"
-            );
-        }
+        end_failed_discovery(&marker, &log_path);
     });
 
     Ok(Discovery { done })
@@ -2535,6 +2532,26 @@ mod tests {
         std::fs::write(&marker, marker_contents(None)).unwrap();
         assert_eq!(marker_sessions_dir(&marker), None);
         assert_eq!(marker_sessions_dir(&tmp.path().join("gone")), None);
+    }
+
+    /// A discovery that ends without a session id leaves no launch marker and
+    /// no harvest log, and leaves another role's files alone.
+    #[test]
+    fn a_failed_discovery_leaves_no_marker_or_harvest_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join(".prime-1.launch-marker");
+        let log = tmp.path().join("prime-1.harvest.log");
+        let other = tmp.path().join(".prime-2.launch-marker");
+        for path in [&marker, &log, &other] {
+            std::fs::write(path, "").unwrap();
+        }
+
+        end_failed_discovery(&marker, &log);
+
+        assert!(!marker.exists());
+        assert!(!log.exists());
+        assert!(other.exists());
+        end_failed_discovery(&marker, &log);
     }
 
     /// U-14: a horch started under `git rebase -x` or a git hook has
