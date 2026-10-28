@@ -561,12 +561,13 @@ fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
     std::io::Error::new(kind, message)
 }
 
+/// A reader's channel and its thread.
+type Reader = (mpsc::Receiver<std::io::Result<Vec<u8>>>, JoinHandle<()>);
+
 /// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
 /// reader ends when the pipe closes or the cap is hit; a caller waits for it
 /// only for [`READER_GRACE`].
-fn read_capped(
-    pipe: Option<impl Read + Send + 'static>,
-) -> std::io::Result<(mpsc::Receiver<std::io::Result<Vec<u8>>>, JoinHandle<()>)> {
+fn read_capped(pipe: Option<impl Read + Send + 'static>) -> std::io::Result<Reader> {
     let (sender, receiver) = mpsc::channel();
     let handle = std::thread::Builder::new().spawn(move || {
         let mut bytes = Vec::new();
@@ -702,7 +703,7 @@ fn resume_main_thread(child: &Child) -> std::io::Result<()> {
 ///
 /// The leader is still unreaped here, so its pid cannot belong to another
 /// process: the group signal reaches only this call's descendants.
-fn kill_and_reap(child: &mut Child) {
+fn kill_and_reap(child: &mut Child) -> std::io::Result<()> {
     // The child leads its own process group, so one signal also ends every
     // descendant that holds a pipe.
     #[cfg(unix)]
@@ -713,8 +714,30 @@ fn kill_and_reap(child: &mut Child) {
     if !killed {
         eprintln!("horch: could not kill herdr");
     }
-    if let Err(e) = child.wait() {
-        eprintln!("horch: could not reap herdr: {e}");
+    reap_within(child, REAP_GRACE).inspect_err(|e| eprintln!("horch: could not reap herdr: {e}"))
+}
+
+/// The most a failed call waits for its killed child to be reaped.
+const REAP_GRACE: Duration = Duration::from_secs(1);
+
+/// Reap `child` by polling, never by a blocking wait: a child that does not
+/// exit within `grace` is an error, so the call still returns.
+fn reap_within(child: &mut Child, grace: Duration) -> std::io::Result<()> {
+    let until = Instant::now() + grace;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        if Instant::now() >= until {
+            return Err(limit_error(
+                format!(
+                    "herdr did not exit within {} ms of the kill",
+                    grace.as_millis()
+                ),
+                std::io::ErrorKind::TimedOut,
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -778,7 +801,7 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
     let job = match Job::contain(&child).and_then(|job| resume_main_thread(&child).map(|()| job)) {
         Ok(job) => job,
         Err(error) => {
-            kill_and_reap(&mut child);
+            let _ = kill_and_reap(&mut child);
             return Err(error);
         }
     };
@@ -790,7 +813,7 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
         (Err(error), _) | (_, Err(error)) => {
             #[cfg(windows)]
             job.terminate();
-            kill_and_reap(&mut child);
+            let _ = kill_and_reap(&mut child);
             return Err(error);
         }
     };
@@ -826,7 +849,7 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
                 Err(error) => {
                     #[cfg(windows)]
                     job.terminate();
-                    kill_and_reap(&mut child);
+                    let _ = kill_and_reap(&mut child);
                     join_readers(threads);
                     return Err(error);
                 }
@@ -846,7 +869,7 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
     if let Some(error) = failure {
         #[cfg(windows)]
         job.terminate();
-        kill_and_reap(&mut child);
+        let _ = kill_and_reap(&mut child);
         join_readers(threads);
         return Err(error);
     }
@@ -932,6 +955,20 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         // The call joins its readers: it returns only once the tree is dead.
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reaping_a_child_that_does_not_exit_returns_inside_the_grace() {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let mut child = command.spawn().unwrap();
+        let started = Instant::now();
+        let error = reap_within(&mut child, Duration::from_millis(200)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        kill_and_reap(&mut child).unwrap();
     }
 
     #[cfg(unix)]
