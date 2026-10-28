@@ -258,6 +258,8 @@ fn read_line_by(stream: &mut UnixStream, deadline: Instant) -> std::io::Result<S
 }
 
 /// Wait until `stream` is ready for `events`, but not past `deadline`.
+/// `Ok(())` means ready: `wait_ready` retries an interrupted poll itself,
+/// with the time left.
 #[cfg(unix)]
 fn wait_ready(
     stream: &UnixStream,
@@ -265,26 +267,26 @@ fn wait_ready(
     deadline: Instant,
 ) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
-    let millis = time_left(deadline)?.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
     let mut poll = libc::pollfd {
         fd: stream.as_raw_fd(),
         events,
         revents: 0,
     };
-    // SAFETY: `poll` points to 1 valid pollfd for the length of the call.
-    let ready = unsafe { libc::poll(&mut poll, 1, millis) };
-    if ready > 0 {
-        return Ok(());
+    loop {
+        let millis = time_left(deadline)?.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
+        // SAFETY: `poll` points to 1 valid pollfd for the length of the call.
+        let ready = unsafe { libc::poll(&mut poll, 1, millis) };
+        if ready > 0 {
+            return Ok(());
+        }
+        if ready == 0 {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
-    if ready == 0 {
-        return Err(std::io::ErrorKind::TimedOut.into());
-    }
-    // An interrupted poll is not ready; the caller's next try polls again.
-    let error = std::io::Error::last_os_error();
-    if error.kind() == std::io::ErrorKind::Interrupted {
-        return Ok(());
-    }
-    Err(error)
 }
 
 /// Run the MCP stdio server until `input` reaches EOF.
