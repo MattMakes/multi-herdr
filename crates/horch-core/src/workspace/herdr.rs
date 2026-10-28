@@ -562,14 +562,20 @@ fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
 
 /// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
 /// reader is never joined: it ends when the pipe closes or the cap is hit.
-fn read_capped(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
+fn read_capped(
+    pipe: Option<impl Read + Send + 'static>,
+) -> mpsc::Receiver<std::io::Result<Vec<u8>>> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        if let Some(pipe) = pipe {
-            let _ = pipe.take(OUTPUT_CAP + 1).read_to_end(&mut bytes);
-        }
-        let _ = sender.send(bytes);
+        let read = match pipe {
+            Some(pipe) => pipe
+                .take(OUTPUT_CAP + 1)
+                .read_to_end(&mut bytes)
+                .map(|_| ()),
+            None => Ok(()),
+        };
+        let _ = sender.send(read.map(|()| bytes));
     });
     receiver
 }
@@ -644,10 +650,16 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
     let mut exited = false;
     let deadline = Instant::now() + timeout;
     let failure = loop {
+        let mut read_failure = None;
         for (slot, reader) in collected.iter_mut().zip(&readers) {
-            if slot.is_none() {
-                *slot = reader.try_recv().ok();
+            match reader.try_recv() {
+                Ok(Ok(bytes)) if slot.is_none() => *slot = Some(bytes),
+                Ok(Err(error)) => read_failure = Some(error),
+                _ => {}
             }
+        }
+        if read_failure.is_some() {
+            break read_failure;
         }
         if collected
             .iter()
@@ -708,7 +720,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_descendant_that_keeps_stdout_open_past_the_deadline_fails_the_call() {
-        let (dir, script) = script_in("sleep 4 &\nexit 0");
+        let (_dir, script) = script_in("sleep 4 &\nexit 0");
         let started = Instant::now();
         let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1000));
         assert!(herdr.pane_list("w1").is_err());

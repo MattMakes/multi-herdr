@@ -249,7 +249,7 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     } else {
         // Unknown pane states keep their role names; this line says why.
         if roles.iter().any(|r| r.state == PaneState::Unknown) {
-            output::println("roles unavailable: herdr did not answer, so pane states are unknown");
+            eprintln!("roles unavailable: herdr did not answer, so pane states are unknown");
         }
         let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
         output::print(&inbox_listing(&roles, channel::is_live(&socket)));

@@ -478,7 +478,9 @@ fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String>
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert!(inbox.status.success(), "{}", text(&inbox));
     let stdout = String::from_utf8_lossy(&inbox.stdout);
-    assert!(stdout.contains("roles unavailable"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&inbox.stderr);
+    assert!(stderr.contains("roles unavailable"), "{stderr}");
+    assert!(stdout.contains("orchestrator "), "{stdout}");
     for message in ["NOTE: one", "NOTE: two", "DONE: three"] {
         assert!(stdout.contains(message), "{stdout}");
     }
