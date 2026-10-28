@@ -4,6 +4,7 @@
 //! 1 SQLite file per machine ([`store::default_path`], `HORCH_LEDGER_DB`
 //! overrides it). Every read-then-write runs in [`store::Store::immediate`].
 
+pub mod bounded;
 pub mod finish;
 pub mod git;
 pub mod import;

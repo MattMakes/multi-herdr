@@ -450,6 +450,8 @@ fn a_spawned_worker_records_its_pids_session_and_checkins() {
         .clone();
     let id = w["worker_id"].as_str().unwrap().to_string();
     assert_eq!(w["persona"], "codex-terra");
+    // finish reads it to sandbox the check: spawn must record it.
+    assert_eq!(w["harness"], "codex", "{w}");
     assert_eq!(w["pane_id"], pane.as_str());
     assert_eq!(w["host"], "test-host");
 
@@ -1678,6 +1680,43 @@ fn claimed_with_check(
 }
 
 #[test]
+fn a_worker_cannot_make_a_worker_row() {
+    let h = world("tl-row-from-worker");
+    ok(&h, &["ledger", "run", "new", "alpha"]);
+    let w = worker_new(&h, "opus");
+    let rows = |h: &Harness| {
+        json_of(h, &["ledger", "status", "--json"])["workers"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let before = rows(&h);
+    for args in [
+        &["ledger", "worker", "new", "--persona", "opus"][..],
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "opus",
+            "--harness",
+            "claude",
+        ],
+    ] {
+        let mut cmd = h.horch(args);
+        cmd.env("HORCH_WORKER_ID", &w);
+        let o = cmd.output().unwrap();
+        assert!(
+            !o.status.success()
+                && text(&o).contains("only the orchestrator or the operator makes worker rows"),
+            "{args:?}: {}",
+            text(&o)
+        );
+    }
+    assert_eq!(rows(&h), before, "no row was written");
+}
+
+#[test]
 fn a_check_for_a_worker_with_no_harness_fails_and_never_runs() {
     let h = finish_world("tl-no-harness");
     let (w, wt) = claimed_with_check(&h, ": > ran.txt", None, None);
@@ -1787,9 +1826,53 @@ fn a_land_push_runs_the_repository_hooks_and_a_worktree_git_runs_none() {
     assert_eq!(code, Some(0), "{r}");
     assert!(
         pushed.exists(),
-        "the push from the main checkout runs pre-push"
+        "the push from the main checkout runs pre-push: {r}"
     );
     assert!(!rebased.exists(), "the rebase in the worktree runs no hook");
+}
+
+#[test]
+fn a_hooks_path_in_the_working_tree_runs_on_neither_merge_nor_push() {
+    let h = finish_world("tl-husky");
+    let (w, wt) = claimed_with_check(&h, "true", Some("check,land"), Some("claude"));
+    std::fs::write(wt.join("feature.txt"), "feature\n").unwrap();
+    git_in(&h, &wt, &["add", "feature.txt"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "feature"],
+    );
+    // The run branch is checked out, so land merges in the main checkout.
+    let project = h.project.clone();
+    git_in(&h, &project, &["checkout", "--quiet", "fleet/alpha"]);
+    // Hooks in a folder of the working tree, as Husky sets them up: a
+    // worker's commit can fill it.
+    let ran = h.root.join("husky-ran");
+    let husky = project.join(".husky");
+    std::fs::create_dir_all(&husky).unwrap();
+    for hook in ["post-merge", "pre-push"] {
+        sh_script(
+            &husky.join(hook),
+            &format!("echo {hook} >> '{}'", ran.display()),
+        );
+    }
+    git_in(&h, &project, &["config", "core.hooksPath", ".husky"]);
+
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    assert!(
+        !ran.exists(),
+        "no hook ran: {:?}",
+        std::fs::read_to_string(&ran)
+    );
+    let land = r["steps"][1]["note"].as_str().unwrap();
+    assert!(
+        land.contains("hooks skipped: core.hooksPath .husky is inside the working tree"),
+        "{land}"
+    );
+    let remote = h.root.join("remote.git");
+    let log = git_in(&h, &remote, &["log", "--oneline", "fleet/alpha"]);
+    assert!(log.contains("feature"), "the push still ran: {log}");
 }
 
 #[test]

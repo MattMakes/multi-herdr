@@ -246,15 +246,26 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
         if let Err(e) = recorded {
             // No worker runs without its harness in the ledger.
             let reason = format!("{e:#}");
-            let state = ExecutionStatus::LaunchFailed {
-                stage: LaunchStage::Run,
-                reason: reason.clone(),
-            };
-            let _ = store.end_live(out.plan.execution.id.as_str(), state);
-            let _ = herdr.pane_close(pane);
-            mailbox.unregister(role.as_str());
-            l.launch_failed(&reason);
-            bail!("horch spawn: worker {role} (pane {pane}) stopped: {reason}");
+            return Err(stop_unrecorded(
+                pane,
+                role.as_str(),
+                &reason,
+                || herdr.pane_close(pane).map_err(Into::into),
+                || {
+                    let state = ExecutionStatus::LaunchFailed {
+                        stage: LaunchStage::Run,
+                        reason: reason.clone(),
+                    };
+                    store
+                        .end_live(out.plan.execution.id.as_str(), state)
+                        .map(drop)
+                        .map_err(Into::into)
+                },
+                || {
+                    mailbox.unregister(role.as_str());
+                    l.launch_failed(&reason);
+                },
+            ));
         }
     }
     // The record has its pane, and the spawn has run the ledger recovery.
@@ -349,8 +360,73 @@ fn fleet_facts(
     }
 }
 
+/// Stop a worker whose launch the ledger could not record. The pane closes
+/// first: until it is confirmed closed, the execution stays live and the
+/// role stays registered, so recovery still tracks a worker that may run.
+fn stop_unrecorded(
+    pane: &str,
+    role: &str,
+    reason: &str,
+    close: impl FnOnce() -> anyhow::Result<()>,
+    end_live: impl FnOnce() -> anyhow::Result<()>,
+    forget: impl FnOnce(),
+) -> anyhow::Error {
+    if let Err(e) = close() {
+        return anyhow::anyhow!(
+            "horch spawn: the task ledger did not record worker {role}: {reason}. Closing pane \
+             {pane} failed ({e:#}): the worker in pane {pane} may still be alive. Close pane \
+             {pane}, then run horch spawn again."
+        );
+    }
+    let ended = end_live();
+    forget();
+    match ended {
+        Ok(()) => anyhow::anyhow!("horch spawn: worker {role} (pane {pane}) stopped: {reason}"),
+        Err(e) => anyhow::anyhow!(
+            "horch spawn: worker {role} (pane {pane}) stopped: {reason}; recording the failed \
+             start also failed: {e:#}"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_pane_close_keeps_the_worker_tracked_and_names_the_pane() {
+        let mut forgot = false;
+        let mut ended = false;
+        let e = stop_unrecorded(
+            "w1:p9",
+            "codex-sol",
+            "database is locked",
+            || anyhow::bail!("herdr is down"),
+            || {
+                ended = true;
+                Ok(())
+            },
+            || forgot = true,
+        );
+        let text = format!("{e:#}");
+        assert!(text.contains("pane w1:p9 may still be alive"), "{text}");
+        assert!(!text.contains("stopped"), "{text}");
+        assert!(
+            !forgot && !ended,
+            "the role stays registered and the execution live"
+        );
+
+        let mut forgot = false;
+        let e = stop_unrecorded(
+            "w1:p9",
+            "codex-sol",
+            "x",
+            || Ok(()),
+            || Ok(()),
+            || forgot = true,
+        );
+        assert!(format!("{e:#}").contains("stopped"), "{e:#}");
+        assert!(forgot, "a closed pane unregisters the role");
+    }
+
     use super::*;
     use horch_core::roster::Roster;
 

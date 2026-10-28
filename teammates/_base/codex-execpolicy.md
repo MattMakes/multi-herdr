@@ -16,7 +16,9 @@ rules:
     justification: read a catalog skill that the bundle does not hold
   - pattern: '"horch", "done"'
     justification: mark session done and close own pane
-  - pattern: '"horch", "ledger"'
+  # Every ledger subcommand but `worker`: only the orchestrator or the
+  # operator makes worker rows, so a worker cannot pick its own harness.
+  - pattern: '"horch", "ledger", ["status", "show", "run", "add", "add-map", "plan-workers", "fallback", "cancel", "claim", "worktree", "finish", "steps", "done", "progress", "commit", "note", "stop", "reap", "watch", "import", "unfinished", "reopen", "dismiss", "legacy", "events", "path"]'
     justification: claim, report and finish tasks through the task ledger
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a

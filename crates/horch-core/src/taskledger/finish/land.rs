@@ -222,7 +222,11 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     // main checkout, else by a compare-and-swap of its ref. Never forced.
     let checked_out = git.current_branch(&cx.root).as_deref() == Some(run_branch.as_str());
     if checked_out {
-        let ff = git.try_run(&cx.root, &["merge", "--ff-only", &new])?;
+        // The repository's filters (git-lfs), never its hooks: a hooks path
+        // can be a folder the worker's commits fill.
+        let ff = git
+            .with_repo_filters()
+            .try_run(&cx.root, &["merge", "--ff-only", &new])?;
         if !ff.ok {
             return red(
                 store,
@@ -252,10 +256,10 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         &new[..new.len().min(12)]
     );
     if let Some(remote) = &cx.run.remote {
-        let push = git.try_run(
-            &cx.root,
-            &["push", remote, &format!("{run_branch}:{run_branch}")],
-        )?;
+        let (push, skipped) = git.push(&cx.root, remote, &run_branch, &[])?;
+        if let Some(skipped) = skipped {
+            note.push_str(&format!("; {skipped}"));
+        }
         if !push.ok {
             // The land stands; the push is retried by the next finish.
             set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landed, None)?;
@@ -297,10 +301,7 @@ fn land_shared(cx: &Ctx<'_>, run_branch: &str, log: &Path) -> Result<Outcome> {
     }
     let head = git.rev(&cx.root, "HEAD")?;
     if let Some(remote) = &cx.run.remote {
-        let push = git.try_run(
-            &cx.root,
-            &["push", remote, &format!("{run_branch}:{run_branch}")],
-        )?;
+        let (push, _) = git.push(&cx.root, remote, run_branch, &[])?;
         if !push.ok {
             return Ok(Outcome::fail("not pushed", None, &push.stderr));
         }

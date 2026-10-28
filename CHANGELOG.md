@@ -29,13 +29,19 @@
   processes it started. They now have the network and live web search.
   `--approve-for-me` is gone: a command the sandbox refuses fails.
 - `horch ledger finish` checks a ledger worktree's `.git` file before each
-  step and runs its git there with that verified git dir: no hook, fsmonitor
-  or filter program runs in the worktree. Its push and merge in the main
-  checkout keep the repository's hooks, so git-lfs still uploads in
-  `pre-push`.
+  step and runs its git there with that verified git dir. Every ledger git
+  call runs no hook, fsmonitor or filter program by default. The merge into
+  the run branch runs the repository's filters and no hook. The push runs
+  the repository's hooks, so git-lfs still uploads in `pre-push`, unless
+  `core.hooksPath` points into the working tree (Husky, for one): then it
+  runs no hook, prints why, and runs `git lfs push` first when git-lfs is
+  configured.
 - `horch ledger finish` refuses the check of a worker whose harness the
   ledger does not record. `horch ledger worker new --harness <agent>` records
-  it, and `horch spawn` stops and closes the pane when it cannot.
+  it, and only the orchestrator or the operator can run it: it refuses in a
+  worker pane, and a Codex worker's rules no longer allow it. `horch spawn`
+  stops when it cannot record the harness, and says so when the pane may
+  still be open.
 
 ## v0.3.0 - 2026-10-28
 

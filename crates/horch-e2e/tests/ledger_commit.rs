@@ -1299,6 +1299,32 @@ fn git_with_hook(h: &Harness, name: &str, word: &str, hook: &str) -> PathBuf {
 }
 
 #[test]
+fn a_file_that_grows_after_the_size_check_is_never_committed() {
+    let (h, w, wt) = claimed("lc-grow");
+    let a = wt.join("a.txt");
+    std::fs::write(&a, "a\n").unwrap();
+    // Past the 100 MB cap, written just before git add stages it.
+    let grow = format!("head -c 104857700 /dev/zero > '{}'", a.display());
+    let fake = git_with_hook(&h, "growing-git", " add ", &grow);
+    let before = head(&h, &wt);
+    let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .env("HORCH_GIT_BIN", &fake)
+        .current_dir(&wt);
+    let o = cmd.output().unwrap();
+    assert!(
+        std::fs::metadata(&a).unwrap().len() > 100 << 20,
+        "the race ran"
+    );
+    assert!(
+        !o.status.success() && text(&o).contains("a staged file is"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+#[test]
 fn a_failed_head_lookup_refuses_and_deletes_no_file() {
     let (h, w, wt) = claimed("lc-head");
     let tracked = git_in(&h, &wt, &["ls-tree", "-r", "--name-only", "HEAD"]);

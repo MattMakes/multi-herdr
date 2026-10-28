@@ -1246,10 +1246,12 @@ fn unused_rules(rules: &[ExecRule], told: &str, who: &str, base: &str) -> Vec<St
     rules
         .iter()
         .filter_map(|rule| {
-            let joined = rule
-                .pattern
+            // The fixed words before a list of alternatives, if any.
+            let fixed = rule.pattern.split('[').next().unwrap_or_default();
+            let joined = fixed
                 .split(',')
                 .map(|p| p.trim().trim_matches('"'))
+                .filter(|p| !p.is_empty())
                 .collect::<Vec<_>>()
                 .join(" ");
             (!told.contains(&joined)).then(|| {

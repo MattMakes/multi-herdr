@@ -5,14 +5,32 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-/// A git binary, maybe pinned to 1 verified linked worktree.
+use super::bounded::run_until;
+
+/// A git binary, maybe pinned to 1 verified linked worktree. Every call
+/// runs with [`SAFE_CONFIG`] and no filter program unless the caller opts
+/// in to the repository's own config ([`Git::with_repo_filters`],
+/// [`Git::push`]).
 #[derive(Debug, Clone)]
 pub struct Git {
     bin: PathBuf,
     pinned: Option<Pinned>,
+    repo: RepoConfig,
+}
+
+/// How much of the repository's own config a call may run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RepoConfig {
+    /// No hook, fsmonitor or filter program: the default.
+    Safe,
+    /// Its filters, no hook: the merge into the run branch.
+    Filters,
+    /// Its hooks and filters: the push, when its hooks are the operator's.
+    Hooks,
 }
 
 /// A linked worktree whose `.git` file was verified, and its git dir.
@@ -24,10 +42,10 @@ struct Pinned {
     filters: Vec<String>,
 }
 
-/// Config pairs on every git call in a worktree the sandbox can write: no
-/// hook, no fsmonitor, no signing program, no git started in a gitlink (it
-/// would read that repository's worker-writable config), and no detached
-/// maintenance after a commit.
+/// Config pairs on every git call by default: no hook, no fsmonitor, no
+/// signing program, no git started in a gitlink (it would read that
+/// repository's worker-writable config), and no detached maintenance after
+/// a commit.
 pub const SAFE_CONFIG: [&str; 7] = [
     "core.hooksPath=/dev/null",
     "core.fsmonitor=false",
@@ -37,6 +55,18 @@ pub const SAFE_CONFIG: [&str; 7] = [
     "submodule.recurse=false",
     "maintenance.auto=false",
 ];
+
+/// The most bytes of a worktree's `.git` file: `gitdir: ` and a path.
+const MAX_DOTGIT_BYTES: u64 = 8 + 4096 + 1;
+
+/// The most filter-driver config keys horch reads: more is refused.
+const MAX_DRIVER_KEYS: usize = 1000;
+
+/// The longest the filter-driver lookup runs.
+const LOOKUP_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The longest `git lfs push` runs before a push without hooks.
+const LFS_PUSH_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
 /// The names of the filter drivers in `git config --null --name-only
 /// --get-regexp '^filter\.'` records, sorted, each once. A name can hold dots.
@@ -54,12 +84,21 @@ pub fn filter_driver_names(records: &[Vec<u8>]) -> Vec<String> {
     names
 }
 
-/// The `-c` pairs that set each driver's `clean` and `process` empty, so
-/// git runs no filter program.
+/// The `-c` pairs that set each driver's `clean`, `smudge` and `process`
+/// empty, so git runs no filter program. `horch ledger commit` refuses a
+/// path whose filter is required; the ledger's own git also passes
+/// `filter.<name>.required=false`, so a call never fails on a filter it
+/// did not run.
 pub fn filter_overrides(names: &[String]) -> Vec<String> {
     names
         .iter()
-        .flat_map(|n| [format!("filter.{n}.clean="), format!("filter.{n}.process=")])
+        .flat_map(|n| {
+            [
+                format!("filter.{n}.clean="),
+                format!("filter.{n}.smudge="),
+                format!("filter.{n}.process="),
+            ]
+        })
         .collect()
 }
 
@@ -76,75 +115,236 @@ impl Git {
         Git {
             bin: bin.into(),
             pinned: None,
+            repo: RepoConfig::Safe,
         }
     }
 
     /// This git, with every call in `worktree` pinned to `gitdir` (from
     /// [`Git::verify_worktree`]): git never reads the worktree's `.git` file,
-    /// which the sandbox can rewrite after the check, and runs no hook,
-    /// fsmonitor or filter program. Calls in other folders, the main
-    /// checkout's push and merge, keep the repository's hooks.
+    /// which the sandbox can rewrite after the check. A pinned call always
+    /// runs safe, whatever the caller opted in to.
     pub fn pinned(&self, worktree: &Path, gitdir: &Path) -> Result<Git> {
         let mut git = Git {
-            bin: self.bin.clone(),
             pinned: Some(Pinned {
                 worktree: worktree.to_path_buf(),
                 gitdir: gitdir.to_path_buf(),
                 filters: Vec::new(),
             }),
+            ..self.clone()
         };
-        let out = git
-            .command(
-                worktree,
-                &[
-                    "config",
-                    "--null",
-                    "--name-only",
-                    "--get-regexp",
-                    r"^filter\.",
-                ],
-            )
-            .output()
-            .context("listing the filter drivers")?;
-        // Exit 1 with no output: no driver is configured.
-        if !out.status.success() && !(out.status.code() == Some(1) && out.stdout.is_empty()) {
-            bail!(
-                "cannot list the filter drivers of the repository config ({})",
-                out.status
-            );
-        }
-        let records: Vec<Vec<u8>> = out
-            .stdout
-            .split(|b| *b == 0)
-            .filter(|r| !r.is_empty())
-            .map(<[u8]>::to_vec)
-            .collect();
+        let filters = git.filter_drivers(worktree)?;
         if let Some(p) = git.pinned.as_mut() {
-            p.filters = filter_driver_names(&records);
+            p.filters = filters;
         }
         Ok(git)
     }
 
-    /// git `args` in `dir`, pinned when `dir` is the pinned worktree.
-    fn command(&self, dir: &Path, args: &[&str]) -> Command {
-        let mut cmd = Command::new(&self.bin);
-        cmd.arg("-C").arg(dir);
-        if let Some(p) = self
-            .pinned
+    /// This git with the repository's filters and no hook: for the merge
+    /// into the run branch in the main checkout, whose `.git` no sandbox
+    /// can write, so its filter config is the operator's.
+    pub fn with_repo_filters(&self) -> Git {
+        Git {
+            repo: RepoConfig::Filters,
+            ..self.clone()
+        }
+    }
+
+    /// The pinned worktree that `dir` is in, if any.
+    fn pin_of(&self, dir: &Path) -> Option<&Pinned> {
+        self.pinned
             .as_ref()
             .filter(|p| dir.starts_with(&p.worktree))
-        {
+    }
+
+    /// git in `dir` with the pin and [`SAFE_CONFIG`], and no other option.
+    fn base(&self, dir: &Path) -> Command {
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("-C").arg(dir);
+        if let Some(p) = self.pin_of(dir) {
             cmd.env("GIT_DIR", &p.gitdir)
                 .env("GIT_WORK_TREE", &p.worktree);
-            for pair in SAFE_CONFIG {
-                cmd.args(["-c", pair]);
+        }
+        for pair in SAFE_CONFIG {
+            cmd.args(["-c", pair]);
+        }
+        cmd.env_remove("ANTHROPIC_API_KEY");
+        cmd
+    }
+
+    /// The filter drivers the config of `dir` names, read by the bounded
+    /// runner: a hung git or a huge config fails, it never blocks finish.
+    fn filter_drivers(&self, dir: &Path) -> Result<Vec<String>> {
+        let mut cmd = self.base(dir);
+        cmd.args([
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\.",
+        ]);
+        let out = run_until(cmd, Vec::new(), MAX_DRIVER_KEYS, LOOKUP_DEADLINE)
+            .context("listing the filter drivers")?;
+        // Exit 1 with no output: no driver is configured.
+        if out.status.code() == Some(1) && out.records.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !out.status.success() || !out.complete {
+            bail!(
+                "refused: cannot list the filter drivers of the git config in {} ({})",
+                dir.display(),
+                out.status
+            );
+        }
+        Ok(filter_driver_names(&out.records))
+    }
+
+    /// git `args` in `dir`, as safe as the opt-in allows; a pinned call is
+    /// always safe.
+    fn command(&self, dir: &Path, args: &[&str]) -> Result<Command> {
+        let pin = self.pin_of(dir);
+        let repo = if pin.is_some() {
+            RepoConfig::Safe
+        } else {
+            self.repo
+        };
+        let mut cmd = match repo {
+            RepoConfig::Hooks => {
+                let mut cmd = Command::new(&self.bin);
+                cmd.arg("-C").arg(dir).env_remove("ANTHROPIC_API_KEY");
+                cmd
             }
-            for pair in filter_overrides(&p.filters) {
-                cmd.arg("-c").arg(pair);
+            RepoConfig::Filters => self.base(dir),
+            RepoConfig::Safe => self.safe(dir, pin)?,
+        };
+        cmd.args(args);
+        Ok(cmd)
+    }
+
+    /// git in `dir` that runs no hook, fsmonitor or filter program: every
+    /// driver the config names gets empty programs and is not required.
+    fn safe(&self, dir: &Path, pin: Option<&Pinned>) -> Result<Command> {
+        let filters = match pin {
+            Some(p) => p.filters.clone(),
+            None => self.filter_drivers(dir)?,
+        };
+        let mut cmd = self.base(dir);
+        for pair in filter_overrides(&filters) {
+            cmd.arg("-c").arg(pair);
+        }
+        for name in &filters {
+            cmd.arg("-c").arg(format!("filter.{name}.required=false"));
+        }
+        Ok(cmd)
+    }
+
+    /// Push `refspec` from the main checkout `root` to `remote`. The push
+    /// runs the repository's hooks (git-lfs uploads in `pre-push`) only when
+    /// they are the operator's: `core.hooksPath` unset, or a real folder
+    /// under the common git dir. Otherwise it runs none, the returned note
+    /// says why, and git-lfs objects go first with `git lfs push`.
+    pub fn push(
+        &self,
+        root: &Path,
+        remote: &str,
+        branch: &str,
+        args: &[&str],
+    ) -> Result<(Out, Option<String>)> {
+        let mut push = vec!["push"];
+        push.extend_from_slice(args);
+        push.push(remote);
+        let refspec = format!("{branch}:{branch}");
+        push.push(&refspec);
+        let Some(skipped) = self.foreign_hooks(root)? else {
+            let git = Git {
+                repo: RepoConfig::Hooks,
+                ..self.clone()
+            };
+            return Ok((git.try_run(root, &push)?, None));
+        };
+        let note = format!("hooks skipped: {skipped}");
+        eprintln!("horch: {note}");
+        if self.uses_lfs(root)? {
+            let lfs = self.lfs_push(root, remote, branch)?;
+            if !lfs.ok {
+                return Ok((lfs, Some(note)));
             }
         }
-        cmd.args(args).env_remove("ANTHROPIC_API_KEY");
-        cmd
+        Ok((self.try_run(root, &push)?, Some(note)))
+    }
+
+    /// Why the hooks of the main checkout `root` are not the operator's, or
+    /// `None` when they are.
+    fn foreign_hooks(&self, root: &Path) -> Result<Option<String>> {
+        let Some(path) = self.config_value(root, "core.hooksPath")? else {
+            return Ok(None);
+        };
+        let path = path.as_str();
+        let root = std::fs::canonicalize(root)
+            .with_context(|| format!("{} does not exist", root.display()))?;
+        let common = self.run(
+            &root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        let common = std::fs::canonicalize(common.trim()).unwrap_or_default();
+        // Relative to the top of the working tree, as git runs hooks.
+        let lexical = normalize(&root.join(path));
+        let real = std::fs::canonicalize(&lexical).ok();
+        if real.as_ref() == Some(&lexical) && lexical.starts_with(&common) {
+            return Ok(None);
+        }
+        let place = if lexical.starts_with(&root) && !lexical.starts_with(&common) {
+            "is inside the working tree"
+        } else {
+            "is not a real folder under the git dir"
+        };
+        Ok(Some(format!("core.hooksPath {path} {place}")))
+    }
+
+    /// Whether the config of `root` sets a git-lfs filter.
+    fn uses_lfs(&self, root: &Path) -> Result<bool> {
+        for key in ["filter.lfs.process", "filter.lfs.clean"] {
+            if self.config_value(root, key)?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The value of `key` in the config of `dir`, or `None` when unset or
+    /// empty. Read without [`SAFE_CONFIG`] and the filter overrides, which
+    /// set some of these keys; reading config runs no program.
+    fn config_value(&self, dir: &Path, key: &str) -> Result<Option<String>> {
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("-C")
+            .arg(dir)
+            .args(["config", "--null", "--get", key])
+            .env_remove("ANTHROPIC_API_KEY");
+        let out = run_until(cmd, Vec::new(), 1, LOOKUP_DEADLINE)
+            .with_context(|| format!("reading {key}"))?;
+        let value = String::from_utf8_lossy(&out.records.concat()).into_owned();
+        Ok((out.status.success() && !value.is_empty()).then_some(value))
+    }
+
+    /// `git lfs push <remote> <branch>` in `root`, bounded; its output goes
+    /// to stderr, which is kept for the error.
+    fn lfs_push(&self, root: &Path, remote: &str, branch: &str) -> Result<Out> {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "exec \"$@\" >&2", "sh"])
+            .arg(&self.bin)
+            .arg("-C")
+            .arg(root)
+            .args(["lfs", "push", remote, branch])
+            .env_remove("ANTHROPIC_API_KEY");
+        let out =
+            run_until(cmd, Vec::new(), 1, LFS_PUSH_DEADLINE).context("running git lfs push")?;
+        Ok(Out {
+            ok: out.status.success() && out.complete,
+            stdout: String::new(),
+            stderr: format!(
+                "git lfs push {remote} {branch}: {}",
+                String::from_utf8_lossy(&out.stderr).trim_end()
+            ),
+        })
     }
 
     /// Run git in `dir`; never fails on a non-zero exit.
@@ -156,7 +356,7 @@ impl Git {
             "the task ledger never forces git"
         );
         let out = self
-            .command(dir, args)
+            .command(dir, args)?
             .output()
             .with_context(|| format!("running {} {}", self.bin.display(), args.join(" ")))?;
         Ok(Out {
@@ -359,10 +559,12 @@ fn worktree_entry(common: &Path, worktree: &Path, worktree_canonical: &Path) -> 
 /// writes that with `worktree.useRelativePaths`).
 fn check_dotgit(worktree_canonical: &Path, gitdir: &Path) -> Result<()> {
     let dotgit = worktree_canonical.join(".git");
+    // At most a path's length: a huge file fails here, never in memory.
     let text = std::fs::symlink_metadata(&dotgit)
         .ok()
-        .filter(|m| m.is_file())
+        .filter(|m| m.is_file() && m.len() <= MAX_DOTGIT_BYTES)
         .and_then(|_| std::fs::read_to_string(&dotgit).ok())
+        .filter(|t| t.len() as u64 <= MAX_DOTGIT_BYTES)
         .unwrap_or_default();
     let line = text.strip_suffix('\n').unwrap_or(&text);
     // git may have written the canonical or the given form of the path.
@@ -409,6 +611,22 @@ fn lexical_join(base: &Path, relative: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
+/// `path` with `.` and `..` resolved by name, no symlink followed.
+fn normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// The size of a directory tree in bytes, following no links.
 pub fn dir_bytes(path: &Path) -> u64 {
     fn walk(p: &Path) -> u64 {
@@ -424,4 +642,95 @@ pub fn dir_bytes(path: &Path) -> u64 {
         }
     }
     walk(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn marker_script(path: &Path, marker: &Path, then: &str) {
+        std::fs::write(
+            path,
+            format!("#!/bin/sh\n: > '{}'\n{then}\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A main checkout with 1 commit and a linked worktree on branch `f`.
+    fn repo(dir: &Path) -> (PathBuf, PathBuf) {
+        let main = dir.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["config", "user.email", "t@t"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "a"]);
+        let wt = dir.join("wt");
+        git(
+            &main,
+            &["worktree", "add", "-q", "-b", "f", &wt.to_string_lossy()],
+        );
+        (main.canonicalize().unwrap(), wt.canonicalize().unwrap())
+    }
+
+    #[test]
+    fn a_call_in_a_worktree_with_no_pin_runs_no_hook_fsmonitor_or_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let (main, wt) = repo(dir.path());
+        let ran = dir.path().join("ran");
+        let prog = dir.path().join("prog.sh");
+        marker_script(&prog, &ran, "cat");
+        let prog = prog.to_string_lossy().into_owned();
+        // A dotted driver name, and every program a status or commit runs.
+        git(&main, &["config", "filter.a.b.clean", &prog]);
+        git(&main, &["config", "filter.a.b.process", &prog]);
+        git(&main, &["config", "core.fsmonitor", &prog]);
+        let hooks = main.join(".git/hooks");
+        marker_script(&hooks.join("pre-commit"), &ran, "");
+        std::fs::write(wt.join(".gitattributes"), "*.txt filter=a.b\n").unwrap();
+        std::fs::write(wt.join("x.txt"), "x\n").unwrap();
+        let g = Git::new("git");
+        g.run(&wt, &["add", ".gitattributes", "x.txt"]).unwrap();
+        g.run(&wt, &["commit", "-q", "-m", "x"]).unwrap();
+        g.run(&wt, &["status", "--porcelain"]).unwrap();
+        assert!(!ran.exists(), "no hook, fsmonitor or filter program ran");
+    }
+
+    #[test]
+    fn a_pinned_rebase_runs_no_smudge_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let (main, wt) = repo(dir.path());
+        // main gets a file whose attributes select a driver with a smudge.
+        std::fs::write(main.join(".gitattributes"), "*.txt filter=x\n").unwrap();
+        std::fs::write(main.join("y.txt"), "y\n").unwrap();
+        git(&main, &["add", ".gitattributes", "y.txt"]);
+        git(&main, &["commit", "-q", "-m", "y"]);
+        let ran = dir.path().join("smudged");
+        let prog = dir.path().join("smudge.sh");
+        marker_script(&prog, &ran, "cat");
+        git(
+            &main,
+            &["config", "filter.x.smudge", &prog.to_string_lossy()],
+        );
+        let g = Git::new("git");
+        let gitdir = g.verify_worktree(&main, &wt).unwrap();
+        let pinned = g.pinned(&wt, &gitdir).unwrap();
+        pinned.run(&wt, &["rebase", "main"]).unwrap();
+        assert!(wt.join("y.txt").exists(), "the rebase checked y.txt out");
+        assert!(!ran.exists(), "the smudge program never runs");
+    }
 }

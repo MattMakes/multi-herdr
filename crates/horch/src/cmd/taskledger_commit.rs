@@ -11,16 +11,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::process::{Command, ExitCode};
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use horch_core::competition::preflight::parse_git_version;
 use horch_core::runtime::RuntimeContext;
+use horch_core::taskledger::bounded::{run_until, Records, GIT_DEADLINE};
 use horch_core::taskledger::finish::{self, WorktreeRow};
 use horch_core::taskledger::git::{
     filter_driver_names, filter_overrides, worktree_gitdir, SAFE_CONFIG,
@@ -51,24 +50,11 @@ const EMPTY_TREE_SHA256: &str = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b
 /// `check-attr` output that horch reads outside the sandbox.
 const MAX_PATHS: usize = 10_000;
 
-/// The most bytes of 1 NUL-ended record of git output that horch reads: a
-/// 3-byte status code and a path of `PATH_MAX` (4096) bytes.
-const MAX_RECORD: usize = 4099;
-
 /// The most bytes of 1 file, and of all files, that 1 commit stages: git
 /// hashes them outside the sandbox. `len()` is the full length of a sparse
 /// file too.
 const MAX_FILE_BYTES: u64 = 100 << 20;
 const MAX_TOTAL_BYTES: u64 = 1 << 30;
-
-/// The longest 1 git child runs before horch kills it.
-const GIT_DEADLINE: Duration = Duration::from_secs(120);
-
-/// The most time a killed git child gets to be reaped.
-const REAP_GRACE: Duration = Duration::from_secs(1);
-
-/// The most bytes of git's stderr kept for an error message.
-const MAX_STDERR: u64 = 4096;
 
 /// Plain data that names the author and committer; never a program.
 const IDENTITY_VARS: [&str; 6] = [
@@ -365,7 +351,11 @@ fn stage_and_commit(
             "--pathspec-file-nul".into(),
         ])?;
     }
-    refuse_unchecked_entries(&staging, &head, &stage.allowed)?;
+    let blobs = refuse_unchecked_entries(&staging, &head, &stage.allowed)?;
+    // The checks before git add read the worktree, which can change after
+    // them: judge what git staged, and the attributes once more.
+    refuse_large_blobs(&staging, &blobs)?;
+    refuse_required_filters(git, &stage.add)?;
     // Quiet: the summary lists every file, past the bound of 1 record.
     staging.run(&[
         "commit".into(),
@@ -387,8 +377,13 @@ fn stage_and_commit(
 /// `allowed`, or holds a gitlink (mode 160000) that `base` does not: the
 /// worktree can change between the checks and `git add`, and a later git
 /// outside the sandbox would start a git in a staged gitlink. Read from the
-/// index and the tree only, so no git starts in a gitlink here.
-fn refuse_unchecked_entries(git: &Trusted, base: &str, allowed: &HashSet<OsString>) -> Result<()> {
+/// index and the tree only, so no git starts in a gitlink here. Returns the
+/// object ids of the staged blobs.
+fn refuse_unchecked_entries(
+    git: &Trusted,
+    base: &str,
+    allowed: &HashSet<OsString>,
+) -> Result<Vec<String>> {
     let args: [OsString; 7] = [
         "diff-index".into(),
         "--cached".into(),
@@ -409,9 +404,11 @@ fn refuse_unchecked_entries(git: &Trusted, base: &str, allowed: &HashSet<OsStrin
     if !out.status.success() || out.records.len() % 2 != 0 {
         bail!("git diff-index failed: {}", out.status);
     }
+    let mut blobs = Vec::new();
     for entry in out.records.as_chunks::<2>().0 {
         let path = os_name(&entry[1]);
-        let new_mode = entry[0].split(|b| *b == b' ').nth(1);
+        let fields: Vec<&[u8]> = entry[0].split(|b| *b == b' ').collect();
+        let new_mode = fields.get(1).copied();
         if new_mode == Some(&b"160000"[..]) {
             bail!(
                 "refused: {} became a gitlink (a nested repository) after the checks; \
@@ -423,6 +420,60 @@ fn refuse_unchecked_entries(git: &Trusted, base: &str, allowed: &HashSet<OsStrin
             bail!(
                 "refused: {} changed after the checks; nothing is committed.",
                 Path::new(&path).display()
+            );
+        }
+        // A deletion stages no blob.
+        if new_mode != Some(&b"000000"[..]) {
+            if let Some(oid) = fields.get(3) {
+                blobs.push(String::from_utf8_lossy(oid).into_owned());
+            }
+        }
+    }
+    Ok(blobs)
+}
+
+/// Object ids per `cat-file` call: each size line is at most 21 bytes, so
+/// the output stays 1 record of at most [`MAX_RECORD`] bytes.
+const SIZES_PER_CALL: usize = 150;
+
+/// Refused when a staged blob is longer than [`MAX_FILE_BYTES`], or all of
+/// them than [`MAX_TOTAL_BYTES`]: the sizes git stored, not the worktree's.
+fn refuse_large_blobs(git: &Trusted, blobs: &[String]) -> Result<()> {
+    let mut total: u64 = 0;
+    for chunk in blobs.chunks(SIZES_PER_CALL) {
+        let input: Vec<u8> = chunk
+            .iter()
+            .flat_map(|o| format!("{o}\n").into_bytes())
+            .collect();
+        let args: [OsString; 2] = ["cat-file".into(), "--batch-check=%(objectsize)".into()];
+        let out = run_until(
+            git.command(clean_git(&git.bin, git.tree), &args),
+            input,
+            1,
+            GIT_DEADLINE,
+        )?;
+        let text = out.text("cat-file")?;
+        let sizes: Vec<u64> = text.lines().filter_map(|l| l.trim().parse().ok()).collect();
+        if sizes.len() != chunk.len() {
+            bail!(
+                "refused: git cat-file printed {} sizes for {} blobs",
+                sizes.len(),
+                chunk.len()
+            );
+        }
+        for len in sizes {
+            if len > MAX_FILE_BYTES {
+                bail!(
+                    "refused: a staged file is {len} bytes; horch ledger commit stages at most \
+                     {MAX_FILE_BYTES} bytes per file. Nothing is committed."
+                );
+            }
+            total = total.saturating_add(len);
+        }
+        if total > MAX_TOTAL_BYTES {
+            bail!(
+                "refused: the staged files are more than {MAX_TOTAL_BYTES} bytes. Nothing is \
+                 committed; commit them in parts with -- <files>."
             );
         }
     }
@@ -731,263 +782,10 @@ fn config_bool(value: &str) -> Option<bool> {
     }
 }
 
-/// The NUL-ended stdout records of 1 git run, and how it ended.
-#[derive(Debug)]
-struct Records {
-    status: ExitStatus,
-    records: Vec<Vec<u8>>,
-    /// False when git printed more than the cap: it was stopped there.
-    complete: bool,
-    /// The first [`MAX_STDERR`] bytes of stderr.
-    stderr: Vec<u8>,
-}
-
-impl Records {
-    /// stdout of a git call that prints at most 1 record, or its error.
-    fn text(self, what: &str) -> Result<String> {
-        if !self.complete || !self.status.success() {
-            let stderr = String::from_utf8_lossy(&self.stderr);
-            let why = if stderr.trim().is_empty() {
-                self.status.to_string()
-            } else {
-                stderr.trim().to_string()
-            };
-            bail!("git {what} failed: {why}");
-        }
-        Ok(String::from_utf8_lossy(&self.records.concat())
-            .trim()
-            .to_string())
-    }
-}
-
 /// The 1 way horch ledger commit runs git: [`run_until`] with no input and
 /// [`GIT_DEADLINE`].
 fn run_git(cmd: Command, max: usize) -> Result<Records> {
     run_until(cmd, Vec::new(), max, GIT_DEADLINE)
-}
-
-/// Run `cmd` with `input` on its stdin, and read at most `max` NUL-ended
-/// stdout records of at most [`MAX_RECORD`] bytes each. git is killed at
-/// the first record past either bound, and at `limit`, which is an error.
-/// So no worker-controlled input grows horch's memory or time past them.
-fn run_until(mut cmd: Command, input: Vec<u8>, max: usize, limit: Duration) -> Result<Records> {
-    let end = Instant::now() + limit;
-    // git leads its own process group, so the kill also reaches a filter or
-    // helper that holds a pipe.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let stdin = if input.is_empty() {
-        Stdio::null()
-    } else {
-        Stdio::piped()
-    };
-    let mut child = cmd
-        .stdin(stdin)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("running git")?;
-    // Names git's group after git is reaped (see `stop_group`).
-    let started = horch_core::procid::start_time(child.id()).unwrap_or(0);
-    // A writer thread, so a full stdout pipe never blocks the input. It
-    // ends when the input is written or git closes the pipe (a kill).
-    if let Some(mut pipe) = child.stdin.take() {
-        std::thread::spawn(move || pipe.write_all(&input));
-    }
-    let stdout = child.stdout.take().context("git has no stdout")?;
-    let stderr = child.stderr.take().context("git has no stderr")?;
-    let mut reader = Some(std::thread::spawn(move || {
-        read_records(BufReader::new(stdout), max)
-    }));
-    let errors = std::thread::spawn(move || read_stderr(stderr));
-    let mut read = None;
-    // The last time a pipe reader may take: `end`, or 1 grace after a kill.
-    let mut join_end = end;
-    let status = loop {
-        if let Some(status) = poll_exit(&mut child)? {
-            break status;
-        }
-        if reader.as_ref().is_some_and(JoinHandle::is_finished) {
-            read = reader.take().and_then(|h| h.join().ok());
-        }
-        let capped = read.as_ref().is_some_and(|r| !matches!(r, Ok((_, true))));
-        let late = Instant::now() >= end;
-        if capped || late {
-            let status = kill_and_reap(&mut child)?;
-            if !capped {
-                bail!(
-                    "git ran longer than {} s and was stopped",
-                    limit.as_secs_f32()
-                );
-            }
-            join_end = Instant::now() + REAP_GRACE;
-            break status;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    // git is reaped. A pipe still open is a helper in its group: stop the
-    // group, so nothing it started outlives this call, and join again.
-    let read = match (read, reader) {
-        (Some(read), _) => Ok(read),
-        (None, Some(reader)) => join_by(reader, join_end),
-        // The reader ended without a result: treat it as an open pipe.
-        (None, None) => Err(()),
-    };
-    let errors = join_by(errors, join_end);
-    let (Ok(read), Ok(stderr)) = (read, errors) else {
-        #[cfg(unix)]
-        stop_group(child.id(), started);
-        #[cfg(not(unix))]
-        let _ = started;
-        bail!(
-            "git output was still open after {} s: the helpers in git's process group \
-             were stopped",
-            limit.as_secs_f32()
-        );
-    };
-    let (records, complete) = read?;
-    Ok(Records {
-        status,
-        records,
-        complete,
-        stderr,
-    })
-}
-
-/// git's exit status once it has exited. A failed wait stops git first, so
-/// the error never leaves git running.
-fn poll_exit(child: &mut Child) -> Result<Option<ExitStatus>> {
-    child
-        .try_wait()
-        .inspect_err(|_| {
-            let _ = kill_and_reap(child);
-        })
-        .context("waiting for git")
-}
-
-/// Stop what is left of git's process group after git is reaped: TERM, up
-/// to [`REAP_GRACE`] for the group to empty, then KILL. Each signal is sent
-/// only while the group is still git's: a member still holds the id, or
-/// the id names a process with git's start time `started`
-/// ([`horch_core::procid::is_same_group`]).
-#[cfg(unix)]
-fn stop_group(pgid: u32, started: u64) {
-    let ours = || horch_core::procid::is_same_group(pgid, started);
-    let Ok(group) = libc::pid_t::try_from(pgid) else {
-        return;
-    };
-    if ours() {
-        // SAFETY: `kill` only signals, and `ours` checked the group.
-        unsafe { libc::kill(-group, libc::SIGTERM) };
-    }
-    let until = Instant::now() + REAP_GRACE;
-    while ours() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    if ours() {
-        // SAFETY: as above.
-        unsafe { libc::kill(-group, libc::SIGKILL) };
-    }
-}
-
-/// Stop git and its process group, then reap git: TERM first, so git
-/// removes its lock files, and KILL when git is not reaped within
-/// [`REAP_GRACE`]. A git that is not reaped after the KILL either is an
-/// error: no wait here blocks, and the whole stop takes at most 2 graces.
-fn kill_and_reap(child: &mut Child) -> Result<ExitStatus> {
-    #[cfg(unix)]
-    {
-        signal_group(child, libc::SIGTERM);
-        if let Ok(status) = reap_within(child, REAP_GRACE) {
-            // A helper that ignored the TERM still holds the group id, so
-            // no new process can have it yet.
-            signal_group(child, libc::SIGKILL);
-            return Ok(status);
-        }
-    }
-    #[cfg(unix)]
-    let killed = signal_group(child, libc::SIGKILL);
-    #[cfg(not(unix))]
-    let killed = child.kill().is_ok();
-    let kill_error = (!killed).then(std::io::Error::last_os_error);
-    reap_within(child, REAP_GRACE).with_context(|| match &kill_error {
-        Some(e) => format!("could not kill git: {e}"),
-        None => "git was killed".to_string(),
-    })
-}
-
-/// Send `signal` to the process group that `child` leads; true when sent.
-/// Call it only while the group id cannot belong to another group: git is
-/// unreaped, or git is reaped and a member of its group still lives (a
-/// group id is not given out while the group has a member). Then the
-/// signal reaches only this call's descendants; an empty group is ESRCH.
-#[cfg(unix)]
-fn signal_group(child: &Child, signal: libc::c_int) -> bool {
-    // SAFETY: `kill` only signals, and the rule above keeps the group ours.
-    unsafe { libc::kill(-(child.id() as libc::pid_t), signal) == 0 }
-}
-
-/// Reap `child` by polling, never by a blocking wait: a child that does not
-/// exit within `grace` is an error, so the call still returns.
-fn reap_within(child: &mut Child, grace: Duration) -> Result<ExitStatus> {
-    let until = Instant::now() + grace;
-    loop {
-        if let Some(status) = child.try_wait().context("waiting for git")? {
-            return Ok(status);
-        }
-        if Instant::now() >= until {
-            bail!("git did not exit within {} ms", grace.as_millis());
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-/// The result of `handle`, or `Err` when it is not done at `end`. A reader
-/// that is not done is detached: the group stop closes its pipe, so it ends.
-fn join_by<T>(handle: JoinHandle<T>, end: Instant) -> std::result::Result<T, ()> {
-    while !handle.is_finished() {
-        if Instant::now() >= end {
-            return Err(());
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    handle.join().map_err(drop)
-}
-
-/// The first [`MAX_STDERR`] bytes of `stderr`; the rest is read and dropped,
-/// so git never blocks on a full pipe.
-fn read_stderr(mut stderr: impl Read) -> Vec<u8> {
-    let mut kept = Vec::new();
-    let _ = stderr.by_ref().take(MAX_STDERR).read_to_end(&mut kept);
-    let mut dropped = [0u8; 4096];
-    while stderr.read(&mut dropped).is_ok_and(|n| n > 0) {}
-    kept
-}
-
-/// At most `max` NUL-ended records from `reader`, and whether it ended
-/// within them. A record longer than [`MAX_RECORD`] is an error.
-fn read_records(mut reader: impl BufRead, max: usize) -> Result<(Vec<Vec<u8>>, bool)> {
-    let mut records = Vec::new();
-    loop {
-        let mut record = Vec::new();
-        reader
-            .by_ref()
-            .take(MAX_RECORD as u64 + 1)
-            .read_until(0, &mut record)
-            .context("reading git output")?;
-        if record.is_empty() {
-            return Ok((records, true));
-        }
-        if record.last() == Some(&0) {
-            record.pop();
-        } else if record.len() > MAX_RECORD {
-            bail!("refused: git printed a record longer than {MAX_RECORD} bytes");
-        }
-        if records.len() == max {
-            return Ok((records, false));
-        }
-        records.push(record);
-    }
 }
 
 /// The worktree's git dir by the shared rule
@@ -1403,228 +1201,6 @@ fn git_without_env(bin: &Path, tree: Option<&str>) -> Command {
 mod tests {
     use super::*;
     use std::io::Cursor;
-
-    #[test]
-    fn records_end_within_the_cap() {
-        let (records, complete) = read_records(Cursor::new(b"a\0bb\0c".to_vec()), 3).unwrap();
-        assert!(complete);
-        assert_eq!(records, vec![b"a".to_vec(), b"bb".to_vec(), b"c".to_vec()]);
-    }
-
-    #[test]
-    fn reading_stops_at_the_first_record_past_the_cap() {
-        let input: Vec<u8> = (0..50)
-            .flat_map(|n| format!("{n}\0").into_bytes())
-            .collect();
-        let mut reader = Cursor::new(input);
-        let (records, complete) = read_records(&mut reader, 10).unwrap();
-        assert!(!complete);
-        assert_eq!(records.len(), 10);
-        // Only 1 record past the cap was read: the rest stays unread.
-        assert_eq!(
-            reader.position(),
-            b"0\x001\x002\x003\x004\x005\x006\x007\x008\x009\x0010\0".len() as u64
-        );
-    }
-
-    #[test]
-    fn a_record_longer_than_the_bound_is_refused_before_it_is_stored() {
-        let mut long = vec![b'x'; MAX_RECORD + 1];
-        long.push(0);
-        let mut reader = Cursor::new(long);
-        let e = read_records(&mut reader, 10).unwrap_err();
-        assert!(e.to_string().contains("longer than 4099 bytes"), "{e}");
-        assert_eq!(reader.position(), MAX_RECORD as u64 + 1);
-        let mut exact = vec![b'x'; MAX_RECORD];
-        exact.push(0);
-        let (records, complete) = read_records(Cursor::new(exact), 10).unwrap();
-        assert!(complete && records[0].len() == MAX_RECORD);
-    }
-
-    #[cfg(unix)]
-    fn sh(script: &str) -> Command {
-        let mut cmd = Command::new("/bin/sh");
-        cmd.args(["-c", script]);
-        cmd
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_child_past_the_deadline_is_killed_and_is_an_error() {
-        let started = Instant::now();
-        let e = run_until(
-            sh("exec sleep 30"),
-            Vec::new(),
-            1,
-            Duration::from_millis(300),
-        )
-        .unwrap_err();
-        assert!(e.to_string().contains("was stopped"), "{e}");
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "{:?}",
-            started.elapsed()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_child_past_the_record_cap_is_killed_at_once() {
-        let started = Instant::now();
-        let out = run_until(
-            sh("exec yes x | tr '\\n' '\\0'"),
-            Vec::new(),
-            10,
-            Duration::from_secs(30),
-        )
-        .unwrap();
-        assert!(!out.complete);
-        assert_eq!(out.records.len(), 10);
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "{:?}",
-            started.elapsed()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_child_within_the_bounds_keeps_its_output_and_stderr() {
-        let out = run_until(
-            sh("printf 'a\\0b'; echo oops >&2; exit 3"),
-            Vec::new(),
-            5,
-            GIT_DEADLINE,
-        )
-        .unwrap();
-        assert!(out.complete);
-        assert_eq!(out.records, vec![b"a".to_vec(), b"b".to_vec()]);
-        assert_eq!(out.status.code(), Some(3));
-        let e = out.text("x").unwrap_err();
-        assert!(e.to_string().contains("oops"), "{e}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn reaping_a_child_that_does_not_exit_returns_inside_the_grace() {
-        let mut cmd = sh("exec sleep 30");
-        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-        let mut child = cmd.spawn().unwrap();
-        let started = Instant::now();
-        let e = reap_within(&mut child, Duration::from_millis(200)).unwrap_err();
-        assert!(e.to_string().contains("did not exit within 200 ms"), "{e}");
-        assert!(started.elapsed() < Duration::from_secs(5));
-        assert!(kill_and_reap(&mut child).is_ok());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_child_that_ignores_term_is_killed_inside_2_graces() {
-        let mut cmd = sh("trap '' TERM; while :; do sleep 1; done");
-        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-        let mut child = cmd.spawn().unwrap();
-        // Let the shell set its trap before the TERM.
-        std::thread::sleep(Duration::from_millis(200));
-        let started = Instant::now();
-        let status = kill_and_reap(&mut child).unwrap();
-        assert!(!status.success());
-        assert!(
-            started.elapsed() >= REAP_GRACE && started.elapsed() < 3 * REAP_GRACE,
-            "{:?}",
-            started.elapsed()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_helper_that_ignores_term_ends_after_git_is_reaped() {
-        let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("helper.pid");
-        let script = format!(
-            "sh -c \"trap '' TERM; while :; do sleep 1; done\" & echo $! > '{}'; sleep 0.2; exec sleep 30",
-            pid_file.display()
-        );
-        let started = Instant::now();
-        run_until(sh(&script), Vec::new(), 1, Duration::from_millis(500)).unwrap_err();
-        let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        // SAFETY: signal 0 only checks that the pid exists.
-        while unsafe { libc::kill(pid, 0) } == 0 {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "helper {pid} survived"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_helper_that_holds_a_pipe_after_git_exits_is_stopped() {
-        // A helper that holds stdout, and one that holds only stderr.
-        for redirect in ["", ">/dev/null"] {
-            let dir = tempfile::tempdir().unwrap();
-            let pid_file = dir.path().join("helper.pid");
-            let script = format!(
-                "sleep 30 {redirect} & echo $! > '{}'; exit 0",
-                pid_file.display()
-            );
-            let limit = Duration::from_millis(300);
-            let started = Instant::now();
-            let e = run_until(sh(&script), Vec::new(), 5, limit).unwrap_err();
-            assert!(e.to_string().contains("still open"), "{redirect}: {e}");
-            assert!(
-                started.elapsed() < limit + 2 * REAP_GRACE + Duration::from_millis(500),
-                "{redirect}: {:?}",
-                started.elapsed()
-            );
-            let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
-            // Dead at the return; reparented, it is reaped soon after.
-            let returned = Instant::now();
-            // SAFETY: signal 0 only checks that the pid exists.
-            while unsafe { libc::kill(pid, 0) } == 0 {
-                assert!(
-                    returned.elapsed() < Duration::from_secs(1),
-                    "{redirect}: helper {pid} survived"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_deadline_kill_also_ends_a_helper_that_git_started() {
-        let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("helper.pid");
-        let script = format!(
-            "sleep 30 & echo $! > '{}'; exec sleep 30",
-            pid_file.display()
-        );
-        let started = Instant::now();
-        run_until(sh(&script), Vec::new(), 1, Duration::from_millis(300)).unwrap_err();
-        let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        // The helper is reparented and reaped once it is dead.
-        // SAFETY: signal 0 only checks that the pid exists.
-        while unsafe { libc::kill(pid, 0) } == 0 {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "helper {pid} survived"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
 
     #[test]
     fn check_attr_output_of_the_wrong_shape_is_refused() {

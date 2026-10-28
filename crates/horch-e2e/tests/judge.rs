@@ -852,10 +852,10 @@ fn cmp_16_only_judge_and_compaction_jobs_detached() {
         // The task-ledger watchdog checks a run's workers after the pane of
         // the command that started it is gone (#42).
         "crates/horch/src/cmd/taskledger_watch.rs",
-        // `horch ledger commit` runs git in its own process group, so a
-        // deadline or cap kills a filter or helper git started too. horch
-        // waits for it, so it is not detached.
-        "crates/horch/src/cmd/taskledger_commit.rs",
+        // The task ledger's bounded git runner runs git in its own process
+        // group, so a deadline or cap kills a filter or helper git started
+        // too. horch waits for it, so it is not detached.
+        "crates/horch-core/src/taskledger/bounded.rs",
     ];
     let mut found = Vec::new();
     let mut stack = vec![root.join("crates")];

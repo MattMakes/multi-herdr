@@ -1,5 +1,5 @@
 prefix_rule(
-    pattern = ["horch", "ledger"],
+    pattern = ["horch", "ledger", ["status", "show", "run", "add", "add-map", "plan-workers", "fallback", "cancel", "claim", "worktree", "finish", "steps", "done", "progress", "commit", "note", "stop", "reap", "watch", "import", "unfinished", "reopen", "dismiss", "legacy", "events", "path"]],
     decision = "allow",
     justification = "herdr-fleet: claim, report and finish tasks through the task ledger",
 )

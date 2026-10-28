@@ -1012,8 +1012,7 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                     eprintln!("horch ledger: created run branch {run_branch} from {base}.");
                 }
                 if let Some(remote) = &remote {
-                    let out =
-                        git.try_run(&root, &["push", "--set-upstream", remote, &run_branch])?;
+                    let (out, _) = git.push(&root, remote, &run_branch, &["--set-upstream"])?;
                     if !out.ok {
                         eprintln!(
                             "horch ledger: warning: could not push {run_branch} to {remote}: {}",
@@ -1516,6 +1515,11 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
             harness,
             run,
         } => {
+            // A worker that made a row could claim with it and pick its own
+            // harness, which picks its check's sandbox.
+            if worker_id_opt(ctx).is_some() {
+                bail!("only the orchestrator or the operator makes worker rows");
+            }
             let r = resolve_run(ctx, store, &run)?;
             let id = store.immediate(|tx| {
                 workers::insert(
