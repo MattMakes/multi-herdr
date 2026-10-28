@@ -10,6 +10,7 @@
 //! are additions, so a caller that never tiles still only needs 0.6.1.
 
 use std::ffi::OsStr;
+use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
@@ -83,8 +84,8 @@ pub struct HerdrFailed {
     pub stderr: String,
 }
 
-impl std::fmt::Display for HerdrFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for HerdrFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "herdr {} failed ({}): {}",
