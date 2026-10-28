@@ -574,20 +574,53 @@ fn read_capped(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u
 
 /// Kill and reap `child`. A failure of either is a warning, not an error:
 /// the call has already failed and the caller goes on.
+///
+/// The leader is still unreaped here, so its pid cannot belong to another
+/// process: the group signal reaches only this call's descendants.
 fn kill_and_reap(child: &mut Child) {
     // The child leads its own process group, so one signal also ends every
     // descendant that holds a pipe.
     #[cfg(unix)]
-    // SAFETY: `kill` only signals; the pid is a child of this process.
-    unsafe {
-        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
-    }
-    if let Err(e) = child.kill() {
-        eprintln!("horch: could not kill herdr: {e}");
+    // SAFETY: `kill` only signals; the leader is unreaped, so the group is ours.
+    let killed = unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) } == 0;
+    #[cfg(not(unix))]
+    let killed = child.kill().is_ok();
+    if !killed {
+        eprintln!("horch: could not kill herdr");
     }
     if let Err(e) = child.wait() {
         eprintln!("horch: could not reap herdr: {e}");
     }
+}
+
+/// True once the child has exited. It stays unreaped, a zombie, so its pid
+/// and process group cannot be reused before the caller kills and reaps it.
+fn has_exited(child: &mut Child) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        // SAFETY: an all-zero `siginfo_t` is valid; `waitid` fills it in.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waits on our own unreaped child without reaping it.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id() as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `waitid` succeeded, so the pid field is initialised.
+        #[cfg(target_os = "linux")]
+        let pid = unsafe { info.si_pid() };
+        #[cfg(not(target_os = "linux"))]
+        let pid = info.si_pid;
+        Ok(pid != 0)
+    }
+    #[cfg(not(unix))]
+    Ok(child.try_wait()?.is_some())
 }
 
 /// Run `command` with one `timeout` for the exit and for both pipes. On the
@@ -606,7 +639,7 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
         read_capped(child.stderr.take()),
     ];
     let mut collected: [Option<Vec<u8>>; 2] = [None, None];
-    let mut status = None;
+    let mut exited = false;
     let deadline = Instant::now() + timeout;
     let failure = loop {
         for (slot, reader) in collected.iter_mut().zip(&readers) {
@@ -624,10 +657,16 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
                 std::io::ErrorKind::InvalidData,
             ));
         }
-        if status.is_none() {
-            status = child.try_wait()?;
+        if !exited {
+            exited = match has_exited(&mut child) {
+                Ok(exited) => exited,
+                Err(error) => {
+                    kill_and_reap(&mut child);
+                    return Err(error);
+                }
+            };
         }
-        if let (Some(_), [Some(_), Some(_)]) = (status, &collected) {
+        if exited && collected.iter().all(Option::is_some) {
             break None;
         }
         if Instant::now() >= deadline {
@@ -644,7 +683,7 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
     }
     let [stdout, stderr] = collected;
     Ok(Output {
-        status: status.expect("exit was seen"),
+        status: child.wait()?,
         stdout: stdout.unwrap_or_default(),
         stderr: stderr.unwrap_or_default(),
     })
@@ -655,11 +694,10 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    fn script_in(name: &str, body: &str) -> (PathBuf, PathBuf) {
+    fn script_in(body: &str) -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("herdr-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("herdr");
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("herdr");
         std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         (dir, script)
@@ -668,31 +706,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_descendant_that_keeps_stdout_open_past_the_deadline_fails_the_call() {
-        let (dir, script) = script_in("open-pipe", "sleep 4 &\nexit 0");
+        let (dir, script) = script_in("sleep 4 &\nexit 0");
         let started = Instant::now();
         let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1000));
         assert!(herdr.pane_list("w1").is_err());
         assert!(started.elapsed() < Duration::from_secs(3));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
     #[test]
     fn a_descendant_holding_stdout_is_killed_with_the_call() {
-        let (dir, script) = script_in(
-            "descendant",
-            &format!(
-                "sleep 30 &\necho $! > {}/pid\nexit 0",
-                std::env::temp_dir()
-                    .join(format!("herdr-descendant-{}", std::process::id()))
-                    .display()
-            ),
-        );
+        let (dir, script) = script_in("sleep 30 &\necho $! > \"$(dirname \"$0\")/pid\"\nexit 0");
         let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1500));
         assert!(herdr.pane_list("w1").is_err());
         // A loaded machine can kill the script before it writes its pid:
         // then no process was left to leak.
-        let Ok(pid) = std::fs::read_to_string(dir.join("pid")) else {
+        let Ok(pid) = std::fs::read_to_string(dir.path().join("pid")) else {
             return;
         };
         let gone = (0..40).any(|_| {
@@ -708,37 +737,23 @@ mod tests {
             dead
         });
         assert!(gone, "descendant {pid} is still running");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
     #[test]
     fn a_herdr_that_prints_more_than_the_cap_fails_the_call() {
-        let (dir, script) = script_in("flood", "exec head -c 3000000 /dev/zero");
+        let (dir, script) = script_in("exec head -c 3000000 /dev/zero");
         let started = Instant::now();
         let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_secs(5));
         assert!(herdr.pane_list("w1").is_err());
         assert!(started.elapsed() < Duration::from_secs(10));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
     #[test]
     fn a_herdr_that_outlasts_the_timeout_is_killed() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("herdr-timeout-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("herdr");
-        let pidfile = dir.join("pid");
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\necho $$ > {}\nexec sleep 60\n",
-                pidfile.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (dir, script) = script_in("echo $$ > \"$(dirname \"$0\")/pid\"\nexec sleep 60");
+        let pidfile = dir.path().join("pid");
 
         let started = Instant::now();
         let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(2000));
@@ -753,7 +768,6 @@ mod tests {
             .output()
             .unwrap();
         assert!(!alive.status.success(), "herdr {pid} is still running");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The three answers herdr 0.8.2 gives, verbatim.
