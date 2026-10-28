@@ -397,13 +397,18 @@ fn worker_reads_the_skill_store_its_spawner_read() {
         .find(|line| line.contains("'worker'"))
         .expect("horch spawn ran a worker command");
     assert!(ran.contains(&set), "{ran}");
+    // The mailbox lives in the state folder, so the line names it too and
+    // the worker finds its brief without the spawner's state variable.
+    let state_set = format!("'HORCH_STATE_DIR={}'", h.state.display());
+    assert!(ran.contains(&state_set), "{ran}");
     let mut worker = std::process::Command::new("/bin/sh");
     h.seal(&mut worker);
     worker
         .arg("-c")
         .arg(&ran)
         .env("HERDR_PANE_ID", &pane)
-        .env_remove("XDG_DATA_HOME");
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("HORCH_STATE_DIR");
     let out = worker.output().unwrap();
     assert!(out.status.success(), "worker: {ran}\n{}", text(&out));
     let r = report(&h);
