@@ -304,7 +304,7 @@ pub fn remind_pending(ctx: &RuntimeContext) {
     {
         return;
     }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(pane_list_timeout());
     let Some(count) = Mailbox::resolve_in(&herdr, ctx)
         .ok()
         .and_then(|mailbox| {
