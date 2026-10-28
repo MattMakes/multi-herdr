@@ -71,11 +71,11 @@ fn arithmetic_echo(shell: PaneShell) -> &'static str {
 /// into it after `horch register` ends.
 fn horch_line(ctx: &RuntimeContext, shell: PaneShell, exe: &Path, args: &[&str]) -> String {
     let data_root = ctx.paths.data_root.to_string_lossy();
-    let mut env = vec![("HORCH_DATA_DIR", data_root.as_ref())];
-    let state_dir = super::path_text(ctx.paths.state_override.as_deref());
-    if let Some(dir) = &state_dir {
-        env.push(("HORCH_STATE_DIR", dir));
-    }
+    let state_root = ctx.paths.state_root.to_string_lossy();
+    let env = [
+        ("HORCH_DATA_DIR", data_root.as_ref()),
+        ("HORCH_STATE_DIR", state_root.as_ref()),
+    ];
     shell.command_line_keep_shell(exe, &env, args)
 }
 
@@ -778,6 +778,33 @@ fn dump_ledger(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A smoke pane is a fresh shell: its `horch` line names the state folder
+    /// the checks read, for each shell.
+    #[test]
+    fn horch_line_carries_the_state_folder() {
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with("HORCH_STATE_DIR", "/smoke-state"),
+        )
+        .unwrap();
+        for (shell, set) in [
+            (PaneShell::Posix, " 'HORCH_STATE_DIR=/smoke-state' "),
+            (
+                PaneShell::PowerShell,
+                "$env:HORCH_STATE_DIR = '/smoke-state'; ",
+            ),
+        ] {
+            let line = horch_line(
+                &ctx,
+                shell,
+                Path::new("/opt/horch/bin/horch"),
+                &["register", "a"],
+            );
+            assert!(line.contains(set), "{line}");
+        }
+    }
 
     /// The arithmetic must be left for the pane's own shell to evaluate, in that
     /// shell's dialect - never pre-computed here.

@@ -700,3 +700,32 @@ fn t11_followup_orchestrator_registers_under_a_custom_state_dir() {
         text(&inbox)
     );
 }
+
+/// A mailbox removal that fails does not stop `horch done`: it warns with the
+/// role and the path, and still closes the pane.
+#[cfg(unix)]
+#[test]
+fn t11_followup_done_warns_when_the_registration_stays() {
+    let h = fleet("done-warns", "exec,stay");
+    let (pane, role, id) = running_worker(&h);
+    let id_file = h.state.join(format!("herdr-orchestration-w1/{role}.id"));
+    std::fs::remove_file(&id_file).unwrap();
+    std::fs::create_dir_all(id_file.join("not-a-file")).unwrap();
+
+    let done = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
+
+    assert!(done.status.success(), "{}", text(&done));
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    let warning = stderr
+        .lines()
+        .find(|l| l.starts_with("horch done:") && l.contains(&id_file.display().to_string()))
+        .unwrap_or_else(|| panic!("no warning in {}", text(&done)));
+    assert!(warning.contains(&role), "{warning}");
+    assert_eq!(record(&h, &id)["status"], "done");
+    let panes = herdr(&h, &["pane", "list"]);
+    assert!(
+        !String::from_utf8_lossy(&panes.stdout).contains(&pane),
+        "{}",
+        text(&panes)
+    );
+}

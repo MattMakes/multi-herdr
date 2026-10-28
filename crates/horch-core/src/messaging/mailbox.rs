@@ -312,29 +312,37 @@ impl Mailbox {
     }
 
     /// Drop a role's registration and brief, and the discovery files its
-    /// launch left. Every file is tried; the error names the first removal of
-    /// a registration file that failed. Discovery files are best effort.
+    /// launch left. Every file is tried; the error names the first removal
+    /// that failed. The discovery files go first: once the id and brief are
+    /// gone the role name can start again, and its new launch writes a new
+    /// marker that this call must not delete.
     pub fn try_unregister(&self, role: &str) -> Result<()> {
         let mut first_error = None;
-        for dir in std::iter::once(&self.dir).chain(&self.legacy_dir) {
-            for file in [Self::id_file(role), Self::brief_file(role)] {
-                let path = dir.join(file);
-                match std::fs::remove_file(&path) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => {
-                        first_error.get_or_insert(anyhow::Error::new(e).context(format!(
-                            "removing {} failed; role '{role}' stays registered",
-                            path.display()
-                        )));
+        let groups = [
+            (
+                [Self::launch_marker_file(role), Self::harvest_log_file(role)],
+                "a new launch of the role may fail",
+            ),
+            (
+                [Self::id_file(role), Self::brief_file(role)],
+                "the role stays registered",
+            ),
+        ];
+        for (files, consequence) in &groups {
+            for dir in std::iter::once(&self.dir).chain(&self.legacy_dir) {
+                for file in files {
+                    let path = dir.join(file);
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            first_error.get_or_insert(anyhow::Error::new(e).context(format!(
+                                "removing {} failed; {consequence} (role '{role}')",
+                                path.display()
+                            )));
+                        }
                     }
                 }
-            }
-            for file in [
-                format!(".{role}.launch-marker"),
-                format!("{role}.harvest.log"),
-            ] {
-                let _ = std::fs::remove_file(dir.join(file));
             }
         }
         first_error.map_or(Ok(()), Err)
@@ -358,17 +366,25 @@ impl Mailbox {
     /// Marker file used to bound the codex rollout-file search to sessions
     /// created after this worker launched.
     pub(crate) fn launch_marker(&self, role: &str) -> PathBuf {
-        self.dir.join(format!(".{role}.launch-marker"))
+        self.dir.join(Self::launch_marker_file(role))
     }
 
     /// The marker to read: a worker launched before the upgrade left its
     /// marker in the old temp location.
     pub(crate) fn launch_marker_read_path(&self, role: &str) -> PathBuf {
-        self.read_path(&format!(".{role}.launch-marker"))
+        self.read_path(&Self::launch_marker_file(role))
     }
 
     pub(crate) fn harvest_log(&self, role: &str) -> PathBuf {
-        self.dir.join(format!("{role}.harvest.log"))
+        self.dir.join(Self::harvest_log_file(role))
+    }
+
+    fn launch_marker_file(role: &str) -> String {
+        format!(".{role}.launch-marker")
+    }
+
+    fn harvest_log_file(role: &str) -> String {
+        format!("{role}.harvest.log")
     }
 }
 
@@ -599,13 +615,23 @@ mod tests {
     }
 
     /// A removal that fails for a reason other than "missing" leaves the role
-    /// registered, and the caller gets the error with the path.
+    /// registered, and the caller gets the error with the path. Every other
+    /// file is still tried, in both locations.
     #[test]
-    fn try_unregister_returns_a_removal_that_fails() {
+    fn try_unregister_returns_a_removal_that_fails_and_tries_the_rest() {
         let state = tempfile::tempdir().unwrap();
-        let mb = Mailbox::under(state.path(), "w1");
+        let temp = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
         let id = mb.dir().join("sonnet-1.id");
         std::fs::create_dir_all(id.join("not-a-file")).unwrap();
+        std::fs::write(mb.dir().join("sonnet-1.brief.json"), "{}").unwrap();
+        for file in [
+            "sonnet-1.id",
+            "sonnet-1.brief.json",
+            ".sonnet-1.launch-marker",
+        ] {
+            std::fs::write(legacy.join(file), "").unwrap();
+        }
 
         let error = mb.try_unregister("sonnet-1").unwrap_err();
 
@@ -613,6 +639,28 @@ mod tests {
         assert!(text.contains(&id.display().to_string()), "{text}");
         assert!(text.contains("sonnet-1"), "{text}");
         assert!(mb.role_taken("sonnet-1"));
+        assert!(!mb.dir().join("sonnet-1.brief.json").exists());
+        for file in [
+            "sonnet-1.id",
+            "sonnet-1.brief.json",
+            ".sonnet-1.launch-marker",
+        ] {
+            assert!(!legacy.join(file).exists(), "{file}");
+        }
+    }
+
+    /// A launch marker that cannot be removed would fail the next launch of
+    /// the role, so the caller gets that error too.
+    #[test]
+    fn try_unregister_returns_a_discovery_file_that_stays() {
+        let state = tempfile::tempdir().unwrap();
+        let mb = Mailbox::under(state.path(), "w1");
+        let marker = mb.dir().join(".sonnet-1.launch-marker");
+        std::fs::create_dir_all(marker.join("not-a-file")).unwrap();
+
+        let text = format!("{:#}", mb.try_unregister("sonnet-1").unwrap_err());
+
+        assert!(text.contains(&marker.display().to_string()), "{text}");
     }
 
     /// A discovery that failed leaves a harvest log, and one that never found

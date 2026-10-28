@@ -243,11 +243,10 @@ fn pane_command_for(
     let data_root = ctx.paths.data_root.to_string_lossy();
     let rounds = compete.map(|c| c.rounds.to_string());
     let mut env: Vec<(&str, &str)> = vec![("HORCH_DATA_DIR", data_root.as_ref())];
-    // The mailbox lives in the state folder, so the pane needs the same one.
-    let state_dir = super::path_text(ctx.paths.state_override.as_deref());
-    if let Some(dir) = &state_dir {
-        env.push(("HORCH_STATE_DIR", dir));
-    }
+    // The mailbox lives in the state folder, so the pane needs the same one,
+    // whether `HORCH_STATE_DIR` or `XDG_STATE_HOME` picked it.
+    let state_root = ctx.paths.state_root.to_string_lossy();
+    env.push(("HORCH_STATE_DIR", state_root.as_ref()));
     // Competition mode (FDS-13) reaches the briefing the same way.
     if let (Some(c), Some(rounds)) = (compete, rounds.as_deref()) {
         env.push((COMPETE_ROUNDS_ENV, rounds));
@@ -1044,22 +1043,30 @@ mod tests {
     }
 
     /// A pane does not inherit `$HORCH_STATE_DIR`, and the mailbox lives
-    /// there, so every pane command names the state folder.
+    /// there, so every pane command names the state folder, however the
+    /// parent chose it.
     #[test]
-    fn pane_command_sets_the_custom_state_dir() {
-        let ctx = RuntimeContext::from_env(
-            &horch_core::runtime::MapEnv::new("/")
-                .with_exe("/opt/horch/bin/horch")
-                .with("HORCH_STATE_DIR", "/custom-state"),
-        )
-        .unwrap();
-        let cmd = pane_command(&ctx, "orchestrator", PaneKind::FleetOrchestrator, None).unwrap();
-        let set = if cfg!(windows) {
-            "$env:HORCH_STATE_DIR = '/custom-state'; "
-        } else {
-            " 'HORCH_STATE_DIR=/custom-state' "
-        };
-        assert!(cmd.contains(set), "{cmd}");
+    fn pane_command_sets_the_state_dir() {
+        for (variable, root, expected) in [
+            ("HORCH_STATE_DIR", "/custom-state", "/custom-state"),
+            ("XDG_STATE_HOME", "/xdg-state", "/xdg-state/horch"),
+        ] {
+            let ctx = RuntimeContext::from_env(
+                &horch_core::runtime::MapEnv::new("/")
+                    .with_exe("/opt/horch/bin/horch")
+                    .with(variable, root),
+            )
+            .unwrap();
+            let cmd =
+                pane_command(&ctx, "orchestrator", PaneKind::FleetOrchestrator, None).unwrap();
+            let expected = std::path::Path::new(expected);
+            let set = if cfg!(windows) {
+                format!("$env:HORCH_STATE_DIR = '{}'; ", expected.display())
+            } else {
+                format!(" 'HORCH_STATE_DIR={}' ", expected.display())
+            };
+            assert!(cmd.contains(&set), "{variable}: {cmd}");
+        }
     }
 
     #[test]
