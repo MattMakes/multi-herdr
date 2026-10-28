@@ -10,8 +10,10 @@
 //! are additions, so a caller that never tiles still only needs 0.6.1.
 
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -95,18 +97,39 @@ impl std::error::Error for HerdrFailed {}
 #[derive(Debug, Clone)]
 pub struct Herdr {
     bin: PathBuf,
+    /// When set, a call that has not finished by then is killed and fails.
+    timeout: Option<Duration>,
 }
 
 impl Herdr {
     /// A handle that runs `bin`. The CLI passes `ctx.bins.harness.herdr`.
     pub fn with_bin(bin: impl Into<PathBuf>) -> Self {
-        Self { bin: bin.into() }
+        Self {
+            bin: bin.into(),
+            timeout: None,
+        }
+    }
+
+    /// The same handle, with every call bounded: a herdr that has not
+    /// answered after `timeout` is killed and the call fails.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    fn run<S: AsRef<OsStr>>(&self, args: &[S]) -> std::io::Result<Output> {
+        let mut command = Command::new(&self.bin);
+        command.args(args);
+        match self.timeout {
+            None => command.output(),
+            Some(timeout) => output_within(command, timeout),
+        }
     }
 
     /// Run `herdr <args>`, returning stdout. Errors carry herdr's own stderr,
     /// which is what actually explains a failure.
     fn output<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
-        let out = Command::new(&self.bin).args(args).output().map_err(|e| {
+        let out = self.run(args).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow!("herdr CLI not found on PATH. Install it with `herdr-install`, or see https://herdr.dev/docs/install/")
             } else {
@@ -527,9 +550,81 @@ fn wait_outcome(success: bool, stderr: &str) -> Result<bool> {
     bail!("{}", stderr.trim())
 }
 
+/// Run `command`, polling it until `timeout`, then kill and reap it.
+fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("herdr did not answer within {} ms", timeout.as_millis()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_herdr_that_outlasts_the_timeout_is_killed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("herdr-timeout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("herdr");
+        let pidfile = dir.join("pid");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > {}\nexec sleep 60\n",
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = Instant::now();
+        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(500));
+        assert!(herdr.pane_list("w1").is_err());
+
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        let alive = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .output()
+            .unwrap();
+        assert!(!alive.status.success(), "herdr {pid} is still running");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The three answers herdr 0.8.2 gives, verbatim.
     #[test]

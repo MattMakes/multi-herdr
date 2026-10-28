@@ -446,6 +446,43 @@ fn inbox_ends_with_the_acknowledged_count_after_the_roles() {
     assert_eq!(pending_count(&h), 0);
 }
 
+#[cfg(unix)]
+#[test]
+fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut h = inbox_fleet_with_three_messages("inbox-stall");
+    let script = h.tmp.join("stalling-herdr");
+    let pidfile = h.tmp.join("stalled.pid");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1 $2\" = \"pane list\" ]; then echo $$ > {pid}; exec sleep 60; fi\nexec {fake} \"$@\"\n",
+            pid = pidfile.display(),
+            fake = h.bin.join("herdr").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    h.set("HORCH_HERDR_BIN", script.to_string_lossy());
+    h.set("HORCH_TEST_PANE_LIST_MS", "300");
+
+    let inbox = h.run(&["inbox"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    for message in ["NOTE: one", "NOTE: two", "DONE: three"] {
+        assert!(stdout.contains(message), "{stdout}");
+    }
+    assert_eq!(stdout.lines().last(), Some("3 messages acknowledged"));
+    assert_eq!(pending_count(&h), 0);
+    let pid = std::fs::read_to_string(&pidfile).unwrap();
+    let alive = std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .output()
+        .unwrap();
+    assert!(!alive.status.success(), "herdr {pid} is still running");
+}
+
 #[test]
 fn inbox_roles_prints_no_mail_and_leaves_it_pending() {
     let h = inbox_fleet_with_three_messages("inbox-roles");
