@@ -243,6 +243,11 @@ fn pane_command_for(
     let data_root = ctx.paths.data_root.to_string_lossy();
     let rounds = compete.map(|c| c.rounds.to_string());
     let mut env: Vec<(&str, &str)> = vec![("HORCH_DATA_DIR", data_root.as_ref())];
+    // The mailbox lives in the state folder, so the pane needs the same one.
+    let state_dir = super::path_text(ctx.paths.state_override.as_deref());
+    if let Some(dir) = &state_dir {
+        env.push(("HORCH_STATE_DIR", dir));
+    }
     // Competition mode (FDS-13) reaches the briefing the same way.
     if let (Some(c), Some(rounds)) = (compete, rounds.as_deref()) {
         env.push((COMPETE_ROUNDS_ENV, rounds));
@@ -677,6 +682,10 @@ pub fn pane_launch(
     identity: PaneIdentity,
 ) -> Result<ExitCode> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    // Before the registration: the mailbox lives in the state folder.
+    if let Some(dir) = &identity.state_dir {
+        ctx.paths.set_state_dir(dir);
+    }
     let (mailbox, _pane) = Mailbox::register_in(&herdr, ctx, role)?;
     // What the agent inherits on top of this process's environment. A pane
     // is a fresh shell, so everything `horch fleet` knew travels here.
@@ -685,7 +694,6 @@ pub fn pane_launch(
         mailbox.workspace_id().to_string(),
     )];
     if let Some(dir) = &identity.state_dir {
-        ctx.paths.set_state_dir(dir);
         child_env.push(("HORCH_STATE_DIR".into(), dir.clone()));
     }
     // Like a worker, the orchestrator knows its own record.
@@ -1033,6 +1041,25 @@ mod tests {
             format!(" 'HORCH_DATA_DIR={}' ", data.display())
         };
         assert!(cmd.contains(&set), "{cmd}");
+    }
+
+    /// A pane does not inherit `$HORCH_STATE_DIR`, and the mailbox lives
+    /// there, so every pane command names the state folder.
+    #[test]
+    fn pane_command_sets_the_custom_state_dir() {
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with("HORCH_STATE_DIR", "/custom-state"),
+        )
+        .unwrap();
+        let cmd = pane_command(&ctx, "orchestrator", PaneKind::FleetOrchestrator, None).unwrap();
+        let set = if cfg!(windows) {
+            "$env:HORCH_STATE_DIR = '/custom-state'; "
+        } else {
+            " 'HORCH_STATE_DIR=/custom-state' "
+        };
+        assert!(cmd.contains(set), "{cmd}");
     }
 
     #[test]

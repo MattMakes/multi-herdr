@@ -627,8 +627,8 @@ impl DoneSteps for CliDone<'_> {
         tell_outcome(self.ctx, "orchestrator", line)
     }
 
-    fn unregister(&self, workspace: &str, role: &str) {
-        Mailbox::in_context(self.ctx, workspace).unregister(role);
+    fn unregister(&self, workspace: &str, role: &str) -> Result<()> {
+        Mailbox::in_context(self.ctx, workspace).try_unregister(role)
     }
 
     fn settle(&self, workspace: &str) {

@@ -165,8 +165,9 @@ impl DoneSteps for Recorder<'_> {
         }
         Ok(ReportStatus::Delivered)
     }
-    fn unregister(&self, workspace: &str, role: &str) {
+    fn unregister(&self, workspace: &str, role: &str) -> Result<()> {
         self.push(format!("unregister {workspace} {role}"));
+        Ok(())
     }
     fn settle(&self, workspace: &str) {
         self.push(format!("settle {workspace}"));

@@ -84,7 +84,9 @@ pub trait DoneSteps {
     fn report_failed(&self, _record_id: &str, _error: &str) {}
     /// Note that a durable report awaits redelivery. Best effort.
     fn report_queued(&self, _record_id: &str, _error: &str) {}
-    fn unregister(&self, workspace: &str, role: &str);
+    /// Free the role's mailbox entry. An error names the role and the file
+    /// that stayed; `done` warns about it and still closes the pane.
+    fn unregister(&self, workspace: &str, role: &str) -> Result<()>;
     fn settle(&self, workspace: &str);
     /// One last session discovery, before the pane close ends the discovery
     /// thread. Best effort; the default does nothing.
@@ -246,7 +248,9 @@ fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> 
             eprintln!("horch done: could not record the session id ({e:#}); shutting down anyway");
         }
 
-        steps.unregister(workspace, role);
+        if let Err(e) = steps.unregister(workspace, role) {
+            eprintln!("horch done: {e:#}");
+        }
 
         // A departing worker leaves a hole and hands its width to whichever
         // neighbour happens to be its split sibling, which lumps the grid
@@ -1008,7 +1012,9 @@ mod tests {
             self.report_failures.borrow_mut().push(error.into());
         }
 
-        fn unregister(&self, _: &str, _: &str) {}
+        fn unregister(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
         fn settle(&self, _: &str) {}
     }
 
@@ -1241,7 +1247,9 @@ mod tests {
         fn report(&self, _: &str) -> Result<ReportStatus> {
             Ok(ReportStatus::Delivered)
         }
-        fn unregister(&self, _: &str, _: &str) {}
+        fn unregister(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
         fn settle(&self, _: &str) {
             if !self.pane.is_empty() {
                 self.ws.pane_close(&self.pane).unwrap();
@@ -1289,6 +1297,56 @@ mod tests {
         assert_eq!(ws.pane_ids(), [pane]);
     }
 
+    /// `done` steps whose mailbox removal fails, and record what ran.
+    struct UnregisterFails {
+        ran: RefCell<Vec<String>>,
+    }
+
+    impl DoneSteps for UnregisterFails {
+        fn mark_done(&self, _: &str, _: &str) -> Result<()> {
+            self.ran.borrow_mut().push("mark_done".into());
+            Ok(())
+        }
+        fn report(&self, _: &str) -> Result<ReportStatus> {
+            Ok(ReportStatus::Delivered)
+        }
+        fn unregister(&self, _: &str, role: &str) -> Result<()> {
+            self.ran.borrow_mut().push(format!("unregister {role}"));
+            bail!("removing /state/{role}.id failed; role '{role}' stays registered")
+        }
+        fn settle(&self, _: &str) {
+            self.ran.borrow_mut().push("settle".into());
+        }
+    }
+
+    /// A mailbox removal that fails is a warning, not a stop: the pane still
+    /// closes and the later steps still run.
+    #[test]
+    fn done_closes_the_pane_when_unregister_fails() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = UnregisterFails {
+            ran: RefCell::new(Vec::new()),
+        };
+        let request = DoneRequest {
+            record_id: "r1",
+            role: "sonnet-1",
+            pane: &pane,
+            workspace: None,
+            summary: "finished",
+            report_to: ReportTarget::None,
+            unlanded: None,
+        };
+
+        done(&ws, &steps, &request).expect("a failed unregister does not fail done");
+
+        assert!(ws.pane_ids().is_empty());
+        assert_eq!(
+            *steps.ran.borrow(),
+            ["mark_done", "unregister sonnet-1", "settle"]
+        );
+    }
+
     /// `done` steps that stop herdr (the server, not the pane) at a step,
     /// or close the pane there, and record what ran.
     struct HerdrDown<'a> {
@@ -1328,10 +1386,11 @@ mod tests {
                 .push(format!("record_session {workspace}"));
             Ok(())
         }
-        fn unregister(&self, workspace: &str, _: &str) {
+        fn unregister(&self, workspace: &str, _: &str) -> Result<()> {
             self.ran
                 .borrow_mut()
                 .push(format!("unregister {workspace}"));
+            Ok(())
         }
         fn settle(&self, workspace: &str) {
             self.ran.borrow_mut().push(format!("settle {workspace}"));
@@ -1439,11 +1498,12 @@ mod tests {
                 .push(format!("record_session {workspace}"));
             Ok(())
         }
-        fn unregister(&self, workspace: &str, _: &str) {
+        fn unregister(&self, workspace: &str, _: &str) -> Result<()> {
             self.at(Step::Unregister);
             self.ran
                 .borrow_mut()
                 .push(format!("unregister {workspace}"));
+            Ok(())
         }
         fn settle(&self, workspace: &str) {
             self.at(Step::Settle);

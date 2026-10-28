@@ -66,11 +66,17 @@ fn arithmetic_echo(shell: PaneShell) -> &'static str {
 }
 
 /// `horch <args>` for a smoke pane, with this process's skill store as
-/// `HORCH_DATA_DIR`, as every pane horch starts has. The pane keeps its
-/// shell: the checks type more lines into it after `horch register` ends.
+/// `HORCH_DATA_DIR` and its state folder as `HORCH_STATE_DIR`, as every pane
+/// horch starts has. The pane keeps its shell: the checks type more lines
+/// into it after `horch register` ends.
 fn horch_line(ctx: &RuntimeContext, shell: PaneShell, exe: &Path, args: &[&str]) -> String {
     let data_root = ctx.paths.data_root.to_string_lossy();
-    shell.command_line_keep_shell(exe, &[("HORCH_DATA_DIR", data_root.as_ref())], args)
+    let mut env = vec![("HORCH_DATA_DIR", data_root.as_ref())];
+    let state_dir = super::path_text(ctx.paths.state_override.as_deref());
+    if let Some(dir) = &state_dir {
+        env.push(("HORCH_STATE_DIR", dir));
+    }
+    shell.command_line_keep_shell(exe, &env, args)
 }
 
 /// Cheap, self-verifying 2-pane check of the herdr messaging primitives

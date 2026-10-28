@@ -642,3 +642,61 @@ fn p09_registry_in_the_old_temp_location_still_resolves() {
     assert!(!legacy_mailbox.join(format!("{role}.id")).exists());
     assert!(!state_mailbox.join(format!("{role}.id")).exists());
 }
+
+/// A fleet with a custom `HORCH_STATE_DIR`: the orchestrator pane does not
+/// inherit it, so its launch line has to carry it. The orchestrator registers
+/// under that folder, not under the default state root, and `inbox` lists it.
+#[cfg(unix)]
+#[test]
+fn t11_followup_orchestrator_registers_under_a_custom_state_dir() {
+    let h = Harness::new("custom-state");
+    let project = h.project.to_string_lossy().into_owned();
+    let out = h.run(&["fleet", "--cwd", &project]);
+    assert!(out.status.success(), "fleet: {}", text(&out));
+    let launch = h
+        .calls_of("herdr")
+        .into_iter()
+        .find(|c| {
+            c["ran"]
+                .as_str()
+                .is_some_and(|l| l.contains("'pane-launch'"))
+        })
+        .expect("horch fleet ran a pane-launch command");
+    let line = launch["ran"].as_str().unwrap();
+    let pane = launch["argv"][2].as_str().unwrap();
+    let workspace = pane.split(':').next().unwrap();
+
+    // The pane is a fresh shell: it has no `HORCH_STATE_DIR` of its own.
+    let mut shell = std::process::Command::new("/bin/sh");
+    h.seal(&mut shell);
+    shell
+        .arg("-c")
+        .arg(line)
+        .env("HERDR_PANE_ID", pane)
+        .env_remove("HORCH_STATE_DIR");
+    let out = shell.output().unwrap();
+    assert!(out.status.success(), "{line}\n{}", text(&out));
+
+    let id = h
+        .state
+        .join(format!("herdr-orchestration-{workspace}/orchestrator.id"));
+    assert!(id.is_file(), "no {}\n{}", id.display(), text(&out));
+    let default_root = h.home.join(".local/state/horch");
+    assert!(
+        !default_root.exists(),
+        "the pane wrote under the default state root: {}",
+        default_root.display()
+    );
+
+    let mut inbox = h.horch(&["inbox"]);
+    inbox.env("HORCH_WORKSPACE_ID", workspace);
+    let inbox = inbox.output().unwrap();
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        String::from_utf8_lossy(&inbox.stdout)
+            .lines()
+            .any(|l| l.starts_with("orchestrator")),
+        "{}",
+        text(&inbox)
+    );
+}

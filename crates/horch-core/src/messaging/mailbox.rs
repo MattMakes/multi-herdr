@@ -304,20 +304,40 @@ impl Mailbox {
     }
 
     /// Drop a role's registration and brief, so the role name frees up.
+    /// A removal that fails is logged; [`Self::try_unregister`] returns it.
     pub fn unregister(&self, role: &str) {
+        if let Err(e) = self.try_unregister(role) {
+            eprintln!("horch: {e:#}");
+        }
+    }
+
+    /// Drop a role's registration and brief, and the discovery files its
+    /// launch left. Every file is tried; the error names the first removal of
+    /// a registration file that failed. Discovery files are best effort.
+    pub fn try_unregister(&self, role: &str) -> Result<()> {
+        let mut first_error = None;
         for dir in std::iter::once(&self.dir).chain(&self.legacy_dir) {
             for file in [Self::id_file(role), Self::brief_file(role)] {
                 let path = dir.join(file);
                 match std::fs::remove_file(&path) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => eprintln!(
-                        "horch: removing {} failed: {e}; role '{role}' stays registered",
-                        path.display()
-                    ),
+                    Err(e) => {
+                        first_error.get_or_insert(anyhow::Error::new(e).context(format!(
+                            "removing {} failed; role '{role}' stays registered",
+                            path.display()
+                        )));
+                    }
                 }
             }
+            for file in [
+                format!(".{role}.launch-marker"),
+                format!("{role}.harvest.log"),
+            ] {
+                let _ = std::fs::remove_file(dir.join(file));
+            }
         }
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Next per-teammate ordinal for auto-naming a role `<teammate>-<n>`.
@@ -576,6 +596,47 @@ mod tests {
 
         assert!(id.exists());
         assert!(mb.role_taken("sonnet-1"));
+    }
+
+    /// A removal that fails for a reason other than "missing" leaves the role
+    /// registered, and the caller gets the error with the path.
+    #[test]
+    fn try_unregister_returns_a_removal_that_fails() {
+        let state = tempfile::tempdir().unwrap();
+        let mb = Mailbox::under(state.path(), "w1");
+        let id = mb.dir().join("sonnet-1.id");
+        std::fs::create_dir_all(id.join("not-a-file")).unwrap();
+
+        let error = mb.try_unregister("sonnet-1").unwrap_err();
+
+        let text = format!("{error:#}");
+        assert!(text.contains(&id.display().to_string()), "{text}");
+        assert!(text.contains("sonnet-1"), "{text}");
+        assert!(mb.role_taken("sonnet-1"));
+    }
+
+    /// A discovery that failed leaves a harvest log, and one that never found
+    /// its session leaves the marker; unregistering the role removes both,
+    /// from the state folder and the old location.
+    #[test]
+    fn unregister_removes_the_launch_marker_and_harvest_log() {
+        let state = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (mb, legacy) = legacy_mailbox(state.path(), temp.path());
+        std::fs::create_dir_all(mb.dir()).unwrap();
+        for dir in [mb.dir(), legacy.as_path()] {
+            std::fs::write(dir.join(".sonnet-1.launch-marker"), "").unwrap();
+            std::fs::write(dir.join("sonnet-1.harvest.log"), "could not capture").unwrap();
+        }
+        std::fs::write(mb.dir().join(".sonnet-2.launch-marker"), "").unwrap();
+
+        mb.try_unregister("sonnet-1").unwrap();
+
+        for dir in [mb.dir(), legacy.as_path()] {
+            assert!(!dir.join(".sonnet-1.launch-marker").exists());
+            assert!(!dir.join("sonnet-1.harvest.log").exists());
+        }
+        assert!(mb.dir().join(".sonnet-2.launch-marker").exists());
     }
 
     #[test]
