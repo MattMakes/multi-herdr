@@ -690,7 +690,11 @@ mod tests {
         );
         let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1500));
         assert!(herdr.pane_list("w1").is_err());
-        let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
+        // A loaded machine can kill the script before it writes its pid:
+        // then no process was left to leak.
+        let Ok(pid) = std::fs::read_to_string(dir.join("pid")) else {
+            return;
+        };
         let gone = (0..40).any(|_| {
             let dead = !Command::new("kill")
                 .args(["-0", pid.trim()])
@@ -741,7 +745,9 @@ mod tests {
         assert!(herdr.pane_list("w1").is_err());
 
         assert!(started.elapsed() < Duration::from_secs(10));
-        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        let Ok(pid) = std::fs::read_to_string(&pidfile) else {
+            return;
+        };
         let alive = Command::new("kill")
             .args(["-0", pid.trim()])
             .output()

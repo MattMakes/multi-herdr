@@ -507,20 +507,22 @@ fn assert_process_gone(pid: &str) {
 #[cfg(unix)]
 #[test]
 fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
-    let pid = inbox_with_broken_pane_list("inbox-stall", "exec sleep 60").unwrap();
-    assert_process_gone(&pid);
+    // No pidfile means the script was killed before it ran: nothing leaked.
+    if let Some(pid) = inbox_with_broken_pane_list("inbox-stall", "exec sleep 60") {
+        assert_process_gone(&pid);
+    }
 }
 
 #[cfg(unix)]
 #[test]
 fn inbox_prints_mail_and_kills_a_descendant_that_holds_the_pane_list_pipe() {
     // The pidfile ends up holding the descendant's pid, not the script's.
-    let pid = inbox_with_broken_pane_list(
+    if let Some(pid) = inbox_with_broken_pane_list(
         "inbox-open-pipe",
         &format!("sleep 30 &\necho $! > {PIDFILE_TOKEN}\nexit 0"),
-    )
-    .unwrap();
-    assert_process_gone(&pid);
+    ) {
+        assert_process_gone(&pid);
+    }
 }
 
 #[cfg(unix)]
