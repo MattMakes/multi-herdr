@@ -564,9 +564,9 @@ fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
 /// reader is never joined: it ends when the pipe closes or the cap is hit.
 fn read_capped(
     pipe: Option<impl Read + Send + 'static>,
-) -> mpsc::Receiver<std::io::Result<Vec<u8>>> {
+) -> std::io::Result<mpsc::Receiver<std::io::Result<Vec<u8>>>> {
     let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
+    std::thread::Builder::new().spawn(move || {
         let mut bytes = Vec::new();
         let read = match pipe {
             Some(pipe) => pipe
@@ -576,8 +576,8 @@ fn read_capped(
             None => Ok(()),
         };
         let _ = sender.send(read.map(|()| bytes));
-    });
-    receiver
+    })?;
+    Ok(receiver)
 }
 
 /// Kill and reap `child`. A failure of either is a warning, not an error:
@@ -645,10 +645,16 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "herdr timeout is too large")
     })?;
     let mut child = command.spawn()?;
-    let readers = [
+    let readers = match (
         read_capped(child.stdout.take()),
         read_capped(child.stderr.take()),
-    ];
+    ) {
+        (Ok(stdout), Ok(stderr)) => [stdout, stderr],
+        (Err(error), _) | (_, Err(error)) => {
+            kill_and_reap(&mut child);
+            return Err(error);
+        }
+    };
     let mut collected: [Option<Vec<u8>>; 2] = [None, None];
     let mut exited = false;
     let failure = loop {
