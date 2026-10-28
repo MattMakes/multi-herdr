@@ -14,6 +14,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -564,9 +565,9 @@ fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
 /// reader is never joined: it ends when the pipe closes or the cap is hit.
 fn read_capped(
     pipe: Option<impl Read + Send + 'static>,
-) -> std::io::Result<mpsc::Receiver<std::io::Result<Vec<u8>>>> {
+) -> std::io::Result<(mpsc::Receiver<std::io::Result<Vec<u8>>>, JoinHandle<()>)> {
     let (sender, receiver) = mpsc::channel();
-    std::thread::Builder::new().spawn(move || {
+    let handle = std::thread::Builder::new().spawn(move || {
         let mut bytes = Vec::new();
         let read = match pipe {
             Some(pipe) => pipe
@@ -577,7 +578,75 @@ fn read_capped(
         };
         let _ = sender.send(read.map(|()| bytes));
     })?;
-    Ok(receiver)
+    Ok((receiver, handle))
+}
+
+/// On Windows, the herdr process tree. The job kills every process in it
+/// when the last handle closes, so a descendant that holds a pipe cannot
+/// outlive the call on any path.
+#[cfg(windows)]
+struct Job(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Job {
+    fn contain(child: &Child) -> std::io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        // SAFETY: a null name and attributes make an unnamed job.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let job = Job(handle);
+        // SAFETY: an all-zero limit structure is valid.
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `info` is live and its size is passed with it.
+        let set = unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                (&raw const info).cast(),
+                std::mem::size_of_val(&info) as u32,
+            )
+        };
+        // SAFETY: the child handle stays valid while `child` is alive.
+        if set == 0 || unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as _) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(job)
+    }
+
+    fn terminate(&self) {
+        // SAFETY: `self.0` is a live job handle.
+        if unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) } == 0 {
+            eprintln!("horch: could not kill the herdr process tree");
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY: closing the handle we own; kill-on-close ends the tree.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+/// Wait for the reader threads. On Windows the tree is dead by now, so the
+/// pipes are closed and each thread ends. On Unix the threads stay detached:
+/// a descendant in a new session can still hold a pipe.
+fn join_readers(handles: Vec<JoinHandle<()>>) {
+    #[cfg(windows)]
+    for handle in handles {
+        let _ = handle.join();
+    }
+    #[cfg(not(windows))]
+    drop(handles);
 }
 
 /// Kill and reap `child`. A failure of either is a warning, not an error:
@@ -633,7 +702,8 @@ fn has_exited(child: &mut Child) -> std::io::Result<bool> {
 
 /// Run `command` with one `timeout` for the exit and for both pipes. On the
 /// deadline, or when either pipe passes the cap, the child is killed and the
-/// call fails. The reader threads are never joined.
+/// call fails. On Windows the whole process tree is killed and the readers
+/// are joined; on Unix the readers stay detached.
 fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
     command
         .stdin(Stdio::null())
@@ -645,16 +715,28 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "herdr timeout is too large")
     })?;
     let mut child = command.spawn()?;
-    let readers = match (
-        read_capped(child.stdout.take()),
-        read_capped(child.stderr.take()),
-    ) {
-        (Ok(stdout), Ok(stderr)) => [stdout, stderr],
-        (Err(error), _) | (_, Err(error)) => {
+    #[cfg(windows)]
+    let job = match Job::contain(&child) {
+        Ok(job) => job,
+        Err(error) => {
             kill_and_reap(&mut child);
             return Err(error);
         }
     };
+    let ((stdout_rx, stdout_thread), (stderr_rx, stderr_thread)) = match (
+        read_capped(child.stdout.take()),
+        read_capped(child.stderr.take()),
+    ) {
+        (Ok(stdout), Ok(stderr)) => (stdout, stderr),
+        (Err(error), _) | (_, Err(error)) => {
+            #[cfg(windows)]
+            job.terminate();
+            kill_and_reap(&mut child);
+            return Err(error);
+        }
+    };
+    let readers = [stdout_rx, stderr_rx];
+    let threads = vec![stdout_thread, stderr_thread];
     let mut collected: [Option<Vec<u8>>; 2] = [None, None];
     let mut exited = false;
     let failure = loop {
@@ -683,7 +765,10 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
             exited = match has_exited(&mut child) {
                 Ok(exited) => exited,
                 Err(error) => {
+                    #[cfg(windows)]
+                    job.terminate();
                     kill_and_reap(&mut child);
+                    join_readers(threads);
                     return Err(error);
                 }
             };
@@ -700,9 +785,13 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
         std::thread::sleep(Duration::from_millis(10));
     };
     if let Some(error) = failure {
+        #[cfg(windows)]
+        job.terminate();
         kill_and_reap(&mut child);
+        join_readers(threads);
         return Err(error);
     }
+    join_readers(threads);
     let [stdout, stderr] = collected;
     Ok(Output {
         status: child.wait()?,
@@ -772,6 +861,18 @@ mod tests {
             assert!(error.to_string().contains("more than"), "{error}");
             assert!(started.elapsed() < Duration::from_secs(10));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_descendant_holding_stdout_does_not_outlive_the_timeout() {
+        let mut command = Command::new("cmd");
+        command.args(["/c", "start /b ping -n 30 127.0.0.1 & exit 0"]);
+        let started = Instant::now();
+        let error = output_within(command, Duration::from_millis(1000)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        // The call joins its readers: it returns only once the tree is dead.
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[cfg(unix)]
