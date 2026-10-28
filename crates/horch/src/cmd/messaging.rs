@@ -104,7 +104,9 @@ fn queue_as<'a>(
     text: &str,
     take_back: bool,
 ) -> Result<Option<Outgoing<'a>>> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    // Inside a push budget, resolving the mailbox (a `pane get` without
+    // HORCH_WORKSPACE_ID) ends at the push deadline too.
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).until(delivery::push_deadline());
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
     let line = render_line(ctx, mailbox.workspace_id(), sender.as_deref(), role, text)?;
@@ -767,7 +769,7 @@ impl DoneSteps for CliDone<'_> {
     /// that is not a failure, so `done` goes on and exits 0. A live channel
     /// relay is an orchestrator too, with or without a registered pane.
     fn queue_report(&self, line: &str) -> Result<()> {
-        let herdr = Herdr::with_bin(&self.ctx.bins.harness.herdr);
+        let herdr = Herdr::with_bin(&self.ctx.bins.harness.herdr).until(delivery::push_deadline());
         let registered = Mailbox::resolve_in(&herdr, self.ctx)
             .map(|m| {
                 m.pane_for("orchestrator").is_some()

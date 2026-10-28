@@ -230,7 +230,10 @@ fn write_by(stream: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> std
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 wait_ready(stream, libc::POLLOUT, deadline)?
             }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            // An interrupted call tries again only while time is left.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                time_left(deadline)?;
+            }
             Err(error) => return Err(error),
         }
     }
@@ -249,7 +252,10 @@ fn read_line_by(stream: &mut UnixStream, deadline: Instant) -> std::io::Result<S
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 wait_ready(stream, libc::POLLIN, deadline)?
             }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            // An interrupted call tries again only while time is left.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                time_left(deadline)?;
+            }
             Err(error) => return Err(error),
         }
     }

@@ -287,3 +287,28 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
     assert_eq!(pending(&h).len(), 1, "{:?}", pending(&h));
     assert!(worker_pane_closed(&h), "the retry closes the pane");
 }
+
+/// #67, round-5 F52: without `HORCH_WORKSPACE_ID`, `done` finds its
+/// workspace with `herdr pane get`. A herdr that hangs there is cut off at
+/// the push deadline, so `done` still returns inside the limit.
+#[test]
+fn done_returns_in_time_when_herdr_hangs_on_pane_get() {
+    let mut h = world("done-hung-get");
+    h.unset("HORCH_WORKSPACE_ID");
+    let fake = std::fs::canonicalize(h.bin.join("herdr")).unwrap();
+    let flag = h.root.join("hang-pane-get");
+    std::fs::write(&flag, "").unwrap();
+    let stub = format!(
+        "#!/bin/sh\nif [ \"$1\" = pane ] && [ \"$2\" = get ] && [ -f '{}' ]; then exec /bin/sleep 60; fi\nexec '{}' \"$@\"\n",
+        flag.display(),
+        fake.display()
+    );
+    h.write_bin("herdr", stub.as_bytes());
+    let started = Instant::now();
+    let o = as_worker(&h, &["done", "finished the work"])
+        .output()
+        .unwrap();
+    let took = started.elapsed();
+    std::fs::remove_file(&flag).unwrap();
+    assert!(took < LIMIT, "done took {took:?}: {}", text(&o));
+}
