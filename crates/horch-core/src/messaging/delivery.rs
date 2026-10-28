@@ -242,6 +242,11 @@ pub fn start_push_budget(total: Duration) -> Option<PushBudget> {
     })
 }
 
+/// When this thread's push budget ends. `None`: no budget started.
+pub fn push_deadline() -> Option<Instant> {
+    PUSH_DEADLINE.with(|deadline| deadline.get())
+}
+
 /// What is left of this thread's push budget. `None`: no budget started,
 /// so a push waits as long as it always has.
 pub fn push_time_left() -> Option<Duration> {

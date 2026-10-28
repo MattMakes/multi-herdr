@@ -151,7 +151,8 @@ fn queue_as<'a>(
         Mail::under(&ctx.paths.state_root, mailbox.workspace_id())
             .enqueue(sender.as_deref().expect("durable mail has a sender"), &line)?;
         if courier_now {
-            super::mail::start_courier(ctx, mailbox.workspace_id());
+            // `done` must not mark the record done with no courier behind it.
+            super::mail::start_courier(ctx, mailbox.workspace_id())?;
         }
     }
     Ok(Some(Outgoing {
@@ -171,9 +172,11 @@ impl Outgoing<'_> {
     /// The second half of [`tell_as`]: type the line. A durable line that
     /// does not land is queued, not an error: the courier delivers it.
     fn push(self) -> Result<ReportStatus> {
+        // Inside a push budget, a herdr call that hangs is cut off with it.
+        let herdr = self.herdr.clone().until(delivery::push_deadline());
         let pushed = push_line(
             self.ctx,
-            &self.herdr,
+            &herdr,
             &self.mailbox,
             &self.role,
             self.sender.as_deref(),
@@ -182,7 +185,9 @@ impl Outgoing<'_> {
             true,
         );
         if self.courier_after {
-            super::mail::start_courier(self.ctx, self.mailbox.workspace_id());
+            if let Err(error) = super::mail::start_courier(self.ctx, self.mailbox.workspace_id()) {
+                eprintln!("horch tell: {error:#}; `horch inbox` still shows the mail");
+            }
         }
         if self.durable {
             return Ok(match pushed {

@@ -103,6 +103,8 @@ pub struct Herdr {
     bin: PathBuf,
     /// When set, a call that has not finished by then is killed and fails.
     timeout: Option<Duration>,
+    /// When set, a call still running at this instant is killed and fails.
+    deadline: Option<Instant>,
 }
 
 impl Herdr {
@@ -111,6 +113,7 @@ impl Herdr {
         Self {
             bin: bin.into(),
             timeout: None,
+            deadline: None,
         }
     }
 
@@ -123,12 +126,25 @@ impl Herdr {
         self
     }
 
+    /// The same handle, with the same calls as [`Herdr::with_timeout`] cut
+    /// off at `deadline`. With a timeout too, a call stops at the earlier of
+    /// the two. `None`: no deadline.
+    pub fn until(mut self, deadline: Option<Instant>) -> Self {
+        self.deadline = deadline;
+        self
+    }
+
     fn run<S: AsRef<OsStr>>(&self, args: &[S]) -> std::io::Result<Output> {
         let mut command = Command::new(&self.bin);
         command.args(args);
-        match self.timeout {
-            None => command.output(),
-            Some(timeout) => output_within(command, timeout),
+        match (self.timeout, self.deadline) {
+            (None, None) => command.output(),
+            (Some(timeout), deadline) => output_within(command, timeout, deadline),
+            (None, Some(deadline)) => output_within(
+                command,
+                deadline.saturating_duration_since(Instant::now()),
+                Some(deadline),
+            ),
         }
     }
 
@@ -559,6 +575,17 @@ fn wait_outcome(success: bool, stderr: &str) -> Result<bool> {
 /// The most a bounded call reads from each of stdout and stderr.
 const OUTPUT_CAP: u64 = 1024 * 1024;
 
+/// The error for a call that reached its stop: the push deadline when
+/// `at_deadline`, else `timeout`.
+fn stop_error(at_deadline: bool, timeout: Duration) -> std::io::Error {
+    let message = if at_deadline {
+        "herdr did not answer inside the push budget".to_string()
+    } else {
+        format!("herdr did not answer within {} ms", timeout.as_millis())
+    };
+    limit_error(message, std::io::ErrorKind::TimedOut)
+}
+
 fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
     std::io::Error::new(kind, message)
 }
@@ -773,24 +800,30 @@ fn has_exited(child: &mut Child) -> std::io::Result<bool> {
     Ok(child.try_wait()?.is_some())
 }
 
-/// Run `command` with one `timeout` for the exit and for both pipes. On the
-/// deadline, or when either pipe passes the cap, the child is killed and the
+/// Run `command` with one `timeout` for the exit and for both pipes. The
+/// call stops at the earlier of `timeout` and the absolute `deadline`. On
+/// that stop, or when either pipe passes the cap, the child is killed and the
 /// call fails. On Windows the child starts suspended inside a job, and the
 /// whole tree is killed. Every platform then waits at most [`READER_GRACE`]
 /// for the readers.
-fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
+fn output_within(
+    mut command: Command,
+    timeout: Duration,
+    deadline: Option<Instant>,
+) -> std::io::Result<Output> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+    let timeout_end = Instant::now().checked_add(timeout).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "herdr timeout is too large",
         )
     })?;
+    let stop = deadline.map_or(timeout_end, |deadline| deadline.min(timeout_end));
     // The child starts suspended, so it cannot start a descendant before the
     // job holds it.
     #[cfg(windows)]
@@ -860,11 +893,8 @@ fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Out
         if exited && collected.iter().all(Option::is_some) {
             break None;
         }
-        if Instant::now() >= deadline {
-            break Some(limit_error(
-                format!("herdr did not answer within {} ms", timeout.as_millis()),
-                std::io::ErrorKind::TimedOut,
-            ));
+        if Instant::now() >= stop {
+            break Some(stop_error(stop < timeout_end, timeout));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -940,7 +970,8 @@ mod tests {
         for stream in ["", ">&2"] {
             let (_dir, script) = script_in(&format!("head -c 3000000 /dev/zero {stream}"));
             let started = Instant::now();
-            let error = output_within(Command::new(&script), Duration::from_secs(5)).unwrap_err();
+            let error =
+                output_within(Command::new(&script), Duration::from_secs(5), None).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{stream}");
             assert!(error.to_string().contains("more than"), "{error}");
             assert!(started.elapsed() < Duration::from_secs(10));
@@ -953,7 +984,7 @@ mod tests {
         let mut command = Command::new("cmd");
         command.args(["/c", "start /b ping -n 30 127.0.0.1 & exit 0"]);
         let started = Instant::now();
-        let error = output_within(command, Duration::from_millis(1000)).unwrap_err();
+        let error = output_within(command, Duration::from_millis(1000), None).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         // The call joins its readers: it returns only once the tree is dead.
         assert!(started.elapsed() < Duration::from_secs(10));
@@ -978,7 +1009,8 @@ mod tests {
     fn a_stalled_herdr_fails_with_timed_out_after_the_deadline() {
         let (_dir, script) = script_in("exec sleep 30");
         let started = Instant::now();
-        let error = output_within(Command::new(&script), Duration::from_millis(500)).unwrap_err();
+        let error =
+            output_within(Command::new(&script), Duration::from_millis(500), None).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert!(error.to_string().contains("did not answer"), "{error}");
         assert!(started.elapsed() >= Duration::from_millis(400));
@@ -988,7 +1020,7 @@ mod tests {
     #[test]
     fn a_timeout_too_large_for_an_instant_is_rejected_before_spawning() {
         let (_dir, script) = script_in("exit 0");
-        let error = output_within(Command::new(&script), Duration::MAX).unwrap_err();
+        let error = output_within(Command::new(&script), Duration::MAX, None).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
@@ -1011,6 +1043,44 @@ mod tests {
             .output()
             .unwrap();
         assert!(!alive.status.success(), "herdr {pid} is still running");
+    }
+
+    /// A herdr call that outlives the deadline is killed and fails at once;
+    /// one that answers in time returns its output (#67).
+    #[cfg(unix)]
+    #[test]
+    fn a_call_past_the_deadline_is_killed() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let stuck = Herdr::with_bin(script("stuck", "sleep 10"))
+            .until(Some(Instant::now() + Duration::from_millis(300)));
+        let started = Instant::now();
+        let err = stuck.pane_get("w1:p1").unwrap_err().to_string();
+        assert!(started.elapsed() < Duration::from_secs(3), "{err}");
+        assert!(err.contains("push budget"), "{err}");
+        let quick = Herdr::with_bin(script("quick", "echo hi"))
+            .until(Some(Instant::now() + Duration::from_secs(10)));
+        assert_eq!(quick.output(&["x"]).unwrap(), "hi\n");
+    }
+
+    /// With a timeout and a deadline, the earlier one stops the call.
+    #[cfg(unix)]
+    #[test]
+    fn a_deadline_before_the_timeout_stops_the_call() {
+        let (_dir, script) = script_in("sleep 10");
+        let herdr = Herdr::with_bin(&script)
+            .with_timeout(Duration::from_secs(10))
+            .until(Some(Instant::now() + Duration::from_millis(300)));
+        let started = Instant::now();
+        let err = herdr.pane_get("w1:p1").unwrap_err().to_string();
+        assert!(started.elapsed() < Duration::from_secs(3), "{err}");
+        assert!(err.contains("push budget"), "{err}");
     }
 
     /// The three answers herdr 0.8.2 gives, verbatim.
