@@ -116,7 +116,8 @@ work. These commands are on your PATH:
   fast-forwards that branch, and then removes your worktree.
 - If land reports a conflict, resolve it in your worktree with
   git rebase <base>. Run your checks again. Then run horch worktree land
-  again.
+  again. A Codex worker does not rebase: it sends BLOCKED: to the
+  orchestrator with the conflict.
 - If land refuses for another reason, read its message. It keeps all your
   work and prints the git commands to continue.
 - horch done refuses while you have a worktree that did not land. If you

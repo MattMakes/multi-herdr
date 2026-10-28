@@ -59,7 +59,11 @@ fn claimed(name: &str) -> (Harness, String, PathBuf) {
 
 /// [`claimed`], with `before` run just before the worktree is made.
 fn claimed_after(name: &str, before: impl FnOnce(&Harness)) -> (Harness, String, PathBuf) {
-    let mut h = Harness::new(name).with_git();
+    claimed_in(Harness::new(name).with_git(), before)
+}
+
+/// [`claimed_after`] in the project of `h`.
+fn claimed_in(mut h: Harness, before: impl FnOnce(&Harness)) -> (Harness, String, PathBuf) {
     let db = h.root.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
@@ -395,7 +399,8 @@ fn a_fake_git_on_path_never_runs() {
         .current_dir(&wt);
     let o = cmd.output().unwrap();
     assert!(
-        !o.status.success() && text(&o).contains("inside the worktree or the state root"),
+        !o.status.success()
+            && text(&o).contains("inside the worktree, the main checkout or the state root"),
         "{}",
         text(&o)
     );
@@ -562,5 +567,207 @@ fn a_git_older_than_2_41_or_with_bad_version_output_is_refused() {
             text(&o)
         );
     }
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+/// The git config `filter.lfs.clean` that touches `marker`, and a `*.bin`
+/// LFS attribute in the worktree.
+fn lfs_filter(h: &Harness, wt: &Path, marker: &Path) {
+    let project = h.project.clone();
+    git_in(
+        h,
+        &project,
+        &[
+            "config",
+            "filter.lfs.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ],
+    );
+    std::fs::write(wt.join(".gitattributes"), "*.bin filter=lfs\n").unwrap();
+}
+
+#[test]
+fn a_failed_commit_leaves_the_index_as_it_was() {
+    let (h, w, wt) = claimed("lc-index");
+    std::fs::write(wt.join("stale.txt"), "stale\n").unwrap();
+    git_in(&h, &wt, &["add", "stale.txt"]);
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+    // git refuses an empty commit message after the paths are staged.
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "", "--", "a.txt"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+    assert_eq!(
+        git_in(&h, &wt, &["diff", "--cached", "--name-only"]),
+        "stale.txt",
+        "the index keeps only what was staged before"
+    );
+    let left: Vec<_> = std::fs::read_dir(h.project.join(".git/worktrees"))
+        .unwrap()
+        .flat_map(|e| std::fs::read_dir(e.unwrap().path()).unwrap())
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("index.horch-"))
+        .collect();
+    assert!(left.is_empty(), "the index copy is removed: {left:?}");
+}
+
+#[test]
+fn a_folder_or_a_glob_cannot_stage_a_required_filter_path() {
+    let (h, w, wt) = claimed("lc-folder");
+    let marker = h.root.join("lfs-ran");
+    lfs_filter(&h, &wt, &marker);
+    let project = h.project.clone();
+    git_in(&h, &project, &["config", "filter.lfs.required", "true"]);
+    std::fs::create_dir_all(wt.join("assets")).unwrap();
+    std::fs::write(wt.join("assets/big.bin"), "large\n").unwrap();
+    let before = head(&h, &wt);
+    let o = as_worker(
+        &h,
+        &w,
+        &wt,
+        &["ledger", "commit", "-m", "x", "--", "assets"],
+    );
+    assert!(
+        !o.status.success() && text(&o).contains("is a folder"),
+        "{}",
+        text(&o)
+    );
+    // A glob is a literal name: it matches no file, so nothing is staged.
+    let o = as_worker(
+        &h,
+        &w,
+        &wt,
+        &["ledger", "commit", "-m", "x", "--", "assets/*.bin"],
+    );
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(!marker.exists(), "the filter must not run");
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+    assert_eq!(git_in(&h, &wt, &["diff", "--cached", "--name-only"]), "");
+}
+
+#[test]
+fn a_required_filter_in_the_global_config_is_refused_too() {
+    let (h, w, wt) = claimed("lc-lfs-global");
+    let marker = h.root.join("lfs-ran");
+    lfs_filter(&h, &wt, &marker);
+    // `git lfs install` writes the flag in ~/.gitconfig, not the repository.
+    std::fs::write(
+        h.home.join(".gitconfig"),
+        "[filter \"lfs\"]\n\trequired = true\n",
+    )
+    .unwrap();
+    std::fs::write(wt.join("big.bin"), "large\n").unwrap();
+    let before = head(&h, &wt);
+    for args in [
+        vec!["ledger", "commit", "-m", "x", "--", "big.bin"],
+        vec!["ledger", "commit", "-m", "x"],
+    ] {
+        let o = as_worker(&h, &w, &wt, &args);
+        assert!(
+            !o.status.success() && text(&o).contains("big.bin (filter=lfs)"),
+            "{}",
+            text(&o)
+        );
+    }
+    assert!(!marker.exists(), "the filter must not run");
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+#[test]
+fn a_name_that_is_not_utf8_keeps_its_required_filter() {
+    use std::os::unix::ffi::OsStrExt;
+    let (h, w, wt) = claimed("lc-bytes");
+    let marker = h.root.join("lfs-ran");
+    lfs_filter(&h, &wt, &marker);
+    let project = h.project.clone();
+    git_in(&h, &project, &["config", "filter.lfs.required", "true"]);
+    let name = std::ffi::OsStr::from_bytes(b"big-\xff.bin");
+    if std::fs::write(wt.join(name), "large\n").is_err() {
+        // APFS refuses a name that is not UTF-8: no such file can exist.
+        return;
+    }
+    let before = head(&h, &wt);
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x"]);
+    assert!(
+        !o.status.success() && text(&o).contains("(filter=lfs)"),
+        "{}",
+        text(&o)
+    );
+    assert!(!marker.exists(), "the filter must not run");
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+#[test]
+fn a_sha256_repository_commits_without_running_filters() {
+    let h = Harness::new("lc-sha256").with_git();
+    let project = h.project.clone();
+    std::fs::remove_dir_all(project.join(".git")).unwrap();
+    for args in [
+        &["init", "--quiet", "--object-format=sha256"][..],
+        &["symbolic-ref", "HEAD", "refs/heads/main"],
+        &["add", "-A"],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "initial commit"],
+    ] {
+        git_in(&h, &project, args);
+    }
+    let (h, w, wt) = claimed_in(h, |_| {});
+    let marker = h.root.join("filter-ran");
+    git_in(
+        &h,
+        &project,
+        &[
+            "config",
+            "filter.evil.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ],
+    );
+    std::fs::write(wt.join(".gitattributes"), "* filter=evil\n").unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let id = out(&o).trim().to_string();
+    assert_eq!(id.len(), 64, "a SHA-256 commit id: {id}");
+    assert_eq!(id, head(&h, &wt));
+    assert!(!marker.exists(), "the clean filter must not run");
+}
+
+#[test]
+fn a_git_in_the_main_checkout_never_runs() {
+    let (h, w, wt) = claimed("lc-git-in-checkout");
+    let marker = h.root.join("fake-ran");
+    // A pane in the shared checkout can write this file.
+    let fake = h.project.join("git");
+    std::fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let mut cmd = h.horch(&["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .env("HORCH_GIT_BIN", &fake)
+        .current_dir(&wt);
+    let o = cmd.output().unwrap();
+    assert!(
+        !o.status.success() && text(&o).contains("the main checkout"),
+        "{}",
+        text(&o)
+    );
+    assert!(!marker.exists(), "the planted git must not run");
+}
+
+#[test]
+fn more_paths_than_the_cap_are_refused() {
+    let (h, w, wt) = claimed("lc-cap");
+    let dir = wt.join("many");
+    std::fs::create_dir_all(&dir).unwrap();
+    for n in 0..10_001 {
+        std::fs::write(dir.join(format!("{n}.txt")), "").unwrap();
+    }
+    let before = head(&h, &wt);
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x"]);
+    assert!(
+        !o.status.success() && text(&o).contains("at most 10000"),
+        "{}",
+        text(&o)
+    );
     assert_eq!(head(&h, &wt), before, "nothing is committed");
 }

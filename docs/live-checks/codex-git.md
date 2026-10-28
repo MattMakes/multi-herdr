@@ -123,7 +123,8 @@ teammate descriptions say this.
     the first of `/usr/bin/git`, `/opt/homebrew/bin/git` and
     `/usr/local/bin/git` at 2.41 or later. Never a lookup through `PATH`:
     a worker-writable folder on it would run a fake git. It refuses a git
-    inside the worktree or the state root, and every git child gets
+    inside the worktree, the main checkout (a pane's project root) or the
+    state root, and every git child gets
     `PATH=/usr/bin:/bin`. `horch doctor` warns when no such git exists;
   - takes the git dir from trusted metadata only: the 1 entry under the
     common dir (`git rev-parse --path-format=absolute --git-common-dir` in
@@ -138,7 +139,9 @@ teammate descriptions say this.
     `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_SOURCE=<empty tree>` (the
     empty tree of the repository's object format, SHA-1 or SHA-256, so no
     `.gitattributes` file selects a filter), `GIT_PAGER=cat`,
-    `GIT_EDITOR=true` and `GIT_TERMINAL_PROMPT=0`. It refuses to run on git
+    `GIT_EDITOR=true`, `GIT_TERMINAL_PROMPT=0` and
+    `GIT_LITERAL_PATHSPECS=1` (a glob or a `:(magic)` path is a literal
+    name, so it cannot stage files the filter check never saw). It refuses to run on git
     older than 2.41, which has no `GIT_ATTR_SOURCE`. Every git call also
     passes the global option `--attr-source=<empty tree>`: fail-closed, a git
     that does not know it exits with an error instead of ignoring it. `user.name` and
@@ -148,18 +151,24 @@ teammate descriptions say this.
   - refuses a path outside the worktree, inside `.git`, or in a nested
     repository (a folder below the worktree root with its own `.git`). It
     checks the path as given and its resolved target, and gives git the
-    path as given, so a symlink is committed as the link itself;
+    path as given, so a symlink is committed as the link itself. It refuses
+    a folder: git would stage its files without a check of their
+    attributes;
   - refuses a path whose `filter` attribute names a driver with
     `filter.<name>.required=true` in the repository or global config (Git
     LFS sets it): with no filters, git would store the raw content. It reads
     the attribute with `git check-attr`, which runs no filter. A path with
-    another filter is committed unfiltered;
-  - stages with `git add -- <paths>` (or `git add -A`), commits with
+    another filter is committed unfiltered. It reads `git status -z` as
+    bytes, so a name that is not UTF-8 is checked as itself, and it looks up
+    each filter name once. It refuses more than 10000 paths in 1 commit;
+  - stages into a copy of the index (`GIT_INDEX_FILE`), which replaces the
+    index only after the commit succeeds: a failed commit leaves the index
+    as it was. It stages with `git add -- <paths>` (or `git add -A`), commits with
     `git commit -m <message> -- <paths>` (only the named files) or
     `git commit -m <message>`, prints the commit id, and records the
     progress event `commit <short id>`. A failed ledger write after the
     commit prints a warning and still exits 0: the commit exists.
-- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 13 tests): a
+- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 20 tests): a
   commit lands without hooks; refused paths; refused for a review task or no
   task; a rewritten `.git` file is refused and its config never runs; a
   `* filter=evil` attribute with `filter.evil.clean` in the repository
@@ -170,7 +179,13 @@ teammate descriptions say this.
   a git that rejects `--attr-source` fails closed and commits nothing; a
   required (LFS-like) filter is refused and never runs; hostile `GIT_DIR`,
   `GIT_WORK_TREE` and `GIT_CONFIG_*` variables are ignored; git 2.40, bad
-  version output and a failing `git --version` are refused.
+  version output and a failing `git --version` are refused; a failed commit
+  leaves the index as it was; a folder or a glob cannot stage a
+  required-filter path; a required flag in the global config only is
+  refused too; a name that is not UTF-8 keeps its required filter (Linux
+  only: APFS refuses such a name, and the test returns early); a SHA-256
+  repository commits without running filters; a git in the main checkout
+  never runs; more than 10000 paths are refused.
 - SHA-256: `scripts/live/codex-git.sh`, run with both scratch repositories
   made by `git init --object-format=sha256`, passed every check (exit 0).
 - The caller cannot steer the command through its environment.

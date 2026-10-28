@@ -238,7 +238,8 @@ fn every_worker_briefing_differs_only_where_sanctioned() {
         \x20 fast-forwards that branch, and then removes your worktree.\n\
         - If land reports a conflict, resolve it in your worktree with\n\
         \x20 git rebase <base>. Run your checks again. Then run horch worktree land\n\
-        \x20 again.\n\
+        \x20 again. A Codex worker does not rebase: it sends BLOCKED: to the\n\
+        \x20 orchestrator with the conflict.\n\
         - If land refuses for another reason, read its message. It keeps all your\n\
         \x20 work and prints the git commands to continue.\n\
         - horch done refuses while you have a worktree that did not land. If you\n\
