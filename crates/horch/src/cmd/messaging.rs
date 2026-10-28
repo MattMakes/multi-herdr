@@ -71,7 +71,7 @@ pub fn tell_as(
     role: &str,
     text: &str,
 ) -> Result<ReportStatus> {
-    match queue_as(ctx, sender, role, text)? {
+    match queue_as(ctx, sender, role, text, false)? {
         Some(outgoing) => outgoing.push(),
         None => Ok(ReportStatus::Delivered),
     }
@@ -95,11 +95,14 @@ struct Outgoing<'a> {
 
 /// The first half of [`tell_as`]: an error here means nothing was sent or
 /// queued. `None`: the line went already, as there was nothing to queue.
+/// `take_back` is for the `done` report only: a courier that cannot start
+/// takes its mail back. Any other line stays queued and is pushed.
 fn queue_as<'a>(
     ctx: &'a RuntimeContext,
     sender: Option<String>,
     role: &str,
     text: &str,
+    take_back: bool,
 ) -> Result<Option<Outgoing<'a>>> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
@@ -131,7 +134,14 @@ fn queue_as<'a>(
     let courier_now = durable && delivery::push_time_left().is_some();
     if durable {
         let from = sender.as_deref().expect("durable mail has a sender");
-        enqueue_durable(ctx, mailbox.workspace_id(), from, &line, courier_now)?;
+        enqueue_durable(
+            ctx,
+            mailbox.workspace_id(),
+            from,
+            &line,
+            courier_now,
+            take_back,
+        )?;
     }
     Ok(Some(Outgoing {
         ctx,
@@ -173,26 +183,34 @@ fn render_line(
 }
 
 /// Queue `line` as durable mail. With `courier_now`, the courier starts
-/// too, and a courier that cannot start takes the mail back out: `done`
-/// then fails with nothing queued, and its retry queues the line once.
+/// too. A courier that cannot start takes the mail back out with
+/// `take_back`: `done` then fails with nothing queued, and its retry queues
+/// the line once. Without `take_back`, the line stays queued: a wake that
+/// is neither queued nor pushed is lost (#67).
 fn enqueue_durable(
     ctx: &RuntimeContext,
     workspace: &str,
     from: &str,
     line: &str,
     courier_now: bool,
+    take_back: bool,
 ) -> Result<()> {
     let mail = Mail::under(&ctx.paths.state_root, workspace);
     let id = mail.enqueue(from, line)?;
-    if courier_now {
-        if let Err(error) = super::mail::start_courier(ctx, workspace) {
-            if let Err(ack_error) = mail.ack(&id) {
-                eprintln!("horch tell: could not take back the queued line ({ack_error:#})");
-            }
-            return Err(error);
-        }
+    if !courier_now {
+        return Ok(());
     }
-    Ok(())
+    let Err(error) = super::mail::start_courier(ctx, workspace) else {
+        return Ok(());
+    };
+    if !take_back {
+        eprintln!("horch tell: {error:#}; `horch inbox` still shows the mail");
+        return Ok(());
+    }
+    if let Err(ack_error) = mail.ack(&id) {
+        eprintln!("horch tell: could not take back the queued line ({ack_error:#})");
+    }
+    Err(error)
 }
 
 impl Outgoing<'_> {
@@ -764,7 +782,7 @@ impl DoneSteps for CliDone<'_> {
             return Ok(());
         }
         let sender = self.ctx.worker.as_ref().and_then(|w| w.role.clone());
-        *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line)?;
+        *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line, true)?;
         Ok(())
     }
 
@@ -887,10 +905,40 @@ mod tests {
                 .with_exe("/nonexistent/horch"),
         )
         .unwrap();
-        let err = enqueue_durable(&ctx, "w1", "opus-1", "[opus-1] DONE: x", true).unwrap_err();
+        let err =
+            enqueue_durable(&ctx, "w1", "opus-1", "[opus-1] DONE: x", true, true).unwrap_err();
         assert!(format!("{err:#}").contains("mail courier"), "{err:#}");
         let mail = Mail::under(&ctx.paths.state_root, "w1");
         assert!(mail.pending().unwrap().is_empty(), "no mail stays queued");
+    }
+
+    /// #67: a wake inside `horch ledger done` is not the done report. A
+    /// courier that cannot start leaves it queued, so the push still goes
+    /// and `horch inbox` still shows it.
+    #[test]
+    fn a_durable_wake_without_a_courier_stays_queued() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with("HORCH_STATE_DIR", &tmp.path().to_string_lossy())
+                .with_exe("/nonexistent/horch"),
+        )
+        .unwrap();
+        enqueue_durable(
+            &ctx,
+            "w1",
+            "horch",
+            "[horch] all tasks are done",
+            true,
+            false,
+        )
+        .expect("the wake stays queued");
+        let mail = Mail::under(&ctx.paths.state_root, "w1");
+        assert_eq!(
+            mail.pending().unwrap().len(),
+            1,
+            "the wake stays in the mail"
+        );
     }
 
     #[test]
