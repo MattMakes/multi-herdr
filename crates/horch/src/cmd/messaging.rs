@@ -88,6 +88,9 @@ struct Outgoing<'a> {
     target: Option<String>,
     line: String,
     durable: bool,
+    /// Start the courier after the push, as before #67: an unbounded push
+    /// can outlast the courier's first redelivery and deliver the line twice.
+    courier_after: bool,
 }
 
 /// The first half of [`tell_as`]: an error here means nothing was sent or
@@ -139,13 +142,17 @@ fn queue_as<'a>(
         )?;
         return Ok(None);
     }
+    // Inside a push budget (`horch done`), the courier starts now, before
+    // `done` marks the record done: a process killed after that leaves the
+    // mail with a courier. Its first redelivery is 30 s after the enqueue,
+    // after the push budget ends.
+    let courier_now = durable && delivery::push_time_left().is_some();
     if durable {
         Mail::under(&ctx.paths.state_root, mailbox.workspace_id())
             .enqueue(sender.as_deref().expect("durable mail has a sender"), &line)?;
-        // The courier now, before `done` marks the record done: a process
-        // killed after that leaves the mail with a courier. Its first
-        // redelivery is 30 s after the enqueue, after any push budget.
-        super::mail::start_courier(ctx, mailbox.workspace_id());
+        if courier_now {
+            super::mail::start_courier(ctx, mailbox.workspace_id());
+        }
     }
     Ok(Some(Outgoing {
         ctx,
@@ -156,6 +163,7 @@ fn queue_as<'a>(
         target,
         line,
         durable,
+        courier_after: durable && !courier_now,
     }))
 }
 
@@ -173,6 +181,9 @@ impl Outgoing<'_> {
             self.line,
             true,
         );
+        if self.courier_after {
+            super::mail::start_courier(self.ctx, self.mailbox.workspace_id());
+        }
         if self.durable {
             return Ok(match pushed {
                 Ok(()) => ReportStatus::Delivered,

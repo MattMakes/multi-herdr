@@ -766,6 +766,88 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
 }
 
 #[test]
+fn a_reviews_in_tell_that_fails_goes_to_the_orchestrator_once() {
+    let h = finish_world("tl-reviews-in");
+    ok(
+        &h,
+        &["ledger", "run", "new", "alpha", "--steps", "code-sweep"],
+    );
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+        ],
+    );
+    // The author has a role but no pane: the tell to it fails.
+    let w = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "opus",
+            "--role",
+            "opus-1",
+        ],
+    )
+    .trim()
+    .to_string();
+    ok_as(&h, &w, &["ledger", "claim"]);
+    let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(path.join("a.txt"), "1\n").unwrap();
+    git_in(&h, &path, &["add", "a.txt"]);
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "a"],
+    );
+    let (_, r) = finish_json(&h, &w);
+    let n = r["queued_reviews"].as_array().unwrap().len();
+    let mut last = String::new();
+    for _ in 0..n {
+        last = worker_new(&h, "codex-reviewer");
+        let c: Value =
+            serde_json::from_str(&ok_as(&h, &last, &["ledger", "claim", "--json"])).unwrap();
+        let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
+        std::fs::write(
+            &f,
+            "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
+        )
+        .unwrap();
+        ok_as(&h, &last, &["ledger", "done", "reviewed"]);
+    }
+    let fallbacks = || {
+        let events = json_of(&h, &["ledger", "events", "--json"]);
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e["kind"] == "woke"
+                    && e["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("The reviews of T-1 are in, but opus-1 was not told")
+            })
+            .count()
+    };
+    assert_eq!(fallbacks(), 1, "the orchestrator gets the missed tell");
+    // A retried done skips the notification, and its fallback too.
+    let mut cmd = h.horch(&["ledger", "done", "reviewed"]);
+    cmd.env("HORCH_WORKER_ID", &last);
+    cmd.output().unwrap();
+    assert_eq!(fallbacks(), 1, "a retry does not send it again");
+}
+
+#[test]
 fn stopping_one_of_three_workers_leaves_the_others_running() {
     let mut h = fleet("tl-stop", "exec,stay");
     h.set("HORCH_STOP_GRACE_MS", "2000");
