@@ -144,7 +144,7 @@ fn done_finishes_in_time_against_a_stuck_orchestrator() {
     assert!(o.status.success(), "{}", text(&o));
     assert!(took < LIMIT, "done took {took:?}: {}", text(&o));
     assert_eq!(
-        String::from_utf8_lossy(&o.stdout).lines().next(),
+        String::from_utf8_lossy(&o.stderr).lines().next(),
         Some(CLOSING),
         "{}",
         text(&o)
@@ -219,7 +219,7 @@ fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     assert!(o.status.success(), "{}", text(&o));
     assert!(took < LIMIT, "ledger done took {took:?}: {}", text(&o));
     assert_eq!(
-        String::from_utf8_lossy(&o.stdout).lines().next(),
+        String::from_utf8_lossy(&o.stderr).lines().next(),
         Some(CLOSING),
         "{}",
         text(&o)

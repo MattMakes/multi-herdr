@@ -516,7 +516,7 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
     // `horch ledger done` started the budget and printed the line already.
     let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
     if budget.is_some() {
-        output::println(CLOSING);
+        eprintln!("{CLOSING}");
     }
 
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
@@ -585,6 +585,7 @@ const NO_ORCHESTRATOR: &str = "horch done: no orchestrator is registered in this
      so nobody is told; the summary is recorded";
 
 /// The first line `horch done` prints, so the worker sees progress at once.
+/// On stderr: stdout stays data.
 pub const CLOSING: &str = "closing: reporting to the orchestrator";
 
 /// The `done` steps against this process's ledger, mailbox and workspace.

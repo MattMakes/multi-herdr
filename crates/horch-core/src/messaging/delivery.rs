@@ -213,8 +213,9 @@ thread_local! {
 
 /// The push budget of one `horch done`, from [`start_push_budget`].
 /// Dropping it ends the budget: later deliveries wait as they always have.
+/// Not `Send`: the deadline it clears belongs to the thread that made it.
 #[must_use = "the budget ends when this is dropped"]
-pub struct PushBudget(());
+pub struct PushBudget(std::marker::PhantomData<*const ()>);
 
 impl Drop for PushBudget {
     fn drop(&mut self) {
@@ -231,7 +232,7 @@ pub fn start_push_budget(total: Duration) -> Option<PushBudget> {
             return None;
         }
         deadline.set(Some(Instant::now() + total));
-        Some(PushBudget(()))
+        Some(PushBudget(std::marker::PhantomData))
     })
 }
 

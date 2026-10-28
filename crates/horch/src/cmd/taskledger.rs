@@ -1277,7 +1277,7 @@ pub fn done_cmd(
     // command timeout (#67).
     let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
     if budget.is_some() && in_pane {
-        output::println(super::messaging::CLOSING);
+        eprintln!("{}", super::messaging::CLOSING);
     }
     let c = finish::complete(&mut store, &wid, summary, unlanded)?;
     let run = runs::get(store.conn(), &c.run_id)?;
