@@ -766,7 +766,7 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
 }
 
 #[test]
-fn a_reviews_in_tell_that_fails_goes_to_the_orchestrator_once() {
+fn a_failed_reviews_in_tell_wakes_the_orchestrator_once() {
     let h = finish_world("tl-reviews-in");
     ok(
         &h,
@@ -811,19 +811,11 @@ fn a_reviews_in_tell_that_fails_goes_to_the_orchestrator_once() {
     );
     let (_, r) = finish_json(&h, &w);
     let n = r["queued_reviews"].as_array().unwrap().len();
-    let mut last = String::new();
-    for _ in 0..n {
-        last = worker_new(&h, "codex-reviewer");
-        let c: Value =
-            serde_json::from_str(&ok_as(&h, &last, &["ledger", "claim", "--json"])).unwrap();
-        let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
-        std::fs::write(
-            &f,
-            "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
-        )
-        .unwrap();
-        ok_as(&h, &last, &["ledger", "done", "reviewed"]);
-    }
+    let last = review_all(
+        &h,
+        n,
+        "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
+    );
     let fallbacks = || {
         let events = json_of(&h, &["ledger", "events", "--json"]);
         events
@@ -1291,7 +1283,9 @@ fn assign_refuses_in_a_ledger_run() {
 }
 
 /// Review every queued reviewer task of a finish round with `findings`.
-fn review_all(h: &Harness, n: usize, findings: &str) {
+/// Returns the last reviewer's worker id.
+fn review_all(h: &Harness, n: usize, findings: &str) -> String {
+    let mut last = String::new();
     for _ in 0..n {
         let rw = worker_new(h, "codex-reviewer");
         let c: Value =
@@ -1300,7 +1294,9 @@ fn review_all(h: &Harness, n: usize, findings: &str) {
         let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
         std::fs::write(&f, findings).unwrap();
         ok_as(h, &rw, &["ledger", "done", "reviewed"]);
+        last = rw;
     }
+    last
 }
 
 /// A claimed task's worktree, with 1 committed file, finished through every

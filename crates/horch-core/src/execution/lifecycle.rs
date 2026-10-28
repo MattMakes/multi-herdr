@@ -53,7 +53,7 @@ pub struct ClaimLine {
     pub path: PathBuf,
 }
 
-/// The result of reporting after the report itself has been accepted.
+/// The result of [`DoneSteps::push_report`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReportStatus {
     Delivered,
@@ -73,13 +73,14 @@ pub trait DoneSteps {
         Ok(Vec::new())
     }
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()>;
-    /// Make the report durable, or fail as nothing changed. A push that
-    /// can take long belongs in [`DoneSteps::push`], after the record is done.
-    fn report(&self, line: &str) -> Result<ReportStatus>;
-    /// Push what [`DoneSteps::report`] queued, after the record is done, so
-    /// a push killed by the agent's command timeout leaves the work done.
-    /// Best effort; the default has nothing to push.
-    fn push(&self) -> ReportStatus {
+    /// Make the report durable, or fail as nothing changed. A push that can
+    /// take long belongs in [`DoneSteps::push_report`], after the record is
+    /// done.
+    fn queue_report(&self, line: &str) -> Result<()>;
+    /// Push what [`DoneSteps::queue_report`] queued, after the record is
+    /// done, so a push killed by the agent's command timeout leaves the work
+    /// done. Best effort; the default has nothing to push.
+    fn push_report(&self) -> ReportStatus {
         ReportStatus::Delivered
     }
     /// Whether an earlier `done` of this record reported and recorded its
@@ -192,21 +193,18 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     }
     let report = req.report_to == ReportTarget::Orchestrator;
     if report {
-        match steps.report(&format!("[{role}] DONE: {summary}")) {
-            Ok(status) => note_queued(steps, req, status),
-            Err(e) => {
-                steps.report_failed(req.record_id, &format!("{e:#}"));
-                // A context, not a new error: the CLI's sandbox hint looks for
-                // the herdr failure in the chain.
-                return Err(e.context(
-                    "horch done: the report did not reach the orchestrator.\n\
-                     This pane stays open. The record is not done. Your role stays registered.\n\
-                     Fix the cause if you can, then run the same horch done command again.\n\
-                     If it fails again, record your summary with horch note and end your turn.\n\
-                     Do not close this pane.\n\
-                     The cause",
-                ));
-            }
+        if let Err(e) = steps.queue_report(&format!("[{role}] DONE: {summary}")) {
+            steps.report_failed(req.record_id, &format!("{e:#}"));
+            // A context, not a new error: the CLI's sandbox hint looks for
+            // the herdr failure in the chain.
+            return Err(e.context(
+                "horch done: the report did not reach the orchestrator.\n\
+                 This pane stays open. The record is not done. Your role stays registered.\n\
+                 Fix the cause if you can, then run the same horch done command again.\n\
+                 If it fails again, record your summary with horch note and end your turn.\n\
+                 Do not close this pane.\n\
+                 The cause",
+            ));
         }
     }
     // After the report: a claim marked unlanded is not open, and a retry of
@@ -216,7 +214,7 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     }
     steps.mark_done(req.record_id, &summary)?;
     if report {
-        note_queued(steps, req, steps.push());
+        note_queued(steps, req, steps.push_report());
     }
     Ok(())
 }
@@ -963,8 +961,6 @@ mod tests {
         recorded: bool,
         fail_report: bool,
         report_failures: RefCell<Vec<String>>,
-        /// How many summaries were marked done at each push.
-        done_at_push: RefCell<Vec<usize>>,
         /// `Some(cause)`: the push does not land.
         push_misses: Option<String>,
         queued: RefCell<Vec<String>>,
@@ -984,7 +980,6 @@ mod tests {
                 recorded: false,
                 fail_report: false,
                 report_failures: RefCell::new(Vec::new()),
-                done_at_push: RefCell::new(Vec::new()),
                 push_misses: None,
                 queued: RefCell::new(Vec::new()),
                 order: RefCell::new(Vec::new()),
@@ -1034,12 +1029,12 @@ mod tests {
             Ok(())
         }
 
-        fn report(&self, line: &str) -> Result<ReportStatus> {
+        fn queue_report(&self, line: &str) -> Result<()> {
             self.reports.borrow_mut().push(line.into());
             if self.fail_report {
                 bail!("channel relay refused");
             }
-            Ok(ReportStatus::Delivered)
+            Ok(())
         }
 
         fn recorded(&self, _: &str) -> Result<bool> {
@@ -1050,11 +1045,8 @@ mod tests {
             self.report_failures.borrow_mut().push(error.into());
         }
 
-        fn push(&self) -> ReportStatus {
+        fn push_report(&self) -> ReportStatus {
             self.order.borrow_mut().push("push");
-            self.done_at_push
-                .borrow_mut()
-                .push(self.marked_done.borrow().len());
             match &self.push_misses {
                 Some(cause) => ReportStatus::Queued(cause.clone()),
                 None => ReportStatus::Delivered,
@@ -1167,7 +1159,7 @@ mod tests {
             ..ClaimSteps::default()
         };
         done(&ws, &steps, &claim_request(&pane, None)).unwrap();
-        assert_eq!(&*steps.done_at_push.borrow(), &[1], "done, then 1 push");
+        assert_eq!(&*steps.order.borrow(), &["mark_done", "push", "unregister"]);
         assert_eq!(&*steps.queued.borrow(), &["the push budget ran out"]);
         assert!(ws.pane_ids().is_empty(), "the pane is closed");
     }
@@ -1221,7 +1213,7 @@ mod tests {
             ..ClaimSteps::default()
         };
         done(&ws, &steps, &claim_request(&pane, None)).unwrap_err();
-        assert!(steps.done_at_push.borrow().is_empty());
+        assert!(steps.order.borrow().is_empty(), "no mark, no push");
     }
 
     /// W2: a record that an earlier `done` reported and marked is not
@@ -1366,8 +1358,8 @@ mod tests {
         fn mark_done(&self, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<ReportStatus> {
-            Ok(ReportStatus::Delivered)
+        fn queue_report(&self, _: &str) -> Result<()> {
+            Ok(())
         }
         fn unregister(&self, _: &str, _: &str) {}
         fn settle(&self, _: &str) {
@@ -1498,7 +1490,7 @@ mod tests {
             self.reach(Step::PaneGet);
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<ReportStatus> {
+        fn queue_report(&self, _: &str) -> Result<()> {
             unreachable!("the request reports to nobody")
         }
         fn record_session(&self, workspace: &str, _: &str, _: &str) -> Result<()> {
@@ -1608,7 +1600,7 @@ mod tests {
             self.at(Step::PaneGet);
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<ReportStatus> {
+        fn queue_report(&self, _: &str) -> Result<()> {
             unreachable!("the request reports to nobody")
         }
         fn record_session(&self, workspace: &str, _: &str, _: &str) -> Result<()> {

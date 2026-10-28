@@ -158,10 +158,12 @@ pub fn deliver_when_idle(
     wait: &Readiness,
     timing: &Timing,
 ) -> Result<()> {
+    // The push budget can cut the wait short: say how long it really was.
+    let waited = capped(wait.timeout);
     if !wait_for(ws, pane, wait, Pane::at_prompt) {
         bail!(
             "the agent in pane {pane} was not idle after {} s, so its task was not typed",
-            wait.timeout.as_secs()
+            waited.as_secs()
         );
     }
     send_line_with(ws, pane, text, timing)
@@ -200,10 +202,11 @@ pub fn send_line_when_ready(
         };
         booting = wait_for(ws, pane, &appear, has_agent);
     }
+    let waited = capped(wait.timeout);
     if booting && !wait_for(ws, pane, wait, |p| !starting(p)) {
         bail!(
             "the agent in pane {pane} was still starting after {} s, so the message was not typed",
-            wait.timeout.as_secs()
+            waited.as_secs()
         );
     }
     send_line_with(ws, pane, message, timing)
@@ -335,7 +338,11 @@ mod tests {
         let grace = Duration::from_secs(30);
         let result =
             send_line_when_ready(&ws, &pane, "[r] DONE: x", grace, &wait, &Timing::DEFAULT);
-        assert!(result.is_err(), "the agent never stopped starting");
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("still starting after 0 s"),
+            "the wait it had: {error}"
+        );
         assert!(
             started.elapsed() < budget + Duration::from_millis(300),
             "{:?}",

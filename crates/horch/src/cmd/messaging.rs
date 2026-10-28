@@ -104,25 +104,7 @@ fn queue_as<'a>(
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
-
-    let text = match &sender {
-        Some(me) => message::ensure_tag(text, me),
-        None => text.to_string(),
-    };
-    let line = if text.chars().count() > message::MAX_INLINE {
-        let from = sender.as_deref().unwrap_or("orchestrator");
-        let workspace = mailbox.workspace_id();
-        let path = message::spool(
-            &message::spool_dir(&ctx.paths.state_root, workspace),
-            workspace,
-            from,
-            role,
-            &text,
-        )?;
-        message::reference_line(&text, &path)
-    } else {
-        text
-    };
+    let line = render_line(ctx, mailbox.workspace_id(), sender.as_deref(), role, text)?;
     let target = mailbox.pane_for(role);
     let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
     let durable = role == "orchestrator" && sender.is_some();
@@ -148,12 +130,8 @@ fn queue_as<'a>(
     // after the push budget ends.
     let courier_now = durable && delivery::push_time_left().is_some();
     if durable {
-        Mail::under(&ctx.paths.state_root, mailbox.workspace_id())
-            .enqueue(sender.as_deref().expect("durable mail has a sender"), &line)?;
-        if courier_now {
-            // `done` must not mark the record done with no courier behind it.
-            super::mail::start_courier(ctx, mailbox.workspace_id())?;
-        }
+        let from = sender.as_deref().expect("durable mail has a sender");
+        enqueue_durable(ctx, mailbox.workspace_id(), from, &line, courier_now)?;
     }
     Ok(Some(Outgoing {
         ctx,
@@ -166,6 +144,55 @@ fn queue_as<'a>(
         durable,
         courier_after: durable && !courier_now,
     }))
+}
+
+/// The line `tell` sends: tagged with the sender, and spooled to a file
+/// with a reference line when it is too long to type.
+fn render_line(
+    ctx: &RuntimeContext,
+    workspace: &str,
+    sender: Option<&str>,
+    role: &str,
+    text: &str,
+) -> Result<String> {
+    let text = match sender {
+        Some(me) => message::ensure_tag(text, me),
+        None => text.to_string(),
+    };
+    if text.chars().count() <= message::MAX_INLINE {
+        return Ok(text);
+    }
+    let path = message::spool(
+        &message::spool_dir(&ctx.paths.state_root, workspace),
+        workspace,
+        sender.unwrap_or("orchestrator"),
+        role,
+        &text,
+    )?;
+    Ok(message::reference_line(&text, &path))
+}
+
+/// Queue `line` as durable mail. With `courier_now`, the courier starts
+/// too, and a courier that cannot start takes the mail back out: `done`
+/// then fails with nothing queued, and its retry queues the line once.
+fn enqueue_durable(
+    ctx: &RuntimeContext,
+    workspace: &str,
+    from: &str,
+    line: &str,
+    courier_now: bool,
+) -> Result<()> {
+    let mail = Mail::under(&ctx.paths.state_root, workspace);
+    let id = mail.enqueue(from, line)?;
+    if courier_now {
+        if let Err(error) = super::mail::start_courier(ctx, workspace) {
+            if let Err(ack_error) = mail.ack(&id) {
+                eprintln!("horch tell: could not take back the queued line ({ack_error:#})");
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 impl Outgoing<'_> {
@@ -610,7 +637,8 @@ struct CliDone<'a> {
     /// `false` when the coordinator owns the layout: see
     /// [`coordinator_owns_layout`].
     settle: bool,
-    /// The report [`DoneSteps::report`] queued, for [`DoneSteps::push`].
+    /// The report [`DoneSteps::queue_report`] queued, for
+    /// [`DoneSteps::push_report`].
     outgoing: std::cell::RefCell<Option<Outgoing<'a>>>,
 }
 
@@ -714,12 +742,13 @@ impl DoneSteps for CliDone<'_> {
         }
     }
 
-    /// Queue the report to the orchestrator; [`DoneSteps::push`] types it.
+    /// Queue the report to the orchestrator; [`DoneSteps::push_report`]
+    /// types it.
     /// A workspace with no registered orchestrator
     /// (a scratch workspace, a worker spawned by hand) has nobody to tell:
     /// that is not a failure, so `done` goes on and exits 0. A live channel
     /// relay is an orchestrator too, with or without a registered pane.
-    fn report(&self, line: &str) -> Result<ReportStatus> {
+    fn queue_report(&self, line: &str) -> Result<()> {
         let herdr = Herdr::with_bin(&self.ctx.bins.harness.herdr);
         let registered = Mailbox::resolve_in(&herdr, self.ctx)
             .map(|m| {
@@ -732,14 +761,14 @@ impl DoneSteps for CliDone<'_> {
             .unwrap_or(true);
         if !registered {
             eprintln!("{NO_ORCHESTRATOR}");
-            return Ok(ReportStatus::Delivered);
+            return Ok(());
         }
         let sender = self.ctx.worker.as_ref().and_then(|w| w.role.clone());
         *self.outgoing.borrow_mut() = queue_as(self.ctx, sender, "orchestrator", line)?;
-        Ok(ReportStatus::Delivered)
+        Ok(())
     }
 
-    fn push(&self) -> ReportStatus {
+    fn push_report(&self) -> ReportStatus {
         match self.outgoing.borrow_mut().take().map(Outgoing::push) {
             None | Some(Ok(ReportStatus::Delivered)) => ReportStatus::Delivered,
             Some(Ok(queued @ ReportStatus::Queued(_))) => queued,
@@ -846,6 +875,23 @@ mod tests {
     use super::*;
     use horch_core::execution::legacy::Record;
     use std::time::Duration;
+
+    /// #67: inside `done`, a courier that cannot start fails the queue and
+    /// leaves no mail, so the retry does not queue a second report.
+    #[test]
+    fn a_durable_line_without_a_courier_is_taken_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with("HORCH_STATE_DIR", &tmp.path().to_string_lossy())
+                .with_exe("/nonexistent/horch"),
+        )
+        .unwrap();
+        let err = enqueue_durable(&ctx, "w1", "opus-1", "[opus-1] DONE: x", true).unwrap_err();
+        assert!(format!("{err:#}").contains("mail courier"), "{err:#}");
+        let mail = Mail::under(&ctx.paths.state_root, "w1");
+        assert!(mail.pending().unwrap().is_empty(), "no mail stays queued");
+    }
 
     #[test]
     fn inbox_listing_marks_closed_panes() {
