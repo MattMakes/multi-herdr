@@ -12,7 +12,8 @@
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -550,49 +551,132 @@ fn wait_outcome(success: bool, stderr: &str) -> Result<bool> {
     bail!("{}", stderr.trim())
 }
 
-/// Run `command`, polling it until `timeout`, then kill and reap it.
+/// The most a bounded call reads from each of stdout and stderr.
+const OUTPUT_CAP: u64 = 1024 * 1024;
+
+fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
+    std::io::Error::new(kind, message)
+}
+
+/// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
+/// reader is never joined: it ends when the pipe closes or the cap is hit.
+fn read_capped(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(pipe) = pipe {
+            let _ = pipe.take(OUTPUT_CAP + 1).read_to_end(&mut bytes);
+        }
+        let _ = sender.send(bytes);
+    });
+    receiver
+}
+
+/// Kill and reap `child`. A failure of either is a warning, not an error:
+/// the call has already failed and the caller goes on.
+fn kill_and_reap(child: &mut Child) {
+    if let Err(e) = child.kill() {
+        eprintln!("horch: could not kill herdr: {e}");
+    }
+    if let Err(e) = child.wait() {
+        eprintln!("horch: could not reap herdr: {e}");
+    }
+}
+
+/// Run `command` with one `timeout` for the exit and for both pipes. On the
+/// deadline, or when either pipe passes the cap, the child is killed and the
+/// call fails. The reader threads are never joined.
 fn output_within(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn()?;
-    let drain = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
-            }
-            bytes
-        })
-    };
-    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
-    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let readers = [
+        read_capped(child.stdout.take()),
+        read_capped(child.stderr.take()),
+    ];
+    let mut collected: [Option<Vec<u8>>; 2] = [None, None];
+    let mut status = None;
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+    let failure = loop {
+        for (slot, reader) in collected.iter_mut().zip(&readers) {
+            if slot.is_none() {
+                *slot = reader.try_recv().ok();
+            }
+        }
+        if collected
+            .iter()
+            .flatten()
+            .any(|b| b.len() as u64 > OUTPUT_CAP)
+        {
+            break Some(limit_error(
+                format!("herdr printed more than {OUTPUT_CAP} bytes"),
+                std::io::ErrorKind::InvalidData,
+            ));
+        }
+        if status.is_none() {
+            status = child.try_wait()?;
+        }
+        if let (Some(_), [Some(_), Some(_)]) = (status, &collected) {
+            break None;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
+            break Some(limit_error(
                 format!("herdr did not answer within {} ms", timeout.as_millis()),
+                std::io::ErrorKind::TimedOut,
             ));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
+    if let Some(error) = failure {
+        kill_and_reap(&mut child);
+        return Err(error);
+    }
+    let [stdout, stderr] = collected;
     Ok(Output {
-        status,
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        status: status.expect("exit was seen"),
+        stdout: stdout.unwrap_or_default(),
+        stderr: stderr.unwrap_or_default(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn script_in(name: &str, body: &str) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("herdr-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("herdr");
+        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, script)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_descendant_that_keeps_stdout_open_past_the_deadline_fails_the_call() {
+        let (dir, script) = script_in("open-pipe", "sleep 4 &\nexit 0");
+        let started = Instant::now();
+        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1000));
+        assert!(herdr.pane_list("w1").is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_herdr_that_prints_more_than_the_cap_fails_the_call() {
+        let (dir, script) = script_in("flood", "exec head -c 3000000 /dev/zero");
+        let started = Instant::now();
+        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_secs(5));
+        assert!(herdr.pane_list("w1").is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[cfg(unix)]
     #[test]
@@ -613,7 +697,7 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let started = Instant::now();
-        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(500));
+        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(2000));
         assert!(herdr.pane_list("w1").is_err());
 
         assert!(started.elapsed() < Duration::from_secs(10));
