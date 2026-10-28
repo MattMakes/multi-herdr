@@ -119,7 +119,7 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
     let writable = [root.as_path(), repo_root, ctx.paths.state_root.as_path()];
     let bin = &trusted_git(&ctx.bins.harness.git, &writable)?;
     let (gitdir, tree) = trusted_gitdir(bin, repo_root, Path::new(&wt.path), &root)?;
-    let git = Trusted::new(bin, &root, &gitdir, tree);
+    let git = Trusted::new(bin, &root, &gitdir, tree)?;
     let stage = paths_to_stage(&git, &paths)?;
     refuse_large_files(&root, &stage.add)?;
     refuse_required_filters(&git, &stage.add)?;
@@ -1277,18 +1277,22 @@ struct Trusted {
     gitdir: PathBuf,
     tree: &'static str,
     identity: Vec<(String, String)>,
+    /// The filter drivers the repository config names: each git call runs
+    /// with their `clean` and `process` set empty, so no filter runs.
+    filters: Vec<String>,
     /// The index file to use instead of the git dir's own.
     index: Option<PathBuf>,
 }
 
 impl Trusted {
-    fn new(bin: &Path, root: &Path, gitdir: &Path, tree: &'static str) -> Trusted {
+    fn new(bin: &Path, root: &Path, gitdir: &Path, tree: &'static str) -> Result<Trusted> {
         let mut git = Trusted {
             bin: bin.to_path_buf(),
             root: root.to_path_buf(),
             gitdir: gitdir.to_path_buf(),
             tree,
             identity: Vec::new(),
+            filters: Vec::new(),
             index: None,
         };
         // `-c` wins over the repository config: pass only what it lacks.
@@ -1296,7 +1300,47 @@ impl Trusted {
             .into_iter()
             .filter(|(key, _)| !git.repo_sets(key))
             .collect();
-        git
+        git.filters = git.filter_drivers()?;
+        Ok(git)
+    }
+
+    /// The names of the filter drivers the repository config defines. The
+    /// checks refuse a selected filter before git add, and these overrides
+    /// keep one from running if the worktree changes after the checks.
+    fn filter_drivers(&self) -> Result<Vec<String>> {
+        let args = [
+            "config".into(),
+            "--null".into(),
+            "--name-only".into(),
+            "--get-regexp".into(),
+            OsString::from(r"^filter\."),
+        ];
+        let out = run_git(
+            self.command(clean_git(&self.bin, self.tree), &args),
+            MAX_PATHS,
+        )?;
+        let code = out.status.code();
+        if code == Some(1) && out.records.is_empty() {
+            return Ok(Vec::new());
+        }
+        if code != Some(0) || !out.complete {
+            bail!(
+                "refused: cannot list the filter drivers of the repository config ({})",
+                out.status
+            );
+        }
+        let mut names: Vec<String> = out
+            .records
+            .iter()
+            .filter_map(|r| {
+                let key = String::from_utf8_lossy(r);
+                let (name, _) = key.strip_prefix("filter.")?.rsplit_once('.')?;
+                Some(name.to_string())
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     /// True when the repository config (with the worktree's) sets `key`.
@@ -1341,6 +1385,10 @@ impl Trusted {
         }
         for (key, value) in &self.identity {
             cmd.arg("-c").arg(format!("{key}={value}"));
+        }
+        for name in &self.filters {
+            cmd.arg("-c").arg(format!("filter.{name}.clean="));
+            cmd.arg("-c").arg(format!("filter.{name}.process="));
         }
         for var in IDENTITY_VARS {
             if let Some(v) = std::env::var_os(var) {
