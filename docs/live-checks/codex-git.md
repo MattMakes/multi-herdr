@@ -111,96 +111,27 @@ teammate descriptions say this.
 - No `prefix_rule` allows a raw `git` command. A Codex worker commits with
   `horch ledger commit -m "<message>" [-- <path>...]`, which the existing
   `["horch", "ledger"]` rule runs outside the sandbox.
-- `horch ledger commit` (`crates/horch/src/cmd/taskledger_commit.rs`):
-  - takes the worker from `HORCH_WORKER_ID`, and refuses a worker with no
-    claimed task or with a review task. It also refuses unless the worker is
-    `working`, the task names it as its current worker, the task is
-    `running` or `landing`, and the worktree is `open`: a reaped or
-    requeued worker keeps its old task id;
-  - takes the worktree from the ledger row of that task, and refuses when
-    the current folder is outside it;
-  - runs an absolute git only: `HORCH_GIT_BIN` when it is absolute, else
-    the first of `/usr/bin/git`, `/opt/homebrew/bin/git` and
-    `/usr/local/bin/git` at 2.41 or later. Never a lookup through `PATH`:
-    a worker-writable folder on it would run a fake git. It refuses a git
-    inside the worktree, the main checkout (a pane's project root) or the
-    state root, and every git child gets
-    `PATH=/usr/bin:/bin`. `horch doctor` warns when no such git exists;
-  - takes the git dir from trusted metadata only: the 1 entry under the
-    common dir (`git rev-parse --path-format=absolute --git-common-dir` in
-    the main checkout the ledger recorded) whose `gitdir` file names the
-    recorded worktree. Not the worktree's folder name: git appends a number
-    when that admin name is taken. It refuses on 0 or 2 or more entries, and
-    unless `<worktree>/.git` is a file that says exactly
-    `gitdir: <that entry>`;
-  - runs every git call with `GIT_DIR=<that git dir>` and
-    `GIT_WORK_TREE=<worktree>`, every other `GIT_*` variable removed except
-    the author and committer name, email and date, `GIT_CONFIG_NOSYSTEM=1`,
-    `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_ATTR_SOURCE=<empty tree>` (the
-    empty tree of the repository's object format, SHA-1 or SHA-256, so no
-    `.gitattributes` file selects a filter), `GIT_PAGER=cat`,
-    `GIT_EDITOR=true`, `GIT_TERMINAL_PROMPT=0` and
-    `GIT_LITERAL_PATHSPECS=1` (a glob or a `:(magic)` path is a literal
-    name, so it cannot stage files the filter check never saw). It refuses to run on git
-    older than 2.41, which has no `GIT_ATTR_SOURCE`. Every git call also
-    passes the global option `--attr-source=<empty tree>`: fail-closed, a git
-    that does not know it exits with an error instead of ignoring it. `user.name` and
-    `user.email` come from the operator's global config as values;
-  - passes `-c core.hooksPath=/dev/null -c core.fsmonitor=false
-    -c commit.gpgsign=false -c gpg.program=/usr/bin/false` to every call;
-  - refuses a path outside the worktree, inside `.git`, or in a nested
-    repository (a folder below the worktree root with its own `.git`). It
-    checks the path as given and its resolved target, and gives git the
-    path as given, so a symlink is committed as the link itself. It refuses
-    a folder: git would stage its files without a check of their
-    attributes;
-  - refuses a path whose `filter` attribute names a driver with
-    `filter.<name>.required=true` in the repository or global config (Git
-    LFS sets it): with no filters, git would store the raw content. It reads
-    the attribute with `git check-attr`, which runs no filter. A path with
-    another filter is committed unfiltered. It reads every
-    `filter.*.required` value with 1 `git config --get-regexp --type=bool`
-    per config (repository, then global). A missing key means "not
-    required"; a failed lookup or a value that is not a boolean refuses the
-    commit. It reads `git status -z`, `git check-attr -z` and the config
-    output as bytes, record by record: at most 10000 records (a rename or
-    copy counts 2) of at most 4099 bytes each. git is killed at the first
-    record past either bound, so worker-controlled output never grows horch
-    past them. A name that is not UTF-8 is checked as itself;
-  - holds git's own `index.lock` for the whole command (refused when it is
-    held), and stages into a copy of the index, `index.horch`
-    (`GIT_INDEX_FILE`). The copy replaces the index only after the commit
-    succeeds: a failed commit leaves the index as it was. Both files are made
-    with `create_new`, which never follows a planted link. When the commit
-    exists but the index update fails, it warns and still exits 0;
-  - accepts the relative links that git writes with
-    `worktree.useRelativePaths` when each one resolves to the trusted entry. It stages with `git add -- <paths>` (or `git add -A`), commits with
-    `git commit -m <message> -- <paths>` (only the named files) or
-    `git commit -m <message>`, prints the commit id, and records the
-    progress event `commit <short id>`. A failed ledger write after the
-    commit prints a warning and still exits 0: the commit exists.
-- End-to-end tests (`crates/horch-e2e/tests/ledger_commit.rs`, 23 tests): a
-  commit lands without hooks; refused paths; refused for a review task or no
-  task; a rewritten `.git` file is refused and its config never runs; a
-  `* filter=evil` attribute with `filter.evil.clean` in the repository
-  config does not run the filter, and the commit lands; a symlink is
-  committed as the link, and links that lead outside are refused; a stopped
-  worker cannot commit; a fake git first on `PATH`, or named inside the
-  worktree, never runs; a worktree whose admin name is taken still commits;
-  a git that rejects `--attr-source` fails closed and commits nothing; a
-  required (LFS-like) filter is refused and never runs; hostile `GIT_DIR`,
-  `GIT_WORK_TREE` and `GIT_CONFIG_*` variables are ignored; git 2.40, bad
-  version output and a failing `git --version` are refused; a failed commit
-  leaves the index as it was; a folder or a glob cannot stage a
-  required-filter path; a required flag in the global config only is
-  refused too; a name that is not UTF-8 keeps its required filter (Linux
-  only: APFS refuses such a name, and the test returns early); a SHA-256
-  repository commits without running filters; a git in the main checkout
-  never runs; more than 10000 paths are refused, and git is stopped at the
-  cap; a held `index.lock` refuses the commit and stays; a `required` value
-  that is not a boolean refuses the commit; a worktree with relative links
-  still commits. Unit tests in `taskledger_commit.rs` check the record
-  bounds and the config entry parser.
+- `horch ledger commit` (`crates/horch/src/cmd/taskledger_commit.rs`) keeps
+  these invariants. Its module and function comments give the detail, and
+  `crates/horch-e2e/tests/ledger_commit.rs` tests each one:
+  - Only the worker that owns a running ledger task commits, and only in
+    that task's open worktree, from inside it. A review task never commits.
+  - git is absolute and 2.41 or later (`HORCH_GIT_BIN`, or a fixed list),
+    and never from the worktree, the main checkout or the state root.
+  - The git dir comes from the main checkout's metadata, never from the
+    worktree's `.git` file, which must point at it.
+  - No program that a worker can steer runs: every `GIT_*` variable is
+    cleared, system and global config are off, hooks, fsmonitor and signing
+    are off, and attributes come from the empty tree. A path under a
+    required filter (Git LFS) is refused, and so is a failed lookup.
+  - Paths are literal, inside the worktree, outside `.git` and nested
+    repositories, and not folders.
+  - Every git child has a 120 s deadline, at most 10000 output records of
+    at most 4099 bytes, and 4 KiB of stderr. git is killed past any bound.
+    1 commit stages at most 10000 paths, 100 MiB per file and 1 GiB in
+    all, by length (a sparse file counts in full).
+  - The index changes only when the commit succeeds, under git's own
+    `index.lock`.
 - SHA-256: `scripts/live/codex-git.sh`, run with both scratch repositories
   made by `git init --object-format=sha256`, passed every check (exit 0).
 - The caller cannot steer the command through its environment.
@@ -237,3 +168,8 @@ pre-01c grants):
 - Commits skip the repository's own hooks and attribute filters. A path
   under a required filter (Git LFS) is refused, not committed raw.
   `horch ledger finish` runs the ticket's check before it lands.
+- The empty-tree attribute source replaces `.gitattributes` files only.
+  git still reads `$GIT_DIR/info/attributes` and a repository
+  `core.attributesFile`, so a filter that the operator sets there still
+  runs. A Codex pane cannot write either one: the main checkout's `.git` is
+  read-only in `fleet_write` (rows above), and the global config is off.

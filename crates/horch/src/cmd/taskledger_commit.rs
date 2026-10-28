@@ -14,6 +14,8 @@ use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -58,6 +60,18 @@ const MAX_PATHS: usize = 10_000;
 /// 3-byte status code and a path of `PATH_MAX` (4096) bytes.
 const MAX_RECORD: usize = 4099;
 
+/// The most bytes of 1 file, and of all files, that 1 commit stages: git
+/// hashes them outside the sandbox. `len()` is the full length of a sparse
+/// file too.
+const MAX_FILE_BYTES: u64 = 100 << 20;
+const MAX_TOTAL_BYTES: u64 = 1 << 30;
+
+/// The longest 1 git child runs before horch kills it.
+const GIT_DEADLINE: Duration = Duration::from_secs(120);
+
+/// The most bytes of git's stderr kept for an error message.
+const MAX_STDERR: u64 = 4096;
+
 /// Plain data that names the author and committer; never a program.
 const IDENTITY_VARS: [&str; 6] = [
     "GIT_AUTHOR_NAME",
@@ -94,7 +108,9 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
     let bin = &trusted_git(&ctx.bins.harness.git, &writable)?;
     let (gitdir, tree) = trusted_gitdir(bin, repo_root, Path::new(&wt.path), &root)?;
     let git = Trusted::new(bin, &root, &gitdir, tree);
-    refuse_required_filters(&git, &paths)?;
+    let names = paths_to_stage(&git, &paths)?;
+    refuse_large_files(&root, &names)?;
+    refuse_required_filters(&git, names)?;
     let id = commit(&git, &args.message, &paths)?;
     // The commit exists now: print its id first, and never fail on the
     // bookkeeping after it, or a retry finds nothing to commit.
@@ -164,7 +180,13 @@ fn commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
             )
         })?;
     let result = commit_locked(git, message, paths);
-    let _ = std::fs::remove_file(&lock);
+    if let Err(e) = std::fs::remove_file(&lock) {
+        eprintln!(
+            "horch: could not remove {}: {e}. horch ledger commit made it and has ended: \
+             remove it, or every later git command in this worktree is refused.",
+            lock.display()
+        );
+    }
     result
 }
 
@@ -218,7 +240,13 @@ fn copy_index(index: &Path, scratch: &Path) -> Result<()> {
 fn stage_and_commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<String> {
     let named = paths.iter().map(|p| p.as_os_str().to_owned());
     let mut add: Vec<OsString> = vec!["add".into()];
-    let mut commit: Vec<OsString> = vec!["commit".into(), "-m".into(), message.into()];
+    // Quiet: the summary lists every file, past the bound of 1 record.
+    let mut commit: Vec<OsString> = vec![
+        "commit".into(),
+        "--quiet".into(),
+        "-m".into(),
+        message.into(),
+    ];
     if paths.is_empty() {
         add.push("-A".into());
     } else {
@@ -233,21 +261,57 @@ fn stage_and_commit(git: &Trusted, message: &str, paths: &[PathBuf]) -> Result<S
     git.run(&["rev-parse".into(), "HEAD".into()])
 }
 
-/// Refused when a path to commit has a required `filter` attribute (Git
-/// LFS, for one): with attributes from the empty tree, git would store its
-/// raw content. With no paths, the paths are every change `git status`
-/// lists.
-fn refuse_required_filters(git: &Trusted, paths: &[PathBuf]) -> Result<()> {
+/// The paths git stages: `paths`, or every change `git status` lists when
+/// there are none. At most [`MAX_PATHS`].
+fn paths_to_stage(git: &Trusted, paths: &[PathBuf]) -> Result<Vec<OsString>> {
     let names = if paths.is_empty() {
         changed_paths(git)?
     } else {
         paths.iter().map(|p| p.as_os_str().to_owned()).collect()
     };
-    if names.is_empty() {
-        return Ok(());
-    }
     if names.len() > MAX_PATHS {
         bail!("{}", too_many_paths());
+    }
+    Ok(names)
+}
+
+/// Refused when a path to stage is longer than [`MAX_FILE_BYTES`], or all
+/// of them than [`MAX_TOTAL_BYTES`]. A symlink counts as the link, which
+/// git stores; a deleted path counts 0. The deadline on git bounds a file
+/// that grows after this check.
+fn refuse_large_files(root: &Path, names: &[OsString]) -> Result<()> {
+    let mut total: u64 = 0;
+    for name in names {
+        let path = root.join(name);
+        let len = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        if len > MAX_FILE_BYTES {
+            bail!(
+                "refused: {} is {len} bytes; horch ledger commit stages at most \
+                 {MAX_FILE_BYTES} bytes per file. Ask the orchestrator for a Claude worker.",
+                path.display()
+            );
+        }
+        total = total.saturating_add(len);
+        if total > MAX_TOTAL_BYTES {
+            bail!(
+                "refused: the paths to commit are more than {MAX_TOTAL_BYTES} bytes. \
+                 Commit them in parts with -- <files>."
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Refused when a path to commit has a required `filter` attribute (Git
+/// LFS, for one): with attributes from the empty tree, git would store its
+/// raw content.
+fn refuse_required_filters(git: &Trusted, names: Vec<OsString>) -> Result<()> {
+    if names.is_empty() {
+        return Ok(());
     }
     let required = required_filters(git)?;
     let refused: Vec<String> = path_filters(git, names)?
@@ -282,7 +346,7 @@ fn changed_paths(git: &Trusted) -> Result<Vec<OsString>> {
         "-z".into(),
         "--untracked-files=all".into(),
     ];
-    let out = bounded_records(git.command(clean_git(&git.bin, git.tree), &args), MAX_PATHS)?;
+    let out = run_git(git.command(clean_git(&git.bin, git.tree), &args), MAX_PATHS)?;
     if !out.complete {
         bail!("{}", too_many_paths());
     }
@@ -317,7 +381,7 @@ fn path_filters(git: &Trusted, names: Vec<OsString>) -> Result<Vec<(OsString, St
         "--".into(),
     ];
     args.extend(names);
-    let out = bounded_records(git.command(attribute_git(&git.bin), &args), expected)?;
+    let out = run_git(git.command(attribute_git(&git.bin), &args), expected)?;
     if !out.complete || !out.status.success() {
         bail!("git check-attr failed: {}", out.status);
     }
@@ -359,7 +423,7 @@ fn required_filters(git: &Trusted) -> Result<HashSet<String>> {
 /// Filter name to `required`, from 1 `git config --get-regexp` run. Exit 1
 /// with no output means the config sets none.
 fn config_values(cmd: Command, scope: &str) -> Result<HashMap<String, bool>> {
-    let out = bounded_records(cmd, MAX_PATHS)?;
+    let out = run_git(cmd, MAX_PATHS)?;
     match out.status.code() {
         Some(0) if out.complete => {}
         Some(1) if out.records.is_empty() => return Ok(HashMap::new()),
@@ -388,35 +452,114 @@ fn config_entry(record: &[u8], scope: &str) -> Result<(String, bool)> {
 }
 
 /// The NUL-ended stdout records of 1 git run, and how it ended.
+#[derive(Debug)]
 struct Records {
     status: ExitStatus,
     records: Vec<Vec<u8>>,
     /// False when git printed more than the cap: it was stopped there.
     complete: bool,
+    /// The first [`MAX_STDERR`] bytes of stderr.
+    stderr: Vec<u8>,
+}
+
+impl Records {
+    /// stdout of a git call that prints at most 1 record, or its error.
+    fn text(self, what: &str) -> Result<String> {
+        if !self.complete || !self.status.success() {
+            let stderr = String::from_utf8_lossy(&self.stderr);
+            let why = if stderr.trim().is_empty() {
+                self.status.to_string()
+            } else {
+                stderr.trim().to_string()
+            };
+            bail!("git {what} failed: {why}");
+        }
+        Ok(String::from_utf8_lossy(&self.records.concat())
+            .trim()
+            .to_string())
+    }
+}
+
+/// The 1 way horch ledger commit runs git: [`run_until`] with
+/// [`GIT_DEADLINE`].
+fn run_git(cmd: Command, max: usize) -> Result<Records> {
+    run_until(cmd, max, GIT_DEADLINE)
 }
 
 /// Run `cmd` and read at most `max` NUL-ended stdout records of at most
 /// [`MAX_RECORD`] bytes each. git is killed at the first record past either
-/// bound, so its output never grows horch past them. stderr is dropped.
-fn bounded_records(mut cmd: Command, max: usize) -> Result<Records> {
+/// bound, and at `limit`, which is an error. So no worker-controlled input
+/// grows horch's memory or time past them.
+fn run_until(mut cmd: Command, max: usize, limit: Duration) -> Result<Records> {
+    let end = Instant::now() + limit;
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .context("running git")?;
     let stdout = child.stdout.take().context("git has no stdout")?;
-    let read = read_records(BufReader::new(stdout), max);
-    if !matches!(read, Ok((_, true))) {
-        let _ = child.kill();
-    }
-    let status = child.wait().context("waiting for git")?;
+    let stderr = child.stderr.take().context("git has no stderr")?;
+    let mut reader = Some(std::thread::spawn(move || {
+        read_records(BufReader::new(stdout), max)
+    }));
+    let errors = std::thread::spawn(move || read_stderr(stderr));
+    let mut read = None;
+    let status = loop {
+        if let Some(status) = child.try_wait().context("waiting for git")? {
+            break status;
+        }
+        if reader.as_ref().is_some_and(JoinHandle::is_finished) {
+            read = reader.take().and_then(|h| h.join().ok());
+        }
+        let capped = read.as_ref().is_some_and(|r| !matches!(r, Ok((_, true))));
+        let late = Instant::now() >= end;
+        if capped || late {
+            let _ = child.kill();
+            let status = child.wait().context("waiting for git")?;
+            if !capped {
+                bail!(
+                    "git ran longer than {} s and was stopped",
+                    limit.as_secs_f32()
+                );
+            }
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let read = match read {
+        Some(read) => read,
+        None => reader.and_then(|h| join_by(h, end)).with_context(|| {
+            format!("git output was still open after {} s", limit.as_secs_f32())
+        })?,
+    };
     let (records, complete) = read?;
     Ok(Records {
         status,
         records,
         complete,
+        stderr: join_by(errors, end).unwrap_or_default(),
     })
+}
+
+/// The result of `handle`, or `None` when it is not done at `end`.
+fn join_by<T>(handle: JoinHandle<T>, end: Instant) -> Option<T> {
+    while !handle.is_finished() {
+        if Instant::now() >= end {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    handle.join().ok()
+}
+
+/// The first [`MAX_STDERR`] bytes of `stderr`; the rest is read and dropped,
+/// so git never blocks on a full pipe.
+fn read_stderr(mut stderr: impl Read) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let _ = stderr.by_ref().take(MAX_STDERR).read_to_end(&mut kept);
+    let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+    kept
 }
 
 /// At most `max` NUL-ended records from `reader`, and whether it ended
@@ -473,19 +616,15 @@ fn repo_metadata(bin: &Path, repo_root: &Path) -> Result<(PathBuf, &'static str)
     for pair in SAFE_CONFIG {
         cmd.args(["-c", pair]);
     }
-    let out = cmd
-        .args([
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-            "--show-object-format",
-        ])
-        .output()
-        .with_context(|| format!("running {}", bin.display()))?;
-    if !out.status.success() {
-        bail!("refused: {} is not a git checkout", repo_root.display());
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
+    cmd.args([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+        "--show-object-format",
+    ]);
+    let text = run_git(cmd, 1)?
+        .text("rev-parse")
+        .with_context(|| format!("refused: {} is not a git checkout", repo_root.display()))?;
     let mut lines = text.lines();
     let common = PathBuf::from(lines.next().unwrap_or_default().trim());
     let tree = match lines.next().map(str::trim) {
@@ -625,11 +764,10 @@ pub fn commit_git(ctx: &RuntimeContext) -> Result<PathBuf> {
 
 /// `(major, minor)` of the git at `bin`, run with a clean environment.
 fn git_version(bin: &Path) -> Option<(u32, u32)> {
-    let out = git_without_env(bin, Some(EMPTY_TREE_SHA1))
-        .arg("--version")
-        .output()
-        .ok()?;
-    parse_git_version(&String::from_utf8_lossy(&out.stdout))
+    let mut cmd = git_without_env(bin, Some(EMPTY_TREE_SHA1));
+    cmd.arg("--version");
+    let text = run_git(cmd, 1).ok()?.text("--version").ok()?;
+    parse_git_version(&text)
 }
 
 /// `arg` as an absolute path inside `root`, or a refusal. Symlinks in the
@@ -749,20 +887,13 @@ impl Trusted {
 
     /// git `args` with attributes from the empty tree; its trimmed stdout.
     fn run(&self, args: &[OsString]) -> Result<String> {
-        let out = self
-            .command(clean_git(&self.bin, self.tree), args)
-            .output()
-            .with_context(|| format!("running {}", self.bin.display()))?;
-        if !out.status.success() {
-            bail!(
-                "git {} failed: {}",
-                args.first()
-                    .map(|a| a.to_string_lossy())
-                    .unwrap_or_default(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        let what = args
+            .first()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        run_git(self.command(clean_git(&self.bin, self.tree), args), 1)
+            .with_context(|| format!("running {}", self.bin.display()))?
+            .text(&what)
     }
 
     /// `cmd` with `args`, pinned to the recorded worktree and git dir.
@@ -844,12 +975,10 @@ fn global_identity(bin: &Path) -> Vec<(String, String)> {
 
 /// 1 value from the operator's global config, read as a value only.
 fn global_config(bin: &Path, key: &str) -> Option<String> {
-    let out = global_git(bin)
-        .args(["config", "--global", "--get", key])
-        .output()
-        .ok()?;
-    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !value.is_empty()).then_some(value)
+    let mut cmd = global_git(bin);
+    cmd.args(["config", "--global", "--get", key]);
+    let value = run_git(cmd, 1).ok()?.text("config").ok()?;
+    (!value.is_empty()).then_some(value)
 }
 
 /// git outside any repository that reads the operator's global config only.
@@ -918,6 +1047,56 @@ mod tests {
         exact.push(0);
         let (records, complete) = read_records(Cursor::new(exact), 10).unwrap();
         assert!(complete && records[0].len() == MAX_RECORD);
+    }
+
+    #[cfg(unix)]
+    fn sh(script: &str) -> Command {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_past_the_deadline_is_killed_and_is_an_error() {
+        let started = Instant::now();
+        let e = run_until(sh("exec sleep 30"), 1, Duration::from_millis(300)).unwrap_err();
+        assert!(e.to_string().contains("was stopped"), "{e}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_past_the_record_cap_is_killed_at_once() {
+        let started = Instant::now();
+        let out = run_until(
+            sh("exec yes x | tr '\\n' '\\0'"),
+            10,
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert!(!out.complete);
+        assert_eq!(out.records.len(), 10);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_within_the_bounds_keeps_its_output_and_stderr() {
+        let out = run_until(sh("printf 'a\\0b'; echo oops >&2; exit 3"), 5, GIT_DEADLINE).unwrap();
+        assert!(out.complete);
+        assert_eq!(out.records, vec![b"a".to_vec(), b"b".to_vec()]);
+        assert_eq!(out.status.code(), Some(3));
+        let e = out.text("x").unwrap_err();
+        assert!(e.to_string().contains("oops"), "{e}");
     }
 
     #[test]

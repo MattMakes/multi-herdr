@@ -852,3 +852,47 @@ fn a_worktree_with_relative_links_still_commits() {
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(out(&o).trim(), head(&h, &wt));
 }
+
+#[test]
+fn a_sparse_file_past_the_size_limit_is_refused_before_git_reads_it() {
+    let (h, w, wt) = claimed("lc-sparse");
+    // 200 MiB of length and no data blocks: only the length tells.
+    std::fs::File::create(wt.join("huge.bin"))
+        .unwrap()
+        .set_len(200 << 20)
+        .unwrap();
+    let before = head(&h, &wt);
+    for args in [
+        vec!["ledger", "commit", "-m", "x", "--", "huge.bin"],
+        vec!["ledger", "commit", "-m", "x"],
+    ] {
+        let o = as_worker(&h, &w, &wt, &args);
+        assert!(
+            !o.status.success() && text(&o).contains("bytes per file"),
+            "{}",
+            text(&o)
+        );
+    }
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+    assert_eq!(git_in(&h, &wt, &["diff", "--cached", "--name-only"]), "");
+}
+
+#[test]
+fn paths_past_the_total_size_limit_are_refused() {
+    let (h, w, wt) = claimed("lc-total");
+    // 11 sparse files of 99 MiB: each is under the file limit, all are over 1 GiB.
+    for n in 0..11 {
+        std::fs::File::create(wt.join(format!("part-{n}.bin")))
+            .unwrap()
+            .set_len(99 << 20)
+            .unwrap();
+    }
+    let before = head(&h, &wt);
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x"]);
+    assert!(
+        !o.status.success() && text(&o).contains("more than 1073741824 bytes"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
