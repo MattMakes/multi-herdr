@@ -235,3 +235,36 @@ fn a_worker_without_a_task_or_with_a_review_task_cannot_commit() {
     );
     assert_eq!(head(&h, &wt), before, "nothing is committed");
 }
+
+#[test]
+fn a_rewritten_worktree_git_file_is_refused_and_its_config_never_runs() {
+    let (h, w, wt) = claimed("lc-gitfile");
+    let before = head(&h, &wt);
+    // The sandbox can write `<worktree>/.git`: point it at a git dir whose
+    // config names a clean filter, as a worker could.
+    let evil = wt.join("evil");
+    git_in(&h, &wt, &["init", "--quiet", "--bare", "evil"]);
+    let marker = h.root.join("filter-ran");
+    git_in(
+        &h,
+        &evil,
+        &[
+            "config",
+            "filter.x.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ],
+    );
+    std::fs::write(wt.join(".gitattributes"), "* filter=x\n").unwrap();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", evil.display())).unwrap();
+
+    let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+    assert!(
+        !o.status.success() && text(&o).contains("was changed"),
+        "{}",
+        text(&o)
+    );
+    assert!(!marker.exists(), "the planted filter must not run");
+    let main_head = git_in(&h, &h.project, &["rev-parse", "fleet/alpha-T1-feature"]);
+    assert_eq!(main_head, before, "nothing is committed");
+}

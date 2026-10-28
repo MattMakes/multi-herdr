@@ -70,6 +70,12 @@ teammate descriptions say this.
     claimed task or with a review task;
   - takes the worktree from the ledger row of that task, and refuses when
     the current folder is outside it;
+  - names the git dir instead of discovering it: the entry under the main
+    repository's `.git/worktrees/` (read-only to the sandbox) whose
+    `gitdir` file names the worktree, passed as `--git-dir` with
+    `--work-tree`. It refuses when `<worktree>/.git` (which the sandbox can
+    write) no longer points at that entry: a rewritten pointer would make
+    git read a worker-written config;
   - runs git with `-C <worktree>`, every `GIT_*` variable removed except the
     author and committer name, email and date, `GIT_CONFIG_NOSYSTEM=1` and
     `GIT_CONFIG_GLOBAL=/dev/null`; `user.name` and `user.email` come from the
@@ -83,6 +89,16 @@ teammate descriptions say this.
     `git commit -m <message>`, prints the commit id, and records the
     progress event `commit <short id>`.
 - End-to-end tests: `crates/horch-e2e/tests/ledger_commit.rs`.
+- The caller cannot steer the command through its environment.
+  `codex execpolicy check` on the shipped rules gives no match for
+  `HORCH_GIT_BIN=x horch ledger commit -m x`, for
+  `env HORCH_GIT_BIN=x horch ledger commit -m x`, and for the same line in
+  `bash -lc`. So an allowed `horch ledger` call runs with the environment
+  horch set at launch. The ledger file is in `~/.horch`, which is outside
+  the sandbox's writable roots.
+- A `filter=` attribute in a worker-written `.gitattributes` runs nothing by
+  itself: git runs a filter only when config defines it, and the only config
+  is the operator's repository config (system and global config are off).
 
 ## Earlier candidates (rejected)
 
