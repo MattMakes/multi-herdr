@@ -1287,6 +1287,17 @@ pub fn done_cmd(
                 format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
             if let Err(e) = super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
                 eprintln!("horch ledger: could not tell {role}: {e:#}");
+                // A tell to a worker is not durable, and a retried done skips
+                // it, so the orchestrator gets it as durable mail instead.
+                super::taskledger_wake::wake(
+                    ctx,
+                    &store,
+                    &run,
+                    &format!(
+                        "NOTE: The reviews of {parent} are in, but {role} was not told. \
+                         Tell {role} to run horch ledger finish."
+                    ),
+                );
             }
         }
         super::taskledger_wake::after_done(ctx, &store, &run);
