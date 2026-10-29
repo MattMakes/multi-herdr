@@ -647,6 +647,71 @@ fn mkt_08_offline_reinstall_from_lock() {
     assert_eq!(lock(&repo.store()).skills, vec![entry]);
 }
 
+/// A locked skill whose version directory is gone is rebuilt from its
+/// source, and the rebuild must match the lock's id and digest.
+#[test]
+fn mkt_08_rebuild_checks_id_and_digest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = local_skill(tmp.path(), "demo");
+    let installer = installer_at(tmp.path(), no_git());
+    let entry = installer.install(&local(&dir), &opts(), None).unwrap();
+    let store = installer.store();
+    let installed = entry_dir(store, &entry);
+
+    // A missing local copy is rebuilt from its current files.
+    fs::remove_dir_all(&installed).unwrap();
+    assert_eq!(
+        installer.reinstall_from_lock().unwrap(),
+        std::slice::from_ref(&entry)
+    );
+    assert!(installed.join("SKILL.md").is_file());
+
+    // The rebuilt files must hash to the locked digest.
+    fs::remove_dir_all(&installed).unwrap();
+    fs::write(dir.join("extra.md"), "changed since the lock").unwrap();
+    let r = installer.reinstall_from_lock();
+    assert!(
+        matches!(r, Err(MarketplaceError::DigestMismatch { .. })),
+        "{r:?}"
+    );
+    assert!(!installed.exists(), "a mismatch must not materialize");
+    fs::remove_file(dir.join("extra.md")).unwrap();
+
+    // The rebuilt SKILL.md name must equal the locked id.
+    let mut wrong = lock(store);
+    wrong.skills[0].id = "other".to_owned();
+    wrong.write(&store.lock_path()).unwrap();
+    let err = installer.reinstall_from_lock().unwrap_err();
+    assert!(
+        matches!(&err, MarketplaceError::SkillMd(_))
+            && err
+                .to_string()
+                .contains("name 'demo' does not match the locked id 'other'"),
+        "{err:?}"
+    );
+}
+
+/// The lock is input: a version that is not one clean path component is
+/// refused before any directory is looked at.
+#[test]
+fn mkt_08_reinstall_refuses_an_unclean_locked_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = local_skill(tmp.path(), "demo");
+    let installer = installer_at(tmp.path(), no_git());
+    installer.install(&local(&dir), &opts(), None).unwrap();
+    let store = installer.store();
+    for bad in ["../x", "a/b"] {
+        let mut tampered = lock(store);
+        tampered.skills[0].version = bad.to_owned();
+        tampered.write(&store.lock_path()).unwrap();
+        let err = installer.reinstall_from_lock().unwrap_err();
+        assert!(
+            matches!(err, MarketplaceError::Traversal(_)),
+            "{bad}: {err:?}"
+        );
+    }
+}
+
 /// A pattern position: what follows a `Type::Variant` (after its braces or
 /// parens) is `=>`, `|`, `if`, or a single `=` (in `if let` / `let else`).
 fn is_pattern(after: &str) -> bool {

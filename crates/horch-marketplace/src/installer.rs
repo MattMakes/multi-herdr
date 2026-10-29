@@ -230,31 +230,29 @@ impl Installer {
             let dir = self.entry_dir(entry)?;
             if dir.is_dir() {
                 check_digest(entry, &tree_digest(&dir)?)?;
-                continue;
+            } else {
+                self.rebuild(entry)?;
             }
-            let mut source = parse_source(&entry.source)?;
-            if let Some(commit) = &entry.resolved_commit {
-                source = source.with_revision(GitRevision::Commit(commit.clone()));
-            }
-            let prepared = self.prepare(&source, &mut None)?;
-            if prepared.id.as_str() != entry.id {
-                return Err(MarketplaceError::SkillMd(format!(
-                    "name '{}' does not match the locked id '{}'",
-                    prepared.id, entry.id
-                )));
-            }
-            check_digest(entry, &prepared.digest)?;
-            // Materialize under the store lock, as `install` does: an
-            // install of the same version must not interleave.
-            let _guard = self.store.lock()?;
-            self.store.materialize(
-                &prepared.tree,
-                &prepared.staging,
-                &prepared.id,
-                &SkillVersion(entry.version.clone()),
-            )?;
         }
         Ok(lock.skills)
+    }
+
+    /// Rebuild a missing locked skill from its pinned source. It must have
+    /// the locked id and digest.
+    fn rebuild(&self, entry: &LockEntry) -> Result<()> {
+        let prepared = self.prepare(&pinned_source(entry)?, &mut None)?;
+        check_id(prepared.id.as_str(), entry)?;
+        check_digest(entry, &prepared.digest)?;
+        // Materialize under the store lock, as `install` does: an
+        // install of the same version must not interleave.
+        let _guard = self.store.lock()?;
+        self.store.materialize(
+            &prepared.tree,
+            &prepared.staging,
+            &prepared.id,
+            &SkillVersion(entry.version.clone()),
+        )?;
+        Ok(())
     }
 
     /// `skills/<id>/<version>/` of a lock entry. The id and version are
@@ -279,5 +277,25 @@ fn check_digest(entry: &LockEntry, actual: &str) -> Result<()> {
             expected: entry.digest.clone(),
             actual: actual.to_owned(),
         })
+    }
+}
+
+/// The locked source at its locked commit, when it has one.
+fn pinned_source(entry: &LockEntry) -> Result<SkillSource> {
+    let source = parse_source(&entry.source)?;
+    Ok(match &entry.resolved_commit {
+        Some(commit) => source.with_revision(GitRevision::Commit(commit.clone())),
+        None => source,
+    })
+}
+
+fn check_id(prepared_id: &str, entry: &LockEntry) -> Result<()> {
+    if prepared_id == entry.id {
+        Ok(())
+    } else {
+        Err(MarketplaceError::SkillMd(format!(
+            "name '{prepared_id}' does not match the locked id '{}'",
+            entry.id
+        )))
     }
 }
