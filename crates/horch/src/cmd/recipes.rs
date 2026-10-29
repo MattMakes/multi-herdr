@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use horch::project::project_facts;
 use horch_core::execution::legacy::{Record, KIND_ORCHESTRATOR};
 use horch_core::execution::records::{Ledger, ORCHESTRATING_TASK};
-use horch_core::execution::SessionMode;
+use horch_core::execution::{ExecutionStatus, LaunchStage, SessionMode};
 use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::SessionId;
@@ -25,7 +25,7 @@ use horch_core::routing::quota::{self, QuotaView, State};
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
 use horch_core::workspace::herdr::Herdr;
-use horch_core::workspace::model::Direction;
+use horch_core::workspace::model::{Direction, NewWorkspace};
 use horch_core::workspace::paneshell::PaneShell;
 
 use super::doctor;
@@ -384,19 +384,15 @@ pub fn fleet_with(
         flavor
     };
 
-    println!("Creating fleet workspace rooted at {cwd}...");
-    let label = workspace_label(Path::new(&cwd), ctx.paths.cwd.as_deref());
-    let ws = herdr.workspace_create(&label, Some(&cwd), true)?;
-    // The rest of this command works in the new workspace and its project.
+    // Every step that can fail without herdr runs before the workspace
+    // exists, so such a failure leaves nothing to close (#217).
     let mut ctx = ctx.clone();
-    ctx.herdr.workspace = Some(horch_core::ids::WorkspaceId::new(ws.workspace_id.as_str())?);
     ctx.paths.project_dir = Some(PathBuf::from(&cwd));
-    let ctx = &ctx;
 
     // The orchestrator is a ledger record like any worker (TEL-02), so its
     // spend is counted. Orchestrators of workspaces that are gone are
     // retired first: an orchestrator never runs `horch done`.
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = Ledger::open_in(&ctx)?;
     if let Ok(open) = herdr.workspace_list() {
         let open: Vec<String> = open.into_iter().map(|w| w.workspace_id).collect();
         ledger.supersede_orchestrators(|ws| open.iter().any(|o| o == ws))?;
@@ -404,7 +400,7 @@ pub fn fleet_with(
     let kind = flavor.pane_kind();
     // The project's facts add its `skills_when` skills, here and at the
     // pane launch, so the record and the launch agree.
-    let roster = super::load_roster(ctx, None)?.with_project_facts(project_facts(Path::new(&cwd)));
+    let roster = super::load_roster(&ctx, None)?.with_project_facts(project_facts(Path::new(&cwd)));
     let teammate = &roster.for_launch(roster.require(orchestrator_teammate(kind))?.clone());
     let record_id = horch_core::mint_uuid();
     // A resumed session's id is known up front for every agent, so the new
@@ -427,46 +423,63 @@ pub fn fleet_with(
         harness_support,
     )?
     .plan(teammate)?;
-    ledger.insert(Record {
-        record_id: record_id.clone(),
-        session_id: session_id.clone(),
-        agent: teammate.agent.as_str().to_string(),
-        tier: teammate.name.clone(),
-        model: flavor.model().to_string(),
-        effort: teammate.effort.clone(),
-        phase: teammate.phase,
-        role: "orchestrator".to_string(),
-        kind: KIND_ORCHESTRATOR.to_string(),
-        task: ORCHESTRATING_TASK.to_string(),
-        project: Some(cwd.clone()),
-        workspace_id: Some(ws.workspace_id.clone()),
-        skills: skills.activated,
-        ..Record::default()
-    })?;
 
-    match &options.resume {
-        Some(id) => println!(
-            "Resuming orchestrator session {id} ({}). No briefing is sent; \
-             type /orchestrator ($orchestrator in Codex) to re-brief it.",
-            flavor.label()
-        ),
-        None => println!("Launching orchestrator ({})...", flavor.label()),
+    println!("Creating fleet workspace rooted at {cwd}...");
+    let label = workspace_label(Path::new(&cwd), ctx.paths.cwd.as_deref());
+    let ws = herdr.workspace_create(&label, Some(&cwd), true)?;
+    // From here a failure closes the workspace and ends the record (#217).
+    let mut inserted = false;
+    let started = (|| -> Result<()> {
+        // The rest of this command works in the new workspace.
+        ctx.herdr.workspace = Some(horch_core::ids::WorkspaceId::new(ws.workspace_id.as_str())?);
+        ledger.insert(Record {
+            record_id: record_id.clone(),
+            session_id: session_id.clone(),
+            agent: teammate.agent.as_str().to_string(),
+            tier: teammate.name.clone(),
+            model: flavor.model().to_string(),
+            effort: teammate.effort.clone(),
+            phase: teammate.phase,
+            role: "orchestrator".to_string(),
+            kind: KIND_ORCHESTRATOR.to_string(),
+            task: ORCHESTRATING_TASK.to_string(),
+            project: Some(cwd.clone()),
+            workspace_id: Some(ws.workspace_id.clone()),
+            skills: skills.activated.clone(),
+            ..Record::default()
+        })?;
+        inserted = true;
+
+        match &options.resume {
+            Some(id) => println!(
+                "Resuming orchestrator session {id} ({}). No briefing is sent; \
+                 type /orchestrator ($orchestrator in Codex) to re-brief it.",
+                flavor.label()
+            ),
+            None => println!("Launching orchestrator ({})...", flavor.label()),
+        }
+        herdr.pane_run(
+            &ws.root_pane_id,
+            &pane_command_for(
+                &ctx,
+                "orchestrator",
+                kind,
+                Some(flavor.model()),
+                Some(PaneRecord {
+                    record_id: &record_id,
+                    session_id: session_id.as_deref(),
+                    resume: options.resume.is_some(),
+                }),
+                options.compete.as_ref(),
+            )?,
+        )
+    })();
+    if let Err(e) = started {
+        let record = inserted.then_some(record_id.as_str());
+        abandon_start(&herdr, &ws.workspace_id, &ledger, record, &e);
+        return Err(e);
     }
-    herdr.pane_run(
-        &ws.root_pane_id,
-        &pane_command_for(
-            ctx,
-            "orchestrator",
-            kind,
-            Some(flavor.model()),
-            Some(PaneRecord {
-                record_id: &record_id,
-                session_id: session_id.as_deref(),
-                resume: options.resume.is_some(),
-            }),
-            options.compete.as_ref(),
-        )?,
-    )?;
+    let ctx = &ctx;
 
     super::delivery_probe::fleet(ctx, &ws.workspace_id, &ws.root_pane_id);
 
@@ -479,10 +492,35 @@ pub fn fleet_with(
         "\nDone. Fleet workspace {} is live with one orchestrator pane.",
         ws.workspace_id
     );
-    println!("Session ledger: {}", Ledger::open_in(ctx)?.path().display());
+    println!("Session ledger: {}", ledger.path().display());
     println!("Orchestrator commands: horch sessions | horch assign | horch spawn [--resume]");
     println!("Workers are spawned on demand: horch spawn <teammate> \"task\"");
     Ok(())
+}
+
+/// Undo a start that failed after its workspace was created (#217): end the
+/// orchestrator `record` it inserted as `LaunchFailed`, so no live record
+/// names the workspace, then close the workspace. A cleanup error is printed;
+/// `error`, the start's own, is the one the caller returns.
+fn abandon_start(
+    herdr: &Herdr,
+    workspace_id: &str,
+    ledger: &Ledger,
+    record: Option<&str>,
+    error: &anyhow::Error,
+) {
+    if let Some(key) = record {
+        let state = ExecutionStatus::LaunchFailed {
+            stage: LaunchStage::Run,
+            reason: format!("{error:#}"),
+        };
+        if let Err(e) = ledger.store().end_live(key, state) {
+            eprintln!("warning: ending the orchestrator record {key} failed: {e:#}");
+        }
+    }
+    if let Err(e) = herdr.workspace_close(workspace_id) {
+        eprintln!("warning: closing workspace {workspace_id} failed: {e:#}");
+    }
 }
 
 /// Which teammate file backs a fleet orchestrator pane of `kind`.
@@ -613,6 +651,32 @@ pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>, no_update: bool) -
     println!("Creating workspace rooted at {cwd}...");
     let ws = herdr.workspace_create("Herdr Orchestration", Some(&cwd), true)?;
 
+    // A failed split or pane run closes the workspace again (#217).
+    if let Err(e) = lay_out_orchestration(ctx, &herdr, &ws) {
+        if let Err(close) = herdr.workspace_close(&ws.workspace_id) {
+            eprintln!(
+                "warning: closing workspace {} failed: {close:#}",
+                ws.workspace_id
+            );
+        }
+        return Err(e);
+    }
+
+    println!(
+        "\nDone. Workspace {} is live with 5 panes.",
+        ws.workspace_id
+    );
+    println!(
+        "From the orchestrator pane: horch tell <role> \"message\"  \
+         (roles: sonnet-1, sonnet-2, opus-1, codex-1)"
+    );
+    println!("From any worker pane:       horch tell orchestrator \"message\"");
+    Ok(())
+}
+
+/// The 5 panes of `horch orchestration` in the new workspace `ws`: the
+/// layout, then each pane's agent.
+fn lay_out_orchestration(ctx: &RuntimeContext, herdr: &Herdr, ws: &NewWorkspace) -> Result<()> {
     println!("Building layout: orchestrator | 2x2 worker grid...");
     let top_left = herdr.pane_split(&ws.root_pane_id, Direction::Right)?;
     let bottom_left = herdr.pane_split(&top_left, Direction::Down)?;
@@ -651,16 +715,6 @@ pub fn orchestration(ctx: &RuntimeContext, cwd: Option<&str>, no_update: bool) -
         println!("Launching {role}...");
         herdr.pane_run(pane, &pane_command(ctx, role, kind, model)?)?;
     }
-
-    println!(
-        "\nDone. Workspace {} is live with 5 panes.",
-        ws.workspace_id
-    );
-    println!(
-        "From the orchestrator pane: horch tell <role> \"message\"  \
-         (roles: sonnet-1, sonnet-2, opus-1, codex-1)"
-    );
-    println!("From any worker pane:       horch tell orchestrator \"message\"");
     Ok(())
 }
 
