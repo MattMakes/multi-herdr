@@ -147,7 +147,8 @@ fn pretty(v: &Value) -> String {
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Variables the builders and loaders read today, and what each is pinned to.
-/// `<TMP>` and `<HOME>` stand for the temp dirs below.
+/// `<TMP>` and `<HOME>` stand for the temp dirs below. [`World::new`] also
+/// pins the state and data roots, outside this list.
 const PINNED: [(&str, Option<&str>); 20] = [
     ("HOME", Some("<HOME>")),
     ("PATH", Some("<TMP>/bin")),
@@ -226,7 +227,8 @@ impl World {
         }
         // The state and data roots point into the temp world, so no launch
         // reads the host's real state (a Codex v1 model catalog, for one).
-        // Kept out of PINNED: its header is part of every frozen oracle.
+        // Kept out of PINNED: `pinned_header` writes PINNED into every frozen
+        // oracle as `_pinned_env`, so a new key there changes every oracle.
         let roots = [
             ("HORCH_STATE_DIR", Some(state.clone())),
             ("HORCH_DATA_DIR", Some(root.join("data"))),

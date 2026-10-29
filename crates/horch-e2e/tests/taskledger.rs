@@ -1123,6 +1123,23 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
     assert_eq!(claim["attempt"], 2);
 }
 
+/// Kills the stand-in agent and every watchdog it records when dropped, so
+/// a failed assertion leaks neither.
+struct WatchdogTeardown {
+    agent: std::process::Child,
+    watchdogs: Vec<(u32, u64)>,
+}
+
+impl Drop for WatchdogTeardown {
+    fn drop(&mut self) {
+        for &(pid, started) in &self.watchdogs {
+            horch_core::procid::signal_same(pid, started, 9);
+        }
+        let _ = self.agent.kill();
+        let _ = self.agent.wait();
+    }
+}
+
 #[test]
 fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
     let mut h = world("tl-wdog");
@@ -1155,12 +1172,19 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         ],
     );
     let w = worker_new(&h, "opus");
-    // The worker's agent is this test process, so the watchdog sees it
-    // alive and does not reap the worker.
+    // The worker's agent is a child this test owns, so the watchdog sees it
+    // alive and does not reap the worker. A reap would stop only the child.
+    let mut teardown = WatchdogTeardown {
+        agent: std::process::Command::new("/bin/sleep")
+            .arg("600")
+            .spawn()
+            .unwrap(),
+        watchdogs: Vec::new(),
+    };
     horch_core::taskledger::supervisor::agent_started(
         &h.root.join("ledger.sqlite3"),
         &w,
-        std::process::id(),
+        teardown.agent.id(),
     )
     .unwrap();
     // The first horch command after a task runs starts the missing watchdog.
@@ -1179,6 +1203,7 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
     });
     let pid = r["watchdog_pid"].as_i64().unwrap() as u32;
     let started = r["watchdog_started"].as_i64().unwrap() as u64;
+    teardown.watchdogs.push((pid, started));
     // A second watchdog for the run is refused.
     let o = h.run(&["ledger", "watch"]);
     assert!(
@@ -1205,6 +1230,7 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         r2["watchdog_pid"].as_i64().unwrap() as u32,
         r2["watchdog_started"].as_i64().unwrap() as u64,
     );
+    teardown.watchdogs.push((p2, s2));
     assert!(horch_core::procid::signal_same(p2, s2, 9), "teardown");
 }
 

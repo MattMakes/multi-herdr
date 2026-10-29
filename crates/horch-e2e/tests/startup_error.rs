@@ -126,8 +126,9 @@ fn spawn_waits_for_a_worker_that_registers_and_prints_only_the_pane() {
 #[test]
 fn a_worker_that_registers_after_the_wait_still_works() {
     let mut h = workspace("startup-late", "300");
-    // The pane holds its line until the gate file exists. The test makes
-    // it after the spawn returns, so the worker registers after the wait.
+    // The pane holds its line until the gate file exists, for at most 30 s.
+    // The test makes it after the spawn returns, so the worker registers
+    // after the wait.
     let fake = h.bin.join("herdr");
     let gate = h.root.join("gate");
     let wrapper = h.write_bin(
@@ -136,7 +137,7 @@ fn a_worker_that_registers_after_the_wait_still_works() {
             "#!/bin/sh\n\
              if [ \"$1\" = warm ]; then exit 0; fi\n\
              if [ \"$1\" = pane ] && [ \"$2\" = run ]; then\n\
-             \x20 exec '{fake}' pane run \"$3\" \"while [ ! -e '{gate}' ]; do /bin/sleep 0.05; done; $4\"\n\
+             \x20 exec '{fake}' pane run \"$3\" \"i=0; while [ ! -e '{gate}' ] && [ \\$i -lt 600 ]; do /bin/sleep 0.05; i=\\$((i+1)); done; $4\"\n\
              fi\n\
              exec '{fake}' \"$@\"\n",
             fake = fake.display(),
