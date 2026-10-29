@@ -24,7 +24,7 @@ use horch_core::competition::model::RoundState;
 use horch_core::competition::observe::{self, TelemetryUsage};
 use horch_core::competition::planner::{plan_round, PlanInput, RoundPlan};
 use horch_core::competition::preflight::{
-    evaluate, recorded_estimates, PreflightCandidate, PreflightReport, TokenEstimate,
+    evaluate, recorded_estimates, PreflightCandidate, PreflightPlan, PreflightReport, TokenEstimate,
 };
 use horch_core::competition::report::{self, RoundReport};
 use horch_core::evaluation::validator::{CommandValidator, GateSpec};
@@ -62,21 +62,12 @@ pub(crate) fn run(
     env: &BTreeMap<String, String>,
     args: &RunArgs,
 ) -> Result<u8> {
-    // `--detach` reports to the caller's pane by default; with no pane to
-    // report to, nothing is created (FDS-10).
-    let report_to = match (&args.report_to, args.detach) {
-        (Some(pane), _) => Some(pane.clone()),
-        (None, true) => match &ctx.herdr.pane {
-            Some(internal) => Some(public_pane(ctx, internal.as_str())),
-            None => {
-                eprintln!(
-                    "multi-herdr-dataset: run --detach needs a pane to report to: \
-                     pass --report-to <PANE>, or run it in a herdr pane (HERDR_PANE_ID)"
-                );
-                return Ok(exit::USAGE);
-            }
-        },
-        (None, false) => None,
+    let report_to = match report_target(ctx, args) {
+        Ok(report_to) => report_to,
+        Err(usage) => {
+            eprintln!("multi-herdr-dataset: {usage}");
+            return Ok(exit::USAGE);
+        }
     };
     let paths = dataset_paths(ctx)?;
     let project = ctx.paths.project()?;
@@ -84,11 +75,7 @@ pub(crate) fn run(
         .plan
         .as_deref()
         .map(|p| plan_in_project(&project, ctx.paths.cwd.as_deref(), p));
-    let task = match (&args.task, &plan) {
-        (Some(task), _) => task.clone(),
-        (None, Some(plan)) => plan_task(plan),
-        (None, None) => bail!("run needs a TASK or --plan"),
-    };
+    let task = task_of(args, plan.as_deref())?;
     let experiment = ExperimentId::mint(clock::now());
     let saved = SavedRun::from_args(args, &task, plan, report_to);
     saved.write(&paths, &experiment)?;
@@ -98,6 +85,28 @@ pub(crate) fn run(
         Start::Here
     };
     preflight_and_run(ctx, env, &paths, &experiment, &task, &saved, start)
+}
+
+/// The pane that gets the report line. `--detach` reports to the caller's
+/// pane by default; with no pane to report to, nothing is created (FDS-10):
+/// that gives the usage error.
+fn report_target(ctx: &RuntimeContext, args: &RunArgs) -> Result<Option<String>, &'static str> {
+    match (&args.report_to, args.detach, &ctx.herdr.pane) {
+        (Some(pane), _, _) => Ok(Some(pane.clone())),
+        (None, true, Some(internal)) => Ok(Some(public_pane(ctx, internal.as_str()))),
+        (None, true, None) => Err("run --detach needs a pane to report to: \
+                                   pass --report-to <PANE>, or run it in a herdr pane (HERDR_PANE_ID)"),
+        (None, false, _) => Ok(None),
+    }
+}
+
+/// The task of the run: the `TASK` argument, else the plan's task.
+fn task_of(args: &RunArgs, plan: Option<&str>) -> Result<String> {
+    match (&args.task, plan) {
+        (Some(task), _) => Ok(task.clone()),
+        (None, Some(plan)) => Ok(plan_task(plan)),
+        (None, None) => bail!("run needs a TASK or --plan"),
+    }
 }
 
 /// Where a round that passed preflight runs.
@@ -170,10 +179,7 @@ pub(crate) fn resume_reporting(
     let paths = dataset_paths(ctx)?;
     let experiment = ExperimentId::new(exp)?;
     let projection = fold(&store::read_all(&paths)?.events);
-    let mut saved = SavedRun::read(&paths, &experiment)?;
-    if let Some(pane) = report_to {
-        saved.report_to = Some(pane.to_string());
-    }
+    let saved = saved_for_resume(&paths, &experiment, report_to)?;
     match resume_plan(&projection, &experiment)? {
         Resume::Fresh => preflight_and_run(
             ctx,
@@ -190,6 +196,20 @@ pub(crate) fn resume_reporting(
         }
         Resume::Continue(x) => continue_round(ctx, &paths, &experiment, &saved, &projection, x),
     }
+}
+
+/// The run the experiment saved, with `report_to` (`--report-to`) as its
+/// report target when given.
+fn saved_for_resume(
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    report_to: Option<&str>,
+) -> Result<SavedRun> {
+    let mut saved = SavedRun::read(paths, experiment)?;
+    if let Some(pane) = report_to {
+        saved.report_to = Some(pane.to_string());
+    }
+    Ok(saved)
 }
 
 /// Where `resume` re-enters an experiment.
@@ -296,11 +316,67 @@ fn preflight_and_run(
     saved: &SavedRun,
     start: Start,
 ) -> Result<u8> {
+    let now = clock::now();
+    let round_id = RoundId::mint(now);
+    let gathered = gather_report(ctx, paths, experiment, task, saved, &round_id)?;
+
+    let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
+    let failed = preflight::record(
+        &recorder,
+        paths,
+        &ExperimentFacts {
+            experiment,
+            task,
+            plan: &gathered.pre_plan,
+            report: &gathered.report,
+            env: snapshot_env(ctx, env),
+            at: now,
+        },
+        &ctx.settings.faults,
+    )?;
+    drop(recorder);
+
+    // A detached pass prints its 1 line only (FDS-10); a refusal prints all.
+    if start == Start::Here || !failed.is_empty() {
+        println!("experiment {experiment}");
+        print!("{}", render_plan(&gathered.plan));
+        print!("{}", preflight::render(&gathered.report));
+    }
+    if let Some((line, code)) = refusal(gathered.plan.candidates.is_empty(), &failed) {
+        println!("{line}");
+        Ok(code)
+    } else {
+        let attempt = Attempt {
+            experiment,
+            round: &round_id,
+            task,
+            saved,
+            start,
+        };
+        launch(ctx, paths, &attempt, &gathered)
+    }
+}
+
+/// What preflight looked at and found.
+struct Gathered {
+    config: DatasetConfig,
+    plan: RoundPlan,
+    pre_plan: PreflightPlan,
+    report: PreflightReport,
+}
+
+/// Plan the round and run the preflight checks on the plan.
+fn gather_report(
+    ctx: &RuntimeContext,
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    task: &str,
+    saved: &SavedRun,
+    round_id: &RoundId,
+) -> Result<Gathered> {
     let project = ctx.paths.project()?;
     let flags = saved.flags()?;
     let mut config = config::load(&project, &flags)?;
-    let now = clock::now();
-    let round_id = RoundId::mint(now);
 
     // PRE-13 checks the root against the trusted directories, so it must be
     // absolute. A relative root is relative to the project. Each experiment
@@ -315,7 +391,7 @@ fn preflight_and_run(
 
     let git = GitCli::new(ctx.bins.harness.git.clone());
     let head = preflight::repo_facts(&git, &project, &[], None).base_sha;
-    let (plan, view) = plan_with_view(ctx, &config, &round_id, head.as_deref().unwrap_or(""))?;
+    let (plan, view) = plan_with_view(ctx, &config, round_id, head.as_deref().unwrap_or(""))?;
 
     let branches = planned_branches(experiment, &plan, &config);
     let git_facts = preflight::repo_facts(&git, &project, &branches, config.promote_to.as_deref());
@@ -342,83 +418,100 @@ fn preflight_and_run(
         },
     );
     let mut report = evaluate(&pre_plan, &snapshot);
-    if let Some(plan) = &saved.plan {
-        let dir = pre_plan
-            .git
-            .toplevel
-            .clone()
-            .unwrap_or_else(|| project.clone());
-        let base = pre_plan.git.base_sha.as_deref();
-        if let Some(problem) = preflight::plan_problem(&git, &dir, base, plan) {
-            preflight::fail_pre_01(&mut report, &problem);
-        }
+    let problem = saved
+        .plan
+        .as_deref()
+        .and_then(|plan| plan_file_problem(&git, &project, &pre_plan, plan));
+    if let Some(problem) = problem {
+        preflight::fail_pre_01(&mut report, &problem);
     }
+    Ok(Gathered {
+        config,
+        plan,
+        pre_plan,
+        report,
+    })
+}
 
-    let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
-    let failed = preflight::record(
-        &recorder,
-        paths,
-        &ExperimentFacts {
-            experiment,
-            task,
-            plan: &pre_plan,
-            report: &report,
-            env: snapshot_env(ctx, env),
-            at: now,
-        },
-        &ctx.settings.faults,
-    )?;
-    drop(recorder);
+/// Why the `--plan` file cannot go with the round, if it cannot.
+fn plan_file_problem(
+    git: &GitCli,
+    project: &Path,
+    pre_plan: &PreflightPlan,
+    plan: &str,
+) -> Option<String> {
+    let dir = pre_plan.git.toplevel.as_deref().unwrap_or(project);
+    preflight::plan_problem(git, dir, pre_plan.git.base_sha.as_deref(), plan)
+}
 
-    // A detached pass prints its 1 line only (FDS-10); a refusal prints all.
-    if start == Start::Here || !failed.is_empty() {
-        println!("experiment {experiment}");
-        print!("{}", render_plan(&plan));
-        print!("{}", preflight::render(&report));
+/// The line and exit code that refuse a round after preflight, or `None`
+/// when the round may start. An empty plan fails PRE-08, but the planner
+/// refused every candidate (excluded, or over its usage limits): that is
+/// the budget/quota refusal, exit 3 (dataset design §6 B2), not a failed
+/// machine check. The report is recorded and the experiment aborted all the
+/// same.
+fn refusal(no_candidates: bool, failed: &[String]) -> Option<(String, u8)> {
+    const NOTHING_STARTED: &str = "No worktree was created and no model was called.";
+    if no_candidates && failed.iter().all(|id| id == "PRE-08") {
+        Some((
+            format!("REFUSED: no candidate can run within the usage limits. {NOTHING_STARTED}"),
+            exit::BUDGET_REFUSED,
+        ))
+    } else if !failed.is_empty() {
+        Some((
+            format!(
+                "REFUSED: preflight failed ({}). {NOTHING_STARTED}",
+                failed.join(", ")
+            ),
+            exit::PREFLIGHT_FAILED,
+        ))
+    } else {
+        None
     }
-    // An empty plan fails PRE-08, but the planner refused every candidate
-    // (excluded, or over its usage limits): that is the budget/quota
-    // refusal, exit 3 (dataset design §6 B2), not a failed machine check.
-    // The report is recorded and the experiment aborted all the same.
-    if plan.candidates.is_empty() && failed.iter().all(|id| id == "PRE-08") {
-        println!(
-            "REFUSED: no candidate can run within the usage limits. \
-             No worktree was created and no model was called."
-        );
-        return Ok(exit::BUDGET_REFUSED);
-    }
-    if !failed.is_empty() {
-        println!(
-            "REFUSED: preflight failed ({}). No worktree was created and no model was called.",
-            failed.join(", ")
-        );
-        return Ok(exit::PREFLIGHT_FAILED);
-    }
+}
+
+/// One attempt of an experiment's first round.
+struct Attempt<'a> {
+    experiment: &'a ExperimentId,
+    round: &'a RoundId,
+    task: &'a str,
+    saved: &'a SavedRun,
+    start: Start,
+}
+
+/// Start the round that passed preflight, in a new pane or here.
+fn launch(
+    ctx: &mut RuntimeContext,
+    paths: &DatasetPaths,
+    a: &Attempt<'_>,
+    g: &Gathered,
+) -> Result<u8> {
     ctx.settings.faults.abort_if("abort-after-preflight");
-    if start == Start::Detached {
-        return start_detached(ctx, paths, experiment, &round_id, &plan, saved);
+    if a.start == Start::Detached {
+        return start_detached(ctx, paths, a.experiment, a.round, &g.plan, a.saved);
     }
+    let pre_plan = &g.pre_plan;
     coordinate(
         ctx,
         paths,
         &Round {
-            experiment,
-            round: &round_id,
-            config: &config,
-            task,
-            safe_n: report.safe_n,
+            experiment: a.experiment,
+            round: a.round,
+            config: &g.config,
+            task: a.task,
+            safe_n: g.report.safe_n,
             estimates: meter_estimates(
                 pre_plan
                     .candidates
                     .iter()
                     .map(|c| (c.label.as_str(), c.model.as_str())),
                 &pre_plan.expected_tokens,
-                &config.budget.expected_tokens,
+                &g.config.budget.expected_tokens,
                 &pre_plan.measured_tokens,
             ),
-            report_to: saved.report_to.as_deref(),
+            report_to: a.saved.report_to.as_deref(),
         },
-        Some(&plan),
+        Some(&g.plan),
     )
 }
 
@@ -440,30 +533,14 @@ fn start_detached(
         .report_to
         .as_deref()
         .context("a detached round has no pane to report to")?;
-    let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
-    record_round_plan(&recorder, experiment, round, plan, &monotonic(clock::now))?;
-    drop(recorder);
+    record_plan(ctx, paths, experiment, round, plan)?;
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let watch = watch_command(ctx, &project, experiment)?;
     let ws = dataset_workspace(&herdr, paths, experiment, &project, &watch)?;
     let pane = herdr
         .pane_split(&ws.root_pane, Direction::Down)
         .context("opening the coordinator pane in the dataset workspace")?;
-    let exe = ctx.bins.exe()?;
-    let env = pane_env(ctx);
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let command = PaneShell::host().command_line_with_env(
-        &exe,
-        &env,
-        &[
-            "resume".to_string(),
-            experiment.to_string(),
-            "--report-to".to_string(),
-            report_to.to_string(),
-            "--project".to_string(),
-            project.to_string_lossy().into_owned(),
-        ],
-    );
+    let command = resume_command(ctx, &project, experiment, report_to)?;
     if let Err(e) = herdr.pane_run(&pane, &command) {
         let _ = herdr.pane_close(&pane);
         return Err(e.context(format!(
@@ -475,6 +552,43 @@ fn start_detached(
         workspace_name(experiment)
     );
     Ok(exit::SUCCESS)
+}
+
+/// Record the round's plan before the detached coordinator resumes it.
+fn record_plan(
+    ctx: &RuntimeContext,
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    round: &RoundId,
+    plan: &RoundPlan,
+) -> Result<()> {
+    let recorder = JsonlRecorder::open(paths, StoreOptions::from_faults(&ctx.settings.faults))?;
+    record_round_plan(&recorder, experiment, round, plan, &monotonic(clock::now))
+}
+
+/// The shell command that runs `resume <experiment> --report-to <pane>` in
+/// the new pane, with the settings a pane does not inherit.
+fn resume_command(
+    ctx: &RuntimeContext,
+    project: &Path,
+    experiment: &ExperimentId,
+    report_to: &str,
+) -> Result<String> {
+    let exe = ctx.bins.exe()?;
+    let env = pane_env(ctx);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    Ok(PaneShell::host().command_line_with_env(
+        &exe,
+        &env,
+        &[
+            "resume".to_string(),
+            experiment.to_string(),
+            "--report-to".to_string(),
+            report_to.to_string(),
+            "--project".to_string(),
+            project.to_string_lossy().into_owned(),
+        ],
+    ))
 }
 
 /// What the dataset workspace's root pane runs: `watch <experiment>`.
@@ -1433,5 +1547,79 @@ mod tests {
             panic!("not continue");
         };
         assert_eq!(x, &experiment(RoundState::Planned, x.rounds.clone()));
+    }
+
+    fn ids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn refusal_is_none_for_a_plan_that_passed() {
+        assert_eq!(refusal(false, &[]), None);
+    }
+
+    #[test]
+    fn refusal_is_the_budget_refusal_when_only_the_empty_plan_failed() {
+        assert_eq!(
+            refusal(true, &ids(&["PRE-08"])),
+            Some((
+                "REFUSED: no candidate can run within the usage limits. \
+                 No worktree was created and no model was called."
+                    .to_string(),
+                3
+            ))
+        );
+    }
+
+    #[test]
+    fn refusal_names_every_failed_check_of_a_failed_preflight() {
+        let expected = Some((
+            "REFUSED: preflight failed (PRE-01, PRE-08). \
+             No worktree was created and no model was called."
+                .to_string(),
+            4,
+        ));
+        assert_eq!(refusal(true, &ids(&["PRE-01", "PRE-08"])), expected);
+        assert_eq!(refusal(false, &ids(&["PRE-01", "PRE-08"])), expected);
+    }
+
+    fn run_args(argv: &[&str]) -> RunArgs {
+        use clap::Parser;
+        let cli = crate::dataset::cli::Cli::try_parse_from(
+            ["multi-herdr-dataset", "run"]
+                .into_iter()
+                .chain(argv.iter().copied()),
+        )
+        .unwrap();
+        let crate::dataset::cli::Command::Run(args) = cli.command else {
+            panic!("not run");
+        };
+        args
+    }
+
+    #[test]
+    fn the_task_comes_from_the_argument_before_the_plan() {
+        let args = run_args(&["fix the bug"]);
+        assert_eq!(task_of(&args, Some("plan.md")).unwrap(), "fix the bug");
+    }
+
+    #[test]
+    fn the_task_comes_from_the_plan_without_an_argument() {
+        let args = run_args(&["--plan", "plan.md"]);
+        assert_eq!(
+            task_of(&args, Some("plan.md")).unwrap(),
+            "Read and follow plan.md exactly."
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_task_and_no_plan_is_refused() {
+        // clap requires one of them; the plan can still be missing after
+        // `plan_in_project`.
+        let args = run_args(&["--plan", "plan.md"]);
+        assert_eq!(
+            task_of(&args, None).unwrap_err().to_string(),
+            "run needs a TASK or --plan"
+        );
     }
 }
