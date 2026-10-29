@@ -118,25 +118,25 @@ pub struct JobFacts {
 /// spawned → not started; else lost.
 pub fn decide(facts: &JobFacts, now: DateTime<Utc>, stale_after: Duration) -> JobState {
     if facts.output {
-        return JobState::OutputPresent(PathBuf::from(OUTPUT_FILE));
-    }
-    if let Some(exit) = &facts.exit {
-        return JobState::Exited(exit.clone().unwrap_or(JobExit {
+        JobState::OutputPresent(PathBuf::from(OUTPUT_FILE))
+    } else if let Some(exit) = &facts.exit {
+        JobState::Exited(exit.clone().unwrap_or(JobExit {
             reason: ExitReason::Crash,
             code: None,
-        }));
-    }
-    let live = heartbeat::liveness(
-        facts.heartbeat.as_ref(),
-        facts.pid_alive,
-        facts.spawned_at,
-        now,
-        stale_after,
-    );
-    match live {
-        Liveness::NotStarted => JobState::NotStarted,
-        Liveness::Running { pid } => JobState::Running { pid },
-        Liveness::Lost => JobState::Lost,
+        }))
+    } else {
+        let live = heartbeat::liveness(
+            facts.heartbeat.as_ref(),
+            facts.pid_alive,
+            facts.spawned_at,
+            now,
+            stale_after,
+        );
+        match live {
+            Liveness::NotStarted => JobState::NotStarted,
+            Liveness::Running { pid } => JobState::Running { pid },
+            Liveness::Lost => JobState::Lost,
+        }
     }
 }
 
@@ -274,12 +274,9 @@ fn open_log(path: &Path) -> Result<std::fs::File> {
 /// empty, and the id go to a new group between 2 calls. The leader itself
 /// gets [`procid::signal_same`], which closes its own window on Linux.
 pub(crate) fn kill_job(hb: &Heartbeat) -> bool {
-    let Some(started) = hb.started else {
+    let Some(started) = hb.started.filter(|s| procid::is_same(hb.pid, *s)) else {
         return false;
     };
-    if !procid::is_same(hb.pid, started) {
-        return false;
-    }
     #[cfg(unix)]
     {
         if let Some(group) = procid::os_pid(hb.pid) {
@@ -322,31 +319,41 @@ pub(crate) struct LostKill {
 /// it, and a CLI that leaves its group is outside horch's control.
 pub(crate) fn kill_lost_job(job_dir: &Path) -> LostKill {
     let path = job_dir.join(HEARTBEAT_FILE);
-    let Some(hb) = std::fs::read(&path)
+    read_heartbeat(&path).map_or_else(LostKill::default, |hb| kill_lost(&path, &hb))
+}
+
+fn read_heartbeat(path: &Path) -> Option<Heartbeat> {
+    std::fs::read(path)
         .ok()
         .and_then(|b| serde_json::from_slice::<Heartbeat>(&b).ok())
-    else {
-        return LostKill::default();
-    };
+}
+
+fn kill_lost(path: &Path, hb: &Heartbeat) -> LostKill {
     let mut done = LostKill {
-        job: kill_job(&hb),
+        job: kill_job(hb),
         ..LostKill::default()
     };
-    let last_beat = std::fs::metadata(&path).and_then(|m| m.modified());
-    if done.job || fsx::pid_alive(hb.pid) {
-        return done;
-    }
-    let Ok(last_beat) = last_beat else {
-        return done;
-    };
-    for pid in procid::group_members(hb.pid) {
-        let ours = procid::started_by(pid, last_beat);
-        match procid::start_time(pid) {
-            Some(started) if ours && kill_member(pid, hb.pid, started) => done.killed.push(pid),
-            _ => done.kept.push(pid),
+    let last_beat = std::fs::metadata(path).and_then(|m| m.modified());
+    if !done.job && !fsx::pid_alive(hb.pid) {
+        if let Ok(last_beat) = last_beat {
+            (done.killed, done.kept) = sweep_group(hb.pid, last_beat);
         }
     }
     done
+}
+
+/// Split the members of the dead job's group into those killed (started at
+/// or before `last_beat`) and those kept.
+fn sweep_group(pgid: u32, last_beat: std::time::SystemTime) -> (Vec<u32>, Vec<u32>) {
+    let (mut killed, mut kept) = (Vec::new(), Vec::new());
+    for pid in procid::group_members(pgid) {
+        let ours = procid::started_by(pid, last_beat);
+        match procid::start_time(pid) {
+            Some(started) if ours && kill_member(pid, pgid, started) => killed.push(pid),
+            _ => kept.push(pid),
+        }
+    }
+    (killed, kept)
 }
 
 /// SIGKILL `pid` while it is still in group `pgid` with start time
@@ -354,14 +361,11 @@ pub(crate) fn kill_lost_job(job_dir: &Path) -> LostKill {
 fn kill_member(pid: u32, pgid: u32, started: u64) -> bool {
     #[cfg(unix)]
     {
-        let (Some(os), Some(group)) = (procid::os_pid(pid), procid::os_pid(pgid)) else {
-            return false;
-        };
-        // SAFETY: plain syscall; a pid that has gone answers -1.
-        if unsafe { libc::getpgid(os) } != group {
-            return false;
-        }
-        procid::signal_same(pid, started, libc::SIGKILL)
+        procid::os_pid(pid)
+            .zip(procid::os_pid(pgid))
+            // SAFETY: plain syscall; a pid that has gone answers -1.
+            .is_some_and(|(os, group)| unsafe { libc::getpgid(os) } == group)
+            && procid::signal_same(pid, started, libc::SIGKILL)
     }
     #[cfg(not(unix))]
     {
@@ -491,5 +495,151 @@ mod tests {
             ..JobFacts::default()
         };
         assert_eq!(decide(&facts, now, STALE_AFTER), JobState::Exited(e));
+    }
+
+    fn write_heartbeat(dir: &Path, hb: &Heartbeat) {
+        std::fs::write(dir.join(HEARTBEAT_FILE), serde_json::to_vec(hb).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_heartbeat_kills_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(kill_lost_job(dir.path()), LostKill::default());
+        std::fs::write(dir.path().join(HEARTBEAT_FILE), b"not json").unwrap();
+        assert_eq!(kill_lost_job(dir.path()), LostKill::default());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_job_that_still_runs_as_itself_is_killed_and_its_group_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        write_heartbeat(
+            dir.path(),
+            &Heartbeat {
+                pid: child.id(),
+                at: "x".into(),
+                started: procid::start_time(child.id()),
+            },
+        );
+        let done = kill_lost_job(dir.path());
+        assert_eq!(
+            done,
+            LostKill {
+                job: true,
+                killed: vec![],
+                kept: vec![]
+            }
+        );
+        assert!(!child.wait().unwrap().success(), "killed");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_dead_job_with_no_group_left_kills_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        let started = procid::start_time(pid);
+        child.wait().unwrap();
+        write_heartbeat(
+            dir.path(),
+            &Heartbeat {
+                pid,
+                at: "x".into(),
+                started,
+            },
+        );
+        assert_eq!(kill_lost_job(dir.path()), LostKill::default());
+    }
+
+    /// The job's leader is gone but its judge CLI still runs in the group:
+    /// a member that started before the last heartbeat write is killed.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn an_orphan_in_the_dead_jobs_group_is_killed() {
+        use std::os::unix::process::CommandExt;
+        let dir = tempfile::tempdir().unwrap();
+        // `sh` leads its own group, starts `sleep` and exits.
+        let mut leader = Command::new("sh")
+            .args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!; exit 0"])
+            .stdout(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut out = String::new();
+        std::io::Read::read_to_string(leader.stdout.as_mut().unwrap(), &mut out).unwrap();
+        let orphan: u32 = out.trim().parse().unwrap();
+        let pid = leader.id();
+        leader.wait().unwrap();
+        write_heartbeat(
+            dir.path(),
+            &Heartbeat {
+                pid,
+                at: "x".into(),
+                started: None,
+            },
+        );
+        // The last beat is after the orphan started.
+        let beat = std::fs::File::options()
+            .write(true)
+            .open(dir.path().join(HEARTBEAT_FILE))
+            .unwrap();
+        beat.set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+            .unwrap();
+        let done = kill_lost_job(dir.path());
+        assert_eq!(
+            done,
+            LostKill {
+                job: false,
+                killed: vec![orphan],
+                kept: vec![]
+            }
+        );
+        // The orphan is gone (its parent is init, which reaps it).
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while fsx::pid_alive(orphan) && std::time::Instant::now() < until {
+            std::thread::yield_now();
+        }
+        assert!(!fsx::pid_alive(orphan));
+    }
+
+    #[test]
+    fn decide_reads_output_before_exit_before_liveness() {
+        let now = at("2026-10-02T12:00:00Z");
+        let exit = JobExit {
+            reason: ExitReason::Ok,
+            code: Some(0),
+        };
+        let both = JobFacts {
+            output: true,
+            exit: Some(Some(exit)),
+            ..JobFacts::default()
+        };
+        assert_eq!(
+            decide(&both, now, STALE_AFTER),
+            JobState::OutputPresent(PathBuf::from(OUTPUT_FILE))
+        );
+        // An exit file that does not parse is a crash.
+        let broken = JobFacts {
+            exit: Some(None),
+            ..JobFacts::default()
+        };
+        assert_eq!(
+            decide(&broken, now, STALE_AFTER),
+            JobState::Exited(JobExit {
+                reason: ExitReason::Crash,
+                code: None
+            })
+        );
+        assert_eq!(
+            decide(&JobFacts::default(), now, STALE_AFTER),
+            JobState::NotStarted
+        );
+        let lost = JobFacts {
+            spawned_at: Some(at("2026-10-02T11:00:00Z")),
+            ..JobFacts::default()
+        };
+        assert_eq!(decide(&lost, now, STALE_AFTER), JobState::Lost);
     }
 }
