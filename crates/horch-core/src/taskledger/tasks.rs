@@ -469,6 +469,8 @@ pub enum Wait {
     Exclusive { running: String },
     /// A running task owns 1 of this task's files.
     FileHeld { path: String, by: String },
+    /// Another shared-checkout task works in the 1 shared checkout.
+    SharedCheckout { running: String },
 }
 
 impl std::fmt::Display for Wait {
@@ -477,6 +479,9 @@ impl std::fmt::Display for Wait {
             Wait::BlockedBy { task, status } => write!(f, "blocked by {task} ({status})"),
             Wait::Exclusive { running } => write!(f, "exclusive: waits for {running}"),
             Wait::FileHeld { path, by } => write!(f, "{path} is held by {by}"),
+            Wait::SharedCheckout { running } => {
+                write!(f, "exclusive: shared checkout, waits for {running}")
+            }
         }
     }
 }
@@ -549,6 +554,12 @@ impl Board {
         if !t.parallel {
             if let Some(a) = work.first() {
                 return Some(Wait::Exclusive { running: a.short() });
+            }
+        }
+        // 1 checkout holds the edits of every shared task: they go 1 by 1.
+        if !t.uses_worktree() {
+            if let Some(a) = work.iter().find(|a| !a.uses_worktree()) {
+                return Some(Wait::SharedCheckout { running: a.short() });
             }
         }
         let mine = self.own.get(&t.task_id).cloned().unwrap_or_default();

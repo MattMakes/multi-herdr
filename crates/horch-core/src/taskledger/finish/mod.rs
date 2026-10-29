@@ -208,6 +208,57 @@ pub(crate) fn set_worktree(
     Ok(())
 }
 
+/// The folder of 1 task's facts that outlive its workers (the start of a
+/// shared task, the code-sweep round, waivers).
+pub fn task_dir(evidence_root: &Path, task_id: &str) -> PathBuf {
+    evidence_root.join(task_id)
+}
+
+/// The file that holds the `HEAD` a shared-checkout task started from.
+fn shared_start_path(evidence_root: &Path, task_id: &str) -> PathBuf {
+    task_dir(evidence_root, task_id).join("shared-start")
+}
+
+/// The commit a shared-checkout task started from, when it was recorded.
+pub(crate) fn shared_start(evidence_root: &Path, task_id: &str) -> Option<String> {
+    std::fs::read_to_string(shared_start_path(evidence_root, task_id))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The gate of a shared-checkout claim: the main checkout must be on the
+/// run branch, so the worker's commits go there. The first claim records
+/// `HEAD`; `land` later requires a commit after it. A worktree task or a
+/// review passes at once.
+pub fn shared_claim(tools: &Tools, run: &Run, task: &Task) -> Result<()> {
+    if task.uses_worktree() || task.is_review() {
+        return Ok(());
+    }
+    let Some(run_branch) = run.run_branch.as_deref() else {
+        return Ok(());
+    };
+    let root = Path::new(&run.project_root);
+    let on = tools.git.current_branch(root);
+    if on.as_deref() != Some(run_branch) {
+        bail!(
+            "{} works in the shared checkout, and {} is on {}, not {run_branch}. \
+             Ask the orchestrator to run this in {}: git switch {run_branch}",
+            task.short(),
+            root.display(),
+            on.as_deref().unwrap_or("a detached HEAD"),
+            root.display()
+        );
+    }
+    let path = shared_start_path(&tools.evidence_root, &task.task_id);
+    if !path.exists() {
+        let head = tools.git.rev(root, "HEAD")?;
+        std::fs::create_dir_all(path.parent().expect("a task folder"))?;
+        std::fs::write(&path, format!("{head}\n"))?;
+    }
+    Ok(())
+}
+
 /// The worker's current task, or an error a worker can act on.
 fn held_task(conn: &Connection, worker_id: &str) -> Result<(Worker, Task)> {
     let w = workers::get(conn, worker_id)?;

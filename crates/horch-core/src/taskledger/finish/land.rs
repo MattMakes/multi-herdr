@@ -59,9 +59,7 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
             "the task has no check command (horch ledger add --check)",
         ));
     };
-    if cx.task.uses_worktree() {
-        require_clean(&cx.tools.git, &cx.dir)?;
-    }
+    require_clean(&cx.tools.git, &cx.dir)?;
     let log = cx
         .evidence_dir
         .join(format!("{}-{}.log", cx.seq, name.as_str()));
@@ -259,6 +257,14 @@ fn land_shared(cx: &Ctx<'_>, run_branch: &str, log: &Path) -> Result<Outcome> {
         bail!("a shared-checkout task lands only when the checkout is on {run_branch}");
     }
     let head = git.rev(&cx.root, "HEAD")?;
+    if let Some(start) = super::shared_start(&cx.tools.evidence_root, &cx.task.task_id) {
+        if head == start || !git.is_ancestor(&cx.root, &start, &head) {
+            bail!(
+                "{run_branch} has no commit since the claim (it started at {}). Commit your work on {run_branch}, then run horch ledger finish again",
+                &start[..start.len().min(12)]
+            );
+        }
+    }
     if let Some(remote) = &cx.run.remote {
         let push = git.try_run(
             &cx.root,

@@ -1228,7 +1228,14 @@ fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -
 
 fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
-    let mut outcome = store.immediate(|tx| tasks::claim(tx, &wid))?;
+    let tools = tools(ctx);
+    let mut outcome = store.immediate(|tx| {
+        let o = tasks::claim(tx, &wid)?;
+        if let ClaimOutcome::Claimed(c) = &o {
+            finish::shared_claim(&tools, &runs::get(tx, &c.task.run_id)?, &c.task)?;
+        }
+        Ok(o)
+    })?;
     if let ClaimOutcome::Claimed(c) = &mut outcome {
         absolute_ticket_if_missing(ctx, store, c);
     }

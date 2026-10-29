@@ -1673,3 +1673,86 @@ fn the_whole_flow_on_the_fake_herdr() {
     }
     assert!(events.as_array().is_some());
 }
+
+/// The output of `horch ledger <args>` as `worker`, success or not.
+fn as_worker(h: &Harness, worker: &str, args: &[&str]) -> Output {
+    let mut cmd = h.horch(args);
+    cmd.env("HORCH_WORKER_ID", worker);
+    cmd.output().unwrap()
+}
+
+#[test]
+fn a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits() {
+    let h = finish_world("tl-shared");
+    // A shared checkout holds only committed tickets: check needs it clean.
+    let p = ticket(&h, "01-a", "# 01: Doc\n");
+    git_commit_all(&h, "ticket");
+    ok(
+        &h,
+        &["ledger", "run", "new", "alpha", "--steps", "check,land"],
+    );
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+            "--shared",
+            "--check",
+            "true",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    // The main checkout is on main: the claim refuses and names the switch.
+    let o = as_worker(&h, &w, &["ledger", "claim"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("git switch fleet/alpha"), "{}", text(&o));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    assert_eq!(
+        st["tasks"][0]["task"]["status"], "queued",
+        "the refusal claims nothing: {st}"
+    );
+
+    let project = h.project.clone();
+    git_in(&h, &project, &["switch", "--quiet", "fleet/alpha"]);
+    ok_as(&h, &w, &["ledger", "claim"]);
+
+    // check judges committed work only, in a shared checkout too.
+    std::fs::write(project.join("doc.md"), "draft\n").unwrap();
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(r["stopped_at"], "check", "{r}");
+    assert!(
+        r["message"].as_str().unwrap().contains("uncommitted"),
+        "{r}"
+    );
+
+    // No commit since the claim: land refuses.
+    std::fs::remove_file(project.join("doc.md")).unwrap();
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(r["stopped_at"], "land", "{r}");
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .contains("no commit since the claim"),
+        "{r}"
+    );
+
+    std::fs::write(project.join("doc.md"), "done\n").unwrap();
+    git_in(&h, &project, &["add", "doc.md"]);
+    git_in(
+        &h,
+        &project,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "doc"],
+    );
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    let remote = h.root.join("remote.git");
+    let log = git_in(&h, &remote, &["log", "--oneline", "fleet/alpha"]);
+    assert!(log.contains("doc"), "{log}");
+}
