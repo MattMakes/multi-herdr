@@ -1072,14 +1072,14 @@ impl<G: GitClient> Coordinator<'_, G> {
         spent: MicroUsd,
         mut committed: MicroUsd,
     ) -> Result<bool> {
-        let mut live = self.live_count(spec, view, records);
+        let live = self.live_count(spec, view, records);
         let room = spec.safe_n.max(1).saturating_sub(live) as usize;
         let launchable = view
             .candidates
             .iter()
             .filter(|(label, c)| self.unlaunched(spec, label, c, records))
             .take(room);
-        for (label, c) in launchable {
+        for (live, (label, c)) in (live..).zip(launchable) {
             let next = c
                 .planned
                 .as_ref()
@@ -1089,7 +1089,6 @@ impl<G: GitClient> Coordinator<'_, G> {
             }
             self.launch(spec, ws, label, c)?;
             committed = MicroUsd(committed.0.saturating_add(next.0));
-            live += 1;
         }
         Ok(false)
     }

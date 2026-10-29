@@ -221,7 +221,7 @@ struct Landing {
 enum Integrated {
     Ready(Landing),
     /// The cherry-pick conflicted: the result to give, already recorded.
-    Conflict(PromotionResult),
+    Conflict(Box<PromotionResult>),
 }
 
 /// What the publish step did.
@@ -262,7 +262,7 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
     }
 
     /// 2. The target's commit; a target that does not exist is created
-    /// (fleet-dataset §7.3). Then integrate, revalidate and publish.
+    ///    (fleet-dataset §7.3). Then integrate, revalidate and publish.
     fn promote_fresh(
         &self,
         candidate: &FrozenCandidate,
@@ -278,7 +278,7 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
             Integrated::Ready(landing) => {
                 self.promote_integrated(candidate, target, plan, &temp, landing)
             }
-            Integrated::Conflict(result) => Ok(result),
+            Integrated::Conflict(result) => Ok(*result),
         }
     }
 
@@ -344,13 +344,15 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
                         paths: paths.clone(),
                     }),
                 )?;
-                Ok(Integrated::Conflict(PromotionResult::NeedsIntervention {
-                    reason: format!(
-                        "cherry-pick onto {} conflicts in {}",
-                        target.refname(),
-                        paths.join(", ")
-                    ),
-                }))
+                Ok(Integrated::Conflict(Box::new(
+                    PromotionResult::NeedsIntervention {
+                        reason: format!(
+                            "cherry-pick onto {} conflicts in {}",
+                            target.refname(),
+                            paths.join(", ")
+                        ),
+                    },
+                )))
             }
         }
     }
