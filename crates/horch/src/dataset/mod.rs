@@ -27,6 +27,8 @@ pub(crate) mod rebuild;
 pub(crate) mod rollback;
 pub(crate) mod run;
 pub mod status;
+#[cfg(test)]
+mod test_fixtures;
 pub(crate) mod watch;
 
 use cli::{Cli, Command, OperatorCommand};
