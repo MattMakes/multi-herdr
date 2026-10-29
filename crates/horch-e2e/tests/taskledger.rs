@@ -1127,7 +1127,21 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
 fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
     let mut h = world("tl-wdog");
     h.unset("HORCH_NO_WATCHDOG");
-    ok(&h, &["ledger", "run", "new", "zeta", "--check-every", "1"]);
+    // The watchdog checks the worker every second. Many stall rounds keep a
+    // stalled worker from being reaped, which would end the running task.
+    ok(
+        &h,
+        &[
+            "ledger",
+            "run",
+            "new",
+            "zeta",
+            "--check-every",
+            "1",
+            "--stall-rounds",
+            "1000",
+        ],
+    );
     let p = ticket(&h, "t0", "# T0\n");
     ok(
         &h,
@@ -1141,6 +1155,14 @@ fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
         ],
     );
     let w = worker_new(&h, "opus");
+    // The worker's agent is this test process, so the watchdog sees it
+    // alive and does not reap the worker.
+    horch_core::taskledger::supervisor::agent_started(
+        &h.root.join("ledger.sqlite3"),
+        &w,
+        std::process::id(),
+    )
+    .unwrap();
     // The first horch command after a task runs starts the missing watchdog.
     let mut cmd = h.horch(&["ledger", "claim"]);
     cmd.env("HORCH_WORKER_ID", &w);

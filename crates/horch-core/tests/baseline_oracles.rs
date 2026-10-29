@@ -224,6 +224,22 @@ impl World {
                 None => std::env::remove_var(key),
             }
         }
+        // The state and data roots point into the temp world, so no launch
+        // reads the host's real state (a Codex v1 model catalog, for one).
+        // Kept out of PINNED: its header is part of every frozen oracle.
+        let roots = [
+            ("HORCH_STATE_DIR", Some(state.clone())),
+            ("HORCH_DATA_DIR", Some(root.join("data"))),
+            ("XDG_STATE_HOME", None),
+            ("XDG_DATA_HOME", None),
+        ];
+        for (key, value) in roots {
+            saved.push((key, std::env::var_os(key)));
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
         World {
             _guard: guard,
             _tmp: tmp,

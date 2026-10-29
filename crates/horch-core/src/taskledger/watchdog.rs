@@ -106,7 +106,17 @@ pub fn check_run(
     observer: &dyn Observer,
     force: bool,
 ) -> Result<Vec<Checked>> {
-    let now = util::now();
+    check_run_at(store, run, observer, force, util::now())
+}
+
+/// [`check_run`] at the ledger stamp `now`.
+fn check_run_at(
+    store: &mut Store,
+    run: &Run,
+    observer: &dyn Observer,
+    force: bool,
+    now: String,
+) -> Result<Vec<Checked>> {
     let mut out = Vec::new();
     for w in workers::of_run(store.conn(), &run.run_id)? {
         if w.kind != "worker" || w.status != "working" {
@@ -465,9 +475,12 @@ mod tests {
             live(screen(10), "working"),
             live(screen(15), "idle"),
         ]));
-        check_run(&mut s, &run, &obs, false).unwrap();
+        // Both checks at one stamp, so the second sees exactly 600 s pass
+        // even when the wall clock ticks a second between them.
+        let now = util::now();
+        check_run_at(&mut s, &run, &obs, false, now.clone()).unwrap();
         pass_time(&s, &w, 600);
-        let r = check_run(&mut s, &run, &obs, false).unwrap();
+        let r = check_run_at(&mut s, &run, &obs, false, now).unwrap();
         assert_eq!(r[0].verdict, "no_progress", "{r:?}");
         assert!(
             r[0].note.contains("stopped about 300s ago"),
