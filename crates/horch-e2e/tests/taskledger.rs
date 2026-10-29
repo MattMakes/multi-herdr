@@ -185,7 +185,11 @@ fn queue_claim_and_status_through_the_cli() {
     let w1 = worker_new(&h, "opus");
     let claim = ok_as(&h, &w1, &["ledger", "claim"]);
     assert!(claim.contains("Claimed T-1 (attempt 1): Parser"), "{claim}");
-    assert!(claim.contains("Ticket: tickets/01-a.md"), "{claim}");
+    // This ticket is not committed, so a worktree would not hold it: the
+    // claim names it by its absolute path.
+    let ticket = ticket_line(&claim);
+    assert!(Path::new(&ticket).is_absolute(), "{claim}");
+    assert!(ticket.ends_with("tickets/01-a.md"), "{claim}");
     assert!(claim.contains("Own: src/parse"), "{claim}");
     assert!(
         claim.contains("horch ledger worktree new parser"),
@@ -213,6 +217,92 @@ fn queue_claim_and_status_through_the_cli() {
     let st = json_of(&h, &["ledger", "status", "--json"]);
     assert_eq!(st["counts"]["cancelled"], 1);
     assert_eq!(st["complete"], false);
+}
+
+/// Write `rel` under the project, with `body`.
+fn project_file(h: &Harness, rel: &str, body: &str) {
+    let p = h.project.join(rel);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, body).unwrap();
+}
+
+fn git_commit_all(h: &Harness, message: &str) {
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", message][..]] {
+        let o = h.git_cmd(args).current_dir(&h.project).output().unwrap();
+        assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
+    }
+}
+
+/// The path on the claim's `Ticket:` line.
+fn ticket_line(claim: &str) -> String {
+    let line = claim
+        .lines()
+        .find_map(|l| l.strip_prefix("Ticket: "))
+        .unwrap_or_else(|| panic!("no Ticket line: {claim}"));
+    line.strip_suffix(". Read it in full and follow it exactly.")
+        .unwrap_or(line)
+        .to_string()
+}
+
+#[test]
+fn a_claim_names_an_ignored_ticket_by_an_absolute_path_that_opens_from_the_worktree() {
+    let h = world("tl-ignored");
+    project_file(&h, ".gitignore", "ai_docs/\n");
+    git_commit_all(&h, "ignore ai_docs");
+    ok(&h, &["ledger", "run", "new", "gamma"]);
+    project_file(&h, "ai_docs/tickets/01-x.md", "# 01: Ignored\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            "ai_docs/tickets/01-x.md",
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    let claim = ok_as(&h, &w, &["ledger", "claim"]);
+    let ticket = ticket_line(&claim);
+    let made = ok_as(&h, &w, &["ledger", "worktree", "new", "ignored"]);
+    let worktree = made
+        .lines()
+        .find_map(|l| l.strip_prefix("path: "))
+        .unwrap_or_else(|| panic!("no worktree path: {made}"));
+    let worktree = Path::new(worktree.trim());
+    assert!(
+        !worktree.join("ai_docs/tickets/01-x.md").exists(),
+        "the ignored ticket is not in the worktree"
+    );
+    let opened = worktree.join(&ticket);
+    assert!(
+        opened.is_file(),
+        "Ticket {ticket} from {}: {claim}",
+        worktree.display()
+    );
+}
+
+#[test]
+fn a_claim_names_a_tracked_ticket_by_its_relative_path() {
+    let h = world("tl-tracked");
+    project_file(&h, "tickets/01-t.md", "# 01: Tracked\n");
+    git_commit_all(&h, "add a ticket");
+    ok(&h, &["ledger", "run", "new", "delta"]);
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            "tickets/01-t.md",
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    let claim = ok_as(&h, &w, &["ledger", "claim"]);
+    assert_eq!(ticket_line(&claim), "tickets/01-t.md", "{claim}");
 }
 
 #[test]
@@ -766,6 +856,80 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
 }
 
 #[test]
+fn a_failed_reviews_in_tell_wakes_the_orchestrator_once() {
+    let h = finish_world("tl-reviews-in");
+    ok(
+        &h,
+        &["ledger", "run", "new", "alpha", "--steps", "code-sweep"],
+    );
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+        ],
+    );
+    // The author has a role but no pane: the tell to it fails.
+    let w = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "opus",
+            "--role",
+            "opus-1",
+        ],
+    )
+    .trim()
+    .to_string();
+    ok_as(&h, &w, &["ledger", "claim"]);
+    let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(path.join("a.txt"), "1\n").unwrap();
+    git_in(&h, &path, &["add", "a.txt"]);
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "a"],
+    );
+    let (_, r) = finish_json(&h, &w);
+    let n = r["queued_reviews"].as_array().unwrap().len();
+    let last = review_all(
+        &h,
+        n,
+        "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
+    );
+    let fallbacks = || {
+        let events = json_of(&h, &["ledger", "events", "--json"]);
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e["kind"] == "woke"
+                    && e["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("The reviews of T-1 are in, but opus-1 was not told")
+            })
+            .count()
+    };
+    assert_eq!(fallbacks(), 1, "the orchestrator gets the missed tell");
+    // A retried done skips the notification, and its fallback too.
+    let mut cmd = h.horch(&["ledger", "done", "reviewed"]);
+    cmd.env("HORCH_WORKER_ID", &last);
+    cmd.output().unwrap();
+    assert_eq!(fallbacks(), 1, "a retry does not send it again");
+}
+
+#[test]
 fn stopping_one_of_three_workers_leaves_the_others_running() {
     let mut h = fleet("tl-stop", "exec,stay");
     h.set("HORCH_STOP_GRACE_MS", "2000");
@@ -1079,19 +1243,21 @@ fn the_import_finds_work_that_never_landed() {
     std::fs::create_dir_all(h.state.join("worktrees")).unwrap();
     let claim = |id: &str, path: &Path, branch: &str, state: &str, record: &str| {
         let path = link.join(path.strip_prefix(&proj).unwrap());
-        format!(
-            r#"{{"id":"{id}","name":"{id}","role":"x","record_id":"{record}","path":"{}","branch":"{branch}","base":"main","base_commit":"0","created_at":"2026-10-01T00:00:00Z","state":"{state}","landed_commit":null,"reason":null}}"#,
-            path.display()
-        )
+        serde_json::json!({
+            "id": id, "name": id, "role": "x", "record_id": record,
+            "path": path.display().to_string(), "branch": branch, "base": "main",
+            "base_commit": "0", "created_at": "2026-10-01T00:00:00Z", "state": state,
+            "landed_commit": null, "reason": null,
+        })
     };
     std::fs::write(
         h.state.join("worktrees/repo.json"),
-        format!(
-            "[{},{},{}]",
+        serde_json::json!([
             claim("c1", &landed, "w-landed", "landed", "r1"),
             claim("c2", &un, "w-unlanded", "open", "r1"),
-            claim("c3", &dirty, "w-dirty", "open", "r2")
-        ),
+            claim("c3", &dirty, "w-dirty", "open", "r2"),
+        ])
+        .to_string(),
     )
     .unwrap();
 
@@ -1192,6 +1358,11 @@ fn the_import_finds_work_that_never_landed() {
         c.contains(&format!("Worktree: {}", un_claimed.display())),
         "{c}"
     );
+    // The inherited worktree lacks the untracked ticket: the claim names it
+    // by its absolute path.
+    let ticket = ticket_line(&c);
+    assert!(Path::new(&ticket).is_absolute(), "{c}");
+    assert!(ticket.ends_with("tickets/finish-it.md"), "{c}");
 }
 
 #[test]
@@ -1209,7 +1380,9 @@ fn assign_refuses_in_a_ledger_run() {
 }
 
 /// Review every queued reviewer task of a finish round with `findings`.
-fn review_all(h: &Harness, n: usize, findings: &str) {
+/// Returns the last reviewer's worker id.
+fn review_all(h: &Harness, n: usize, findings: &str) -> String {
+    let mut last = String::new();
     for _ in 0..n {
         let rw = worker_new(h, "codex-reviewer");
         let c: Value =
@@ -1218,7 +1391,9 @@ fn review_all(h: &Harness, n: usize, findings: &str) {
         let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
         std::fs::write(&f, findings).unwrap();
         ok_as(h, &rw, &["ledger", "done", "reviewed"]);
+        last = rw;
     }
+    last
 }
 
 /// A claimed task's worktree, with 1 committed file, finished through every

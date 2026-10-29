@@ -1,7 +1,7 @@
 //! Tasks: queueing, the claimable rule and the claim (sections 4.3 to 4.5,
 //! 5.1, 5.2).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
@@ -576,19 +576,29 @@ impl Board {
         q
     }
 
-    /// The queued tasks that can all start now, chosen greedily in claim
-    /// order: each one is checked against the running tasks and the ones
-    /// chosen before it.
-    fn startable(&self) -> Vec<&Task> {
+    /// Every queued task in claim order, with why it cannot start (`None`
+    /// when it can). The tasks are chosen greedily: each one is checked
+    /// against the running tasks and the startable ones before it.
+    fn plan(&self) -> Vec<(&Task, Option<Wait>)> {
         let mut active: Vec<&Task> = self.tasks.iter().filter(|t| Self::is_active(t)).collect();
         let mut out = Vec::new();
         for t in self.queued() {
-            if self.wait(t, &active).is_none() {
+            let w = self.wait(t, &active);
+            if w.is_none() {
                 active.push(t);
-                out.push(t);
             }
+            out.push((t, w));
         }
         out
+    }
+
+    /// The queued tasks that can all start now.
+    fn startable(&self) -> Vec<&Task> {
+        self.plan()
+            .into_iter()
+            .filter(|(_, w)| w.is_none())
+            .map(|(t, _)| t)
+            .collect()
     }
 }
 
@@ -601,23 +611,11 @@ pub fn startable(conn: &Connection, run_id: &str) -> Result<Vec<Task>> {
 /// Why each queued task that cannot start now waits.
 pub fn waits(conn: &Connection, run_id: &str) -> Result<Vec<(Task, Wait)>> {
     let board = Board::load(conn, run_id)?;
-    let active: Vec<&Task> = board.tasks.iter().filter(|t| Board::is_active(t)).collect();
-    let startable: BTreeSet<String> = board
-        .startable()
-        .iter()
-        .map(|t| t.task_id.clone())
-        .collect();
-    let mut out = Vec::new();
-    for t in board.queued() {
-        if startable.contains(&t.task_id) {
-            continue;
-        }
-        let w = board.wait(t, &active).unwrap_or(Wait::Exclusive {
-            running: "a task queued ahead of it".into(),
-        });
-        out.push((t.clone(), w));
-    }
-    Ok(out)
+    Ok(board
+        .plan()
+        .into_iter()
+        .filter_map(|(t, w)| w.map(|w| (t.clone(), w)))
+        .collect())
 }
 
 /// 1 earlier attempt, as a claim hands it to the next worker.

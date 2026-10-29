@@ -157,6 +157,27 @@ fn two_tasks_never_hold_one_file() {
 }
 
 #[test]
+fn a_queued_task_behind_a_task_with_its_file_waits_on_the_file() {
+    let (_d, mut s, run) = ledger();
+    add(&mut s, &run, "a", "opus", |t| {
+        t.own = vec!["crates/horch/src/cmd/taskledger.rs".into()]
+    });
+    add(&mut s, &run, "b", "opus", |t| {
+        t.own = vec!["crates/horch/src/cmd/taskledger.rs".into()]
+    });
+    let waits = tasks::waits(s.conn(), &run.run_id).unwrap();
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(waits[0].0.short(), "T-2");
+    assert_eq!(
+        waits[0].1,
+        Wait::FileHeld {
+            path: "crates/horch/src/cmd/taskledger.rs".into(),
+            by: "T-1".into()
+        }
+    );
+}
+
+#[test]
 fn only_the_named_persona_claims_until_fallback() {
     let (_d, mut s, run) = ledger();
     let t = add(&mut s, &run, "a", "opus", |t| {

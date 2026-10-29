@@ -243,6 +243,10 @@ fn pane_command_for(
     let data_root = ctx.paths.data_root.to_string_lossy();
     let rounds = compete.map(|c| c.rounds.to_string());
     let mut env: Vec<(&str, &str)> = vec![("HORCH_DATA_DIR", data_root.as_ref())];
+    // The mailbox lives in the state folder, so the pane needs the same one,
+    // whether `HORCH_STATE_DIR` or `XDG_STATE_HOME` picked it.
+    let state_root = ctx.paths.state_root.to_string_lossy();
+    env.push(("HORCH_STATE_DIR", state_root.as_ref()));
     // Competition mode (FDS-13) reaches the briefing the same way.
     if let (Some(c), Some(rounds)) = (compete, rounds.as_deref()) {
         env.push((COMPETE_ROUNDS_ENV, rounds));
@@ -677,17 +681,26 @@ pub fn pane_launch(
     identity: PaneIdentity,
 ) -> Result<ExitCode> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    // Before the registration: the mailbox lives in the state folder.
+    if let Some(dir) = &identity.state_dir {
+        ctx.paths.set_state_dir(dir);
+    }
     let (mailbox, _pane) = Mailbox::register_in(&herdr, ctx, role)?;
     // What the agent inherits on top of this process's environment. A pane
     // is a fresh shell, so everything `horch fleet` knew travels here.
-    let mut child_env: Vec<(String, String)> = vec![(
-        "HORCH_WORKSPACE_ID".into(),
-        mailbox.workspace_id().to_string(),
-    )];
-    if let Some(dir) = &identity.state_dir {
-        ctx.paths.set_state_dir(dir);
-        child_env.push(("HORCH_STATE_DIR".into(), dir.clone()));
-    }
+    // The state folder is the effective one, whether `--state-dir`, the
+    // environment or `XDG_STATE_HOME` chose it, so the agent's `horch` finds
+    // this pane's mailbox even when its harness strips ambient variables.
+    let mut child_env: Vec<(String, String)> = vec![
+        (
+            "HORCH_WORKSPACE_ID".into(),
+            mailbox.workspace_id().to_string(),
+        ),
+        (
+            "HORCH_STATE_DIR".into(),
+            ctx.paths.state_root.to_string_lossy().into_owned(),
+        ),
+    ];
     // Like a worker, the orchestrator knows its own record.
     if let Some(record_id) = &identity.record_id {
         child_env.push(("HORCH_RECORD_ID".into(), record_id.clone()));
@@ -1033,6 +1046,33 @@ mod tests {
             format!(" 'HORCH_DATA_DIR={}' ", data.display())
         };
         assert!(cmd.contains(&set), "{cmd}");
+    }
+
+    /// A pane does not inherit `$HORCH_STATE_DIR`, and the mailbox lives
+    /// there, so every pane command names the state folder, however the
+    /// parent chose it.
+    #[test]
+    fn pane_command_sets_the_state_dir() {
+        for (variable, root, expected) in [
+            ("HORCH_STATE_DIR", "/custom-state", "/custom-state"),
+            ("XDG_STATE_HOME", "/xdg-state", "/xdg-state/horch"),
+        ] {
+            let ctx = RuntimeContext::from_env(
+                &horch_core::runtime::MapEnv::new("/")
+                    .with_exe("/opt/horch/bin/horch")
+                    .with(variable, root),
+            )
+            .unwrap();
+            let cmd =
+                pane_command(&ctx, "orchestrator", PaneKind::FleetOrchestrator, None).unwrap();
+            let expected = std::path::Path::new(expected);
+            let set = if cfg!(windows) {
+                format!("$env:HORCH_STATE_DIR = '{}'; ", expected.display())
+            } else {
+                format!(" 'HORCH_STATE_DIR={}' ", expected.display())
+            };
+            assert!(cmd.contains(&set), "{variable}: {cmd}");
+        }
     }
 
     #[test]

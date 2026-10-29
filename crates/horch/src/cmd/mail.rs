@@ -15,17 +15,19 @@ use horch_core::workspace::herdr::Herdr;
 const POLL: Duration = Duration::from_secs(5);
 const NO_ORCHESTRATOR_LIMIT: Duration = Duration::from_secs(10 * 60);
 
-pub fn start_courier(ctx: &RuntimeContext, workspace: &str) {
+pub fn start_courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     let Some(exe) = ctx.bins.current_exe.clone() else {
-        return;
+        anyhow::bail!("the mail courier cannot start: the horch binary path is unknown");
     };
-    let mut cmd = std::process::Command::new(exe);
+    let mut cmd = std::process::Command::new(&exe);
     cmd.args(["mail", "courier", "--workspace", workspace])
         .env("HORCH_STATE_DIR", &ctx.paths.state_root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let _ = process::spawn_detached(&mut cmd);
+    process::spawn_detached(&mut cmd)
+        .with_context(|| format!("starting the mail courier {}", exe.display()))?;
+    Ok(())
 }
 
 pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
@@ -154,10 +156,8 @@ fn due_at(created_at: SystemTime, attempt: usize) -> Option<SystemTime> {
 
 fn test_duration(name: &str, default: Duration) -> Duration {
     #[cfg(debug_assertions)]
-    if let Ok(milliseconds) = std::env::var(name) {
-        if let Ok(milliseconds) = milliseconds.parse() {
-            return Duration::from_millis(milliseconds);
-        }
+    if let Some(milliseconds) = std::env::var(name).ok().and_then(|v| v.parse().ok()) {
+        return Duration::from_millis(milliseconds);
     }
     let _ = name;
     default
@@ -168,6 +168,22 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::first_attempt_after;
+
+    /// A courier that cannot start is an error, so `done` stops before it
+    /// marks the record done (#67).
+    #[test]
+    fn a_courier_that_cannot_start_is_an_error() {
+        use horch_core::runtime::{MapEnv, RuntimeContext};
+        let gone =
+            RuntimeContext::from_env(&MapEnv::new("/").with_exe("/nonexistent/horch")).unwrap();
+        let err = super::start_courier(&gone, "w1").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("starting the mail courier"),
+            "{err:#}"
+        );
+        let unknown = RuntimeContext::from_env(&MapEnv::new("/")).unwrap();
+        assert!(super::start_courier(&unknown, "w1").is_err());
+    }
 
     #[test]
     fn a_new_message_owes_the_first_redelivery() {

@@ -122,34 +122,23 @@ fn request(socket: &Path, _: &Value, _: Duration) -> std::result::Result<(), Sen
     )))
 }
 
+/// `timeout` is 1 deadline for the whole request: the connect, every write
+/// and the read of the answer each get only the time that is left.
 #[cfg(unix)]
 fn request(socket: &Path, value: &Value, timeout: Duration) -> std::result::Result<(), SendError> {
-    let mut stream = UnixStream::connect(socket)
+    let deadline = Instant::now() + timeout;
+    let mut stream = connect_by(socket, deadline)
         .with_context(|| format!("connect to channel relay {}", socket.display()))
         .map_err(SendError::NotDelivered)?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .context("set channel relay write timeout")
-        .map_err(SendError::NotDelivered)?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .context("set channel relay read timeout")
-        .map_err(SendError::NotDelivered)?;
-    serde_json::to_writer(&mut stream, value)
+    let mut line = serde_json::to_vec(value)
         .context("encode channel request")
         .map_err(SendError::NotDelivered)?;
-    stream
-        .write_all(b"\n")
+    line.push(b'\n');
+    write_by(&mut stream, &line, deadline)
         .context("write channel request")
         .map_err(SendError::NotDelivered)?;
-    stream
-        .flush()
-        .context("flush channel request")
-        .map_err(SendError::NotDelivered)?;
 
-    let mut answer = String::new();
-    BufReader::new(stream)
-        .read_line(&mut answer)
+    let answer = read_line_by(&mut stream, deadline)
         .context("read channel relay answer")
         .map_err(SendError::Unconfirmed)?;
     let answer = answer.trim_end_matches(['\r', '\n']);
@@ -161,6 +150,148 @@ fn request(socket: &Path, value: &Value, timeout: Duration) -> std::result::Resu
         )))
     } else {
         Err(SendError::NotDelivered(anyhow!(answer.to_owned())))
+    }
+}
+
+/// The time left until `deadline`, or a timed-out error once it passed.
+fn time_left(deadline: Instant) -> std::io::Result<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(std::io::ErrorKind::TimedOut.into());
+    }
+    Ok(left)
+}
+
+/// `UnixStream::connect` has no timeout, and it can block while the relay's
+/// backlog is full. Connect a nonblocking socket instead, and wait for it
+/// only until `deadline`. No helper thread outlives the request.
+#[cfg(unix)]
+fn connect_by(socket: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    // SAFETY: sockaddr_un is plain data; all zeroes is a valid value.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let path = socket.as_os_str().as_bytes();
+    if path.len() >= address.sun_path.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "socket path is too long",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (to, from) in address.sun_path.iter_mut().zip(path) {
+        *to = *from as libc::c_char;
+    }
+    // SAFETY: plain syscall; a negative answer is checked before use.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a new socket that nothing else owns.
+    let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    // SAFETY: plain syscall on the socket that `stream` owns.
+    if unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    stream.set_nonblocking(true)?;
+    let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // SAFETY: `address` is a valid sockaddr_un of `length` bytes.
+    let connected = unsafe {
+        libc::connect(
+            stream.as_raw_fd(),
+            (&address as *const libc::sockaddr_un).cast(),
+            length,
+        )
+    };
+    if connected == 0 {
+        return Ok(stream);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::EINPROGRESS) {
+        return Err(error);
+    }
+    wait_ready(&stream, libc::POLLOUT, deadline)?;
+    match stream.take_error()? {
+        Some(error) => Err(error),
+        None => Ok(stream),
+    }
+}
+
+/// A blocking socket write keeps going while a slow reader frees space, past
+/// any write timeout (macOS). So the stream from [`connect_by`] is
+/// nonblocking, and `poll` waits only for the time that is left.
+#[cfg(unix)]
+fn write_by(stream: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        match stream.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_ready(stream, libc::POLLOUT, deadline)?
+            }
+            // An interrupted call tries again only while time is left.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                time_left(deadline)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// One answer line, up to and with its newline, or what came before EOF.
+#[cfg(unix)]
+fn read_line_by(stream: &mut UnixStream, deadline: Instant) -> std::io::Result<String> {
+    let mut answer = Vec::new();
+    let mut buffer = [0; 256];
+    while !answer.contains(&b'\n') && answer.len() < MAX_LINE_BYTES {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => answer.extend_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_ready(stream, libc::POLLIN, deadline)?
+            }
+            // An interrupted call tries again only while time is left.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                time_left(deadline)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    String::from_utf8(answer)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+/// Wait until `stream` is ready for `events`, but not past `deadline`.
+/// `Ok(())` means ready: `wait_ready` retries an interrupted poll itself,
+/// with the time left.
+#[cfg(unix)]
+fn wait_ready(
+    stream: &UnixStream,
+    events: libc::c_short,
+    deadline: Instant,
+) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let mut poll = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events,
+        revents: 0,
+    };
+    loop {
+        let millis = time_left(deadline)?.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
+        // SAFETY: `poll` points to 1 valid pollfd for the length of the call.
+        let ready = unsafe { libc::poll(&mut poll, 1, millis) };
+        if ready > 0 {
+            return Ok(());
+        }
+        if ready == 0 {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
 }
 
@@ -923,6 +1054,58 @@ mod tests {
             .join()
             .expect("server thread")
             .contains("\"text\":\"hello\""));
+    }
+
+    /// A relay that accepts and then reads `chunk` bytes every `pause`, and
+    /// never answers. A `chunk` of 0 never reads at all.
+    fn stalled_relay(name: &str, chunk: usize, pause: Duration) -> (PathBuf, JoinHandle<()>) {
+        let socket = socket_path(&temp_root(), name);
+        fs::create_dir_all(socket.parent().expect("socket parent")).expect("create parent");
+        let listener = UnixListener::bind(&socket).expect("bind test listener");
+        let server = thread::spawn(move || read_slowly(listener, chunk, pause));
+        (socket, server)
+    }
+
+    /// The body of [`stalled_relay`]: read until the sender hangs up.
+    fn read_slowly(listener: UnixListener, chunk: usize, pause: Duration) {
+        let (mut stream, _) = listener.accept().expect("accept request");
+        let mut buffer = vec![0; chunk.max(1)];
+        loop {
+            thread::sleep(pause);
+            if chunk == 0 {
+                continue;
+            }
+            if matches!(stream.read(&mut buffer), Ok(0) | Err(_)) {
+                return;
+            }
+        }
+    }
+
+    /// #67: a relay that accepts and never reads or answers costs the push
+    /// no more than its timeout.
+    #[test]
+    fn send_to_a_relay_that_never_reads_ends_inside_the_timeout() {
+        let (socket, _server) = stalled_relay("never-reads", 0, Duration::from_secs(60));
+        let text = "x".repeat(1024 * 1024);
+        let started = Instant::now();
+        let result = send(&socket, "worker", &text, Duration::from_millis(300));
+        let took = started.elapsed();
+        assert!(matches!(result, Err(SendError::NotDelivered(_))));
+        assert!(took < Duration::from_millis(600), "{took:?}");
+    }
+
+    /// #67: the timeout is 1 deadline for the whole request. A relay that
+    /// reads a little before each write times out cannot stretch it.
+    #[test]
+    fn a_slow_reader_cannot_stretch_the_send_past_its_timeout() {
+        let (socket, server) = stalled_relay("trickle", 512, Duration::from_millis(50));
+        let text = "x".repeat(256 * 1024);
+        let started = Instant::now();
+        let result = send(&socket, "worker", &text, Duration::from_millis(300));
+        let took = started.elapsed();
+        assert!(result.is_err());
+        assert!(took < Duration::from_millis(700), "{took:?}");
+        server.join().expect("server thread");
     }
 
     #[test]

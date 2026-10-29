@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, land};
 use horch_core::taskledger::git::Git;
@@ -1171,7 +1172,10 @@ fn add_map(ctx: &RuntimeContext, store: &mut Store, path: &Path, arg: &RunArg) -
 
 fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
-    let outcome = store.immediate(|tx| tasks::claim(tx, &wid))?;
+    let mut outcome = store.immediate(|tx| tasks::claim(tx, &wid))?;
+    if let ClaimOutcome::Claimed(c) = &mut outcome {
+        absolute_ticket_if_missing(ctx, &store, c);
+    }
     if as_json {
         json(&outcome)?;
         return Ok(ExitCode::SUCCESS);
@@ -1186,6 +1190,41 @@ fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitC
         ClaimOutcome::Claimed(c) => output::print(&render_claim(&c)),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// A ticket queued from an ignored folder is not in the worker's worktree.
+/// Then the claim names the ticket by its absolute path in the project root.
+/// A tracked ticket keeps its relative path. A shared-checkout task works in
+/// the project root, so its relative path always opens.
+fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claimed) {
+    let Some(file) = c.task.task_file.clone() else {
+        return;
+    };
+    if Path::new(&file).is_absolute() || (c.worktree.is_none() && !c.task.uses_worktree()) {
+        return;
+    }
+    let Ok(run) = runs::get(store.conn(), &c.task.run_id) else {
+        return;
+    };
+    let in_root = Path::new(&run.project_root).join(&file);
+    if !in_root.is_file() {
+        return;
+    }
+    let in_worktree = match (&c.worktree, &run.run_branch) {
+        (Some(w), _) => Path::new(w).join(&file).is_file(),
+        // A new worktree is cut from the run branch: it holds the ticket
+        // only when the branch tracks a file (a blob) at that path.
+        (None, Some(b)) => Git::new(&ctx.bins.harness.git)
+            .try_run(
+                Path::new(&run.project_root),
+                &["cat-file", "-t", &format!("{b}:{file}")],
+            )
+            .is_ok_and(|o| o.ok && o.stdout == "blob"),
+        (None, None) => true,
+    };
+    if !in_worktree {
+        c.task.task_file = Some(in_root.to_string_lossy().into_owned());
+    }
 }
 
 /// The finish steps' tools: git, gh, node, the sweep skills.
@@ -1265,6 +1304,19 @@ pub fn done_cmd(
     unlanded: Option<&str>,
 ) -> Result<()> {
     let wid = worker_id(ctx)?;
+    // The report to the orchestrator and the pane close: `horch done`'s
+    // machinery, when this runs in a worker pane.
+    let in_pane = ctx.herdr.pane.is_some()
+        && ctx
+            .worker
+            .as_ref()
+            .is_some_and(|w| w.record_id.is_some() && w.role.is_some());
+    // One push budget for the wakes and the report, inside the agent's
+    // command timeout (#67).
+    let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
+    if budget.is_some() && in_pane {
+        eprintln!("{}", super::messaging::CLOSING);
+    }
     let c = finish::complete(&mut store, &wid, summary, unlanded)?;
     let run = runs::get(store.conn(), &c.run_id)?;
     if !c.already {
@@ -1273,6 +1325,17 @@ pub fn done_cmd(
                 format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
             if let Err(e) = super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
                 eprintln!("horch ledger: could not tell {role}: {e:#}");
+                // A tell to a worker is not durable, and a retried done skips
+                // it, so the orchestrator gets it as durable mail instead.
+                super::taskledger_wake::wake(
+                    ctx,
+                    &store,
+                    &run,
+                    &format!(
+                        "NOTE: The reviews of {parent} are in, but {role} was not told. \
+                         Tell {role} to run horch ledger finish."
+                    ),
+                );
             }
         }
         super::taskledger_wake::after_done(ctx, &store, &run);
@@ -1287,13 +1350,6 @@ pub fn done_cmd(
         }
     ));
     drop(store);
-    // The report to the orchestrator and the pane close: `horch done`'s
-    // machinery, when this runs in a worker pane.
-    let in_pane = ctx.herdr.pane.is_some()
-        && ctx
-            .worker
-            .as_ref()
-            .is_some_and(|w| w.record_id.is_some() && w.role.is_some());
     if in_pane {
         super::messaging::done(ctx, summary, unlanded)?;
     }

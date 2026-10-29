@@ -66,11 +66,17 @@ fn arithmetic_echo(shell: PaneShell) -> &'static str {
 }
 
 /// `horch <args>` for a smoke pane, with this process's skill store as
-/// `HORCH_DATA_DIR`, as every pane horch starts has. The pane keeps its
-/// shell: the checks type more lines into it after `horch register` ends.
+/// `HORCH_DATA_DIR` and its state folder as `HORCH_STATE_DIR`, as every pane
+/// horch starts has. The pane keeps its shell: the checks type more lines
+/// into it after `horch register` ends.
 fn horch_line(ctx: &RuntimeContext, shell: PaneShell, exe: &Path, args: &[&str]) -> String {
     let data_root = ctx.paths.data_root.to_string_lossy();
-    shell.command_line_keep_shell(exe, &[("HORCH_DATA_DIR", data_root.as_ref())], args)
+    let state_root = ctx.paths.state_root.to_string_lossy();
+    let env = [
+        ("HORCH_DATA_DIR", data_root.as_ref()),
+        ("HORCH_STATE_DIR", state_root.as_ref()),
+    ];
+    shell.command_line_keep_shell(exe, &env, args)
 }
 
 /// Cheap, self-verifying 2-pane check of the herdr messaging primitives
@@ -772,6 +778,35 @@ fn dump_ledger(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A smoke pane is a fresh shell: its `horch` line names the state folder
+    /// the checks read, for each shell, however the parent chose it.
+    #[test]
+    fn horch_line_carries_the_state_folder() {
+        for (variable, root, state) in [
+            ("HORCH_STATE_DIR", "/smoke-state", "/smoke-state"),
+            ("XDG_STATE_HOME", "/xdg-state", "/xdg-state/horch"),
+        ] {
+            let ctx = RuntimeContext::from_env(
+                &horch_core::runtime::MapEnv::new("/")
+                    .with_exe("/opt/horch/bin/horch")
+                    .with(variable, root),
+            )
+            .unwrap();
+            let state = Path::new(state).display();
+            for (shell, set) in [
+                (PaneShell::Posix, format!(" 'HORCH_STATE_DIR={state}' ")),
+                (
+                    PaneShell::PowerShell,
+                    format!("$env:HORCH_STATE_DIR = '{state}'; "),
+                ),
+            ] {
+                let exe = Path::new("/opt/horch/bin/horch");
+                let line = horch_line(&ctx, shell, exe, &["register", "a"]);
+                assert!(line.contains(&set), "{variable}: {line}");
+            }
+        }
+    }
 
     /// The arithmetic must be left for the pane's own shell to evaluate, in that
     /// shell's dialect - never pre-computed here.

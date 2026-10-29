@@ -46,7 +46,7 @@ fn create_target_pane(h: &Harness) -> String {
 }
 
 fn register_orchestrator(h: &Harness, pane: &str) {
-    let mailbox = h.tmp.join(format!("herdr-orchestration-{WORKSPACE}"));
+    let mailbox = h.state.join(format!("herdr-orchestration-{WORKSPACE}"));
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), pane).unwrap();
 }
@@ -359,7 +359,7 @@ fn arc_30_e2e_relay_stdout_is_json_only() {
 fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
     let h = world("w2-relay-only");
     std::fs::remove_file(
-        h.tmp
+        h.state
             .join(format!("herdr-orchestration-{WORKSPACE}"))
             .join("orchestrator.id"),
     )
@@ -405,7 +405,7 @@ fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
 fn w2_e2e_refused_tell_without_a_pane_does_not_claim_no_orchestrator() {
     let mut h = world("w2-refused");
     std::fs::remove_file(
-        h.tmp
+        h.state
             .join(format!("herdr-orchestration-{WORKSPACE}"))
             .join("orchestrator.id"),
     )

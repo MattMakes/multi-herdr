@@ -834,7 +834,7 @@ pub fn discover_now(
     if ledger.get(record_id)?.session_id.is_some() {
         return Ok(());
     }
-    let marker = mailbox.launch_marker(role);
+    let marker = mailbox.launch_marker_read_path(role);
     let since = std::fs::metadata(&marker).and_then(|m| m.modified())?;
     let sessions_dir = marker_sessions_dir(&marker);
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);

@@ -243,7 +243,7 @@ fn g5_resume_after_a_closed_pane() {
 fn mail_u1_done_stays_open_when_enqueue_fails() {
     let h = fleet("mail-enqueue", "exec,stay");
     let (pane, role, id) = running_worker(&h);
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     std::fs::create_dir_all(h.state.join("mail/w1")).unwrap();
     std::fs::write(h.state.join("mail/w1/pending"), "not a directory").unwrap();
@@ -303,7 +303,7 @@ fn mail_u1_done_stays_open_when_enqueue_fails() {
 fn mail_u1_done_push_failure_records_queued_and_closes() {
     let h = fleet("mail-done", "exec,stay,fail_typing");
     let (pane, role, id) = running_worker(&h);
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
 
     let done = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
@@ -333,7 +333,7 @@ fn mail_u1_done_push_failure_records_queued_and_closes() {
 #[test]
 fn mail_u1_tell_push_failure_leaves_pending_mail() {
     let h = fleet("mail-tell", "exec,stay,fail_typing");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
 
@@ -366,7 +366,7 @@ fn mail_u1_tell_push_failure_leaves_pending_mail() {
 #[test]
 fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
     let h = fleet("mail-inbox", "exec,stay");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
@@ -387,8 +387,9 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
     let stdout = String::from_utf8_lossy(&inbox.stdout);
     let first = stdout.find("[sonnet-1] NOTE: first").unwrap();
     let second = stdout.find("[sonnet-1] DONE: second").unwrap();
-    let roles = stdout.find("orchestrator").unwrap();
-    assert!(first < second && second < roles, "{stdout}");
+    let roles = stdout.find("orchestrator ").unwrap();
+    assert!(roles < first && first < second, "{stdout}");
+    assert_eq!(stdout.lines().last(), Some("2 messages acknowledged"));
     assert_eq!(
         std::fs::read_dir(h.state.join("mail/w1/pending"))
             .unwrap()
@@ -403,10 +404,174 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
     );
 }
 
+/// Queue 3 worker messages for the orchestrator and return the harness.
+fn inbox_fleet_with_three_messages(name: &str) -> Harness {
+    let h = fleet(name, "exec,stay");
+    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
+    for message in ["NOTE: one", "NOTE: two", "DONE: three"] {
+        let tell = as_worker(
+            &h,
+            &["tell", "orchestrator", message],
+            "w1:p2",
+            "sonnet-1",
+            "r1",
+        );
+        assert!(tell.status.success(), "{}", text(&tell));
+    }
+    h
+}
+
+fn pending_count(h: &Harness) -> usize {
+    std::fs::read_dir(h.state.join("mail/w1/pending"))
+        .unwrap()
+        .count()
+}
+
+#[test]
+fn inbox_ends_with_the_acknowledged_count_after_the_roles() {
+    let h = inbox_fleet_with_three_messages("inbox-count");
+
+    let inbox = h.run(&["inbox"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    assert_eq!(stdout.lines().last(), Some("3 messages acknowledged"));
+    assert!(
+        stdout.find("orchestrator ").unwrap() < stdout.find("NOTE: one").unwrap(),
+        "{stdout}"
+    );
+    assert_eq!(pending_count(&h), 0);
+}
+
+/// Stands for the pidfile path inside a `pane list` body.
+#[cfg(unix)]
+const PIDFILE_TOKEN: &str = "@PIDFILE@";
+
+/// Run `horch inbox` with a `pane list` that misbehaves as `on_pane_list`
+/// says, and check that the mail still prints. Returns the stalled pid, if any.
+#[cfg(unix)]
+fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut h = inbox_fleet_with_three_messages(name);
+    let script = h.tmp.join("broken-herdr");
+    let pidfile = h.tmp.join("stalled.pid");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1 $2\" = \"pane list\" ]; then echo $$ > {pid}; {body}; fi\nexec {fake} \"$@\"\n",
+            pid = pidfile.display(),
+            body = on_pane_list.replace(PIDFILE_TOKEN, &pidfile.to_string_lossy()),
+            fake = h.bin.join("herdr").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    h.set("HORCH_HERDR_BIN", script.to_string_lossy());
+    h.set("HORCH_TEST_PANE_LIST_MS", "1500");
+
+    let started = std::time::Instant::now();
+    let inbox = h.run(&["inbox"]);
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    let stderr = String::from_utf8_lossy(&inbox.stderr);
+    assert!(stderr.contains("roles unavailable"), "{stderr}");
+    assert!(stdout.contains("orchestrator "), "{stdout}");
+    for message in ["NOTE: one", "NOTE: two", "DONE: three"] {
+        assert!(stdout.contains(message), "{stdout}");
+    }
+    assert_eq!(stdout.lines().last(), Some("3 messages acknowledged"));
+    assert_eq!(pending_count(&h), 0);
+    std::fs::read_to_string(&pidfile).ok()
+}
+
+#[cfg(unix)]
+fn assert_process_gone(pid: &str) {
+    let gone = (0..40).any(|_| {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        if alive {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        !alive
+    });
+    assert!(gone, "process {pid} is still running");
+}
+
+#[cfg(unix)]
+#[test]
+fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
+    // No pidfile means the script was killed before it ran: nothing leaked.
+    if let Some(pid) = inbox_with_broken_pane_list("inbox-stall", "exec sleep 60") {
+        assert_process_gone(&pid);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inbox_prints_mail_and_kills_a_descendant_that_holds_the_pane_list_pipe() {
+    // The pidfile ends up holding the descendant's pid, not the script's.
+    if let Some(pid) = inbox_with_broken_pane_list(
+        "inbox-open-pipe",
+        &format!("sleep 30 &\necho $! > {PIDFILE_TOKEN}\nexit 0"),
+    ) {
+        assert_process_gone(&pid);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn inbox_prints_mail_when_pane_list_prints_more_than_1_mib() {
+    inbox_with_broken_pane_list("inbox-flood", "exec head -c 3000000 /dev/zero");
+}
+
+#[test]
+fn inbox_roles_prints_no_mail_and_leaves_it_pending() {
+    let h = inbox_fleet_with_three_messages("inbox-roles");
+
+    let inbox = h.run(&["inbox", "--roles"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    assert!(stdout.contains("orchestrator "), "{stdout}");
+    assert!(
+        !stdout.contains("NOTE:") && !stdout.contains("DONE:"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("acknowledged"), "{stdout}");
+    assert_eq!(pending_count(&h), 3);
+}
+
+#[test]
+fn inbox_peek_prints_mail_and_leaves_it_pending() {
+    let h = inbox_fleet_with_three_messages("inbox-peek");
+
+    let inbox = h.run(&["inbox", "--peek"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stdout = String::from_utf8_lossy(&inbox.stdout);
+    for message in ["NOTE: one", "NOTE: two", "DONE: three"] {
+        assert!(stdout.contains(message), "{stdout}");
+    }
+    assert_eq!(
+        stdout.lines().last(),
+        Some("3 messages pending, not acknowledged")
+    );
+    assert_eq!(pending_count(&h), 3);
+}
+
 #[test]
 fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
     let h = fleet("mail-worker", "exec,stay");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     let tell = as_worker(
@@ -437,7 +602,7 @@ fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
 #[test]
 fn mail_u1_orchestrator_command_reminds_without_acking() {
     let h = fleet("mail-remind", "exec,stay");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     for message in ["NOTE: first", "NOTE: second"] {
@@ -456,7 +621,7 @@ fn mail_u1_orchestrator_command_reminds_without_acking() {
     assert!(sessions.status.success(), "{}", text(&sessions));
     assert!(
         String::from_utf8_lossy(&sessions.stderr)
-            .contains("horch: 2 worker messages are not acknowledged; run horch inbox"),
+            .contains("horch: 2 messages are not acknowledged; run horch inbox"),
         "{}",
         text(&sessions)
     );
@@ -468,13 +633,29 @@ fn mail_u1_orchestrator_command_reminds_without_acking() {
     );
 }
 
+#[test]
+fn inbox_roles_still_reminds_about_pending_mail() {
+    let h = inbox_fleet_with_three_messages("inbox-roles-remind");
+
+    let inbox = h.run(&["inbox", "--roles"]);
+
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        String::from_utf8_lossy(&inbox.stderr)
+            .contains("horch: 3 messages are not acknowledged; run horch inbox"),
+        "{}",
+        text(&inbox)
+    );
+    assert_eq!(pending_count(&h), 3);
+}
+
 /// W2: the codex agent exits 0 at once, without `horch done` (as Codex
 /// can at a usage limit or a crash). The record ends with an `exited` event,
 /// and the worker types a `BLOCKED:` line into the orchestrator's pane.
 #[test]
 fn w2_agent_exit_before_done_tells_the_orchestrator() {
     let h = fleet("w2-early-exit", "exec");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     let pane = spawn(&h, &["codex-sol", "build the thing"]);
@@ -517,7 +698,7 @@ fn w2_agent_exit_before_done_tells_the_orchestrator() {
 #[test]
 fn r1_long_tell_spools_under_its_own_workspace() {
     let h = fleet("r1-spool", "exec");
-    let mailbox = h.tmp.join("herdr-orchestration-w1");
+    let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
 
@@ -572,5 +753,160 @@ fn r1_long_tell_spools_under_its_own_workspace() {
         "the typed line does not name {}: {}",
         spooled[0].display(),
         typed[0]
+    );
+}
+
+/// P09: a spawn writes the registry under the state folder and nothing under
+/// the temp folder. With the temp folder emptied, `inbox` still lists the
+/// role and `tell` still reaches it.
+#[test]
+fn p09_registry_lives_in_the_state_folder() {
+    let h = fleet("p09-state", "exec,stay");
+    let (_pane, role, _id) = running_worker(&h);
+
+    assert!(h
+        .state
+        .join(format!("herdr-orchestration-w1/{role}.id"))
+        .exists());
+    assert!(h
+        .state
+        .join(format!("herdr-orchestration-w1/{role}.brief.json"))
+        .exists());
+    assert!(!h.tmp.join("herdr-orchestration-w1").exists());
+
+    for entry in std::fs::read_dir(&h.tmp).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+
+    let inbox = h.run(&["inbox"]);
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        String::from_utf8_lossy(&inbox.stdout)
+            .lines()
+            .any(|l| l.starts_with(&role)),
+        "{}",
+        text(&inbox)
+    );
+    let tell = h.run(&["tell", &role, "NOTE: still there"]);
+    assert!(tell.status.success(), "{}", text(&tell));
+}
+
+/// P09: a registry that exists only in the old temp location is still found
+/// by `inbox`, `tell` and `done`, and nothing is written back to it.
+#[test]
+fn p09_registry_in_the_old_temp_location_still_resolves() {
+    let h = fleet("p09-legacy", "exec,stay");
+    let (pane, role, id) = running_worker(&h);
+    let state_mailbox = h.state.join("herdr-orchestration-w1");
+    let legacy_mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::rename(&state_mailbox, &legacy_mailbox).unwrap();
+
+    let inbox = h.run(&["inbox"]);
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        String::from_utf8_lossy(&inbox.stdout)
+            .lines()
+            .any(|l| l.starts_with(&role)),
+        "{}",
+        text(&inbox)
+    );
+    let tell = h.run(&["tell", &role, "NOTE: old registry"]);
+    assert!(tell.status.success(), "{}", text(&tell));
+
+    done(&h, &pane, &role, &id);
+    assert_eq!(record(&h, &id)["status"], "done");
+    assert!(!legacy_mailbox.join(format!("{role}.id")).exists());
+    assert!(!state_mailbox.join(format!("{role}.id")).exists());
+}
+
+/// A fleet with a custom `HORCH_STATE_DIR`: the orchestrator pane does not
+/// inherit it, so its launch line has to carry it. The orchestrator registers
+/// under that folder, not under the default state root, and `inbox` lists it.
+#[cfg(unix)]
+#[test]
+fn t11_followup_orchestrator_registers_under_a_custom_state_dir() {
+    let h = Harness::new("custom-state");
+    let project = h.project.to_string_lossy().into_owned();
+    let out = h.run(&["fleet", "--cwd", &project]);
+    assert!(out.status.success(), "fleet: {}", text(&out));
+    let launch = h
+        .calls_of("herdr")
+        .into_iter()
+        .find(|c| {
+            c["ran"]
+                .as_str()
+                .is_some_and(|l| l.contains("'pane-launch'"))
+        })
+        .expect("horch fleet ran a pane-launch command");
+    let line = launch["ran"].as_str().unwrap();
+    let pane = launch["argv"][2].as_str().unwrap();
+    let workspace = pane.split(':').next().unwrap();
+
+    // The pane is a fresh shell: it has no `HORCH_STATE_DIR` of its own.
+    let mut shell = std::process::Command::new("/bin/sh");
+    h.seal(&mut shell);
+    shell
+        .arg("-c")
+        .arg(line)
+        .env("HERDR_PANE_ID", pane)
+        .env_remove("HORCH_STATE_DIR");
+    let out = shell.output().unwrap();
+    assert!(out.status.success(), "{line}\n{}", text(&out));
+
+    let id = h
+        .state
+        .join(format!("herdr-orchestration-{workspace}/orchestrator.id"));
+    assert!(id.is_file(), "no {}\n{}", id.display(), text(&out));
+    let default_root = h.home.join(".local/state/horch");
+    assert!(
+        !default_root.exists(),
+        "the pane wrote under the default state root: {}",
+        default_root.display()
+    );
+
+    let mut inbox = h.horch(&["inbox"]);
+    inbox.env("HORCH_WORKSPACE_ID", workspace);
+    let inbox = inbox.output().unwrap();
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    assert!(
+        String::from_utf8_lossy(&inbox.stdout)
+            .lines()
+            .any(|l| l.starts_with("orchestrator")),
+        "{}",
+        text(&inbox)
+    );
+}
+
+/// A mailbox removal that fails does not stop `horch done`: it warns with the
+/// role and the path, and still closes the pane.
+#[cfg(unix)]
+#[test]
+fn t11_followup_done_warns_when_the_registration_stays() {
+    let h = fleet("done-warns", "exec,stay");
+    let (pane, role, id) = running_worker(&h);
+    let id_file = h.state.join(format!("herdr-orchestration-w1/{role}.id"));
+    std::fs::remove_file(&id_file).unwrap();
+    std::fs::create_dir_all(id_file.join("not-a-file")).unwrap();
+
+    let done = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
+
+    assert!(done.status.success(), "{}", text(&done));
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    let warning = stderr
+        .lines()
+        .find(|l| l.starts_with("horch done:") && l.contains(&id_file.display().to_string()))
+        .unwrap_or_else(|| panic!("no warning in {}", text(&done)));
+    assert!(warning.contains(&role), "{warning}");
+    assert_eq!(record(&h, &id)["status"], "done");
+    let panes = herdr(&h, &["pane", "list"]);
+    assert!(
+        !String::from_utf8_lossy(&panes.stdout).contains(&pane),
+        "{}",
+        text(&panes)
     );
 }

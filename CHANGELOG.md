@@ -4,6 +4,28 @@
 
 ## Unreleased
 
+- Fleet role registrations, briefs and launch records now live in horch's
+  state folder, so clearing temporary files no longer breaks a running
+  fleet. Fleets started before the upgrade still resolve their old records,
+  and worker panes inherit the fleet's state-folder setting.
+- `horch done` and `horch ledger done` record completion before pushing the
+  report and limit all pushes together to 20 seconds. Reports stay queued
+  for the courier when the orchestrator is slow or still starting, so a
+  worker can finish within its command timeout.
+- A ledger claim now gives a usable absolute ticket path when the ticket
+  is absent from the worker's worktree, including tickets in ignored
+  folders. Queue wait reasons now name the task holding a shared file.
+- `horch inbox` now prints the role list first, then pending messages, and
+  ends with `N messages acknowledged`. It used to print messages first.
+  `horch inbox --roles` prints only the roles and leaves mail pending.
+  `horch inbox --peek` prints mail and leaves it pending. Mail is for the
+  orchestrator only: a worker gets only the role list. A script that read
+  the role list from `horch inbox` should use `--roles`. A script that must
+  not acknowledge mail should use `--peek`. The reminder other commands print
+  now reads "N messages are not acknowledged", without "worker". If herdr
+  does not answer for 5 seconds, `inbox` stops that herdr call, marks the
+  pane states unknown, and still prints mail.
+
 ## v0.3.1 - 2026-10-28
 
 - `horch fleet` and `horch orchestration` install a newer multi-herdr

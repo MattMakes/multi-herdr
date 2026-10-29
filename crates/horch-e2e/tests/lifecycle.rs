@@ -439,7 +439,7 @@ fn arc_16_e2e_fail_split() {
     assert!(r["finished_at"].is_string());
     let role = r["role"].as_str().unwrap();
     assert!(!h
-        .tmp
+        .state
         .join("herdr-orchestration-w1")
         .join(format!("{role}.brief.json"))
         .exists());

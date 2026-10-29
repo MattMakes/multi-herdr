@@ -75,7 +75,7 @@ fn create_target_pane(h: &Harness) -> String {
 
 fn prepare_done(h: &mut Harness) -> String {
     let pane = create_target_pane(h);
-    let mailbox = h.tmp.join(format!("herdr-orchestration-{WORKSPACE}"));
+    let mailbox = h.state.join(format!("herdr-orchestration-{WORKSPACE}"));
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), &pane).unwrap();
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
@@ -122,7 +122,8 @@ fn arc_31_e2e_done_refuses_then_unlanded_reports() {
     let refused = h.run(&["done", "s"]);
     assert!(!refused.status.success());
     let expected = format!(
-        "horch: horch done refused because this record has an open worktree claim:\n\
+        "closing: reporting to the orchestrator\n\
+         horch: horch done refused because this record has an open worktree claim:\n\
          wt/sonnet-1-unit at {short} (1 commits ahead of main), worktree {}\n\
          Run: horch worktree land\n\
          If it cannot land: horch done --unlanded \"<reason>\" \"<summary>\"\n",

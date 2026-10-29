@@ -53,7 +53,7 @@ pub struct ClaimLine {
     pub path: PathBuf,
 }
 
-/// The result of reporting after the report itself has been accepted.
+/// The result of [`DoneSteps::push_report`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReportStatus {
     Delivered,
@@ -73,7 +73,16 @@ pub trait DoneSteps {
         Ok(Vec::new())
     }
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()>;
-    fn report(&self, line: &str) -> Result<ReportStatus>;
+    /// Make the report durable, or fail as nothing changed. A push that can
+    /// take long belongs in [`DoneSteps::push_report`], after the record is
+    /// done.
+    fn queue_report(&self, line: &str) -> Result<()>;
+    /// Push what [`DoneSteps::queue_report`] queued, after the record is
+    /// done, so a push killed by the agent's command timeout leaves the work
+    /// done. Best effort; the default has nothing to push.
+    fn push_report(&self) -> ReportStatus {
+        ReportStatus::Delivered
+    }
     /// Whether an earlier `done` of this record reported and recorded its
     /// summary, so a retry only closes the pane. The default says no.
     fn recorded(&self, _record_id: &str) -> Result<bool> {
@@ -85,6 +94,13 @@ pub trait DoneSteps {
     /// Note that a durable report awaits redelivery. Best effort.
     fn report_queued(&self, _record_id: &str, _error: &str) {}
     fn unregister(&self, workspace: &str, role: &str);
+    /// [`DoneSteps::unregister`], where a removal that fails is returned. The
+    /// error names the role and the file that stayed; `done` warns about it
+    /// and still closes the pane. The default cannot fail.
+    fn try_unregister(&self, workspace: &str, role: &str) -> Result<()> {
+        self.unregister(workspace, role);
+        Ok(())
+    }
     fn settle(&self, workspace: &str);
     /// One last session discovery, before the pane close ends the discovery
     /// thread. Best effort; the default does nothing.
@@ -101,8 +117,9 @@ pub trait DoneSteps {
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
 /// while waiting on a question).
 ///
-/// The order is fixed: report to the orchestrator, mark the claims unlanded,
-/// mark done in the ledger, record a session id still undiscovered,
+/// The order is fixed: queue the report to the orchestrator, mark the claims
+/// unlanded, mark done in the ledger, push the report (best effort, within
+/// the push budget), record a session id still undiscovered,
 /// unregister the mailbox entry, settle the grid, write the fleet run row,
 /// close the pane. Everything happens BEFORE the pane close, because closing
 /// the pane kills this very process tree. The underlying agent session stays
@@ -174,28 +191,20 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     for entry in unregistered {
         summary.push_str(&format!(" | UNREGISTERED: {entry}"));
     }
-    if req.report_to == ReportTarget::Orchestrator {
-        match steps.report(&format!("[{role}] DONE: {summary}")) {
-            Ok(ReportStatus::Delivered) => {}
-            Ok(ReportStatus::Queued(cause)) => {
-                eprintln!(
-                    "horch done: the push did not land ({cause}); the courier will redeliver it"
-                );
-                steps.report_queued(req.record_id, &cause);
-            }
-            Err(e) => {
-                steps.report_failed(req.record_id, &format!("{e:#}"));
-                // A context, not a new error: the CLI's sandbox hint looks for
-                // the herdr failure in the chain.
-                return Err(e.context(
-                    "horch done: the report did not reach the orchestrator.\n\
-                     This pane stays open. The record is not done. Your role stays registered.\n\
-                     Fix the cause if you can, then run the same horch done command again.\n\
-                     If it fails again, record your summary with horch note and end your turn.\n\
-                     Do not close this pane.\n\
-                     The cause",
-                ));
-            }
+    let report = req.report_to == ReportTarget::Orchestrator;
+    if report {
+        if let Err(e) = steps.queue_report(&format!("[{role}] DONE: {summary}")) {
+            steps.report_failed(req.record_id, &format!("{e:#}"));
+            // A context, not a new error: the CLI's sandbox hint looks for
+            // the herdr failure in the chain.
+            return Err(e.context(
+                "horch done: the report did not reach the orchestrator.\n\
+                 This pane stays open. The record is not done. Your role stays registered.\n\
+                 Fix the cause if you can, then run the same horch done command again.\n\
+                 If it fails again, record your summary with horch note and end your turn.\n\
+                 Do not close this pane.\n\
+                 The cause",
+            ));
         }
     }
     // After the report: a claim marked unlanded is not open, and a retry of
@@ -203,7 +212,19 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     if let Some(reason) = req.unlanded {
         steps.mark_unlanded(req.record_id, reason)?;
     }
-    steps.mark_done(req.record_id, &summary)
+    steps.mark_done(req.record_id, &summary)?;
+    if report {
+        note_queued(steps, req, steps.push_report());
+    }
+    Ok(())
+}
+
+/// Say so when a push did not land: the report waits in the mail.
+fn note_queued(steps: &dyn DoneSteps, req: &DoneRequest, status: ReportStatus) {
+    if let ReportStatus::Queued(cause) = status {
+        eprintln!("horch done: the push did not land ({cause}); the courier will redeliver it");
+        steps.report_queued(req.record_id, &cause);
+    }
 }
 
 /// The steps of [`done`] after the summary is in the ledger: the pane closes.
@@ -246,7 +267,9 @@ fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> 
             eprintln!("horch done: could not record the session id ({e:#}); shutting down anyway");
         }
 
-        steps.unregister(workspace, role);
+        if let Err(e) = steps.try_unregister(workspace, role) {
+            eprintln!("horch done: {e:#}");
+        }
 
         // A departing worker leaves a hole and hands its width to whichever
         // neighbour happens to be its split sibling, which lumps the grid
@@ -938,6 +961,12 @@ mod tests {
         recorded: bool,
         fail_report: bool,
         report_failures: RefCell<Vec<String>>,
+        /// `Some(cause)`: the push does not land.
+        push_misses: Option<String>,
+        queued: RefCell<Vec<String>>,
+        /// `mark_done`, `push` and `unregister`, in the order they ran.
+        order: RefCell<Vec<&'static str>>,
+        fail_mark_done: bool,
     }
 
     impl Default for ClaimSteps {
@@ -951,6 +980,10 @@ mod tests {
                 recorded: false,
                 fail_report: false,
                 report_failures: RefCell::new(Vec::new()),
+                push_misses: None,
+                queued: RefCell::new(Vec::new()),
+                order: RefCell::new(Vec::new()),
+                fail_mark_done: false,
             }
         }
     }
@@ -989,15 +1022,19 @@ mod tests {
 
         fn mark_done(&self, _: &str, summary: &str) -> Result<()> {
             self.marked_done.borrow_mut().push(summary.into());
+            self.order.borrow_mut().push("mark_done");
+            if self.fail_mark_done {
+                bail!("the ledger is locked");
+            }
             Ok(())
         }
 
-        fn report(&self, line: &str) -> Result<ReportStatus> {
+        fn queue_report(&self, line: &str) -> Result<()> {
             self.reports.borrow_mut().push(line.into());
             if self.fail_report {
                 bail!("channel relay refused");
             }
-            Ok(ReportStatus::Delivered)
+            Ok(())
         }
 
         fn recorded(&self, _: &str) -> Result<bool> {
@@ -1008,7 +1045,21 @@ mod tests {
             self.report_failures.borrow_mut().push(error.into());
         }
 
-        fn unregister(&self, _: &str, _: &str) {}
+        fn push_report(&self) -> ReportStatus {
+            self.order.borrow_mut().push("push");
+            match &self.push_misses {
+                Some(cause) => ReportStatus::Queued(cause.clone()),
+                None => ReportStatus::Delivered,
+            }
+        }
+
+        fn report_queued(&self, _: &str, error: &str) {
+            self.queued.borrow_mut().push(error.into());
+        }
+
+        fn unregister(&self, _: &str, _: &str) {
+            self.order.borrow_mut().push("unregister");
+        }
         fn settle(&self, _: &str) {}
     }
 
@@ -1094,6 +1145,75 @@ mod tests {
         assert_eq!(&*retry.marked_unlanded.borrow(), &["cannot rebase"]);
         assert_eq!(retry.marked_done.borrow().len(), 1);
         assert!(ws.pane_ids().is_empty(), "the retry closes the pane");
+    }
+
+    /// #67: the record is done before the push, so a push the agent's
+    /// command timeout kills leaves the work done. A push that does not
+    /// land is noted, and `done` still closes the pane.
+    #[test]
+    fn done_marks_the_record_before_the_push() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps {
+            push_misses: Some("the push budget ran out".into()),
+            ..ClaimSteps::default()
+        };
+        done(&ws, &steps, &claim_request(&pane, None)).unwrap();
+        assert_eq!(&*steps.order.borrow(), &["mark_done", "push", "unregister"]);
+        assert_eq!(&*steps.queued.borrow(), &["the push budget ran out"]);
+        assert!(ws.pane_ids().is_empty(), "the pane is closed");
+    }
+
+    /// #67: the push runs after the record is done and before the pane's
+    /// closing steps; a worker that reports to nobody pushes nothing.
+    #[test]
+    fn done_pushes_between_the_record_and_the_close() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps::default();
+        done(&ws, &steps, &claim_request(&pane, None)).unwrap();
+        assert_eq!(&*steps.order.borrow(), &["mark_done", "push", "unregister"]);
+
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let silent = ClaimSteps::default();
+        let req = DoneRequest {
+            report_to: ReportTarget::None,
+            ..claim_request(&pane, None)
+        };
+        done(&ws, &silent, &req).unwrap();
+        assert_eq!(&*silent.order.borrow(), &["mark_done", "unregister"]);
+    }
+
+    /// #67: a ledger write that fails after the report is queued stops
+    /// `done` before the push and the close. The queued mail stays for the
+    /// courier; the retry queues the report again (as before #67, where a
+    /// report was delivered before the same write).
+    #[test]
+    fn done_stops_before_the_push_when_the_record_is_not_written() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps {
+            fail_mark_done: true,
+            ..ClaimSteps::default()
+        };
+        let error = done(&ws, &steps, &claim_request(&pane, None)).unwrap_err();
+        assert_eq!(error.to_string(), "the ledger is locked");
+        assert_eq!(steps.reports.borrow().len(), 1, "the report is queued");
+        assert_eq!(&*steps.order.borrow(), &["mark_done"], "no push, no close");
+        assert_eq!(ws.pane_ids(), vec![pane], "the pane stays open");
+    }
+
+    /// #67: a report that fails to queue is not pushed.
+    #[test]
+    fn done_does_not_push_a_report_that_failed() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = ClaimSteps {
+            fail_report: true,
+            ..ClaimSteps::default()
+        };
+        done(&ws, &steps, &claim_request(&pane, None)).unwrap_err();
+        assert!(steps.order.borrow().is_empty(), "no mark, no push");
     }
 
     /// W2: a record that an earlier `done` reported and marked is not
@@ -1238,8 +1358,8 @@ mod tests {
         fn mark_done(&self, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<ReportStatus> {
-            Ok(ReportStatus::Delivered)
+        fn queue_report(&self, _: &str) -> Result<()> {
+            Ok(())
         }
         fn unregister(&self, _: &str, _: &str) {}
         fn settle(&self, _: &str) {
@@ -1289,6 +1409,57 @@ mod tests {
         assert_eq!(ws.pane_ids(), [pane]);
     }
 
+    /// `done` steps whose mailbox removal fails, and record what ran.
+    struct UnregisterFails {
+        ran: RefCell<Vec<String>>,
+    }
+
+    impl DoneSteps for UnregisterFails {
+        fn mark_done(&self, _: &str, _: &str) -> Result<()> {
+            self.ran.borrow_mut().push("mark_done".into());
+            Ok(())
+        }
+        fn queue_report(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn unregister(&self, _: &str, _: &str) {}
+        fn try_unregister(&self, _: &str, role: &str) -> Result<()> {
+            self.ran.borrow_mut().push(format!("unregister {role}"));
+            bail!("removing /state/{role}.id failed; role '{role}' stays registered")
+        }
+        fn settle(&self, _: &str) {
+            self.ran.borrow_mut().push("settle".into());
+        }
+    }
+
+    /// A mailbox removal that fails is a warning, not a stop: the pane still
+    /// closes and the later steps still run.
+    #[test]
+    fn done_closes_the_pane_when_unregister_fails() {
+        let ws = FakeWorkspace::new();
+        let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
+        let steps = UnregisterFails {
+            ran: RefCell::new(Vec::new()),
+        };
+        let request = DoneRequest {
+            record_id: "r1",
+            role: "sonnet-1",
+            pane: &pane,
+            workspace: None,
+            summary: "finished",
+            report_to: ReportTarget::None,
+            unlanded: None,
+        };
+
+        done(&ws, &steps, &request).expect("a failed unregister does not fail done");
+
+        assert!(ws.pane_ids().is_empty());
+        assert_eq!(
+            *steps.ran.borrow(),
+            ["mark_done", "unregister sonnet-1", "settle"]
+        );
+    }
+
     /// `done` steps that stop herdr (the server, not the pane) at a step,
     /// or close the pane there, and record what ran.
     struct HerdrDown<'a> {
@@ -1319,7 +1490,7 @@ mod tests {
             self.reach(Step::PaneGet);
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<ReportStatus> {
+        fn queue_report(&self, _: &str) -> Result<()> {
             unreachable!("the request reports to nobody")
         }
         fn record_session(&self, workspace: &str, _: &str, _: &str) -> Result<()> {
@@ -1429,7 +1600,7 @@ mod tests {
             self.at(Step::PaneGet);
             Ok(())
         }
-        fn report(&self, _: &str) -> Result<ReportStatus> {
+        fn queue_report(&self, _: &str) -> Result<()> {
             unreachable!("the request reports to nobody")
         }
         fn record_session(&self, workspace: &str, _: &str, _: &str) -> Result<()> {

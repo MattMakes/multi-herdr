@@ -255,17 +255,22 @@ impl ExecutionService<'_> {
     }
 
     /// Run `horch worker <role>` in the new pane, with this process's skill
-    /// store as `HORCH_DATA_DIR`: a pane does not inherit this environment,
-    /// and the worker's agent inherits the worker's.
+    /// store as `HORCH_DATA_DIR` and state folder as `HORCH_STATE_DIR`: a
+    /// pane does not inherit this environment, the worker finds its brief in
+    /// the state folder, and the worker's agent inherits the worker's.
     fn run(&self, pane: &str, role: &str) -> Result<()> {
         if self.ctx.settings.faults.has("fail-pane-run") {
             return Err(anyhow!("HORCH_FAULT fail-pane-run"));
         }
         let exe = self.ctx.bins.exe()?;
         let data_root = self.ctx.paths.data_root.to_string_lossy();
+        let state_root = self.ctx.paths.state_root.to_string_lossy();
         let command = PaneShell::host().command_line_with_env(
             &exe,
-            &[("HORCH_DATA_DIR", data_root.as_ref())],
+            &[
+                ("HORCH_DATA_DIR", data_root.as_ref()),
+                ("HORCH_STATE_DIR", state_root.as_ref()),
+            ],
             &["worker", role],
         );
         self.workspace.pane_run(pane, &command)
