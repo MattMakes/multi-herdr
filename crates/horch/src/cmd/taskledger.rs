@@ -1412,15 +1412,22 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
         ctx.paths.home.join(".claude").join("plugins"),
         ctx.paths.data_root.clone(),
     ];
+    // A plugin holds `<skill>/`; the skill store holds
+    // `skills/<skill>/<source>+<hash>/`.
+    let skill_dir = |p: &Path, skill: &str| {
+        p.file_name().is_some_and(|n| n == skill)
+            || p.parent()
+                .and_then(|d| d.file_name())
+                .is_some_and(|n| n == skill)
+    };
     let code_sweep_dir = env("HORCH_CODE_SWEEP_DIR").or_else(|| {
         find_dir(&roots, |p| {
-            p.file_name().is_some_and(|n| n == "code-sweep") && p.join("reviewers").is_dir()
+            skill_dir(p, "code-sweep") && p.join("reviewers").is_dir()
         })
     });
     let complexity_cli = env("HORCH_COMPLEXITY_CLI").or_else(|| {
         find_dir(&roots, |p| {
-            p.file_name().is_some_and(|n| n == "complexity-sweep")
-                && p.join("code/cli/dist/index.js").is_file()
+            skill_dir(p, "complexity-sweep") && p.join("code/cli/dist/index.js").is_file()
         })
         .map(|d| d.join("code/cli/dist/index.js"))
     });

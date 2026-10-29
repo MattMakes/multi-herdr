@@ -2363,3 +2363,42 @@ fn an_outer_git_dir_reaches_no_child_of_finish() {
         }
     }
 }
+
+#[test]
+fn finish_finds_the_code_sweep_skill_in_the_skill_store() {
+    let mut h = finish_world("tl-sweep-store");
+    // The store layout: <data>/skills/<skill>/<source>+<hash>/.
+    let data = h.root.join("data");
+    let skill = data.join("skills/code-sweep/local+b9691d7496c9");
+    std::fs::create_dir_all(skill.join("reviewers")).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "# code-sweep\n").unwrap();
+    for entry in std::fs::read_dir(h.root.join("code-sweep/reviewers")).unwrap() {
+        let p = entry.unwrap().path();
+        std::fs::copy(&p, skill.join("reviewers").join(p.file_name().unwrap())).unwrap();
+    }
+    h.set("HORCH_DATA_DIR", data.to_string_lossy());
+    h.set("HORCH_CODE_SWEEP_DIR", "");
+    let (w, _) = sweep_world(&h);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        step_of(&r, "code-sweep").0,
+        "running",
+        "reviews are queued: {r}"
+    );
+    let ticket = std::fs::read_to_string(
+        json_of(&h, &["ledger", "status", "--json"])["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["task"]["kind"] == "review")
+            .unwrap()["task"]["task_file"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        ticket.contains("You are bug-hunter."),
+        "the store prompt: {ticket}"
+    );
+}
