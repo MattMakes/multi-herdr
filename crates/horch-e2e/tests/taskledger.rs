@@ -1127,24 +1127,26 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
 /// when dropped, so a failed assertion leaks neither.
 struct WatchdogTeardown {
     agent: std::process::Child,
-    locks: std::path::PathBuf,
+    locks: PathBuf,
 }
 
 impl Drop for WatchdogTeardown {
     fn drop(&mut self) {
-        for lock in std::fs::read_dir(&self.locks)
-            .into_iter()
+        let locks = std::fs::read_dir(&self.locks).into_iter().flatten();
+        locks
             .flatten()
-            .flatten()
-        {
-            let owner = std::fs::read(lock.path().join("owner")).unwrap_or_default();
-            let v: serde_json::Value = serde_json::from_slice(&owner).unwrap_or_default();
-            if let (Some(pid), Some(started)) = (v["pid"].as_u64(), v["started"].as_u64()) {
-                horch_core::procid::signal_same(pid as u32, started, 9);
-            }
-        }
+            .for_each(|lock| kill_lock_owner(&lock.path()));
         let _ = self.agent.kill();
         let _ = self.agent.wait();
+    }
+}
+
+/// Kill the process that the `owner` file of `lock` names, if it still runs.
+fn kill_lock_owner(lock: &Path) {
+    let owner = std::fs::read(lock.join("owner")).unwrap_or_default();
+    let v: Value = serde_json::from_slice(&owner).unwrap_or_default();
+    if let (Some(pid), Some(started)) = (v["pid"].as_u64(), v["started"].as_u64()) {
+        horch_core::procid::signal_same(pid as u32, started, 9);
     }
 }
 
