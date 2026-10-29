@@ -30,6 +30,7 @@ use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
 use horch_core::prompts;
 use horch_core::runtime::RuntimeContext;
+use horch_core::skills::catalog::marketplace::GitError;
 use horch_core::usage::Locations;
 use horch_core::vcs::git::GitCli;
 use horch_core::vcs::git::GitClient;
@@ -813,10 +814,13 @@ impl DoneSteps for CliDone<'_> {
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound)
             });
-            let not_work_tree = error
-                .root_cause()
-                .to_string()
-                .starts_with("git rev-parse --show-toplevel failed (128):");
+            let not_work_tree = error.chain().any(|cause| {
+                matches!(
+                    cause.downcast_ref::<GitError>(),
+                    Some(GitError::Failed { args, status: 128, .. })
+                        if args == &["rev-parse", "--show-toplevel"]
+                )
+            });
             if git_not_found || not_work_tree {
                 return Ok(Vec::new());
             }

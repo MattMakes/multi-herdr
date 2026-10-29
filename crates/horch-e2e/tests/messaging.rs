@@ -180,6 +180,31 @@ fn g5_done_without_an_orchestrator() {
     );
 }
 
+/// #201: `horch done` in a project that is not a git work tree, with a real
+/// git, reports no unregistered worktrees and no scan error. git says
+/// "not a git repository" with status 128, which `done` finds as a typed
+/// `GitError`, not by its text.
+#[test]
+fn done_outside_a_git_work_tree_reports_no_scan_error() {
+    let mut h = fleet("done-no-repo", "exec,stay").with_git();
+    if h.git_bin().is_none() {
+        return;
+    }
+    std::fs::remove_dir_all(h.project.join(".git")).unwrap();
+    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "20");
+    h.set("HORCH_TEST_MAIL_POLL_MS", "10");
+    let (pane, role, id) = running_worker(&h);
+
+    let done = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
+    assert!(done.status.success(), "{}", text(&done));
+    assert!(
+        !text(&done).contains("could not inspect unregistered worktrees"),
+        "{}",
+        text(&done)
+    );
+    assert_eq!(record(&h, &id)["status"], "done");
+}
+
 /// G5: a worker pane closed without `horch done`. `horch inbox` marks the
 /// role, and `horch spawn --resume` ends the record ("pane closed without
 /// horch done") and resumes it. While the pane is open, the resume refuses.
