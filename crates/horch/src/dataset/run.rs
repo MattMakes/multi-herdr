@@ -33,7 +33,7 @@ use horch_core::fsx;
 use horch_core::ids::{ExperimentId, RoundId, TeammateName};
 use horch_core::measure::event::EventEnvelope;
 use horch_core::measure::paths::{component, DatasetPaths};
-use horch_core::measure::projection::{fold, RoundView};
+use horch_core::measure::projection::{fold, ExperimentView, Projection, RoundView};
 use horch_core::measure::recorder::JsonlRecorder;
 use horch_core::measure::redact::redact;
 use horch_core::measure::store::{self, StoreOptions};
@@ -174,9 +174,8 @@ pub(crate) fn resume_reporting(
     if let Some(pane) = report_to {
         saved.report_to = Some(pane.to_string());
     }
-    let Some(x) = projection.experiments.get(&experiment) else {
-        // Killed before `experiment.created`: start over under the same id.
-        return preflight_and_run(
+    match resume_plan(&projection, &experiment)? {
+        Resume::Fresh => preflight_and_run(
             ctx,
             env,
             &paths,
@@ -184,55 +183,57 @@ pub(crate) fn resume_reporting(
             &saved.task,
             &saved,
             Start::Here,
-        );
+        ),
+        Resume::Aborted => {
+            println!("experiment {experiment} was aborted by preflight");
+            Ok(exit::PREFLIGHT_FAILED)
+        }
+        Resume::Continue(x) => continue_round(ctx, &paths, &experiment, &saved, &projection, x),
+    }
+}
+
+/// Where `resume` re-enters an experiment.
+#[derive(Debug)]
+enum Resume<'a> {
+    /// Preflight never completed: it runs again under the same id.
+    Fresh,
+    /// Preflight aborted the experiment: nothing to resume.
+    Aborted,
+    /// Preflight passed: its round goes on.
+    Continue(&'a ExperimentView),
+}
+
+/// Where the events of `experiment` stop.
+fn resume_plan<'a>(projection: &'a Projection, experiment: &ExperimentId) -> Result<Resume<'a>> {
+    // Killed before `experiment.created`: start over under the same id.
+    let Some(x) = projection.experiments.get(experiment) else {
+        return Ok(Resume::Fresh);
     };
     match x.state {
-        RoundState::Aborted => {
-            println!("experiment {experiment} was aborted by preflight");
-            return Ok(exit::PREFLIGHT_FAILED);
-        }
-        RoundState::Preflight if x.preflight.is_none() => {
-            return preflight_and_run(
-                ctx,
-                env,
-                &paths,
-                &experiment,
-                &saved.task,
-                &saved,
-                Start::Here,
-            );
-        }
+        RoundState::Aborted => Ok(Resume::Aborted),
+        RoundState::Preflight if x.preflight.is_none() => Ok(Resume::Fresh),
         RoundState::Preflight => {
             bail!("experiment {experiment} failed preflight but was not aborted")
         }
-        _ => {}
+        _ => Ok(Resume::Continue(x)),
     }
+}
+
+/// Run the round of `x` again from where its events stop.
+fn continue_round(
+    ctx: &RuntimeContext,
+    paths: &DatasetPaths,
+    experiment: &ExperimentId,
+    saved: &SavedRun,
+    projection: &Projection,
+    x: &ExperimentView,
+) -> Result<u8> {
     let report = x
         .preflight
         .clone()
         .context("the experiment has no preflight report")?;
-    let base_sha = x.created.base_sha.clone();
-    let config = manifest_config(&paths, &experiment)?;
-    let task = saved.task.clone();
-    let (round, plan, mut planned_models) = match x.rounds.last() {
-        Some(round) => {
-            let view = &projection.rounds[round];
-            let plan = (view.state == RoundState::Planned)
-                .then(|| plan_for(ctx, &config, round, &base_sha))
-                .transpose()?;
-            let models = view
-                .candidates
-                .iter()
-                .filter_map(|(l, c)| Some((l.clone(), c.planned.as_ref()?.model.to_string())))
-                .collect();
-            (round.clone(), plan, models)
-        }
-        None => {
-            let round = RoundId::mint(clock::now());
-            let plan = plan_for(ctx, &config, &round, &base_sha)?;
-            (round, Some(plan), Vec::new())
-        }
-    };
+    let config = manifest_config(paths, experiment)?;
+    let (round, plan, mut planned_models) = round_and_plan(ctx, &config, projection, x)?;
     if let Some(p) = &plan {
         planned_models.extend(
             p.candidates
@@ -243,18 +244,45 @@ pub(crate) fn resume_reporting(
     let estimates = resumed_estimates(&report, &planned_models, &config.budget.expected_tokens);
     coordinate(
         ctx,
-        &paths,
+        paths,
         &Round {
-            experiment: &experiment,
+            experiment,
             round: &round,
             config: &config,
-            task: &task,
+            task: &saved.task,
             safe_n: report.safe_n,
             estimates,
             report_to: saved.report_to.as_deref(),
         },
         plan.as_ref(),
     )
+}
+
+/// The round that `resume` drives: the latest round of `x`, or a new one.
+/// Gives its plan when it is still planned or new, and the model planned
+/// for each label of the round so far.
+fn round_and_plan(
+    ctx: &RuntimeContext,
+    config: &DatasetConfig,
+    projection: &Projection,
+    x: &ExperimentView,
+) -> Result<(RoundId, Option<RoundPlan>, Vec<(String, String)>)> {
+    let base_sha = &x.created.base_sha;
+    let Some(round) = x.rounds.last() else {
+        let round = RoundId::mint(clock::now());
+        let plan = plan_for(ctx, config, &round, base_sha)?;
+        return Ok((round, Some(plan), Vec::new()));
+    };
+    let view = &projection.rounds[round];
+    let plan = (view.state == RoundState::Planned)
+        .then(|| plan_for(ctx, config, round, base_sha))
+        .transpose()?;
+    let models = view
+        .candidates
+        .iter()
+        .filter_map(|(l, c)| Some((l.clone(), c.planned.as_ref()?.model.to_string())))
+        .collect();
+    Ok((round.clone(), plan, models))
 }
 
 /// Preflight, then the round. `run` calls it for a new experiment, and
@@ -698,35 +726,42 @@ pub(super) fn outcome_line(
     reason: Option<&str>,
 ) -> (String, u8) {
     match outcome {
-        RoundOutcome::Decided => {
-            let p = &view.promotion;
-            let line = match (&p.started, &p.completed, &view.winner) {
-                (Some(started), Some(done), _) => {
-                    format!("PROMOTED: {} is at {}", started.target, done.dest_after)
-                }
-                (_, _, Some(w)) => format!("DECIDED: winner {}", w.label),
-                _ => "DECIDED".to_string(),
-            };
-            (line, exit::SUCCESS)
-        }
+        RoundOutcome::Decided => (decided_line(view), exit::SUCCESS),
         RoundOutcome::Rejected { budget: true } => (
             "REJECTED: the budget stopped the candidates".to_string(),
             exit::BUDGET_REFUSED,
         ),
-        RoundOutcome::Rejected { budget: false } => (
-            match view.rejected {
-                Some(reason) => format!("REJECTED: {reason}"),
-                None => "REJECTED".to_string(),
-            },
-            exit::REJECTED,
-        ),
+        RoundOutcome::Rejected { budget: false } => {
+            (with_reason("REJECTED", view.rejected), exit::REJECTED)
+        }
         RoundOutcome::NeedsIntervention => (
-            match reason.or(view.needs_intervention.as_ref().map(|n| n.reason.as_str())) {
-                Some(reason) => format!("NEEDS_INTERVENTION: {reason}"),
-                None => "NEEDS_INTERVENTION".to_string(),
-            },
+            with_reason(
+                "NEEDS_INTERVENTION",
+                reason.or(view.needs_intervention.as_ref().map(|n| n.reason.as_str())),
+            ),
             exit::NEEDS_INTERVENTION,
         ),
+    }
+}
+
+/// The line of a decided round: where the promotion put the winner, else the
+/// winner, else no more than the state.
+fn decided_line(view: &RoundView) -> String {
+    let p = &view.promotion;
+    match (&p.started, &p.completed, &view.winner) {
+        (Some(started), Some(done), _) => {
+            format!("PROMOTED: {} is at {}", started.target, done.dest_after)
+        }
+        (_, _, Some(w)) => format!("DECIDED: winner {}", w.label),
+        _ => "DECIDED".to_string(),
+    }
+}
+
+/// `head: reason`, or `head` when there is no reason.
+fn with_reason(head: &str, reason: Option<impl std::fmt::Display>) -> String {
+    match reason {
+        Some(reason) => format!("{head}: {reason}"),
+        None => head.to_string(),
     }
 }
 
@@ -1022,6 +1057,7 @@ fn render_plan(plan: &RoundPlan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dataset::test_fixtures::{exp, experiment, projection, round_view};
 
     /// The meter gets PRE-09's estimate per model: the plan's per-label value
     /// first, then the config; 2 labels of 1 model keep the per-kind maximum.
@@ -1268,5 +1304,134 @@ mod tests {
             "{:?}",
             launched.skills
         );
+    }
+
+    fn decided() -> RoundView {
+        round_view(RoundState::Complete, Vec::new())
+    }
+
+    #[test]
+    fn outcome_line_for_a_decided_round_names_the_winner_or_the_promotion() {
+        let mut view = decided();
+        assert_eq!(
+            outcome_line(&RoundOutcome::Decided, &view, None),
+            ("DECIDED".to_string(), 0)
+        );
+        view.winner = Some(
+            serde_json::from_value(serde_json::json!({
+                "label": "B",
+                "execution_id": "0199a5b0-0000-7000-8000-000000000c01",
+                "head_sha": "h",
+                "judgment_id": "0199a5b0-0000-7000-8000-000000000d01",
+                "promotion": "not_requested",
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            outcome_line(&RoundOutcome::Decided, &view, None),
+            ("DECIDED: winner B".to_string(), 0)
+        );
+        view.promotion = serde_json::from_value(serde_json::json!({
+            "started": {"target": "main", "dest_before": "a", "planned_after": "b",
+                        "strategy": "fast_forward"},
+            "completed": {"receipt_digest": horch_core::measure::digest::sha256_bytes(b"r"),
+                          "dest_after": "bbb"},
+            "conflicted": null,
+            "rolled_back": [],
+        }))
+        .unwrap();
+        assert_eq!(
+            outcome_line(&RoundOutcome::Decided, &view, None),
+            ("PROMOTED: main is at bbb".to_string(), 0)
+        );
+    }
+
+    #[test]
+    fn outcome_line_for_a_rejected_round() {
+        use horch_core::evaluation::winner::RejectReason;
+        let mut view = decided();
+        assert_eq!(
+            outcome_line(&RoundOutcome::Rejected { budget: true }, &view, None),
+            ("REJECTED: the budget stopped the candidates".to_string(), 3)
+        );
+        assert_eq!(
+            outcome_line(&RoundOutcome::Rejected { budget: false }, &view, None),
+            ("REJECTED".to_string(), 6)
+        );
+        view.rejected = Some(RejectReason::BelowConfidence);
+        assert_eq!(
+            outcome_line(&RoundOutcome::Rejected { budget: false }, &view, None),
+            ("REJECTED: below_confidence".to_string(), 6)
+        );
+    }
+
+    #[test]
+    fn outcome_line_for_a_round_that_needs_the_operator_prefers_the_latest_reason() {
+        let mut view = decided();
+        assert_eq!(
+            outcome_line(&RoundOutcome::NeedsIntervention, &view, None),
+            ("NEEDS_INTERVENTION".to_string(), 5)
+        );
+        view.needs_intervention = serde_json::from_value(serde_json::json!(
+            {"reason": "first", "source": "judge"}
+        ))
+        .ok();
+        assert_eq!(
+            outcome_line(&RoundOutcome::NeedsIntervention, &view, None),
+            ("NEEDS_INTERVENTION: first".to_string(), 5)
+        );
+        assert_eq!(
+            outcome_line(&RoundOutcome::NeedsIntervention, &view, Some("latest")),
+            ("NEEDS_INTERVENTION: latest".to_string(), 5)
+        );
+    }
+
+    #[test]
+    fn resume_starts_over_for_an_experiment_with_no_events() {
+        let p = Projection::default();
+        assert!(matches!(resume_plan(&p, &exp()).unwrap(), Resume::Fresh));
+    }
+
+    #[test]
+    fn resume_does_not_restart_an_aborted_experiment() {
+        let p = projection(RoundState::Aborted, &[]);
+        assert!(matches!(resume_plan(&p, &exp()).unwrap(), Resume::Aborted));
+    }
+
+    #[test]
+    fn resume_runs_preflight_again_when_it_never_completed() {
+        let p = projection(RoundState::Preflight, &[]);
+        assert!(matches!(resume_plan(&p, &exp()).unwrap(), Resume::Fresh));
+    }
+
+    #[test]
+    fn resume_refuses_a_failed_preflight_that_was_not_aborted() {
+        let mut p = projection(RoundState::Preflight, &[]);
+        p.experiments.get_mut(&exp()).unwrap().preflight =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": "1.0.0", "checks": [], "safe_n": 1, "waves": 1,
+                "projected_cost_microusd": 0,
+                "machine": {"os": "macos", "arch": "aarch64", "cpus": 10,
+                            "mem_total_bytes": null, "mem_available_bytes": null,
+                            "disk_free_bytes": null, "disk_total_bytes": null,
+                            "gpu": "apple_silicon", "max_open_files": null,
+                            "max_processes": null},
+                "environment_digest": horch_core::measure::digest::sha256_bytes(b"e"),
+                "passed": false,
+            }))
+            .unwrap();
+        assert_eq!(
+            resume_plan(&p, &exp()).unwrap_err().to_string(),
+            format!("experiment {} failed preflight but was not aborted", exp())
+        );
+    }
+
+    #[test]
+    fn resume_continues_a_planned_experiment() {
+        let p = projection(RoundState::Planned, &[RoundState::Running]);
+        let Resume::Continue(x) = resume_plan(&p, &exp()).unwrap() else {
+            panic!("not continue");
+        };
+        assert_eq!(x, &experiment(RoundState::Planned, x.rounds.clone()));
     }
 }
