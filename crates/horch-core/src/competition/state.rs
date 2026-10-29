@@ -95,9 +95,15 @@ impl RoundEvent {
                 pick(*last, "candidate.ended", "candidate.ended:last")
             }
             RoundEvent::CandidateFrozen => "candidate.frozen",
-            RoundEvent::ValidationCompleted { last, any_eligible } => {
-                validation_name(*last, *any_eligible)
-            }
+            RoundEvent::ValidationCompleted { last, any_eligible } => pick(
+                *last,
+                "validation.completed",
+                pick(
+                    *any_eligible,
+                    "validation.completed:none_eligible",
+                    "validation.completed:last",
+                ),
+            ),
             RoundEvent::JudgeScheduled => "judge.scheduled",
             RoundEvent::JudgeStarted => "judge.started",
             RoundEvent::JudgeCompleted => "judge.completed",
@@ -125,14 +131,6 @@ fn pick(flag: bool, plain: &'static str, flagged: &'static str) -> &'static str 
         flagged
     } else {
         plain
-    }
-}
-
-fn validation_name(last: bool, any_eligible: bool) -> &'static str {
-    match (last, any_eligible) {
-        (false, _) => "validation.completed",
-        (true, true) => "validation.completed:last",
-        (true, false) => "validation.completed:none_eligible",
     }
 }
 
