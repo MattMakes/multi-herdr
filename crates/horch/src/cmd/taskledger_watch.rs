@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
+use horch_core::messaging::questions::QuestionState;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::land;
 use horch_core::taskledger::git::Git;
@@ -48,16 +49,17 @@ impl Observer for Live<'_> {
             .transcript_path
             .as_deref()
             .and_then(|t| std::fs::metadata(t).ok());
-        let questions = watchdog::open_question(self.state_root, self.run, w).and_then(|open| {
-            Ok((
-                open,
-                watchdog::answered_question(self.state_root, self.run, w)?,
-            ))
-        });
-        let ((open_question, answered_question), question_error) = match questions {
-            Ok(q) => (q, None),
-            Err(e) => ((None, None), Some(format!("{e:#}"))),
-        };
+        // 1 read of the record: a question asked between 2 reads could
+        // hide both the open and the answered state.
+        let mut open_question = None;
+        let mut answered_question = None;
+        let mut question_error = None;
+        match watchdog::question_state(self.state_root, self.run, w) {
+            Ok(QuestionState::Open(q)) => open_question = Some(q),
+            Ok(QuestionState::Answered(q)) => answered_question = Some(q),
+            Ok(QuestionState::None) => {}
+            Err(e) => question_error = Some(format!("{e:#}")),
+        }
         Observation {
             agent_alive,
             herdr_status: pane.as_ref().and_then(|p| p.agent_status.clone()),

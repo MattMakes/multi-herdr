@@ -47,6 +47,15 @@ struct Record {
     ask_id: String,
 }
 
+/// The state of a role's last question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestionState {
+    /// No question, or one past the retention.
+    None,
+    Open(OpenQuestion),
+    Answered(OpenQuestion),
+}
+
 /// What 1 `tell` line does to the record. [`Questions::plan`] decides it
 /// before the line is sent, [`Questions::apply`] makes it: a question
 /// before the push (its answer can come at once), an answer after the
@@ -156,23 +165,34 @@ impl Questions {
     /// The open question of `role`, if it has one. A record that cannot be
     /// read, or that names another role, is an error.
     pub fn open_for(&self, role: &str) -> Result<Option<OpenQuestion>> {
-        self.last_for(role, false)
+        Ok(match self.state_of(role)? {
+            QuestionState::Open(q) => Some(q),
+            _ => None,
+        })
     }
 
     /// The last question of `role` when it is answered: the role waited
     /// from its `asked_at` to the answer.
     pub fn answered_for(&self, role: &str) -> Result<Option<OpenQuestion>> {
-        self.last_for(role, true)
+        Ok(match self.state_of(role)? {
+            QuestionState::Answered(q) => Some(q),
+            _ => None,
+        })
     }
 
-    fn last_for(&self, role: &str, answered: bool) -> Result<Option<OpenQuestion>> {
+    /// The state of `role`'s last question, from 1 read of its record: a
+    /// question asked between 2 reads cannot hide both states.
+    pub fn state_of(&self, role: &str) -> Result<QuestionState> {
         let Some(r) = self.read_role(role)? else {
-            return Ok(None);
+            return Ok(QuestionState::None);
         };
-        if r.answered_at.is_some() != answered || expired(&r)? {
-            return Ok(None);
+        if expired(&r)? {
+            return Ok(QuestionState::None);
         }
-        Ok(Some(r.question))
+        Ok(match r.answered_at {
+            None => QuestionState::Open(r.question),
+            Some(_) => QuestionState::Answered(r.question),
+        })
     }
 
     fn path(&self, role: &str) -> PathBuf {
@@ -594,5 +614,29 @@ mod tests {
             .unwrap();
         q.apply(&reply).unwrap();
         assert!(q.open_for("opus-1").unwrap().is_some());
+    }
+
+    #[test]
+    fn one_read_sees_the_question_open_or_answered_when_a_new_one_replaces_an_answer() {
+        let root = tempfile::tempdir().unwrap();
+        let q = record(root.path());
+        q.record_tell(Some("opus-1"), "orchestrator", "[opus-1] QUESTION: a")
+            .unwrap();
+        q.record_tell(None, "opus-1", "answer").unwrap();
+        // 2 reads with a new question between them see neither state.
+        let open_first = q.open_for("opus-1").unwrap();
+        q.record_tell(Some("opus-1"), "orchestrator", "[opus-1] QUESTION: b")
+            .unwrap();
+        let answered_second = q.answered_for("opus-1").unwrap();
+        assert_eq!((open_first, answered_second), (None, None));
+        // 1 read sees 1 state on each side of the swap.
+        assert!(
+            matches!(q.state_of("opus-1").unwrap(), QuestionState::Open(o) if o.text == "[opus-1] QUESTION: b")
+        );
+        q.record_tell(None, "opus-1", "answer").unwrap();
+        assert!(matches!(
+            q.state_of("opus-1").unwrap(),
+            QuestionState::Answered(_)
+        ));
     }
 }

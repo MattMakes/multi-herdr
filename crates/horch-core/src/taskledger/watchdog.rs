@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
-use crate::messaging::questions::OpenQuestion;
+use crate::messaging::questions::{OpenQuestion, QuestionState};
 
 use super::model::{EventKind, ProgressSource, Verdict};
 use super::runs::Run;
@@ -122,17 +122,21 @@ pub fn open_question(
     run: &Run,
     w: &Worker,
 ) -> Result<Option<OpenQuestion>> {
-    question_record(state_root, run, w).map_or(Ok(None), |(q, role)| q.open_for(&role))
+    Ok(match question_state(state_root, run, w)? {
+        QuestionState::Open(q) => Some(q),
+        _ => None,
+    })
 }
 
-/// The last question of worker `w` when it is answered, as
-/// [`open_question`] finds it.
-pub fn answered_question(
+/// The state of worker `w`'s last question, from 1 read of the record that
+/// [`open_question`] reads.
+pub fn question_state(
     state_root: &std::path::Path,
     run: &Run,
     w: &Worker,
-) -> Result<Option<OpenQuestion>> {
-    question_record(state_root, run, w).map_or(Ok(None), |(q, role)| q.answered_for(&role))
+) -> Result<QuestionState> {
+    question_record(state_root, run, w)
+        .map_or(Ok(QuestionState::None), |(q, role)| q.state_of(&role))
 }
 
 fn question_record(

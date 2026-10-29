@@ -999,3 +999,32 @@ fn a_reply_that_is_not_delivered_leaves_the_question_open() {
     .unwrap();
     assert!(record["answered_at"].is_null(), "{record}");
 }
+
+/// #70: a worker question whose push fails is still queued as mail, and
+/// its record is open: the worker waits for the courier's delivery.
+#[test]
+fn a_question_whose_push_fails_still_opens_its_record() {
+    let h = fleet("open-question-push-fails", "exec,stay,fail_typing");
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    let ask = as_worker(
+        &h,
+        &["tell", "orchestrator", "QUESTION: May I edit x?"],
+        "w1:p2",
+        "sonnet-1",
+        "r1",
+    );
+    assert!(ask.status.success(), "{}", text(&ask));
+    assert!(
+        String::from_utf8_lossy(&ask.stderr).contains("the courier will redeliver it"),
+        "{}",
+        text(&ask)
+    );
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(h.state.join("questions/w1/sonnet-1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["text"], "[sonnet-1] QUESTION: May I edit x?");
+    assert!(record["answered_at"].is_null(), "{record}");
+}
