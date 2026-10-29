@@ -176,9 +176,50 @@ pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child> {
     cmd.spawn()
 }
 
+/// The pane identity of the process that starts a detached child (#218).
+/// The child outlives that pane and serves the whole project, so it must not
+/// act as that pane: it gets none of these unless its caller sets them.
+pub const PANE_IDENTITY_ENV: &[&str] = &[
+    "HORCH_ROLE",
+    "HORCH_RECORD_ID",
+    "HORCH_WORKER_ID",
+    "HORCH_WORKSPACE_ID",
+    "HERDR_PANE_ID",
+];
+
+/// Remove from `cmd` the [`PANE_IDENTITY_ENV`] it would inherit from
+/// `inherited`, and a `TMPDIR` under `<state_root>/tmp/`: a pane's private
+/// temp dir, which the pane removes when it ends. A key the caller set or
+/// removed on `cmd` itself is left as the caller wants it.
+fn scrub_pane_identity(cmd: &mut Command, inherited: &dyn super::context::EnvSource) {
+    let taken: Vec<OsString> = cmd.get_envs().map(|(k, _)| k.to_os_string()).collect();
+    let is_taken = |key: &str| taken.iter().any(|t| t == key);
+    for key in PANE_IDENTITY_ENV {
+        if !is_taken(key) {
+            cmd.env_remove(key);
+        }
+    }
+    if is_taken("TMPDIR") {
+        return;
+    }
+    let home = super::paths::home_dir(inherited);
+    let mut roots = vec![super::paths::state_root(inherited, &home)];
+    if let Some((_, Some(dir))) = cmd.get_envs().find(|(k, _)| *k == "HORCH_STATE_DIR") {
+        roots.push(PathBuf::from(dir));
+    }
+    let pane_tmp = inherited
+        .var_os("TMPDIR")
+        .map(PathBuf::from)
+        .is_some_and(|t| roots.iter().any(|r| t.starts_with(r.join("tmp"))));
+    if pane_tmp {
+        cmd.env_remove("TMPDIR");
+    }
+}
+
 /// What [`spawn_detached`] does to `cmd` before the spawn.
 fn detach(cmd: &mut Command) {
     scrub_child_env(cmd);
+    scrub_pane_identity(cmd, &super::context::ProcessEnv);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -196,6 +237,7 @@ fn detach(cmd: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::context::MapEnv;
 
     /// A detached child never carries a forbidden key: `spawn_detached`
     /// removes every one itself, after the caller's `env` calls.
@@ -217,6 +259,77 @@ mod tests {
         assert!(envs
             .iter()
             .any(|(k, v)| k == "HORCH_TEST_KEEP" && v.as_deref() == Some(OsStr::new("1"))));
+    }
+
+    /// The env `cmd` gives its child, as the caller and the scrub left it:
+    /// `None` is a removed key.
+    fn envs_of(cmd: &Command) -> Vec<(String, Option<String>)> {
+        cmd.get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    /// #218: a child started from a worker pane does not carry that pane's
+    /// identity or its private TMPDIR.
+    #[test]
+    fn a_detached_child_drops_the_starting_panes_identity() {
+        let mut inherited = MapEnv::new("/cwd");
+        inherited = inherited.with("HOME", "/home/a");
+        inherited = inherited.with("HORCH_STATE_DIR", "/state");
+        inherited = inherited.with("HORCH_ROLE", "sonnet-2");
+        inherited = inherited.with("HORCH_WORKER_ID", "w-123");
+        inherited = inherited.with("HORCH_WORKSPACE_ID", "W2");
+        inherited = inherited.with("TMPDIR", "/state/tmp/sonnet-2");
+        let mut cmd = Command::new("true");
+        scrub_pane_identity(&mut cmd, &inherited);
+        let envs = envs_of(&cmd);
+        for key in PANE_IDENTITY_ENV.iter().chain(&["TMPDIR"]) {
+            assert!(
+                envs.contains(&(key.to_string(), None)),
+                "{key} is not removed: {envs:?}"
+            );
+        }
+    }
+
+    /// What the caller sets on purpose stays: the watchdog's run workspace,
+    /// the Prime stop's TMPDIR. An operator's own TMPDIR is not a pane's.
+    #[test]
+    fn a_detached_child_keeps_what_its_caller_sets_and_a_plain_tmpdir() {
+        let mut inherited = MapEnv::new("/cwd");
+        inherited = inherited.with("HOME", "/home/a");
+        inherited = inherited.with("HORCH_WORKSPACE_ID", "W2");
+        inherited = inherited.with("TMPDIR", "/var/folders/xy/T/");
+        let mut cmd = Command::new("true");
+        cmd.env("HORCH_WORKSPACE_ID", "W1");
+        scrub_pane_identity(&mut cmd, &inherited);
+        let envs = envs_of(&cmd);
+        assert!(envs.contains(&("HORCH_WORKSPACE_ID".into(), Some("W1".into()))));
+        assert!(!envs.iter().any(|(k, _)| k == "TMPDIR"), "{envs:?}");
+
+        // The default state root, and a state dir the caller passes.
+        for (state_dir, tmp) in [
+            (None, "/home/a/.local/state/horch/tmp/codex-1"),
+            (Some("/elsewhere"), "/elsewhere/tmp/codex-1"),
+        ] {
+            let mut inherited = MapEnv::new("/cwd");
+            inherited = inherited.with("HOME", "/home/a");
+            inherited = inherited.with("TMPDIR", tmp);
+            let mut cmd = Command::new("true");
+            if let Some(dir) = state_dir {
+                cmd.env("HORCH_STATE_DIR", dir);
+            }
+            scrub_pane_identity(&mut cmd, &inherited);
+            assert!(envs_of(&cmd).contains(&("TMPDIR".into(), None)), "{tmp}");
+        }
+        let mut cmd = Command::new("true");
+        cmd.env("TMPDIR", "/state/tmp/prime");
+        scrub_pane_identity(&mut cmd, &inherited);
+        assert!(envs_of(&cmd).contains(&("TMPDIR".into(), Some("/state/tmp/prime".into()))));
     }
 
     fn path_list(dirs: &[&Path]) -> OsString {

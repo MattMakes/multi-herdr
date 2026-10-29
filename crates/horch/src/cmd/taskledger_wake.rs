@@ -23,27 +23,35 @@ pub fn wake(ctx: &RuntimeContext, store: &Store, run: &Run, text: &str) {
     } else {
         format!("[horch] {text}")
     };
+    // The run's workspace wins (#218): the caller can be a pane of another
+    // workspace, or a watchdog started from one. The caller's workspace
+    // counts only for a run with no workspace.
+    let mut ctx = ctx.clone();
+    if let Some(id) = run
+        .workspace_id
+        .as_deref()
+        .and_then(|ws| WorkspaceId::new(ws).ok())
+    {
+        ctx.herdr.workspace = Some(id);
+    }
+    let target = match &ctx.herdr.workspace {
+        Some(ws) if run.workspace_id.is_some() => format!("the run's workspace {}", ws.as_str()),
+        Some(ws) => format!("the caller's workspace {}; the run has none", ws.as_str()),
+        None => "no workspace".to_string(),
+    };
     let sent = if disabled() {
         Err(anyhow::anyhow!("wakes are off (HORCH_NO_WAKE=1)"))
     } else {
-        let mut ctx = ctx.clone();
-        {
-            if let Some(ws) = run.workspace_id.as_deref() {
-                if let Ok(id) = WorkspaceId::new(ws) {
-                    ctx.herdr.workspace = Some(id);
-                }
-            }
-        }
         super::messaging::tell_as(&ctx, Some("horch".into()), "orchestrator", &line)
     };
     let note = match &sent {
         Ok(horch_core::execution::lifecycle::ReportStatus::Delivered) => {
-            format!("Wake delivered: {line}")
+            format!("Wake delivered to {target}: {line}")
         }
         Ok(horch_core::execution::lifecycle::ReportStatus::Queued(reason)) => {
-            format!("Wake queued, not yet acknowledged ({reason}): {line}")
+            format!("Wake queued for {target}, not yet acknowledged ({reason}): {line}")
         }
-        Err(e) => format!("Wake not delivered ({e:#}): {line}"),
+        Err(e) => format!("Wake for {target} not delivered ({e:#}): {line}"),
     };
     if let Err(e) = &sent {
         eprintln!("horch ledger: the orchestrator was not woken: {e:#}");
