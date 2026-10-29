@@ -327,9 +327,9 @@ mod tests {
     use crate::workspace::model::{Direction, NewWorkspace};
     use crate::workspace::testing::FakeWorkspace;
 
-    /// #67: one budget bounds every phase of a push. An agent that shows
-    /// late in the grace and stays `unknown`, then a typed line whose tail
-    /// never shows: each phase alone could wait its full timeout.
+    /// #67: one budget bounds the grace and readiness waits together. An
+    /// agent appears on the first grace poll and stays `unknown`; after
+    /// readiness spends the budget, a fallback line must not be typed.
     #[test]
     fn the_push_budget_bounds_every_phase_together() {
         let ws = FakeWorkspace::new();
@@ -337,12 +337,13 @@ mod tests {
         let budget = Duration::from_millis(600);
         let wait = Readiness {
             timeout: Duration::from_secs(120),
-            poll: Duration::from_millis(20),
+            poll: Duration::from_millis(200),
         };
         let starting = (Some("claude"), Some("unknown"));
-        let mut states = vec![(None, None); 20];
-        states.push(starting);
-        ws.set_agent_states(&pane, &states);
+        // Advance by calls, without sleeps before the agent appears. A
+        // long no-agent script can spend the entire budget on a loaded
+        // runner, never exercise readiness, and take the no-agent path.
+        ws.set_agent_states(&pane, &[(None, None), starting]);
         let started = Instant::now();
         let guard = start_push_budget(budget).expect("no budget runs yet");
         assert!(

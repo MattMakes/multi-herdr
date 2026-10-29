@@ -817,6 +817,8 @@ fn sec_08_e2e_no_api_key_in_judge_job() {
 /// - `workspace/arrange.rs` detaches the grid tidy a closing pane leaves;
 /// - `evaluation/validator.rs` puts each gate in its own process group to
 ///   kill it at its timeout, and waits for it (not detached);
+/// - `workspace/herdr.rs` puts bounded herdr calls in their own process
+///   group to kill their descendants at the deadline, and waits for them;
 /// - `horch-e2e/src/bin/fake-herdr.rs` is a test fake;
 /// - `evaluation/scheduler.rs` starts the judge job;
 /// - `cmd/compact.rs` starts the compaction job; both jobs use
@@ -835,6 +837,7 @@ fn cmp_16_only_judge_and_compaction_jobs_detached() {
         "crates/horch-core/src/runtime/process.rs",
         "crates/horch-core/src/workspace/arrange.rs",
         "crates/horch-core/src/evaluation/validator.rs",
+        "crates/horch-core/src/workspace/herdr.rs",
         "crates/horch-e2e/src/bin/fake-herdr.rs",
         "crates/horch-core/src/evaluation/scheduler.rs",
         "crates/horch/src/cmd/compact.rs",

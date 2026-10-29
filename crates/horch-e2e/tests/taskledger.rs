@@ -276,7 +276,11 @@ fn a_claim_names_an_ignored_ticket_by_an_absolute_path_that_opens_from_the_workt
         "the ignored ticket is not in the worktree"
     );
     let opened = worktree.join(&ticket);
-    assert!(opened.is_file(), "Ticket {ticket} from {}: {claim}", worktree.display());
+    assert!(
+        opened.is_file(),
+        "Ticket {ticket} from {}: {claim}",
+        worktree.display()
+    );
 }
 
 #[test]
