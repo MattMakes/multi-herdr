@@ -221,21 +221,22 @@ pub fn resolve_estimate(
     configured: &ExpectedTokens,
     measured: &BTreeMap<String, MeasuredTokens>,
 ) -> (TokenEstimate, EstimateSource) {
-    if let Some(e) = per_label {
-        return (e, EstimateSource::Plan);
-    }
-    if let Some(e) = configured.models.get(model) {
-        return (*e, EstimateSource::ConfigModel);
-    }
-    if let Some(e) = configured.all {
-        return (e, EstimateSource::ConfigAll);
-    }
-    match measured.get(model) {
-        Some(m) if m.runs >= MEASURED_MIN_RUNS => {
-            (m.estimate, EstimateSource::Measured { runs: m.runs })
-        }
-        _ => (DEFAULT_TOKEN_ESTIMATE, EstimateSource::Default),
-    }
+    per_label
+        .map(|e| (e, EstimateSource::Plan))
+        .or_else(|| {
+            configured
+                .models
+                .get(model)
+                .map(|e| (*e, EstimateSource::ConfigModel))
+        })
+        .or_else(|| configured.all.map(|e| (e, EstimateSource::ConfigAll)))
+        .or_else(|| {
+            measured
+                .get(model)
+                .filter(|m| m.runs >= MEASURED_MIN_RUNS)
+                .map(|m| (m.estimate, EstimateSource::Measured { runs: m.runs }))
+        })
+        .unwrap_or((DEFAULT_TOKEN_ESTIMATE, EstimateSource::Default))
 }
 
 /// The measured estimate per model from `runs`: (model, tokens) of each
