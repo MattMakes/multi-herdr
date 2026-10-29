@@ -31,46 +31,15 @@ pub fn parse(xml: &str) -> Result<Sitemap> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
-    let mut is_index = false;
-    let mut in_loc = false;
-    let mut depth = 0i32;
-    let mut locations = Vec::new();
+    let mut scan = SitemapScan::default();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Eof) => {
-                // A truncated download parses as valid-so-far XML and would yield a
-                // short page list, which the prune step would then act on by
-                // deleting good local files. Refuse it instead.
-                if depth != 0 {
-                    bail!(
-                        "sitemap XML ended with {depth} element(s) still open; \
-                         the download looks truncated"
-                    );
-                }
-                break;
-            }
-            Ok(Event::Start(e)) => {
-                depth += 1;
-                match local_name(e.name().as_ref()) {
-                    b"sitemapindex" => is_index = true,
-                    b"loc" => in_loc = true,
-                    _ => {}
-                }
-            }
-            Ok(Event::End(e)) => {
-                depth -= 1;
-                if local_name(e.name().as_ref()) == b"loc" {
-                    in_loc = false;
-                }
-            }
-            Ok(Event::Text(text)) if in_loc => {
-                let value = text.unescape()?.trim().to_string();
-                if !value.is_empty() {
-                    locations.push(value);
-                }
-            }
+            Ok(Event::Eof) => break,
+            Ok(Event::Start(e)) => scan.start(e.name().as_ref()),
+            Ok(Event::End(e)) => scan.end(e.name().as_ref()),
+            Ok(Event::Text(text)) if scan.in_loc => scan.text(text.unescape()?.into_owned()),
             Ok(_) => {}
             Err(e) => bail!(
                 "malformed sitemap XML at byte {}: {e}",
@@ -80,11 +49,60 @@ pub fn parse(xml: &str) -> Result<Sitemap> {
         buf.clear();
     }
 
-    Ok(if is_index {
-        Sitemap::Index(locations)
-    } else {
-        Sitemap::Urls(locations)
-    })
+    scan.finish()
+}
+
+/// What the XML events seen so far add up to.
+#[derive(Default)]
+struct SitemapScan {
+    is_index: bool,
+    in_loc: bool,
+    depth: i32,
+    locations: Vec<String>,
+}
+
+impl SitemapScan {
+    fn start(&mut self, name: &[u8]) {
+        self.depth += 1;
+        match local_name(name) {
+            b"sitemapindex" => self.is_index = true,
+            b"loc" => self.in_loc = true,
+            _ => {}
+        }
+    }
+
+    fn end(&mut self, name: &[u8]) {
+        self.depth -= 1;
+        if local_name(name) == b"loc" {
+            self.in_loc = false;
+        }
+    }
+
+    fn text(&mut self, value: String) {
+        let value = value.trim();
+        if !value.is_empty() {
+            self.locations.push(value.to_string());
+        }
+    }
+
+    /// Called at end of input.
+    fn finish(self) -> Result<Sitemap> {
+        // A truncated download parses as valid-so-far XML and would yield a
+        // short page list, which the prune step would then act on by
+        // deleting good local files. Refuse it instead.
+        if self.depth != 0 {
+            bail!(
+                "sitemap XML ended with {} element(s) still open; \
+                 the download looks truncated",
+                self.depth
+            );
+        }
+        Ok(if self.is_index {
+            Sitemap::Index(self.locations)
+        } else {
+            Sitemap::Urls(self.locations)
+        })
+    }
 }
 
 /// Strip an XML namespace prefix, so `xhtml:link` compares as `link`.
@@ -188,6 +206,23 @@ mod tests {
 
         assert!(parse("<urlset><loc>unclosed").is_err());
         assert!(parse("<urlset></noturlset>").is_err(), "mismatched end tag");
+    }
+
+    /// Text outside `<loc>` (such as a `<lastmod>` date) is not a page address.
+    #[test]
+    fn collects_only_loc_text_and_trims_it() {
+        let xml = "<urlset><url><loc> https://herdr.dev/docs/a/ </loc>\
+                   <lastmod>2026-01-01</lastmod></url></urlset>";
+        assert_eq!(
+            parse(xml).unwrap(),
+            Sitemap::Urls(vec!["https://herdr.dev/docs/a/".to_string()])
+        );
+    }
+
+    #[test]
+    fn rejects_mismatched_tags_as_malformed() {
+        let err = parse("<urlset><url></urlset>").unwrap_err().to_string();
+        assert!(err.contains("malformed sitemap XML"), "{err}");
     }
 
     #[test]
