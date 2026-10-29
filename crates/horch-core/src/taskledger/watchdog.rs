@@ -839,6 +839,7 @@ mod tests {
         let pid = child.id();
         let Some(started) = crate::procid::start_time(pid) else {
             let _ = child.kill();
+            let _ = child.wait();
             return; // No start times on this platform.
         };
         let reaper = std::thread::spawn(move || child.wait().unwrap());

@@ -533,7 +533,9 @@ fn ensure_current(
 ) -> Result<()> {
     let root = ctx.paths.state_root.clone();
     match lock::holder(&root) {
-        Holder::Live(info) if lock::runs_other_binary(&info, horch_core::exeid::exe_identity(exe).as_ref()) => {
+        Holder::Live(info)
+            if lock::runs_other_binary(&info, horch_core::exeid::exe_identity(exe).as_ref()) =>
+        {
             // A collector horch cannot prove it owns (no recorded start time,
             // a reused pid) is left running: `ensure` runs on fleet start and
             // must not fail because an old collector is live.
