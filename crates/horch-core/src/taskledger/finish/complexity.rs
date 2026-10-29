@@ -172,8 +172,8 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
     };
     cmd.args(["--format", "json", "--threshold-action", "none"])
         .args(&files)
-        .current_dir(&cx.dir)
-        .env_remove("ANTHROPIC_API_KEY");
+        .current_dir(&cx.dir);
+    crate::runtime::process::scrub_child_env(&mut cmd);
     let out = cmd
         .output()
         .with_context(|| format!("running {}", cli.display()))?;

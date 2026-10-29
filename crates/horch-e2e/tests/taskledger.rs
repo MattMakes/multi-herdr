@@ -2302,3 +2302,64 @@ fn a_rust_only_change_is_not_sent_to_the_complexity_analyser() {
     assert_eq!(step_of(&r, "complexity-sweep").0, "not_applicable", "{r}");
     assert!(!called.exists(), "the analyser parses TypeScript only");
 }
+
+#[test]
+fn an_outer_git_dir_reaches_no_child_of_finish() {
+    let mut h = finish_world("tl-scrub");
+    // Another repository, as a hook or `git rebase -x` would name it.
+    let other = h.root.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    git_in(&h, &other, &["init", "--quiet", "-b", "main"]);
+    std::fs::write(other.join("o.txt"), "o\n").unwrap();
+    git_in(&h, &other, &["add", "o.txt"]);
+    git_in(
+        &h,
+        &other,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "other"],
+    );
+    let dumps = h.root.join("env");
+    std::fs::create_dir_all(&dumps).unwrap();
+    let gh = h.bin.join("gh").to_string_lossy().into_owned();
+    let gh_env = h.write_bin(
+        "gh-env",
+        format!(
+            "#!/bin/sh\n/usr/bin/env > {}/gh.env\nexec {gh} \"$@\"\n",
+            dumps.display()
+        )
+        .as_bytes(),
+    );
+    h.set("HORCH_GH_BIN", gh_env.to_string_lossy());
+    let cli = h.write_bin(
+        "complexity-env",
+        format!(
+            "#!/bin/sh\n/usr/bin/env > {}/complexity.env\necho '{{\"files\":[],\"violations\":[]}}'\n",
+            dumps.display()
+        )
+        .as_bytes(),
+    );
+    h.set("HORCH_COMPLEXITY_CLI", cli.to_string_lossy());
+    let check = format!("/usr/bin/env > {}/check.env", dumps.display());
+    let (w, _) = claimed_with_commit(&h, "check,complexity-sweep,land,pr", Some(&check), "a.ts");
+    h.set("GIT_DIR", other.join(".git").to_string_lossy());
+    h.set("GIT_WORK_TREE", other.to_string_lossy());
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    let project = h.project.clone();
+    assert_eq!(git_in(&h, &project, &["show", "fleet/alpha:a.ts"]), "a.ts");
+    let branches = git_in(&h, &other, &["branch", "--list"]);
+    assert_eq!(
+        branches.trim(),
+        "* main",
+        "the other repository is untouched"
+    );
+    for name in ["check", "complexity", "gh"] {
+        let env = std::fs::read_to_string(dumps.join(format!("{name}.env")))
+            .unwrap_or_else(|e| panic!("{name} ran: {e}"));
+        for var in ["GIT_DIR=", "GIT_WORK_TREE="] {
+            assert!(
+                !env.lines().any(|l| l.starts_with(var)),
+                "{name} got {var}: {env}"
+            );
+        }
+    }
+}

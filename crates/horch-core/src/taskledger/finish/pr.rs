@@ -19,10 +19,10 @@ use crate::taskledger::store::Store;
 use crate::taskledger::util::{self, About};
 
 fn gh(bin: &Path, dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new(bin)
-        .args(args)
-        .current_dir(dir)
-        .env_remove("ANTHROPIC_API_KEY")
+    let mut cmd = Command::new(bin);
+    cmd.args(args).current_dir(dir);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {

@@ -692,3 +692,38 @@ fn ctx_07_compaction_pure_modules_do_no_io() {
         found.join("\n")
     );
 }
+
+/// A child's environment is cleaned in 1 place, `scrub_child_env` (#88): a
+/// hand-built removal of the API key is the sign of a child that keeps the
+/// caller's `GIT_DIR`. Only the runtime and the launch builder name it.
+#[test]
+fn arc_88_children_are_scrubbed_in_one_place() {
+    let needle = concat!("env_remove(\"ANTHROPIC", "_API_KEY\")");
+    let mut found = Vec::new();
+    for krate in [
+        "horch-core",
+        "horch",
+        "horch-marketplace",
+        "herdr-install",
+        "herdr-docs-sync",
+    ] {
+        let root = crate_src(krate);
+        if !root.is_dir() {
+            continue;
+        }
+        let mut files = Vec::new();
+        rust_files(&root, &mut files);
+        files.retain(|f| {
+            let rel = relative(f, &root);
+            !(krate == "horch-core" && (rel.starts_with("runtime/") || rel == "harness/launch.rs"))
+        });
+        for line in forbidden_lines(&root, &files, &[needle]) {
+            found.push(format!("{krate}/{line}"));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "use runtime::process::scrub_child_env:\n{}",
+        found.join("\n")
+    );
+}
