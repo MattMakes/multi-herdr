@@ -366,6 +366,7 @@ pub fn fleet_with(
     super::spawn::fleet_warnings(&warning_ctx, false);
 
     warn_about_missing_integrations(&herdr);
+    super::restore::warn_if_resume_on(ctx);
 
     let flavor = if flavor == FleetFlavor::Auto {
         let state_root = ctx.paths.state_root.clone();

@@ -698,6 +698,17 @@ fn run() -> Result<std::process::ExitCode> {
         Command::Spawn { .. } | Command::Inbox { .. } => cmd::selfupdate::stale_warning(&ctx),
         _ => {}
     }
+    // A pane that herdr resumed after a restart has no HORCH_ROLE (#125).
+    if matches!(
+        &cli.command,
+        Command::Tell { .. }
+            | Command::Inbox { .. }
+            | Command::Note { .. }
+            | Command::Done { .. }
+            | Command::Ledger { .. }
+    ) {
+        cmd::restore::adopt_restored_identity(&mut ctx);
+    }
     let remind = !matches!(
         &cli.command,
         Command::Channel { .. }
