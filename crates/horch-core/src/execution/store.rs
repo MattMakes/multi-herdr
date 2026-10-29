@@ -660,7 +660,7 @@ fn render_records(records: &[LedgerRecordV1], out: &mut String) {
                 r.substitution_reason.as_deref().unwrap_or("substituted")
             ));
         }
-        out.push_str(&format!("  task: {}\n", r.task));
+        out.push_str(&format!("  task: {}\n", r.task.replace('\n', "\n        ")));
         let notable: Vec<&crate::execution::legacy::HistoryEntry> = r
             .history
             .iter()
@@ -672,7 +672,15 @@ fn render_records(records: &[LedgerRecordV1], out: &mut String) {
             })
             .collect();
         for h in notable.iter().rev().take(3).rev() {
-            out.push_str(&format!("  {} @ {}: {}\n", h.event, h.at, h.text));
+            out.push_str(&format!(
+                "  {} @ {}: {}\n",
+                h.event,
+                h.at,
+                h.text.replace(
+                    '\n',
+                    &format!("\n  {}", " ".repeat(h.event.len() + h.at.len() + 5))
+                )
+            ));
         }
         out.push('\n');
     }

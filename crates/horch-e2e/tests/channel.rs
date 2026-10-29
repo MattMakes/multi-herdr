@@ -419,7 +419,7 @@ fn w2_e2e_refused_tell_without_a_pane_does_not_claim_no_orchestrator() {
     let sent = tell(&h);
     assert!(sent.status.success(), "{}", stderr(&sent));
     assert!(
-        stderr(&sent).contains("the courier will redeliver it"),
+        stderr(&sent).contains("queued, not yet acknowledged"),
         "{}",
         stderr(&sent)
     );

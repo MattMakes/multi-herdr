@@ -469,6 +469,7 @@ fn pre_08_safe_n_waves() {
         os: "unknown".into(),
         arch: "unknown".into(),
         cpus: Known::Unknown,
+        load_average_1m: None,
         mem_total_bytes: Known::Unknown,
         mem_available_bytes: Known::Unknown,
         disk_free_bytes: Known::Unknown,

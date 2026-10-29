@@ -20,6 +20,7 @@ pub mod timer;
 pub mod util;
 pub mod watchdog;
 pub mod workers;
+pub mod worktree_ops;
 
 pub use store::Store;
 

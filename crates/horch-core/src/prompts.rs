@@ -58,6 +58,27 @@ pub fn worker_prompt(
     task: &str,
     session: &SessionMode,
 ) -> Result<String> {
+    worker_prompt_with_context(
+        roster,
+        teammate,
+        role,
+        task,
+        session,
+        "(No project facts recorded.)",
+        &crate::project_notes::host_line(),
+    )
+}
+
+/// Render a worker with launch-time project knowledge and host capabilities.
+pub fn worker_prompt_with_context(
+    roster: &Roster,
+    teammate: &Teammate,
+    role: &str,
+    task: &str,
+    session: &SessionMode,
+    project_facts: &str,
+    host: &str,
+) -> Result<String> {
     let base_name = match &teammate.base {
         Some(b) => b.as_str(),
         None => return agent_prompt(roster, teammate, role),
@@ -75,6 +96,8 @@ pub fn worker_prompt(
 
     let mut vars = BTreeMap::from([
         ("role", role),
+        ("project_facts", project_facts),
+        ("host", host),
         ("persona", teammate.persona.as_str()),
         ("task_briefing", closing.as_str()),
     ]);

@@ -220,7 +220,21 @@ pub enum LedgerCommand {
 #[derive(Subcommand)]
 pub enum WorktreeCommand {
     /// Create this worker's worktree (or get the task's existing one back).
-    New { name: String },
+    New {
+        name: String,
+        #[arg(long)]
+        from: Option<String>,
+    },
+    /// Create a registered scratch worktree that does not block completion.
+    Scratch { name: String },
+    /// Abandon a clean registered worktree without losing unique commits.
+    Drop {
+        name: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        keep_branch: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -459,17 +473,59 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         }
         LedgerCommand::Claim { json: as_json } => claim(ctx, &mut store, as_json),
         LedgerCommand::Worktree {
-            command: WorktreeCommand::New { name },
+            command: WorktreeCommand::New { name, from },
         } => {
             let wid = worker_id(ctx)?;
             let git = Git::new(&ctx.bins.harness.git);
-            let wt = finish::worktree_new(&mut store, &git, &wid, &name)?;
+            let wt = taskledger::worktree_ops::create(
+                &mut store,
+                &git,
+                &wid,
+                &name,
+                from.as_deref(),
+                false,
+            )?;
             output::println(&format!("path: {}", wt.path));
             output::println(&format!("branch: {}", wt.branch));
+            output::println(&format!("base: {}", wt.base));
             output::println(&format!(
                 "Work and commit in {}. When the work is complete, run: horch ledger finish",
                 wt.path
             ));
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Worktree {
+            command: WorktreeCommand::Scratch { name },
+        } => {
+            let wid = worker_id(ctx)?;
+            let git = Git::new(&ctx.bins.harness.git);
+            let wt = taskledger::worktree_ops::create(&mut store, &git, &wid, &name, None, true)?;
+            output::println(&format!("path: {}", wt.path));
+            output::println(&format!("branch: {}", wt.branch));
+            output::println("Scratch worktree: drop it when it is no longer needed; it does not block completion.");
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Worktree {
+            command:
+                WorktreeCommand::Drop {
+                    name,
+                    reason,
+                    keep_branch,
+                },
+        } => {
+            let wid = worker_id(ctx)?;
+            let worker = workers::get(store.conn(), &wid)?;
+            let run_id = worker.run_id.as_deref().context("worker has no run")?;
+            let git = Git::new(&ctx.bins.harness.git);
+            let wt = taskledger::worktree_ops::drop_worktree(
+                &mut store,
+                &git,
+                run_id,
+                &name,
+                &reason,
+                keep_branch,
+            )?;
+            output::println(&format!("abandoned: {} ({reason})", wt.path));
             Ok(ExitCode::SUCCESS)
         }
         LedgerCommand::Finish { json: as_json } => {
@@ -1187,7 +1243,14 @@ fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitC
             ));
             output::println(&tell);
         }
-        ClaimOutcome::Claimed(c) => output::print(&render_claim(&c)),
+        ClaimOutcome::Claimed(c) => {
+            output::print(&render_claim(&c));
+            let facts =
+                horch_core::project_notes::display(&ctx.paths.state_root, &ctx.paths.project()?)?;
+            if !facts.is_empty() {
+                output::println(&facts);
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1478,6 +1541,9 @@ fn progress(
 ) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
     store.immediate(|tx| workers::progress(tx, &wid, ProgressSource::Agent, kind, text))?;
+    if let Err(error) = super::compact::worker_note_context(ctx, text) {
+        eprintln!("horch ledger: context check failed: {error:#}");
+    }
     Ok(ExitCode::SUCCESS)
 }
 

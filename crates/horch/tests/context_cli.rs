@@ -180,11 +180,19 @@ This horch note call is your stopping point. Do not start new work. \
 Write ai_docs/handoffs/sonnet-1-whats-next.md with the horch:handoff skill. \
 Then run: horch note \"handoff: ai_docs/handoffs/sonnet-1-whats-next.md\". \
 Then send: horch tell orchestrator \"[sonnet-1] NOTE: COMPACT-READY ai_docs/handoffs/sonnet-1-whats-next.md\". \
-Then end your turn.\n";
+Then end your turn. If DONE WHEN is met, run horch ledger finish, then horch ledger done (or horch done) instead.\n";
     let me = [("HORCH_RECORD_ID", "rec-s1")];
     assert_eq!(w.stdout(&["note", "step 1 done"], &me), warning);
     let handoff = "handoff: ai_docs/handoffs/sonnet-1-whats-next.md";
-    assert_eq!(w.stdout(&["note", handoff], &me), "", "1 warning per cycle");
+    // A handoff now attempts automatic compaction. This offline fixture has
+    // no workspace; keep the note and expose that scheduling refusal.
+    let handoff_out = w.horch(&["note", handoff], &me);
+    assert!(handoff_out.status.success());
+    assert_eq!(handoff_out.stdout, b"", "1 warning per cycle");
+    assert_eq!(
+        String::from_utf8(handoff_out.stderr).unwrap(),
+        "horch note: context follow-up: not inside a herdr pane (HERDR_PANE_ID is unset) and HORCH_WORKSPACE_ID is not set\n"
+    );
     let history = w.history("rec-s1");
     let notes: Vec<&str> = history
         .iter()
@@ -537,6 +545,7 @@ fn ctx_24_json_has_every_key_and_nulls() {
         "transcript",
         "pane",
         "pane_status",
+        "pane_gone",
         "tokens",
         "provisional",
         "pending",

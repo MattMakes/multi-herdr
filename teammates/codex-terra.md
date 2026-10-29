@@ -1,6 +1,6 @@
 ---
 name: codex-terra
-brief_description: Generic worker, Codex flavor. Straightforward grunt work; executes exactly what is asked.
+brief_description: "Precise code. fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."
 generic: true
 base: fleet-worker
 agent: codex

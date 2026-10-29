@@ -1,6 +1,6 @@
 ---
 name: orchestrator-codex
-brief_description: The fleet orchestrator, Codex flavor. Never spawned as a worker; started by `horch fleet codex`.
+brief_description: "Fleet orchestrator. fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."
 hidden: true
 base: fleet-orchestrator
 agent: codex

@@ -19,6 +19,8 @@ pub struct WorktreeLine {
     pub task: Option<String>,
     pub path: String,
     pub branch: String,
+    pub base: String,
+    pub scratch: bool,
     pub status: String,
     pub bytes_on_disk: Option<i64>,
     pub reason: Option<String>,
@@ -43,6 +45,7 @@ pub struct WorkerLine {
     pub progress_age_s: Option<i64>,
     /// A working worker with no check in the last 2 check intervals.
     pub unwatched: bool,
+    pub waiting: Vec<workers::Wait>,
 }
 
 /// The board of 1 run.
@@ -70,9 +73,10 @@ pub struct Counts {
 /// The worktrees of a run.
 pub fn worktrees(conn: &Connection, run_id: &str) -> Result<Vec<WorktreeLine>> {
     let mut stmt = conn.prepare(
-        "SELECT w.worktree_id, t.seq, w.path, w.branch, w.status, w.bytes_on_disk, w.reason
-         FROM worktrees w JOIN tasks t ON t.task_id = w.task_id
-         WHERE t.run_id = ?1 ORDER BY w.created_at, w.rowid",
+        "SELECT w.worktree_id, t.seq, w.path, w.branch, w.status, w.bytes_on_disk, w.reason, w.base, COALESCE(m.scratch, 0)
+         FROM worktrees w LEFT JOIN tasks t ON t.task_id = w.task_id
+         LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
+         WHERE t.run_id = ?1 OR m.run_id = ?1 ORDER BY w.created_at, w.rowid",
     )?;
     let rows = stmt
         .query_map([run_id], |r| {
@@ -84,6 +88,8 @@ pub fn worktrees(conn: &Connection, run_id: &str) -> Result<Vec<WorktreeLine>> {
                 status: r.get(4)?,
                 bytes_on_disk: r.get(5)?,
                 reason: r.get(6)?,
+                base: r.get(7)?,
+                scratch: r.get::<_, i64>(8)? != 0,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -170,6 +176,7 @@ pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
                 .map(|l| l.task.short())
         });
         wl.push(WorkerLine {
+            waiting: workers::waiting(conn, &w.worker_id)?,
             worker: w,
             task,
             checkin_age_s,
@@ -181,7 +188,7 @@ pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
     let open_tasks = counts.queued + counts.running + counts.landing;
     let open_worktrees = wts
         .iter()
-        .any(|w| !matches!(w.status.as_str(), "cleaned" | "unlanded" | "abandoned"));
+        .any(|w| !w.scratch && !matches!(w.status.as_str(), "cleaned" | "unlanded" | "abandoned"));
     Ok(Report {
         run: run.clone(),
         tasks: lines,
@@ -246,6 +253,16 @@ pub fn render(r: &Report) -> String {
     if !live.is_empty() {
         let _ = writeln!(out, "Live workers:");
         for w in live {
+            for wait in &w.waiting {
+                let _ = writeln!(
+                    out,
+                    "  {} waiting: {} ({} ago; until {})",
+                    w.worker.label(),
+                    wait.reason,
+                    age(util::seconds_between(&wait.started_at, &util::now())),
+                    wait.deadline
+                );
+            }
             let _ = writeln!(
                 out,
                 "  {:<20} {:<9} {:<5} checkin {} ago, progress {} ago{}",
@@ -268,10 +285,12 @@ pub fn render(r: &Report) -> String {
         for w in open {
             let _ = writeln!(
                 out,
-                "  {:<5} {:<14} {}{}",
+                "  {:<5} {:<14} {} (base {}){}{}",
                 w.task.as_deref().unwrap_or("-"),
                 w.status,
                 w.path,
+                w.base,
+                if w.scratch { " [scratch]" } else { "" },
                 w.reason
                     .as_deref()
                     .map(|r| format!(" ({r})"))

@@ -47,13 +47,16 @@ pub enum GpuClass {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     /// `"macos"`, `"linux"`, `"windows"` or another `std::env::consts::OS` value.
     pub os: String,
     pub arch: String,
     pub cpus: Known<u32>,
+    /// One minute host load; absent on platforms without getloadavg.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_average_1m: Option<f64>,
     pub mem_total_bytes: Known<u64>,
     pub mem_available_bytes: Known<u64>,
     pub disk_free_bytes: Known<u64>,
@@ -102,6 +105,7 @@ pub fn probe(path: &Path, bins: &ProbeBins, fixture: Option<&Path>) -> MachineSn
             .ok()
             .map(|n| n.get() as u32)
             .into(),
+        load_average_1m: sys::load_average(),
         mem_total_bytes: parts.mem_total.into(),
         mem_available_bytes: parts.mem_available.into(),
         disk_free_bytes: parts.disk_free.into(),
@@ -117,6 +121,7 @@ fn all_unknown() -> MachineSnapshot {
         os: "unknown".to_string(),
         arch: "unknown".to_string(),
         cpus: Known::Unknown,
+        load_average_1m: None,
         mem_total_bytes: Known::Unknown,
         mem_available_bytes: Known::Unknown,
         disk_free_bytes: Known::Unknown,
@@ -140,6 +145,11 @@ struct Parts {
 
 #[cfg(unix)]
 mod sys {
+    pub(super) fn load_average() -> Option<f64> {
+        let mut value = 0.0;
+        // SAFETY: getloadavg writes one double to a valid out pointer.
+        (unsafe { libc::getloadavg(&mut value, 1) } == 1).then_some(value)
+    }
     /// The OS host name (gethostname), if it has one.
     pub(super) fn host_name() -> Option<String> {
         let mut buf = [0u8; 256];
@@ -310,6 +320,9 @@ mod sys {
 
 #[cfg(not(unix))]
 mod sys {
+    pub(super) fn load_average() -> Option<f64> {
+        None
+    }
     /// No gethostname here: the caller reads `COMPUTERNAME`.
     pub(super) fn host_name() -> Option<String> {
         None

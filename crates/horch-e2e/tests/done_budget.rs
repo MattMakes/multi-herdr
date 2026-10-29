@@ -150,7 +150,9 @@ fn done_finishes_in_time_against_a_stuck_orchestrator() {
         text(&o)
     );
     assert!(
-        String::from_utf8_lossy(&o.stderr).contains("the courier will redeliver it"),
+        String::from_utf8_lossy(&o.stderr).contains("queued, not yet acknowledged")
+            && String::from_utf8_lossy(&o.stderr)
+                .contains("redelivered until horch inbox reads it"),
         "{}",
         text(&o)
     );

@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 1;
+pub const VERSION: i64 = 2;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -310,6 +310,19 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
     if current < 1 {
         tx.execute_batch(&v1())
             .context("creating the task ledger tables")?;
+    }
+    if current < 2 {
+        tx.execute_batch(
+            "CREATE TABLE worker_waits (
+            worker_id TEXT NOT NULL REFERENCES workers(worker_id),
+            kind TEXT NOT NULL CHECK(kind IN ('question','reviewers','background')),
+            reason TEXT NOT NULL, started_at TEXT NOT NULL, deadline TEXT NOT NULL,
+            task_ids TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(worker_id,kind));
+            CREATE TABLE worktree_modes (
+                worktree_id TEXT PRIMARY KEY REFERENCES worktrees(worktree_id),
+                run_id TEXT NOT NULL REFERENCES runs(run_id), name TEXT NOT NULL,
+                scratch INTEGER NOT NULL DEFAULT 0 CHECK(scratch IN (0,1))); ",
+        )?;
     }
     tx.pragma_update(None, "user_version", VERSION)?;
     tx.commit()?;

@@ -440,6 +440,61 @@ pub(crate) fn find_rollouts(
     found
 }
 
+/// Stable unique marker shared by launch-time and done-time discovery.
+pub fn launch_token(record_id: &str) -> String {
+    format!("HORCH-LAUNCH:{record_id}:END")
+}
+
+/// Candidates must carry this launch's token in their first user message.
+pub fn find_launch_rollouts(
+    sessions: &Path,
+    project: &str,
+    since: SystemTime,
+    record_id: &str,
+) -> Vec<RolloutCandidate> {
+    let token = launch_token(record_id);
+    find_rollouts(sessions, project, since)
+        .into_iter()
+        .filter(|candidate| {
+            let Ok(file) = std::fs::File::open(&candidate.path) else {
+                return false;
+            };
+            use std::io::BufRead;
+            let mut first_response_user = None;
+            for line in std::io::BufReader::new(file.take(1024 * 1024))
+                .lines()
+                .map_while(Result::ok)
+            {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                let payload = &value["payload"];
+                if first_response_user.is_none()
+                    && value["type"] == "response_item"
+                    && payload["role"] == "user"
+                {
+                    first_response_user =
+                        Some(payload["content"].as_array().is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                part["text"]
+                                    .as_str()
+                                    .is_some_and(|text| text.contains(&token))
+                            })
+                        }));
+                }
+                // The event records the actual submitted prompt; response items can
+                // include preceding AGENTS/environment context represented as user text.
+                if value["type"] == "event_msg" && payload["type"] == "user_message" {
+                    return payload["message"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(&token));
+                }
+            }
+            first_response_user.unwrap_or(false)
+        })
+        .collect()
+}
+
 fn collect_rollouts(
     dir: &Path,
     since: SystemTime,
@@ -686,7 +741,7 @@ impl Harness for Codex {
 /// The value of `key` (dotted, for example `tui.auto_recap`) in a codex
 /// `config.toml`, at its top level and in its tables. The legacy
 /// `[profiles.<p>]` table and the top-level `profile` key are not read: Codex
-/// 0.163.0 refuses them; [`ConfigLayers`] reads `<name>.config.toml`. A
+/// 0.163.0 refuses them; `ConfigLayers` reads `<name>.config.toml`. A
 /// string loses its quotes and a number its `_` separators. A line scanner
 /// like `trust::codex_trust`, not a TOML parser: no TOML crate.
 pub fn codex_config_value(text: &str, key: &str) -> Option<String> {
@@ -930,7 +985,7 @@ fn profile_sandbox(profile: &str) -> String {
 
 /// The fleet's write profile. A write pane launches in it; a plan pane
 /// defines it so `horch mode <role> write` can select it in `/permissions`
-/// (X6 repro 5). See [`fleet_write_profile_args`].
+/// (X6 repro 5). See `fleet_write_profile_args`.
 pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
 
 /// The `-c` pairs that define [`FLEET_WRITE_PROFILE`]:

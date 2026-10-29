@@ -4,6 +4,41 @@
 
 ## Unreleased
 
+- Worker reports and task-ledger wakes remain queued until `horch inbox`
+  acknowledges them. Missing orchestrator registrations no longer drop
+  mail, and the courier keeps retrying while the orchestrator is available.
+  An expired Claude login pauses delivery and sends one operator notification.
+- `horch inbox` shows worker state and unanswered questions. `horch peek
+  <role> --lines <n>` reads a worker's recent pane output without typing.
+- The watchdog recognizes waits for reviews, unanswered questions and
+  background commands, with deadlines and visible reasons. A dead agent
+  process is still detected immediately. The task ledger upgrades to schema 2;
+  older horch binaries refuse the upgraded database, so fleets sharing it
+  need the updated binary.
+- `horch ledger worktree new --from <ref>`, `scratch`, and `drop` support
+  alternate branches and disposable work. Drop refuses dirty or unique work;
+  `--keep-branch` retains commits when removing a clean worktree.
+- `horch sessions` and `horch context` default to the caller's workspace.
+  Both accept `--all-workspaces`, `--live` and `--role`; closed panes are
+  marked, and multiline session summaries remain readable.
+- Codex session discovery matches a unique launch token, so workers started
+  together do not share the wrong session or transcript.
+- A worker's handoff note can schedule compaction automatically. Ledger
+  notes and progress now run the context check, and compaction completion
+  counts as progress.
+- Fleet startup prints its version and checks message acknowledgement.
+  Offline stale-binary checks, live-orchestrator warnings and host-load
+  notes make conflicting work visible. Doctor also tests delivery, Docker,
+  MCP command availability and sandbox support, and warns about proxy hosts.
+- Quota parsers cover captured replies from current Claude Code, Codex and
+  Antigravity CLIs. Unknown readings show their reason in `horch quota`.
+- `horch note --fact` shares bounded, deduplicated project facts with later
+  worker briefs and claims. Briefs name the host and its command-line tools.
+- Worker and orchestrator instructions now cover reversible questions,
+  background waits, exact permission denials, one completion report and
+  delegated verification. Orchestrators retain decisions and get a command
+  card on resume; Claude workers pre-allow common read-only commands.
+
 ## v0.4.0 - 2026-10-29
 
 - Fleet role registrations, briefs and launch records now live in horch's

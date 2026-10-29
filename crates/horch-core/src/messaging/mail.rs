@@ -40,12 +40,17 @@ impl Mail {
     }
 
     pub fn enqueue(&self, from: &str, text: &str) -> Result<Id> {
+        self.enqueue_with_questions(from, text, text)
+    }
+
+    /// Keep question lines from the original body before transport truncation.
+    pub fn enqueue_with_questions(&self, from: &str, text: &str, original: &str) -> Result<Id> {
         let pending = self.dir.join("pending");
         std::fs::create_dir_all(&pending)
             .with_context(|| format!("creating {}", pending.display()))?;
         self.prune_acked()?;
 
-        let created_at = SystemTime::now();
+        let created_at = crate::clock::now().into();
         let id = next_id(created_at);
         let message = Message {
             id: id.clone(),
@@ -65,13 +70,147 @@ impl Mail {
             let _ = std::fs::remove_file(&temp_path);
             return Err(error).with_context(|| format!("writing {}", temp_path.display()));
         }
+        let questions = original
+            .lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                let line = line
+                    .strip_prefix(&format!("[{from}]"))
+                    .unwrap_or(line)
+                    .trim_start();
+                line.starts_with("QUESTION:") || line.starts_with("BLOCKED:")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let question_path = if questions.is_empty() {
+            None
+        } else {
+            let dir = self.dir.join("questions");
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join(format!("{}.json", id.0));
+            let temporary = dir.join(format!(".{}.tmp", id.0));
+            let question = Message {
+                text: questions,
+                ..message
+            };
+            let bytes = serde_json::to_vec(&question)?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, &path)?;
+            Some(path)
+        };
+        // Publish questions first: a courier/inbox can observe pending mail as
+        // soon as this rename completes, and acknowledgement must not erase them.
         if let Err(error) = std::fs::rename(&temp_path, &final_path) {
             let _ = std::fs::remove_file(&temp_path);
+            if let Some(path) = question_path {
+                let _ = std::fs::remove_file(path);
+            }
             return Err(error).with_context(|| {
                 format!("moving {} to {}", temp_path.display(), final_path.display())
             });
         }
         Ok(id)
+    }
+
+    /// Unanswered questions are independent of pending mail and need no ledger run.
+    pub fn open_questions(&self) -> Result<Vec<Message>> {
+        let dir = self.dir.join("questions");
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let now: SystemTime = crate::clock::now().into();
+        let mut out = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let file = match File::open(&path) {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            let message: Message = serde_json::from_reader(file)?;
+            if now
+                .duration_since(message.created_at)
+                .is_ok_and(|age| age > ACK_RETENTION)
+            {
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+                continue;
+            }
+            let answered: Option<SystemTime> = std::fs::read(self.answer_path(&message.from))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok());
+            if answered.is_none_or(|at| at < message.created_at) {
+                out.push(message);
+            }
+        }
+        out.sort_by_key(|m| m.created_at);
+        Ok(out)
+    }
+
+    fn answer_path(&self, role: &str) -> PathBuf {
+        self.dir
+            .join("answers")
+            .join(format!("{}.json", file_safe(role)))
+    }
+
+    /// An orchestrator reply closes questions created before this tell.
+    pub fn answer(&self, role: &str) -> Result<()> {
+        let path = self.answer_path(role);
+        std::fs::create_dir_all(path.parent().expect("answer parent"))?;
+        let now: SystemTime = crate::clock::now().into();
+        let _guard = crate::fsx::DirLock::acquire(
+            path.parent().expect("answer parent"),
+            &format!("answer-{}", file_safe(role)),
+            Duration::from_secs(300),
+            Duration::from_secs(5),
+        )?;
+        let existing: Option<SystemTime> = match std::fs::read(&path) {
+            Ok(bytes) => Some(serde_json::from_slice(&bytes)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        if existing.is_some_and(|at| at >= now) {
+            return Ok(());
+        }
+        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        std::fs::write(&temporary, serde_json::to_vec(&now)?)?;
+        std::fs::rename(temporary, path)?;
+        Ok(())
+    }
+
+    /// Shared persisted login state. Returns true only for the first observer.
+    pub fn set_login_required(&self, required: bool) -> Result<bool> {
+        std::fs::create_dir_all(&self.dir)?;
+        let path = self.dir.join("login-required");
+        if required {
+            return match OpenOptions::new().write(true).create_new(true).open(path) {
+                Ok(_) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(e) => Err(e.into()),
+            };
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn login_required(&self) -> bool {
+        self.dir.join("login-required").exists()
     }
 
     pub fn pending(&self) -> Result<Vec<Message>> {
@@ -150,15 +289,25 @@ impl Mail {
     }
 }
 
-/// The wait before each redelivery, from the one before it (or from the
-/// enqueue, for the first): 30 s doubling, capped at 5 min, 6 in all.
+/// Early retries: 30s, 60s, 120s, 240s, 300s, 300s; then every five minutes.
 const REDELIVERY_GAPS: [u64; 6] = [30, 60, 120, 240, 300, 300];
 
-/// How long after the enqueue redelivery `attempt` (1-based) is due. `None`
-/// after the last one.
+/// Total age at which a one-based attempt is due; pending mail never expires.
 pub fn redelivery_offset(attempt: usize) -> Option<Duration> {
-    let gaps = REDELIVERY_GAPS.get(..attempt).filter(|_| attempt > 0)?;
-    Some(Duration::from_secs(gaps.iter().sum()))
+    if attempt == 0 {
+        return None;
+    }
+    let early: u64 = REDELIVERY_GAPS.iter().take(attempt).sum();
+    let late = u64::try_from(attempt.saturating_sub(REDELIVERY_GAPS.len()))
+        .ok()?
+        .checked_mul(300)?;
+    Some(Duration::from_secs(early.checked_add(late)?))
+}
+
+/// Claude Code login screen match strings; fixtures cover every table row.
+pub const LOGIN_PROMPTS: &[&str] = &["Please run /login"];
+pub fn needs_login(screen: &str) -> bool {
+    LOGIN_PROMPTS.iter().any(|prompt| screen.contains(prompt))
 }
 
 pub fn redelivery_due(created_at: SystemTime, attempt: usize) -> Option<SystemTime> {
@@ -279,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn redelivery_schedule_caps_at_five_minutes_and_stops_after_six() {
+    fn redelivery_schedule_caps_at_five_minutes_and_continues() {
         let created_at = SystemTime::UNIX_EPOCH;
         // 30 s, 1 m, 2 m, 4 m, 5 m and 5 m apart.
         let expected = [30, 90, 210, 450, 750, 1050];
@@ -291,6 +440,9 @@ mod tests {
             );
         }
         assert_eq!(redelivery_due(created_at, 0), None);
-        assert_eq!(redelivery_due(created_at, 7), None);
+        assert_eq!(
+            redelivery_due(created_at, 7),
+            Some(created_at + Duration::from_secs(1350))
+        );
     }
 }

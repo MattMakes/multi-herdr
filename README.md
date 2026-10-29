@@ -71,6 +71,13 @@ team), and for a setting that overrides every teammate's effort. Run it from
 your project directory: it counts the teammates the orchestrator would be
 offered there.
 
+Doctor also tests delivery in a temporary two-pane workspace and checks the
+Docker, MCP commands and sandbox support that offered teammates need. It warns
+about a non-Anthropic Claude proxy host. Fleet startup queues an acknowledgement
+probe; a warning leaves that probe pending for the courier. Startup prints the
+running version, and `doctor`, `spawn` and `inbox` warn about known stale binaries
+without a network check. `HORCH_NO_SELF_CHECK=1` silences that warning.
+
 Both smoke checks spend no LLM tokens and clean up after themselves. They leave
 the scratch workspace open when they fail, so you can look at it.
 
@@ -158,6 +165,7 @@ pane's terminal and submitted, as if you switched panes and typed it by hand.
 |------------------------------------|--------------|---------------------------------------|
 | `horch tell <role> "<message>"`    | anyone       | Type a message into another pane      |
 | `horch inbox`                      | anyone       | List roles; the orchestrator prints and acknowledges pending worker messages |
+| `horch peek <role> --lines 20`      | anyone       | Read the recent output of a registered worker |
 | `horch assign <role> "<task>"`     | orchestrator | Record a task on the ledger, then send it |
 | `horch spawn <teammate> "<task>"`  | orchestrator | New pane, new agent session           |
 | `horch spawn --resume <id> "<task>"` | orchestrator | New pane, resuming an old session   |
@@ -166,6 +174,7 @@ pane's terminal and submitted, as if you switched panes and typed it by hand.
 | `horch tile`                       | orchestrator | Rearrange every pane into the grid    |
 | `horch balance`                    | orchestrator | Make every worker column the same width |
 | `horch note "<update>"`            | worker       | Record progress on its ledger record  |
+| `horch note --fact "<fact>"`       | anyone       | Share one project fact with later worker briefs and claims |
 | `horch done "<summary>"`           | worker       | Record a summary, report, close its pane |
 
 `horch tile` puts every pane where it belongs: the orchestrator full height down
@@ -801,6 +810,7 @@ cold. Workers close their own pane when done, but their sessions stay resumable.
 ```bash
 horch sessions              # readable summary, newest first
 horch sessions --json       # the raw records
+horch sessions --all-workspaces --live --role sonnet-2
 horch ledger legacy path           # where the file lives
 ```
 
@@ -808,6 +818,10 @@ The ledger lives at `$HORCH_STATE_DIR`, else
 `${XDG_STATE_HOME:-~/.local/state}/horch/<slugified-project-path>.json`. The
 format is unchanged from the previous bash implementation, so existing ledgers
 stay readable and their sessions stay resumable.
+
+`sessions` and `context` show only the caller's workspace by default; outside a
+workspace they show the project. Both support `--all-workspaces`, `--live` and
+`--role`. A live record whose pane has disappeared is marked `(pane gone)`.
 
 ## The task ledger
 
@@ -822,6 +836,17 @@ cleanup that refuses to lose work. Workers check in every 30 s, a watchdog
 reaps a worker that stops making progress, and workers are stopped only by
 the PIDs the ledger recorded (`horch ledger stop`). See
 [docs/specs/task-ledger.md](docs/specs/task-ledger.md).
+
+Workers may create a worktree with `horch ledger worktree new <name> --from
+<ref>`, or a disposable one with `horch ledger worktree scratch <name>`.
+`horch ledger worktree drop <name> --reason "<why>"` abandons a clean tree and
+refuses unique commits; `--keep-branch` keeps the branch when removing the
+folder. Scratch and abandoned trees do not block task completion.
+
+`horch ledger progress "waiting: <command>"` records a bounded background wait.
+The watchdog also recognizes pending reviews and unanswered questions; these
+waits reset stall counting when they end. Missing agent processes are still
+detected immediately. Status shows each waiting reason and age.
 
 ## Skills, domain teams and the contributor handbook
 

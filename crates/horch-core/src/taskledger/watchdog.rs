@@ -123,6 +123,7 @@ pub fn check_run(
             continue;
         }
         let o = observer.observe(&w);
+        let waits = workers::waiting(store.conn(), &w.worker_id)?;
         let checkin_age = w
             .last_checkin_at
             .as_deref()
@@ -167,6 +168,19 @@ pub fn check_run(
         let timer_short = timer_delta.is_some_and(|d| d < elapsed - tol);
         let (mut verdict, mut note, source) = if !o.agent_alive {
             (Verdict::Dead, "the agent process is gone".to_string(), None)
+        } else if !waits.is_empty() {
+            (
+                Verdict::Progress,
+                format!(
+                    "waiting: {}",
+                    waits
+                        .iter()
+                        .map(|w| w.reason.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+                None,
+            )
         } else if agent_moved {
             (
                 Verdict::Progress,
@@ -224,7 +238,7 @@ pub fn check_run(
             )
         };
         let mut round = match verdict {
-            Verdict::NoProgress => w.stall_rounds + 1,
+            Verdict::NoProgress => workers::get(store.conn(), &w.worker_id)?.stall_rounds + 1,
             Verdict::Dead => w.stall_rounds,
             _ => 0,
         };

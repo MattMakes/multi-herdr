@@ -4,6 +4,7 @@ pub mod channel;
 pub mod compact;
 pub mod context;
 pub mod cost;
+pub mod delivery_probe;
 pub mod doctor;
 pub mod install;
 pub mod layoutcmd;

@@ -94,6 +94,13 @@ fn pass(
     let live = Live {
         herdr: Herdr::with_bin(&ctx.bins.harness.herdr),
     };
+    if let Some(workspace) = run.workspace_id.as_deref() {
+        horch_core::taskledger::workers::sync_questions(
+            store.conn(),
+            &ctx.paths.state_root,
+            workspace,
+        )?;
+    }
     let checked = watchdog::check_run(store, run, &live, force)?;
     for c in &checked {
         let who = c.role.as_deref().unwrap_or(&c.worker_id);
