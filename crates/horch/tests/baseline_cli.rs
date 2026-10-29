@@ -121,7 +121,13 @@ impl World {
 
     fn horch(&self, args: &[&str]) -> String {
         let teammates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
-        let out = Command::new(env!("CARGO_BIN_EXE_horch"))
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
+        // A test run inside a herdr pane must not see that pane's workspace:
+        // sessions are filtered by workspace, which would hide the fixtures.
+        for (key, _) in std::env::vars().filter(|(k, _)| k.starts_with("HERDR_")) {
+            cmd.env_remove(key);
+        }
+        let out = cmd
             .args(args)
             .current_dir(&self.root)
             .env("HOME", self.root.join("home"))
