@@ -1135,6 +1135,92 @@ fn pro_05_cleanup_after_receipt_only() {
     assert_eq!(f.events()[3].payload["final_outcome"], "promoted");
 }
 
+/// The skip reasons, and the final outcome each starting state records.
+#[test]
+fn cleanup_outcome_per_starting_state() {
+    let Some(f) = Fixture::new() else { return };
+    let round = f.plan().round;
+    let faults = no_faults();
+    let skip = |state: RoundState, options: CleanupOptions| match f
+        .cleanup(&faults)
+        .run(&round, &round_view(state, &[&f.candidate]), options)
+        .unwrap()
+    {
+        CleanupOutcome::Skipped { reason } => reason,
+        other => panic!("{state}: {other:?}"),
+    };
+    assert_eq!(
+        skip(RoundState::Promoted, CleanupOptions::default()),
+        "round r-1 is PROMOTED but has no receipt yet"
+    );
+    assert_eq!(
+        skip(RoundState::NeedsIntervention, CleanupOptions::default()),
+        "round r-1 needs intervention; only the operator's cleanup removes its worktrees"
+    );
+    assert_eq!(
+        skip(RoundState::Running, CleanupOptions::default()),
+        "round r-1 is RUNNING; cleanup waits for its end"
+    );
+    assert!(f.candidate.worktree.exists());
+    assert!(f.kinds().is_empty());
+
+    // A rejected round: removed, recorded `rejected`.
+    let out = f
+        .cleanup(&faults)
+        .run(
+            &round,
+            &round_view(RoundState::Rejected, &[&f.candidate]),
+            CleanupOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        out,
+        CleanupOutcome::Done {
+            removed: vec!["A".into()],
+            failed: vec![]
+        }
+    );
+    assert_eq!(f.kinds(), ["round.cleanup_started", "round.completed"]);
+    assert_eq!(f.events()[1].payload["final_outcome"], "rejected");
+
+    // A restart in CLEANUP from NEEDS_INTERVENTION records no second
+    // `round.cleanup_started`, and completes as `needs_intervention`.
+    let Some(g) = Fixture::new() else { return };
+    let mut view = round_view(RoundState::Cleanup, &[&g.candidate]);
+    view.cleaned_from = None;
+    let out = g
+        .cleanup(&faults)
+        .run(&round, &view, CleanupOptions::default())
+        .unwrap();
+    assert!(matches!(out, CleanupOutcome::Done { .. }), "{out:?}");
+    assert_eq!(g.kinds(), ["round.completed"]);
+    assert_eq!(g.events()[0].payload["final_outcome"], "needs_intervention");
+
+    // A decided round records `winner`; a forced NEEDS_INTERVENTION round
+    // `needs_intervention`.
+    let Some(h) = Fixture::new() else { return };
+    h.cleanup(&faults)
+        .run(
+            &round,
+            &round_view(RoundState::Decided, &[&h.candidate]),
+            CleanupOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(h.events()[1].payload["final_outcome"], "winner");
+    let Some(k) = Fixture::new() else { return };
+    k.cleanup(&faults)
+        .run(
+            &round,
+            &round_view(RoundState::NeedsIntervention, &[&k.candidate]),
+            CleanupOptions {
+                prune_branches: false,
+                force: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(k.events()[1].payload["final_outcome"], "needs_intervention");
+}
+
 // ─── PRO-06 ─────────────────────────────────────────────────────────────────
 
 /// How many times the reflog saw `refname` change (creation included).
