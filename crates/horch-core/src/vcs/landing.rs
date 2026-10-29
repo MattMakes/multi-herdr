@@ -66,6 +66,39 @@ pub struct Unregistered {
     pub dirty: usize,
 }
 
+/// A linked worktree the scan could not read, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    pub path: PathBuf,
+    /// `prunable` (git cannot reach its gitdir) or `folder missing`.
+    pub reason: &'static str,
+}
+
+/// What [`Landing::unregistered`] found, and what it had to leave out.
+///
+/// A skipped path is named, never dropped in silence: a deleted folder used
+/// to fail the whole scan, and `done` then reported nothing at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnregisteredScan {
+    pub entries: Vec<Unregistered>,
+    pub skipped: Vec<Skipped>,
+}
+
+impl UnregisteredScan {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// A linked worktree as `git worktree list --porcelain` describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Worktree {
+    path: PathBuf,
+    branch: Option<String>,
+    /// git's reason, when the folder or its gitdir is gone.
+    prunable: Option<String>,
+}
+
 /// The result of a successful landing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Landed {
@@ -81,6 +114,8 @@ pub struct Landing {
     runner: GitRunner,
     state_root: PathBuf,
     env: Vec<(OsString, OsString)>,
+    /// Worktree paths the task ledger owns, which the scan never reports.
+    recorded: Vec<PathBuf>,
     lock_stale_after: Duration,
     lock_timeout: Duration,
     lock_heartbeat: Duration,
@@ -99,10 +134,19 @@ impl Landing {
             runner: GitRunner::new(git_bin),
             state_root,
             env: Vec::new(),
+            recorded: Vec::new(),
             lock_stale_after: LOCK_STALE_AFTER,
             lock_timeout: LOCK_TIMEOUT,
             lock_heartbeat: LOCK_HEARTBEAT,
         }
+    }
+
+    /// Paths the task ledger records as worktrees. Its worktrees are not in
+    /// the claim registry, so without this every worker's `done` lists the
+    /// other workers' in-flight worktrees as unregistered.
+    pub fn with_recorded_worktrees(mut self, paths: Vec<PathBuf>) -> Self {
+        self.recorded = paths;
+        self
     }
 
     /// Add an environment variable to every git child process.
@@ -371,25 +415,53 @@ impl Landing {
     }
 
     /// List changed linked worktrees which have no registry claim.
-    pub fn unregistered(&self, dir: &Path) -> Result<Vec<Unregistered>> {
+    ///
+    /// Only worktrees under the repo's `.worktrees/` folder are fleet
+    /// worktrees: the operator's own checkouts anywhere on disk are not
+    /// reported. A path git cannot read is skipped and named, so one deleted
+    /// folder does not fail the scan.
+    pub fn unregistered(&self, dir: &Path) -> Result<UnregisteredScan> {
         let repo = self.repo(dir)?;
         let base = self
             .current_branch(dir)?
             .ok_or_else(|| anyhow!("cannot scan unregistered worktrees from a detached HEAD"))?;
         let registered = self.claims(dir)?;
-        let mut result = Vec::new();
-        for (path, branch) in self.worktrees(&repo.top)? {
-            if path == repo.top || registered.iter().any(|claim| claim.path == path) {
+        let worktrees_root = repo.top.join(".worktrees");
+        let mut scan = UnregisteredScan::default();
+        for worktree in self.worktrees(&repo.top)? {
+            if worktree.path == repo.top || !worktree.path.starts_with(&worktrees_root) {
                 continue;
             }
-            if path
-                .strip_prefix(repo.top.join(".worktrees"))
+            // Every git call inside a worktree whose folder or gitdir is gone
+            // exits 128. Name it and move on.
+            let prunable = worktree.prunable.is_some();
+            if prunable || !worktree.path.is_dir() {
+                scan.skipped.push(Skipped {
+                    path: worktree.path,
+                    reason: if prunable {
+                        "prunable"
+                    } else {
+                        "folder missing"
+                    },
+                });
+                continue;
+            }
+            if registered.iter().any(|claim| claim.path == worktree.path)
+                || self.recorded.contains(&worktree.path)
+            {
+                continue;
+            }
+            if worktree
+                .path
+                .strip_prefix(&worktrees_root)
                 .ok()
                 .and_then(|relative| relative.components().next())
                 .is_some_and(|part| part.as_os_str().to_string_lossy().starts_with('_'))
             {
                 continue;
             }
+            let path = worktree.path;
+            let branch = worktree.branch;
             let dirty = line_count(&self.text(&path, &["status", "--porcelain"])?);
             if branch.is_none() && dirty == 0 {
                 continue;
@@ -398,7 +470,7 @@ impl Landing {
                 .lines(&path, &["rev-list", &format!("{base}..HEAD")])?
                 .len();
             if ahead != 0 || dirty != 0 {
-                result.push(Unregistered {
+                scan.entries.push(Unregistered {
                     path,
                     branch,
                     ahead,
@@ -406,8 +478,8 @@ impl Landing {
                 });
             }
         }
-        result.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(result)
+        scan.entries.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(scan)
     }
 
     fn land_locked(
@@ -432,8 +504,8 @@ impl Landing {
         let base_checkouts = self
             .worktrees(&repo.top)?
             .into_iter()
-            .filter(|(_, branch)| branch.as_deref() == Some(claim.base.as_str()))
-            .map(|(path, _)| path)
+            .filter(|worktree| worktree.branch.as_deref() == Some(claim.base.as_str()))
+            .map(|worktree| worktree.path)
             .collect::<Vec<_>>();
         if base_checkouts.len() > 1 {
             bail!(
@@ -579,7 +651,7 @@ impl Landing {
             .worktrees(dir)?
             .into_iter()
             .next()
-            .map(|(path, _)| path)
+            .map(|worktree| worktree.path)
             .ok_or_else(|| anyhow!("git worktree list returned no main worktree"))?;
         let common_text = self.text(&top, &["rev-parse", "--git-common-dir"])?;
         let common = PathBuf::from(common_text);
@@ -683,12 +755,13 @@ impl Landing {
         }
     }
 
-    fn worktrees(&self, repo: &Path) -> Result<Vec<(PathBuf, Option<String>)>> {
+    fn worktrees(&self, repo: &Path) -> Result<Vec<Worktree>> {
         let text = self.text(repo, &["worktree", "list", "--porcelain"])?;
         let mut result = Vec::new();
         for block in text.split("\n\n") {
             let mut path = None;
             let mut branch = None;
+            let mut prunable = None;
             for line in block.lines() {
                 if let Some(value) = line.strip_prefix("worktree ") {
                     path = Some(PathBuf::from(value));
@@ -699,10 +772,17 @@ impl Landing {
                             .unwrap_or(value)
                             .to_owned(),
                     );
+                } else if let Some(value) = line.strip_prefix("prunable") {
+                    // `prunable <reason>` on git 2.36 and later.
+                    prunable = Some(value.trim().to_owned());
                 }
             }
             if let Some(path) = path {
-                result.push((path, branch));
+                result.push(Worktree {
+                    path,
+                    branch,
+                    prunable,
+                });
             }
         }
         Ok(result)
@@ -1257,10 +1337,118 @@ mod tests {
         );
         fixture.commit_file(&path, "raw.txt", "raw\n", "raw");
         let found = fixture.landing.unregistered(&fixture.repo).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].path, path.canonicalize().unwrap());
-        assert_eq!(found[0].branch.as_deref(), Some("raw"));
-        assert_eq!(found[0].ahead, 1);
+        assert_eq!(found.entries.len(), 1);
+        assert!(found.skipped.is_empty());
+        assert_eq!(found.entries[0].path, path.canonicalize().unwrap());
+        assert_eq!(found.entries[0].branch.as_deref(), Some("raw"));
+        assert_eq!(found.entries[0].ahead, 1);
+    }
+
+    /// P27: one deleted folder used to fail the whole scan, so `done` reported
+    /// nothing at all. It is skipped and named, and the rest is still read.
+    #[test]
+    fn arc_31_unregistered_skips_a_deleted_folder_and_names_it() {
+        let fixture = Fixture::new();
+        let gone = fixture.repo.join(".worktrees/gone");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "gone",
+                gone.to_str().unwrap(),
+                "main",
+            ],
+        );
+        let gone_path = gone.canonicalize().unwrap();
+        let kept = fixture.repo.join(".worktrees/kept");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "kept",
+                kept.to_str().unwrap(),
+                "main",
+            ],
+        );
+        fixture.commit_file(&kept, "kept.txt", "kept\n", "kept");
+        std::fs::remove_dir_all(&gone).unwrap();
+
+        let found = fixture.landing.unregistered(&fixture.repo).unwrap();
+        assert_eq!(
+            found.entries.len(),
+            1,
+            "the readable worktree is still read"
+        );
+        assert_eq!(found.entries[0].path, kept.canonicalize().unwrap());
+        assert_eq!(found.skipped.len(), 1, "the deleted one is named");
+        assert_eq!(found.skipped[0].path, gone_path);
+        assert!(
+            matches!(found.skipped[0].reason, "prunable" | "folder missing"),
+            "reason: {}",
+            found.skipped[0].reason
+        );
+    }
+
+    /// P30: the operator's own checkouts anywhere on disk are not fleet
+    /// worktrees, however dirty they are.
+    #[test]
+    fn arc_31_unregistered_ignores_worktrees_outside_the_worktrees_folder() {
+        let fixture = Fixture::new();
+        let operator = fixture._temp.path().join("operator-checkout");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "operator",
+                operator.to_str().unwrap(),
+                "main",
+            ],
+        );
+        fixture.commit_file(&operator, "operator.txt", "operator\n", "operator");
+        std::fs::write(operator.join("operator.txt"), "dirty\n").unwrap();
+        let found = fixture.landing.unregistered(&fixture.repo).unwrap();
+        assert!(found.is_empty(), "entries: {:?}", found.entries);
+        assert!(found.skipped.is_empty(), "skipped: {:?}", found.skipped);
+    }
+
+    /// A task-ledger worktree is not in the claim registry, so without the
+    /// ledger's paths every worker's `done` lists its peers' work as
+    /// UNREGISTERED.
+    #[test]
+    fn arc_31_unregistered_skips_recorded_worktrees() {
+        let fixture = Fixture::new();
+        let path = fixture.repo.join(".worktrees/T1-ledger");
+        fixture.git(
+            &fixture.repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "ledger",
+                path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        fixture.commit_file(&path, "ledger.txt", "ledger\n", "ledger");
+        let landing = configured_landing(&fixture.state, &fixture.config)
+            .with_recorded_worktrees(vec![path.canonicalize().unwrap()]);
+        assert!(landing.unregistered(&fixture.repo).unwrap().is_empty());
+        // Without the ledger's paths it is still reported.
+        assert_eq!(
+            fixture
+                .landing
+                .unregistered(&fixture.repo)
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
     }
 
     #[test]
