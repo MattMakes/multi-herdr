@@ -960,6 +960,9 @@ fn start_typed_prompt(
 /// with no task and no word. `queue` first queues that line as durable
 /// orchestrator mail (#177), so a failed push still reaches it. True when
 /// the prompt was typed.
+/// Queues 1 line as durable orchestrator mail.
+pub(crate) type QueueLine<'a> = &'a dyn Fn(&str) -> Result<()>;
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn type_resumed_prompt(
     ws: &dyn WorkspaceClient,
@@ -968,7 +971,7 @@ pub(crate) fn type_resumed_prompt(
     role: &str,
     ledger: Option<(&Ledger, &str)>,
     orchestrator: Option<&str>,
-    queue: Option<&dyn Fn(&str) -> Result<()>>,
+    queue: Option<QueueLine<'_>>,
     wait: &Readiness,
     timing: &Timing,
 ) -> bool {
