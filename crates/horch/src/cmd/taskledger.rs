@@ -340,6 +340,9 @@ pub struct AddArgs {
     /// The check the finish steps run.
     #[arg(long)]
     check: Option<String>,
+    /// Seconds the check may run before it is killed (default 1200).
+    #[arg(long = "check-timeout")]
+    check_timeout: Option<u64>,
     #[arg(long)]
     phase: Option<String>,
     #[arg(long)]
@@ -1189,6 +1192,13 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
     };
     let _ = a.parallel;
     let t = store.immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))?;
+    if let Some(secs) = a.check_timeout {
+        finish::land::set_check_timeout(
+            &tools(ctx).evidence_root,
+            &t.task_id,
+            std::time::Duration::from_secs(secs),
+        )?;
+    }
     output::println(&format!(
         "{} queued for {}: {}.",
         t.short(),

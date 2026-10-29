@@ -1956,3 +1956,112 @@ fn a_landed_worktree_passes_land_at_once_in_a_run_with_no_remote() {
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(0), "{r}");
 }
+
+#[test]
+fn a_check_past_its_timeout_is_killed_with_its_children() {
+    let h = finish_world("tl-check-timeout");
+    ok(&h, &["ledger", "run", "new", "alpha", "--steps", "check"]);
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    let pidfile = h.root.join("sleep.pid");
+    let check = format!("/bin/sleep 5 & echo $! > {}; wait", pidfile.display());
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+            "--check",
+            &check,
+            "--check-timeout",
+            "2",
+        ],
+    );
+    let w = worker_new(&h, "opus");
+    ok_as(&h, &w, &["ledger", "claim"]);
+    let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feat"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    commit_file(&h, &path, "a.txt");
+    let start = Instant::now();
+    let (code, r) = finish_json(&h, &w);
+    assert!(
+        start.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(code, Some(1), "{r}");
+    assert_eq!(
+        step_of(&r, "check"),
+        ("failed".into(), "timed out".into()),
+        "{r}"
+    );
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .contains("timed out after 2 s"),
+        "{r}"
+    );
+    let pid = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .to_string();
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid])
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "the check's sleep {pid} is gone");
+}
+
+#[test]
+fn a_land_checks_outside_the_lock_and_lands_after_a_faster_task() {
+    let h = finish_world("tl-land-race");
+    ok(&h, &["ledger", "run", "new", "alpha", "--steps", "land"]);
+    let started = h.root.join("a-started");
+    let slow = format!("/usr/bin/touch {}; /bin/sleep 4", started.display());
+    for (name, check) in [("01-a", slow.as_str()), ("02-b", "true")] {
+        let p = ticket(&h, name, &format!("# {name}\n"));
+        ok(
+            &h,
+            &[
+                "ledger",
+                "add",
+                "--file",
+                &p.to_string_lossy(),
+                "--primary",
+                "opus",
+                "--check",
+                check,
+            ],
+        );
+    }
+    let wa = worker_new(&h, "opus");
+    ok_as(&h, &wa, &["ledger", "claim"]);
+    let wb = worker_new(&h, "opus");
+    ok_as(&h, &wb, &["ledger", "claim"]);
+    let mut paths = Vec::new();
+    for (w, name, file) in [(&wa, "a", "a.txt"), (&wb, "b", "b.txt")] {
+        let wt = ok_as(&h, w, &["ledger", "worktree", "new", name]);
+        let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+        commit_file(&h, &path, file);
+        paths.push(path);
+    }
+    let mut a = h.horch(&["ledger", "finish", "--json"]);
+    a.env("HORCH_WORKER_ID", &wa)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut a = a.spawn().unwrap();
+    wait_for("A's land check", || started.exists().then_some(()));
+    let (code, r) = finish_json(&h, &wb);
+    assert_eq!(code, Some(0), "B lands while A checks: {r}");
+    assert!(a.try_wait().unwrap().is_none(), "A still checks");
+    let out = a.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    let project = h.project.clone();
+    let log = git_in(&h, &project, &["log", "--format=%s", "fleet/alpha"]);
+    let order: Vec<&str> = log.lines().take(2).collect();
+    assert_eq!(order, vec!["a.txt", "b.txt"], "A lands after B: {log}");
+}

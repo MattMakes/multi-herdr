@@ -16,21 +16,132 @@ use crate::taskledger::util::{self, About};
 /// How long a land waits for another land of the same repository.
 pub const LAND_LOCK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-/// Run `command` in `dir` with the shell; the log goes to `log`.
-fn run_check(shell: &Path, dir: &Path, command: &str, log: &Path) -> Result<bool> {
-    let out = Command::new(shell)
-        .arg("-c")
+/// How many times a land rebases and checks again because the run branch
+/// moved during its check.
+const MAX_LAND_TRIES: u32 = 5;
+
+/// How long a check runs before it is killed, unless the task sets it
+/// (`horch ledger add --check-timeout`).
+pub const CHECK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
+/// How often a land that waits for the land lock names its holder.
+const LOCK_NOTICE_EVERY: Duration = Duration::from_secs(30);
+
+fn check_timeout_path(evidence_root: &Path, task_id: &str) -> PathBuf {
+    super::task_dir(evidence_root, task_id).join("check-timeout-s")
+}
+
+/// Record the check timeout of 1 task.
+pub fn set_check_timeout(evidence_root: &Path, task_id: &str, timeout: Duration) -> Result<()> {
+    let path = check_timeout_path(evidence_root, task_id);
+    std::fs::create_dir_all(path.parent().expect("a task folder"))?;
+    std::fs::write(&path, format!("{}\n", timeout.as_secs()))?;
+    Ok(())
+}
+
+/// The check timeout of 1 task: its own, else [`CHECK_TIMEOUT`].
+pub fn check_timeout(evidence_root: &Path, task_id: &str) -> Duration {
+    std::fs::read_to_string(check_timeout_path(evidence_root, task_id))
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(CHECK_TIMEOUT)
+}
+
+/// How 1 check run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Checked {
+    Passed,
+    Failed,
+    TimedOut(Duration),
+}
+
+/// Run `command` in `dir` with the shell, in its own process group; the
+/// output goes to `log`. At `timeout` the whole group is killed (#160).
+fn run_check(
+    shell: &Path,
+    dir: &Path,
+    command: &str,
+    log: &Path,
+    timeout: Duration,
+) -> Result<Checked> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(log)?;
+    writeln!(file, "$ {command}\n# in {}", dir.display())?;
+    let mut cmd = Command::new(shell);
+    cmd.arg("-c")
         .arg(command)
         .current_dir(dir)
-        .env_remove("ANTHROPIC_API_KEY")
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(file.try_clone()?)
+        .stderr(file.try_clone()?);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = cmd
+        .spawn()
         .with_context(|| format!("running the check `{command}`"))?;
-    let mut text = format!("$ {command}\n# in {}\n", dir.display());
-    text.push_str(&String::from_utf8_lossy(&out.stdout));
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    text.push_str(&format!("\n# exit: {:?}\n", out.status.code()));
-    std::fs::write(log, text)?;
-    Ok(out.status.success())
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if std::time::Instant::now() >= deadline {
+            kill_group(&mut child);
+            let _ = child.wait();
+            writeln!(file, "\n# timed out after {} s", timeout.as_secs())?;
+            return Ok(Checked::TimedOut(timeout));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    writeln!(file, "\n# exit: {:?}", status.code())?;
+    Ok(if status.success() {
+        Checked::Passed
+    } else {
+        Checked::Failed
+    })
+}
+
+#[cfg(unix)]
+fn kill_group(child: &mut std::process::Child) {
+    // The group id is the child's pid (`process_group(0)`); the child is not
+    // reaped yet, so the id still names its group.
+    // SAFETY: killpg takes plain integers and touches no memory.
+    unsafe {
+        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
+/// The task's check command, if it has one.
+fn check_command<'a>(cx: &'a Ctx<'_>) -> Option<&'a str> {
+    cx.task
+        .land_check
+        .as_deref()
+        .filter(|c| !c.trim().is_empty())
+}
+
+/// Run the task's check in `dir`. `None` when it passed or there is none,
+/// else why it did not pass.
+fn check_in(cx: &Ctx<'_>, dir: &Path, log: &Path) -> Result<Option<String>> {
+    let Some(cmd) = check_command(cx) else {
+        return Ok(None);
+    };
+    let timeout = check_timeout(&cx.tools.evidence_root, &cx.task.task_id);
+    Ok(match run_check(&cx.tools.shell, dir, cmd, log, timeout)? {
+        Checked::Passed => None,
+        Checked::Failed => Some(format!("`{cmd}` failed; read {}", log.display())),
+        Checked::TimedOut(t) => Some(format!(
+            "`{cmd}` timed out after {} s and was killed; read {}",
+            t.as_secs(),
+            log.display()
+        )),
+    })
 }
 
 /// Committed work only: a step judges commits, never a half-saved tree.
@@ -49,12 +160,7 @@ fn require_clean(git: &Git, dir: &Path) -> Result<()> {
 
 /// `check` and `recheck`: the task's check command, exit 0 to pass.
 pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
-    let Some(cmd) = cx
-        .task
-        .land_check
-        .as_deref()
-        .filter(|c| !c.trim().is_empty())
-    else {
+    let Some(cmd) = check_command(cx) else {
         return Ok(Outcome::not_applicable(
             "the task has no check command (horch ledger add --check)",
         ));
@@ -64,28 +170,68 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
         .evidence_dir
         .join(format!("{}-{}.log", cx.seq, name.as_str()));
     let tree = cx.tools.git.tree(&cx.dir).ok();
-    if run_check(&cx.tools.shell, &cx.dir, cmd, &log)? {
-        Ok(Outcome::pass("exit 0", Some(log), &format!("`{cmd}` passed")).judged(tree))
-    } else {
-        Ok(Outcome::fail(
-            "red",
-            Some(log.clone()),
-            &format!("`{cmd}` failed; read {} and fix it", log.display()),
-        )
-        .judged(tree))
+    match check_in(cx, &cx.dir, &log)? {
+        None => Ok(Outcome::pass("exit 0", Some(log), &format!("`{cmd}` passed")).judged(tree)),
+        Some(why) => {
+            let verdict = if why.contains("timed out") {
+                "timed out"
+            } else {
+                "red"
+            };
+            Ok(Outcome::fail(verdict, Some(log), &format!("{why}; fix it")).judged(tree))
+        }
     }
 }
 
-/// The lock every land of 1 repository takes, so lands go in a line.
+/// The lock every land of 1 repository takes, so lands go in a line. While
+/// it waits, it prints who holds it every 30 s.
 pub(crate) fn land_lock(cx: &Ctx<'_>) -> Result<crate::fsx::DirLockGuard> {
     let dir = cx.tools.evidence_root.join("locks");
     let key = sha_hex(&cx.root.to_string_lossy());
-    Ok(crate::fsx::DirLock::acquire(
+    let holder = format!(
+        "{} of {} (PID {})",
+        cx.task.short(),
+        cx.worker.label(),
+        std::process::id()
+    );
+    take_lock(
         &dir,
         &format!("land-{}", &key[..16]),
+        &holder,
+        LOCK_NOTICE_EVERY,
         LAND_LOCK_TIMEOUT,
-        LAND_LOCK_TIMEOUT,
-    )?)
+        |held_by| eprintln!("horch ledger: waiting for the land lock; {held_by} holds it"),
+    )
+}
+
+/// Take lock `name` in `dir` and write `holder` into it. Every `every`
+/// that it waits, `notice` gets the current holder's line.
+fn take_lock(
+    dir: &Path,
+    name: &str,
+    holder: &str,
+    every: Duration,
+    timeout: Duration,
+    mut notice: impl FnMut(&str),
+) -> Result<crate::fsx::DirLockGuard> {
+    let start = std::time::Instant::now();
+    loop {
+        let left = timeout.saturating_sub(start.elapsed());
+        match crate::fsx::DirLock::acquire(dir, name, LAND_LOCK_TIMEOUT, every.min(left)) {
+            Ok(guard) => {
+                std::fs::write(guard.path().join("holder"), format!("{holder}\n"))?;
+                return Ok(guard);
+            }
+            Err(crate::fsx::FsxError::LockTimeout { .. }) if !left.is_zero() => {
+                let path = dir.join(format!("{name}.lock")).join("holder");
+                let held_by = std::fs::read_to_string(path)
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "another process".into());
+                notice(&held_by);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 fn sha_hex(s: &str) -> String {
@@ -95,7 +241,8 @@ fn sha_hex(s: &str) -> String {
 }
 
 /// `land`: rebase on the run branch, run the check, fast-forward the run
-/// branch, push it. A red check or a conflict changes nothing.
+/// branch under the land lock, push it. A red check or a conflict changes
+/// nothing.
 pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     let git = &cx.tools.git;
     let run_branch = cx
@@ -112,7 +259,6 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     }
     let dir = PathBuf::from(&wt.path);
     require_clean(git, &dir)?;
-    let _lock = land_lock(cx)?;
     set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landing, None)?;
     let about = About {
         run: Some(&cx.run.run_id),
@@ -142,43 +288,49 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         )?;
         Ok(Outcome::fail("not landed", Some(log.clone()), &why))
     };
-    // Rebase on the run branch's tip.
-    let target_before = git.rev(&cx.root, &run_branch)?;
-    let rebase = git.try_run(&dir, &["rebase", &target_before])?;
-    if !rebase.ok {
-        let _ = git.try_run(&dir, &["rebase", "--abort"]);
-        std::fs::write(&log, format!("{}\n{}", rebase.stdout, rebase.stderr))?;
-        return red(
-            store,
-            format!(
-                "rebase on {run_branch} conflicts; resolve it with git rebase {run_branch} in {}, commit, then run finish again",
-                dir.display()
-            ),
-        );
-    }
-    if let Some(cmd) = cx
-        .task
-        .land_check
-        .as_deref()
-        .filter(|c| !c.trim().is_empty())
-    {
-        if !run_check(&cx.tools.shell, &dir, cmd, &log)? {
+    // Rebase and check outside the land lock; under it, fast-forward only
+    // when the run branch did not move meanwhile, else go again (#160).
+    let mut tries = 0;
+    let (_lock, new) = loop {
+        tries += 1;
+        let target_before = git.rev(&cx.root, &run_branch)?;
+        let rebase = git.try_run(&dir, &["rebase", &target_before])?;
+        if !rebase.ok {
+            let _ = git.try_run(&dir, &["rebase", "--abort"]);
+            std::fs::write(&log, format!("{}\n{}", rebase.stdout, rebase.stderr))?;
             return red(
                 store,
-                format!("`{cmd}` failed after the rebase; read {}", log.display()),
+                format!(
+                    "rebase on {run_branch} conflicts; resolve it with git rebase {run_branch} in {}, commit, then run finish again",
+                    dir.display()
+                ),
             );
         }
-    }
-    let new = git.rev(&dir, "HEAD")?;
-    if !git.is_ancestor(&cx.root, &target_before, &new) {
-        return red(
-            store,
-            "the rebased branch does not contain the run branch".into(),
-        );
-    }
+        if let Some(why) = check_in(cx, &dir, &log)? {
+            return red(store, format!("after the rebase: {why}"));
+        }
+        let new = git.rev(&dir, "HEAD")?;
+        if !git.is_ancestor(&cx.root, &target_before, &new) {
+            return red(
+                store,
+                "the rebased branch does not contain the run branch".into(),
+            );
+        }
+        let lock = land_lock(cx)?;
+        if git.rev(&cx.root, &run_branch)? == target_before {
+            break (lock, new);
+        }
+        if tries >= MAX_LAND_TRIES {
+            return red(
+                store,
+                format!("{run_branch} moved during each of {tries} checks; run finish again"),
+            );
+        }
+    };
     // Fast-forward the run branch: by merge when it is checked out in the
     // main checkout, else by a compare-and-swap of its ref. Never forced.
     let checked_out = git.current_branch(&cx.root).as_deref() == Some(run_branch.as_str());
+    let target_before = git.rev(&cx.root, &run_branch)?;
     if checked_out {
         let ff = git.try_run(&cx.root, &["merge", "--ff-only", &new])?;
         if !ff.ok {
@@ -515,4 +667,52 @@ pub fn retry_cleanup(store: &mut Store, git: &Git) -> Result<Vec<(String, Outcom
         out.push((wt.path.clone(), o));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_land_that_waits_names_the_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let every = Duration::from_millis(100);
+        let held = take_lock(
+            dir.path(),
+            "land-x",
+            "T-3 of w1 (PID 7)",
+            every,
+            every,
+            |_| {},
+        )
+        .unwrap();
+        let mut seen = Vec::new();
+        let start = std::time::Instant::now();
+        let r = take_lock(
+            dir.path(),
+            "land-x",
+            "T-4 of w2 (PID 8)",
+            every,
+            Duration::from_millis(350),
+            |h| seen.push(h.to_string()),
+        );
+        assert!(r.is_err(), "the lock is held");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(seen.len() >= 2, "1 line per wait interval: {seen:?}");
+        assert_eq!(seen[0], "T-3 of w1 (PID 7)");
+        drop(held);
+        let g = take_lock(
+            dir.path(),
+            "land-x",
+            "T-4 of w2 (PID 8)",
+            every,
+            every,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(g.path().join("holder")).unwrap(),
+            "T-4 of w2 (PID 8)\n"
+        );
+    }
 }
