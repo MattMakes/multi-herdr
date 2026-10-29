@@ -1,6 +1,7 @@
 //! `horch ledger status` and `show`: the board of a run (section 5.6).
 
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
@@ -87,6 +88,16 @@ pub fn worktrees(conn: &Connection, run_id: &str) -> Result<Vec<WorktreeLine>> {
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// Every path the ledger records as a worktree, in any run. The claim
+/// registry never sees these, so the unregistered scan asks for them here.
+pub fn worktree_paths(conn: &Connection) -> Result<Vec<PathBuf>> {
+    let mut stmt = conn.prepare("SELECT path FROM worktrees")?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().map(PathBuf::from).collect())
 }
 
 /// The last check of a worker, if any.

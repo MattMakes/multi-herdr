@@ -721,9 +721,11 @@ impl DoneSteps for CliDone<'_> {
             self.ctx.bins.harness.git.clone(),
             self.ctx.paths.state_root.clone(),
         )
+        .with_recorded_worktrees(super::worktree::recorded_worktrees(self.ctx))
         .unregistered(&dir)
-        .map(|entries| {
-            entries
+        .map(|scan| {
+            super::worktree::note_skipped("done", &scan.skipped);
+            scan.entries
                 .into_iter()
                 .map(|entry| {
                     format!(
