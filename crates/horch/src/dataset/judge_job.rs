@@ -7,8 +7,8 @@
 //! judgment: the coordinator is the single authority (CMP-16).
 
 use std::io::{Read, Write};
-use std::path::Path;
-use std::process::{ExitStatus, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,6 +24,7 @@ use horch_core::heartbeat;
 use horch_core::ids::{RoundId, SessionId};
 use horch_core::roster::Roster;
 use horch_core::runtime::RuntimeContext;
+use serde_json::{Map, Value};
 
 use super::cli::JudgeJobArgs;
 use super::exit;
@@ -41,18 +42,7 @@ enum RunResult {
 }
 
 pub(crate) fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8> {
-    let round: RoundId = args.round.parse().context("--round")?;
-    let job_dir = super::dataset_paths(ctx)?.job_dir(&round, args.attempt)?;
-    if !job_dir.is_dir() {
-        bail!(
-            "{} does not exist; the coordinator creates it",
-            job_dir.display()
-        );
-    }
-    if job_dir.join(EXIT_FILE).exists() || job_dir.join(OUTPUT_FILE).exists() {
-        bail!("attempt {} of round {round} has run already", args.attempt);
-    }
-
+    let job_dir = fresh_job_dir(ctx, args)?;
     let beat = heartbeat::start(&job_dir);
     let result = run_judge(ctx, args).unwrap_or_else(|e| {
         eprintln!("judge-job: {e:#}");
@@ -62,15 +52,7 @@ pub(crate) fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8>
         })
     });
     let done = match result {
-        RunResult::Answer(text) => {
-            ctx.settings.faults.abort_if(ABORT_BEFORE_OUTPUT);
-            fsx::create_immutable(&job_dir.join(OUTPUT_FILE), &text, fsx::PRIVATE_FILE)?;
-            ctx.settings.faults.abort_if(ABORT_AFTER_OUTPUT);
-            JobExit {
-                reason: ExitReason::Ok,
-                code: Some(0),
-            }
-        }
+        RunResult::Answer(text) => write_answer(ctx, &job_dir, &text)?,
         RunResult::Failed(e) => e,
     };
     let bytes = serde_json::to_vec(&done)?;
@@ -83,7 +65,60 @@ pub(crate) fn judge_job(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<u8>
     })
 }
 
+/// The job dir of the attempt: it exists (the coordinator creates it) and
+/// the attempt has not run.
+fn fresh_job_dir(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<PathBuf> {
+    let round: RoundId = args.round.parse().context("--round")?;
+    let job_dir = super::dataset_paths(ctx)?.job_dir(&round, args.attempt)?;
+    if !job_dir.is_dir() {
+        bail!(
+            "{} does not exist; the coordinator creates it",
+            job_dir.display()
+        );
+    }
+    if job_dir.join(EXIT_FILE).exists() || job_dir.join(OUTPUT_FILE).exists() {
+        bail!("attempt {} of round {round} has run already", args.attempt);
+    }
+    Ok(job_dir)
+}
+
+/// Write `output.json`, between its two fault points. Gives the exit of a
+/// job that answered.
+fn write_answer(ctx: &RuntimeContext, job_dir: &Path, text: &[u8]) -> Result<JobExit> {
+    ctx.settings.faults.abort_if(ABORT_BEFORE_OUTPUT);
+    fsx::create_immutable(&job_dir.join(OUTPUT_FILE), text, fsx::PRIVATE_FILE)?;
+    ctx.settings.faults.abort_if(ABORT_AFTER_OUTPUT);
+    Ok(JobExit {
+        reason: ExitReason::Ok,
+        code: Some(0),
+    })
+}
+
 fn run_judge(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<RunResult> {
+    let (mut child, prompt) = start_judge(ctx, args)?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(prompt.as_bytes());
+    });
+    let over_cap = Arc::new(AtomicBool::new(false));
+    let stdout = child.stdout.take().expect("piped stdout");
+    let flag = over_cap.clone();
+    let reader = std::thread::spawn(move || read_capped(stdout, &flag));
+
+    let deadline = Instant::now() + Duration::from_secs(args.timeout_s);
+    Ok(match wait_capped(&mut child, &over_cap, deadline)? {
+        Ok(status) => {
+            let _ = writer.join();
+            let raw = reader.join().unwrap_or_default();
+            grade(&raw, status, over_cap.load(Ordering::SeqCst))
+        }
+        Err(reason) => RunResult::Failed(JobExit { reason, code: None }),
+    })
+}
+
+/// Start the headless judge in the input dir. Gives the child, with its
+/// stdin and stdout piped, and the prompt to write to it.
+fn start_judge(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<(Child, String)> {
     let roster = Roster::load_layered(
         ctx.inherited.home_var.as_deref().map(Path::new),
         ctx.bins.roster_override.as_deref(),
@@ -100,41 +135,43 @@ fn run_judge(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<RunResult> {
     cmd.current_dir(&args.input_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    let mut child = cmd
+    let child = cmd
         .spawn()
         .with_context(|| format!("starting {}", ctx.bins.harness.claude.display()))?;
+    Ok((child, judge_prompt(&judge)))
+}
 
-    let prompt = judge_prompt(&judge);
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(prompt.as_bytes());
-    });
-    let over_cap = Arc::new(AtomicBool::new(false));
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let flag = over_cap.clone();
-    let reader = std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            match stdout.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    // The envelope adds a little to the answer; allow it.
-                    if out.len() + n > OUTPUT_CAP_BYTES * 2 {
-                        flag.store(true, Ordering::SeqCst);
-                        break;
-                    }
-                    out.extend_from_slice(&buf[..n]);
+/// Read `stdout` to its end. Sets `flag` and stops when the output passes
+/// the cap.
+fn read_capped(mut stdout: impl Read, flag: &AtomicBool) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match stdout.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                // The envelope adds a little to the answer; allow it.
+                if out.len() + n > OUTPUT_CAP_BYTES * 2 {
+                    flag.store(true, Ordering::SeqCst);
+                    break;
                 }
+                out.extend_from_slice(&buf[..n]);
             }
         }
-        out
-    });
+    }
+    out
+}
 
-    let deadline = Instant::now() + Duration::from_secs(args.timeout_s);
-    let status: ExitStatus = loop {
+/// Wait for the child. A child that passes the output cap or the deadline
+/// is killed: that gives the reason, else the exit status.
+fn wait_capped(
+    child: &mut Child,
+    over_cap: &AtomicBool,
+    deadline: Instant,
+) -> Result<std::result::Result<ExitStatus, ExitReason>> {
+    loop {
         if let Some(status) = child.try_wait()? {
-            break status;
+            return Ok(Ok(status));
         }
         let failed = if over_cap.load(Ordering::SeqCst) {
             Some(ExitReason::TooLarge)
@@ -146,43 +183,34 @@ fn run_judge(ctx: &RuntimeContext, args: &JudgeJobArgs) -> Result<RunResult> {
         if let Some(reason) = failed {
             let _ = child.kill();
             let _ = child.wait();
-            return Ok(RunResult::Failed(JobExit { reason, code: None }));
+            return Ok(Err(reason));
         }
         std::thread::sleep(Duration::from_millis(50));
-    };
-    let _ = writer.join();
-    let raw = reader.join().unwrap_or_default();
-    if over_cap.load(Ordering::SeqCst) {
-        return Ok(RunResult::Failed(JobExit {
-            reason: ExitReason::TooLarge,
-            code: status.code(),
-        }));
     }
-    if !status.success() {
-        return Ok(RunResult::Failed(JobExit {
-            reason: ExitReason::Crash,
-            code: status.code(),
-        }));
-    }
-    let Some(text) = answer_text(&raw) else {
-        return Ok(RunResult::Failed(JobExit {
-            reason: ExitReason::Crash,
-            code: status.code(),
-        }));
-    };
-    if text.len() > OUTPUT_CAP_BYTES {
-        return Ok(RunResult::Failed(JobExit {
-            reason: ExitReason::TooLarge,
-            code: status.code(),
-        }));
-    }
-    Ok(RunResult::Answer(text))
 }
 
-/// The answer in a `--output-format json` envelope: `structured_output` when
-/// `--json-schema` produced one, else the `result` text. `None` for an error
-/// envelope. Stdout that is not an envelope is passed on as it is, so the
-/// coordinator's strict parser records it as malformed.
+/// The result of a child that exited: too much output, a bad exit status,
+/// no answer or an answer over the cap each fail.
+fn grade(raw: &[u8], status: ExitStatus, over_cap: bool) -> RunResult {
+    let failed = |reason| {
+        RunResult::Failed(JobExit {
+            reason,
+            code: status.code(),
+        })
+    };
+    if over_cap {
+        failed(ExitReason::TooLarge)
+    } else if !status.success() {
+        failed(ExitReason::Crash)
+    } else {
+        match answer_text(raw) {
+            None => failed(ExitReason::Crash),
+            Some(text) if text.len() > OUTPUT_CAP_BYTES => failed(ExitReason::TooLarge),
+            Some(text) => RunResult::Answer(text),
+        }
+    }
+}
+
 /// Write each [`Roster::load_warnings`] line to `out` as `warning: <line>`,
 /// as `horch`'s `load_roster` does. A job loads the roster once.
 fn warn(roster: &Roster, out: &mut impl Write) {
@@ -191,18 +219,30 @@ fn warn(roster: &Roster, out: &mut impl Write) {
     }
 }
 
+/// The answer in a `--output-format json` envelope: `structured_output` when
+/// `--json-schema` produced one, else the `result` text. `None` for an error
+/// envelope. Stdout that is not an envelope is passed on as it is, so the
+/// coordinator's strict parser records it as malformed.
 fn answer_text(raw: &[u8]) -> Option<Vec<u8>> {
-    let Ok(serde_json::Value::Object(env)) = serde_json::from_slice(raw) else {
-        return Some(raw.to_vec());
-    };
-    if env.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
+    match serde_json::from_slice(raw) {
+        Ok(Value::Object(env)) => envelope_answer(&env, raw),
+        _ => Some(raw.to_vec()),
+    }
+}
+
+/// The answer in the envelope `env`, which came from `raw`: `None` for an
+/// error, else `structured_output`, else `result`, else `raw`.
+fn envelope_answer(env: &Map<String, Value>, raw: &[u8]) -> Option<Vec<u8>> {
+    let errored = env.get("is_error").and_then(Value::as_bool) == Some(true);
+    if errored {
         return None;
     }
-    if let Some(v) = env.get("structured_output").filter(|v| !v.is_null()) {
-        return serde_json::to_vec(v).ok();
-    }
-    match env.get("result") {
-        Some(serde_json::Value::String(s)) => Some(s.as_bytes().to_vec()),
+    match (
+        env.get("structured_output").filter(|v| !v.is_null()),
+        env.get("result"),
+    ) {
+        (Some(v), _) => serde_json::to_vec(v).ok(),
+        (None, Some(Value::String(s))) => Some(s.as_bytes().to_vec()),
         _ => Some(raw.to_vec()),
     }
 }
@@ -239,5 +279,129 @@ mod tests {
         assert_eq!(answer_text(structured).unwrap(), br#"{"a":2}"#);
         assert_eq!(answer_text(br#"{"is_error":true,"result":"x"}"#), None);
         assert_eq!(answer_text(b"not json").unwrap(), b"not json");
+    }
+
+    use std::os::unix::process::ExitStatusExt;
+
+    fn exited(code: i32) -> ExitStatus {
+        ExitStatus::from_raw(code << 8)
+    }
+
+    fn failed(r: RunResult) -> (ExitReason, Option<i32>) {
+        match r {
+            RunResult::Failed(e) => (e.reason, e.code),
+            RunResult::Answer(_) => panic!("answered"),
+        }
+    }
+
+    #[test]
+    fn grade_gives_the_answer_of_a_clean_exit() {
+        let RunResult::Answer(text) = grade(br#"{"result":"ok"}"#, exited(0), false) else {
+            panic!("no answer");
+        };
+        assert_eq!(text, b"ok");
+    }
+
+    #[test]
+    fn grade_fails_too_large_when_the_output_passed_the_cap() {
+        let got = failed(grade(b"x", exited(0), true));
+        assert_eq!(got, (ExitReason::TooLarge, Some(0)));
+    }
+
+    #[test]
+    fn grade_fails_crash_on_a_bad_exit_status_even_with_an_answer() {
+        let got = failed(grade(br#"{"result":"ok"}"#, exited(3), false));
+        assert_eq!(got, (ExitReason::Crash, Some(3)));
+    }
+
+    #[test]
+    fn grade_fails_crash_on_an_error_envelope() {
+        let got = failed(grade(
+            br#"{"is_error":true,"result":"x"}"#,
+            exited(0),
+            false,
+        ));
+        assert_eq!(got, (ExitReason::Crash, Some(0)));
+    }
+
+    #[test]
+    fn grade_fails_too_large_on_an_answer_over_the_cap() {
+        let big = vec![b'a'; OUTPUT_CAP_BYTES + 1];
+        assert_eq!(
+            failed(grade(&big, exited(0), false)),
+            (ExitReason::TooLarge, Some(0))
+        );
+        let at_cap = vec![b'a'; OUTPUT_CAP_BYTES];
+        assert!(matches!(
+            grade(&at_cap, exited(0), false),
+            RunResult::Answer(_)
+        ));
+    }
+
+    #[test]
+    fn read_capped_reads_all_below_the_cap() {
+        let flag = AtomicBool::new(false);
+        let got = read_capped(&b"hello"[..], &flag);
+        assert_eq!(got, b"hello");
+        assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn read_capped_sets_the_flag_past_twice_the_cap() {
+        let flag = AtomicBool::new(false);
+        let input = vec![0u8; OUTPUT_CAP_BYTES * 2 + 1];
+        let got = read_capped(&input[..], &flag);
+        assert!(flag.load(Ordering::SeqCst));
+        assert!(got.len() <= OUTPUT_CAP_BYTES * 2);
+    }
+
+    fn sleeper(secs: &str) -> Child {
+        std::process::Command::new("sleep")
+            .arg(secs)
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn wait_capped_gives_the_status_of_a_child_that_exits() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 4"])
+            .spawn()
+            .unwrap();
+        let flag = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = wait_capped(&mut child, &flag, deadline).unwrap().unwrap();
+        assert_eq!(status.code(), Some(4));
+    }
+
+    #[test]
+    fn wait_capped_kills_a_child_past_the_deadline() {
+        let mut child = sleeper("30");
+        let flag = AtomicBool::new(false);
+        let got = wait_capped(&mut child, &flag, Instant::now()).unwrap();
+        assert_eq!(got.unwrap_err(), ExitReason::Timeout);
+        assert!(child.try_wait().unwrap().is_some(), "child was not killed");
+    }
+
+    #[test]
+    fn wait_capped_kills_a_child_over_the_cap_before_the_deadline() {
+        let mut child = sleeper("30");
+        let flag = AtomicBool::new(true);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let got = wait_capped(&mut child, &flag, deadline).unwrap();
+        assert_eq!(got.unwrap_err(), ExitReason::TooLarge);
+        assert!(child.try_wait().unwrap().is_some(), "child was not killed");
+    }
+
+    #[test]
+    fn answer_text_prefers_structured_output_and_passes_other_envelopes_on() {
+        let both = br#"{"result":"text","structured_output":{"a":3}}"#;
+        assert_eq!(answer_text(both).unwrap(), br#"{"a":3}"#);
+        let null_structured = br#"{"result":"text","structured_output":null}"#;
+        assert_eq!(answer_text(null_structured).unwrap(), b"text");
+        let no_result = br#"{"type":"result"}"#;
+        assert_eq!(answer_text(no_result).unwrap(), no_result);
+        let not_object = b"[1,2]";
+        assert_eq!(answer_text(not_object).unwrap(), not_object);
     }
 }
