@@ -79,6 +79,7 @@ fn worker_context_compaction(role: &str) -> String {
 /// The `== Context watch ==` and `== Compact instructions ==` blocks of
 /// `fleet-orchestrator.md`, with their trailing blank line.
 // Sanctioned decisions-log block (#57): pin run identity and rebuild ledger roster/ownership.
+// Sanctioned stale-ask block: a request with no answer is asked again once (#75).
 const ORCHESTRATOR_CONTEXT_WATCH: &str = r####"== Context watch ==
 horch watches the context size of every session, yours included:
   horch context --over            sessions at or over their threshold
@@ -88,7 +89,10 @@ horch watches the context size of every session, yours included:
 Run horch context --over after you handle each worker message and before
 each spawn. For a worker in state "over":
 1. Run horch compact <role> --request once. The state becomes "requested".
-   Do not ask a "requested" worker again.
+   Do not ask a "requested" worker again before it is stale. The row shows
+   the age of the ask. On "request-stale" or "compact-failed", run
+   horch compact <role> --request one more time. If the state is "request-stale"
+   or "compact-failed" again, use the fresh route (step 3).
 2. On "[<role>] NOTE: COMPACT-READY <path>", run horch compact <role>. It
    returns at once. horch compacts the worker when it is idle, then tells
    it to read its handoff file.

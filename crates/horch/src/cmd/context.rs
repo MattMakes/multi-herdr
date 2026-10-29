@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use horch_core::compaction::jobfile::{self, LOG_FILE};
 use horch_core::compaction::policy::{self, JobLiveness, RowInputs, RowState, EVENT_FAILED};
 use horch_core::compaction::window::{self, WindowDecision, WindowSource, HEADROOM_FLOOR};
@@ -67,6 +67,8 @@ pub(crate) struct Row {
     pub job: JobLiveness,
     pub job_dir: PathBuf,
     pub state: RowState,
+    /// When the row was built; the age of an ask is measured to it.
+    pub now: DateTime<Utc>,
     /// The mode of a Codex pane with `permission_mode: plan` (X6); None for
     /// every other row.
     pub mode: Option<PaneMode>,
@@ -79,6 +81,7 @@ impl Row {
             threshold: self.threshold,
             history: &self.record.history,
             job: &self.job,
+            now: self.now,
         }
     }
 
@@ -111,6 +114,13 @@ impl Row {
                 _,
                 Err(why),
             ) => why.to_string(),
+            (RowState::CompactFailed, _, Ok(reading)) => {
+                let failed = policy::failed_after_ask(
+                    &self.record.history,
+                    reading.last_compaction.as_ref(),
+                )?;
+                format!("the compaction failed at {}: {}", failed.at, failed.text)
+            }
             (RowState::Unknown, _, Ok(_)) => "the transcript has no usable response".into(),
             _ => return None,
         })
@@ -234,6 +244,7 @@ pub(crate) fn build_row(src: &Sources, record: Record, workspace: Option<&str>) 
         job,
         job_dir,
         state: RowState::Ok,
+        now: Utc::now(),
     };
     row.state = policy::classify(&row.inputs());
     row
@@ -382,7 +393,11 @@ fn context_text_matching(
             !over
                 || matches!(
                     row.state,
-                    RowState::Over | RowState::Requested | RowState::CompactLost
+                    RowState::Over
+                        | RowState::Requested
+                        | RowState::RequestStale
+                        | RowState::CompactLost
+                        | RowState::CompactFailed
                 )
         })
         .collect();
@@ -561,10 +576,28 @@ fn json_row(src: &Sources, row: &Row, pane: Option<&Pane>) -> JsonRow {
 /// STATE of the text table: a plan pane left in write mode gets ` [write]`,
 /// so the orchestrator sees a pane to switch back (X6).
 fn state_text(row: &Row) -> String {
-    match row.mode {
-        Some(PaneMode::Write) => format!("{} [write]", row.state.as_str()),
+    let name = match row.state {
+        RowState::Requested | RowState::RequestStale => match ask_age_text(row) {
+            Some(age) => format!("{} ({age})", row.state.as_str()),
+            None => row.state.as_str().into(),
+        },
         _ => row.state.as_str().into(),
+    };
+    match row.mode {
+        Some(PaneMode::Write) => format!("{name} [write]"),
+        _ => name,
     }
+}
+
+/// `asked 12m ago` for the newest ask of the cycle.
+fn ask_age_text(row: &Row) -> Option<String> {
+    let last = row
+        .reading
+        .as_ref()
+        .ok()
+        .and_then(|r| r.last_compaction.as_ref());
+    let age = policy::ask_age(&row.record.history, last, row.now)?;
+    Some(format!("asked {}m ago", age.as_secs() / 60))
 }
 
 /// The table of rows and its `reasons:` block.
@@ -1195,7 +1228,13 @@ mod tests {
             .collect();
         assert_eq!(roles, ["sonnet-1", "sonnet-3"], "{out}");
         assert!(out.lines().nth(1).unwrap().ends_with("over"));
-        assert!(out.lines().nth(2).unwrap().ends_with("requested"));
+        assert!(
+            out.lines()
+                .nth(2)
+                .unwrap()
+                .ends_with("requested (asked 0m ago)"),
+            "{out}"
+        );
     }
 
     /// CTX-09, CTX-15: a lost job shows in `--over` with its reason.
@@ -1215,6 +1254,44 @@ mod tests {
                 "  sonnet-1: compact-lost: the compaction job is lost at step wait-marker; log {}",
                 dir.join("job.log").display()
             )
+        );
+    }
+
+    /// #75: `--over` lists a stale ask with its age.
+    #[test]
+    fn over_prints_the_age_of_a_requested_and_a_stale_ask() {
+        let w = World::new();
+        w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        w.worker("r-2", "sonnet-2", "claude", "sonnet", Some(OVER));
+        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        w.event_at("r-1", &ago(5), "compact-requested", "");
+        w.event_at("r-2", &ago(25), "compact-requested", "");
+        let out = text(&w, true);
+        let state = |role: &str| {
+            let line = out.lines().find(|l| l.starts_with(role)).expect(role);
+            line.split("  ").last().unwrap().trim().to_string()
+        };
+        assert_eq!(state("sonnet-1"), "requested (asked 5m ago)", "{out}");
+        assert_eq!(state("sonnet-2"), "request-stale (asked 25m ago)", "{out}");
+    }
+
+    /// #75: a failure after the ask lists the role with the failed step.
+    #[test]
+    fn over_lists_a_compact_failed_row_with_its_step() {
+        let w = World::new();
+        w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        w.event_at("r-1", &ago(10), "compact-requested", "");
+        w.event_at("r-1", &ago(5), EVENT_FAILED, "step wait-idle: timed out");
+        let out = text(&w, true);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "{out}");
+        assert!(lines[1].ends_with("compact-failed"), "{out}");
+        assert_eq!(lines[2], "reasons:");
+        assert!(
+            lines[3].starts_with("  sonnet-1: compact-failed: the compaction failed at ")
+                && lines[3].ends_with(": step wait-idle: timed out"),
+            "{out}"
         );
     }
 

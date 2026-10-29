@@ -392,7 +392,9 @@ fn request(env: &Env, role: &str) -> Outcome {
         .rev()
         .find(|e| e.event == EVENT_REQUESTED || e.event == EVENT_WARNED)
         .is_some_and(|e| e.event == EVENT_WARNED);
-    if policy::already_asked(&record.history, last) && !(read_only && warned_only) {
+    // A stale ask, or an ask a failed job followed, is asked again (#75).
+    let reask = policy::may_ask_again(&record.history, last, horch_core::clock::now());
+    if policy::already_asked(&record.history, last) && !(read_only && warned_only) && !reask {
         let at = policy::asked_at(&record.history)
             .map(|s| horch_core::clock::stamp(DateTime::<Utc>::from(s)))
             .unwrap_or_else(|| "an earlier time".into());
@@ -1257,6 +1259,61 @@ mod tests {
         );
         assert_eq!(f.typed(&pane).len(), 1, "nothing typed the second time");
         assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 1);
+    }
+
+    /// #75: an ask inside the deadline is still "already asked".
+    #[test]
+    fn a_fresh_ask_inside_the_deadline_is_not_typed_again() {
+        let f = Fleet::new();
+        let pane = f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        f.w.event_at("r-1", &ago(5), EVENT_REQUESTED, "earlier");
+        let fresh = f.run("sonnet-1", |a| a.request = true);
+        assert!(
+            fresh.out[0].starts_with("already asked sonnet-1 at"),
+            "{fresh:?}"
+        );
+        assert!(f.typed(&pane).is_empty());
+        assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 1);
+    }
+
+    /// #75: the second `--request` on a stale row types the line and
+    /// records a second event.
+    #[test]
+    fn a_request_on_a_stale_row_types_and_records_again() {
+        let f = Fleet::new();
+        let pane = f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        f.w.event_at("r-1", &ago(25), EVENT_REQUESTED, "earlier");
+        let o = f.run("sonnet-1", |a| a.request = true);
+        assert_eq!(o.code, 0, "{o:?}");
+        assert_eq!(
+            o.out,
+            ["asked sonnet-1 to write ai_docs/handoffs/sonnet-1-whats-next.md"]
+        );
+        assert_eq!(f.typed(&pane).len(), 1);
+        assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 2);
+        // The new ask is inside the deadline: a third `--request` is refused.
+        let third = f.run("sonnet-1", |a| a.request = true);
+        assert!(third.out[0].starts_with("already asked"), "{third:?}");
+        assert_eq!(f.typed(&pane).len(), 1);
+    }
+
+    /// #75: a failed job after the ask also allows a second `--request`.
+    #[test]
+    fn a_request_after_a_failed_job_types_and_records_again() {
+        let f = Fleet::new();
+        let pane = f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(OVER));
+        let ago = |m: i64| horch_core::clock::stamp(Utc::now() - chrono::Duration::minutes(m));
+        f.w.event_at("r-1", &ago(4), EVENT_REQUESTED, "earlier");
+        f.w.event_at("r-1", &ago(2), EVENT_FAILED, "step wait-idle: timed out");
+        let o = f.run("sonnet-1", |a| a.request = true);
+        assert_eq!(o.code, 0, "{o:?}");
+        assert_eq!(f.typed(&pane).len(), 1);
+        assert_eq!(f.w.events("r-1", EVENT_REQUESTED).len(), 2);
     }
 
     /// CTX-22: the exact texts of the request and warning events.

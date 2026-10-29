@@ -25,6 +25,9 @@ pub const EVENT_FAILED: &str = "compact-failed";
 /// horch drove the compaction (CTX-25).
 pub const HORCH_MATCH_WINDOW: Duration = Duration::from_secs(15 * 60);
 
+/// An ask with no COMPACT-READY after this long is stale (#75).
+pub const REQUEST_DEADLINE: Duration = Duration::from_secs(20 * 60);
+
 /// Without an ask, a handoff older than this is stale (CTX-14).
 pub const HANDOFF_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 
@@ -32,12 +35,14 @@ pub const HANDOFF_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowState {
     CompactLost,
+    CompactFailed,
     NoSession,
     NotRead,
     NoTranscript,
     Unknown,
     Compacting,
     Pending,
+    RequestStale,
     Requested,
     Over,
     Ok,
@@ -48,12 +53,14 @@ impl RowState {
     pub fn as_str(self) -> &'static str {
         match self {
             RowState::CompactLost => "compact-lost",
+            RowState::CompactFailed => "compact-failed",
             RowState::NoSession => "no-session",
             RowState::NotRead => "not-read",
             RowState::NoTranscript => "no-transcript",
             RowState::Unknown => "unknown",
             RowState::Compacting => "compacting",
             RowState::Pending => "pending",
+            RowState::RequestStale => "request-stale",
             RowState::Requested => "requested",
             RowState::Over => "over",
             RowState::Ok => "ok",
@@ -80,15 +87,19 @@ pub struct RowInputs<'a> {
     pub threshold: u64,
     pub history: &'a [HistoryEntry],
     pub job: &'a JobLiveness,
+    pub now: DateTime<Utc>,
 }
 
 /// First match: compact-lost (job Lost), no-session, not-read,
 /// no-transcript, unknown (Failed, or tokens None and not pending),
-/// compacting (job Live), pending, requested, over, ok.
+/// compacting (job Live), pending, compact-failed, request-stale,
+/// requested, over, ok.
 ///
 /// `compact-lost` is first: a lost job is a failure the orchestrator must
 /// see whatever the reading says (review finding 1). `requested` means
-/// asked in this compaction cycle, whatever the tokens.
+/// asked in this compaction cycle, whatever the tokens. `compact-failed`
+/// means a job failed after the newest ask of the cycle; `request-stale`
+/// means the newest ask is older than [`REQUEST_DEADLINE`] (#75).
 pub fn classify(i: &RowInputs) -> RowState {
     if matches!(i.job, JobLiveness::Lost { .. }) {
         return RowState::CompactLost;
@@ -109,8 +120,16 @@ pub fn classify(i: &RowInputs) -> RowState {
     if reading.pending {
         return RowState::Pending;
     }
-    if already_asked(i.history, reading.last_compaction.as_ref()) {
-        return RowState::Requested;
+    let last = reading.last_compaction.as_ref();
+    if failed_after_ask(i.history, last).is_some() {
+        return RowState::CompactFailed;
+    }
+    if already_asked(i.history, last) {
+        return if ask_is_stale(i.history, last, i.now) {
+            RowState::RequestStale
+        } else {
+            RowState::Requested
+        };
     }
     match reading.tokens {
         Some(t) if t >= i.threshold => RowState::Over,
@@ -180,6 +199,66 @@ pub fn already_asked(history: &[HistoryEntry], last: Option<&CompactionMark>) ->
             None => true,
             Some(start) => crate::clock::parse(&e.at).is_some_and(|at| at >= start),
         })
+}
+
+/// The start of the current compaction cycle: the later of the newest
+/// `compacted` event and `last.at`.
+fn cycle_start(history: &[HistoryEntry], last: Option<&CompactionMark>) -> Option<DateTime<Utc>> {
+    let marked = last.and_then(|m| crate::clock::parse(&m.at));
+    newest(history, &[EVENT_COMPACTED]).max(marked)
+}
+
+/// The newest ask (`compact-requested` or `context-warned`) of the current
+/// cycle, as an instant.
+pub fn cycle_ask(history: &[HistoryEntry], last: Option<&CompactionMark>) -> Option<DateTime<Utc>> {
+    let start = cycle_start(history, last);
+    newest(history, &[EVENT_REQUESTED, EVENT_WARNED]).filter(|ask| start.is_none_or(|s| *ask >= s))
+}
+
+/// The newest `compact-failed` event of the current cycle that is later than
+/// the cycle's newest ask. A new ask or a marker ends it (#75).
+pub fn failed_after_ask<'a>(
+    history: &'a [HistoryEntry],
+    last: Option<&CompactionMark>,
+) -> Option<&'a HistoryEntry> {
+    let start = cycle_start(history, last);
+    let ask = cycle_ask(history, last);
+    history
+        .iter()
+        .filter(|e| e.event == EVENT_FAILED)
+        .filter_map(|e| Some((crate::clock::parse(&e.at)?, e)))
+        .filter(|(at, _)| start.is_none_or(|s| *at >= s) && ask.is_none_or(|a| *at > a))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, e)| e)
+}
+
+/// How long ago the newest ask of the cycle was made, when there is one.
+pub fn ask_age(
+    history: &[HistoryEntry],
+    last: Option<&CompactionMark>,
+    now: DateTime<Utc>,
+) -> Option<Duration> {
+    let ask = cycle_ask(history, last)?;
+    Some((now - ask).to_std().unwrap_or_default())
+}
+
+/// The newest ask of the cycle is older than [`REQUEST_DEADLINE`].
+fn ask_is_stale(
+    history: &[HistoryEntry],
+    last: Option<&CompactionMark>,
+    now: DateTime<Utc>,
+) -> bool {
+    ask_age(history, last, now).is_some_and(|age| age > REQUEST_DEADLINE)
+}
+
+/// A second `--request` is allowed: the ask went stale, or a compaction job
+/// failed after it (#75).
+pub fn may_ask_again(
+    history: &[HistoryEntry],
+    last: Option<&CompactionMark>,
+    now: DateTime<Utc>,
+) -> bool {
+    failed_after_ask(history, last).is_some() || ask_is_stale(history, last, now)
 }
 
 /// The newest time of the `events` in `history`.
@@ -293,4 +372,165 @@ pub fn compact_line(caps: CompactionCaps, instructions: &str) -> Option<String> 
     } else {
         format!("/compact {keep}")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::telemetry::context::Reading;
+    use std::path::PathBuf;
+
+    fn at(raw: &str) -> DateTime<Utc> {
+        crate::clock::parse(raw).expect("test time")
+    }
+
+    fn ev(at: &str, event: &str, text: &str) -> HistoryEntry {
+        HistoryEntry {
+            at: at.into(),
+            event: event.into(),
+            text: text.into(),
+        }
+    }
+
+    fn over_reading() -> Reading {
+        Reading {
+            tokens: Some(311_225),
+            provisional: false,
+            pending: false,
+            window: None,
+            model: None,
+            last_compaction: None,
+            marks: 0,
+            marks_at: Vec::new(),
+            transcript: PathBuf::from("/t/rollout.jsonl"),
+        }
+    }
+
+    fn state(history: &[HistoryEntry], now: &str) -> RowState {
+        let reading = over_reading();
+        classify(&RowInputs {
+            reading: Ok(&reading),
+            threshold: 300_000,
+            history,
+            job: &JobLiveness::None,
+            now: at(now),
+        })
+    }
+
+    #[test]
+    fn an_ask_past_the_deadline_with_no_marker_is_request_stale() {
+        let history = [ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, "")];
+        assert_eq!(state(&history, "2026-09-20T10:19:00Z"), RowState::Requested);
+        assert_eq!(
+            state(&history, "2026-09-20T10:21:00Z"),
+            RowState::RequestStale
+        );
+    }
+
+    #[test]
+    fn a_stale_warning_is_request_stale_too() {
+        let history = [ev("2026-09-20T10:00:00Z", EVENT_WARNED, "")];
+        assert_eq!(
+            state(&history, "2026-09-20T11:00:00Z"),
+            RowState::RequestStale
+        );
+    }
+
+    #[test]
+    fn a_new_ask_after_a_stale_one_is_requested_again() {
+        let history = [
+            ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, ""),
+            ev("2026-09-20T10:30:00Z", EVENT_REQUESTED, ""),
+        ];
+        assert_eq!(state(&history, "2026-09-20T10:35:00Z"), RowState::Requested);
+    }
+
+    #[test]
+    fn a_failure_after_the_ask_is_compact_failed_until_a_new_ask() {
+        let history = [
+            ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, ""),
+            ev(
+                "2026-09-20T10:05:00Z",
+                EVENT_FAILED,
+                "step wait-idle: timed out",
+            ),
+        ];
+        assert_eq!(
+            state(&history, "2026-09-20T10:06:00Z"),
+            RowState::CompactFailed
+        );
+        // The failure outranks the deadline.
+        assert_eq!(
+            state(&history, "2026-09-20T12:00:00Z"),
+            RowState::CompactFailed
+        );
+        let asked_again = [
+            history[0].clone(),
+            history[1].clone(),
+            ev("2026-09-20T10:07:00Z", EVENT_REQUESTED, ""),
+        ];
+        assert_eq!(
+            state(&asked_again, "2026-09-20T10:08:00Z"),
+            RowState::Requested
+        );
+    }
+
+    #[test]
+    fn a_failure_before_the_ask_does_not_count() {
+        let history = [
+            ev("2026-09-20T09:00:00Z", EVENT_FAILED, "step start: boom"),
+            ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, ""),
+        ];
+        assert_eq!(state(&history, "2026-09-20T10:01:00Z"), RowState::Requested);
+    }
+
+    #[test]
+    fn a_marker_ends_a_failure_and_a_stale_ask() {
+        let history = [
+            ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, ""),
+            ev("2026-09-20T10:05:00Z", EVENT_FAILED, "step start: boom"),
+        ];
+        let mut reading = over_reading();
+        reading.last_compaction = Some(CompactionMark {
+            at: "2026-09-20T10:30:00Z".into(),
+            offset: 10,
+            trigger: Some("manual".into()),
+            pre_tokens: Some(311_225),
+            post_tokens: Some(9_000),
+        });
+        let got = classify(&RowInputs {
+            reading: Ok(&reading),
+            threshold: 300_000,
+            history: &history,
+            job: &JobLiveness::None,
+            now: at("2026-09-20T11:00:00Z"),
+        });
+        assert_eq!(got, RowState::Over);
+    }
+
+    #[test]
+    fn may_ask_again_only_when_stale_or_failed() {
+        let fresh = [ev("2026-09-20T10:00:00Z", EVENT_REQUESTED, "")];
+        let now = at("2026-09-20T10:05:00Z");
+        assert!(!may_ask_again(&fresh, None, now));
+        assert!(may_ask_again(&fresh, None, at("2026-09-20T10:25:00Z")));
+        let failed = [
+            fresh[0].clone(),
+            ev("2026-09-20T10:02:00Z", EVENT_FAILED, "step start: boom"),
+        ];
+        assert!(may_ask_again(&failed, None, now));
+    }
+
+    #[test]
+    fn ask_age_is_the_time_since_the_newest_ask() {
+        let history = [
+            ev("2026-09-20T10:00:00Z", EVENT_WARNED, ""),
+            ev("2026-09-20T10:10:00Z", EVENT_REQUESTED, ""),
+        ];
+        assert_eq!(
+            ask_age(&history, None, at("2026-09-20T10:25:00Z")),
+            Some(Duration::from_secs(15 * 60))
+        );
+        assert_eq!(ask_age(&[], None, at("2026-09-20T10:25:00Z")), None);
+    }
 }
