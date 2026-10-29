@@ -122,7 +122,8 @@ fn arc_31_e2e_done_refuses_then_unlanded_reports() {
     let refused = h.run(&["done", "s"]);
     assert!(!refused.status.success());
     let expected = format!(
-        "horch: horch done refused because this record has an open worktree claim:\n\
+        "closing: reporting to the orchestrator\n\
+         horch: horch done refused because this record has an open worktree claim:\n\
          wt/sonnet-1-unit at {short} (1 commits ahead of main), worktree {}\n\
          Run: horch worktree land\n\
          If it cannot land: horch done --unlanded \"<reason>\" \"<summary>\"\n",

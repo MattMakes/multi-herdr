@@ -12,6 +12,7 @@
 //! mailbox that does not have it. For the late worker, a wrapper starts the
 //! pane line 2 s late.
 
+use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,21 @@ fn text(o: &Output) -> String {
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr)
     )
+}
+
+/// A concurrent fork on Linux can briefly inherit the script's write
+/// descriptor. Retry only that exec error until the child closes it.
+fn warm(path: &Path) {
+    for _ in 0..100 {
+        match Command::new(path).arg("warm").status() {
+            Ok(status) => return assert!(status.success()),
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("warm {}: {e}", path.display()),
+        }
+    }
+    panic!("{} stayed busy", path.display());
 }
 
 fn records(h: &Harness) -> Vec<Value> {
@@ -125,11 +141,7 @@ fn a_worker_that_registers_after_the_wait_still_works() {
         )
         .as_bytes(),
     );
-    assert!(Command::new(&wrapper)
-        .arg("warm")
-        .status()
-        .unwrap()
-        .success());
+    warm(&wrapper);
     h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
     let out = spawn_smoke(&h);
     assert!(out.status.success(), "{}", text(&out));
@@ -169,11 +181,7 @@ fn spawn_fails_with_the_error_of_a_worker_whose_brief_is_missing() {
         )
         .as_bytes(),
     );
-    assert!(Command::new(&wrapper)
-        .arg("warm")
-        .status()
-        .unwrap()
-        .success());
+    warm(&wrapper);
     h.set("HORCH_HERDR_BIN", wrapper.to_string_lossy());
 
     let started = Instant::now();
