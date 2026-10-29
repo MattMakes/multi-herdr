@@ -48,11 +48,16 @@ impl Observer for Live<'_> {
             .transcript_path
             .as_deref()
             .and_then(|t| std::fs::metadata(t).ok());
-        let (open_question, question_error) =
-            match watchdog::open_question(self.state_root, self.run, w) {
-                Ok(q) => (q, None),
-                Err(e) => (None, Some(format!("{e:#}"))),
-            };
+        let questions = watchdog::open_question(self.state_root, self.run, w).and_then(|open| {
+            Ok((
+                open,
+                watchdog::answered_question(self.state_root, self.run, w)?,
+            ))
+        });
+        let ((open_question, answered_question), question_error) = match questions {
+            Ok(q) => (q, None),
+            Err(e) => ((None, None), Some(format!("{e:#}"))),
+        };
         Observation {
             agent_alive,
             herdr_status: pane.as_ref().and_then(|p| p.agent_status.clone()),
@@ -63,6 +68,7 @@ impl Observer for Live<'_> {
                 .map(|t| horch_core::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
             screen,
             open_question,
+            answered_question,
             question_error,
         }
     }

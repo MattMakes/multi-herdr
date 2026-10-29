@@ -41,6 +41,29 @@ struct Record {
     #[serde(flatten)]
     question: OpenQuestion,
     answered_at: Option<String>,
+    /// A new id for each question: an answer closes only the question it
+    /// saw before its line was sent.
+    #[serde(default)]
+    ask_id: String,
+}
+
+/// What 1 `tell` line does to the record. [`Questions::plan`] decides it
+/// before the line is sent, [`Questions::apply`] makes it: a question
+/// before the push (its answer can come at once), an answer after the
+/// reply is delivered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    Nothing,
+    Ask {
+        role: String,
+        line: String,
+    },
+    /// Answer `role`'s question `ask_id`, the one open when the reply was
+    /// planned; `None` when none was open.
+    Answer {
+        role: String,
+        ask_id: Option<String>,
+    },
 }
 
 impl Record {
@@ -68,15 +91,42 @@ impl Questions {
     /// `to`. A role's question to the orchestrator opens a question; an
     /// orchestrator line to a role answers that role's question.
     pub fn record_tell(&self, sender: Option<&str>, to: &str, line: &str) -> Result<()> {
+        self.apply(&self.plan(sender, to, line)?)
+    }
+
+    /// The change 1 `tell` line makes, read before the line is sent.
+    pub fn plan(&self, sender: Option<&str>, to: &str, line: &str) -> Result<Change> {
         let from_orchestrator = sender.is_none_or(|s| s == "orchestrator");
         if from_orchestrator && to != "orchestrator" {
-            return self.answer(to);
+            let ask_id = self
+                .read_role(to)?
+                .filter(|r| r.answered_at.is_none())
+                .map(|r| r.ask_id);
+            return Ok(Change::Answer {
+                role: to.to_string(),
+                ask_id,
+            });
         }
-        match sender {
+        Ok(match sender {
             Some(role) if to == "orchestrator" && role != "horch" && is_question(line, role) => {
-                self.ask(role, line)
+                Change::Ask {
+                    role: role.to_string(),
+                    line: line.to_string(),
+                }
             }
-            _ => Ok(()),
+            _ => Change::Nothing,
+        })
+    }
+
+    /// Make a [`Change`].
+    pub fn apply(&self, change: &Change) -> Result<()> {
+        match change {
+            Change::Nothing | Change::Answer { ask_id: None, .. } => Ok(()),
+            Change::Ask { role, line } => self.ask(role, line),
+            Change::Answer {
+                role,
+                ask_id: Some(id),
+            } => self.answer(role, id),
         }
     }
 
@@ -94,7 +144,7 @@ impl Questions {
                 continue;
             }
             if let Some(r) = read(&path)? {
-                if r.answered_at.is_none() && !expired(&r) {
+                if r.answered_at.is_none() && !expired(&r)? {
                     out.push(r.question);
                 }
             }
@@ -106,10 +156,23 @@ impl Questions {
     /// The open question of `role`, if it has one. A record that cannot be
     /// read, or that names another role, is an error.
     pub fn open_for(&self, role: &str) -> Result<Option<OpenQuestion>> {
-        Ok(self
-            .read_role(role)?
-            .filter(|r| r.answered_at.is_none() && !expired(r))
-            .map(|r| r.question))
+        self.last_for(role, false)
+    }
+
+    /// The last question of `role` when it is answered: the role waited
+    /// from its `asked_at` to the answer.
+    pub fn answered_for(&self, role: &str) -> Result<Option<OpenQuestion>> {
+        self.last_for(role, true)
+    }
+
+    fn last_for(&self, role: &str, answered: bool) -> Result<Option<OpenQuestion>> {
+        let Some(r) = self.read_role(role)? else {
+            return Ok(None);
+        };
+        if r.answered_at.is_some() != answered || expired(&r)? {
+            return Ok(None);
+        }
+        Ok(Some(r.question))
     }
 
     fn path(&self, role: &str) -> PathBuf {
@@ -154,16 +217,18 @@ impl Questions {
                     asked_at,
                 },
                 answered_at: None,
+                ask_id: uuid::Uuid::new_v4().to_string(),
             })
         })
     }
 
-    fn answer(&self, role: &str) -> Result<()> {
+    /// Mark `role`'s question `ask_id` answered. A newer question stays open.
+    fn answer(&self, role: &str, ask_id: &str) -> Result<()> {
         self.locked(|| {
             let Some(mut r) = self.read_role(role)? else {
                 return Ok(());
             };
-            if r.answered_at.is_some() {
+            if r.answered_at.is_some() || r.ask_id != ask_id {
                 return Ok(());
             }
             r.answered_at = Some(crate::clock::now_stamp());
@@ -179,8 +244,8 @@ impl Questions {
             .with_context(|| format!("writing {}", path.display()))
     }
 
-    /// Remove the records past the retention. A record that cannot be read
-    /// stays: it may hold an open question.
+    /// Remove the records past the retention. A record that cannot be read,
+    /// or whose time does not parse, stays: it may hold an open question.
     fn prune(&self) -> Result<()> {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return Ok(());
@@ -188,7 +253,7 @@ impl Questions {
         for entry in entries {
             let path = entry?.path();
             if path.extension().is_some_and(|x| x == "json")
-                && read(&path).is_ok_and(|r| r.is_some_and(|r| expired(&r)))
+                && read(&path).is_ok_and(|r| r.is_some_and(|r| expired(&r).unwrap_or(false)))
             {
                 std::fs::remove_file(&path)
                     .with_context(|| format!("removing {}", path.display()))?;
@@ -227,11 +292,17 @@ fn read(path: &Path) -> Result<Option<Record>> {
     Ok(Some(r))
 }
 
-fn expired(r: &Record) -> bool {
-    let (Some(at), now) = (crate::clock::parse(r.last_change()), crate::clock::now()) else {
-        return true;
-    };
-    (now - at).num_seconds() > RETENTION_S
+/// Whether the record is past the retention. A time that does not parse is
+/// an error: the record may hold an open question.
+fn expired(r: &Record) -> Result<bool> {
+    let at = crate::clock::parse(r.last_change()).with_context(|| {
+        format!(
+            "the question record of {} has a time that does not parse: {}",
+            r.question.role,
+            r.last_change()
+        )
+    })?;
+    Ok((crate::clock::now() - at).num_seconds() > RETENTION_S)
 }
 
 /// A file name for `s` that no other string has: ASCII letters, digits and
@@ -347,6 +418,7 @@ mod tests {
                 asked_at: old,
             },
             answered_at: None,
+            ask_id: "a1".into(),
         })
         .unwrap();
         assert!(q.open().unwrap().is_empty());
@@ -422,6 +494,7 @@ mod tests {
                 asked_at: days_ago(10),
             },
             answered_at: Some(at),
+            ask_id: "a1".into(),
         };
         q.write(&answered(days_ago(6))).unwrap();
         q.record_tell(Some("sonnet-1"), "orchestrator", "[sonnet-1] QUESTION: y")
@@ -434,31 +507,92 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_questions_and_answers_lose_no_record() {
+    fn a_change_waits_for_the_lock_that_another_change_holds() {
         let root = tempfile::tempdir().unwrap();
-        let q = std::sync::Arc::new(record(root.path()));
-        let threads: Vec<_> = (0..2)
-            .map(|t| {
-                let q = std::sync::Arc::clone(&q);
-                std::thread::spawn(move || {
-                    for i in 0..6 {
-                        let role = format!("r{t}-{i}");
-                        q.record_tell(
-                            Some(&role),
-                            "orchestrator",
-                            &format!("[{role}] QUESTION: x"),
-                        )
-                        .unwrap();
-                        if i % 2 == 0 {
-                            q.record_tell(None, &role, "answer").unwrap();
-                        }
-                    }
-                })
+        let q = record(root.path());
+        std::fs::create_dir_all(&q.dir).unwrap();
+        let guard = crate::fsx::DirLock::acquire(&q.dir, "records", LOCK_STALE, LOCK_WAIT).unwrap();
+        let (started, wait) = std::sync::mpsc::channel();
+        let asker = {
+            let q = q.clone();
+            std::thread::spawn(move || {
+                started.send(()).unwrap();
+                q.record_tell(Some("opus-1"), "orchestrator", "[opus-1] QUESTION: x")
             })
-            .collect();
-        for t in threads {
-            t.join().unwrap();
-        }
-        assert_eq!(q.open().unwrap().len(), 6);
+        };
+        wait.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !q.path("opus-1").exists(),
+            "no write while the lock is held"
+        );
+        drop(guard);
+        asker.join().unwrap().unwrap();
+        assert!(q.open_for("opus-1").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_record_whose_time_does_not_parse_is_an_error_and_is_not_pruned() {
+        let root = tempfile::tempdir().unwrap();
+        let q = record(root.path());
+        let mut r = Record {
+            question: OpenQuestion {
+                role: "opus-1".into(),
+                text: "[opus-1] QUESTION: x".into(),
+                asked_at: "yesterday".into(),
+            },
+            answered_at: None,
+            ask_id: "a1".into(),
+        };
+        q.write(&r).unwrap();
+        let e = q.open_for("opus-1").unwrap_err();
+        assert!(format!("{e:#}").contains("does not parse"), "{e:#}");
+        assert!(q.open().is_err());
+        q.record_tell(Some("sonnet-1"), "orchestrator", "[sonnet-1] QUESTION: y")
+            .unwrap();
+        assert!(q.path("opus-1").exists(), "kept");
+        r.question.asked_at = crate::clock::now_stamp();
+        r.answered_at = Some("not a time".into());
+        q.write(&r).unwrap();
+        assert!(q.answered_for("opus-1").is_err());
+    }
+
+    #[test]
+    fn an_answer_closes_only_the_question_it_saw() {
+        let root = tempfile::tempdir().unwrap();
+        let q = record(root.path());
+        q.record_tell(Some("opus-1"), "orchestrator", "[opus-1] QUESTION: a")
+            .unwrap();
+        let reply = q.plan(None, "opus-1", "answer to a").unwrap();
+        // The role asks again before the reply is recorded.
+        q.record_tell(Some("opus-1"), "orchestrator", "[opus-1] QUESTION: b")
+            .unwrap();
+        q.apply(&reply).unwrap();
+        let open = q.open_for("opus-1").unwrap().unwrap();
+        assert_eq!(open.text, "[opus-1] QUESTION: b");
+        q.record_tell(None, "opus-1", "answer to b").unwrap();
+        assert!(q.open_for("opus-1").unwrap().is_none());
+        assert_eq!(
+            q.answered_for("opus-1").unwrap().unwrap().text,
+            "[opus-1] QUESTION: b"
+        );
+    }
+
+    #[test]
+    fn a_reply_planned_before_the_question_answers_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let q = record(root.path());
+        let reply = q.plan(None, "opus-1", "an older reply").unwrap();
+        assert_eq!(
+            reply,
+            Change::Answer {
+                role: "opus-1".into(),
+                ask_id: None
+            }
+        );
+        q.record_tell(Some("opus-1"), "orchestrator", "[opus-1] QUESTION: a")
+            .unwrap();
+        q.apply(&reply).unwrap();
+        assert!(q.open_for("opus-1").unwrap().is_some());
     }
 }

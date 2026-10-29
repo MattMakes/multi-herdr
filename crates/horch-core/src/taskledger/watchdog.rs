@@ -50,6 +50,9 @@ pub struct Observation {
     pub screen: Option<String>,
     /// The worker's open question to the orchestrator, if any.
     pub open_question: Option<OpenQuestion>,
+    /// The worker's last question when it is answered: a wait that may have
+    /// opened and closed since the last check.
+    pub answered_question: Option<OpenQuestion>,
     /// Why the open-question record could not be read: the worker's wait
     /// state is unknown.
     pub question_error: Option<String>,
@@ -119,22 +122,39 @@ pub fn open_question(
     run: &Run,
     w: &Worker,
 ) -> Result<Option<OpenQuestion>> {
-    let (Some(ws), Some(role)) = (
-        w.workspace_id.as_deref().or(run.workspace_id.as_deref()),
-        w.role.as_deref(),
-    ) else {
-        return Ok(None);
-    };
-    crate::messaging::questions::Questions::under(state_root, ws).open_for(role)
+    question_record(state_root, run, w).map_or(Ok(None), |(q, role)| q.open_for(&role))
+}
+
+/// The last question of worker `w` when it is answered, as
+/// [`open_question`] finds it.
+pub fn answered_question(
+    state_root: &std::path::Path,
+    run: &Run,
+    w: &Worker,
+) -> Result<Option<OpenQuestion>> {
+    question_record(state_root, run, w).map_or(Ok(None), |(q, role)| q.answered_for(&role))
+}
+
+fn question_record(
+    state_root: &std::path::Path,
+    run: &Run,
+    w: &Worker,
+) -> Option<(crate::messaging::questions::Questions, String)> {
+    let ws = w.workspace_id.as_deref().or(run.workspace_id.as_deref())?;
+    let role = w.role.clone()?;
+    Some((
+        crate::messaging::questions::Questions::under(state_root, ws),
+        role,
+    ))
 }
 
 /// The reviewer tasks of the worker's waiting finish step that are not in.
 fn review_wait(conn: &Connection, w: &Worker) -> Result<Option<Wait>> {
     let ids: Option<String> = optional(conn.query_row(
         "SELECT review_task_ids FROM task_steps
-         WHERE worker_id = ?1 AND status = 'running' AND verdict = 'waiting'
+         WHERE task_id = ?1 AND worker_id = ?2 AND status = 'running' AND verdict = 'waiting'
          ORDER BY seq DESC LIMIT 1",
-        [&w.worker_id],
+        params![w.task_id, w.worker_id],
         |r| r.get(0),
     ))?
     .flatten();
@@ -293,6 +313,7 @@ fn check_run_at(store: &mut Store, pass: &Pass<'_>) -> Result<Vec<Checked>> {
 /// What 1 check measured, besides the observation.
 struct Facts {
     prev: Option<Prev>,
+    now: String,
     /// The last check, or the claim.
     since: String,
     elapsed: i64,
@@ -333,13 +354,14 @@ fn check_worker(store: &mut Store, pass: &Pass<'_>, w: &Worker) -> Result<Option
         .map(|(now_t, before)| now_t - before);
     let f = Facts {
         prev,
+        now: now.to_string(),
         since,
         elapsed,
         timer_s,
         timer_delta,
     };
     let call = classify(run, w, &o, &f);
-    let call = apply_wait(store.conn(), w, &o, now, call);
+    let call = apply_wait(store.conn(), w, &o, &f, call);
     let (verdict, round, note, source) = stall(run, w, call);
     persist(store, w, now, &o, &f, (verdict, round, &note, source))?;
     let task = match &w.task_id {
@@ -466,16 +488,22 @@ fn timer_suspect(run: &Run, o: &Observation, f: &Facts) -> Call {
 
 /// A `no_progress` while a wait holds is `progress`; while the wait state
 /// cannot be read it is `suspect`, which holds the stall count.
-fn apply_wait(conn: &Connection, w: &Worker, o: &Observation, now: &str, call: Call) -> Call {
+fn apply_wait(conn: &Connection, w: &Worker, o: &Observation, f: &Facts, call: Call) -> Call {
     let (verdict, note, source) = call;
     if verdict != Verdict::NoProgress {
         return (verdict, note, source);
     }
+    let now = f.now.as_str();
     let wait = match &o.question_error {
         Some(e) => Err(anyhow::anyhow!("{e}")),
         None => wait_of(conn, w, o.open_question.as_ref(), now),
     };
     match wait {
+        Ok(None) if answered_since(w, o, &f.since) => (
+            Verdict::Progress,
+            format!("the worker asked the orchestrator and got its answer since the last check, so the stall count starts fresh: {note}"),
+            None,
+        ),
         Ok(None) => (verdict, note, source),
         Ok(Some(wait)) => (
             Verdict::Progress,
@@ -493,6 +521,15 @@ fn apply_wait(conn: &Connection, w: &Worker, o: &Observation, now: &str, call: C
             None,
         ),
     }
+}
+
+/// Whether the worker's answered question was asked at or after `since`
+/// (and after its claim): a wait that opened and closed between 2 checks.
+fn answered_since(w: &Worker, o: &Observation, since: &str) -> bool {
+    let start = w.claimed_at.as_deref().unwrap_or(since);
+    o.answered_question
+        .as_ref()
+        .is_some_and(|q| q.asked_at.as_str() >= since && q.asked_at.as_str() >= start)
 }
 
 /// The note prefix of a check whose wait state could not be read.
@@ -832,6 +869,12 @@ mod tests {
                 ids.push(t.task_id);
             }
             waiting_step(tx, w, &util::json_list(&ids))?;
+            // The tasks are queued at the claim, the test clock's start.
+            tx.execute(
+                "UPDATE tasks SET created_at = (SELECT claimed_at FROM workers WHERE worker_id = ?1)
+                 WHERE kind = 'work' AND title = 'review'",
+                [w],
+            )?;
             Ok(ids)
         })
         .unwrap()
@@ -1089,5 +1132,47 @@ mod tests {
         let mut c = Clock::at_claim(&s, &w);
         s.immediate(|tx| waiting_step(tx, &w, "not json")).unwrap();
         assert_unreadable_holds(&mut c, &mut s, &run, &w, &Idle(None), "does not parse");
+    }
+
+    #[test]
+    fn a_question_asked_and_answered_between_checks_starts_the_stall_count_fresh() {
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        for want in ["no_progress", "no_progress"] {
+            assert_eq!(c.next(&mut s, &run, &Idle(None)).verdict, want);
+        }
+        // At round 2 the worker asks; the reply comes before the next check.
+        let answered = Script(RefCell::new(vec![Observation {
+            answered_question: Some(OpenQuestion {
+                role: "r".into(),
+                text: "[r] QUESTION: x?".into(),
+                asked_at: c.ago(-60),
+            }),
+            ..live(None, "idle")
+        }]));
+        let r = c.next(&mut s, &run, &answered);
+        assert_eq!(r.verdict, "progress", "{r:?}");
+        assert!(
+            r.note.contains("got its answer since the last check"),
+            "{}",
+            r.note
+        );
+        assert_reaped_after_3_idle_checks(&mut c, &mut s, &run, &Idle(None));
+    }
+
+    #[test]
+    fn an_answered_question_from_before_the_last_check_is_no_progress() {
+        let (_d, mut s, run, w) = setup();
+        let mut c = Clock::at_claim(&s, &w);
+        c.next(&mut s, &run, &Idle(None));
+        let old = Script(RefCell::new(vec![Observation {
+            answered_question: Some(OpenQuestion {
+                role: "r".into(),
+                text: "[r] QUESTION: x?".into(),
+                asked_at: c.ago(60),
+            }),
+            ..live(None, "idle")
+        }]));
+        assert_eq!(c.next(&mut s, &run, &old).verdict, "no_progress");
     }
 }

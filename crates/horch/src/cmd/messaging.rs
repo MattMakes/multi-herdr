@@ -28,7 +28,7 @@ use horch_core::messaging::delivery;
 use horch_core::messaging::mail::Mail;
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
-use horch_core::messaging::questions::Questions;
+use horch_core::messaging::questions::{Change, Questions};
 use horch_core::prompts;
 use horch_core::runtime::RuntimeContext;
 use horch_core::usage::Locations;
@@ -74,19 +74,38 @@ pub fn tell_as(
 ) -> Result<ReportStatus> {
     match queue_as(ctx, sender, role, text, false)? {
         Some(outgoing) => {
+            // The open-question record (#70). A question is recorded once its
+            // line is queued and before the push: the answer can come at once.
+            // An answer is planned now and recorded only after the reply is
+            // delivered. A record failure never fails the tell.
             let questions =
                 Questions::under(&ctx.paths.state_root, outgoing.mailbox.workspace_id());
-            let (sender, line) = (outgoing.sender.clone(), outgoing.line.clone());
+            let change = questions.plan(outgoing.sender.as_deref(), role, &outgoing.line);
+            let (before, after) = match change {
+                Ok(c @ Change::Ask { .. }) => (Some(c), None),
+                Ok(c) => (None, Some(c)),
+                Err(e) => {
+                    warn_question_record(&e);
+                    (None, None)
+                }
+            };
+            record_change(&questions, before);
             let status = outgoing.push()?;
-            // The open-question record (#70) changes only for a line that was
-            // delivered or durably queued; its failure never fails the tell.
-            if let Err(e) = questions.record_tell(sender.as_deref(), role, &line) {
-                eprintln!("horch tell: the open-question record was not updated: {e:#}");
-            }
+            record_change(&questions, after);
             Ok(status)
         }
         None => Ok(ReportStatus::Delivered),
     }
+}
+
+fn record_change(questions: &Questions, change: Option<Change>) {
+    if let Some(Err(e)) = change.map(|c| questions.apply(&c)) {
+        warn_question_record(&e);
+    }
+}
+
+fn warn_question_record(e: &anyhow::Error) {
+    eprintln!("horch tell: the open-question record was not updated: {e:#}");
 }
 
 /// A line [`queue_as`] made ready (and durable, for the orchestrator) that

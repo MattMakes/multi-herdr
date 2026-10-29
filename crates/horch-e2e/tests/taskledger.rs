@@ -1781,3 +1781,15 @@ fn a_missing_reviewer_task_keeps_the_worker_alive_and_notes_the_orchestrator() {
     assert!(o.status.success(), "{}", text(&o));
     assert_unreadable_wait_holds(&mut h, &w, "reviewer task gone");
 }
+
+/// #70: a question record that parses but holds a time that does not
+/// keeps the worker alive past 3 checks, and the orchestrator gets 1 NOTE.
+#[test]
+fn a_question_record_with_a_bad_time_keeps_the_worker_alive_and_notes_the_orchestrator() {
+    let (mut h, w, role) = asking("tl-wait-bad-time");
+    let path = h.state.join(format!("questions/w1/{role}.json"));
+    let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    record["asked_at"] = Value::from("yesterday");
+    std::fs::write(&path, record.to_string()).unwrap();
+    assert_unreadable_wait_holds(&mut h, &w, "does not parse");
+}
