@@ -943,3 +943,59 @@ fn a_question_is_open_until_the_orchestrator_tells_that_role_without_a_ledger_ru
     let answered = read();
     assert_eq!(answered["answered_at"], NOW, "{answered}");
 }
+
+/// #70: a question record that cannot be written never blocks `tell`: the
+/// line is still queued for the orchestrator, with a warning.
+#[test]
+fn a_tell_succeeds_when_the_question_record_cannot_be_written() {
+    let h = fleet("open-question-blocked", "exec,stay");
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    std::fs::create_dir_all(h.state.join("questions")).unwrap();
+    std::fs::write(h.state.join("questions/w1"), "not a directory").unwrap();
+    let ask = as_worker(
+        &h,
+        &["tell", "orchestrator", "QUESTION: May I edit x?"],
+        "w1:p2",
+        "sonnet-1",
+        "r1",
+    );
+    assert!(ask.status.success(), "{}", text(&ask));
+    assert!(
+        String::from_utf8_lossy(&ask.stderr).contains("the open-question record was not updated"),
+        "{}",
+        text(&ask)
+    );
+    let mail = std::fs::read_dir(h.state.join("mail/w1/pending"))
+        .unwrap()
+        .count()
+        + std::fs::read_dir(h.state.join("mail/w1/acked")).map_or(0, |d| d.count());
+    assert_eq!(mail, 1, "the question is queued as mail");
+}
+
+/// #70: an orchestrator reply that is not delivered answers nothing: the
+/// question stays open.
+#[test]
+fn a_reply_that_is_not_delivered_leaves_the_question_open() {
+    let h = fleet("open-question-undelivered", "exec,stay");
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
+    let ask = as_worker(
+        &h,
+        &["tell", "orchestrator", "QUESTION: May I edit x?"],
+        "w1:p2",
+        "sonnet-1",
+        "r1",
+    );
+    assert!(ask.status.success(), "{}", text(&ask));
+    // sonnet-1 has no registered pane: the reply cannot be delivered.
+    let reply = h.run(&["tell", "sonnet-1", "Yes."]);
+    assert!(!reply.status.success(), "{}", text(&reply));
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(h.state.join("questions/w1/sonnet-1.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(record["answered_at"].is_null(), "{record}");
+}

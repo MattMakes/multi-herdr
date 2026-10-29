@@ -46,6 +46,8 @@ pub struct WorkerLine {
     pub unwatched: bool,
     /// The wait that keeps a working worker from counting as stalled (#70).
     pub waiting: Option<Wait>,
+    /// Why the worker's wait state could not be read.
+    pub wait_error: Option<String>,
 }
 
 /// The board of 1 run.
@@ -102,9 +104,40 @@ fn last_check_at(conn: &Connection, worker_id: &str) -> Result<Option<String>> {
     ))
 }
 
-/// Build the board of `run`. `state_root` holds the open-question record;
-/// without it, no worker waits on an answer.
-pub fn report(conn: &Connection, run: &Run, state_root: Option<&Path>) -> Result<Report> {
+/// Build the board of `run`. No worker waits on an answer here; see
+/// [`report_with_questions`].
+pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
+    build(conn, run, None)
+}
+
+/// [`report`], with the open questions of the record under `state_root`.
+pub fn report_with_questions(conn: &Connection, run: &Run, state_root: &Path) -> Result<Report> {
+    build(conn, run, Some(state_root))
+}
+
+/// The wait of a working worker, or why it cannot be read.
+fn wait_line(
+    conn: &Connection,
+    run: &Run,
+    w: &Worker,
+    state_root: Option<&Path>,
+    now: &str,
+) -> (Option<Wait>, Option<String>) {
+    if w.status != "working" || w.kind != "worker" {
+        return (None, None);
+    }
+    let found = state_root
+        .map(|root| watchdog::open_question(root, run, w))
+        .transpose()
+        .map(Option::flatten)
+        .and_then(|q| watchdog::wait_of(conn, w, q.as_ref(), now));
+    match found {
+        Ok(wait) => (wait, None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    }
+}
+
+fn build(conn: &Connection, run: &Run, state_root: Option<&Path>) -> Result<Report> {
     let now = util::now();
     let all = tasks::of_run(conn, &run.run_id)?;
     let waits = tasks::waits(conn, &run.run_id)?;
@@ -148,12 +181,7 @@ pub fn report(conn: &Connection, run: &Run, state_root: Option<&Path>) -> Result
             .last_progress_at
             .as_deref()
             .and_then(|t| util::seconds_between(t, &now));
-        let waiting = if w.status == "working" && w.kind == "worker" {
-            let question = state_root.and_then(|root| watchdog::open_question(root, run, &w));
-            watchdog::wait_of(conn, &w, question.as_ref(), &now)?
-        } else {
-            None
-        };
+        let (waiting, wait_error) = wait_line(conn, run, &w, state_root, &now);
         let unwatched = if w.status == "working" {
             let since = last_check_at(conn, &w.worker_id)?.or_else(|| w.claimed_at.clone());
             since
@@ -176,6 +204,7 @@ pub fn report(conn: &Connection, run: &Run, state_root: Option<&Path>) -> Result
             progress_age_s,
             unwatched,
             waiting,
+            wait_error,
         });
     }
     let wts = worktrees(conn, &run.run_id)?;
@@ -265,6 +294,9 @@ pub fn render(r: &Report) -> String {
                     wait.reason,
                     age(util::seconds_between(&wait.since, &now))
                 );
+            }
+            if let Some(e) = &w.wait_error {
+                let _ = write!(out, "  {}: {e}", watchdog::WAIT_UNREADABLE.to_uppercase());
             }
             let _ = writeln!(out);
         }

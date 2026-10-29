@@ -73,7 +73,18 @@ pub fn tell_as(
     text: &str,
 ) -> Result<ReportStatus> {
     match queue_as(ctx, sender, role, text, false)? {
-        Some(outgoing) => outgoing.push(),
+        Some(outgoing) => {
+            let questions =
+                Questions::under(&ctx.paths.state_root, outgoing.mailbox.workspace_id());
+            let (sender, line) = (outgoing.sender.clone(), outgoing.line.clone());
+            let status = outgoing.push()?;
+            // The open-question record (#70) changes only for a line that was
+            // delivered or durably queued; its failure never fails the tell.
+            if let Err(e) = questions.record_tell(sender.as_deref(), role, &line) {
+                eprintln!("horch tell: the open-question record was not updated: {e:#}");
+            }
+            Ok(status)
+        }
         None => Ok(ReportStatus::Delivered),
     }
 }
@@ -111,12 +122,6 @@ fn queue_as<'a>(
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch tell must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
     let line = render_line(ctx, mailbox.workspace_id(), sender.as_deref(), role, text)?;
-    // The open-question record (#70); a failure there never blocks a tell.
-    if let Err(e) = Questions::under(&ctx.paths.state_root, mailbox.workspace_id())
-        .record_tell(sender.as_deref(), role, &line)
-    {
-        eprintln!("horch tell: the open-question record was not updated: {e:#}");
-    }
     let target = mailbox.pane_for(role);
     let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
     let durable = role == "orchestrator" && sender.is_some();

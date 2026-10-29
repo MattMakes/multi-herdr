@@ -1585,33 +1585,26 @@ fn assert_reaped_by_3_idle_checks(h: &mut Harness, from: u32) {
     );
 }
 
-/// #70: a worker waiting on reviewer tasks for 60 minutes is not reaped,
-/// and is reaped as usual when it stays idle after the reviews are in.
-#[test]
-fn a_worker_waiting_on_reviewer_tasks_is_not_reaped_until_they_are_in() {
-    let mut h = into_fleet(
-        finish_world("tl-wait-review"),
-        "tl-wait-review",
-        "exec,stay",
+/// Queue 1 task for codex-terra in run `slug`.
+fn one_task(h: &Harness, slug: &str, steps: Option<&str>) {
+    let mut args = vec!["ledger", "run", "new", slug];
+    args.extend(steps.map(|s| ["--steps", s]).into_iter().flatten());
+    ok(h, &args);
+    let p = ticket(h, "01-a", "# 01: Feature\n");
+    let file = p.to_string_lossy();
+    ok(
+        h,
+        &["ledger", "add", "--file", &file, "--primary", "codex-terra"],
     );
+}
+
+/// A spawned worker whose `finish` waits on reviewer tasks queued at
+/// pinned minute 0: the harness, worker id, role and review count.
+fn waiting_on_reviews(name: &str) -> (Harness, String, String, usize) {
+    let mut h = into_fleet(finish_world(name), name, "exec,stay");
     h.set("HORCH_STOP_GRACE_MS", "2000");
     h.set("HORCH_NOW", pinned(0));
-    ok(
-        &h,
-        &["ledger", "run", "new", "alpha", "--steps", "code-sweep"],
-    );
-    let p = ticket(&h, "01-a", "# 01: Feature\n");
-    ok(
-        &h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            &p.to_string_lossy(),
-            "--primary",
-            "codex-terra",
-        ],
-    );
+    one_task(&h, "alpha", Some("code-sweep"));
     let (w, role) = spawn_and_claim(&h);
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
@@ -1625,8 +1618,40 @@ fn a_worker_waiting_on_reviewer_tasks_is_not_reaped_until_they_are_in() {
     let (_, r) = finish_json(&h, &w);
     let reviews = r["queued_reviews"].as_array().unwrap().len();
     assert!(reviews > 0, "{r}");
+    (h, w, role, reviews)
+}
 
-    // 60 minutes of checks while the reviews run.
+/// Claim and finish every queued review with no findings, each as a worker
+/// of the persona it is for.
+fn complete_reviews(h: &Harness, reviews: usize) {
+    let st = json_of(h, &["ledger", "status", "--json"]);
+    let personas: Vec<String> = st["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["task"]["kind"] == "review")
+        .map(|t| t["task"]["claimable_by"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(personas.len(), reviews, "{st}");
+    for persona in &personas {
+        let rw = worker_new(h, persona);
+        let c: Value =
+            serde_json::from_str(&ok_as(h, &rw, &["ledger", "claim", "--json"])).unwrap();
+        let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
+        std::fs::write(
+            &f,
+            "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
+        )
+        .unwrap();
+        ok_as(h, &rw, &["ledger", "done", "reviewed"]);
+    }
+}
+
+/// #70: a worker waiting on reviewer tasks for 60 minutes is not reaped,
+/// and is reaped as usual when it stays idle after the reviews are in.
+#[test]
+fn a_worker_waiting_on_reviewer_tasks_is_not_reaped_until_they_are_in() {
+    let (mut h, w, role, reviews) = waiting_on_reviews("tl-wait-review");
     for min in (10..=60).step_by(10) {
         let (verdict, note) = watch_at(&mut h, min);
         assert_eq!(verdict, "progress", "minute {min}: {note}");
@@ -1644,53 +1669,20 @@ fn a_worker_waiting_on_reviewer_tasks_is_not_reaped_until_they_are_in() {
 
     // The reviews come in at minute 65; the worker stays idle.
     h.set("HORCH_NOW", pinned(65));
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    let personas: Vec<String> = st["tasks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|t| t["task"]["kind"] == "review")
-        .map(|t| t["task"]["claimable_by"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(personas.len(), reviews, "{st}");
-    for persona in &personas {
-        let rw = worker_new(&h, persona);
-        let c: Value =
-            serde_json::from_str(&ok_as(&h, &rw, &["ledger", "claim", "--json"])).unwrap();
-        let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
-        std::fs::write(
-            &f,
-            "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
-        )
-        .unwrap();
-        ok_as(&h, &rw, &["ledger", "done", "reviewed"]);
-    }
+    complete_reviews(&h, reviews);
     assert!(!out(&h.run(&["ledger", "status"])).contains("WAITING"));
     assert_reaped_by_3_idle_checks(&mut h, 60);
     let shown = json_of(&h, &["ledger", "show", &w, "--json"]);
     assert_eq!(shown["worker"]["status"], "incomplete", "{shown}");
 }
 
-/// #70: a worker that sent `QUESTION:` is not reaped while no reply has
-/// come. After the orchestrator's reply, 3 idle checks reap it.
-#[test]
-fn a_worker_with_an_open_question_is_not_reaped_until_the_reply() {
-    let mut h = fleet("tl-wait-question", "exec,stay");
+/// A spawned worker that asked the orchestrator a question at pinned
+/// minute 1: the harness, worker id and role.
+fn asking(name: &str) -> (Harness, String, String) {
+    let mut h = fleet(name, "exec,stay");
     h.set("HORCH_STOP_GRACE_MS", "2000");
     h.set("HORCH_NOW", pinned(0));
-    ok(&h, &["ledger", "run", "new", "beta"]);
-    let p = ticket(&h, "01-a", "# 01: A\n");
-    ok(
-        &h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            &p.to_string_lossy(),
-            "--primary",
-            "codex-terra",
-        ],
-    );
+    one_task(&h, "beta", None);
     let (w, role) = spawn_and_claim(&h);
     let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
@@ -1699,7 +1691,14 @@ fn a_worker_with_an_open_question_is_not_reaped_until_the_reply() {
     ask.env("HORCH_ROLE", &role).env("HORCH_WORKER_ID", &w);
     let o = ask.output().unwrap();
     assert!(o.status.success(), "{}", text(&o));
+    (h, w, role)
+}
 
+/// #70: a worker that sent `QUESTION:` is not reaped while no reply has
+/// come. After the orchestrator's reply, 3 idle checks reap it.
+#[test]
+fn a_worker_with_an_open_question_is_not_reaped_until_the_reply() {
+    let (mut h, _w, role) = asking("tl-wait-question");
     for min in (10..=60).step_by(10) {
         let (verdict, note) = watch_at(&mut h, min);
         assert_eq!(verdict, "progress", "minute {min}: {note}");
@@ -1720,4 +1719,65 @@ fn a_worker_with_an_open_question_is_not_reaped_until_the_reply() {
     ok(&h, &["tell", &role, "Yes, edit x."]);
     assert!(!out(&h.run(&["ledger", "status"])).contains("WAITING"));
     assert_reaped_by_3_idle_checks(&mut h, 60);
+}
+
+/// 4 checks of a worker whose wait state cannot be read: none counts
+/// toward a reap, `ledger status` says why, and the orchestrator gets 1
+/// NOTE (a `woke` event; wakes are off in these tests).
+fn assert_unreadable_wait_holds(h: &mut Harness, w: &str, why: &str) {
+    for min in (10..=40).step_by(10) {
+        let (verdict, note) = watch_at(h, min);
+        assert_eq!(verdict, "suspect", "minute {min}: {note}");
+        assert!(
+            note.starts_with("wait state unreadable") && note.contains(why),
+            "{note}"
+        );
+    }
+    assert_eq!(worker_json(h, w)["status"], "working");
+    let st = out(&h.run(&["ledger", "status"]));
+    assert!(st.contains("WAIT STATE UNREADABLE"), "{st}");
+    let events = json_of(h, &["ledger", "events", "--json"]);
+    let notes = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            e["kind"] == "woke"
+                && e["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("cannot read the wait state"))
+        })
+        .count();
+    assert_eq!(notes, 1, "{events}");
+}
+
+/// #70: a question record that does not parse keeps the worker alive past
+/// 3 checks, and the orchestrator gets 1 NOTE.
+#[test]
+fn a_corrupt_question_record_keeps_the_worker_alive_and_notes_the_orchestrator() {
+    let (mut h, w, role) = asking("tl-wait-corrupt");
+    std::fs::write(
+        h.state.join(format!("questions/w1/{role}.json")),
+        "{not json",
+    )
+    .unwrap();
+    assert_unreadable_wait_holds(&mut h, &w, "is not a question record");
+}
+
+/// #70: a reviewer task the waiting step names but the ledger lacks keeps
+/// the worker alive past 3 checks, and the orchestrator gets 1 NOTE.
+#[test]
+fn a_missing_reviewer_task_keeps_the_worker_alive_and_notes_the_orchestrator() {
+    let (mut h, w, _role, _) = waiting_on_reviews("tl-wait-missing");
+    if !h.has_sqlite3() {
+        return;
+    }
+    let db = h.root.join("ledger.sqlite3");
+    let o = std::process::Command::new(h.bin.join("sqlite3"))
+        .arg(&db)
+        .arg(r#"UPDATE task_steps SET review_task_ids = '["gone"]' WHERE verdict = 'waiting'"#)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    assert_unreadable_wait_holds(&mut h, &w, "reviewer task gone");
 }

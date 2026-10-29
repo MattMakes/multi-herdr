@@ -48,6 +48,11 @@ impl Observer for Live<'_> {
             .transcript_path
             .as_deref()
             .and_then(|t| std::fs::metadata(t).ok());
+        let (open_question, question_error) =
+            match watchdog::open_question(self.state_root, self.run, w) {
+                Ok(q) => (q, None),
+                Err(e) => (None, Some(format!("{e:#}"))),
+            };
         Observation {
             agent_alive,
             herdr_status: pane.as_ref().and_then(|p| p.agent_status.clone()),
@@ -57,7 +62,8 @@ impl Observer for Live<'_> {
                 .and_then(|m| m.modified().ok())
                 .map(|t| horch_core::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
             screen,
-            open_question: watchdog::open_question(self.state_root, self.run, w),
+            open_question,
+            question_error,
         }
     }
 }
@@ -121,6 +127,17 @@ fn pass(
                     c.note
                 ),
             ),
+            "suspect" if c.changed && c.note.starts_with(watchdog::WAIT_UNREADABLE) => {
+                taskledger_wake::wake(
+                    ctx,
+                    store,
+                    run,
+                    &format!(
+                        "NOTE: The watchdog cannot read the wait state of {who} on {on}, so it does not count its stall checks. Fix the record. {}",
+                        c.note
+                    ),
+                )
+            }
             "progress" | "proxy_checkin" if c.changed => {
                 // Back to normal after a stall: nothing to do, no wake.
             }
