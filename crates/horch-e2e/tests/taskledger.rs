@@ -2308,6 +2308,42 @@ fn a_rust_only_change_is_not_sent_to_the_complexity_analyser() {
 }
 
 #[test]
+fn a_complexity_report_past_64_kib_is_read_whole() {
+    let mut h = finish_world("tl-complexity-big");
+    // Node exits before a piped stdout drains: a pipe gets the first 64 KiB.
+    // The violation at the end of the report is past that.
+    let mut files: Vec<String> = (0..2000)
+        .map(|i| format!("{{\"filePath\":\"pad/file-{i:04}.ts\",\"functions\":[]}}"))
+        .collect();
+    files.push("{\"filePath\":\"a.ts\",\"functions\":[{\"line\":1}]}".to_string());
+    let report = format!(
+        "{{\"files\":[{}],\"violations\":[{{\"functionName\":\"big\",\"filePath\":\"a.ts\",\"line\":1,\"metric\":\"cyclomatic\",\"value\":30,\"threshold\":10}}]}}\n",
+        files.join(",")
+    );
+    assert!(report.len() > 65_536);
+    let report_path = h.root.join("report.json");
+    std::fs::write(&report_path, &report).unwrap();
+    let cli = h.write_bin(
+        "node-like-complexity",
+        format!(
+            "#!/bin/sh\nif [ -p /dev/stdout ]; then /usr/bin/head -c 65536 {r}; else /bin/cat {r}; fi\nexit 0\n",
+            r = report_path.display()
+        )
+        .as_bytes(),
+    );
+    h.set("HORCH_COMPLEXITY_CLI", cli.to_string_lossy());
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "a.ts");
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    let (status, summary) = step_of(&r, "complexity-sweep");
+    assert_eq!(
+        (status.as_str(), summary.as_str()),
+        ("failed", "1 violations"),
+        "{r}"
+    );
+}
+
+#[test]
 fn an_outer_git_dir_reaches_no_child_of_finish() {
     let mut h = finish_world("tl-scrub");
     // Another repository, as a hook or `git rebase -x` would name it.

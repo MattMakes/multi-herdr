@@ -174,12 +174,14 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
         .args(&files)
         .current_dir(&cx.dir);
     crate::runtime::process::scrub_child_env(&mut cmd);
+    // The report goes to a file, not a pipe: node exits before a piped
+    // stdout drains, and a pipe keeps only the first 64 KiB.
+    let evidence = cx.evidence_dir.join(format!("{}-complexity.json", cx.seq));
+    cmd.stdout(std::fs::File::create(&evidence)?);
     let out = cmd
         .output()
         .with_context(|| format!("running {}", cli.display()))?;
-    let json = String::from_utf8_lossy(&out.stdout).into_owned();
-    let evidence = cx.evidence_dir.join(format!("{}-complexity.json", cx.seq));
-    std::fs::write(&evidence, &json)?;
+    let json = std::fs::read_to_string(&evidence)?;
     if json.trim().is_empty() {
         return Ok(Outcome::fail(
             "no output",
