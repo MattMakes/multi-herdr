@@ -215,6 +215,13 @@ fn held_task(conn: &Connection, worker_id: &str) -> Result<(Worker, Task)> {
         bail!("this worker holds no task: run horch ledger claim first");
     };
     let task = tasks::get(conn, t)?;
+    if task.status == TaskStatus::Cancelled.as_str() {
+        bail!(
+            "{} was cancelled: {}. Stop work, then run horch done",
+            task.short(),
+            task.summary.as_deref().unwrap_or("no reason given")
+        );
+    }
     if task.current_worker_id.as_deref() != Some(worker_id) {
         bail!(
             "{} is no longer this worker's ({}); stop work and end your turn",
@@ -412,7 +419,8 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         }
         if task.status == TaskStatus::Running.as_str() {
             tx.execute(
-                "UPDATE tasks SET status = 'landing', updated_at = ?2 WHERE task_id = ?1",
+                "UPDATE tasks SET status = 'landing', updated_at = ?2
+                 WHERE task_id = ?1 AND status = 'running'",
                 params![task.task_id, util::now()],
             )?;
         }
@@ -679,11 +687,18 @@ pub fn complete(
             }
             None => ("done", summary.to_string(), EventKind::Done),
         };
-        tx.execute(
+        // Never turn a task cancelled meanwhile into done (#136).
+        let n = tx.execute(
             "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4, finished_at = ?4
-             WHERE task_id = ?1",
+             WHERE task_id = ?1 AND status IN ('running', 'landing')",
             params![task.task_id, status, text, now],
         )?;
+        if n == 0 {
+            bail!(
+                "{} is no longer running: stop work, then run horch done",
+                task.short()
+            );
+        }
         tx.execute(
             "UPDATE workers SET status = 'done', summary = ?2, end_reason = ?3, ended_at = ?4,
                 last_progress_at = ?4

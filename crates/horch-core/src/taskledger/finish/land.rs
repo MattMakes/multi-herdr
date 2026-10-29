@@ -118,6 +118,24 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     let dir = PathBuf::from(&wt.path);
     require_clean(git, &dir)?;
     let _lock = land_lock(cx)?;
+    // The task may have been cancelled while this land waited (#136).
+    let still_mine = |store: &Store| -> Result<Option<Outcome>> {
+        let t = super::tasks::get(store.conn(), &cx.task.task_id)?;
+        if t.status == "landing"
+            && t.current_worker_id.as_deref() == Some(cx.worker.worker_id.as_str())
+        {
+            return Ok(None);
+        }
+        let why = format!(
+            "{} is {}: nothing landed. Stop work, then run horch done",
+            t.short(),
+            t.status
+        );
+        Ok(Some(Outcome::fail("not landed", None, &why)))
+    };
+    if let Some(o) = still_mine(store)? {
+        return Ok(o);
+    }
     set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landing, None)?;
     let about = About {
         run: Some(&cx.run.run_id),
@@ -180,6 +198,9 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
             store,
             "the rebased branch does not contain the run branch".into(),
         );
+    }
+    if let Some(o) = still_mine(store)? {
+        return Ok(o);
     }
     // Fast-forward the run branch: by merge when it is checked out in the
     // main checkout, else by a compare-and-swap of its ref. Never forced.

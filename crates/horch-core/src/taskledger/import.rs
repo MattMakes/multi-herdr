@@ -620,7 +620,9 @@ pub fn sync_native(conn: &Connection) -> Result<()> {
         "SELECT t.task_id, t.run_id, r.project_id, w.worktree_id, w.path, t.seq
          FROM tasks t JOIN runs r ON r.run_id = t.run_id JOIN worktrees w ON w.task_id = t.task_id
          WHERE t.origin = 'native' AND t.status = 'cancelled'
-           AND w.status IN ('open', 'unlanded', 'cleanup_failed')
+           AND (w.status IN ('open', 'unlanded', 'cleanup_failed')
+                -- The cancel keeps the folder of the worktree it abandons (#136).
+                OR (w.status = 'abandoned' AND w.cleaned_at IS NULL))
            AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.worktree_id = w.worktree_id
                            AND f.kind = 'task_cancelled_open_worktree')",
     )?;

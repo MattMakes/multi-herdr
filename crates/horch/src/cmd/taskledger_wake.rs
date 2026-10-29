@@ -94,6 +94,100 @@ pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
         Err(e) => eprintln!("horch ledger: {e:#}"),
     }
     nudge_startable(ctx, store, run);
+    nudge_stuck(ctx, store, run);
+}
+
+/// After a task was cancelled (or parked unlanded): tell the orchestrator
+/// which open tasks now wait for it (#119). No wake when none do.
+pub fn cancelled_dependents(
+    ctx: &RuntimeContext,
+    store: &Store,
+    run: &Run,
+    task: &str,
+    dependents: &[tasks::Task],
+) {
+    let Some(first) = dependents.first() else {
+        return;
+    };
+    let names: Vec<String> = dependents.iter().map(|t| t.short()).collect();
+    wake(
+        ctx,
+        store,
+        run,
+        &format!(
+            "NOTE: {task} was cancelled. {} wait for it. Run horch ledger unblock {} --from {task}, or cancel them, or requeue {task}.",
+            names.join(", "),
+            first.short()
+        ),
+    );
+}
+
+/// Wake the orchestrator once when the run has open tasks, none can start
+/// and no worker is live: nothing else would ever wake it (#119).
+pub fn nudge_stuck(ctx: &RuntimeContext, store: &Store, run: &Run) {
+    let Some(text) = stuck_line(store, run) else {
+        return;
+    };
+    // Once per stuck state: the same line is not sent twice in a row.
+    let last: Option<String> = store
+        .conn()
+        .query_row(
+            "SELECT text FROM events WHERE run_id = ?1 AND kind = 'woke'
+               AND text LIKE '%the run is stuck:%' ORDER BY event_id DESC LIMIT 1",
+            [&run.run_id],
+            |r| r.get(0),
+        )
+        .ok();
+    if last.is_some_and(|l| l.ends_with(&text)) {
+        return;
+    }
+    wake(ctx, store, run, &text);
+}
+
+fn stuck_line(store: &Store, run: &Run) -> Option<String> {
+    let conn = store.conn();
+    let open: Vec<tasks::Task> = tasks::of_run(conn, &run.run_id)
+        .ok()?
+        .into_iter()
+        .filter(|t| matches!(t.status.as_str(), "queued" | "running" | "landing"))
+        .collect();
+    if open.is_empty() || !tasks::startable(conn, &run.run_id).ok()?.is_empty() {
+        return None;
+    }
+    let now = util::now();
+    let live = workers::of_run(conn, &run.run_id).ok()?.iter().any(|w| {
+        w.kind == "worker"
+            && w.status().is_ok_and(|s| s.is_live())
+            && !workers::is_stale(w, run.heartbeat_stale_s, &now)
+    });
+    if live {
+        return None;
+    }
+    let waits = tasks::waits(conn, &run.run_id).ok()?;
+    let parts: Vec<String> = open
+        .iter()
+        .map(|t| {
+            match (
+                &t.held_reason,
+                waits.iter().find(|(w, _)| w.task_id == t.task_id),
+            ) {
+                (Some(r), _) => format!("{} is held ({r})", t.short()),
+                (None, Some((_, w))) => format!("{}: {w}", t.short()),
+                (None, None) => format!("{} is {}", t.short(), t.status),
+            }
+        })
+        .collect();
+    Some(format!(
+        "NOTE: the run is stuck: {}. No worker is live and no task can start.",
+        parts.join("; ")
+    ))
+}
+
+/// The watchdog's ledger work after its checks: the pre-claim sweep, then
+/// the stuck-run wake.
+pub fn after_watch(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
+    sweep_preclaim(ctx, store, run);
+    nudge_stuck(ctx, store, run);
 }
 
 /// Wake the orchestrator when workers should be spawned now.

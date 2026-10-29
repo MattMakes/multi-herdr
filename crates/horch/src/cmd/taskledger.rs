@@ -79,10 +79,21 @@ pub enum LedgerCommand {
         #[command(flatten)]
         run: RunArg,
     },
-    /// Drop a task.
+    /// Drop a task. Its worker lets go of it at once; `--stop` also stops
+    /// that worker by its recorded PIDs and pane.
     Cancel {
         task: String,
         reason: String,
+        #[arg(long)]
+        stop: bool,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Drop 1 dependency: TASK no longer waits for --from (orchestrator).
+    Unblock {
+        task: String,
+        #[arg(long = "from", value_name = "BLOCKER")]
+        from: String,
         #[command(flatten)]
         run: RunArg,
     },
@@ -505,19 +516,59 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             ));
             Ok(ExitCode::SUCCESS)
         }
-        LedgerCommand::Cancel { task, reason, run } => {
+        LedgerCommand::Cancel {
+            task,
+            reason,
+            stop: stop_it,
+            run,
+        } => {
             let r = resolve_run(ctx, &store, &run)?;
+            let holder = tasks::resolve(store.conn(), &r.run_id, &task)?.current_worker_id;
+            if let (true, Some(w)) = (stop_it, &holder) {
+                let report = stop::stop_worker(
+                    &mut store,
+                    w,
+                    StopRequester::Orchestrator,
+                    &format!("task cancelled: {reason}"),
+                    &HerdrPanes::new(ctx),
+                    &stop::Os,
+                    &stop::StopOptions {
+                        grace: stop_grace(),
+                        ..Default::default()
+                    },
+                )?;
+                print_stop(&report, false)?;
+            }
             let t = store.immediate(|tx| {
                 let t = tasks::resolve(tx, &r.run_id, &task)?;
                 tasks::cancel(tx, &t, &reason)
             })?;
             output::println(&format!("{} cancelled.", t.short()));
-            if t.current_worker_id.is_some() {
+            if let (false, Some(w)) = (stop_it, &holder) {
                 eprintln!(
-                    "horch ledger: a worker still holds {}. Stop it with horch ledger stop <worker>.",
+                    "horch ledger: worker {w} held {} and can no longer finish it. Its process may still run: horch ledger stop {w} \"<reason>\".",
                     t.short()
                 );
             }
+            let waiting = tasks::dependents(store.conn(), &t.task_id)?;
+            if !waiting.is_empty() {
+                let names: Vec<String> = waiting.iter().map(|d| d.short()).collect();
+                output::println(&format!("Waiting for {}: {}.", t.short(), names.join(", ")));
+            }
+            super::taskledger_wake::cancelled_dependents(ctx, &store, &r, &t.short(), &waiting);
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Unblock { task, from, run } => {
+            orchestrator_only(ctx, &store, "unblock")?;
+            let r = resolve_run(ctx, &store, &run)?;
+            let t = store.immediate(|tx| {
+                let t = tasks::resolve(tx, &r.run_id, &task)?;
+                let b = tasks::resolve(tx, &r.run_id, &from)?;
+                tasks::unblock(tx, &t, &b)?;
+                Ok(t)
+            })?;
+            output::println(&format!("{} no longer waits for {from}.", t.short()));
+            super::taskledger_wake::nudge_startable(ctx, &store, &r);
             Ok(ExitCode::SUCCESS)
         }
         LedgerCommand::Requeue { task, reason, run } => {
@@ -1484,6 +1535,10 @@ pub fn done_cmd(
                 );
             }
         }
+        if c.unlanded {
+            let waiting = tasks::dependents(store.conn(), &c.task_id)?;
+            super::taskledger_wake::cancelled_dependents(ctx, &store, &run, &c.task, &waiting);
+        }
         super::taskledger_wake::after_done(ctx, &store, &run);
     }
     output::println(&format!(
@@ -1518,8 +1573,9 @@ pub fn active_run_slug(ctx: &RuntimeContext) -> Option<String> {
         .map(|r| r.slug)
 }
 
-/// Whether this process is a task-ledger worker that holds (or held) a task:
-/// `horch done` then goes through [`done_cmd`].
+/// Whether this process is a task-ledger worker that holds (or finished) a
+/// task: `horch done` then goes through [`done_cmd`]. A worker whose task
+/// was cancelled or taken from it ends with the plain `horch done` (#136).
 pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
     let Some(wid) = worker_id_opt(ctx) else {
         return false;
@@ -1527,7 +1583,9 @@ pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
     taskledger::open(ctx)
         .ok()
         .and_then(|s| workers::find(s.conn(), &wid).ok().flatten())
-        .is_some_and(|w| w.task_id.is_some())
+        .is_some_and(|w| {
+            w.task_id.is_some() && (w.status == "done" || w.status().is_ok_and(|s| s.is_live()))
+        })
 }
 
 /// The text a worker reads after a claim.

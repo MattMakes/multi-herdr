@@ -1892,6 +1892,31 @@ fn later(seconds: u64) -> String {
     horch_core::clock::stamp(horch_core::clock::now() + Duration::from_secs(seconds))
 }
 
+/// A process that stands in for a live supervisor and agent; killed on drop.
+struct Stand(std::process::Child);
+
+impl Stand {
+    fn new() -> Stand {
+        Stand(
+            std::process::Command::new("sleep")
+                .arg("300")
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    fn pid(&self) -> String {
+        self.0.id().to_string()
+    }
+}
+
+impl Drop for Stand {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn plan_line(h: &Harness) -> String {
     ok(h, &["ledger", "plan-workers"]).trim().to_string()
 }
@@ -2039,8 +2064,8 @@ fn a_live_worker_that_does_not_claim_is_reported_once() {
     )
     .trim()
     .to_string();
-    // This test process stands in for the live supervisor and agent.
-    let me = std::process::id().to_string();
+    let stand = Stand::new();
+    let me = stand.pid();
     ok(&h, &["ledger", "worker", "pid", &id, "--supervisor", &me]);
     ok(&h, &["ledger", "worker", "pid", &id, "--agent", &me]);
     let watch = |at: Option<String>| {
@@ -2156,4 +2181,251 @@ fn requeue_refuses_a_task_that_is_neither_held_nor_cancelled() {
         "{}",
         text(&o)
     );
+}
+
+// ─── #119: dependents of a cancelled task are named, and can be freed ───────
+
+#[test]
+fn a_cancel_names_the_tasks_that_wait_for_it() {
+    let h = world("tl-cancel-deps");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus-a", &[]);
+    queue(&h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
+    queue(&h, "03-c", "opus-b", &["--blocked-by", "T-2"]);
+    let o = ok(&h, &["ledger", "cancel", "T-1", "dropped"]);
+    assert!(o.contains("Waiting for T-1: T-2, T-3."), "{o}");
+    let st = out(&h.run(&["ledger", "status"]));
+    assert!(
+        st.contains("[T-1 was cancelled: requeue it, or drop the dependency]"),
+        "{st}"
+    );
+    let w = wakes(&h);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(
+        w[0].contains("NOTE: T-1 was cancelled. T-2, T-3 wait for it. Run horch ledger unblock T-2 --from T-1"),
+        "{w:?}"
+    );
+
+    assert_eq!(plan_line(&h), "No task can start now. Spawn no worker.");
+    ok(&h, &["ledger", "unblock", "T-2", "--from", "T-1"]);
+    assert_eq!(
+        plan_line(&h),
+        "opus-b: spawn 1 (1 can start, 0 on the way)."
+    );
+    // A dependency that does not exist is refused.
+    let o = h.run(&["ledger", "unblock", "T-2", "--from", "T-1"]);
+    assert!(
+        text(&o).contains("T-2 does not wait for T-1"),
+        "{}",
+        text(&o)
+    );
+}
+
+#[test]
+fn an_unlanded_done_names_its_dependents_and_a_stuck_run_wakes_once() {
+    let h = world("tl-unlanded-deps");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus-a", &[]);
+    queue(&h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
+    let w = worker_new(&h, "opus-a");
+    ok_as(&h, &w, &["ledger", "claim"]);
+    ok_as(
+        &h,
+        &w,
+        &["ledger", "done", "--unlanded", "a red check", "parked"],
+    );
+    let all = wakes(&h);
+    assert!(
+        all.iter()
+            .any(|w| w.contains("NOTE: T-1 was cancelled. T-2 wait for it.")),
+        "{all:?}"
+    );
+    // No worker is live, nothing can start, T-2 is open: the run is stuck.
+    let stuck = |h: &Harness| {
+        wakes(h)
+            .into_iter()
+            .filter(|w| w.contains("the run is stuck:"))
+            .collect::<Vec<_>>()
+    };
+    let s = stuck(&h);
+    assert_eq!(s.len(), 1, "{all:?}");
+    assert!(s[0].contains("T-2: T-1 was cancelled"), "{s:?}");
+    // The watchdog sees the same stuck run: no second wake.
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    assert_eq!(stuck(&h).len(), 1, "{:?}", wakes(&h));
+}
+
+#[test]
+fn a_stuck_run_wakes_from_the_watchdog_when_no_task_finishes() {
+    let h = world("tl-stuck-watch");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus-a", &[]);
+    queue(&h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
+    // A live worker holds T-1: the run is not stuck.
+    let w = worker_new(&h, "opus-a");
+    let stand = Stand::new();
+    let me = stand.pid();
+    ok(&h, &["ledger", "worker", "pid", &w, "--supervisor", &me]);
+    ok(&h, &["ledger", "worker", "pid", &w, "--agent", &me]);
+    ok_as(&h, &w, &["ledger", "claim"]);
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    assert!(
+        !wakes(&h).iter().any(|w| w.contains("stuck")),
+        "{:?}",
+        wakes(&h)
+    );
+    // Its worker is stopped and T-1 cancelled: nothing will start.
+    ok(&h, &["ledger", "cancel", "T-1", "dropped"]);
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    let stuck: Vec<String> = wakes(&h)
+        .into_iter()
+        .filter(|w| w.contains("the run is stuck:"))
+        .collect();
+    assert_eq!(stuck.len(), 1, "{:?}", wakes(&h));
+}
+
+// ─── #136: a cancelled task never lands or turns done ───────────────────────
+
+/// Claim the next task as a new `persona` worker, make worktree `name` and
+/// commit `file` in it. Returns the worker and the worktree path.
+fn claim_and_commit(h: &Harness, persona: &str, name: &str, file: &str) -> (String, PathBuf) {
+    let w = worker_new(h, persona);
+    ok_as(h, &w, &["ledger", "claim"]);
+    let wt = ok_as(h, &w, &["ledger", "worktree", "new", name]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(path.join(file), "x\n").unwrap();
+    git_in(h, &path, &["add", file]);
+    git_in(
+        h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", file],
+    );
+    (w, path)
+}
+
+fn rev(h: &Harness, what: &str) -> String {
+    git_in(h, &h.project.clone(), &["rev-parse", what])
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn a_cancelled_task_does_not_land_or_turn_done() {
+    let h = finish_world("tl-cancel-land");
+    ok(
+        &h,
+        &["ledger", "run", "new", "r2", "--steps", "land,cleanup"],
+    );
+    queue(&h, "01-a", "opus", &[]);
+    let (w, path) = claim_and_commit(&h, "opus", "canc", "c.txt");
+    let before = (rev(&h, "fleet/r2"), rev(&h, "origin/fleet/r2"));
+
+    let o = ok(&h, &["ledger", "cancel", "T-1", "operator dropped it"]);
+    assert!(o.contains("T-1 cancelled."), "{o}");
+    assert_eq!(worker_status(&h, &w).0, "stopped");
+
+    let mut cmd = h.horch(&["ledger", "finish"]);
+    cmd.env("HORCH_WORKER_ID", &w);
+    let o = cmd.output().unwrap();
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("T-1 was cancelled"), "{}", text(&o));
+    let mut cmd = h.horch(&["ledger", "done", "finished anyway"]);
+    cmd.env("HORCH_WORKER_ID", &w);
+    let o = cmd.output().unwrap();
+    assert!(!o.status.success(), "{}", text(&o));
+    git_in(&h, &h.project.clone(), &["fetch", "--quiet", "origin"]);
+    assert_eq!((rev(&h, "fleet/r2"), rev(&h, "origin/fleet/r2")), before);
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["status"], "cancelled", "{t}");
+
+    // The worktree is abandoned, kept on disk, and listed as unfinished.
+    let st = out(&h.run(&["ledger", "status"]));
+    assert!(st.contains("T-1   abandoned"), "{st}");
+    assert!(path.join("c.txt").exists());
+    let unf = ok(&h, &["ledger", "unfinished"]);
+    assert!(unf.contains("T-1 was cancelled with its worktree"), "{unf}");
+
+    // A requeue reopens the kept worktree for the next claim.
+    ok(&h, &["ledger", "requeue", "T-1", "wanted after all"]);
+    let w2 = worker_new(&h, "opus");
+    let claim = ok_as(&h, &w2, &["ledger", "claim"]);
+    assert!(
+        claim.contains(&path.to_string_lossy().into_owned()),
+        "{claim}"
+    );
+    assert_eq!(
+        ok(&h, &["ledger", "unfinished"]).trim(),
+        "No unfinished work."
+    );
+}
+
+#[test]
+fn a_cancel_while_land_waits_for_the_lock_lands_nothing() {
+    let h = finish_world("tl-cancel-lock");
+    ok(
+        &h,
+        &["ledger", "run", "new", "r2", "--steps", "land,cleanup"],
+    );
+    let go = h.root.join("go");
+    // T-1's land check holds the land lock until the test says go.
+    let hold = format!("while [ ! -f '{}' ]; do /bin/sleep 0.1; done", go.display());
+    queue(&h, "01-a", "opus", &["--check", &hold]);
+    queue(&h, "02-b", "opus", &[]);
+    let (wa, _) = claim_and_commit(&h, "opus", "a", "a.txt");
+    let (wb, _) = claim_and_commit(&h, "opus", "b", "b.txt");
+    let finish_as = |w: &str| {
+        let mut cmd = h.horch(&["ledger", "finish"]);
+        cmd.env("HORCH_WORKER_ID", w)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        cmd.spawn().unwrap()
+    };
+    let task_field = |seq: &str, f: &str| -> String {
+        let t = json_of(&h, &["ledger", "show", seq, "--json"]);
+        t["task"][f].as_str().unwrap_or_default().to_string()
+    };
+    let worktree_of = |seq: &str| -> String {
+        let st = json_of(&h, &["ledger", "status", "--json"]);
+        st["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["task"] == seq)
+            .map(|w| w["status"].as_str().unwrap().to_string())
+            .unwrap_or_default()
+    };
+    let a = finish_as(&wa);
+    wait_for("T-1 holds the land lock", || {
+        (worktree_of("T-1") == "landing").then_some(())
+    });
+    let b = finish_as(&wb);
+    wait_for("T-2 to start its finish", || {
+        (task_field("T-2", "status") == "landing").then_some(())
+    });
+    ok(&h, &["ledger", "cancel", "T-2", "dropped while waiting"]);
+    std::fs::write(&go, "").unwrap();
+    let a = a.wait_with_output().unwrap();
+    let b = b.wait_with_output().unwrap();
+    let log = out(&a)
+        .split("read ")
+        .nth(1)
+        .and_then(|p| std::fs::read_to_string(p.trim()).ok())
+        .unwrap_or_default();
+    assert!(a.status.success(), "{}\n{log}", text(&a));
+    assert!(!b.status.success(), "{}", text(&b));
+    assert!(
+        text(&b).contains("T-2 is cancelled: nothing landed"),
+        "{}",
+        text(&b)
+    );
+    let files = git_in(
+        &h,
+        &h.project.clone(),
+        &["ls-tree", "--name-only", "fleet/r2"],
+    );
+    assert!(files.lines().any(|f| f == "a.txt"), "{files}");
+    assert!(!files.lines().any(|f| f == "b.txt"), "{files}");
+    assert_eq!(task_field("T-2", "status"), "cancelled");
 }

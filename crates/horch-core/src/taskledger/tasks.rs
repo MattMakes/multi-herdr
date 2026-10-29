@@ -210,6 +210,45 @@ pub fn blockers(conn: &Connection, task_id: &str) -> Result<Vec<Task>> {
     Ok(rows)
 }
 
+/// The open tasks that wait for `task_id`, directly or through another
+/// task, in `seq` order.
+pub fn dependents(conn: &Connection, task_id: &str) -> Result<Vec<Task>> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE down(id) AS (
+            SELECT task_id FROM task_deps WHERE blocked_by = ?1
+            UNION SELECT d.task_id FROM task_deps d JOIN down ON d.blocked_by = down.id)
+         SELECT t.* FROM tasks t JOIN down ON t.task_id = down.id
+         WHERE t.status NOT IN ('done', 'cancelled') ORDER BY t.seq",
+    )?;
+    let rows = stmt
+        .query_map([task_id], Task::from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// `horch ledger unblock`: `task` no longer waits for `blocker`.
+pub fn unblock(conn: &Connection, task: &Task, blocker: &Task) -> Result<()> {
+    let n = conn.execute(
+        "DELETE FROM task_deps WHERE task_id = ?1 AND blocked_by = ?2",
+        params![task.task_id, blocker.task_id],
+    )?;
+    if n == 0 {
+        bail!("{} does not wait for {}", task.short(), blocker.short());
+    }
+    util::event(
+        conn,
+        &About {
+            run: Some(&task.run_id),
+            task: Some(&task.task_id),
+            worker: None,
+        },
+        Actor::Orchestrator,
+        EventKind::Note,
+        &format!("{} no longer waits for {}.", task.short(), blocker.short()),
+    )?;
+    Ok(())
+}
+
 /// The files a task owns or must not touch.
 pub fn files(conn: &Connection, task_id: &str, mode: FileMode) -> Result<Vec<String>> {
     let mut stmt =
@@ -472,6 +511,8 @@ fn topo_order(edges: &[Vec<usize>]) -> Vec<usize> {
 pub enum Wait {
     /// A blocker is not done.
     BlockedBy { task: String, status: String },
+    /// A blocker was cancelled: it never finishes unless someone acts (#119).
+    BlockerCancelled { task: String },
     /// An exclusive task runs, or this exclusive task waits for others.
     Exclusive { running: String },
     /// A running task owns 1 of this task's files.
@@ -482,6 +523,12 @@ impl std::fmt::Display for Wait {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Wait::BlockedBy { task, status } => write!(f, "blocked by {task} ({status})"),
+            Wait::BlockerCancelled { task } => {
+                write!(
+                    f,
+                    "{task} was cancelled: requeue it, or drop the dependency"
+                )
+            }
             Wait::Exclusive { running } => write!(f, "exclusive: waits for {running}"),
             Wait::FileHeld { path, by } => write!(f, "{path} is held by {by}"),
         }
@@ -536,6 +583,9 @@ impl Board {
     fn wait(&self, t: &Task, active: &[&Task]) -> Option<Wait> {
         for b in self.deps.get(&t.task_id).into_iter().flatten() {
             if let Some(bt) = self.task(b) {
+                if bt.status == TaskStatus::Cancelled.as_str() {
+                    return Some(Wait::BlockerCancelled { task: bt.short() });
+                }
                 if bt.status != TaskStatus::Done.as_str() {
                     return Some(Wait::BlockedBy {
                         task: bt.short(),
@@ -847,17 +897,41 @@ pub fn fallback(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     get(conn, &task.task_id)
 }
 
-/// Drop a task.
+/// Drop a task: the 1 cancel path (#136). In the caller's transaction the
+/// task lets go of its worker, the worker row ends `stopped`, and an open
+/// worktree becomes `abandoned` (its branch and folder stay, so a requeue
+/// can reopen it). The worker's process is not signalled here.
 pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     if matches!(task.status.as_str(), "done" | "cancelled") {
         bail!("{} is already {}", task.short(), task.status);
     }
+    let why = format!("task cancelled: {reason}");
     conn.execute(
         "UPDATE tasks SET status = 'cancelled', summary = COALESCE(summary, ?2), updated_at = ?3,
-            finished_at = ?3
+            finished_at = ?3, current_worker_id = NULL, held_reason = NULL
          WHERE task_id = ?1",
         params![task.task_id, format!("cancelled: {reason}"), util::now()],
     )?;
+    if let Some(w) = &task.current_worker_id {
+        workers::end(conn, w, WorkerStatus::Stopped, &why, None)?;
+    }
+    let open: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT worktree_id FROM worktrees WHERE task_id = ?1 AND status IN ('open', 'landing')",
+        )?;
+        let ids = stmt
+            .query_map([&task.task_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        ids
+    };
+    for id in open {
+        super::finish::set_worktree(
+            conn,
+            &id,
+            super::model::WorktreeStatus::Abandoned,
+            Some(&why),
+        )?;
+    }
     util::event(
         conn,
         &About {
