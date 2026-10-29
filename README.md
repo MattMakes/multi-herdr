@@ -748,7 +748,14 @@ plus `-a never` and `--search`:
   and `horch ledger finish` lands that work. It cannot rebase: on a land
   conflict it sends `BLOCKED:`. Route other commit and worktree work to a
   Claude worker. `horch ledger commit` needs git 2.41 or later, and
-  `horch doctor` warns when it is missing.
+  `horch doctor` warns when it is missing. It looks for git only at
+  `HORCH_GIT_BIN` (an absolute path) or at `/usr/bin/git`,
+  `/opt/homebrew/bin/git` and `/usr/local/bin/git`, never on `PATH`, which a
+  worker can change. On a system with git elsewhere (Nix, a user toolchain),
+  set `HORCH_GIT_BIN` to the absolute path of git 2.41 or later before you
+  spawn Codex workers. The sandboxed check finds codex the same way:
+  `HORCH_CODEX_BIN`, or `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`
+  and `/usr/bin/codex`.
 - The Codex orchestrator has the same limits: it runs no git write and
   cannot run `horch worktree land`, the gate in `.worktrees/_gate` or a
   push. It spawns a Claude worker for each of those steps.

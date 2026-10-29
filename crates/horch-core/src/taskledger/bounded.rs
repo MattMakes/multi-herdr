@@ -4,7 +4,9 @@
 //! `git_safe.rs` and shares it with every horch git call.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::path::Path;
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -52,14 +54,224 @@ impl Records {
     }
 }
 
+/// How 1 bounded run ended.
+pub struct Bounded<O, E> {
+    pub status: ExitStatus,
+    /// What the stdout reader returned.
+    pub out: O,
+    /// What the stderr reader returned.
+    pub err: E,
+    /// True when the deadline passed and the process group was stopped.
+    pub timed_out: bool,
+}
+
+/// Run `cmd` with `input` on its stdin, as the leader of its own process
+/// group. `read_out` and `read_err` read its pipes on their own threads;
+/// when `read_out` returns before the child exits and `stop_early` says so,
+/// the group is stopped. At `limit` the group is stopped too. On every
+/// return, what is left of the group is stopped, so nothing it started
+/// outlives the call.
+pub fn run_bounded<O, E>(
+    cmd: Command,
+    input: Vec<u8>,
+    limit: Duration,
+    read_out: impl FnOnce(ChildStdout) -> O + Send + 'static,
+    read_err: impl FnOnce(ChildStderr) -> E + Send + 'static,
+    stop_early: impl Fn(&O) -> bool,
+) -> Result<Bounded<O, E>>
+where
+    O: Send + 'static,
+    E: Send + 'static,
+{
+    let end = Instant::now() + limit;
+    let mut run = start(cmd, input, read_out, read_err)?;
+    let (status, read, timed_out, join_end) = monitor(&mut run, end, &stop_early)?;
+    let (out, err) = collect(run, read, join_end)?;
+    Ok(Bounded {
+        status,
+        out,
+        err,
+        timed_out,
+    })
+}
+
 /// Run `cmd` with `input` on its stdin, and read at most `max` NUL-ended
-/// stdout records of at most [`MAX_RECORD`] bytes each. git is killed at
+/// stdout records of at most [`MAX_RECORD`] bytes each. git is stopped at
 /// the first record past either bound, and at `limit`, which is an error.
 /// So no worker-controlled input grows horch's memory or time past them.
-pub fn run_until(mut cmd: Command, input: Vec<u8>, max: usize, limit: Duration) -> Result<Records> {
-    let end = Instant::now() + limit;
-    // git leads its own process group, so the kill also reaches a filter or
-    // helper that holds a pipe.
+pub fn run_until(cmd: Command, input: Vec<u8>, max: usize, limit: Duration) -> Result<Records> {
+    run_records(cmd, input, 0, max, limit)
+}
+
+/// [`run_until`] with records ended by `sep`.
+pub fn run_records(
+    cmd: Command,
+    input: Vec<u8>,
+    sep: u8,
+    max: usize,
+    limit: Duration,
+) -> Result<Records> {
+    let run = run_bounded(
+        cmd,
+        input,
+        limit,
+        move |o| read_delimited(BufReader::new(o), sep, max),
+        read_stderr,
+        |r: &Result<(Vec<Vec<u8>>, bool)>| !matches!(r, Ok((_, true))),
+    )?;
+    if run.timed_out {
+        bail!(
+            "git ran longer than {} s and was stopped",
+            limit.as_secs_f32()
+        );
+    }
+    let (records, complete) = run.out?;
+    Ok(Records {
+        status: run.status,
+        records,
+        complete,
+        stderr: run.err,
+    })
+}
+
+/// What 1 capped run printed.
+#[derive(Debug)]
+pub struct Capped {
+    pub status: ExitStatus,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Run `cmd` with no input for at most `limit`, and keep at most `cap`
+/// bytes of each pipe. More output on a pipe stops the group; it and the
+/// deadline are errors.
+pub fn run_capped(cmd: Command, limit: Duration, cap: usize) -> Result<Capped> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let run = run_bounded(
+        cmd,
+        Vec::new(),
+        limit,
+        move |o| read_capped(o, cap, false),
+        move |e| read_capped(e, cap, true),
+        |r: &(Vec<u8>, bool)| r.1,
+    )?;
+    if run.timed_out {
+        bail!(
+            "{program} ran longer than {} s and was stopped",
+            limit.as_secs_f32()
+        );
+    }
+    if run.out.1 || run.err.1 {
+        bail!("{program} printed more than {cap} bytes on a pipe and was stopped");
+    }
+    Ok(Capped {
+        status: run.status,
+        stdout: run.out.0,
+        stderr: run.err.0,
+    })
+}
+
+/// At most `cap` bytes of `reader`, and true when it had more. With
+/// `drain`, the rest is read and dropped, so the writer never blocks;
+/// without, the read stops at once.
+fn read_capped(reader: impl Read, cap: usize, drain: bool) -> (Vec<u8>, bool) {
+    let mut kept = Vec::new();
+    let mut reader = reader;
+    let _ = reader.by_ref().take(cap as u64 + 1).read_to_end(&mut kept);
+    let over = kept.len() > cap;
+    kept.truncate(cap);
+    if over && drain {
+        let mut dropped = [0u8; 8192];
+        while reader.read(&mut dropped).is_ok_and(|n| n > 0) {}
+    }
+    (kept, over)
+}
+
+/// Run `cmd` with no input for at most `limit`, with stdout and stderr
+/// appended to `log` as they come, at most `cap` bytes in all. Past the
+/// cap, the log gets 1 line `# log truncated` and the rest is read and
+/// dropped: memory and the log stay bounded. Returns the status, and true
+/// when the deadline stopped the group.
+pub fn run_logged(
+    cmd: Command,
+    log: &Path,
+    limit: Duration,
+    cap: u64,
+) -> Result<(ExitStatus, bool)> {
+    let file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(log)
+        .with_context(|| format!("opening {}", log.display()))?;
+    let sink = Arc::new(Mutex::new(LogSink {
+        file,
+        written: 0,
+        cap,
+        truncated: false,
+    }));
+    let (out, err) = (Arc::clone(&sink), Arc::clone(&sink));
+    let run = run_bounded(
+        cmd,
+        Vec::new(),
+        limit,
+        move |o| stream_to(o, &out),
+        move |e| stream_to(e, &err),
+        |_: &()| false,
+    )?;
+    Ok((run.status, run.timed_out))
+}
+
+/// A log file and how much of its cap is used.
+struct LogSink {
+    file: std::fs::File,
+    written: u64,
+    cap: u64,
+    truncated: bool,
+}
+
+/// Copy `reader` to the sink until it ends, within the sink's cap.
+fn stream_to(mut reader: impl Read, sink: &Mutex<LogSink>) {
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        };
+        let Ok(mut s) = sink.lock() else { continue };
+        let room = s.cap.saturating_sub(s.written).min(n as u64) as usize;
+        if room > 0 {
+            let _ = s.file.write_all(&buf[..room]);
+        }
+        if room < n && !s.truncated {
+            s.truncated = true;
+            let _ = s.file.write_all(b"\n# log truncated\n");
+        }
+        s.written = s.written.saturating_add(n as u64);
+    }
+}
+
+/// A child, its group's guard, and the threads on its pipes.
+struct Running<O, E> {
+    child: Child,
+    group: GroupGuard,
+    writer: Option<JoinHandle<std::io::Result<()>>>,
+    out: Option<JoinHandle<O>>,
+    err: JoinHandle<E>,
+}
+
+/// Start `cmd` in its own process group, with a thread on each pipe. The
+/// writer thread keeps a full stdout pipe from blocking the input.
+fn start<O, E>(
+    mut cmd: Command,
+    input: Vec<u8>,
+    read_out: impl FnOnce(ChildStdout) -> O + Send + 'static,
+    read_err: impl FnOnce(ChildStderr) -> E + Send + 'static,
+) -> Result<Running<O, E>>
+where
+    O: Send + 'static,
+    E: Send + 'static,
+{
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let stdin = if input.is_empty() {
@@ -67,76 +279,105 @@ pub fn run_until(mut cmd: Command, input: Vec<u8>, max: usize, limit: Duration) 
     } else {
         Stdio::piped()
     };
+    let program = cmd.get_program().to_string_lossy().into_owned();
     let mut child = cmd
         .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("running git")?;
-    // Names git's group after git is reaped (see `stop_group`).
-    let started = crate::procid::start_time(child.id()).unwrap_or(0);
-    // A writer thread, so a full stdout pipe never blocks the input. It
-    // ends when the input is written or the last reader of the pipe ends.
+        .with_context(|| format!("running {program}"))?;
+    let group = GroupGuard::of(&child);
     let writer = child
         .stdin
         .take()
         .map(|mut pipe| std::thread::spawn(move || pipe.write_all(&input)));
-    let stdout = child.stdout.take().context("git has no stdout")?;
-    let stderr = child.stderr.take().context("git has no stderr")?;
-    let mut reader = Some(std::thread::spawn(move || {
-        read_records(BufReader::new(stdout), max)
-    }));
-    let errors = std::thread::spawn(move || read_stderr(stderr));
+    let stdout = child.stdout.take().context("the child has no stdout")?;
+    let stderr = child.stderr.take().context("the child has no stderr")?;
+    Ok(Running {
+        out: Some(std::thread::spawn(move || read_out(stdout))),
+        err: std::thread::spawn(move || read_err(stderr)),
+        child,
+        group,
+        writer,
+    })
+}
+
+/// Wait for the child until `end`, and stop it early when its finished
+/// stdout result says so. Returns its status, the stdout result when it was
+/// read here, whether the deadline passed, and the last time a pipe thread
+/// may take: `end`, or 1 grace after a stop.
+fn monitor<O, E>(
+    run: &mut Running<O, E>,
+    end: Instant,
+    stop_early: &dyn Fn(&O) -> bool,
+) -> Result<(ExitStatus, Option<O>, bool, Instant)> {
     let mut read = None;
-    // The last time a pipe reader may take: `end`, or 1 grace after a kill.
-    let mut join_end = end;
-    let status = loop {
-        if let Some(status) = poll_exit(&mut child)? {
-            break status;
+    loop {
+        if let Some(status) = poll_exit(&mut run.child)? {
+            return Ok((status, read, false, end));
         }
-        if reader.as_ref().is_some_and(JoinHandle::is_finished) {
-            read = reader.take().and_then(|h| h.join().ok());
+        if run.out.as_ref().is_some_and(JoinHandle::is_finished) {
+            read = run.out.take().and_then(|h| h.join().ok());
         }
-        let capped = read.as_ref().is_some_and(|r| !matches!(r, Ok((_, true))));
+        let early = read.as_ref().is_some_and(stop_early);
         let late = Instant::now() >= end;
-        if capped || late {
-            let status = kill_and_reap(&mut child)?;
-            if !capped {
-                bail!(
-                    "git ran longer than {} s and was stopped",
-                    limit.as_secs_f32()
-                );
-            }
-            join_end = Instant::now() + REAP_GRACE;
-            break status;
+        if early || late {
+            let status = kill_and_reap(&mut run.child)?;
+            return Ok((status, read, late && !early, Instant::now() + REAP_GRACE));
         }
         std::thread::sleep(Duration::from_millis(5));
-    };
-    // git is reaped. Stop what is left of its group every time: a helper
-    // can hold only stdin, with stdout and stderr elsewhere, and no pipe
-    // would show it. Then every pipe closes, and the joins end.
-    #[cfg(unix)]
-    stop_group(child.id(), started);
-    #[cfg(not(unix))]
-    let _ = started;
+    }
+}
+
+/// Stop what is left of the group, then join every pipe thread by
+/// `join_end`. A helper can hold only stdin, with stdout and stderr
+/// elsewhere, and no pipe would show it: the stop runs every time.
+fn collect<O, E>(run: Running<O, E>, read: Option<O>, join_end: Instant) -> Result<(O, E)> {
+    let Running {
+        child,
+        group,
+        writer,
+        out,
+        err,
+    } = run;
+    drop(group);
     let written = writer.map_or(Ok(Ok(())), |w| join_by(w, join_end));
-    let read = match (read, reader) {
+    let out = match (read, out) {
         (Some(read), _) => Ok(read),
         (None, Some(reader)) => join_by(reader, join_end),
         // The reader ended without a result: treat it as an open pipe.
         (None, None) => Err(()),
     };
-    let errors = join_by(errors, join_end);
-    let (Ok(read), Ok(stderr), Ok(_)) = (read, errors, written) else {
-        bail!("a pipe of git was still open after git ended and its process group was stopped");
+    let err = join_by(err, join_end);
+    drop(child);
+    let (Ok(out), Ok(err), Ok(_)) = (out, err, written) else {
+        bail!("a pipe was still open after the child ended and its process group was stopped");
     };
-    let (records, complete) = read?;
-    Ok(Records {
-        status,
-        records,
-        complete,
-        stderr,
-    })
+    Ok((out, err))
+}
+
+/// Stops what is left of a child's process group when dropped, on every
+/// return: TERM, a grace, then KILL ([`stop_group`]).
+struct GroupGuard {
+    pgid: u32,
+    started: u64,
+}
+
+impl GroupGuard {
+    fn of(child: &Child) -> GroupGuard {
+        GroupGuard {
+            pgid: child.id(),
+            // Names the group after the leader is reaped (see `stop_group`).
+            started: crate::procid::start_time(child.id()).unwrap_or(0),
+        }
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        stop_group(self.pgid, self.started);
+    }
 }
 
 /// git's exit status once it has exited. A failed wait stops git first, so
@@ -251,19 +492,28 @@ fn read_stderr(mut stderr: impl Read) -> Vec<u8> {
 
 /// At most `max` NUL-ended records from `reader`, and whether it ended
 /// within them. A record longer than [`MAX_RECORD`] is an error.
-pub fn read_records(mut reader: impl BufRead, max: usize) -> Result<(Vec<Vec<u8>>, bool)> {
+pub fn read_records(reader: impl BufRead, max: usize) -> Result<(Vec<Vec<u8>>, bool)> {
+    read_delimited(reader, 0, max)
+}
+
+/// [`read_records`] with records ended by `sep`.
+pub fn read_delimited(
+    mut reader: impl BufRead,
+    sep: u8,
+    max: usize,
+) -> Result<(Vec<Vec<u8>>, bool)> {
     let mut records = Vec::new();
     loop {
         let mut record = Vec::new();
         reader
             .by_ref()
             .take(MAX_RECORD as u64 + 1)
-            .read_until(0, &mut record)
+            .read_until(sep, &mut record)
             .context("reading git output")?;
         if record.is_empty() {
             return Ok((records, true));
         }
-        if record.last() == Some(&0) {
+        if record.last() == Some(&sep) {
             record.pop();
         } else if record.len() > MAX_RECORD {
             bail!("refused: git printed a record longer than {MAX_RECORD} bytes");
@@ -279,6 +529,63 @@ pub fn read_records(mut reader: impl BufRead, max: usize) -> Result<(Vec<Vec<u8>
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn a_logged_run_past_its_deadline_is_stopped_inside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("check.log");
+        std::fs::write(&log, "").unwrap();
+        let limit = Duration::from_millis(300);
+        let started = Instant::now();
+        let (_, timed_out) = run_logged(sh("echo begun; sleep 30"), &log, limit, 1 << 20).unwrap();
+        assert!(timed_out);
+        assert!(started.elapsed() < limit + 2 * REAP_GRACE + Duration::from_millis(500));
+        assert!(std::fs::read_to_string(&log).unwrap().contains("begun"));
+    }
+
+    #[test]
+    fn a_logged_run_past_its_cap_keeps_the_log_at_the_cap_and_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("check.log");
+        std::fs::write(&log, "").unwrap();
+        // 4 MiB on stdout and on stderr against a 64 KiB cap.
+        let script = "head -c 4194304 /dev/zero; head -c 4194304 /dev/zero >&2; exit 3";
+        let (status, timed_out) =
+            run_logged(sh(script), &log, Duration::from_secs(20), 64 << 10).unwrap();
+        assert!(
+            !timed_out && status.code() == Some(3),
+            "the run ended by itself"
+        );
+        let text = std::fs::read(&log).unwrap();
+        let line = b"\n# log truncated\n";
+        assert!(text.len() <= (64 << 10) + line.len(), "{}", text.len());
+        assert!(text.ends_with(line));
+    }
+
+    #[test]
+    fn a_capped_run_fails_past_its_deadline_or_its_cap() {
+        let limit = Duration::from_millis(300);
+        let started = Instant::now();
+        let e = run_capped(sh("sleep 30"), limit, 1024).unwrap_err();
+        assert!(e.to_string().contains("ran longer than"), "{e}");
+        assert!(started.elapsed() < limit + 2 * REAP_GRACE + Duration::from_millis(500));
+        let e = run_capped(
+            sh("head -c 100000 /dev/zero"),
+            Duration::from_secs(20),
+            1024,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("more than 1024 bytes"), "{e}");
+        let e = run_capped(
+            sh("head -c 100000 /dev/zero >&2"),
+            Duration::from_secs(20),
+            1024,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("more than 1024 bytes"), "{e}");
+        let ok = run_capped(sh("echo hi; echo oh >&2"), Duration::from_secs(20), 1024).unwrap();
+        assert_eq!((ok.stdout, ok.stderr), (b"hi\n".to_vec(), b"oh\n".to_vec()));
+    }
 
     #[test]
     fn records_end_within_the_cap() {

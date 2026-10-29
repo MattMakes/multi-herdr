@@ -42,6 +42,14 @@
   worker pane, and a Codex worker's rules no longer allow it. `horch spawn`
   stops when it cannot record the harness, and says so when the pane may
   still be open.
+- `horch ledger commit` and the sandboxed check never look up git or codex
+  on `PATH`. Where git is not at `/usr/bin`, `/opt/homebrew/bin` or
+  `/usr/local/bin` (Nix, a user toolchain), set `HORCH_GIT_BIN` to the
+  absolute path of git 2.41 or later before you spawn Codex workers; set
+  `HORCH_CODEX_BIN` the same way for codex.
+- Every ledger git call has a deadline and an output cap (a push 15 min), and
+  a finish check or recheck runs for at most 60 min, with its log capped at
+  64 MiB.
 
 ## v0.3.0 - 2026-10-28
 

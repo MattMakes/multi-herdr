@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use super::bounded::run_until;
+use super::bounded::{run_capped, run_until};
 
 /// A git binary, maybe pinned to 1 verified linked worktree. Every call
 /// runs with [`SAFE_CONFIG`] and no filter program unless the caller opts
@@ -20,6 +20,9 @@ pub struct Git {
     bin: PathBuf,
     pinned: Option<Pinned>,
     repo: RepoConfig,
+    /// [`CALL_DEADLINE`] and [`CALL_OUTPUT_CAP`]; tests make them small.
+    deadline: Duration,
+    output_cap: usize,
 }
 
 /// How much of the repository's own config a call may run.
@@ -65,23 +68,38 @@ const MAX_DRIVER_KEYS: usize = 1000;
 /// The longest the filter-driver lookup runs.
 const LOOKUP_DEADLINE: Duration = Duration::from_secs(30);
 
-/// The longest `git lfs push` runs before a push without hooks.
-const LFS_PUSH_DEADLINE: Duration = Duration::from_secs(30 * 60);
+/// The longest 1 ledger git call runs, and the most bytes it may print on
+/// each pipe: more is an error.
+const CALL_DEADLINE: Duration = Duration::from_secs(120);
+const CALL_OUTPUT_CAP: usize = 16 << 20;
+
+/// The longest a push, and the `git lfs push` before it, runs.
+const PUSH_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
 /// The names of the filter drivers in `git config --null --name-only
-/// --get-regexp '^filter\.'` records, sorted, each once. A name can hold dots.
-pub fn filter_driver_names(records: &[Vec<u8>]) -> Vec<String> {
-    let mut names: Vec<String> = records
-        .iter()
-        .filter_map(|r| {
-            let key = String::from_utf8_lossy(r);
-            let (name, _) = key.strip_prefix("filter.")?.rsplit_once('.')?;
-            Some(name.to_string())
-        })
-        .collect();
+/// --get-regexp '^filter\.'` records, sorted, each once. A name can hold
+/// dots. Refused when a name holds `=`, a newline or bytes that are not
+/// UTF-8: its `-c` override would set another key, and the driver would
+/// keep its program.
+pub fn filter_driver_names(records: &[Vec<u8>]) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for record in records {
+        let Ok(key) = std::str::from_utf8(record) else {
+            bail!("refused: a filter driver name in the git config is not UTF-8");
+        };
+        let Some((name, _)) = key.strip_prefix("filter.").and_then(|k| k.rsplit_once('.')) else {
+            continue;
+        };
+        if name.contains(['=', '\n', '\r']) {
+            bail!(
+                "refused: the filter driver name {name:?} in the git config holds '=' or a newline"
+            );
+        }
+        names.push(name.to_string());
+    }
     names.sort();
     names.dedup();
-    names
+    Ok(names)
 }
 
 /// The `-c` pairs that set each driver's `clean`, `smudge` and `process`
@@ -116,6 +134,8 @@ impl Git {
             bin: bin.into(),
             pinned: None,
             repo: RepoConfig::Safe,
+            deadline: CALL_DEADLINE,
+            output_cap: CALL_OUTPUT_CAP,
         }
     }
 
@@ -195,7 +215,7 @@ impl Git {
                 out.status
             );
         }
-        Ok(filter_driver_names(&out.records))
+        filter_driver_names(&out.records)
     }
 
     /// git `args` in `dir`, as safe as the opt-in allows; a pinned call is
@@ -259,7 +279,7 @@ impl Git {
                 repo: RepoConfig::Hooks,
                 ..self.clone()
             };
-            return Ok((git.try_run(root, &push)?, None));
+            return Ok((git.push_out(root, &push), None));
         };
         let note = format!("hooks skipped: {skipped}");
         eprintln!("horch: {note}");
@@ -269,7 +289,18 @@ impl Git {
                 return Ok((lfs, Some(note)));
             }
         }
-        Ok((self.try_run(root, &push)?, Some(note)))
+        Ok((self.push_out(root, &push), Some(note)))
+    }
+
+    /// Run the push `args` in `root` within [`PUSH_DEADLINE`]: a timeout or
+    /// too much output is a failed push, never a hung finish.
+    fn push_out(&self, root: &Path, args: &[&str]) -> Out {
+        self.try_run_within(root, args, PUSH_DEADLINE)
+            .unwrap_or_else(|e| Out {
+                ok: false,
+                stdout: String::new(),
+                stderr: format!("{e:#}"),
+            })
     }
 
     /// Why the hooks of the main checkout `root` are not the operator's, or
@@ -281,23 +312,14 @@ impl Git {
         let path = path.as_str();
         let root = std::fs::canonicalize(root)
             .with_context(|| format!("{} does not exist", root.display()))?;
-        let common = self.run(
-            &root,
-            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        )?;
-        let common = std::fs::canonicalize(common.trim()).unwrap_or_default();
-        // Relative to the top of the working tree, as git runs hooks.
-        let lexical = normalize(&root.join(path));
-        let real = std::fs::canonicalize(&lexical).ok();
-        if real.as_ref() == Some(&lexical) && lexical.starts_with(&common) {
-            return Ok(None);
-        }
-        let place = if lexical.starts_with(&root) && !lexical.starts_with(&common) {
-            "is inside the working tree"
-        } else {
-            "is not a real folder under the git dir"
-        };
-        Ok(Some(format!("core.hooksPath {path} {place}")))
+        let common = self
+            .run(
+                &root,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )
+            .ok()
+            .and_then(|c| std::fs::canonicalize(c.trim()).ok());
+        Ok(hooks_verdict(path, &root, common.as_deref()))
     }
 
     /// Whether the config of `root` sets a git-lfs filter.
@@ -335,8 +357,7 @@ impl Git {
             .arg(root)
             .args(["lfs", "push", remote, branch])
             .env_remove("ANTHROPIC_API_KEY");
-        let out =
-            run_until(cmd, Vec::new(), 1, LFS_PUSH_DEADLINE).context("running git lfs push")?;
+        let out = run_until(cmd, Vec::new(), 1, PUSH_DEADLINE).context("running git lfs push")?;
         Ok(Out {
             ok: out.status.success() && out.complete,
             stdout: String::new(),
@@ -349,15 +370,19 @@ impl Git {
 
     /// Run git in `dir`; never fails on a non-zero exit.
     pub fn try_run(&self, dir: &Path, args: &[&str]) -> Result<Out> {
+        self.try_run_within(dir, args, self.deadline)
+    }
+
+    /// [`Git::try_run`] that may take `limit`; more, or more output than
+    /// the cap on a pipe, is an error.
+    fn try_run_within(&self, dir: &Path, args: &[&str], limit: Duration) -> Result<Out> {
         debug_assert!(
             !args
                 .iter()
                 .any(|a| *a == "--force" || *a == "-D" || *a == "-f"),
             "the task ledger never forces git"
         );
-        let out = self
-            .command(dir, args)?
-            .output()
+        let out = run_capped(self.command(dir, args)?, limit, self.output_cap)
             .with_context(|| format!("running {} {}", self.bin.display(), args.join(" ")))?;
         Ok(Out {
             ok: out.status.success(),
@@ -611,6 +636,30 @@ fn lexical_join(base: &Path, relative: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
+/// Why `core.hooksPath` `path` of the main checkout `root` (canonical) is
+/// not the operator's, or `None` when it is a real folder under the
+/// canonical common git dir `common`. A common dir that could not be
+/// resolved trusts no hooks path: an empty path would prefix every path.
+fn hooks_verdict(path: &str, root: &Path, common: Option<&Path>) -> Option<String> {
+    let Some(common) = common.filter(|c| c.is_absolute()) else {
+        return Some(format!(
+            "core.hooksPath {path} is set and the git dir cannot be resolved"
+        ));
+    };
+    // Relative to the top of the working tree, as git runs hooks.
+    let lexical = normalize(&root.join(path));
+    let real = std::fs::canonicalize(&lexical).ok();
+    if real.as_ref() == Some(&lexical) && lexical.starts_with(common) {
+        return None;
+    }
+    let place = if lexical.starts_with(root) && !lexical.starts_with(common) {
+        "is inside the working tree"
+    } else {
+        "is not a real folder under the git dir"
+    };
+    Some(format!("core.hooksPath {path} {place}"))
+}
+
 /// `path` with `.` and `..` resolved by name, no symlink followed.
 fn normalize(path: &Path) -> PathBuf {
     use std::path::Component;
@@ -708,6 +757,62 @@ mod tests {
         g.run(&wt, &["commit", "-q", "-m", "x"]).unwrap();
         g.run(&wt, &["status", "--porcelain"]).unwrap();
         assert!(!ran.exists(), "no hook, fsmonitor or filter program ran");
+    }
+
+    #[test]
+    fn a_git_dir_that_cannot_be_resolved_trusts_no_hooks_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let common = root.join(".git");
+        std::fs::create_dir_all(common.join("hooks")).unwrap();
+        assert_eq!(hooks_verdict(".git/hooks", &root, Some(&common)), None);
+        for unresolved in [None, Some(Path::new(""))] {
+            let why = hooks_verdict(".git/hooks", &root, unresolved).unwrap();
+            assert!(why.contains("the git dir cannot be resolved"), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_filter_driver_name_that_would_break_its_override_is_refused() {
+        let ok = filter_driver_names(&[b"filter.a.b.clean".to_vec(), b"filter.x.smudge".to_vec()]);
+        assert_eq!(ok.unwrap(), vec!["a.b".to_string(), "x".to_string()]);
+        for bad in [
+            &b"filter.a=b.clean"[..],
+            b"filter.a\nb.clean",
+            b"filter.a\xffb.clean",
+        ] {
+            assert!(filter_driver_names(&[bad.to_vec()]).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_ledger_git_call_that_hangs_or_floods_fails_inside_its_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("git");
+        let mut g = Git::new(&stub);
+        g.deadline = Duration::from_millis(300);
+        g.output_cap = 1024;
+        // Outside a repository: the filter lookup gets no output and exit 1.
+        marker_script(
+            &stub,
+            &dir.path().join("ran"),
+            "case \"$*\" in *config*) exit 1;; esac\nsleep 30",
+        );
+        let started = std::time::Instant::now();
+        let e = g.try_run(dir.path(), &["status"]).unwrap_err();
+        assert!(format!("{e:#}").contains("ran longer than"), "{e:#}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        marker_script(
+            &stub,
+            &dir.path().join("ran"),
+            "case \"$*\" in *config*) exit 1;; esac\nhead -c 100000 /dev/zero",
+        );
+        let e = g.try_run(dir.path(), &["status"]).unwrap_err();
+        assert!(format!("{e:#}").contains("more than 1024 bytes"), "{e:#}");
     }
 
     #[test]

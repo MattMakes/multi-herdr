@@ -10,6 +10,7 @@ use rusqlite::params;
 use super::{set_worktree, worktree_of, Ctx, Outcome, WorktreeRow};
 use crate::harness::codex::fleet_write_sandbox;
 use crate::harness::HarnessKind;
+use crate::taskledger::bounded::run_logged;
 use crate::taskledger::git::{dir_bytes, Git};
 use crate::taskledger::model::{Actor, EventKind, StepName, WorktreeStatus};
 use crate::taskledger::store::Store;
@@ -18,22 +19,39 @@ use crate::taskledger::util::{self, About};
 /// How long a land waits for another land of the same repository.
 pub const LAND_LOCK_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-/// Run `command` in `dir` with the shell; the log goes to `log`. When the
-/// worker that holds the claim runs on Codex, the check runs in the same
-/// `codex sandbox` its pane has: the committed code is the worker's, and
-/// outside a sandbox it would run with the operator's rights. The harness
-/// comes from the ledger's worker row, which spawn wrote, never from the
-/// worker's environment. A row with no harness fails: the check would run
+/// The longest a check or recheck runs before its process group is
+/// stopped and the step fails.
+const CHECK_DEADLINE: Duration = Duration::from_secs(60 * 60);
+
+/// The most bytes of check output the step log keeps; the rest is read and
+/// dropped.
+const CHECK_LOG_CAP: u64 = 64 << 20;
+
+/// Absolute codex paths a Codex-held check tries in order when
+/// `HORCH_CODEX_BIN` is not absolute. Never a lookup through `PATH`: a
+/// worker-writable folder on it would run a fake codex outside the sandbox.
+const TRUSTED_CODEXES: [&str; 3] = [
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    "/usr/bin/codex",
+];
+
+/// Run `command` in `dir` with the shell, in its own process group, for at
+/// most [`CHECK_DEADLINE`]; its output streams to `log`, capped at
+/// [`CHECK_LOG_CAP`]. `Ok(Err(why))` is a failed check. When the worker
+/// that holds the claim runs on Codex, the check runs in the same `codex
+/// sandbox` its pane has: the committed code is the worker's, and outside a
+/// sandbox it would run with the operator's rights. The harness comes from
+/// the ledger's worker row, which spawn wrote, never from the worker's
+/// environment. A row with no harness fails: the check would run
 /// unsandboxed for a worker that may be on Codex.
-fn run_check(cx: &Ctx<'_>, dir: &Path, command: &str, log: &Path) -> Result<bool> {
-    let sandboxed = match cx.worker.harness.as_deref() {
-        Some(h) => h == HarnessKind::Codex.as_str(),
-        None => bail!(
-            "the ledger does not record this worker's harness. The orchestrator \
-             replaces the worker with horch spawn, or records a new row with \
-             horch ledger worker new --harness <claude|codex|...>"
-        ),
-    };
+fn run_check(
+    cx: &Ctx<'_>,
+    dir: &Path,
+    command: &str,
+    log: &Path,
+) -> Result<std::result::Result<(), String>> {
+    let sandboxed = is_codex(cx)?;
     // /tmp is read-only in the sandbox: a private temp dir in the state
     // root, as a pane has, removed after the check.
     let tmp = sandboxed.then(|| {
@@ -44,30 +62,101 @@ fn run_check(cx: &Ctx<'_>, dir: &Path, command: &str, log: &Path) -> Result<bool
     });
     let mut cmd = match &tmp {
         Some(tmp) => {
+            let codex = trusted_codex(cx, dir)?;
             std::fs::create_dir_all(tmp).with_context(|| format!("creating {}", tmp.display()))?;
-            let mut cmd = fleet_write_sandbox(&cx.tools.codex, &cx.tools.state_root, dir);
+            let mut cmd = fleet_write_sandbox(&codex, &cx.tools.state_root, dir);
             cmd.arg(&cx.tools.shell).env("TMPDIR", tmp);
             cmd
         }
         None => Command::new(&cx.tools.shell),
     };
-    let out = cmd
-        .arg("-c")
+    cmd.arg("-c")
         .arg(command)
         .current_dir(dir)
-        .env_remove("ANTHROPIC_API_KEY")
-        .output();
+        .env_remove("ANTHROPIC_API_KEY");
+    let place = if sandboxed { " (codex sandbox)" } else { "" };
+    std::fs::write(log, format!("$ {command}\n# in {}{place}\n", dir.display()))?;
+    let ran = run_logged(cmd, log, CHECK_DEADLINE, CHECK_LOG_CAP);
     if let Some(tmp) = &tmp {
         let _ = std::fs::remove_dir_all(tmp);
     }
-    let out = out.with_context(|| format!("running the check `{command}`"))?;
-    let place = if sandboxed { " (codex sandbox)" } else { "" };
-    let mut text = format!("$ {command}\n# in {}{place}\n", dir.display());
-    text.push_str(&String::from_utf8_lossy(&out.stdout));
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    text.push_str(&format!("\n# exit: {:?}\n", out.status.code()));
-    std::fs::write(log, text)?;
-    Ok(out.status.success())
+    let (status, timed_out) = ran.with_context(|| format!("running the check `{command}`"))?;
+    let end = if timed_out {
+        format!(
+            "\n# check ran longer than {} min\n",
+            CHECK_DEADLINE.as_secs() / 60
+        )
+    } else {
+        format!("\n# exit: {:?}\n", status.code())
+    };
+    let mut file = std::fs::OpenOptions::new().append(true).open(log)?;
+    std::io::Write::write_all(&mut file, end.as_bytes())?;
+    Ok(match (timed_out, status.success()) {
+        (true, _) => Err(format!(
+            "check ran longer than {} min; read {}",
+            CHECK_DEADLINE.as_secs() / 60,
+            log.display()
+        )),
+        (false, true) => Ok(()),
+        (false, false) => Err(format!(
+            "`{command}` failed; read {} and fix it",
+            log.display()
+        )),
+    })
+}
+
+/// Whether the worker that holds the claim runs on Codex, from its ledger
+/// row. A row with no harness is an error.
+fn is_codex(cx: &Ctx<'_>) -> Result<bool> {
+    match cx.worker.harness.as_deref() {
+        Some(h) => Ok(h == HarnessKind::Codex.as_str()),
+        None => bail!(
+            "the ledger does not record this worker's harness. The orchestrator \
+             replaces the worker with horch spawn, or records a new row with \
+             horch ledger worker new --harness <claude|codex|...>"
+        ),
+    }
+}
+
+/// The codex that sandboxes a check: `HORCH_CODEX_BIN` when absolute, else
+/// the first of [`TRUSTED_CODEXES`], as a canonical path. Refused inside the
+/// worktree `dir`, the main checkout or the state root: the sandbox writes
+/// each, and this codex runs outside it.
+fn trusted_codex(cx: &Ctx<'_>, dir: &Path) -> Result<PathBuf> {
+    let configured = &cx.tools.codex;
+    let candidates: Vec<PathBuf> = if configured.is_absolute() {
+        vec![configured.clone()]
+    } else {
+        TRUSTED_CODEXES.iter().map(PathBuf::from).collect()
+    };
+    let writable: Vec<PathBuf> = [dir, cx.root.as_path(), cx.tools.state_root.as_path()]
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .collect();
+    for candidate in &candidates {
+        let Ok(real) = std::fs::canonicalize(candidate) else {
+            continue;
+        };
+        if let Some(root) = writable.iter().find(|w| real.starts_with(w)) {
+            bail!(
+                "refused: codex {} is inside {}, which a Codex worker can write. Set \
+                 HORCH_CODEX_BIN to an absolute codex path outside it",
+                real.display(),
+                root.display()
+            );
+        }
+        if real.is_file() {
+            return Ok(real);
+        }
+    }
+    bail!(
+        "refused: no codex at {}. Set HORCH_CODEX_BIN to an absolute codex path",
+        candidates
+            .iter()
+            .map(|c| c.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Committed work only: a step judges commits, never a half-saved tree.
@@ -103,15 +192,28 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
         .evidence_dir
         .join(format!("{}-{}.log", cx.seq, name.as_str()));
     let tree = cx.tools.git.tree(&cx.dir).ok();
-    if run_check(cx, &cx.dir, cmd, &log)? {
-        Ok(Outcome::pass("exit 0", Some(log), &format!("`{cmd}` passed")).judged(tree))
-    } else {
-        Ok(Outcome::fail(
-            "red",
-            Some(log.clone()),
-            &format!("`{cmd}` failed; read {} and fix it", log.display()),
+    match run_check(cx, &cx.dir, cmd, &log)? {
+        Ok(()) => Ok(Outcome::pass("exit 0", Some(log), &format!("`{cmd}` passed")).judged(tree)),
+        Err(why) => Ok(Outcome::fail("red", Some(log), &why).judged(tree)),
+    }
+}
+
+/// What a worker does about a land whose rebase conflicts. A Codex worker
+/// cannot write `.git`, so it cannot rebase: it reports the conflict.
+fn conflict_text(cx: &Ctx<'_>, run_branch: &str, dir: &Path) -> String {
+    if cx.worker.harness.as_deref() == Some(HarnessKind::Codex.as_str()) {
+        format!(
+            "rebase on {run_branch} conflicts in {}. A Codex worker cannot rebase: send \
+             BLOCKED: to the orchestrator with the conflicting files, and ask for a Claude \
+             worker to rebase",
+            dir.display()
         )
-        .judged(tree))
+    } else {
+        format!(
+            "rebase on {run_branch} conflicts; resolve it with git rebase {run_branch} in {}, \
+             commit, then run finish again",
+            dir.display()
+        )
     }
 }
 
@@ -190,13 +292,7 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     if !rebase.ok {
         let _ = git.try_run(&dir, &["rebase", "--abort"]);
         std::fs::write(&log, format!("{}\n{}", rebase.stdout, rebase.stderr))?;
-        return red(
-            store,
-            format!(
-                "rebase on {run_branch} conflicts; resolve it with git rebase {run_branch} in {}, commit, then run finish again",
-                dir.display()
-            ),
-        );
+        return red(store, conflict_text(cx, &run_branch, &dir));
     }
     if let Some(cmd) = cx
         .task
@@ -204,11 +300,12 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         .as_deref()
         .filter(|c| !c.trim().is_empty())
     {
-        if !run_check(cx, &dir, cmd, &log)? {
-            return red(
-                store,
-                format!("`{cmd}` failed after the rebase; read {}", log.display()),
-            );
+        // Any failure here sets the worktree back to open: a Codex worker
+        // commits only in an open worktree.
+        match run_check(cx, &dir, cmd, &log) {
+            Ok(Ok(())) => {}
+            Ok(Err(why)) => return red(store, format!("after the rebase: {why}")),
+            Err(e) => return red(store, format!("the check could not run: {e:#}")),
         }
     }
     let new = git.rev(&dir, "HEAD")?;

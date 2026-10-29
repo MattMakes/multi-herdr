@@ -19,7 +19,7 @@ use anyhow::{bail, Context, Result};
 use clap::Args;
 use horch_core::competition::preflight::parse_git_version;
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::bounded::{run_until, Records, GIT_DEADLINE};
+use horch_core::taskledger::bounded::{run_records, run_until, Records, GIT_DEADLINE};
 use horch_core::taskledger::finish::{self, WorktreeRow};
 use horch_core::taskledger::git::{
     filter_driver_names, filter_overrides, worktree_gitdir, SAFE_CONFIG,
@@ -98,7 +98,7 @@ pub fn run(ctx: &RuntimeContext, args: CommitArgs) -> Result<ExitCode> {
     let git = Trusted::new(bin, &root, &gitdir, tree)?;
     let stage = paths_to_stage(&git, &paths)?;
     refuse_large_files(&root, &stage.add)?;
-    refuse_required_filters(&git, &stage.add)?;
+    refuse_required_filters(&git, &stage.add, Attributes::Worktree)?;
     refuse_staging_filters(&git, &stage.add)?;
     let id = commit(&git, &args.message, &stage)?;
     // The commit exists now: print its id first, and never fail on the
@@ -355,7 +355,7 @@ fn stage_and_commit(
     // The checks before git add read the worktree, which can change after
     // them: judge what git staged, and the attributes once more.
     refuse_large_blobs(&staging, &blobs)?;
-    refuse_required_filters(git, &stage.add)?;
+    refuse_required_filters(&staging, &stage.add, Attributes::Staged)?;
     // Quiet: the summary lists every file, past the bound of 1 record.
     staging.run(&[
         "commit".into(),
@@ -432,44 +432,48 @@ fn refuse_unchecked_entries(
     Ok(blobs)
 }
 
-/// Object ids per `cat-file` call: each size line is at most 21 bytes, so
-/// the output stays 1 record of at most [`MAX_RECORD`] bytes.
-const SIZES_PER_CALL: usize = 150;
-
 /// Refused when a staged blob is longer than [`MAX_FILE_BYTES`], or all of
 /// them than [`MAX_TOTAL_BYTES`]: the sizes git stored, not the worktree's.
 fn refuse_large_blobs(git: &Trusted, blobs: &[String]) -> Result<()> {
+    if blobs.is_empty() {
+        return Ok(());
+    }
+    let input: Vec<u8> = blobs
+        .iter()
+        .flat_map(|o| format!("{o}\n").into_bytes())
+        .collect();
+    let args: [OsString; 2] = ["cat-file".into(), "--batch-check=%(objectsize)".into()];
+    // 1 git for every blob: 1 size line each, bounded like every record.
+    let out = run_records(
+        git.command(clean_git(&git.bin, git.tree), &args),
+        input,
+        b'\n',
+        blobs.len(),
+        GIT_DEADLINE,
+    )?;
+    if !out.complete || !out.status.success() || out.records.len() != blobs.len() {
+        bail!(
+            "refused: git cat-file printed {} sizes for {} blobs ({})",
+            out.records.len(),
+            blobs.len(),
+            out.status
+        );
+    }
     let mut total: u64 = 0;
-    for chunk in blobs.chunks(SIZES_PER_CALL) {
-        let input: Vec<u8> = chunk
-            .iter()
-            .flat_map(|o| format!("{o}\n").into_bytes())
-            .collect();
-        let args: [OsString; 2] = ["cat-file".into(), "--batch-check=%(objectsize)".into()];
-        let out = run_until(
-            git.command(clean_git(&git.bin, git.tree), &args),
-            input,
-            1,
-            GIT_DEADLINE,
-        )?;
-        let text = out.text("cat-file")?;
-        let sizes: Vec<u64> = text.lines().filter_map(|l| l.trim().parse().ok()).collect();
-        if sizes.len() != chunk.len() {
+    for record in &out.records {
+        let Some(len) = std::str::from_utf8(record)
+            .ok()
+            .and_then(|t| t.trim().parse::<u64>().ok())
+        else {
+            bail!("refused: git cat-file printed a size that is not a number");
+        };
+        if len > MAX_FILE_BYTES {
             bail!(
-                "refused: git cat-file printed {} sizes for {} blobs",
-                sizes.len(),
-                chunk.len()
+                "refused: a staged file is {len} bytes; horch ledger commit stages at most \
+                 {MAX_FILE_BYTES} bytes per file. Nothing is committed."
             );
         }
-        for len in sizes {
-            if len > MAX_FILE_BYTES {
-                bail!(
-                    "refused: a staged file is {len} bytes; horch ledger commit stages at most \
-                     {MAX_FILE_BYTES} bytes per file. Nothing is committed."
-                );
-            }
-            total = total.saturating_add(len);
-        }
+        total = total.saturating_add(len);
         if total > MAX_TOTAL_BYTES {
             bail!(
                 "refused: the staged files are more than {MAX_TOTAL_BYTES} bytes. Nothing is \
@@ -572,12 +576,12 @@ fn refuse_large_files(root: &Path, names: &[OsString]) -> Result<()> {
 /// Refused when a path to commit has a required `filter` attribute (Git
 /// LFS, for one): with attributes from the empty tree, git would store its
 /// raw content.
-fn refuse_required_filters(git: &Trusted, names: &[OsString]) -> Result<()> {
+fn refuse_required_filters(git: &Trusted, names: &[OsString], from: Attributes) -> Result<()> {
     if names.is_empty() {
         return Ok(());
     }
     let required = required_filters(git)?;
-    let refused: Vec<String> = path_filters(git, attribute_git(&git.bin), names)?
+    let refused: Vec<String> = path_filters(git, attribute_git(&git.bin), names, from)?
         .into_iter()
         .filter(|(_, filter)| required.contains(filter))
         .map(|(path, filter)| format!("{} (filter={filter})", path.to_string_lossy()))
@@ -604,10 +608,15 @@ fn refuse_staging_filters(git: &Trusted, names: &[OsString]) -> Result<()> {
     if names.is_empty() {
         return Ok(());
     }
-    let selected: Vec<String> = path_filters(git, clean_git(&git.bin, git.tree), names)?
-        .into_iter()
-        .map(|(path, filter)| format!("{} (filter={filter})", path.to_string_lossy()))
-        .collect();
+    let selected: Vec<String> = path_filters(
+        git,
+        clean_git(&git.bin, git.tree),
+        names,
+        Attributes::Worktree,
+    )?
+    .into_iter()
+    .map(|(path, filter)| format!("{} (filter={filter})", path.to_string_lossy()))
+    .collect();
     if !selected.is_empty() {
         bail!(
             "refused: {} selected by $GIT_DIR/info/attributes or core.attributesFile. \
@@ -675,14 +684,14 @@ fn path_filters(
     git: &Trusted,
     base: Command,
     names: &[OsString],
+    from: Attributes,
 ) -> Result<Vec<(OsString, String)>> {
     let expected = 3 * names.len();
-    let args: [OsString; 4] = [
-        "check-attr".into(),
-        "-z".into(),
-        "--stdin".into(),
-        "filter".into(),
-    ];
+    let mut args: Vec<OsString> = vec!["check-attr".into()];
+    if from == Attributes::Staged {
+        args.push("--cached".into());
+    }
+    args.extend(["-z".into(), "--stdin".into(), "filter".into()]);
     let mut input = Vec::new();
     for name in names {
         input.extend_from_slice(name.as_encoded_bytes());
@@ -693,6 +702,15 @@ fn path_filters(
         bail!("git check-attr failed: {}", out.status);
     }
     filter_records(&out.records, names.len())
+}
+
+/// Where `git check-attr` reads `.gitattributes` files.
+#[derive(Clone, Copy, PartialEq)]
+enum Attributes {
+    /// The worktree, which can change while horch runs.
+    Worktree,
+    /// The index of the git that runs: what is staged, after git add.
+    Staged,
 }
 
 /// `git check-attr -z filter` output for `count` paths, as `(path, filter)`
@@ -864,11 +882,14 @@ fn trusted_git(configured: &Path, writable: &[&Path]) -> Result<PathBuf> {
         .collect();
     let mut too_old = Vec::new();
     for candidate in candidates {
-        let real = std::fs::canonicalize(&candidate)
-            .with_context(|| format!("refused: no git at {}", candidate.display()))?;
+        let Ok(real) = std::fs::canonicalize(&candidate) else {
+            too_old.push(format!("{} (missing)", candidate.display()));
+            continue;
+        };
         if writable.iter().any(|w| real.starts_with(w)) {
             bail!(
-                "refused: git {} is inside the worktree, the main checkout or the state root",
+                "refused: git {} is inside the worktree, the main checkout or the state root. \
+                 Set HORCH_GIT_BIN to an absolute path of git 2.41 or later outside them",
                 real.display()
             );
         }
@@ -881,7 +902,10 @@ fn trusted_git(configured: &Path, writable: &[&Path]) -> Result<PathBuf> {
     bail!(
         "refused: horch ledger commit needs git 2.41 or later, at HORCH_GIT_BIN or \
          one of {}: older git has no attribute source, so a worker's .gitattributes \
-         could select a filter that runs outside the sandbox. Found: {}",
+         could select a filter that runs outside the sandbox. horch never searches PATH, \
+         which a worker can change. Where git is elsewhere (Nix, a user toolchain), the \
+         operator sets HORCH_GIT_BIN to its absolute path before spawning Codex workers. \
+         Found: {}",
         TRUSTED_GITS.join(", "),
         if too_old.is_empty() {
             "none".to_string()
@@ -1054,7 +1078,7 @@ impl Trusted {
                 out.status
             );
         }
-        Ok(filter_driver_names(&out.records))
+        filter_driver_names(&out.records)
     }
 
     /// True when the repository config (with the worktree's) sets `key`.

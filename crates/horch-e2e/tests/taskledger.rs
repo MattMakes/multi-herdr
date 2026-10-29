@@ -1875,6 +1875,118 @@ fn a_hooks_path_in_the_working_tree_runs_on_neither_merge_nor_push() {
     assert!(log.contains("feature"), "the push still ran: {log}");
 }
 
+/// A run like [`a_hooks_path_in_the_working_tree_runs_on_neither_merge_nor_push`]'s,
+/// with git-lfs configured and a fake `git-lfs` on PATH that logs its
+/// arguments and exits with `lfs_exit`. Returns the finish report, the
+/// fake's log and the remote's log of the run branch.
+fn land_with_lfs(name: &str, lfs_exit: i32) -> (Value, String, String) {
+    let h = finish_world(name);
+    let log = h.root.join("lfs.log");
+    h.write_bin(
+        "git-lfs",
+        format!(
+            "#!/bin/sh\necho \"lfs $*\" >> '{}'\nexit {lfs_exit}\n",
+            log.display()
+        )
+        .as_bytes(),
+    );
+    let (w, wt) = claimed_with_check(&h, "true", Some("check,land"), Some("claude"));
+    std::fs::write(wt.join("feature.txt"), "feature\n").unwrap();
+    git_in(&h, &wt, &["add", "feature.txt"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "feature"],
+    );
+    let project = h.project.clone();
+    std::fs::create_dir_all(project.join(".husky")).unwrap();
+    git_in(&h, &project, &["config", "core.hooksPath", ".husky"]);
+    git_in(
+        &h,
+        &project,
+        &["config", "filter.lfs.process", "git-lfs filter-process"],
+    );
+    let (_, r) = finish_json(&h, &w);
+    let remote = h.root.join("remote.git");
+    let pushed = git_in(&h, &remote, &["log", "--oneline", "fleet/alpha"]);
+    (r, std::fs::read_to_string(&log).unwrap_or_default(), pushed)
+}
+
+#[test]
+fn a_push_without_hooks_runs_git_lfs_push_first_and_stops_when_it_fails() {
+    let (r, lfs, pushed) = land_with_lfs("tl-lfs-ok", 0);
+    assert_eq!(r["complete"], true, "{r}");
+    assert!(lfs.contains("lfs push origin fleet/alpha"), "{lfs}");
+    assert!(pushed.contains("feature"), "{pushed}");
+
+    let (r, lfs, pushed) = land_with_lfs("tl-lfs-fail", 1);
+    assert_eq!(r["stopped_at"], "land", "{r}");
+    assert!(
+        r["message"].as_str().unwrap().contains("git lfs push"),
+        "{r}"
+    );
+    assert!(lfs.contains("lfs push origin fleet/alpha"), "{lfs}");
+    assert!(
+        !pushed.contains("feature"),
+        "no push after a failed git lfs push: {pushed}"
+    );
+}
+
+#[test]
+fn a_codex_worker_with_a_land_conflict_is_told_to_report_it() {
+    let h = finish_world("tl-codex-conflict");
+    let (w, wt) = claimed_with_check(&h, "true", Some("land"), Some("codex"));
+    std::fs::write(wt.join("x.txt"), "worker\n").unwrap();
+    git_in(&h, &wt, &["add", "x.txt"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "worker"],
+    );
+    // The run branch gets a different x.txt.
+    let project = h.project.clone();
+    git_in(&h, &project, &["checkout", "--quiet", "fleet/alpha"]);
+    std::fs::write(project.join("x.txt"), "other\n").unwrap();
+    git_in(&h, &project, &["add", "x.txt"]);
+    git_in(
+        &h,
+        &project,
+        &["commit", "--quiet", "--no-verify", "-m", "other"],
+    );
+    git_in(&h, &project, &["checkout", "--quiet", "main"]);
+
+    let (_, r) = finish_json(&h, &w);
+    assert_eq!(r["stopped_at"], "land", "{r}");
+    let message = r["message"].as_str().unwrap();
+    assert!(
+        message.contains("A Codex worker cannot rebase: send BLOCKED:"),
+        "{message}"
+    );
+    assert!(!message.contains("resolve it with git rebase"), "{message}");
+}
+
+#[test]
+fn a_codex_binary_inside_the_worktree_is_refused_and_never_runs() {
+    let mut h = finish_world("tl-codex-in-wt");
+    let (w, wt) = claimed_with_check(&h, "true", Some("check"), Some("codex"));
+    let ran = h.root.join("codex-ran");
+    let fake = wt.join("codex");
+    sh_script(&fake, &format!(": > '{}'", ran.display()));
+    // Committed, as a worker would: finish judges a clean worktree.
+    git_in(&h, &wt, &["add", "codex"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "codex"],
+    );
+    h.set("HORCH_CODEX_BIN", fake.to_string_lossy());
+    let (_, r) = finish_json(&h, &w);
+    assert_eq!(r["stopped_at"], "check", "{r}");
+    let message = r["message"].as_str().unwrap();
+    assert!(message.contains("HORCH_CODEX_BIN"), "{message}");
+    assert!(!ran.exists(), "the planted codex never runs");
+}
+
 #[test]
 fn a_git_file_switched_after_the_check_never_reaches_finish_git() {
     let mut h = finish_world("tl-gitdir-race");
