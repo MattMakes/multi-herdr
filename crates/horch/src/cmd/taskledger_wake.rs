@@ -6,9 +6,12 @@ use horch_core::ids::WorkspaceId;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::model::{Actor, EventKind};
 use horch_core::taskledger::runs::Run;
+use horch_core::taskledger::stop::Panes;
 use horch_core::taskledger::tasks;
 use horch_core::taskledger::util::{self, About};
+use horch_core::taskledger::workers;
 use horch_core::taskledger::Store;
+use horch_core::workspace::herdr::Herdr;
 
 /// `HORCH_NO_WAKE=1` turns wakes off (tests that run no herdr).
 fn disabled() -> bool {
@@ -95,9 +98,15 @@ pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
 
 /// Wake the orchestrator when workers should be spawned now.
 pub fn nudge_startable(ctx: &RuntimeContext, store: &Store, run: &Run) {
-    let Ok(plan) = tasks::plan_workers(store.conn(), &run.run_id) else {
-        return;
-    };
+    if let Some(advice) = spawn_advice(store, run) {
+        wake(ctx, store, run, &format!("NOTE: {advice}"));
+    }
+}
+
+/// "Tasks can start: T-1. Spawn: opus x1." when workers should be spawned
+/// now, else `None`.
+fn spawn_advice(store: &Store, run: &Run) -> Option<String> {
+    let plan = tasks::plan_workers(store.conn(), &run.run_id).ok()?;
     let spawn: Vec<String> = plan
         .iter()
         .filter(|p| p.spawn > 0)
@@ -115,21 +124,76 @@ pub fn nudge_startable(ctx: &RuntimeContext, store: &Store, run: &Run) {
         })
         .collect();
     if spawn.is_empty() {
-        return;
+        return None;
     }
     let ready: Vec<String> = tasks::startable(store.conn(), &run.run_id)
         .map(|v| v.iter().map(|t| t.short()).collect())
         .unwrap_or_default();
-    wake(
-        ctx,
-        store,
-        run,
-        &format!(
-            "NOTE: Tasks can start: {}. Spawn: {}.",
-            ready.join(", "),
-            spawn.join(", ")
-        ),
-    );
+    Some(format!(
+        "Tasks can start: {}. Spawn: {}.",
+        ready.join(", "),
+        spawn.join(", ")
+    ))
+}
+
+/// The watchdog's pre-claim sweep (#190): end the rows no process stands
+/// for and close their panes, ask about a worker that does not claim, and
+/// wake once with the spawns the freed slots allow.
+pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
+    let swept =
+        match store.immediate(|tx| workers::sweep_preclaim(tx, run, &workers::supervisor_alive)) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("horch ledger watch: the pre-claim sweep failed: {e:#}");
+                return;
+            }
+        };
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let panes = super::taskledger::HerdrPanes::new(ctx);
+    let mut ended = Vec::new();
+    for p in &swept {
+        let pane = p.worker.pane_id.as_deref();
+        match &p.ended {
+            Some(status) => {
+                if let Some(pane) = pane.filter(|id| panes.exists(id)) {
+                    if let Err(e) = panes.close(pane) {
+                        eprintln!("horch ledger watch: closing pane {pane} failed: {e:#}");
+                    }
+                }
+                ended.push(format!("{} ({status}: {})", p.worker.label(), p.note));
+            }
+            None => {
+                let state = pane
+                    .and_then(|id| herdr.pane_get(id).ok())
+                    .and_then(|p| p.agent_status)
+                    .unwrap_or_else(|| "unknown".into());
+                wake(
+                    ctx,
+                    store,
+                    run,
+                    &format!(
+                        "NOTE: {}. Look at its pane {} (herdr status {state}): it may wait at a login, trust or quota prompt.",
+                        p.note,
+                        pane.unwrap_or("(none)")
+                    ),
+                );
+            }
+        }
+    }
+    if !ended.is_empty() {
+        let advice = spawn_advice(store, run).unwrap_or_default();
+        wake(
+            ctx,
+            store,
+            run,
+            &format!(
+                "NOTE: These workers ended before they claimed a task: {}. {advice}",
+                ended.join(", ")
+            )
+            .trim_end()
+            .to_string(),
+        );
+    }
 }
 
 /// After a reap: tell the orchestrator which persona to spawn, and how.

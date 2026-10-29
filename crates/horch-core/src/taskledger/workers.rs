@@ -395,6 +395,145 @@ pub fn end(
     Ok(n > 0)
 }
 
+/// How long a `spawning` row may wait for its supervisor: longer than the
+/// registration wait of `horch spawn` (#190).
+pub const LAUNCH_GRACE_S: i64 = 120;
+
+/// How long a live `claiming` worker may take to claim before the
+/// orchestrator is asked to look at its pane (#190).
+pub const CLAIM_GRACE_S: i64 = 600;
+
+/// Whether a pre-claim row (`spawning`, `starting`, `claiming`) no longer
+/// stands for a process on its way to a claim: its last checkin is older
+/// than `heartbeat_stale_s`, or it never checked in within
+/// [`LAUNCH_GRACE_S`] of its spawn.
+pub fn is_stale(w: &Worker, heartbeat_stale_s: i64, now: &str) -> bool {
+    if !matches!(w.status.as_str(), "spawning" | "starting" | "claiming") {
+        return false;
+    }
+    let older = |t: Option<&str>, limit: i64| {
+        t.and_then(|t| util::seconds_between(t, now))
+            .is_some_and(|age| age > limit)
+    };
+    match w.last_checkin_at.as_deref() {
+        Some(t) => older(Some(t), heartbeat_stale_s),
+        None => older(w.spawned_at.as_deref(), LAUNCH_GRACE_S),
+    }
+}
+
+/// Whether the worker's recorded supervisor process still runs.
+pub fn supervisor_alive(w: &Worker) -> bool {
+    w.supervisor_pid
+        .is_some_and(|p| crate::procid::alive(p as u32, w.supervisor_started.map(|s| s as u64)))
+}
+
+/// What the pre-claim sweep did to 1 worker.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Preclaim {
+    pub worker: Worker,
+    /// The status it ended with; `None` for a live worker that has not
+    /// claimed within [`CLAIM_GRACE_S`] (reported once).
+    pub ended: Option<String>,
+    pub note: String,
+}
+
+const NO_CLAIM: &str = "No claim:";
+
+/// The watchdog's pass over pre-claim rows (#190). A row whose process is
+/// gone or silent ends: `launch_failed` before the agent ran, `no_task`
+/// after. A live `claiming` worker past [`CLAIM_GRACE_S`] is reported once.
+pub fn sweep_preclaim(
+    conn: &Connection,
+    run: &super::runs::Run,
+    alive: &dyn Fn(&Worker) -> bool,
+) -> Result<Vec<Preclaim>> {
+    let now = util::now();
+    let mut out = Vec::new();
+    for w in of_run(conn, &run.run_id)? {
+        if w.kind != WorkerKind::Worker.as_str() {
+            continue;
+        }
+        let status = w.status()?;
+        if !matches!(
+            status,
+            WorkerStatus::Spawning | WorkerStatus::Starting | WorkerStatus::Claiming
+        ) {
+            continue;
+        }
+        let about = About {
+            run: Some(&run.run_id),
+            task: None,
+            worker: Some(&w.worker_id),
+        };
+        let gone = w.supervisor_pid.is_some() && !alive(&w);
+        if gone || is_stale(&w, run.heartbeat_stale_s, &now) {
+            let (end_as, why) = match (status, gone) {
+                (WorkerStatus::Claiming, true) => (
+                    WorkerStatus::NoTask,
+                    "its supervisor is gone before it claimed a task",
+                ),
+                (WorkerStatus::Claiming, false) => {
+                    (WorkerStatus::NoTask, "no checkin before it claimed a task")
+                }
+                (_, true) => (
+                    WorkerStatus::LaunchFailed,
+                    "its supervisor is gone before the agent ran",
+                ),
+                (_, false) => (
+                    WorkerStatus::LaunchFailed,
+                    "no horch worker checked in after the spawn",
+                ),
+            };
+            if end(conn, &w.worker_id, end_as, why, None)? {
+                util::event(
+                    conn,
+                    &about,
+                    Actor::Watchdog,
+                    EventKind::Exited,
+                    &format!("{} ended {end_as}: {why}.", w.label()),
+                )?;
+                out.push(Preclaim {
+                    worker: w,
+                    ended: Some(end_as.as_str().to_string()),
+                    note: why.to_string(),
+                });
+            }
+            continue;
+        }
+        let waited = w
+            .started_at
+            .as_deref()
+            .or(w.spawned_at.as_deref())
+            .and_then(|t| util::seconds_between(t, &now))
+            .unwrap_or(0);
+        if status != WorkerStatus::Claiming || waited <= CLAIM_GRACE_S {
+            continue;
+        }
+        let told: i64 = conn.query_row(
+            "SELECT count(*) FROM events WHERE worker_id = ?1 AND kind = 'verdict' AND text LIKE ?2",
+            params![w.worker_id, format!("{NO_CLAIM}%")],
+            |r| r.get(0),
+        )?;
+        if told > 0 {
+            continue;
+        }
+        let note = format!("{} has not claimed a task in {}s", w.label(), waited);
+        util::event(
+            conn,
+            &about,
+            Actor::Watchdog,
+            EventKind::Verdict,
+            &format!("{NO_CLAIM} {note}."),
+        )?;
+        out.push(Preclaim {
+            worker: w,
+            ended: None,
+            note,
+        });
+    }
+    Ok(out)
+}
+
 /// Record the exit code of a worker that already ended (a `done` worker).
 pub fn set_exit_code(conn: &Connection, worker_id: &str, exit_code: Option<i32>) -> Result<()> {
     conn.execute(

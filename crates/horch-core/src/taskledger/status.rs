@@ -45,6 +45,8 @@ pub struct WorkerLine {
     pub progress_age_s: Option<i64>,
     /// A working worker with no check in the last 2 check intervals.
     pub unwatched: bool,
+    /// A pre-claim row whose process went silent ([`workers::is_stale`]).
+    pub stale: bool,
     pub waiting: Vec<workers::Wait>,
 }
 
@@ -176,6 +178,7 @@ pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
                 .map(|l| l.task.short())
         });
         wl.push(WorkerLine {
+            stale: workers::is_stale(&w, run.heartbeat_stale_s, &now),
             waiting: workers::waiting(conn, &w.worker_id)?,
             worker: w,
             task,
@@ -271,7 +274,13 @@ pub fn render(r: &Report) -> String {
                 w.task.as_deref().unwrap_or("-"),
                 age(w.checkin_age_s),
                 age(w.progress_age_s),
-                if w.unwatched { "  UNWATCHED" } else { "" }
+                if w.unwatched {
+                    "  UNWATCHED"
+                } else if w.stale {
+                    "  STALE"
+                } else {
+                    ""
+                }
             );
         }
     }

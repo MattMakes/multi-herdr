@@ -1866,3 +1866,212 @@ fn a_spawn_with_task_text_runs_outside_the_run() {
     );
     assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
 }
+
+// ─── #190: no pre-claim row outlives its process ─────────────────────────────
+
+fn worker_status(h: &Harness, id: &str) -> (String, String) {
+    let w = worker_json(h, id);
+    (
+        w["status"].as_str().unwrap_or_default().to_string(),
+        w["end_reason"].as_str().unwrap_or_default().to_string(),
+    )
+}
+
+/// The wakes recorded for the run, oldest first.
+fn wakes(h: &Harness) -> Vec<String> {
+    json_of(h, &["ledger", "events", "--json"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "woke")
+        .map(|e| e["text"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn later(seconds: u64) -> String {
+    horch_core::clock::stamp(horch_core::clock::now() + Duration::from_secs(seconds))
+}
+
+fn plan_line(h: &Harness) -> String {
+    ok(h, &["ledger", "plan-workers"]).trim().to_string()
+}
+
+#[test]
+fn a_refused_spawn_ends_its_worker_row() {
+    let mut h = fleet("tl-refused", "default");
+    h.set(
+        "HORCH_QUOTA_FILE",
+        fixtures()
+            .join("quota/all-exhausted.json")
+            .to_string_lossy(),
+    );
+    // The fixture's 7-day window is exhausted at its own time.
+    h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus", &[]);
+    let o = h.run(&["spawn", "opus", "--from-pane", "w1:p1", "--no-tile"]);
+    assert_eq!(o.status.code(), Some(3), "{}", text(&o));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    let rows: Vec<&Value> = st["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["worker"]["kind"] == "worker")
+        .collect();
+    assert_eq!(rows.len(), 1, "{st}");
+    assert_eq!(rows[0]["worker"]["status"], "launch_failed", "{st}");
+    let reason = rows[0]["worker"]["end_reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("REFUSED: opus cannot start."),
+        "{reason}"
+    );
+    assert_eq!(plan_line(&h), "opus: spawn 1 (1 can start, 0 on the way).");
+}
+
+#[test]
+fn a_spawn_of_an_unknown_teammate_leaves_no_live_row() {
+    let h = fleet("tl-unknown", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let o = h.run(&[
+        "spawn",
+        "no-such-teammate",
+        "--from-pane",
+        "w1:p1",
+        "--no-tile",
+    ]);
+    assert!(!o.status.success(), "{}", text(&o));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    for w in st["workers"].as_array().unwrap() {
+        if w["worker"]["kind"] == "worker" {
+            assert_eq!(w["worker"]["status"], "launch_failed", "{st}");
+        }
+    }
+}
+
+#[test]
+fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
+    let h = world("tl-ghosts");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "sonnet-x", &[]);
+    let ghost = worker_new(&h, "sonnet-x");
+    let ghost2 = worker_new(&h, "sonnet-x");
+    // PIDs far above any pid_max: never a live process.
+    ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "pid",
+            &ghost2,
+            "--supervisor",
+            "99999991",
+        ],
+    );
+    ok(
+        &h,
+        &["ledger", "worker", "pid", &ghost2, "--agent", "99999992"],
+    );
+    assert_eq!(
+        plan_line(&h),
+        "sonnet-x: spawn 0 (1 can start, 2 on the way)."
+    );
+
+    // 1 pass now: ghost2's supervisor is gone; ghost is in its launch grace.
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    let (st, why) = worker_status(&h, &ghost2);
+    assert_eq!(st, "no_task", "{why}");
+    assert!(why.contains("supervisor is gone"), "{why}");
+    assert_eq!(worker_status(&h, &ghost).0, "spawning");
+    assert_eq!(
+        plan_line(&h),
+        "sonnet-x: spawn 0 (1 can start, 1 on the way)."
+    );
+
+    // Past the grace, ghost never had a supervisor: status marks it STALE,
+    // and 1 watchdog pass ends it launch_failed with 1 wake.
+    let o = run_env(&h, &[("HORCH_NOW", &later(200))], &["ledger", "status"]);
+    let line = out(&o)
+        .lines()
+        .find(|l| l.contains("spawning"))
+        .unwrap_or_default()
+        .to_string();
+    assert!(line.ends_with("STALE"), "{}", text(&o));
+    let before = wakes(&h).len();
+    let o = run_env(
+        &h,
+        &[("HORCH_NOW", &later(200))],
+        &["ledger", "watch", "--once", "--force"],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(worker_status(&h, &ghost).0, "launch_failed");
+    let new: Vec<String> = wakes(&h).split_off(before);
+    assert_eq!(new.len(), 1, "{new:?}");
+    assert!(
+        new[0].contains("ended before they claimed a task"),
+        "{new:?}"
+    );
+    assert!(new[0].contains("Spawn: sonnet-x x1"), "{new:?}");
+    assert_eq!(
+        plan_line(&h),
+        "sonnet-x: spawn 1 (1 can start, 0 on the way)."
+    );
+}
+
+#[test]
+fn a_live_worker_that_does_not_claim_is_reported_once() {
+    let h = world("tl-noclaim");
+    ok(
+        &h,
+        &["ledger", "run", "new", "a", "--heartbeat-stale", "100000"],
+    );
+    queue(&h, "01-a", "sonnet-x", &[]);
+    let id = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "sonnet-x",
+            "--pane",
+            "w1:p7",
+        ],
+    )
+    .trim()
+    .to_string();
+    // This test process stands in for the live supervisor and agent.
+    let me = std::process::id().to_string();
+    ok(&h, &["ledger", "worker", "pid", &id, "--supervisor", &me]);
+    ok(&h, &["ledger", "worker", "pid", &id, "--agent", &me]);
+    let watch = |at: Option<String>| {
+        let env: Vec<(&str, &str)> = at.iter().map(|t| ("HORCH_NOW", t.as_str())).collect();
+        let o = run_env(&h, &env, &["ledger", "watch", "--once", "--force"]);
+        assert!(o.status.success(), "{}", text(&o));
+    };
+    // Within the claim grace the worker is never touched.
+    watch(Some(later(300)));
+    assert_eq!(worker_status(&h, &id).0, "claiming");
+    assert!(wakes(&h).is_empty(), "{:?}", wakes(&h));
+    // Past it: 1 wake that names the pane, and only 1.
+    watch(Some(later(700)));
+    watch(Some(later(800)));
+    let w = wakes(&h);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("has not claimed a task"), "{w:?}");
+    assert!(w[0].contains("pane w1:p7"), "{w:?}");
+    assert_eq!(worker_status(&h, &id).0, "claiming");
+}
+
+#[test]
+fn replacing_a_live_worker_names_the_stop_command() {
+    let h = fleet("tl-replaces-live", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let live = worker_new(&h, "codex-terra");
+    let o = h.run(&spawn_args("w1:p1", &["codex-terra", "--replaces", &live]));
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains(&format!("Run horch ledger stop {live}")),
+        "{}",
+        text(&o)
+    );
+}

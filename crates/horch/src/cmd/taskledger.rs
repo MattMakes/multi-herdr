@@ -304,6 +304,9 @@ pub enum WorkerCommand {
         role: Option<String>,
         #[arg(long)]
         replaces: Option<String>,
+        /// The herdr pane the worker runs in.
+        #[arg(long)]
+        pane: Option<String>,
         #[command(flatten)]
         run: RunArg,
     },
@@ -1619,6 +1622,7 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
             persona,
             role,
             replaces,
+            pane,
             run,
         } => {
             let r = resolve_run(ctx, store, &run)?;
@@ -1631,6 +1635,7 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
                         persona,
                         role,
                         previous_worker_id: replaces,
+                        pane_id: pane,
                         ..Default::default()
                     },
                 )

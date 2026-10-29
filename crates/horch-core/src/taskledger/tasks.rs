@@ -910,7 +910,7 @@ pub struct PersonaPlan {
 
 /// How many workers of each persona to spawn now: the tasks that can start
 /// now, minus the workers of that persona still spawning, starting or
-/// claiming.
+/// claiming and not stale ([`workers::is_stale`]).
 pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>> {
     let startable = startable(conn, run_id)?;
     let mut by: BTreeMap<String, (i64, Vec<String>)> = BTreeMap::new();
@@ -925,14 +925,21 @@ pub fn plan_workers(conn: &Connection, run_id: &str) -> Result<Vec<PersonaPlan>>
             }
         }
     }
+    // A pre-claim row whose process went silent is not on its way (#190).
+    let run = super::runs::get(conn, run_id)?;
+    let now = util::now();
+    let roster = workers::of_run(conn, run_id)?;
     let mut out = Vec::new();
     for (persona, (n, replaces)) in by {
-        let on_the_way: i64 = conn.query_row(
-            "SELECT count(*) FROM workers WHERE run_id = ?1 AND persona = ?2 AND kind = 'worker'
-               AND status IN ('spawning', 'starting', 'claiming')",
-            params![run_id, persona],
-            |r| r.get(0),
-        )?;
+        let on_the_way = roster
+            .iter()
+            .filter(|w| {
+                w.kind == WorkerKind::Worker.as_str()
+                    && w.persona.as_deref() == Some(persona.as_str())
+                    && matches!(w.status.as_str(), "spawning" | "starting" | "claiming")
+                    && !workers::is_stale(w, run.heartbeat_stale_s, &now)
+            })
+            .count() as i64;
         out.push(PersonaPlan {
             spawn: (n - on_the_way).max(0),
             persona,
