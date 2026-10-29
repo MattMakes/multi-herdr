@@ -20,6 +20,11 @@ orchestrator, and the orchestrator spawns another pane.
 messages, and ends with `N messages acknowledged`. `--roles` lists roles only.
 `--peek` prints messages and leaves them pending.
 
+The role list includes agent state and unanswered questions. `horch peek
+<role> --lines 20` reads recent pane output without typing. A relay write does
+not acknowledge a message; only `inbox` does. The courier keeps retrying pending
+mail and pauses with an operator notification when Claude needs `/login`.
+
 The operator starts the orchestrator with no task. Its briefing ends with
 "Acknowledge and await further instruction.", so it acknowledges the briefing
 and waits for the operator's first message. A worker always gets its task at
@@ -50,6 +55,16 @@ transcript path and worktree. `horch ledger stop` is the only way to stop a
 worker. `horch ledger unfinished` lists past work that never landed,
 including the history imported from the old JSON ledgers
 (`horch ledger import`).
+
+An outstanding review, unanswered question or `progress "waiting: ..."` note
+gives a worker a waiting reason and deadline. These waits suspend stall counting
+while valid. The counter starts fresh after the wait ends; a gone agent is
+still reaped immediately. Status lists the reason and age.
+
+Use `horch ledger worktree new <name> --from <ref>` for a different base, and
+`horch ledger worktree scratch <name>` for work that will not land. Drop a clean
+tree with `horch ledger worktree drop <name> --reason "<why>"`; use
+`--keep-branch` to retain unique commits. No command forces removal.
 
 ## Plan files
 

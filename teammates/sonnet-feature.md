@@ -3,6 +3,8 @@ name: sonnet-feature
 brief_description: Sonnet/medium. Features to a clear spec - endpoints, UI components, CRUD, unit test updates. No race conditions.
 base: fleet-worker
 agent: claude
+# Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
+allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: implementation
 model: sonnet
 # When this model's usage pool cannot serve a spawn (horch route sonnet-feature).

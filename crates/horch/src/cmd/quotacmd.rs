@@ -57,6 +57,11 @@ pub fn quota(ctx: &RuntimeContext, json: bool, refresh: bool) -> Result<()> {
                     output::println(&format!("{name}: from a rollout written {at}{age}"));
                 }
             }
+            if r.state == "unknown" {
+                if let Some(reason) = &r.reason {
+                    output::println(&format!("{name}: {reason}"));
+                }
+            }
             if let Some(e) = &r.error {
                 output::println(&format!("{name}: {e}"));
             }

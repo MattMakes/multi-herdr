@@ -202,6 +202,9 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     if let Some(line) = &plan.gate_line {
         crate::output::println(line);
     }
+    // Advisory probes belong after validation: a refused/headless request
+    // must not contact herdr or create diagnostic state.
+    fleet_warnings(ctx, true);
 
     // Lay the grid out, which also puts the pane where it belongs: a split
     // halves its parent, and the tiler moves the worker into the next free
@@ -333,6 +336,78 @@ fn fleet_facts(
     });
     if let Err(e) = synced {
         eprintln!("horch: NOTE: fleet run rows not synced: {e:#}");
+    }
+}
+
+/// Advisory collision/load diagnostics; abandoned workspaces do not count.
+pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
+    let prefix = if as_note { "NOTE:" } else { "WARNING:" };
+    let caller = super::ledgercmd::caller_workspace(ctx);
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    if let Ok(workspaces) = herdr.workspace_list() {
+        let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
+        let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
+        if let Ok(store) = horch_core::taskledger::open(ctx) {
+            if let Ok(root) = super::taskledger::project_root(ctx) {
+                if let Ok(runs) = horch_core::taskledger::runs::of_project(store.conn(), &root) {
+                    for run in runs.into_iter().filter(|r| r.status == "active") {
+                        if let Some(w) = run
+                            .workspace_id
+                            .filter(|w| caller.as_deref() != Some(w) && listed(w))
+                        {
+                            active.insert(w, Some(run.slug));
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(store) = ExecutionStore::open_in(ctx) {
+            for r in store
+                .read()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.is_orchestrator() && r.execution_status().is_live())
+            {
+                if let Some(w) = r
+                    .workspace_id
+                    .filter(|w| caller.as_deref() != Some(w) && listed(w))
+                {
+                    active.entry(w).or_insert(None);
+                }
+            }
+        }
+        if !active.is_empty() {
+            let names: Vec<_> = active
+                .into_iter()
+                .map(|(w, slug)| slug.map_or_else(|| w.clone(), |s| format!("{w} (run {s})")))
+                .collect();
+            eprintln!(
+                "horch: {prefix} live orchestrator in workspace {}",
+                names.join(", ")
+            );
+        }
+    }
+    if as_note {
+        let project = ctx
+            .paths
+            .project()
+            .unwrap_or_else(|_| Path::new(".").to_path_buf());
+        let machine = horch_core::runtime::machine::probe(
+            &project,
+            &Default::default(),
+            ctx.settings.machine_file.as_deref(),
+        );
+        if machine.os != "windows" {
+            if let (Some(load), horch_core::runtime::machine::Known::Known(cpus)) =
+                (machine.load_average_1m, machine.cpus)
+            {
+                if load.is_finite() && cpus > 0 && load >= f64::from(cpus) {
+                    eprintln!(
+                        "horch: NOTE: host 1-minute load {load:.2} is at or above {cpus} CPUs"
+                    );
+                }
+            }
+        }
     }
 }
 

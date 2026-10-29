@@ -104,7 +104,7 @@ impl Mailbox {
         Ok(open(&ws))
     }
 
-    /// [`Mailbox::resolve`] with the context's dirs, workspace and pane.
+    /// `Mailbox::resolve` with the context's dirs, workspace and pane.
     pub fn resolve_in(herdr: &Herdr, ctx: &RuntimeContext) -> Result<Self> {
         Self::resolve(
             herdr,
@@ -182,7 +182,7 @@ impl Mailbox {
         Ok((mailbox, pane.pane_id))
     }
 
-    /// [`Mailbox::register`] this context's pane, then record the workspace
+    /// `Mailbox::register` this context's pane, then record the workspace
     /// in the context, so everything this process does next, and every child
     /// it starts, belongs to that workspace.
     pub fn register_in(

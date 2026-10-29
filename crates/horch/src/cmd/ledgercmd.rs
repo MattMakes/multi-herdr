@@ -80,18 +80,128 @@ pub enum LegacyCommand {
 /// Read this before spawning: a `[done]` session whose task or history overlaps
 /// the new task is a resume candidate
 /// (`horch spawn --resume <session-or-record-id> "task"`).
-pub fn sessions(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
-    print_list(ctx, json, all)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionFilter<'a> {
+    pub all_workspaces: bool,
+    pub live: bool,
+    pub role: Option<&'a str>,
 }
 
-/// The JSON form is the store's records as written: a record with a typed
-/// status carries it under `state` (additive), and `status` keeps the legacy
-/// word. The text form prints only the legacy words, which the orchestrator
-/// prompt reads (risk 5). Competition candidates and judges belong to
-/// `multi-herdr-dataset`: both forms leave them out unless `all`.
-fn print_list(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
+impl SessionFilter<'_> {
+    pub fn matches(
+        &self,
+        workspace: Option<&str>,
+        r: &horch_core::execution::legacy::Record,
+    ) -> bool {
+        (self.all_workspaces || workspace.is_none_or(|w| r.workspace_id.as_deref() == Some(w)))
+            && (!self.live || r.execution_status().is_live())
+            && self.role.is_none_or(|role| r.role == role)
+    }
+}
+
+pub(crate) fn caller_workspace(ctx: &RuntimeContext) -> Option<String> {
+    if let Some(workspace) = &ctx.herdr.workspace {
+        return Some(workspace.to_string());
+    }
+    let pane = ctx.herdr.pane.as_ref()?;
+    horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr)
+        .pane_get(pane.as_str())
+        .ok()
+        .and_then(|p| p.workspace_id)
+}
+
+#[allow(dead_code)]
+pub fn sessions(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
+    sessions_filtered(ctx, json, all, false, false, None)
+}
+
+pub fn sessions_filtered(
+    ctx: &RuntimeContext,
+    json: bool,
+    all: bool,
+    all_workspaces: bool,
+    live: bool,
+    role: Option<&str>,
+) -> Result<()> {
+    let filter = SessionFilter {
+        all_workspaces,
+        live,
+        role,
+    };
     let store = ExecutionStore::open_in(ctx)?;
+    let caller = caller_workspace(ctx);
     let records: Vec<_> = store
+        .read()?
+        .into_iter()
+        .filter(|r| (all || r.round_id.is_none()) && filter.matches(caller.as_deref(), r))
+        .collect();
+    let herdr = horch_core::workspace::herdr::Herdr::with_bin(&ctx.bins.harness.herdr);
+    let mut panes = std::collections::BTreeMap::new();
+    for workspace in records.iter().filter_map(|r| r.workspace_id.as_deref()) {
+        panes
+            .entry(workspace)
+            .or_insert_with(|| herdr.pane_list(workspace).ok());
+    }
+    let pane_gone = |r: &horch_core::execution::legacy::Record| -> bool {
+        r.execution_status().is_live()
+            && r.workspace_id
+                .as_deref()
+                .zip(r.pane_id.as_deref())
+                .and_then(|(ws, pane)| {
+                    panes
+                        .get(ws)?
+                        .as_ref()
+                        .map(|ps| !ps.iter().any(|p| p.pane_id == pane))
+                })
+                .unwrap_or(false)
+    };
+    if json {
+        #[derive(serde::Serialize)]
+        struct SessionRow<'a> {
+            #[serde(flatten)]
+            record: &'a horch_core::execution::legacy::Record,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            pane_gone: Option<bool>,
+        }
+        let rows: Vec<_> = records
+            .iter()
+            .map(|r| SessionRow {
+                record: r,
+                pane_gone: r.pane_id.as_ref().map(|_| pane_gone(r)),
+            })
+            .collect();
+        output::println(&serde_json::to_string_pretty(&rows)?);
+    } else {
+        let mut text = ExecutionStore::render_text(&records);
+        for record in records.iter().filter(|r| pane_gone(r)) {
+            let key = format!("record={}\n", record.record_id);
+            text = text.replace(&key, &format!("record={} (pane gone)\n", record.record_id));
+        }
+        output::print(&text);
+        if let Some(workspace) = caller_workspace(ctx) {
+            if let Ok(store) = horch_core::taskledger::open(ctx) {
+                if super::taskledger::project_root(ctx)
+                    .ok()
+                    .and_then(|root| {
+                        horch_core::taskledger::runs::of_project(store.conn(), &root).ok()
+                    })
+                    .is_some_and(|runs| {
+                        runs.iter().any(|r| {
+                            r.status == "active" && r.workspace_id.as_deref() == Some(&workspace)
+                        })
+                    })
+                {
+                    output::println("Active task-ledger run: horch ledger status");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// Legacy plumbing retains its project-wide output.
+fn print_list(ctx: &RuntimeContext, json: bool, all: bool) -> Result<()> {
+    let records: Vec<_> = ExecutionStore::open_in(ctx)?
         .read()?
         .into_iter()
         .filter(|r| all || r.round_id.is_none())

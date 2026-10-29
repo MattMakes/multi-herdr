@@ -6,7 +6,7 @@
 //! means the agent is still in one long turn. This module only parses text;
 //! it does no I/O.
 //!
-//! Each known status-line shape is 1 entry in [`FORMATS`]. When a CLI release
+//! Each known status-line shape is 1 entry in `FORMATS`. When a CLI release
 //! changes its wording, add 1 entry and 1 fixture under
 //! `tests/fixtures/screens/`.
 

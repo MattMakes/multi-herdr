@@ -51,6 +51,7 @@ pub mod ids;
 pub mod measure;
 pub mod messaging;
 pub mod procid;
+pub mod project_notes;
 pub mod prompts;
 pub mod roster;
 pub mod routing;

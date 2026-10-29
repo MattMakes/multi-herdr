@@ -583,6 +583,9 @@ impl QuotaView {
             let why = match (&r.error, &r.observed_at) {
                 (Some(e), _) => e.clone(),
                 (None, Some(at)) if !fresh => format!("reading from {at} is stale"),
+                (None, _) if !r.windows.is_empty() && windows.is_empty() => {
+                    format!("no matching window for {}", scope.unwrap_or("this pool"))
+                }
                 _ => "no reading".into(),
             };
             return out(State::Unknown, why, worst.cloned(), headroom);
@@ -636,7 +639,7 @@ fn refusal_in_force(
 
 /// What a successful probe read.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct Probed {
+pub struct Probed {
     pub windows: Vec<Window>,
     pub ordinary_usage_allowed: Option<bool>,
 }
@@ -664,9 +667,9 @@ fn reset_stamp(v: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Parse a `get_usage` reply ([Q] 1a). `utilization` is 0-100 and resets
+/// Parse a `get_usage` reply (quota specification 1a). `utilization` is 0-100 and resets
 /// are ISO. Only window fields are read; everything else is dropped.
-pub(crate) fn parse_claude_usage(reply: &Value) -> Result<Probed, String> {
+pub fn parse_claude_usage(reply: &Value) -> Result<Probed, String> {
     if reply.pointer("/response/subtype").and_then(Value::as_str) == Some("error") {
         let e = reply
             .pointer("/response/error")
@@ -773,9 +776,9 @@ pub(crate) fn parse_claude_usage(reply: &Value) -> Result<Probed, String> {
     })
 }
 
-/// Parse an `account/rateLimits/read` result ([Q] 2). `usedPercent` is
+/// Parse an `account/rateLimits/read` result (quota specification 2). `usedPercent` is
 /// 0-100 and `resetsAt` epoch seconds; windows by `windowDurationMins`.
-pub(crate) fn parse_codex_limits(reply: &Value) -> Result<Probed, String> {
+pub fn parse_codex_limits(reply: &Value) -> Result<Probed, String> {
     if let Some(e) = reply.get("error") {
         let msg = e.get("message").and_then(Value::as_str).unwrap_or("error");
         return Err(format!("account/rateLimits/read error: {msg}"));
@@ -826,7 +829,7 @@ pub(crate) fn parse_codex_limits(reply: &Value) -> Result<Probed, String> {
 ///   `gpt-oss`.
 /// - any other id: unscoped, so it limits every model (the conservative
 ///   choice).
-pub(crate) fn parse_agy_usage(reply: &Value) -> Result<Probed, String> {
+pub fn parse_agy_usage(reply: &Value) -> Result<Probed, String> {
     let status = reply.get("status").and_then(Value::as_str).unwrap_or("");
     if status != "SUCCESS" {
         let why = reply

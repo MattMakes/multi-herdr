@@ -5,11 +5,11 @@ description: "Use when directing a herdr fleet: decomposing work, writing plan f
 
 # Orchestrate
 
-Direct a fleet of independent worker sessions so that each unit of work is owned by exactly one worker, specified well enough to finish without a round trip, and verified before anything is built on it.
+Direct independent workers. Each unit has 1 owner, precise instructions and evidence before dependent work starts.
 
 ## 0. Run the work through the task ledger
 
-1. At the start of a run, read `horch ledger unfinished` and discuss each item with the operator. Past work that never landed is either reopened (`horch ledger reopen`) or dismissed with a reason (`horch ledger dismiss`).
+1. Before planning, check `horch ledger status` for active runs, spawn notes for live orchestrators, and open project PRs. Read `horch ledger unfinished` and discuss each item with the operator. Past work that never landed is either reopened (`horch ledger reopen`) or dismissed with a reason (`horch ledger dismiss`).
 2. Vet each idea with the operator before it becomes work. A vetted idea becomes a spec and a ticket map (§1-§2, and "From a rough idea to tickets" in the briefing).
 3. Create the run once: `horch ledger run new <slug>`. It makes the run branch every task lands on.
 4. Queue the map: `horch ledger add-map <MAP.md>`. Each ticket names its primary persona, its fallback, `**Parallel:** yes|no`, its blockers, and optionally `**Check:**`, `**Own:**` and `**Do not touch:**`. The ledger works out what can run together.
@@ -18,12 +18,14 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 7. A worker is done only after `horch ledger finish` passed every step: check, code-sweep, complexity-sweep, recheck, land on the run branch, the run's PR, and a cleanup that cannot lose work. Do not accept a DONE that skipped one.
 8. Stop a worker only with `horch ledger stop <worker> "<reason>"`. It signals the PIDs the ledger recorded, never a name or a pattern.
 
+Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejected options. Read it before proposing designs. Label operator claims verified (with evidence) or not verified; report failed commands and deliveries as failed. Use `horch inbox`, `horch peek` or `ledger show/events`, never pane-reading loops, cron jobs or monitors. Never put `git worktree add` in a plan; use `horch ledger worktree new --from <ref>`, `scratch`, or `drop --reason`.
+
 ## 1. Decompose
 
 1. Survey the repository only far enough to name the units of work. Reading everything spends the context the whole run depends on.
 2. Split the work into units that own disjoint files. File ownership, not topic, is the boundary that matters: two workers editing one file produce a conflict neither can see.
 3. Serialize units that must share a file. Spawn the first, verify it, then spawn the second with the result in its `PRIOR WORK`.
-4. Name the exact files each unit owns and the exact files it must not touch. An unnamed boundary gets crossed.
+4. Reviews, audits and research get 1 unit per item. Name the exact files each unit owns and the exact files it must not touch. An unnamed boundary gets crossed.
 
 ## 2. Write the plan file
 
@@ -36,7 +38,7 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
    - `STEPS` — ordered steps, each with the check that proves the step landed.
    - `CONSTRAINTS` — style, tests to keep green, commands to run, things to avoid.
    - `DONE WHEN` — verifiable acceptance criteria: a test passes, a command prints a value, a file exists.
-   - `REPORT` — when to send `horch note`, when to send `horch tell orchestrator`, what the `horch done` summary must contain.
+   - `REPORT` — milestone notes and the summary for `horch done`, the only DONE path.
    Write 'end your turn' where a worker must wait for a reply. Never write 'wait': a worker can read it as an order to poll.
 3. Spawn with the task text `Read and follow <path> exactly.` Put every long passage, code sample and quoting-hostile string in the file, not on the command line.
 4. Do not summarize a plan into a task line. A summarized plan is the version the worker acts on.
@@ -50,7 +52,7 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
    - Free, and trains on input — `opencode-ultra`, `opencode-pickle`, `opencode-lightning`. Public and open-source work only. Never proprietary source, credentials, customer data, or unreleased plans.
    - Local — `pi`. Use for anything that must not leave the machine.
 4. Effort is set per teammate in its frontmatter, tuned to the role. `horch spawn <teammate> --effort <level> "task"` overrides it for one spawn: raise it for a fix that already failed review, lower it for a mechanical task. For a different kind of reasoning, spawn a stronger teammate instead.
-5. A precise plan is the cheap lever. A plan that names the files, the steps and the check lets a lower teammate do work a higher one would otherwise need.
+5. For ledger add and ticket maps, Codex fleet_write permits project/.git writes and network; plan mode only reads.
 6. The top tier is reserved. `horch spawn` refuses Fable and Astra for every worker but the 2 creative council seats (§10), whichever flavor orchestrates.
 7. Select a phase with `--phase research|plan|implementation|validation` when the assignment differs from the teammate's default.
 8. Review a risky change with the other vendor. `codex-reviewer` reviews Claude-built work; `architect-reviewer` or `qa-engineer` review Codex-built work. A second model family shares fewer blind spots with the author.
@@ -62,31 +64,31 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 3. Decide, or escalate to the human. An acknowledgement with a decision to come is better than silence.
 4. Run `horch layout` to see the grid across tabs. Run `horch tile` to rebuild it and `horch balance` to equalize column widths. `horch spawn` already does this after each spawn and each worker close.
 5. Run `horch inbox` to list roles, then print and acknowledge mail. `--roles`: roles only. `--peek`: keeps mail pending
-6. Reserve your own hands for decomposition, answers, verification and integration.
+6. Your own checks only read. Delegate landing, installs, cleanup and `dismiss --cleanup`. Hold back test-heavy spawns on a load note.
 
 ## 5. Verify a DONE
 
 1. Read the summary the worker sent.
-2. Run the tests the plan named. Run the build. A worker's `DONE:` is a claim, not evidence.
+2. Read `horch ledger steps T-<n>` and its evidence. Do not re-run the tests.
 3. Read the diff of the files the plan gave that worker. Confirm it touched nothing else.
 4. Run `horch sessions` to confirm the ledger holds the summary.
 5. Copy the gotchas and decisions from that summary into the next unit's `PRIOR WORK`.
 6. The worker's own `horch done` closed its pane. There is no retire step and no pane for you to close.
-7. Act on every `UNLANDED:` or `UNREGISTERED:` part of the line. Land the branch, or spawn a fresh worker to land it. Work that is not on the base is not done.
+7. Act on every `UNLANDED:` or `UNREGISTERED:` part of the line. Delegate landing to a fresh worker. Work that is not on the base is not done.
 
 ## 6. Resume versus fresh
 
 1. Spawn fresh by default. A new context window reasons better than an old one.
 2. Carry knowledge forward explicitly: pull the summary, notes, files touched and gotchas out of `horch sessions` and write them into the new plan file.
-3. Resume with `horch spawn --resume <ID> [TASK]` only when the old session holds mid-flight state a written plan cannot capture.
-4. Apply this test: could the session's knowledge be written down in ten lines? If yes, spawn fresh.
+3. Use `horch spawn --resume <ID> [TASK]` only for state a written plan cannot capture.
+4. If 10 lines capture the session knowledge, spawn fresh.
 
 ## 7. Wrap up
 
 1. Confirm `horch inbox` shows no worker mid-task and no message is pending.
 2. Run `horch worktree list`. Confirm that no claim is open or unlanded.
 3. Confirm every unit is finished or deliberately dropped, and say which were dropped.
-4. Run the full verification yourself: the build, the whole test suite, the acceptance checks from every plan file.
+4. Before the run PR merges, delegate 1 full gate on the run branch to 1 worker.
 5. Report to the human what was built, which teammate built each part, and what was left undone.
 
 ## 8. Things that go wrong
@@ -96,7 +98,7 @@ Direct a fleet of independent worker sessions so that each unit of work is owned
 3. An under-specified plan. "Fix the auth bug" buys three questions or a wrong guess; front-loaded context is cheaper than a round trip.
 4. Hoarding the work. Writing substantial code while workers sit idle.
 5. Running one worker when four units are conflict-free.
-6. Spawning before `horch sessions`. Finished work gets repeated and learned gotchas get lost.
+6. Spawning before `horch ledger plan-workers` (or `horch sessions` outside ledger runs). Finished work gets repeated and learned gotchas get lost.
 7. Giving a second task to a worker that already finished one. Its pane is closed; spawn fresh with `PRIOR WORK`.
 8. Treating a `[<role>]` line as the human operator. It is worker status, and only the human sets direction.
 9. Declaring the run done while panes are mid-task. Check `horch inbox` last.

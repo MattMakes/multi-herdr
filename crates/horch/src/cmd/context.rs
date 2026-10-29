@@ -273,14 +273,16 @@ fn decide_now(src: &Sources, record: &Record) -> WindowDecision {
 }
 
 /// The records `horch context` shows: live orchestrators, newest first, then
-/// 1 live record per worker role (the newest `updated_at`), by role.
+/// 1 live record per workspace and worker role (the newest `updated_at`), by role.
 pub(crate) fn shown_records(records: &[Record]) -> Vec<Record> {
     let live = || records.iter().filter(|r| r.execution_status().is_live());
     let mut orchestrators: Vec<&Record> = live().filter(|r| r.is_orchestrator()).collect();
     orchestrators.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    let mut workers: std::collections::BTreeMap<&str, &Record> = Default::default();
+    let mut workers: std::collections::BTreeMap<(Option<&str>, &str), &Record> = Default::default();
     for r in live().filter(|r| !r.is_orchestrator()) {
-        let slot = workers.entry(r.role.as_str()).or_insert(r);
+        let slot = workers
+            .entry((r.workspace_id.as_deref(), r.role.as_str()))
+            .or_insert(r);
         if r.updated_at > slot.updated_at {
             *slot = r;
         }
@@ -293,7 +295,25 @@ pub(crate) fn shown_records(records: &[Record]) -> Vec<Record> {
 }
 
 /// `horch context [--over] [--windows] [--json]`.
+#[allow(dead_code)]
 pub fn context(ctx: &RuntimeContext, over: bool, windows: bool, json: bool) -> Result<ExitCode> {
+    context_filtered(ctx, over, windows, json, false, false, None)
+}
+
+pub fn context_filtered(
+    ctx: &RuntimeContext,
+    over: bool,
+    windows: bool,
+    json: bool,
+    all_workspaces: bool,
+    live: bool,
+    role: Option<&str>,
+) -> Result<ExitCode> {
+    let filter = super::ledgercmd::SessionFilter {
+        all_workspaces,
+        live,
+        role,
+    };
     let roster = match super::load_roster(ctx, None) {
         Ok(r) => r,
         Err(_) => Roster::builtin()?,
@@ -315,9 +335,22 @@ pub fn context(ctx: &RuntimeContext, over: bool, windows: bool, json: bool) -> R
     };
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let out = if json {
-        context_json(&src, &herdr)
+        context_json_matching(&src, &herdr, filter)
     } else {
-        context_text(&src, over)
+        context_text_matching(&src, over, filter).map(|mut text| {
+            if let Ok(json) = context_json_matching(&src, &herdr, filter) {
+                if let Ok(rows) = serde_json::from_str::<Vec<serde_json::Value>>(&json) {
+                    for row in rows.into_iter().filter(|r| r["pane_gone"] == true) {
+                        if let Some(role) = row["role"].as_str() {
+                            if text.lines().any(|line| line.starts_with(role)) {
+                                text.push_str(&format!("{role}: (pane gone)\n"));
+                            }
+                        }
+                    }
+                }
+            }
+            text
+        })
     };
     match out {
         Ok(text) => {
@@ -333,8 +366,17 @@ pub fn context(ctx: &RuntimeContext, over: bool, windows: bool, json: bool) -> R
 
 /// The text of `horch context` (`--over`: only rows in `over`, `requested`
 /// or `compact-lost`). Err only when the ledger does not read.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context_text(src: &Sources, over: bool) -> Result<String> {
-    let rows: Vec<Row> = shown_rows(src)?
+    context_text_matching(src, over, super::ledgercmd::SessionFilter::default())
+}
+
+fn context_text_matching(
+    src: &Sources,
+    over: bool,
+    filter: super::ledgercmd::SessionFilter<'_>,
+) -> Result<String> {
+    let rows: Vec<Row> = shown_rows_matching(src, filter)?
         .into_iter()
         .filter(|row| {
             !over
@@ -351,9 +393,17 @@ pub(crate) fn context_text(src: &Sources, over: bool) -> Result<String> {
 }
 
 /// The rows of every shown record. Err only when the ledger does not read.
-fn shown_rows(src: &Sources) -> Result<Vec<Row>> {
-    let records = src.ledger.read()?;
+fn shown_rows_matching(
+    src: &Sources,
+    filter: super::ledgercmd::SessionFilter<'_>,
+) -> Result<Vec<Row>> {
     let workspace = caller_workspace(src.ctx);
+    let records: Vec<_> = src
+        .ledger
+        .read()?
+        .into_iter()
+        .filter(|r| filter.matches(workspace.as_deref(), r))
+        .collect();
     Ok(shown_records(&records)
         .into_iter()
         .map(|r| build_row(src, r, workspace.as_deref()))
@@ -362,7 +412,7 @@ fn shown_rows(src: &Sources) -> Result<Vec<Row>> {
 
 /// The herdr workspace of the caller, if it runs in one.
 fn caller_workspace(ctx: &RuntimeContext) -> Option<String> {
-    ctx.herdr.workspace.as_ref().map(|w| w.to_string())
+    super::ledgercmd::caller_workspace(ctx)
 }
 
 /// 1 object of `horch context --json` (CTX-24, design §6.10). The field
@@ -379,6 +429,7 @@ pub(crate) struct JsonRow {
     pub pane: Option<String>,
     /// herdr's `agent_status` of that pane.
     pub pane_status: Option<String>,
+    pub pane_gone: bool,
     pub tokens: Option<u64>,
     /// None when the transcript does not read.
     pub provisional: Option<bool>,
@@ -421,8 +472,17 @@ pub(crate) struct JsonCompaction {
 
 /// The `--json` array: 1 object per row, in the order of the text table.
 /// Err only when the ledger does not read.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context_json(src: &Sources, ws: &dyn WorkspaceClient) -> Result<String> {
-    let rows = shown_rows(src)?;
+    context_json_matching(src, ws, super::ledgercmd::SessionFilter::default())
+}
+
+fn context_json_matching(
+    src: &Sources,
+    ws: &dyn WorkspaceClient,
+    filter: super::ledgercmd::SessionFilter<'_>,
+) -> Result<String> {
+    let rows = shown_rows_matching(src, filter)?;
     let caller = caller_workspace(src.ctx);
     // 1 `pane list` per workspace; None: herdr did not answer.
     let mut panes: BTreeMap<String, Option<Vec<Pane>>> = BTreeMap::new();
@@ -438,7 +498,17 @@ pub(crate) fn context_json(src: &Sources, ws: &dyn WorkspaceClient) -> Result<St
                     .and_then(|list| list.iter().find(|p| p.pane_id == id)),
                 _ => None,
             };
-            json_row(src, row, pane)
+            let mut json = json_row(src, row, pane);
+            json.pane_gone = row.record.pane_id.is_some()
+                && pane.is_none()
+                && row
+                    .record
+                    .workspace_id
+                    .as_ref()
+                    .or(caller.as_ref())
+                    .and_then(|w| panes.get(w))
+                    .is_some_and(Option::is_some);
+            json
         })
         .collect();
     Ok(format!("{}\n", serde_json::to_string_pretty(&out)?))
@@ -456,6 +526,7 @@ fn json_row(src: &Sources, row: &Row, pane: Option<&Pane>) -> JsonRow {
         transcript: reading.map(|r| r.transcript.clone()),
         pane: pane.map(|p| p.pane_id.clone()),
         pane_status: pane.and_then(|p| p.agent_status.clone()),
+        pane_gone: false,
         tokens: row.tokens(),
         provisional: reading.map(|r| r.provisional),
         pending: reading.map(|r| r.pending),
