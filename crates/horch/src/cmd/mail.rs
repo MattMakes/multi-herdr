@@ -7,27 +7,16 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result};
 use horch_core::messaging::channel;
 use horch_core::messaging::delivery;
-use horch_core::messaging::mail::{redelivery_due, redelivery_offset, Id, Mail};
+use horch_core::messaging::mail::{redelivery_due, redelivery_offset, Id, Mail, Message};
 use horch_core::messaging::mailbox::Mailbox;
-use horch_core::runtime::{process, RuntimeContext};
+use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
 
 const POLL: Duration = Duration::from_secs(5);
 const NO_ORCHESTRATOR_LIMIT: Duration = Duration::from_secs(10 * 60);
 
 pub fn start_courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
-    let Some(exe) = ctx.bins.current_exe.clone() else {
-        anyhow::bail!("the mail courier cannot start: the horch binary path is unknown");
-    };
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.args(["mail", "courier", "--workspace", workspace])
-        .env("HORCH_STATE_DIR", &ctx.paths.state_root)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    process::spawn_detached(&mut cmd)
-        .with_context(|| format!("starting the mail courier {}", exe.display()))?;
-    Ok(())
+    horch_core::messaging::mail::start_courier(ctx, workspace)
 }
 
 pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
@@ -56,28 +45,53 @@ pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     let poll = test_duration("HORCH_TEST_MAIL_POLL_MS", POLL);
     let no_orchestrator_limit =
         test_duration("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", NO_ORCHESTRATOR_LIMIT);
-    let mut attempts: HashMap<Id, (usize, Option<SystemTime>)> = HashMap::new();
+    let mut attempts: Attempts = HashMap::new();
     let mut no_orchestrator_since = None;
 
     loop {
         let pending = mail.pending()?;
-        if pending.is_empty() {
+        let role_mail = pending_role_mail(&mail)?;
+        if pending.is_empty() && role_mail.is_empty() {
             // A message enqueued while this courier was deciding to exit
             // found the lock held, so its own courier exited at once. Look
             // once more with the lock released, and take it back for it.
             let _ = lock.unlock();
-            if mail.pending()?.is_empty() || lock.try_lock().is_err() {
+            let still = !mail.pending()?.is_empty() || !pending_role_mail(&mail)?.is_empty();
+            if !still || lock.try_lock().is_err() {
                 return Ok(());
             }
             continue;
         }
         // A pane id file can outlive its pane: a pane herdr does not answer
-        // for is no orchestrator.
-        let pane = mailbox
-            .pane_for("orchestrator")
-            .and_then(|id| herdr.pane_get(&id).ok().map(|state| (id, state)));
-        let relay_live = pane.is_none() && channel::is_live(&socket);
-        if pane.is_none() && !relay_live {
+        // for is no target.
+        let open_pane = |role: &str| {
+            mailbox
+                .pane_for(role)
+                .and_then(|id| herdr.pane_get(&id).ok().map(|state| (id, state)))
+        };
+        // A worker pane gets its mail only when it is idle: no relay.
+        let mut reachable = false;
+        for (role, messages) in &role_mail {
+            let Some((id, state)) = open_pane(role) else {
+                continue;
+            };
+            reachable = true;
+            let idle = state.at_prompt();
+            redeliver_due(ctx, &mut attempts, messages, |_, line| {
+                idle && {
+                    let _ = delivery::send_line(&herdr, &id, line);
+                    true
+                }
+            });
+        }
+        let pane = if pending.is_empty() {
+            None
+        } else {
+            open_pane("orchestrator")
+        };
+        let relay_live = !pending.is_empty() && pane.is_none() && channel::is_live(&socket);
+        reachable |= pane.is_some() || relay_live;
+        if !reachable {
             let since = no_orchestrator_since.get_or_insert_with(Instant::now);
             if since.elapsed() >= no_orchestrator_limit {
                 return Ok(());
@@ -86,66 +100,95 @@ pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
             continue;
         }
         no_orchestrator_since = None;
+        if pane.is_none() && !relay_live {
+            std::thread::sleep(poll);
+            continue;
+        }
         if check_login(&herdr, &mailbox, &mail)? {
             std::thread::sleep(poll);
             continue;
         }
         let idle = pane.as_ref().is_some_and(|(_, state)| state.at_prompt());
-
-        for message in pending {
-            let next = attempts.entry(message.id.clone()).or_insert_with(|| {
-                let attempt = first_attempt_after(message.created_at, mail_now(ctx));
-                (attempt, due_at(message.created_at, attempt))
-            });
-            let now = mail_now(ctx);
-            let Some(due) = next.1 else {
-                continue;
-            };
-            if now < due {
-                continue;
-            }
-            // A held pane may miss hours of scheduled retries. Skip those slots
-            // rather than replaying them on consecutive courier polls.
-            let latest_due = if due_at(message.created_at, 6).is_some_and(|due| due <= now) {
-                first_attempt_after(message.created_at, now)
-            } else {
-                (1..=6)
-                    .rev()
-                    .find(|n| due_at(message.created_at, *n).is_some_and(|due| due <= now))
-                    .unwrap_or(1)
-            };
-            let attempt = next.0.max(latest_due);
-            let line = format!(
-                "{} (redelivery {attempt}: not acknowledged; run horch inbox)",
-                message.text
-            );
-            let attempted = if let Some((id, _)) = &pane {
+        redeliver_due(ctx, &mut attempts, &pending, |message, line| {
+            if let Some((id, _)) = &pane {
                 if idle {
-                    let _ = delivery::send_line(&herdr, id, &line);
+                    let _ = delivery::send_line(&herdr, id, line);
                     true
                 } else {
                     false
                 }
             } else if relay_live {
-                let _ = channel::send(&socket, &message.from, &line, channel::SEND_TIMEOUT);
+                let _ = channel::send(&socket, &message.from, line, channel::SEND_TIMEOUT);
                 true
             } else {
                 false
-            };
-            if attempted {
-                let following = attempt.saturating_add(1);
-                let gap = due_at(message.created_at, following)
-                    .zip(due_at(message.created_at, attempt))
-                    .and_then(|(after, before)| after.duration_since(before).ok());
-                // Anchor the next retry to this actual attempt, including failed
-                // pushes. A slow call or a suppressed pane cannot create a backlog.
-                *next = (
-                    following,
-                    gap.and_then(|gap| mail_now(ctx).checked_add(gap)),
-                );
             }
-        }
+        });
         std::thread::sleep(poll);
+    }
+}
+
+/// The pending mail of each worker role that has some.
+fn pending_role_mail(mail: &Mail) -> Result<Vec<(String, Vec<Message>)>> {
+    let mut out = Vec::new();
+    for (role, role_mail) in mail.roles()? {
+        let pending = role_mail.pending()?;
+        if !pending.is_empty() {
+            out.push((role, pending));
+        }
+    }
+    Ok(out)
+}
+
+type Attempts = HashMap<Id, (usize, Option<SystemTime>)>;
+
+/// Send each message whose redelivery is due with `send`, which returns
+/// whether it attempted the delivery, and schedule its next one.
+fn redeliver_due(
+    ctx: &RuntimeContext,
+    attempts: &mut Attempts,
+    messages: &[Message],
+    mut send: impl FnMut(&Message, &str) -> bool,
+) {
+    for message in messages {
+        let next = attempts.entry(message.id.clone()).or_insert_with(|| {
+            let attempt = first_attempt_after(message.created_at, mail_now(ctx));
+            (attempt, due_at(message.created_at, attempt))
+        });
+        let now = mail_now(ctx);
+        let Some(due) = next.1 else {
+            continue;
+        };
+        if now < due {
+            continue;
+        }
+        // A held pane may miss hours of scheduled retries. Skip those slots
+        // rather than replaying them on consecutive courier polls.
+        let latest_due = if due_at(message.created_at, 6).is_some_and(|due| due <= now) {
+            first_attempt_after(message.created_at, now)
+        } else {
+            (1..=6)
+                .rev()
+                .find(|n| due_at(message.created_at, *n).is_some_and(|due| due <= now))
+                .unwrap_or(1)
+        };
+        let attempt = next.0.max(latest_due);
+        let line = format!(
+            "{} (redelivery {attempt}: not acknowledged; run horch inbox)",
+            message.text
+        );
+        if send(message, &line) {
+            let following = attempt.saturating_add(1);
+            let gap = due_at(message.created_at, following)
+                .zip(due_at(message.created_at, attempt))
+                .and_then(|(after, before)| after.duration_since(before).ok());
+            // Anchor the next retry to this actual attempt, including failed
+            // pushes. A slow call or a suppressed pane cannot create a backlog.
+            *next = (
+                following,
+                gap.and_then(|gap| mail_now(ctx).checked_add(gap)),
+            );
+        }
     }
 }
 

@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use horch_core::execution::lifecycle::ReportStatus;
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, land};
@@ -530,6 +531,16 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         }
         LedgerCommand::Finish { json: as_json } => {
             let wid = worker_id(ctx)?;
+            // finish answers a reviews-in notice: its mail and wait end.
+            if workers::waiting(store.conn(), &wid)?
+                .iter()
+                .any(|w| w.kind == REVIEWS_WAIT && w.task_ids.is_empty())
+            {
+                workers::clear_wait(store.conn(), &wid, REVIEWS_WAIT)?;
+            }
+            if let Some(role) = workers::get(store.conn(), &wid)?.role {
+                super::messaging::ack_role_mail(ctx, &role);
+            }
             let tools = tools(ctx);
             let report = finish::finish(&mut store, &tools, &wid)?;
             if !report.queued_reviews.is_empty() {
@@ -1386,10 +1397,21 @@ pub fn done_cmd(
         if let Some((parent, Some(role))) = &c.reviews_in_for {
             let line =
                 format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
-            if let Err(e) = super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
+            // The author waits for this line until it runs finish (#177).
+            if let Err(e) = hold_for_finish(&store, &c.task_id) {
+                eprintln!("horch ledger: could not record the wait of {role}: {e:#}");
+            }
+            let told = match super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
+                Ok(ReportStatus::Delivered) => Ok(()),
+                Ok(ReportStatus::Queued(cause)) => Err(anyhow::anyhow!(
+                    "{cause}; the courier types it when the pane is idle"
+                )),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = told {
                 eprintln!("horch ledger: could not tell {role}: {e:#}");
-                // A tell to a worker is not durable, and a retried done skips
-                // it, so the orchestrator gets it as durable mail instead.
+                // A retried done skips the tell, so the orchestrator gets it
+                // as durable mail too.
                 super::taskledger_wake::wake(
                     ctx,
                     &store,
@@ -1417,6 +1439,46 @@ pub fn done_cmd(
         super::messaging::done(ctx, summary, unlanded)?;
     }
     Ok(())
+}
+
+/// The wait kind of an author on its reviews. With no task ids, the
+/// reviews are in, and it holds until the author runs finish.
+const REVIEWS_WAIT: &str = "reviewers";
+
+/// After the last review of a task: the author keeps its reviewers wait
+/// (#70), with no task ids, until it runs `horch ledger finish`, up to the
+/// deadline it had.
+fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
+    let Some(parent) = tasks::get(store.conn(), review_task_id)?.parent_task_id else {
+        return Ok(());
+    };
+    let Some(author) = tasks::get(store.conn(), &parent)?.current_worker_id else {
+        return Ok(());
+    };
+    // Read the row directly: `workers::waiting` ends a reviewers wait whose
+    // reviews are done, which they all are now.
+    let deadline: Option<String> = store
+        .conn()
+        .query_row(
+            "SELECT deadline FROM worker_waits WHERE worker_id = ?1 AND kind = 'reviewers'",
+            [&author],
+            |r| r.get(0),
+        )
+        .ok();
+    let left = deadline
+        .as_deref()
+        .and_then(horch_core::clock::parse)
+        .map(|d| (d - horch_core::clock::now()).num_seconds())
+        .filter(|s| *s > 0)
+        .unwrap_or(7 * 24 * 3600);
+    workers::set_wait(
+        store.conn(),
+        &author,
+        REVIEWS_WAIT,
+        "the reviews are in; waiting for horch ledger finish",
+        &[],
+        left,
+    )
 }
 
 /// The slug of this project's active task-ledger run, if it has one. Never

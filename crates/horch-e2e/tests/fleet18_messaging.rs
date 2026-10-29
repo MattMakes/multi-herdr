@@ -1738,3 +1738,82 @@ fn g60_optional_question_projection_error_does_not_abort_courier_startup() {
         h.state.join("mail/w1/courier.lock").exists().then_some(())
     });
 }
+
+/// #177: an author whose reviews are in keeps its reviewers wait, with no
+/// task ids, until it runs finish. The watchdog does not reap it before the
+/// wait's deadline, and reaps it normally after.
+#[test]
+fn reviews_in_wait_holds_until_its_deadline_then_the_author_is_reaped() {
+    use horch_core::taskledger::workers;
+    let (h, store, run, worker, _agent) = pinned_worker("t177-reviews-in-wait");
+    workers::set_wait(
+        store.conn(),
+        &worker,
+        "reviewers",
+        "the reviews are in; waiting for horch ledger finish",
+        &[],
+        7 * 86400,
+    )
+    .unwrap();
+    pin_wait(&store, &worker, "reviewers", "2030-01-01T02:00:00Z");
+    for at in [
+        "2030-01-01T00:10:00Z",
+        "2030-01-01T00:20:00Z",
+        "2030-01-01T00:30:00Z",
+        "2030-01-01T01:50:00Z",
+    ] {
+        let c = pinned_check(&h, &run, at);
+        assert_eq!(c["verdict"], "progress", "{c}");
+    }
+    for (at, want) in [
+        ("2030-01-01T02:10:00Z", "no_progress"),
+        ("2030-01-01T02:20:00Z", "no_progress"),
+        ("2030-01-01T02:30:00Z", "dead"),
+    ] {
+        assert_eq!(pinned_check(&h, &run, at)["verdict"], want);
+    }
+    assert_eq!(
+        workers::get(store.conn(), &worker).unwrap().status,
+        "incomplete"
+    );
+}
+
+/// #177: a watchdog pass whose orchestrator pane stays `unknown` (an agent
+/// herdr has not classified) ends within the push budget of #67, and its
+/// stall wake waits as orchestrator mail.
+#[test]
+fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
+    let (mut h, _store, run, _worker, _agent) = pinned_worker("t177-unknown-orchestrator");
+    h.set("HORCH_NO_WAKE", "0");
+    fake(&h, &["workspace", "create", "--label", "orchestrator"]);
+    fake(
+        &h,
+        &[
+            "pane",
+            "test-state",
+            "w1:p1",
+            "--status",
+            "unknown",
+            "--agent",
+            "claude",
+        ],
+    );
+    let mb = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mb).unwrap();
+    std::fs::write(mb.join("orchestrator.id"), "w1:p1").unwrap();
+
+    let began = std::time::Instant::now();
+    let c = pinned_check(&h, &run, "2030-01-01T00:10:00Z");
+    let took = began.elapsed();
+
+    assert_eq!(c["verdict"], "no_progress", "{c}");
+    // The budget is 20 s; without it the readiness wait alone is 120 s.
+    assert!(took < Duration::from_secs(60), "the pass took {took:?}");
+    let pending = Mail::under(&h.state, "w1").pending().unwrap();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert!(
+        pending[0].text.contains("worker-1 on") && pending[0].text.contains("shows no progress"),
+        "{pending:?}"
+    );
+    assert!(h.run(&["inbox"]).status.success());
+}

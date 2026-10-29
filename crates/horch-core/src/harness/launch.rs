@@ -21,6 +21,7 @@ use crate::execution::legacy::LedgerWindow;
 use crate::execution::records::Ledger;
 use crate::execution::SessionMode;
 use crate::messaging::delivery::{self, Readiness, Timing};
+use crate::messaging::mail;
 use crate::messaging::mailbox::Mailbox;
 use crate::roster::{ExecRule, HarnessDefault, Teammate};
 use crate::runtime::bins::{host_tool_bin, BLENDER_APP};
@@ -929,8 +930,16 @@ fn start_typed_prompt(
     let role = role.to_string();
     let prompt = prompt.to_string();
     let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
+    let workspace = target.map(|t| t.mailbox.workspace_id().to_string());
+    let ctx = ctx.clone();
     std::thread::spawn(move || {
         let ledger = ledger.as_ref().map(|(l, id)| (l, id.as_str()));
+        let queue = |line: &str| -> Result<()> {
+            let workspace = workspace
+                .as_deref()
+                .context("the workspace of this worker is unknown")?;
+            mail::queue_notice(&ctx, workspace, "orchestrator", line).map(|_| ())
+        };
         type_resumed_prompt(
             &herdr,
             pane.as_deref(),
@@ -938,6 +947,7 @@ fn start_typed_prompt(
             &role,
             ledger,
             orchestrator.as_deref(),
+            Some(&queue),
             &Readiness::DEFAULT,
             &Timing::DEFAULT,
         );
@@ -947,7 +957,9 @@ fn start_typed_prompt(
 /// Type `prompt` into `pane` once its agent is idle. When that fails, the
 /// worker's record gets a note that says why, and the orchestrator pane, if
 /// one is registered, gets a `BLOCKED` line: a resumed pane never sits idle
-/// with no task and no word. True when the prompt was typed.
+/// with no task and no word. `queue` first queues that line as durable
+/// orchestrator mail (#177), so a failed push still reaches it. True when
+/// the prompt was typed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn type_resumed_prompt(
     ws: &dyn WorkspaceClient,
@@ -956,6 +968,7 @@ pub(crate) fn type_resumed_prompt(
     role: &str,
     ledger: Option<(&Ledger, &str)>,
     orchestrator: Option<&str>,
+    queue: Option<&dyn Fn(&str) -> Result<()>>,
     wait: &Readiness,
     timing: &Timing,
 ) -> bool {
@@ -975,11 +988,16 @@ pub(crate) fn type_resumed_prompt(
             eprintln!("horch worker[{role}]: recording the failure failed: {e:#}");
         }
     }
+    let line = format!(
+        "[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. \
+         Send it again with horch assign {role} \"<task>\"."
+    );
+    if let Some(queue) = queue {
+        if let Err(e) = queue(&line) {
+            eprintln!("horch worker[{role}]: queueing the BLOCKED line failed: {e:#}");
+        }
+    }
     if let Some(orchestrator) = orchestrator {
-        let line = format!(
-            "[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. \
-             Send it again with horch assign {role} \"<task>\"."
-        );
         if let Err(e) = delivery::send_line_with(ws, orchestrator, &line, timing) {
             eprintln!("horch worker[{role}]: telling the orchestrator failed: {e:#}");
         }
@@ -2083,6 +2101,7 @@ mod tests {
             "pickle-1",
             Some((&ledger, "rec-1")),
             Some(&orchestrator),
+            None,
             &wait,
             &fast,
         );
@@ -2100,6 +2119,37 @@ mod tests {
         assert_eq!(prompts[0].args[0], orchestrator);
         assert!(prompts[0].args[1].starts_with("[pickle-1] BLOCKED: "));
 
+        // #177: with no orchestrator pane to type into, the BLOCKED line
+        // still waits as orchestrator mail.
+        let state = tempfile::tempdir().unwrap();
+        let mail = mail::Mail::under(state.path(), "w1");
+        let queue = |line: &str| mail.enqueue("horch", line).map(|_| ());
+        let ws = FakeWorkspace::new();
+        let worker = ws
+            .workspace_create("fleet", None, false)
+            .unwrap()
+            .root_pane_id;
+        ws.set_agent_states(&worker, &[(Some("opencode"), Some("unknown"))]);
+        assert!(!type_resumed_prompt(
+            &ws,
+            Some(&worker),
+            "TASK",
+            "pickle-1",
+            None,
+            None,
+            Some(&queue),
+            &wait,
+            &fast,
+        ));
+        let pending = mail.pending().unwrap();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(
+            pending[0]
+                .text
+                .starts_with("[pickle-1] BLOCKED: My resumed task did not reach my pane. Reason: "),
+            "{pending:?}"
+        );
+
         // An idle agent gets the prompt and nothing is recorded.
         let ws = FakeWorkspace::new();
         let worker = ws
@@ -2112,6 +2162,7 @@ mod tests {
             Some(&worker),
             "TASK",
             "pickle-1",
+            None,
             None,
             None,
             &wait,

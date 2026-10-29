@@ -751,11 +751,15 @@ fn refuse_child(
 
 /// Send 1 untagged line to the mailbox's `orchestrator` pane. Not
 /// `messaging::tell`: that would add a `[<role>]` tag.
+/// Queue `line` as durable orchestrator mail first (#177): the courier
+/// delivers it when no orchestrator pane is registered yet or the push
+/// fails. Then type it, as before.
 fn report(env: &Env, line: &str) -> Result<()> {
+    horch_core::messaging::mail::queue_notice(env.src.ctx, env.workspace(), "orchestrator", line)?;
     let pane = env
         .mailbox
         .pane_for("orchestrator")
-        .context("no orchestrator is registered in this workspace")?;
+        .context("no orchestrator is registered in this workspace; the line is queued as mail")?;
     delivery::send_line_when_ready(
         env.ws,
         &pane,
@@ -1507,6 +1511,32 @@ mod tests {
         assert_eq!(second, Outcome::code(0));
         assert_eq!(f.w.events("r-1", EVENT_FAILED).len(), 1);
         assert_eq!(f.typed(&orch).len(), 1);
+    }
+
+    /// #177: a job that fails with no orchestrator pane registered leaves
+    /// its `failed` line as pending orchestrator mail.
+    #[test]
+    fn a_failed_job_with_no_orchestrator_leaves_the_failed_line_as_mail() {
+        let f = Fleet::new();
+        f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        let path = f.handoff(&f.w.project(), "sonnet-1");
+        set_mtime(&path, Duration::from_secs(90 * 60));
+
+        let o = f.run("sonnet-1", |a| a.foreground = true);
+        assert_eq!(o.code, EXIT_REPORTED, "{o:?}");
+
+        let pending = horch_core::messaging::mail::Mail::under(&f.w.ctx.paths.state_root, "w1")
+            .pending()
+            .unwrap();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(pending[0].from, "horch");
+        assert!(
+            pending[0].text.starts_with(
+                "[horch] BLOCKED: Compaction of sonnet-1 failed at step start: refused: handoff "
+            ),
+            "{pending:?}"
+        );
     }
 
     /// CTX-16: a harness that is not in `in_place` takes the fresh route,

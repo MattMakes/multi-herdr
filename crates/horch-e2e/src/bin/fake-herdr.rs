@@ -33,6 +33,9 @@
 //! - `fail_typing`: `agent prompt` and `pane send-text` exit 1 with a message
 //!   on stderr, as a pane that is gone or a sandboxed caller gets. Nothing is
 //!   typed.
+//! - `fail_first_typing`: the first `agent prompt` into each pane exits 1,
+//!   and so does a `pane send-text` that follows it into that pane. Later
+//!   typing into the pane succeeds, so a retry gets through.
 //! - `mail_drop`: the first non-redelivery agent prompt succeeds but is
 //!   dropped, then the pane reports an idle agent for the courier.
 //!
@@ -385,6 +388,20 @@ fn run(call: &mut Call) -> i32 {
             if scenario_has("fail_typing") =>
         {
             eprintln!("fake-herdr: typing into {pane} refused (scenario fail_typing)");
+            1
+        }
+        ["agent", "prompt", pane, ..] | ["pane", "send-text", pane, ..]
+            if scenario_has("fail_first_typing")
+                && match state["typing_failures"][*pane].as_u64().unwrap_or(0) {
+                    0 => args[0] == "agent",
+                    1 => args[0] == "pane",
+                    _ => false,
+                } =>
+        {
+            let failures = state["typing_failures"][*pane].as_u64().unwrap_or(0);
+            state["typing_failures"][*pane] = json!(failures + 1);
+            save(&state);
+            eprintln!("fake-herdr: typing into {pane} refused once (scenario fail_first_typing)");
             1
         }
         ["agent", "prompt", pane, text]

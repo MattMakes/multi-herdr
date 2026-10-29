@@ -1,4 +1,5 @@
-//! Durable worker-to-orchestrator mail.
+//! Durable mail: worker-to-orchestrator, and horch's own notices to a
+//! worker role (`roles/<role>/` under the workspace's mail dir).
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -35,8 +36,50 @@ impl Mail {
         }
     }
 
+    /// Mail to a worker role: the reviews-in notice. The workspace's
+    /// courier delivers it too.
+    pub fn to_role(state_root: &Path, workspace: &str, role: &str) -> Self {
+        Self {
+            dir: Self::under(state_root, workspace)
+                .dir
+                .join("roles")
+                .join(file_safe(role)),
+        }
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// The worker roles that have a mail dir under this workspace mail.
+    pub fn roles(&self) -> Result<Vec<(String, Mail)>> {
+        let dir = self.dir.join("roles");
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
+        };
+        let mut roles = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Some(role) = entry.file_name().to_str() {
+                roles.push((role.to_string(), Mail { dir: entry.path() }));
+            }
+        }
+        roles.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(roles)
+    }
+
+    /// Acknowledge every pending message. Returns how many there were.
+    pub fn ack_all(&self) -> Result<usize> {
+        let pending = self.pending()?;
+        for message in &pending {
+            self.ack(&message.id)?;
+        }
+        Ok(pending.len())
     }
 
     pub fn enqueue(&self, from: &str, text: &str) -> Result<Id> {
@@ -309,6 +352,44 @@ impl Mail {
     }
 }
 
+/// Start the workspace's detached mail courier (`horch mail courier`). It
+/// exits at once when another courier holds the lock.
+pub fn start_courier(ctx: &crate::runtime::RuntimeContext, workspace: &str) -> Result<()> {
+    let Some(exe) = ctx.bins.current_exe.clone() else {
+        bail!("the mail courier cannot start: the horch binary path is unknown");
+    };
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(["mail", "courier", "--workspace", workspace])
+        .env("HORCH_STATE_DIR", &ctx.paths.state_root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    crate::runtime::process::spawn_detached(&mut cmd)
+        .with_context(|| format!("starting the mail courier {}", exe.display()))?;
+    Ok(())
+}
+
+/// A horch notice that ends a wait: queue it as durable mail from `horch`
+/// to `role`, and start the courier, which redelivers it until it is
+/// acknowledged. A courier that cannot start is printed: the mail stays.
+pub fn queue_notice(
+    ctx: &crate::runtime::RuntimeContext,
+    workspace: &str,
+    role: &str,
+    line: &str,
+) -> Result<Id> {
+    let mail = if role == "orchestrator" {
+        Mail::under(&ctx.paths.state_root, workspace)
+    } else {
+        Mail::to_role(&ctx.paths.state_root, workspace, role)
+    };
+    let id = mail.enqueue("horch", line)?;
+    if let Err(error) = start_courier(ctx, workspace) {
+        eprintln!("horch: {error:#}; the notice stays queued");
+    }
+    Ok(id)
+}
+
 /// Early retries: 30s, 60s, 120s, 240s, 300s, 300s; then every five minutes.
 const REDELIVERY_GAPS: [u64; 6] = [30, 60, 120, 240, 300, 300];
 
@@ -513,6 +594,49 @@ mod tests {
         let pending = mail.pending().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].text, "message");
+    }
+
+    #[test]
+    fn role_mail_is_separate_from_orchestrator_mail_and_listed_by_role() {
+        let root = tempfile::tempdir().unwrap();
+        let orchestrator = Mail::under(root.path(), "w1");
+        let worker = Mail::to_role(root.path(), "w1", "opus-1");
+        orchestrator.enqueue("opus-1", "report").unwrap();
+        worker.enqueue("horch", "reviews in").unwrap();
+        worker.enqueue("horch", "reviews in again").unwrap();
+
+        assert_eq!(orchestrator.pending().unwrap().len(), 1);
+        let roles = orchestrator.roles().unwrap();
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].0, "opus-1");
+        assert_eq!(roles[0].1.pending().unwrap().len(), 2);
+
+        assert_eq!(worker.ack_all().unwrap(), 2);
+        assert!(worker.pending().unwrap().is_empty());
+        assert_eq!(orchestrator.pending().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn queue_notice_leaves_pending_mail_when_no_courier_can_start() {
+        use crate::runtime::{MapEnv, RuntimeContext};
+        let root = tempfile::tempdir().unwrap();
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new("/").with("HORCH_STATE_DIR", root.path().to_str().unwrap()),
+        )
+        .unwrap();
+        assert!(ctx.bins.current_exe.is_none());
+
+        queue_notice(&ctx, "w1", "orchestrator", "[horch] BLOCKED: x").unwrap();
+        queue_notice(&ctx, "w1", "opus-1", "[horch] NOTE: y").unwrap();
+
+        let orchestrator = Mail::under(root.path(), "w1").pending().unwrap();
+        assert_eq!(orchestrator.len(), 1);
+        assert_eq!(orchestrator[0].text, "[horch] BLOCKED: x");
+        assert_eq!(orchestrator[0].from, "horch");
+        let worker = Mail::to_role(root.path(), "w1", "opus-1")
+            .pending()
+            .unwrap();
+        assert_eq!(worker[0].text, "[horch] NOTE: y");
     }
 
     #[test]
