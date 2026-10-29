@@ -1442,10 +1442,25 @@ fn g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadlin
             String::from_utf8_lossy(&done.stderr)
         );
     }
+    // #177: the reviews are in, and the author has not run finish. It keeps
+    // waiting, with the original deadline, and is not reaped before it.
+    let waits = workers::waiting(store.conn(), &worker).unwrap();
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!(waits[0].kind, "reviewers");
+    assert!(waits[0].task_ids.is_empty(), "{waits:?}");
+    assert_eq!(waits[0].deadline, "2030-01-08T00:00:00Z");
+    for at in [
+        "2030-01-01T01:10:00Z",
+        "2030-01-01T01:20:00Z",
+        "2030-01-01T01:30:00Z",
+        "2030-01-07T23:50:00Z",
+    ] {
+        assert_eq!(pinned_check(&h, &run, at)["verdict"], "progress");
+    }
     for (at, want) in [
-        ("2030-01-01T01:10:00Z", "no_progress"),
-        ("2030-01-01T01:20:00Z", "no_progress"),
-        ("2030-01-01T01:30:00Z", "dead"),
+        ("2030-01-08T00:10:00Z", "no_progress"),
+        ("2030-01-08T00:20:00Z", "no_progress"),
+        ("2030-01-08T00:30:00Z", "dead"),
     ] {
         assert_eq!(pinned_check(&h, &run, at)["verdict"], want);
     }
@@ -1737,45 +1752,6 @@ fn g60_optional_question_projection_error_does_not_abort_courier_startup() {
     horch_e2e::harness::wait_for("courier startup after projection error", || {
         h.state.join("mail/w1/courier.lock").exists().then_some(())
     });
-}
-
-/// #177: an author whose reviews are in keeps its reviewers wait, with no
-/// task ids, until it runs finish. The watchdog does not reap it before the
-/// wait's deadline, and reaps it normally after.
-#[test]
-fn reviews_in_wait_holds_until_its_deadline_then_the_author_is_reaped() {
-    use horch_core::taskledger::workers;
-    let (h, store, run, worker, _agent) = pinned_worker("t177-reviews-in-wait");
-    workers::set_wait(
-        store.conn(),
-        &worker,
-        "reviewers",
-        "the reviews are in; waiting for horch ledger finish",
-        &[],
-        7 * 86400,
-    )
-    .unwrap();
-    pin_wait(&store, &worker, "reviewers", "2030-01-01T02:00:00Z");
-    for at in [
-        "2030-01-01T00:10:00Z",
-        "2030-01-01T00:20:00Z",
-        "2030-01-01T00:30:00Z",
-        "2030-01-01T01:50:00Z",
-    ] {
-        let c = pinned_check(&h, &run, at);
-        assert_eq!(c["verdict"], "progress", "{c}");
-    }
-    for (at, want) in [
-        ("2030-01-01T02:10:00Z", "no_progress"),
-        ("2030-01-01T02:20:00Z", "no_progress"),
-        ("2030-01-01T02:30:00Z", "dead"),
-    ] {
-        assert_eq!(pinned_check(&h, &run, at)["verdict"], want);
-    }
-    assert_eq!(
-        workers::get(store.conn(), &worker).unwrap().status,
-        "incomplete"
-    );
 }
 
 /// #177: a watchdog pass whose orchestrator pane stays `unknown` (an agent
