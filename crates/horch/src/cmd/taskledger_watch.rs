@@ -122,6 +122,16 @@ fn pass(
                     c.note
                 ),
             ),
+            "suspect" => taskledger_wake::wake(
+                ctx,
+                store,
+                run,
+                &format!(
+                    "NOTE: {who} on {on} may be stuck in pane {}: {}. The watchdog reaps it at the next check unless something else moves.",
+                    c.pane_id.as_deref().unwrap_or("unknown"),
+                    c.note
+                ),
+            ),
             "progress" | "proxy_checkin" if c.changed => {
                 // Back to normal after a stall: nothing to do, no wake.
             }

@@ -12,8 +12,14 @@
 //! 4. Suspect: the timer ran less than the clock (10m, then 15m, 10 min
 //!    apart: it stopped about 5 min ago). Verified at once: herdr still
 //!    showing `working` makes it a proxy checkin; else `no_progress`.
-//! 5. Nothing moved: `no_progress`, and 1 more stall round. At the run's
+//! 5. Nothing else moved, but herdr shows `working` (#203): a proxy
+//!    checkin, at most `2 * stall_rounds` checks in a row. The next one is
+//!    `suspect` (1 wake with the pane), and the one after it is `dead`.
+//! 6. Nothing moved: `no_progress`, and 1 more stall round. At the run's
 //!    `stall_rounds` the worker is `dead`.
+//!
+//! A note names the signals the watchdog could not read ("no timer format
+//! for harness pi; no transcript"), so `ledger show` explains a reap.
 //!
 //! This module decides and records; the caller reaps and wakes.
 
@@ -88,14 +94,92 @@ pub struct Checked {
     pub changed: bool,
     /// The first `no_progress` after progress: ask the worker for an update.
     pub first_stall: bool,
+    /// The worker's herdr pane, for a `suspect` wake.
+    pub pane_id: Option<String>,
+}
+
+/// The note prefix of a check that only herdr's `working` status kept alive.
+const HERDR_ONLY: &str = "herdr shows working";
+
+/// The signals the watchdog could not read for `w`, for the check note.
+fn missing_signals(w: &Worker, o: &Observation, timer_s: Option<i64>) -> String {
+    let mut out = Vec::new();
+    match w.harness.as_deref() {
+        Some(h) if timer::Agent::of_harness(h).is_none() => {
+            out.push(format!("no timer format for harness {h}"))
+        }
+        _ if timer_s.is_none() => out.push("no running timer".to_string()),
+        _ => {}
+    }
+    if o.transcript_bytes.is_none() {
+        out.push("no transcript".to_string());
+    }
+    if out.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", out.join("; "))
+    }
+}
+
+/// How many checks in a row, up to the last, only herdr's `working` status
+/// kept alive.
+fn herdr_only_streak(conn: &Connection, worker_id: &str, cap: i64) -> Result<i64> {
+    let mut stmt = conn
+        .prepare("SELECT note FROM checks WHERE worker_id = ?1 ORDER BY check_id DESC LIMIT ?2")?;
+    let notes = stmt
+        .query_map(params![worker_id, cap + 1], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(notes
+        .iter()
+        .take_while(|n| n.starts_with(HERDR_ONLY))
+        .count() as i64)
+}
+
+/// Nothing but herdr's `working` status moved: a proxy checkin up to the
+/// run's cap of `2 * stall_rounds` checks, then `suspect` once, then `dead`.
+fn herdr_fallback(
+    conn: &Connection,
+    w: &Worker,
+    run: &Run,
+    prev_verdict: Option<&str>,
+    elapsed: i64,
+    missing: &str,
+) -> Result<(Verdict, String, Option<ProgressSource>)> {
+    let cap = 2 * run.stall_rounds;
+    let streak = herdr_only_streak(conn, &w.worker_id, cap)?;
+    Ok(
+        if streak > 0 && prev_verdict == Some(Verdict::Suspect.as_str()) {
+            (
+                Verdict::Dead,
+                format!(
+                    "{HERDR_ONLY}, but nothing else moved for {} checks in a row{missing}",
+                    streak + 1
+                ),
+                None,
+            )
+        } else if streak >= cap {
+            (
+                Verdict::Suspect,
+                format!(
+                "{HERDR_ONLY}, but nothing else moved for {cap} checks in a row{missing}; pane {}",
+                w.pane_id.as_deref().unwrap_or("unknown")
+            ),
+                None,
+            )
+        } else {
+            (
+                Verdict::ProxyCheckin,
+                format!("{HERDR_ONLY}, and nothing else moved in {elapsed}s{missing}"),
+                Some(ProgressSource::HerdrState),
+            )
+        },
+    )
 }
 
 fn timer_agent(harness: Option<&str>) -> timer::Agent {
-    match harness {
-        Some("codex") => timer::Agent::Codex,
-        Some("claude") => timer::Agent::Claude,
-        _ => timer::Agent::Any,
-    }
+    harness
+        .and_then(timer::Agent::of_harness)
+        .unwrap_or(timer::Agent::Any)
 }
 
 /// Check every due working worker of `run`. `force` checks every one now,
@@ -176,6 +260,7 @@ fn check_run_at(
             _ => false,
         };
         let timer_short = timer_delta.is_some_and(|d| d < elapsed - tol);
+        let missing = missing_signals(&w, &o, timer_s);
         let (mut verdict, mut note, source) = if !o.agent_alive {
             (Verdict::Dead, "the agent process is gone".to_string(), None)
         } else if !waits.is_empty() {
@@ -238,11 +323,20 @@ fn check_run_at(
                 ),
                 None,
             )
+        } else if o.herdr_status.as_deref() == Some("working") {
+            herdr_fallback(
+                store.conn(),
+                &w,
+                run,
+                p.as_ref().map(|p| p.verdict.as_str()),
+                elapsed,
+                &missing,
+            )?
         } else {
             (
                 Verdict::NoProgress,
                 format!(
-                    "no ledger call, no transcript growth, no state change, no running timer in {elapsed}s"
+                    "no ledger call, no transcript growth, no state change, no running timer in {elapsed}s{missing}"
                 ),
                 None,
             )
@@ -313,6 +407,7 @@ fn check_run_at(
             first_stall: verdict == Verdict::NoProgress && round == 1,
             note,
             changed,
+            pane_id: w.pane_id.clone(),
         });
     }
     Ok(out)
@@ -530,6 +625,80 @@ mod tests {
                 want
             );
         }
+    }
+
+    #[test]
+    fn herdr_working_with_no_timer_and_no_transcript_is_a_proxy_checkin() {
+        let (_d, mut s, run, w) = setup();
+        let busy = || live(None, "working");
+        let obs = Script(RefCell::new(vec![busy(), busy(), busy()]));
+        for _ in 0..3 {
+            pass_time(&s, &w, 600);
+            let r = check_run(&mut s, &run, &obs, false).unwrap();
+            assert_eq!(r[0].verdict, "proxy_checkin", "{r:?}");
+            assert!(r[0].note.contains("herdr shows working"), "{}", r[0].note);
+            assert!(r[0].note.contains("no transcript"), "{}", r[0].note);
+        }
+        let worker = workers::get(s.conn(), &w).unwrap();
+        assert_eq!(worker.status, "working");
+        assert_eq!(worker.stall_rounds, 0);
+        assert_eq!(worker.last_progress_source.as_deref(), Some("herdr_state"));
+    }
+
+    #[test]
+    fn herdr_working_past_the_cap_is_one_suspect_then_dead() {
+        let (_d, mut s, run, w) = setup();
+        // The run keeps the default 3 stall rounds: the cap is 6 checks.
+        assert_eq!(run.stall_rounds, 3);
+        let busy = || live(None, "working");
+        let obs = Script(RefCell::new((0..8).map(|_| busy()).collect()));
+        let mut got = Vec::new();
+        for _ in 0..8 {
+            pass_time(&s, &w, 600);
+            got.push(check_run(&mut s, &run, &obs, false).unwrap().remove(0));
+        }
+        let verdicts: Vec<&str> = got.iter().map(|c| c.verdict.as_str()).collect();
+        assert_eq!(
+            verdicts,
+            [
+                "proxy_checkin",
+                "proxy_checkin",
+                "proxy_checkin",
+                "proxy_checkin",
+                "proxy_checkin",
+                "proxy_checkin",
+                "suspect",
+                "dead"
+            ]
+        );
+        assert!(got[6].changed, "the suspect check is a change: 1 wake");
+        assert!(got[6].note.contains("6 checks"), "{}", got[6].note);
+        assert!(
+            got[7].note.contains("herdr shows working"),
+            "{}",
+            got[7].note
+        );
+    }
+
+    #[test]
+    fn a_harness_with_no_timer_format_is_named_in_the_note() {
+        let (_d, mut s, run, w) = setup();
+        s.conn()
+            .execute(
+                "UPDATE workers SET harness = 'pi' WHERE worker_id = ?1",
+                [&w],
+            )
+            .unwrap();
+        pass_time(&s, &w, 600);
+        let obs = Script(RefCell::new(vec![live(None, "idle")]));
+        let r = check_run(&mut s, &run, &obs, false).unwrap();
+        assert_eq!(r[0].verdict, "no_progress");
+        assert!(
+            r[0].note
+                .contains("no timer format for harness pi; no transcript"),
+            "{}",
+            r[0].note
+        );
     }
 
     #[test]

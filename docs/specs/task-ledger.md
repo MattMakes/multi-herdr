@@ -432,11 +432,25 @@ courier) checks each `working` worker every `check_every_s` and writes 1
    watchdog verifies at once: PID alive, herdr status, transcript mtime.
    If the transcript was written after the timer stopped, or herdr shows
    `working`, it is `proxy_checkin`. Else verdict `no_progress`.
-5. **Nothing moved:** verdict `no_progress`, `stall_rounds + 1`. On the
+5. **Herdr fallback.** Nothing above moved, but herdr shows `working`
+   (a harness with no timer format, a session with no transcript, or 1
+   long tool call): verdict `proxy_checkin` with source `herdr_state`,
+   at most `2 * runs.stall_rounds` checks in a row (6 checks, 60 min with
+   the defaults). The next such check is `suspect`, and the watchdog wakes
+   the orchestrator once with the pane id. The check after a `suspect`
+   is `dead`, so a stuck spinner cannot hold a task forever. Go to 5.4.
+   Herdr `idle` or no herdr status goes on to step 6.
+6. **Nothing moved:** verdict `no_progress`, `stall_rounds + 1`. On the
    first `no_progress` the watchdog tells the orchestrator, and the
    orchestrator asks the worker for an update with `horch tell`.
-6. At `stall_rounds = runs.stall_rounds` (3 checks, 30 min with the
+7. At `stall_rounds = runs.stall_rounds` (3 checks, 30 min with the
    defaults): verdict `dead`. Go to 5.4.
+
+A worker in a waiting state (reviewer tasks, an open question, a
+background command) skips steps 2 to 7 while the wait holds; step 1
+still applies. Each `checks.note` names the signals the watchdog could
+not read, for example "no timer format for harness pi; no transcript",
+so `ledger show` explains a reap.
 
 The watchdog tells the orchestrator only when a verdict changes, so a
 healthy fleet makes no noise.
