@@ -48,7 +48,10 @@ impl Mail {
         let pending = self.dir.join("pending");
         std::fs::create_dir_all(&pending)
             .with_context(|| format!("creating {}", pending.display()))?;
-        self.prune_acked()?;
+        // Cleanup is best effort: a prune error must never block a send.
+        if let Err(error) = self.prune_acked() {
+            eprintln!("horch: pruning acked mail: {error:#}");
+        }
 
         let created_at = crate::clock::now().into();
         let id = next_id(created_at);
@@ -269,20 +272,37 @@ impl Mail {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
         };
+        self.prune_paths(entries.map(|entry| entry.map(|entry| entry.path())))
+    }
+
+    /// Another enqueue can prune the same file first, so NotFound is skipped.
+    fn prune_paths(&self, paths: impl IntoIterator<Item = std::io::Result<PathBuf>>) -> Result<()> {
         let now = SystemTime::now();
-        for entry in entries {
-            let path = entry?.path();
-            let modified = path
-                .metadata()
-                .with_context(|| format!("reading metadata for {}", path.display()))?
-                .modified()
-                .with_context(|| format!("reading modified time for {}", path.display()))?;
+        for path in paths {
+            let path = match path {
+                Ok(path) => path,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error).context("reading an acked mail entry"),
+            };
+            let modified = match path.metadata().and_then(|metadata| metadata.modified()) {
+                Ok(modified) => modified,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("reading metadata for {}", path.display()))
+                }
+            };
             if now
                 .duration_since(modified)
                 .is_ok_and(|age| age > ACK_RETENTION)
             {
-                std::fs::remove_file(&path)
-                    .with_context(|| format!("removing {}", path.display()))?;
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| format!("removing {}", path.display()))
+                    }
+                }
             }
         }
         Ok(())
@@ -425,6 +445,74 @@ mod tests {
 
         assert!(!old.exists());
         assert!(recent.exists());
+    }
+
+    fn plant_old_acked(mail: &Mail, count: usize) {
+        let acked = mail.dir.join("acked");
+        std::fs::create_dir_all(&acked).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60);
+        for n in 0..count {
+            let file = File::create(acked.join(format!("old-{n}.json"))).unwrap();
+            file.set_modified(old).unwrap();
+        }
+    }
+
+    #[test]
+    fn concurrent_enqueues_that_prune_the_same_acked_files_lose_no_message() {
+        for round in 0..20 {
+            let root = tempfile::tempdir().unwrap();
+            let mail = Arc::new(Mail::under(root.path(), "w1"));
+            plant_old_acked(&mail, 200);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let threads: Vec<_> = (0..2)
+                .map(|thread| {
+                    let mail = Arc::clone(&mail);
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        mail.enqueue("worker", &format!("{round}-{thread}"))
+                    })
+                })
+                .collect();
+            for thread in threads {
+                thread.join().unwrap().unwrap();
+            }
+            assert_eq!(mail.pending().unwrap().len(), 2, "round {round}");
+            assert_eq!(
+                std::fs::read_dir(mail.dir.join("acked")).unwrap().count(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn an_acked_file_removed_before_its_metadata_is_read_is_skipped() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        plant_old_acked(&mail, 1);
+        let gone = mail.dir.join("acked").join("gone.json");
+
+        mail.prune_paths(vec![Ok(gone), Ok(mail.dir.join("acked/old-0.json"))])
+            .unwrap();
+
+        assert!(!mail.dir.join("acked/old-0.json").exists());
+        mail.enqueue("worker", "message").unwrap();
+        assert_eq!(mail.pending().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_acked_dir_does_not_block_enqueue() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        std::fs::create_dir_all(&mail.dir).unwrap();
+        // A file in place of the dir makes read_dir fail with NotADirectory.
+        std::fs::write(mail.dir.join("acked"), b"").unwrap();
+
+        mail.enqueue("worker", "message").unwrap();
+
+        let pending = mail.pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].text, "message");
     }
 
     #[test]
