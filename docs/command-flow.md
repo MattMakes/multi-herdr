@@ -118,12 +118,18 @@ pending report, oldest first, acknowledges it, and ends with
   5 s. When the orchestrator pane is ready, it resends each due report with
   `(redelivery <n>: not acknowledged; run horch inbox)`.
 - The courier waits 30 s, 1 min, 2 min, 4 min, then 5 min between retries.
-  It stops pushes after 6 redeliveries. The report stays pending, and horch
-  commands continue to name unacknowledged worker messages.
+  It then retries every 5 min until `inbox` acknowledges the mail. A relay
+  write is queued delivery, not proof of acknowledgement.
+  Retry gaps start at the actual attempt. A busy pane or a login pause skips
+  missed slots instead of replaying a backlog on consecutive courier polls.
 - If no orchestrator pane and no live relay exist for 10 min, the courier
   exits. The pending report stays available for a later `horch inbox`.
 - A workspace with no registered orchestrator pane and no live channel relay
-  has nobody to tell. `horch done` does not queue or report, and exits 0.
+  still keeps the report in durable mail. Registering the orchestrator starts
+  the courier again. Missing registration never means silent completion.
+- A Claude login prompt pauses redelivery and sends one operator notification.
+  Delivery resumes when the prompt clears. Questions remain open after mail is
+  acknowledged, until the orchestrator replies to the sending role.
 - An agent that exits without `horch done` ends its record (`Done` on exit
   0, else `Failed`) with an `exited` event. The `horch worker` process,
   which is still alive in the pane, sends the orchestrator

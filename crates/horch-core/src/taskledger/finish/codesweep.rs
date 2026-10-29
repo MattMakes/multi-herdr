@@ -313,6 +313,17 @@ fn queue_round(
         reviews: reviews.clone(),
     };
     std::fs::write(state_path(cx), serde_json::to_vec_pretty(&state)?)?;
+    super::super::workers::set_wait(
+        store.conn(),
+        &cx.worker.worker_id,
+        "reviewers",
+        "waiting for reviewer tasks",
+        &reviews
+            .iter()
+            .map(|(_, id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        7 * 24 * 3600,
+    )?;
     Ok(Outcome::waiting(
         &format!(
             "round {round}: {} reviewer tasks queued ({}) for {persona}. horch wakes the orchestrator to spawn them, and tells you when the reviews are in. End your turn now",
@@ -365,6 +376,24 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         }
     }
     if !pending.is_empty() {
+        // Keep the original deadline; repeated finish calls do not extend it.
+        if !super::super::workers::waiting(store.conn(), &cx.worker.worker_id)?
+            .iter()
+            .any(|w| w.kind == "reviewers")
+        {
+            super::super::workers::set_wait(
+                store.conn(),
+                &cx.worker.worker_id,
+                "reviewers",
+                "waiting for reviewer tasks",
+                &state
+                    .reviews
+                    .iter()
+                    .map(|(_, id, _)| id.clone())
+                    .collect::<Vec<_>>(),
+                7 * 24 * 3600,
+            )?;
+        }
         return Ok(Outcome::waiting(
             &format!(
                 "round {}: waiting for reviewer tasks {}. End your turn; horch tells you when they are in",
@@ -375,6 +404,7 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         )
         .judged(Some(tree)));
     }
+    super::super::workers::clear_wait(store.conn(), &cx.worker.worker_id, "reviewers")?;
     // Merge the findings.
     let mut findings = Vec::new();
     let mut table = Vec::new();

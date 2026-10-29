@@ -356,10 +356,14 @@ pub fn fleet_with(
     flavor: FleetFlavor,
     options: &FleetOptions,
 ) -> Result<()> {
+    println!("horch {}", super::selfupdate::CURRENT);
     super::update::before_fleet(ctx, options.no_update);
     doctor::check(ctx)?;
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let cwd = resolve_cwd(ctx, cwd)?;
+    let mut warning_ctx = ctx.clone();
+    warning_ctx.paths.project_dir = Some(PathBuf::from(&cwd));
+    super::spawn::fleet_warnings(&warning_ctx, false);
 
     warn_about_missing_integrations(&herdr);
 
@@ -463,6 +467,8 @@ pub fn fleet_with(
             options.compete.as_ref(),
         )?,
     )?;
+
+    super::delivery_probe::fleet(ctx, &ws.workspace_id, &ws.root_pane_id);
 
     // The telemetry space (SPC-06). Never a reason for the fleet to fail.
     if let Err(e) = super::telemetry::ensure(ctx, &herdr, true) {

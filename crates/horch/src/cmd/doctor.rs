@@ -18,13 +18,16 @@ use horch_core::runtime::{process, RuntimeContext};
 use horch_core::workspace::herdr::Herdr;
 
 pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
-    super::selfupdate::notice(ctx, false);
     check(ctx)?;
     println!("herdr is installed and its server is reachable.");
+    super::delivery_probe::doctor(ctx);
     let mut roster = super::load_roster_unwarned(ctx, None)?;
     // Count and check what a fleet started here would offer (`offer_when`).
     if let Ok(project) = ctx.paths.project() {
         roster = roster.with_project_facts(horch::project::project_facts(&project));
+    }
+    for problem in service_problems(ctx, &roster) {
+        eprintln!("warning: {problem}");
     }
     let problems = roster.check();
     if problems.is_empty() {
@@ -184,6 +187,7 @@ pub(crate) fn requirement_problems(
         Requirement::Blender,
         Requirement::Godot,
         Requirement::GitLfs,
+        Requirement::Docker,
     ] {
         let needed_by: Vec<&str> = offered
             .iter()
@@ -194,6 +198,7 @@ pub(crate) fn requirement_problems(
             continue;
         }
         let problem = match requirement {
+            Requirement::Docker => docker_problem(path, pathext),
             Requirement::Xcode => xcode_problem(path, pathext),
             Requirement::Blender => {
                 blender_problem(path, pathext, tools.blender_path, tools.blender_app)
@@ -1493,5 +1498,88 @@ mod tests {
             warnings[0]
         );
         assert!(warnings[0].contains("Fix `pi --version` first."));
+    }
+}
+
+/// Offered services are diagnosed without launching MCP servers.
+fn service_problems(ctx: &RuntimeContext, roster: &Roster) -> Vec<String> {
+    let mut problems = Vec::new();
+    if let Some(host) = &ctx.inherited.claude_base_url_host {
+        if host != "api.anthropic.com"
+            && host != "anthropic.com"
+            && !host.ends_with(".anthropic.com")
+        {
+            problems.push(format!("Claude base URL overrides Anthropic with host {host}; plan reads may come back cut short"));
+        }
+    }
+    for teammate in roster.offered() {
+        if teammate.sandbox.is_some() {
+            if let Some(why) = horch_core::harness::launch::sandbox_host_problem(ctx) {
+                problems.push(format!(
+                    "{}: refusing to launch without a sandbox: {why}",
+                    teammate.name
+                ));
+            }
+        }
+        for (name, server) in teammate.mcp_servers.iter().flatten() {
+            if server
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|kind| kind != "stdio")
+            {
+                continue;
+            }
+            if let Some(command) = server.get("command").and_then(serde_json::Value::as_str) {
+                if process::which(
+                    ctx.inherited.path.as_deref(),
+                    ctx.inherited.pathext.as_deref(),
+                    command,
+                )
+                .is_none()
+                {
+                    problems.push(format!(
+                        "{}: MCP server {name} command {command} is missing from PATH",
+                        teammate.name
+                    ));
+                }
+            }
+        }
+    }
+    problems
+}
+
+fn docker_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String> {
+    let Some(bin) = process::which(path, pathext, "docker") else {
+        return Some("docker not found on PATH".into());
+    };
+    let mut cmd = Command::new(bin);
+    cmd.args(["version", "--format", "{{.Server.Version}}"]);
+    for key in horch_core::harness::launch::FORBIDDEN_ENV {
+        cmd.env_remove(key);
+    }
+    use std::process::Stdio;
+    let mut child = match cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => return Some(format!("Docker daemon version could not run: {e}")),
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return None,
+            Ok(Some(status)) => return Some(format!("Docker daemon version failed: {status}")),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some("Docker daemon version timed out after 2s".into());
+            }
+        }
     }
 }

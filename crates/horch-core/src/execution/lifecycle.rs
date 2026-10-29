@@ -219,10 +219,10 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
     Ok(())
 }
 
-/// Say so when a push did not land: the report waits in the mail.
+/// A pushed report remains queued until its explicit inbox acknowledgement.
 fn note_queued(steps: &dyn DoneSteps, req: &DoneRequest, status: ReportStatus) {
     if let ReportStatus::Queued(cause) = status {
-        eprintln!("horch done: the push did not land ({cause}); the courier will redeliver it");
+        eprintln!("horch done: queued, not yet acknowledged ({cause}); redelivered until horch inbox reads it");
         steps.report_queued(req.record_id, &cause);
     }
 }
@@ -653,6 +653,9 @@ impl WorkerSteps for PaneWorker<'_> {
 
     fn set_running(&mut self, brief: &Brief) -> Result<()> {
         if let Some((db, id)) = &self.ledger {
+            crate::taskledger::Store::open(db).and_then(|store| {
+                crate::taskledger::workers::set_record(store.conn(), id, &brief.record_id)
+            })?;
             if let Err(e) = crate::taskledger::supervisor::started(db, id, &brief.role) {
                 eprintln!(
                     "horch worker[{}]: the task ledger did not record the start: {e:#}",
@@ -681,12 +684,14 @@ impl WorkerSteps for PaneWorker<'_> {
             Some(t) => t.clone(),
             None => roster.require(&brief.teammate)?.clone(),
         };
-        let prompt = crate::prompts::worker_prompt(
+        let prompt = crate::prompts::worker_prompt_with_context(
             &roster,
             &teammate,
             self.role,
             &brief.task,
             &brief.session,
+            &crate::project_notes::display(&ctx.paths.state_root, &ctx.paths.project()?)?,
+            &crate::project_notes::host_line(),
         )?;
         // The agent starts in its workdir (a candidate's worktree), once the
         // roster has resolved from the project.

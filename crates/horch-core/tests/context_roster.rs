@@ -10,13 +10,14 @@ use horch_core::harness::HarnessKind;
 use horch_core::prompts::context_message;
 use horch_core::roster::{Roster, Teammate};
 
-const MESSAGE_KEYS: [&str; 8] = [
+const MESSAGE_KEYS: [&str; 9] = [
     "request",
     "warning",
     "warning-orchestrator",
     "instructions",
     "instructions-orchestrator",
     "resume",
+    "resume-orchestrator",
     "reported",
     "failed",
 ];
@@ -228,7 +229,7 @@ fn context_message_renders_the_warning_line() {
          ai_docs/handoffs/sonnet-1-whats-next.md with the horch:handoff skill. Then run: horch \
          note \"handoff: ai_docs/handoffs/sonnet-1-whats-next.md\". Then send: horch tell \
          orchestrator \"[sonnet-1] NOTE: COMPACT-READY ai_docs/handoffs/sonnet-1-whats-next.md\". \
-         Then end your turn."
+         Then end your turn. If DONE WHEN is met, run horch ledger finish, then horch ledger done (or horch done) instead."
     );
 }
 
@@ -919,4 +920,14 @@ fn ctx_21_overlay_copy_without_compact_at_warns() {
         "{:?}",
         warnings(&roster)
     );
+}
+
+/// Sanctioned orchestrator-compaction keep-list (#57): the actual compact
+/// argument must preserve run identity and decisions, then rebuild ledger state.
+#[test]
+fn orchestrator_compact_instructions_preserve_run_and_decisions() {
+    let vars = BTreeMap::from([("role", "orchestrator"), ("handoff", "handoff.md")]);
+    let actual = context_message(&builtin(), "instructions-orchestrator", &vars).unwrap();
+    assert_eq!(actual, "Keep in the summary: your actual run slug, its decisions log path ai_docs/plans/<run-slug>/decisions.md, your plan file, every open question and its answer, every COMPACT-READY line you did not yet act on, and your decisions. Use the actual slug and path from your run, not placeholder text. In a ledger run, rebuild the roster and ownership from horch ledger status instead of retaining them. Outside a ledger run, keep the live roster and ownership map. The full state is in handoff.md.");
+    assert!(!actual.contains('\n'));
 }

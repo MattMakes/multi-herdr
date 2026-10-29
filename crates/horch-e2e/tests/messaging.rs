@@ -145,18 +145,19 @@ fn running_worker(h: &Harness) -> (String, String, String) {
     (pane, role, id)
 }
 
-/// G5: in a workspace with no registered orchestrator, a worker's `tell` to
-/// it fails and says that `horch done` still works; `done` records the
-/// summary, tells nobody, says why, and exits 0.
+/// G5/#60: without registration both tell and done retain durable reports.
+/// A later orchestrator can acknowledge them; finishing still closes the worker.
 #[test]
 fn g5_done_without_an_orchestrator() {
-    let h = fleet("g5-done", "exec,stay");
+    let mut h = fleet("g5-done", "exec,stay");
+    h.set("HORCH_TEST_MAIL_NO_ORCHESTRATOR_MS", "20");
+    h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     let (pane, role, id) = running_worker(&h);
 
     let tell = as_worker(&h, &["tell", "orchestrator", "DONE: x"], &pane, &role, &id);
-    assert!(!tell.status.success(), "{}", text(&tell));
+    assert!(tell.status.success(), "{}", text(&tell));
     assert!(
-        text(&tell).contains("still records your summary"),
+        text(&tell).contains("queued, not yet acknowledged"),
         "{}",
         text(&tell)
     );
@@ -164,15 +165,18 @@ fn g5_done_without_an_orchestrator() {
     let done = as_worker(&h, &["done", "finished the work"], &pane, &role, &id);
     assert!(done.status.success(), "{}", text(&done));
     assert!(
-        text(&done).contains("no orchestrator is registered in this workspace"),
+        text(&done).contains("queued, not yet acknowledged"),
         "{}",
         text(&done)
     );
     let r = record(&h, &id);
     assert_eq!(r["status"], "done", "{r}");
-    assert!(
-        !h.state.join("mail/w1/pending").exists(),
-        "no recipient means no durable report"
+    assert_eq!(
+        std::fs::read_dir(h.state.join("mail/w1/pending"))
+            .unwrap()
+            .count(),
+        2,
+        "tell and done both remain pending without registration"
     );
 }
 
@@ -310,7 +314,8 @@ fn mail_u1_done_push_failure_records_queued_and_closes() {
 
     assert!(done.status.success(), "{}", text(&done));
     assert!(
-        String::from_utf8_lossy(&done.stderr).contains("horch done: the push did not land ("),
+        String::from_utf8_lossy(&done.stderr)
+            .contains("horch done: queued, not yet acknowledged ("),
         "{}",
         text(&done)
     );
@@ -347,7 +352,7 @@ fn mail_u1_tell_push_failure_leaves_pending_mail() {
 
     assert!(tell.status.success(), "{}", text(&tell));
     assert!(
-        String::from_utf8_lossy(&tell.stderr).contains("the courier will redeliver it"),
+        String::from_utf8_lossy(&tell.stderr).contains("queued, not yet acknowledged"),
         "{}",
         text(&tell)
     );

@@ -164,7 +164,11 @@ fn list_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
 /// The `stay` launch: record or write the session, then block until killed.
 fn stay(call: &mut Call) {
     if call.argv.first().map(String::as_str) == Some("resume") {
-        if let Some(id) = call.argv.get(1) {
+        if let Some(id) = call.argv.iter().skip(1).find(|arg| {
+            arg.len() == 36
+                && arg.split('-').map(str::len).eq([8, 4, 4, 4, 12])
+                && arg.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit())
+        }) {
             call.extra.insert("resumed".into(), json!(id));
         }
     } else {
@@ -181,7 +185,9 @@ fn stay(call: &mut Call) {
 fn write_rollout() -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-    let h = format!("{}{}", hash16(&cwd.to_string_lossy()), hash16("codex"));
+    let prompt = std::env::args().skip(1).last().unwrap_or_default();
+    let launch = format!("{}:{}:{}", cwd.display(), std::process::id(), prompt);
+    let h = format!("{}{}", hash16(&launch), hash16("codex"));
     let id = format!(
         "{}-{}-4{}-8{}-{}",
         &h[0..8],
@@ -198,7 +204,10 @@ fn write_rollout() -> String {
     let line = json!({"type": "session_meta", "payload": {"id": id, "cwd": cwd.to_string_lossy()}});
     let _ = std::fs::write(
         dir.join(format!("rollout-2026-10-02T00-00-00-{id}.jsonl")),
-        format!("{line}\n"),
+        format!(
+            "{line}\n{}\n",
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]}})
+        ),
     );
     id
 }

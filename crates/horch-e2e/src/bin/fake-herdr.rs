@@ -315,6 +315,24 @@ fn run(call: &mut Call) -> i32 {
                 "root_pane": {"pane_id": pane, "workspace_id": ws, "tab_id": tab},
             }))
         }
+        ["pane", "test-state", id, rest @ ..] => {
+            let Some(pane) = find_pane_mut(&mut state, id) else {
+                eprintln!("fake-herdr: no pane {id}");
+                return 1;
+            };
+            if let Some(status) = flag(rest, "--status") {
+                pane["agent_status"] = json!(status);
+            }
+            if let Some(agent) = flag(rest, "--agent") {
+                pane["agent"] = json!(agent);
+            }
+            if let Some(text) = flag(rest, "--text") {
+                pane["test_screen"] = json!(text);
+            }
+            save(&state);
+            ok(json!({"type": "ok"}))
+        }
+        ["notification", "show", _, ..] => ok(json!({"type": "ok"})),
         ["pane", "get", id] => match find_pane(&state, id) {
             Some(p) => ok(json!({"type": "pane", "pane": p})),
             None => {
@@ -339,6 +357,13 @@ fn run(call: &mut Call) -> i32 {
                 return 1;
             }
             call.extra.insert("ran".into(), json!(command));
+            if scenario_has("fleet_probe_ack") {
+                if let Some(target) = find_pane_mut(&mut state, pane) {
+                    target["agent"] = json!("claude");
+                    target["agent_status"] = json!("idle");
+                    save(&state);
+                }
+            }
             if scenario_has("exec") {
                 if let Some(pid) = exec_detached(pane, command) {
                     state["pids"][*pane] = json!(pid);
@@ -374,6 +399,67 @@ fn run(call: &mut Call) -> i32 {
         ["pane", "send-text", pane, text] if scenario_has("shell") => {
             let typed = state["typed"][*pane].as_str().unwrap_or("").to_string();
             state["typed"][*pane] = json!(format!("{typed}{text}"));
+            save(&state);
+            ok(json!({"type": "ok"}))
+        }
+        ["agent", "prompt", pane, text]
+            if scenario_has("fleet_probe_ack")
+                && text.contains("run horch inbox to confirm delivery") =>
+        {
+            let workspace = pane.split(':').next().unwrap_or(pane);
+            let Some(binary) = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.canonicalize().ok())
+                .and_then(|p| p.parent().map(|dir| dir.join("horch")))
+            else {
+                return 1;
+            };
+            let mut command = std::process::Command::new(&binary);
+            command
+                .arg("inbox")
+                .env("HORCH_WORKSPACE_ID", workspace)
+                // Orchestrator panes have no worker-role environment. A
+                // HORCH_ROLE value deliberately makes inbox worker-only.
+                .env_remove("HORCH_ROLE")
+                .env_remove("HORCH_RECORD_ID")
+                .env_remove("HORCH_WORKER_ID")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if let Err(error) = command.spawn() {
+                call.extra.insert(
+                    "probe_inbox_error".into(),
+                    json!(format!("{}: {error}", binary.display())),
+                );
+                return 1;
+            }
+            ok(json!({"type": "ok"}))
+        }
+        ["agent", "prompt", pane, text]
+            if text.starts_with("/compact")
+                && std::env::var_os("HORCH_FAKE_COMPACT_TRANSCRIPT").is_some() =>
+        {
+            use std::io::Write;
+            let path = std::env::var_os("HORCH_FAKE_COMPACT_TRANSCRIPT").unwrap();
+            let lines = [
+                json!({"type":"system","subtype":"compact_boundary","timestamp":"2026-10-29T04:00:00Z","compactMetadata":{"trigger":"manual","preTokens":311225,"postTokens":1200}}),
+                json!({"type":"assistant","timestamp":"2026-10-29T04:00:01Z","sessionId":"fixture","message":{"id":"post-compact","model":"claude-opus-5-5","role":"assistant","usage":{"input_tokens":1200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}}),
+            ];
+            let result = std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .and_then(|mut file| {
+                    for line in lines {
+                        writeln!(file, "{line}")?;
+                    }
+                    Ok(())
+                });
+            if result.is_err() {
+                return 1;
+            }
+            if let Some(p) = find_pane_mut(&mut state, pane) {
+                p["agent_status"] = json!("idle");
+            }
             save(&state);
             ok(json!({"type": "ok"}))
         }
@@ -596,6 +682,11 @@ fn pane_out(pane: &str) -> Option<PathBuf> {
 
 /// What a read of `pane` shows: its output, then the line typed into it.
 fn pane_text(state: &Value, pane: &str) -> String {
+    if let Some(text) =
+        find_pane(state, pane).and_then(|p| p["test_screen"].as_str().map(str::to_owned))
+    {
+        return text;
+    }
     let out = pane_out(pane)
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();

@@ -188,6 +188,79 @@ pub fn compact(ctx: &RuntimeContext, args: &CompactArgs) -> Result<ExitCode> {
     Ok(print(run(&env, args)))
 }
 
+/// Shared post-note hook for legacy notes and task-ledger note/progress.
+/// A warning never invalidates a saved note. Handoff refusals remain visible.
+pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<()> {
+    let Some(record_id) = ctx.worker.as_ref().and_then(|w| w.record_id.as_deref()) else {
+        return Ok(());
+    };
+    let ledger = Ledger::open_in(ctx)?;
+    let record = ledger.get(record_id)?;
+    let roster = super::load_roster_unwarned(ctx, None)
+        .or_else(|_| horch_core::roster::Roster::builtin())?;
+    let loc = Locations::from_context(ctx);
+    let cache = context::cache_dir(ctx);
+    let src = Sources {
+        ctx,
+        ledger: &ledger,
+        roster: &roster,
+        loc: &loc,
+        cache_dir: &cache,
+    };
+    let row = build_row(
+        &src,
+        record,
+        ctx.herdr.workspace.as_ref().map(|w| w.as_str()),
+    );
+    let asked = policy::already_asked(
+        &row.record.history,
+        row.reading
+            .as_ref()
+            .ok()
+            .and_then(|r| r.last_compaction.as_ref()),
+    );
+    if let Some(line) = super::messaging::note_check(&src, record_id)? {
+        println!("{line}");
+    }
+    let handoff = policy::handoff_path(&row.record.role);
+    if !asked
+        || !row.record.execution_status().is_live()
+        || !text.contains(&handoff)
+        || row.tokens().is_none_or(|tokens| tokens < row.threshold)
+        || row.job == JobLiveness::Live
+    {
+        return Ok(());
+    }
+    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
+    let env = Env {
+        src,
+        ws: &herdr,
+        mailbox: &mailbox,
+        exe: ctx.bins.exe()?,
+        start_timeout: START_TIMEOUT,
+        mode_timing: mode::Timing::DEFAULT,
+    };
+    let outcome = schedule(
+        &env,
+        &CompactArgs {
+            role: row.record.role.clone(),
+            request: false,
+            force: false,
+            foreground: false,
+            timeout: None,
+        },
+    );
+    if outcome.code == 0 && outcome.out.iter().any(|s| s.contains(" scheduled;")) {
+        let line = format!("[horch] compaction started for {}", row.record.role);
+        if let Err(error) = report(&env, &line) {
+            eprintln!("horch: {line}; orchestrator notification failed: {error:#}");
+        }
+    }
+    print(outcome);
+    Ok(())
+}
+
 fn print(o: Outcome) -> ExitCode {
     for l in &o.out {
         println!("{l}");
@@ -719,7 +792,14 @@ fn plan_for(env: &Env, t: &Target, timeout: Option<u64>) -> Result<JobPlan> {
     Ok(JobPlan {
         compact_line,
         max_sends: caps.max_sends,
-        resume_line: env.message("resume", &[("role", role), ("handoff", &handoff)])?,
+        resume_line: env.message(
+            if record.is_orchestrator() {
+                "resume-orchestrator"
+            } else {
+                "resume"
+            },
+            &[("role", role), ("handoff", &handoff)],
+        )?,
         reported_tmpl: env.message(
             "reported",
             &[
@@ -800,7 +880,26 @@ impl JobPorts for Ports<'_> {
         self.env
             .src
             .ledger
-            .record_event(&self.record.record_id, event, text)
+            .record_event(&self.record.record_id, event, text)?;
+        if event == policy::EVENT_COMPACTED {
+            let ctx = self.env.src.ctx;
+            let store = horch_core::taskledger::open(ctx)?;
+            let mut statement = store.conn().prepare("SELECT worker_id FROM workers WHERE legacy_record_id = ?1 AND status IN ('spawning','starting','claiming','working')")?;
+            let ids = statement
+                .query_map([&self.record.record_id], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for id in ids {
+                use horch_core::taskledger::model::{EventKind, ProgressSource};
+                horch_core::taskledger::workers::progress(
+                    store.conn(),
+                    &id,
+                    ProgressSource::Transcript,
+                    EventKind::Progress,
+                    &format!("compaction completed: {text}"),
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn report(&self, line: &str) -> Result<()> {

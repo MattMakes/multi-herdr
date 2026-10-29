@@ -27,17 +27,22 @@ pub fn wake(ctx: &RuntimeContext, store: &Store, run: &Run, text: &str) {
         Err(anyhow::anyhow!("wakes are off (HORCH_NO_WAKE=1)"))
     } else {
         let mut ctx = ctx.clone();
-        if ctx.herdr.workspace.is_none() {
+        {
             if let Some(ws) = run.workspace_id.as_deref() {
                 if let Ok(id) = WorkspaceId::new(ws) {
                     ctx.herdr.workspace = Some(id);
                 }
             }
         }
-        super::messaging::tell_as(&ctx, Some("horch".into()), "orchestrator", &line).map(|_| ())
+        super::messaging::tell_as(&ctx, Some("horch".into()), "orchestrator", &line)
     };
     let note = match &sent {
-        Ok(()) => format!("Woke the orchestrator: {line}"),
+        Ok(horch_core::execution::lifecycle::ReportStatus::Delivered) => {
+            format!("Wake delivered: {line}")
+        }
+        Ok(horch_core::execution::lifecycle::ReportStatus::Queued(reason)) => {
+            format!("Wake queued, not yet acknowledged ({reason}): {line}")
+        }
         Err(e) => format!("Wake not delivered ({e:#}): {line}"),
     };
     if let Err(e) = &sent {

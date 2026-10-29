@@ -2,11 +2,13 @@
 # NFR-05 and NFR-06: no runtime crate beyond the allowed lists. NFR-05 keeps
 # the telemetry crates (ratatui, crossterm) in the horch crate; NFR-06 (OD6)
 # allows sha2 in horch-core and horch-marketplace. Compares the direct normal
-# dependencies of each checked crate with its allowed list.
+# dependencies of each checked crate with its allowed list. Keep these in sync
+# with tests/nfr.rs: self-update (2026-10-20), task ledger (ADR 0001), and
+# Windows process identity (#29) are already approved runtime dependencies.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-allowed_core="anyhow serde serde_json serde_yaml chrono uuid libc sha2 horch-marketplace"
-allowed_horch="horch-core anyhow clap serde serde_json chrono tempfile libc ratatui crossterm"
+allowed_core="anyhow serde serde_json serde_yaml chrono uuid libc sha2 horch-marketplace rusqlite windows-sys"
+allowed_horch="horch-core anyhow clap serde serde_json chrono tempfile libc ratatui crossterm ureq sha2 flate2 tar zip"
 allowed_marketplace="anyhow serde serde_json serde_yaml sha2"
 fail=0
 check() {

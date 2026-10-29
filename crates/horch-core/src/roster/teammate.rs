@@ -388,13 +388,14 @@ pub(crate) const CONTEXT_WINDOWS_BASE: &str = "context-windows";
 pub(crate) const CONTEXT_MESSAGES_BASE: &str = "context-messages";
 
 /// Every key `_base/context-messages.md` must set.
-pub(crate) const CONTEXT_MESSAGE_KEYS: [&str; 8] = [
+pub(crate) const CONTEXT_MESSAGE_KEYS: [&str; 9] = [
     "request",
     "warning",
     "warning-orchestrator",
     "instructions",
     "instructions-orchestrator",
     "resume",
+    "resume-orchestrator",
     "reported",
     "failed",
 ];

@@ -556,11 +556,22 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
         env.state_root = None;
     }
     env.compact_window = Some(decision.clone());
+    let tagged_prompt = if req.teammate.agent == HarnessKind::Codex && !req.session.is_resume() {
+        req.record.as_ref().map(|r| {
+            format!(
+                "[{}]\n{}",
+                super::codex::launch_token(r.record_id),
+                req.prompt
+            )
+        })
+    } else {
+        None
+    };
     let mut cmd = agent_command_in(
         &env,
         &teammate,
         session,
-        req.prompt,
+        tagged_prompt.as_deref().unwrap_or(req.prompt),
         skills.as_ref(),
         req.child_env,
     )?;
@@ -800,17 +811,30 @@ fn discover_once(
     workdir: &Path,
     since: SystemTime,
     sessions_dir: Option<&Path>,
+    record_id: &str,
 ) -> Option<String> {
     (!pane.is_empty())
         .then(|| herdr.pane_get(pane).ok())
         .flatten()
         .and_then(|p| p.agent_session_id())
         .or_else(|| {
-            agent
-                .adapter()
-                .discover_sessions(ctx, workdir, since, sessions_dir)
+            if agent == HarnessKind::Codex {
+                super::codex::find_launch_rollouts(
+                    &crate::usage::Locations::from_context(ctx).codex_sessions,
+                    &workdir.to_string_lossy(),
+                    since,
+                    record_id,
+                )
                 .into_iter()
-                .find(|id| !ledger.has_session(id).unwrap_or(false))
+                .map(|c| c.session_id)
+                .collect::<Vec<_>>()
+            } else {
+                agent
+                    .adapter()
+                    .discover_sessions(ctx, workdir, since, sessions_dir)
+            }
+            .into_iter()
+            .find(|id| !ledger.has_session(id).unwrap_or(false))
         })
 }
 
@@ -854,6 +878,7 @@ pub fn discover_now(
         &workdir,
         since,
         sessions_dir.as_deref(),
+        record_id,
     ) {
         ledger.set_session(record_id, &session_id)?;
         let _ = std::fs::remove_file(&marker);
@@ -1008,6 +1033,7 @@ fn start_discovery(
                 &workdir,
                 since,
                 sessions_dir.as_deref(),
+                &record_id,
             );
             if let Some(session_id) = found {
                 if let Err(e) = ledger.set_session(&record_id, &session_id) {
@@ -1078,6 +1104,15 @@ fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
         .wait()
         .with_context(|| format!("waiting for {name}"))?;
     Ok(status.code())
+}
+
+/// The same host sandbox check used when preparing a Claude launch.
+pub fn sandbox_host_problem(ctx: &RuntimeContext) -> Option<String> {
+    super::claude::sandbox_host_problem(
+        std::env::consts::OS,
+        ctx.inherited.path.as_deref(),
+        Path::new("/usr/bin/sandbox-exec").is_file(),
+    )
 }
 
 #[cfg(test)]
@@ -1391,6 +1426,9 @@ mod tests {
         assert_eq!(
             a,
             vec![
+                // Sanctioned #58: read-only pre-approvals precede variadic tool denials.
+                "--allowedTools",
+                "Read,Grep,Glob,Bash(git status),Bash(git status *),Bash(git log),Bash(git log --oneline -10),Bash(git diff),Bash(git diff --stat),Bash(git diff --cached),Bash(git show),Bash(git ls-files),Bash(horch ledger status),Bash(horch ledger status *),Bash(horch ledger show *),Bash(horch ledger steps *),Bash(horch ledger events),Bash(horch ledger events *),Bash(aws sts get-caller-identity),Bash(aws s3 ls),Bash(gcloud projects list),Bash(az account show),Bash(kubectl get pods),Bash(docker ps)",
                 // The fleet rule: opus, like every claude fleet pane, denies
                 // the subagent tool.
                 "--disallowedTools",

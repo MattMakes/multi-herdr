@@ -119,6 +119,13 @@ enum Command {
         peek: bool,
     },
 
+    /// Read the last lines of a registered role's pane without typing.
+    Peek {
+        role: String,
+        #[arg(long, default_value_t = 20)]
+        lines: usize,
+    },
+
     /// Give a task to a live worker: record it on the ledger, then deliver it.
     Assign {
         role: String,
@@ -128,6 +135,9 @@ enum Command {
 
     /// Append a progress note to this worker's own ledger record.
     Note {
+        /// Share a project fact with workers launched after this command.
+        #[arg(long)]
+        fact: bool,
         #[arg(required = true, trailing_var_arg = true)]
         text: Vec<String>,
     },
@@ -146,6 +156,15 @@ enum Command {
         /// null. Ignores --over; --windows wins.
         #[arg(long)]
         json: bool,
+        /// Include sessions from every workspace of this project.
+        #[arg(long)]
+        all_workspaces: bool,
+        /// Include only live sessions.
+        #[arg(long)]
+        live: bool,
+        /// Include only this role.
+        #[arg(long)]
+        role: Option<String>,
     },
 
     /// Compact the context of a session in place. First ask it to write its
@@ -206,6 +225,15 @@ enum Command {
         /// Also list competition candidates and judges (multi-herdr-dataset).
         #[arg(long)]
         all: bool,
+        /// Include sessions from every workspace of this project.
+        #[arg(long)]
+        all_workspaces: bool,
+        /// Include only live sessions.
+        #[arg(long)]
+        live: bool,
+        /// Include only this role.
+        #[arg(long)]
+        role: Option<String>,
     },
 
     /// Inspect, validate, or scaffold the roster in `teammates/`.
@@ -665,6 +693,11 @@ fn run() -> Result<std::process::ExitCode> {
     // The one read of the process environment. Every command takes its
     // values from this context.
     let mut ctx = bootstrap::context()?;
+    match &cli.command {
+        Command::Doctor => cmd::selfupdate::doctor_warning(&ctx),
+        Command::Spawn { .. } | Command::Inbox { .. } => cmd::selfupdate::stale_warning(&ctx),
+        _ => {}
+    }
     let remind = !matches!(
         &cli.command,
         Command::Channel { .. }
@@ -724,13 +757,42 @@ fn dispatch(
         Command::Update { names } => return cmd::update::update(ctx, &names),
         Command::Tell { role, message } => cmd::messaging::tell(ctx, &role, &joined(&message))?,
         Command::Inbox { roles, peek } => cmd::messaging::inbox(ctx, roles, peek)?,
+        Command::Peek { role, lines } => cmd::messaging::peek(ctx, &role, lines)?,
         Command::Assign { role, task } => cmd::messaging::assign(ctx, &role, &joined(&task))?,
-        Command::Note { text } => cmd::messaging::note(ctx, &joined(&text))?,
+        Command::Note { text, fact } => {
+            if fact {
+                let added = horch_core::project_notes::record(
+                    &ctx.paths.state_root,
+                    &ctx.paths.project()?,
+                    &joined(&text),
+                )?;
+                output::println(if added {
+                    "Project fact recorded."
+                } else {
+                    "Project fact already recorded."
+                });
+            } else {
+                cmd::messaging::note(ctx, &joined(&text))?;
+            }
+        }
         Command::Context {
             over,
             windows,
             json,
-        } => return cmd::context::context(ctx, over, windows, json),
+            all_workspaces,
+            live,
+            role,
+        } => {
+            return cmd::context::context_filtered(
+                ctx,
+                over,
+                windows,
+                json,
+                all_workspaces,
+                live,
+                role.as_deref(),
+            )
+        }
         Command::Compact {
             role,
             request,
@@ -780,7 +842,20 @@ fn dispatch(
             }
             WorktreeSubcommand::List => cmd::worktree::list(ctx)?,
         },
-        Command::Sessions { json, all } => cmd::ledgercmd::sessions(ctx, json, all)?,
+        Command::Sessions {
+            json,
+            all,
+            all_workspaces,
+            live,
+            role,
+        } => cmd::ledgercmd::sessions_filtered(
+            ctx,
+            json,
+            all,
+            all_workspaces,
+            live,
+            role.as_deref(),
+        )?,
         Command::Skills {
             command,
             phase,

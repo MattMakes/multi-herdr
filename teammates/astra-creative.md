@@ -1,6 +1,6 @@
 ---
 name: astra-creative
-brief_description: Creative council seat on Codex Astra. Spawn with fable-creative and opus-creative.
+brief_description: "Creative council. fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."
 base: fleet-worker
 agent: codex
 phase: plan

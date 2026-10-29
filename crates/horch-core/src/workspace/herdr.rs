@@ -458,6 +458,12 @@ impl Herdr {
         Ok(())
     }
 
+    /// Show an operator notification through the existing herdr boundary.
+    pub fn notification_show(&self, title: &str, body: &str) -> Result<()> {
+        self.output(&["notification", "show", title, "--body", body])?;
+        Ok(())
+    }
+
     /// `herdr pane wait-output <pane> --match <needle> --source recent-unwrapped
     /// --timeout <ms>`. Returns false on timeout rather than erroring.
     ///

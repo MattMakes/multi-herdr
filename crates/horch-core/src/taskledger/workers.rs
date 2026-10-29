@@ -353,6 +353,13 @@ pub fn progress(
          WHERE worker_id = ?1",
         params![worker_id, util::now(), source.as_str()],
     )?;
+    if source == ProgressSource::Agent {
+        if let Some(reason) = text.trim_start().strip_prefix("waiting:") {
+            set_wait(conn, worker_id, "background", reason.trim(), &[], 24 * 3600)?;
+        } else {
+            clear_wait(conn, worker_id, "background")?;
+        }
+    }
     let actor = match source {
         ProgressSource::Agent => Actor::Worker,
         _ => Actor::Watchdog,
@@ -395,5 +402,155 @@ pub fn set_exit_code(conn: &Connection, worker_id: &str, exit_code: Option<i32>)
          WHERE worker_id = ?1",
         params![worker_id, exit_code, util::now()],
     )?;
+    Ok(())
+}
+
+/// A known bounded wait; multiple causes may coexist for one worker.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Wait {
+    pub kind: String,
+    pub reason: String,
+    pub started_at: String,
+    pub deadline: String,
+    pub task_ids: Vec<String>,
+}
+
+pub fn set_wait(
+    conn: &Connection,
+    worker: &str,
+    kind: &str,
+    reason: &str,
+    task_ids: &[String],
+    seconds: i64,
+) -> Result<()> {
+    let now = crate::clock::now();
+    let deadline = crate::clock::stamp(now + chrono::Duration::seconds(seconds));
+    conn.execute("INSERT INTO worker_waits(worker_id,kind,reason,started_at,deadline,task_ids)
+        VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(worker_id,kind) DO UPDATE SET
+        reason=excluded.reason,started_at=excluded.started_at,deadline=excluded.deadline,task_ids=excluded.task_ids",
+        params![worker,kind,reason,crate::clock::stamp(now),deadline,serde_json::to_string(task_ids)?])?;
+    conn.execute(
+        "UPDATE workers SET stall_rounds=0 WHERE worker_id=?1",
+        [worker],
+    )?;
+    Ok(())
+}
+
+pub fn clear_wait(conn: &Connection, worker: &str, kind: &str) -> Result<()> {
+    if conn.execute(
+        "DELETE FROM worker_waits WHERE worker_id=?1 AND kind=?2",
+        params![worker, kind],
+    )? > 0
+    {
+        conn.execute(
+            "UPDATE workers SET stall_rounds=0 WHERE worker_id=?1",
+            [worker],
+        )?;
+    }
+    Ok(())
+}
+
+/// Expired waits and completed reviews stop holding the watchdog immediately.
+pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
+    let mut stmt=conn.prepare("SELECT kind,reason,started_at,deadline,task_ids FROM worker_waits WHERE worker_id=?1 ORDER BY kind")?;
+    let rows = stmt
+        .query_map([worker], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (kind, reason, started_at, deadline, ids) in rows {
+        let task_ids: Vec<String> = serde_json::from_str(&ids)?;
+        let reviews_done = kind == "reviewers"
+            && !task_ids.is_empty()
+            && task_ids.iter().all(|id| {
+                super::tasks::get(conn, id)
+                    .is_ok_and(|t| matches!(t.status.as_str(), "done" | "cancelled"))
+            });
+        if deadline <= util::now() || reviews_done {
+            clear_wait(conn, worker, &kind)?;
+            continue;
+        }
+        out.push(Wait {
+            kind,
+            reason,
+            started_at,
+            deadline,
+            task_ids,
+        });
+    }
+    Ok(out)
+}
+
+/// Project the messaging layer's authoritative questions into ledger waits.
+pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &str) -> Result<()> {
+    let questions = crate::messaging::mail::Mail::under(state, workspace).open_questions()?;
+    let mut stmt =
+        conn.prepare("SELECT * FROM workers WHERE workspace_id=?1 AND status='working'")?;
+    let roster = stmt
+        .query_map([workspace], Worker::from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for w in roster {
+        // The first unanswered question fixes the deadline; polling must never extend it.
+        let question = questions
+            .iter()
+            .find(|q| w.role.as_deref() == Some(q.from.as_str()));
+        if let Some(q) = question {
+            let started: chrono::DateTime<chrono::Utc> = q.created_at.into();
+            let deadline = crate::clock::stamp(started + chrono::Duration::days(7));
+            conn.execute("INSERT INTO worker_waits(worker_id,kind,reason,started_at,deadline) VALUES(?1,'question',?2,?3,?4)
+                ON CONFLICT(worker_id,kind) DO UPDATE SET reason=excluded.reason,started_at=excluded.started_at,deadline=excluded.deadline",
+                params![w.worker_id,q.text,crate::clock::stamp(started),deadline])?;
+        } else {
+            clear_wait(conn, &w.worker_id, "question")?;
+        }
+    }
+    Ok(())
+}
+
+pub fn role_state(conn: &Connection, workspace: &str, role: &str) -> Result<String> {
+    let w = optional(conn.query_row(
+        "SELECT * FROM workers WHERE workspace_id=?1 AND role=?2 ORDER BY rowid DESC LIMIT 1",
+        params![workspace, role],
+        Worker::from_row,
+    ))?;
+    let Some(w) = w else {
+        return Ok(String::new());
+    };
+    let verdict: Option<String> = optional(conn.query_row(
+        "SELECT verdict FROM checks WHERE worker_id=?1 ORDER BY check_id DESC LIMIT 1",
+        [&w.worker_id],
+        |r| r.get(0),
+    ))?;
+    let waits = waiting(conn, &w.worker_id)?;
+    Ok(format!(
+        " watchdog={}{}",
+        verdict.as_deref().unwrap_or("unchecked"),
+        waits
+            .iter()
+            .map(|w| format!(
+                " waiting: {} ({}s ago)",
+                w.reason,
+                util::seconds_between(&w.started_at, &util::now()).unwrap_or(0)
+            ))
+            .collect::<String>()
+    ))
+}
+
+/// Join the native worker life to its execution record for session and compaction hooks.
+pub fn set_record(conn: &Connection, worker_id: &str, record_id: &str) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE workers SET legacy_record_id=?2 WHERE worker_id=?1",
+        params![worker_id, record_id],
+    )?;
+    if changed == 0 {
+        bail!("no worker {worker_id} in the task ledger");
+    }
     Ok(())
 }

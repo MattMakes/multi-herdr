@@ -1,6 +1,6 @@
 ---
 name: codex-sol
-brief_description: Generic worker, Codex flavor. Complex implementation work.
+brief_description: "Complex code. fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."
 generic: true
 base: fleet-worker
 agent: codex
