@@ -2075,3 +2075,85 @@ fn replacing_a_live_worker_names_the_stop_command() {
         text(&o)
     );
 }
+
+// ─── #168: a task that kills every worker is held, not retried forever ──────
+
+fn claim_and_reap(h: &Harness, persona: &str, why: &str) -> String {
+    let w = worker_new(h, persona);
+    let claim = ok_as(h, &w, &["ledger", "claim"]);
+    assert!(claim.contains("Claimed T-1"), "{claim}");
+    ok(h, &["ledger", "reap", &w, why]);
+    w
+}
+
+#[test]
+fn a_task_reaped_max_attempts_times_is_held_for_the_operator() {
+    let h = world("tl-held");
+    ok(&h, &["ledger", "run", "new", "a", "--max-attempts", "2"]);
+    queue(&h, "01-a", "sonnet-x", &[]);
+
+    // Reaped once: queued again, as before.
+    claim_and_reap(&h, "sonnet-x", "hung in check");
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["status"], "queued", "{t}");
+    assert!(t["task"]["held_reason"].is_null(), "{t}");
+    assert!(
+        plan_line(&h).starts_with("sonnet-x: spawn 1"),
+        "{}",
+        plan_line(&h)
+    );
+    let before = wakes(&h).len();
+
+    // Reaped twice: held. No worker is asked for, and 1 QUESTION names both ends.
+    claim_and_reap(&h, "sonnet-x", "overflowed at claim");
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["held_reason"], "2 attempts failed", "{t}");
+    assert_eq!(plan_line(&h), "No task can start now. Spawn no worker.");
+    let new = wakes(&h).split_off(before);
+    let questions: Vec<&String> = new.iter().filter(|w| w.contains("QUESTION:")).collect();
+    assert_eq!(questions.len(), 1, "{new:?}");
+    assert!(questions[0].contains("dead: hung in check"), "{new:?}");
+    assert!(
+        questions[0].contains("dead: overflowed at claim"),
+        "{new:?}"
+    );
+    assert!(!new.iter().any(|w| w.contains("--replaces")), "{new:?}");
+    let st = out(&h.run(&["ledger", "status"]));
+    assert!(st.contains("held: 2 attempts failed"), "{st}");
+    assert!(
+        st.contains("[2 attempts; ends: dead: hung in check; dead: overflowed at claim]"),
+        "{st}"
+    );
+    // A held task is open work: the run does not close.
+    let o = h.run(&["ledger", "run", "close"]);
+    assert!(
+        text(&o).contains("T-1 (held: 2 attempts failed)"),
+        "{}",
+        text(&o)
+    );
+
+    // The operator requeues it: claimable again, its history kept.
+    ok(&h, &["ledger", "requeue", "T-1", "ticket fixed"]);
+    let w = worker_new(&h, "sonnet-x");
+    let claim = ok_as(&h, &w, &["ledger", "claim"]);
+    assert!(claim.contains("Claimed T-1 (attempt 3)"), "{claim}");
+    // The limit counts attempts since the requeue: 1 reap queues it again.
+    ok(&h, &["ledger", "reap", &w, "once more"]);
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert!(t["task"]["held_reason"].is_null(), "{t}");
+    assert_eq!(t["task"]["attempts"], 3, "{t}");
+}
+
+#[test]
+fn requeue_refuses_a_task_that_is_neither_held_nor_cancelled() {
+    let h = world("tl-requeue-queued");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus", &[]);
+    let o = h.run(&["ledger", "requeue", "T-1", "why"]);
+    assert!(!o.status.success());
+    assert!(
+        text(&o).contains("only a held or cancelled task is requeued"),
+        "{}",
+        text(&o)
+    );
+}

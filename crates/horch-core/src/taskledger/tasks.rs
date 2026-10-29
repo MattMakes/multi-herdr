@@ -572,12 +572,13 @@ impl Board {
         None
     }
 
-    /// Queued tasks in claim order: priority, then seq.
+    /// Queued tasks in claim order: priority, then seq. A held task waits
+    /// for the operator, not for a worker.
     fn queued(&self) -> Vec<&Task> {
         let mut q: Vec<&Task> = self
             .tasks
             .iter()
-            .filter(|t| t.status == TaskStatus::Queued.as_str())
+            .filter(|t| t.status == TaskStatus::Queued.as_str() && t.held_reason.is_none())
             .collect();
         q.sort_by_key(|t| (t.priority, t.seq));
         q
@@ -871,11 +872,53 @@ pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     get(conn, &task.task_id)
 }
 
-/// Put a task back in the queue after its worker died, first in line.
-pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<()> {
+/// What [`requeue`] did with a task whose worker ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Requeue {
+    /// The task was not running: nothing changed.
+    Skipped,
+    /// Queued again, first in line.
+    Queued,
+    /// Its attempts since the last operator requeue reached the run's
+    /// `max_attempts`: held for the operator (#168).
+    Held,
+}
+
+/// Put a task back in the queue after its worker died, first in line, or
+/// hold it when it used up the run's `max_attempts`.
+pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
     let task = get(conn, task_id)?;
     if !matches!(task.status.as_str(), "running" | "landing") {
-        return Ok(());
+        return Ok(Requeue::Skipped);
+    }
+    let about = About {
+        run: Some(&task.run_id),
+        task: Some(task_id),
+        worker: task.current_worker_id.as_deref(),
+    };
+    let max = super::runs::get(conn, &task.run_id)?.max_attempts;
+    let used = task.attempts - task.attempt_floor;
+    if used >= max {
+        let held = format!("{used} attempts failed");
+        conn.execute(
+            "UPDATE tasks SET status = 'queued', current_worker_id = NULL, held_reason = ?2,
+                updated_at = ?3
+             WHERE task_id = ?1",
+            params![task_id, held, util::now()],
+        )?;
+        util::event(
+            conn,
+            &about,
+            Actor::Horch,
+            EventKind::Blocked,
+            &format!(
+                "{} is held for the operator: {held} ({}). Release it with horch ledger requeue {} \"<reason>\".",
+                task.short(),
+                attempt_ends(conn, &get(conn, task_id)?)?.join("; "),
+                task.short()
+            ),
+        )?;
+        return Ok(Requeue::Held);
     }
     conn.execute(
         "UPDATE tasks SET status = 'queued', current_worker_id = NULL,
@@ -885,16 +928,76 @@ pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<()> {
     )?;
     util::event(
         conn,
-        &About {
-            run: Some(&task.run_id),
-            task: Some(task_id),
-            worker: task.current_worker_id.as_deref(),
-        },
+        &about,
         Actor::Horch,
         EventKind::Requeued,
         &format!("{} is queued again, first in line: {why}", task.short()),
     )?;
-    Ok(())
+    Ok(Requeue::Queued)
+}
+
+/// How each attempt at `task` since the last operator requeue ended, oldest
+/// first: the worker's end reason, else its status.
+pub fn attempt_ends(conn: &Connection, task: &Task) -> Result<Vec<String>> {
+    Ok(workers::attempts_at(conn, &task.task_id)?
+        .into_iter()
+        .filter(|w| w.attempt.is_some_and(|a| a > task.attempt_floor))
+        .map(|w| w.end_reason.unwrap_or(w.status))
+        .collect())
+}
+
+/// `horch ledger requeue`: the operator wants a held or cancelled task
+/// worked on again. Its attempt history stays, and it gets the run's
+/// `max_attempts` anew. A cancelled task gets back the worktree its cancel
+/// abandoned.
+pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
+    let held = task.status == TaskStatus::Queued.as_str() && task.held_reason.is_some();
+    if !held && task.status != TaskStatus::Cancelled.as_str() {
+        bail!(
+            "{} is {}; only a held or cancelled task is requeued",
+            task.short(),
+            task.status
+        );
+    }
+    let now = util::now();
+    conn.execute(
+        "UPDATE tasks SET status = 'queued', held_reason = NULL, attempt_floor = attempts,
+            current_worker_id = NULL, summary = CASE WHEN status = 'cancelled' THEN NULL ELSE summary END,
+            finished_at = NULL, updated_at = ?2
+         WHERE task_id = ?1",
+        params![task.task_id, now],
+    )?;
+    // The newest abandoned worktree whose folder is still there.
+    let kept: Option<(String, String)> = optional(conn.query_row(
+        "SELECT worktree_id, path FROM worktrees WHERE task_id = ?1 AND status = 'abandoned'
+         ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        [&task.task_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ))?;
+    if let Some((id, _)) = kept.filter(|(_, p)| std::path::Path::new(p).exists()) {
+        conn.execute(
+            "UPDATE worktrees SET status = 'open', worker_id = NULL, reason = NULL WHERE worktree_id = ?1",
+            [&id],
+        )?;
+        conn.execute(
+            "UPDATE import_findings SET status = 'requeued', decided_by = 'orchestrator',
+                decided_at = ?2, decision_note = ?3
+             WHERE task_id = ?1 AND status = 'open' AND kind = 'task_cancelled_open_worktree'",
+            params![task.task_id, now, reason],
+        )?;
+    }
+    util::event(
+        conn,
+        &About {
+            run: Some(&task.run_id),
+            task: Some(&task.task_id),
+            worker: None,
+        },
+        Actor::Orchestrator,
+        EventKind::Requeued,
+        &format!("{} is queued again by the operator: {reason}", task.short()),
+    )?;
+    get(conn, &task.task_id)
 }
 
 /// 1 persona's line of `horch ledger plan-workers`.

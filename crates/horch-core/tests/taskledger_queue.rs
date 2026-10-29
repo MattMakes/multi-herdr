@@ -337,3 +337,51 @@ fn a_cancelled_task_is_finished_and_not_claimable() {
     assert!(matches!(claim(&mut s, &w), ClaimOutcome::NoTask { .. }));
     assert!(tasks::all_finished(s.conn(), &run.run_id).unwrap());
 }
+
+#[test]
+fn an_agent_that_exits_on_its_last_attempt_holds_the_task() {
+    use horch_core::taskledger::supervisor::{self, Ended};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("ledger.sqlite3");
+    let mut store = Store::open(&db).unwrap();
+    let run = store
+        .immediate(|tx| {
+            runs::create(
+                tx,
+                Path::new("/repo"),
+                &NewRun {
+                    slug: "r1".into(),
+                    thresholds: runs::Thresholds {
+                        max_attempts: Some(2),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    let t = add(&mut store, &run, "a", "opus", |_| {});
+    let first = worker(&mut store, &run, "opus");
+    assert_eq!(claimed_seq(&claim(&mut store, &first)), Some(1));
+    assert_eq!(
+        supervisor::agent_exited(&db, &first, Some(1)).unwrap(),
+        Ended::Requeued {
+            task: "T-1".into(),
+            persona: "opus".into()
+        }
+    );
+    let second = worker(&mut store, &run, "opus");
+    assert_eq!(claimed_seq(&claim(&mut store, &second)), Some(1));
+    assert_eq!(
+        supervisor::agent_exited(&db, &second, Some(1)).unwrap(),
+        Ended::Held { task: "T-1".into() }
+    );
+    let held = tasks::get(store.conn(), &t.task_id).unwrap();
+    assert_eq!(held.status, "queued");
+    assert_eq!(held.held_reason.as_deref(), Some("2 attempts failed"));
+    assert!(tasks::startable(store.conn(), &run.run_id)
+        .unwrap()
+        .is_empty());
+    let third = worker(&mut store, &run, "opus");
+    assert_eq!(claimed_seq(&claim(&mut store, &third)), None);
+}

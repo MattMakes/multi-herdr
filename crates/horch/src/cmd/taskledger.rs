@@ -86,6 +86,14 @@ pub enum LedgerCommand {
         #[command(flatten)]
         run: RunArg,
     },
+    /// Queue a held or cancelled task again (orchestrator). It keeps its
+    /// attempt history and gets the run's attempt limit anew.
+    Requeue {
+        task: String,
+        reason: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
     /// (worker) Take the next task meant for this worker's persona.
     Claim {
         #[arg(long)]
@@ -412,6 +420,19 @@ pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<
     Ok(run)
 }
 
+/// Refuse `what` when the caller is a ledger worker: the orchestrator
+/// decides it.
+fn orchestrator_only(ctx: &RuntimeContext, store: &Store, what: &str) -> Result<()> {
+    if let Some(wid) = worker_id_opt(ctx) {
+        if let Some(w) = workers::find(store.conn(), &wid)? {
+            if w.kind == WorkerKind::Worker.as_str() {
+                bail!("horch ledger {what} is for the orchestrator, not a worker");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn worker_id_opt(ctx: &RuntimeContext) -> Option<String> {
     ctx.worker.as_ref().and_then(|w| w.worker_id.clone())
 }
@@ -497,6 +518,17 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
                     t.short()
                 );
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        LedgerCommand::Requeue { task, reason, run } => {
+            orchestrator_only(ctx, &store, "requeue")?;
+            let r = resolve_run(ctx, &store, &run)?;
+            let t = store.immediate(|tx| {
+                let t = tasks::resolve(tx, &r.run_id, &task)?;
+                tasks::requeue_by_operator(tx, &t, &reason)
+            })?;
+            output::println(&format!("{} is queued again.", t.short()));
+            super::taskledger_wake::nudge_startable(ctx, &store, &r);
             Ok(ExitCode::SUCCESS)
         }
         LedgerCommand::Claim { json: as_json } => claim(ctx, &mut store, as_json),

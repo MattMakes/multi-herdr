@@ -196,6 +196,20 @@ pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
     }
 }
 
+/// The QUESTION for the operator when the task of `worker_id` is held after
+/// too many attempts (#168), else `None`.
+fn held_question(store: &Store, worker_id: &str) -> Option<String> {
+    let w = workers::get(store.conn(), worker_id).ok()?;
+    let task = tasks::get(store.conn(), w.task_id.as_deref()?).ok()?;
+    let held = task.held_reason.as_deref()?;
+    let ends = tasks::attempt_ends(store.conn(), &task).unwrap_or_default();
+    Some(format!(
+        "QUESTION: {t} is held: {held} ({}). Ask the operator: requeue it (horch ledger requeue {t} \"<reason>\"), change the ticket, or cancel it (horch ledger cancel {t} \"<reason>\"). Spawn no replacement.",
+        ends.join("; "),
+        t = task.short()
+    ))
+}
+
 /// After a reap: tell the orchestrator which persona to spawn, and how.
 pub fn after_reap(
     ctx: &RuntimeContext,
@@ -208,6 +222,10 @@ pub fn after_reap(
         .role
         .as_deref()
         .unwrap_or(&report.stop.worker_id);
+    if let Some(question) = held_question(store, &report.stop.worker_id) {
+        wake(ctx, store, run, &question);
+        return;
+    }
     let persona = report.persona.as_deref().unwrap_or("the same persona");
     wake(
         ctx,
