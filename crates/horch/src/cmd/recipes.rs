@@ -247,6 +247,12 @@ fn pane_command_for(
     // whether `HORCH_STATE_DIR` or `XDG_STATE_HOME` picked it.
     let state_root = ctx.paths.state_root.to_string_lossy();
     env.push(("HORCH_STATE_DIR", state_root.as_ref()));
+    // An explicit task ledger too (#199): the pane's agent and every
+    // `horch spawn` it runs then use the ledger this command used.
+    let ledger = super::path_text(ctx.paths.ledger_override.as_deref());
+    if let Some(ledger) = ledger.as_deref() {
+        env.push(("HORCH_LEDGER_DB", ledger));
+    }
     // Competition mode (FDS-13) reaches the briefing the same way.
     if let (Some(c), Some(rounds)) = (compete, rounds.as_deref()) {
         env.push((COMPETE_ROUNDS_ENV, rounds));
@@ -1133,6 +1139,37 @@ mod tests {
             };
             assert!(cmd.contains(&set), "{variable}: {cmd}");
         }
+    }
+
+    /// #199: the orchestrator pane uses the task ledger of the `horch` that
+    /// opened it. With `HORCH_LEDGER_DB` set, the pane line sets it; without
+    /// it, the line does not name it, and the pane uses the default ledger.
+    #[test]
+    fn pane_command_carries_the_ledger_override_only_when_set() {
+        let ledger = Path::new("/scratch/try.sqlite3");
+        let set = if cfg!(windows) {
+            format!("$env:HORCH_LEDGER_DB = '{}'; ", ledger.display())
+        } else {
+            format!(" 'HORCH_LEDGER_DB={}' ", ledger.display())
+        };
+        let with = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe("/opt/horch/bin/horch")
+                .with("HORCH_LEDGER_DB", "/scratch/try.sqlite3"),
+        )
+        .unwrap();
+        for kind in [PaneKind::FleetOrchestrator, PaneKind::OrchestrationClaude] {
+            let cmd = pane_command(&with, "orchestrator", kind, None).unwrap();
+            assert!(cmd.contains(&set), "{kind:?}: {cmd}");
+        }
+        let cmd = pane_command(
+            &test_ctx(),
+            "orchestrator",
+            PaneKind::FleetOrchestrator,
+            None,
+        )
+        .unwrap();
+        assert!(!cmd.contains("HORCH_LEDGER_DB"), "{cmd}");
     }
 
     #[test]

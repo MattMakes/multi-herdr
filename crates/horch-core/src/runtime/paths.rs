@@ -82,6 +82,19 @@ impl Paths {
         self.cwd.clone().context("resolving the current directory")
     }
 
+    /// The warning for a command that runs with its own `HORCH_STATE_DIR`
+    /// but no `HORCH_LEDGER_DB` (#199): the state moved, but the task ledger
+    /// did not. The ledger path stays independent of the state root on
+    /// purpose, as the state root is writable from a Codex pane (#181).
+    pub fn ledger_isolation_warning(&self) -> Option<String> {
+        (self.state_override.is_some() && self.ledger_override.is_none()).then(|| {
+            format!(
+                "the task ledger is still {}; set HORCH_LEDGER_DB to isolate it",
+                self.ledger_db.display()
+            )
+        })
+    }
+
     /// Point every state lookup at `dir`, as `HORCH_STATE_DIR=<dir>` would.
     pub fn set_state_dir(&mut self, dir: impl Into<PathBuf>) {
         let dir = dir.into();
@@ -191,6 +204,33 @@ mod tests {
         let env = MapEnv::default();
         assert!(project_dir(&env).is_err(), "no cwd and no variable");
         assert!(Paths::from_env(&env).project().is_err());
+    }
+
+    /// #199: only an own state dir without an own ledger warns, and the
+    /// warning names the ledger the command still uses.
+    #[test]
+    fn a_state_dir_without_a_ledger_override_warns_with_the_ledger_path() {
+        let home = MapEnv::new("/cwd").with("HOME", "/h");
+        assert_eq!(Paths::from_env(&home).ledger_isolation_warning(), None);
+        let scratch = home.clone().with("HORCH_STATE_DIR", "/scratch");
+        let expected = format!(
+            "the task ledger is still {}; set HORCH_LEDGER_DB to isolate it",
+            Path::new("/h")
+                .join(".horch")
+                .join("ledger.sqlite3")
+                .display()
+        );
+        assert_eq!(
+            Paths::from_env(&scratch).ledger_isolation_warning(),
+            Some(expected)
+        );
+        let isolated = scratch.with("HORCH_LEDGER_DB", "/scratch/ledger.sqlite3");
+        assert_eq!(Paths::from_env(&isolated).ledger_isolation_warning(), None);
+        let ledger_only = home.with("HORCH_LEDGER_DB", "/scratch/ledger.sqlite3");
+        assert_eq!(
+            Paths::from_env(&ledger_only).ledger_isolation_warning(),
+            None
+        );
     }
 
     #[test]

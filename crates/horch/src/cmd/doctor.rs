@@ -29,6 +29,9 @@ pub fn doctor(ctx: &RuntimeContext) -> Result<()> {
     for problem in service_problems(ctx, &roster) {
         eprintln!("warning: {problem}");
     }
+    if let Some(warning) = ctx.paths.ledger_isolation_warning() {
+        eprintln!("warning: {warning}");
+    }
     let problems = roster.check();
     if problems.is_empty() {
         println!(

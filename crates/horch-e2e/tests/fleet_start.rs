@@ -101,3 +101,95 @@ fn an_orchestration_whose_pane_run_fails_closes_its_workspace() {
     assert!(!o.status.success(), "{}{}", out(&o), err(&o));
     assert_eq!(workspaces(&h), Vec::<String>::new(), "{}", out(&o));
 }
+
+/// The default task ledger of the sealed home: what a scratch fleet must
+/// not create or change.
+fn default_ledger(h: &Harness) -> std::path::PathBuf {
+    h.home.join(".horch").join("ledger.sqlite3")
+}
+
+/// #199: a scratch fleet with its own `HORCH_STATE_DIR` and no
+/// `HORCH_LEDGER_DB` says which task ledger it still uses, and does not
+/// create that ledger.
+#[test]
+fn a_scratch_fleet_warns_about_the_shared_ledger_and_does_not_create_it() {
+    let mut h = harness("f199-new", "");
+    h.unset("HORCH_LEDGER_DB");
+    h.unset("HORCH_NO_WATCHDOG").unset("HORCH_NO_WAKE");
+    let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
+    assert!(o.status.success(), "{}{}", out(&o), err(&o));
+    let warning = format!(
+        "the task ledger is still {}; set HORCH_LEDGER_DB to isolate it",
+        default_ledger(&h).display()
+    );
+    assert_eq!(err(&o).matches(&warning).count(), 1, "{}", err(&o));
+    assert!(
+        !default_ledger(&h).exists(),
+        "the fleet created the default ledger"
+    );
+
+    // `horch doctor` and `horch spawn` give the same warning, once each.
+    let o = h.run(&["doctor"]);
+    let doctor = format!("warning: {warning}");
+    assert_eq!(err(&o).matches(&doctor).count(), 1, "{}", err(&o));
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    let o = h.run(&[
+        "spawn",
+        "sonnet",
+        "task",
+        "--from-pane",
+        "w1:p1",
+        "--no-tile",
+        "--force",
+    ]);
+    assert!(o.status.success(), "{}{}", out(&o), err(&o));
+    let note = format!("horch: NOTE: {warning}");
+    assert_eq!(err(&o).matches(&note).count(), 1, "{}", err(&o));
+}
+
+/// #199: with an existing default ledger, a scratch fleet leaves its bytes
+/// as they were.
+#[test]
+fn a_scratch_fleet_does_not_change_an_existing_default_ledger() {
+    let mut h = harness("f199-old", "");
+    h.unset("HORCH_LEDGER_DB");
+    h.unset("HORCH_NO_WATCHDOG").unset("HORCH_NO_WAKE");
+    // The operator's real ledger, with 1 active run of this project.
+    let o = h.run(&["ledger", "run", "new", "real"]);
+    assert!(o.status.success(), "{}{}", out(&o), err(&o));
+    let before = std::fs::read(default_ledger(&h)).unwrap();
+    let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
+    assert!(o.status.success(), "{}{}", out(&o), err(&o));
+    assert_eq!(
+        std::fs::read(default_ledger(&h)).unwrap(),
+        before,
+        "the fleet changed the default ledger"
+    );
+}
+
+/// #199: with `HORCH_LEDGER_DB` set, the orchestrator pane of a real fleet
+/// start carries it, and no warning prints.
+#[test]
+fn a_fleet_with_a_ledger_override_passes_it_to_the_orchestrator_pane() {
+    let h = harness("f199-pane", "");
+    let ledger = h.root.join("ledger.sqlite3");
+    let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
+    assert!(o.status.success(), "{}{}", out(&o), err(&o));
+    assert!(!err(&o).contains("the task ledger is still"), "{}", err(&o));
+    let runs: Vec<String> = h
+        .calls_of("herdr")
+        .iter()
+        .filter_map(|c| {
+            let argv: Vec<String> = serde_json::from_value(c["argv"].clone()).ok()?;
+            let line = argv.join(" ");
+            (argv.first().map(String::as_str) == Some("pane")
+                && argv.get(1).map(String::as_str) == Some("run")
+                && line.contains("pane-launch"))
+            .then_some(line)
+        })
+        .collect();
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    let set = format!("HORCH_LEDGER_DB={}", ledger.display());
+    assert!(runs[0].contains(&set), "{}", runs[0]);
+    assert!(!default_ledger(&h).exists());
+}
