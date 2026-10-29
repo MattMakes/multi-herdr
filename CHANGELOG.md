@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.0 - 2026-10-29
+
 - Fleet role registrations, briefs and launch records now live in horch's
   state folder, so clearing temporary files no longer breaks a running
   fleet. Fleets started before the upgrade still resolve their old records,
