@@ -107,3 +107,86 @@ impl From<GitError> for MarketplaceError {
         Self::Git(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_variant_keeps_its_message() {
+        let cases: Vec<(MarketplaceError, &str)> = vec![
+            (
+                MarketplaceError::BadSource("x".into()),
+                "invalid skill source: x",
+            ),
+            (
+                MarketplaceError::Credentials("a token".into()),
+                "skill source URL carries credentials (a token); remove them",
+            ),
+            (
+                MarketplaceError::Git(GitError::NoDir),
+                "git needs an explicit working directory",
+            ),
+            (
+                MarketplaceError::RevisionNotFound {
+                    url: "u".into(),
+                    revision: "r".into(),
+                },
+                "revision 'r' not found in u",
+            ),
+            (
+                MarketplaceError::Manifest("m".into()),
+                "invalid SKILL.md: m",
+            ),
+            (MarketplaceError::SkillMd("s".into()), "invalid SKILL.md: s"),
+            (
+                MarketplaceError::Traversal("a/../b".into()),
+                "path 'a/../b' is not a clean relative path",
+            ),
+            (
+                MarketplaceError::AbsolutePath("/etc".into()),
+                "absolute path '/etc'",
+            ),
+            (MarketplaceError::Symlink("l".into()), "'l' is a symlink"),
+            (
+                MarketplaceError::NotRegularFile("f".into()),
+                "'f' is not a regular file",
+            ),
+            (
+                MarketplaceError::TooManyFiles(512),
+                "skill has more than 512 files",
+            ),
+            (
+                MarketplaceError::FileTooLarge {
+                    path: "big".into(),
+                    bytes: 9,
+                },
+                "'big' is 9 bytes, over the limit",
+            ),
+            (
+                MarketplaceError::TotalTooLarge(100),
+                "skill is over 100 bytes in total",
+            ),
+            (
+                MarketplaceError::DigestMismatch {
+                    expected: "e".into(),
+                    actual: "a".into(),
+                },
+                "digest a does not match the locked e",
+            ),
+            (
+                MarketplaceError::Lock("bad".into()),
+                "marketplace.lock: bad",
+            ),
+            (MarketplaceError::Io(io::Error::other("disk")), "disk"),
+            (
+                MarketplaceError::Fault("after_rename"),
+                "fault injected at after_rename",
+            ),
+        ];
+        assert_eq!(cases.len(), 17);
+        for (err, text) in cases {
+            assert_eq!(err.to_string(), text);
+        }
+    }
+}
