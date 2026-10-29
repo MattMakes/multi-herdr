@@ -41,25 +41,28 @@ impl SkillManifest {
             .ok_or_else(|| MarketplaceError::Manifest("missing YAML frontmatter".to_owned()))?;
         let manifest: Self =
             serde_yaml::from_str(front).map_err(|e| MarketplaceError::Manifest(e.to_string()))?;
-        let rule = |why: String| Err(MarketplaceError::SkillMd(why));
-        if !is_valid_skill_name(&manifest.name) {
-            return rule(format!("invalid skill name '{}'", manifest.name));
+        match manifest.rule_violation(expected_name) {
+            Some(why) => Err(MarketplaceError::SkillMd(why)),
+            None => Ok(manifest),
         }
-        if let Some(expected) = expected_name {
-            if manifest.name != expected {
-                return rule(format!(
-                    "name '{}' does not match the directory '{expected}'",
-                    manifest.name
-                ));
-            }
+    }
+
+    /// The first SKILL.md rule this manifest breaks, or `None`.
+    fn rule_violation(&self, expected_name: Option<&str>) -> Option<String> {
+        if !is_valid_skill_name(&self.name) {
+            Some(format!("invalid skill name '{}'", self.name))
+        } else if let Some(expected) = expected_name.filter(|e| self.name != *e) {
+            Some(format!(
+                "name '{}' does not match the directory '{expected}'",
+                self.name
+            ))
+        } else if self.description.trim().is_empty() {
+            Some("description is empty".to_owned())
+        } else if self.description.len() > MAX_DESCRIPTION_BYTES {
+            Some(format!("description is over {MAX_DESCRIPTION_BYTES} bytes"))
+        } else {
+            None
         }
-        if manifest.description.trim().is_empty() {
-            return rule("description is empty".to_owned());
-        }
-        if manifest.description.len() > MAX_DESCRIPTION_BYTES {
-            return rule(format!("description is over {MAX_DESCRIPTION_BYTES} bytes"));
-        }
-        Ok(manifest)
     }
 
     /// Read and validate `<dir>/SKILL.md`. A symlinked SKILL.md is rejected
@@ -116,5 +119,47 @@ mod tests {
         }
         let long = format!("---\nname: tdd\ndescription: {}\n---\n", "x".repeat(1025));
         assert!(SkillManifest::parse(&long, None).is_err());
+    }
+
+    #[test]
+    fn rule_messages_and_order() {
+        let parse = |name: &str, desc: &str, expected: Option<&str>| {
+            SkillManifest::parse(
+                &format!("---\nname: {name}\ndescription: '{desc}'\n---\n"),
+                expected,
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        };
+        // The name rule fires before the directory rule, which fires before
+        // the description rules.
+        assert_eq!(
+            parse("Bad", "", Some("other")),
+            Err("invalid SKILL.md: invalid skill name 'Bad'".into())
+        );
+        assert_eq!(
+            parse("tdd", "", Some("other")),
+            Err("invalid SKILL.md: name 'tdd' does not match the directory 'other'".into())
+        );
+        assert_eq!(
+            parse("tdd", " ", Some("tdd")),
+            Err("invalid SKILL.md: description is empty".into())
+        );
+        assert_eq!(
+            parse("tdd", &"x".repeat(1025), None),
+            Err("invalid SKILL.md: description is over 1024 bytes".into())
+        );
+        assert_eq!(parse("tdd", &"x".repeat(1024), Some("tdd")), Ok(()));
+        assert_eq!(parse("tdd", "ok", None), Ok(()));
+    }
+
+    #[test]
+    fn frontmatter_errors_are_manifest_errors() {
+        let err = SkillManifest::parse("no front", None).unwrap_err();
+        assert!(matches!(err, MarketplaceError::Manifest(_)), "{err:?}");
+        let err = SkillManifest::parse("---\nname: tdd\n---\n", None).unwrap_err();
+        assert!(matches!(err, MarketplaceError::Manifest(_)), "{err:?}");
+        let rule = SkillManifest::parse("---\nname: T\ndescription: x\n---\n", None).unwrap_err();
+        assert!(matches!(rule, MarketplaceError::SkillMd(_)), "{rule:?}");
     }
 }
