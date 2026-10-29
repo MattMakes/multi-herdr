@@ -342,6 +342,10 @@ enum Command {
         /// takes that worker's task and gets its transcript and worktree.
         #[arg(long, value_name = "WORKER")]
         replaces: Option<String>,
+        /// The task-ledger run (slug or id) this worker joins. Without it, a
+        /// spawn with task text runs outside any run.
+        #[arg(long = "run", value_name = "RUN")]
+        run: Option<String>,
     },
 
     /// Where the tokens went: every pane on this machine, from the telemetry
@@ -873,6 +877,7 @@ fn dispatch(
             exact,
             force,
             replaces,
+            run,
         } => {
             let (teammate, task) = cmd::spawn::resolve_positionals(&args, resume.as_deref())?;
             let pane = cmd::spawn::spawn(
@@ -890,6 +895,7 @@ fn dispatch(
                     exact,
                     force,
                     replaces,
+                    run,
                 },
             )?;
             output::println(&pane);

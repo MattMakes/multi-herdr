@@ -1673,3 +1673,196 @@ fn the_whole_flow_on_the_fake_herdr() {
     }
     assert!(events.as_array().is_some());
 }
+
+// ─── #89: closing a run, and which run a command means ──────────────────────
+
+/// `horch <args>` with extra environment variables.
+fn run_env(h: &Harness, env: &[(&str, &str)], args: &[&str]) -> Output {
+    let mut cmd = h.horch(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.output().unwrap()
+}
+
+fn queue(h: &Harness, name: &str, persona: &str, extra: &[&str]) {
+    let p = ticket(h, name, &format!("# {name}\n"));
+    let p = p.to_string_lossy().into_owned();
+    let mut args = vec!["ledger", "add", "--file", &p, "--primary", persona];
+    args.extend_from_slice(extra);
+    ok(h, &args);
+}
+
+#[test]
+fn a_closed_run_frees_the_project_for_the_next_run() {
+    let h = world("tl-close");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus", &[]);
+
+    // A queued task holds the run open, and the refusal names it.
+    let o = h.run(&["ledger", "run", "close"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("T-1 (queued)"), "{}", text(&o));
+
+    ok(&h, &["ledger", "cancel", "T-1", "not needed"]);
+    let closed = ok(&h, &["ledger", "run", "close"]);
+    assert!(closed.contains("Run a closed as done."), "{closed}");
+    ok(&h, &["ledger", "run", "new", "b"]);
+    let o = h.run(&["ledger", "status"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    assert!(out(&o).starts_with("Run b (active)."), "{}", text(&o));
+
+    // The slug of a closed run can be used again.
+    ok(&h, &["ledger", "run", "close", "--run", "b"]);
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let runs = json_of(&h, &["ledger", "run", "list", "--json"]);
+    let status: Vec<(&str, &str)> = runs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["slug"].as_str().unwrap(), r["status"].as_str().unwrap()))
+        .collect();
+    assert_eq!(status, [("a", "active"), ("b", "done"), ("a", "done")]);
+}
+
+#[test]
+fn close_abandon_cancels_the_open_tasks() {
+    let h = world("tl-abandon");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus", &[]);
+    let o = ok(
+        &h,
+        &["ledger", "run", "close", "--abandon", "operator dropped it"],
+    );
+    assert!(o.contains("T-1 cancelled."), "{o}");
+    assert!(o.contains("Run a closed as abandoned."), "{o}");
+    let t = json_of(&h, &["ledger", "show", "T-1", "--run", "a", "--json"]);
+    assert_eq!(t["task"]["status"], "cancelled", "{t}");
+}
+
+#[test]
+fn run_new_refuses_an_old_run_branch_behind_the_main_branch() {
+    let h = world("tl-oldbranch");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    ok(&h, &["ledger", "run", "close"]);
+    project_file(&h, "new.txt", "x");
+    git_commit_all(&h, "main moves on");
+    let o = h.run(&["ledger", "run", "new", "a"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("branch fleet/a exists"), "{}", text(&o));
+}
+
+#[test]
+fn the_watchdog_of_a_closed_run_exits() {
+    let h = world("tl-close-watch");
+    ok(&h, &["ledger", "run", "new", "a", "--check-every", "10"]);
+    let mut child = h
+        .horch(&["ledger", "watch", "--run", "a"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // It runs while the run is active.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(child.try_wait().unwrap().is_none(), "the watchdog runs");
+    ok(&h, &["ledger", "run", "close"]);
+    // 1 tick is 1 s at a 10 s check interval.
+    let until = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() > until {
+            let _ = child.kill();
+            panic!("the watchdog of a closed run still runs");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(status.success());
+}
+
+/// The run a ledger worker row of `persona` belongs to.
+fn run_of_worker(h: &Harness, run: &str, persona: &str) -> usize {
+    json_of(h, &["ledger", "status", "--run", run, "--json"])["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["worker"]["persona"] == persona)
+        .count()
+}
+
+fn second_workspace(h: &Harness) {
+    let mut create = std::process::Command::new(h.bin.join("herdr"));
+    h.seal(&mut create);
+    let o = create
+        .args(["workspace", "create", "--label", "second"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+}
+
+fn spawn_args<'a>(pane: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut v = vec!["spawn"];
+    v.extend_from_slice(extra);
+    v.extend_from_slice(&["--from-pane", pane, "--no-tile", "--force"]);
+    v
+}
+
+#[test]
+fn spawn_run_names_the_run_the_worker_joins() {
+    let h = fleet("tl-spawn-run", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    ok(&h, &["ledger", "run", "new", "b"]);
+    // Without --run, 2 active runs in no workspace of theirs: the error names
+    // a flag spawn accepts.
+    let o = run_env(
+        &h,
+        &[("HORCH_WORKSPACE_ID", "w9")],
+        &spawn_args("w1:p1", &["codex-terra"]),
+    );
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("--run <slug>"), "{}", text(&o));
+    let o = h.run(&spawn_args("w1:p1", &["codex-terra", "--run", "b"]));
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(run_of_worker(&h, "b", "codex-terra"), 1);
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+}
+
+#[test]
+fn a_spawn_joins_the_run_of_its_own_workspace() {
+    let h = fleet("tl-spawn-ws", "default");
+    second_workspace(&h);
+    ok(&h, &["ledger", "run", "new", "a"]);
+    // Only W1 owns a run: a spawn from W2 joins it, with a NOTE that names it.
+    let w2 = [("HORCH_WORKSPACE_ID", "w2")];
+    let o = run_env(&h, &w2, &spawn_args("w2:p1", &["codex-terra"]));
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("NOTE: this command uses run a of workspace w1"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 1);
+
+    // W2 owns a run of its own now: the spawn goes there.
+    let o = run_env(&h, &w2, &["ledger", "run", "new", "b"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let o = run_env(&h, &w2, &spawn_args("w2:p1", &["opus"]));
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(run_of_worker(&h, "b", "opus"), 1);
+    assert_eq!(run_of_worker(&h, "a", "opus"), 0);
+}
+
+#[test]
+fn a_spawn_with_task_text_runs_outside_the_run() {
+    let h = fleet("tl-spawn-text", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let o = h.run(&spawn_args("w1:p1", &["codex-terra", "Review src/x.rs"]));
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("NOTE: this spawn has task text, so it runs outside task-ledger run a"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+}

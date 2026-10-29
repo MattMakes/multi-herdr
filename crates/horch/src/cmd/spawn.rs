@@ -63,6 +63,8 @@ pub struct SpawnArgs {
     pub force: bool,
     /// The dead task-ledger worker this spawn replaces.
     pub replaces: Option<String>,
+    /// The task-ledger run to join (`--run`).
+    pub run: Option<String>,
 }
 
 /// Split `horch spawn`'s positional arguments into a teammate and a task.

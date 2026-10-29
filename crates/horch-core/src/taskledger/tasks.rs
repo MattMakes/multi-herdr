@@ -43,6 +43,11 @@ pub struct Task {
     pub parent_task_id: Option<String>,
     pub status: String,
     pub attempts: i64,
+    /// Set while a `queued` task is held for the operator after too many
+    /// attempts (#168).
+    pub held_reason: Option<String>,
+    /// `attempts` at the last operator requeue.
+    pub attempt_floor: i64,
     pub current_worker_id: Option<String>,
     pub summary: Option<String>,
     pub origin: String,
@@ -92,6 +97,8 @@ impl Task {
             parent_task_id: r.get("parent_task_id")?,
             status: r.get("status")?,
             attempts: r.get("attempts")?,
+            held_reason: r.get("held_reason")?,
+            attempt_floor: r.get("attempt_floor")?,
             current_worker_id: r.get("current_worker_id")?,
             summary: r.get("summary")?,
             origin: r.get("origin")?,

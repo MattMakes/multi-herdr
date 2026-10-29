@@ -198,6 +198,7 @@ fn fleet(ctx: &RuntimeContext) -> Result<ExitCode> {
             exact: false,
             force: true,
             replaces: None,
+            run: None,
         },
     )?;
 
@@ -662,6 +663,7 @@ fn tile(ctx: &RuntimeContext) -> Result<ExitCode> {
             exact: false,
             force: true,
             replaces: None,
+            run: None,
         },
     )?;
 

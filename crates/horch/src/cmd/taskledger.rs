@@ -51,7 +51,8 @@ pub enum LedgerCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Runs: `run new <slug>` creates a run and its run branch.
+    /// Runs: `run new <slug>` creates a run and its run branch; `run close`
+    /// ends it.
     Run {
         #[command(subcommand)]
         command: RunCommand,
@@ -271,6 +272,20 @@ pub enum RunCommand {
         /// Slack, in seconds, when a screen timer is compared with the clock.
         #[arg(long, hide = true)]
         timer_tolerance: Option<i64>,
+        /// Attempts at 1 task before horch holds it and asks the operator
+        /// (default 3).
+        #[arg(long)]
+        max_attempts: Option<i64>,
+    },
+    /// Close the run when its work is done. Refuses while a task is queued,
+    /// held, running or landing, or a worktree is open or landing.
+    Close {
+        #[command(flatten)]
+        run: RunArg,
+        /// Cancel every open task with this reason, then close the run as
+        /// abandoned.
+        #[arg(long, value_name = "REASON")]
+        abandon: Option<String>,
     },
     /// Every run of this project.
     List {
@@ -381,7 +396,17 @@ pub fn resolve_run(ctx: &RuntimeContext, store: &Store, arg: &RunArg) -> Result<
             }
         }
     }
-    runs::resolve(store.conn(), &project_root(ctx)?, explicit.as_deref())
+    let workspace = ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string());
+    let (run, note) = runs::resolve(
+        store.conn(),
+        &project_root(ctx)?,
+        explicit.as_deref(),
+        workspace.as_deref(),
+    )?;
+    if let Some(note) = note {
+        eprintln!("horch: {note}");
+    }
+    Ok(run)
 }
 
 fn worker_id_opt(ctx: &RuntimeContext) -> Option<String> {
@@ -1006,6 +1031,21 @@ fn opt(v: Option<i64>) -> String {
 fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     match command {
+        RunCommand::Close { run, abandon } => {
+            let r = resolve_run(ctx, store, &run)?;
+            let closed = store.immediate(|tx| runs::close_run(tx, &r, abandon.as_deref()))?;
+            for (task, holder) in &closed.cancelled {
+                match holder {
+                    Some(w) => output::println(&format!(
+                        "{task} cancelled. Its worker {w} may still run: horch ledger stop {w} \"run abandoned\" --run {}",
+                        r.slug
+                    )),
+                    None => output::println(&format!("{task} cancelled.")),
+                }
+            }
+            output::println(&format!("Run {} closed as {}.", r.slug, closed.status));
+            Ok(ExitCode::SUCCESS)
+        }
         RunCommand::List { json: as_json } => {
             let all = runs::of_project(store.conn(), &root)?;
             if as_json {
@@ -1037,6 +1077,7 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
             heartbeat_every,
             heartbeat_stale,
             timer_tolerance,
+            max_attempts,
         } => {
             let steps: Vec<StepName> = steps
                 .iter()
@@ -1059,6 +1100,12 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                 if !git.branch_exists(&root, &run_branch) {
                     git.run(&root, &["branch", &run_branch, base])?;
                     eprintln!("horch ledger: created run branch {run_branch} from {base}.");
+                } else if !git.is_ancestor(&root, base, &run_branch) {
+                    // An earlier run's branch: tasks would land on old code.
+                    bail!(
+                        "branch {run_branch} exists and lacks commits of {base}. Delete it \
+                         (git branch -D {run_branch}) or name another with --branch"
+                    );
                 }
                 if let Some(remote) = &remote {
                     let out =
@@ -1084,6 +1131,7 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                     heartbeat_every_s: heartbeat_every,
                     heartbeat_stale_s: heartbeat_stale,
                     timer_tolerance_s: timer_tolerance,
+                    max_attempts,
                 },
             };
             let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
@@ -1419,18 +1467,19 @@ pub fn done_cmd(
     Ok(())
 }
 
-/// The slug of this project's active task-ledger run, if it has one. Never
-/// creates the ledger file.
+/// The slug of the active task-ledger run of this project that the caller's
+/// herdr workspace owns, if any (#89). Never creates the ledger file.
 pub fn active_run_slug(ctx: &RuntimeContext) -> Option<String> {
     if !ctx.paths.ledger_db.exists() {
         return None;
     }
+    let workspace = ctx.herdr.workspace.as_ref()?.as_str().to_string();
     let store = taskledger::open(ctx).ok()?;
     let root = project_root(ctx).ok()?;
     runs::of_project(store.conn(), &root)
         .ok()?
         .into_iter()
-        .find(|r| r.status == "active")
+        .find(|r| r.status == "active" && r.workspace_id.as_deref() == Some(workspace.as_str()))
         .map(|r| r.slug)
 }
 

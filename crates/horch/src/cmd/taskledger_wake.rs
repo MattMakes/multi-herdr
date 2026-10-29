@@ -79,7 +79,10 @@ pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
                     ctx,
                     store,
                     run,
-                    "NOTE: All tasks are done. Run horch ledger status, verify the run, then report to the operator.",
+                    &format!(
+                        "NOTE: All tasks are done. Run horch ledger status, verify the run, then close it with horch ledger run close --run {} and report to the operator.",
+                        run.slug
+                    ),
                 );
                 return;
             }
