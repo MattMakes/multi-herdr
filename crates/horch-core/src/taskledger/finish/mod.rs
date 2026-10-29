@@ -5,7 +5,7 @@
 //! first that does not pass. A re-run starts again from the top: a step that
 //! passed is kept while the branch's tree is the one it judged, and runs
 //! again when a later fix changed it. Once `land` passed, the steps before
-//! it are final.
+//! it are final, until a commit arrives that the run branch lacks.
 
 pub mod codesweep;
 pub mod complexity;
@@ -474,6 +474,18 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         .iter()
         .position(|n| *n == StepName::Land)
         .map(|i| i as i64 + 1);
+    // Commits after a land: the steps before land judge them again (#154).
+    if let (Some(w0), Some(rb), Some(ls)) = (&wt, run.run_branch.as_deref(), land_seq) {
+        if land::reopen_if_new_commits(store, &tools.git, &root, w0, rb)? {
+            store.immediate(|tx| {
+                tx.execute(
+                    "UPDATE task_steps SET status = 'pending' WHERE task_id = ?1 AND worker_id = ?2 AND seq >= ?3",
+                    params![task.task_id, w.worker_id, ls],
+                )?;
+                Ok(())
+            })?;
+        }
+    }
     let mut stopped_at = None;
     let mut message = String::new();
     let mut queued_reviews = Vec::new();

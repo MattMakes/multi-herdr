@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use super::model::{
-    Actor, EventKind, FileMode, Origin, TaskKind, TaskStatus, WorkerKind, WorkerStatus,
+    Actor, EventKind, FileMode, Origin, StepName, TaskKind, TaskStatus, WorkerKind, WorkerStatus,
     WorktreeMode,
 };
 use super::runs::Run;
@@ -655,6 +655,10 @@ pub struct Claimed {
     /// The unfinished past work this task was reopened from.
     pub reopened_from: Option<String>,
     pub worktree_branch: Option<String>,
+    /// The commit the inherited worktree already landed, if it did.
+    pub landed_commit: Option<String>,
+    /// The finish steps after `land`: what a landed worktree has left.
+    pub steps_after_land: Vec<String>,
 }
 
 /// The result of `horch ledger claim`.
@@ -801,21 +805,31 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
             transcript_path: a.transcript_path,
         })
         .collect();
-    let wt: Option<(String, String)> = optional(conn.query_row(
-        "SELECT path, branch FROM worktrees WHERE task_id = ?1
+    let wt: Option<(String, String, Option<String>)> = optional(conn.query_row(
+        "SELECT path, branch, CASE WHEN status IN ('landed', 'cleanup_failed') THEN landed_commit END
+         FROM worktrees WHERE task_id = ?1
            AND status IN ('open', 'landing', 'landed', 'cleanup_failed')
          ORDER BY created_at DESC LIMIT 1",
         [&task.task_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     ))?;
+    let steps = super::runs::get(conn, &task.run_id)?.steps()?;
+    let steps_after_land = steps
+        .iter()
+        .skip_while(|s| **s != StepName::Land)
+        .skip(1)
+        .map(|s| s.as_str().to_string())
+        .collect();
     Ok(Claimed {
         own: files(conn, &task.task_id, FileMode::Own)?,
         do_not_touch: files(conn, &task.task_id, FileMode::DoNotTouch)?,
         attempt: w.attempt.unwrap_or(task.attempts),
         prior,
-        worktree: wt.as_ref().map(|(p, _)| p.clone()),
+        worktree: wt.as_ref().map(|(p, _, _)| p.clone()),
         reopened_from: super::import::reopened_from(conn, &task.task_id)?,
-        worktree_branch: wt.map(|(_, b)| b),
+        landed_commit: wt.as_ref().and_then(|(_, _, l)| l.clone()),
+        steps_after_land,
+        worktree_branch: wt.map(|(_, b, _)| b),
         task,
     })
 }

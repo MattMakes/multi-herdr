@@ -1477,10 +1477,23 @@ pub fn render_claim(c: &Claimed) -> String {
         return out;
     }
     match (&c.worktree, t.uses_worktree()) {
-        (Some(path), _) => out.push_str(&format!(
-            "Worktree: {path} (branch {}). It holds the earlier attempt's work. Work there.\n",
-            c.worktree_branch.as_deref().unwrap_or("?")
-        )),
+        (Some(path), _) => {
+            out.push_str(&format!(
+                "Worktree: {path} (branch {}). It holds the earlier attempt's work. Work there.\n",
+                c.worktree_branch.as_deref().unwrap_or("?")
+            ));
+            if let Some(landed) = &c.landed_commit {
+                out.push_str(&format!(
+                    "Its work already landed at {}. The finish steps left: {}. A new commit is checked, reviewed and landed again.\n",
+                    &landed[..landed.len().min(12)],
+                    if c.steps_after_land.is_empty() {
+                        "none".to_string()
+                    } else {
+                        c.steps_after_land.join(", ")
+                    }
+                ));
+            }
+        }
         (None, true) => out.push_str(&format!(
             "Make your worktree first: horch ledger worktree new {}\n",
             slug(&t.title)

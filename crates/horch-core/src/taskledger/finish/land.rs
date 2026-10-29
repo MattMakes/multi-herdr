@@ -107,11 +107,8 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     let Some(wt) = cx.worktree.clone() else {
         return land_shared(cx, &run_branch, &log);
     };
-    if wt.status == WorktreeStatus::Landed.as_str()
-        || wt.status == WorktreeStatus::CleanupFailed.as_str()
-    {
-        let c = wt.landed_commit.clone().unwrap_or_default();
-        return Ok(Outcome::pass(&c, None, "already landed"));
+    if is_landed(&wt) && !reopen_if_new_commits(store, git, &cx.root, &wt, &run_branch)? {
+        return land_again(cx, &wt, &run_branch, &log);
     }
     let dir = PathBuf::from(&wt.path);
     require_clean(git, &dir)?;
@@ -218,7 +215,7 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
             &["push", remote, &format!("{run_branch}:{run_branch}")],
         )?;
         if !push.ok {
-            // The land stands; the push is retried by the next finish.
+            // The land stands; the next finish pushes again (`land_again`).
             set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landed, None)?;
             store.conn().execute(
                 "UPDATE worktrees SET landed_commit = ?2, landed_at = ?3 WHERE worktree_id = ?1",
@@ -246,6 +243,78 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     )?;
     std::fs::write(&log, format!("{note}\n"))?;
     Ok(Outcome::pass(&new, Some(log), &note))
+}
+
+/// Whether the worktree's work landed already.
+fn is_landed(wt: &WorktreeRow) -> bool {
+    wt.status == WorktreeStatus::Landed.as_str()
+        || wt.status == WorktreeStatus::CleanupFailed.as_str()
+}
+
+/// A landed worktree whose branch has commits the run branch lacks goes
+/// back to `open`, so they are checked, reviewed and landed (#154). Returns
+/// whether it did.
+pub(crate) fn reopen_if_new_commits(
+    store: &Store,
+    git: &Git,
+    root: &Path,
+    wt: &WorktreeRow,
+    run_branch: &str,
+) -> Result<bool> {
+    if !is_landed(wt) {
+        return Ok(false);
+    }
+    let new = git
+        .commits_missing_from(root, &wt.branch, run_branch)
+        .unwrap_or_default();
+    if new.is_empty() {
+        return Ok(false);
+    }
+    set_worktree(
+        store.conn(),
+        &wt.worktree_id,
+        WorktreeStatus::Open,
+        Some(&format!("{} commits after the land", new.len())),
+    )?;
+    Ok(true)
+}
+
+/// Whether `remote`'s run branch holds `commit` (after a fetch).
+fn remote_has(git: &Git, root: &Path, remote: &str, run_branch: &str, commit: &str) -> bool {
+    let _ = git.try_run(root, &["fetch", remote, run_branch]);
+    let remote_ref = format!("refs/remotes/{remote}/{run_branch}");
+    git.rev(root, &remote_ref).is_ok() && git.is_ancestor(root, commit, &remote_ref)
+}
+
+/// A landed worktree with no new commit: push the run branch again when the
+/// remote lacks the land, else pass at once.
+fn land_again(cx: &Ctx<'_>, wt: &WorktreeRow, run_branch: &str, log: &Path) -> Result<Outcome> {
+    let git = &cx.tools.git;
+    let landed = wt.landed_commit.clone().unwrap_or_default();
+    let Some(remote) = cx.run.remote.as_deref() else {
+        return Ok(Outcome::pass(&landed, None, "already landed"));
+    };
+    if landed.is_empty() || remote_has(git, &cx.root, remote, run_branch, &landed) {
+        return Ok(Outcome::pass(&landed, None, "already landed"));
+    }
+    let _lock = land_lock(cx)?;
+    let push = git.try_run(
+        &cx.root,
+        &["push", remote, &format!("{run_branch}:{run_branch}")],
+    )?;
+    if !push.ok {
+        return Ok(Outcome::fail(
+            "landed, not pushed",
+            None,
+            &format!(
+                "push of {run_branch} to {remote} failed again: {}",
+                push.stderr
+            ),
+        ));
+    }
+    let note = format!("{run_branch} pushed to {remote}; it holds {landed}");
+    std::fs::write(log, format!("{note}\n"))?;
+    Ok(Outcome::pass(&landed, Some(log.to_path_buf()), &note))
 }
 
 /// A shared-checkout task: its commits are on the run branch already when
@@ -315,9 +384,7 @@ pub fn unsafe_to_remove(
         )));
     }
     if let (Some(remote), Some(landed)) = (remote, wt.landed_commit.as_deref()) {
-        let _ = git.try_run(root, &["fetch", remote, run_branch]);
-        let remote_ref = format!("refs/remotes/{remote}/{run_branch}");
-        if git.rev(root, &remote_ref).is_err() || !git.is_ancestor(root, landed, &remote_ref) {
+        if !remote_has(git, root, remote, run_branch, landed) {
             return Ok(Some(format!(
                 "{remote}/{run_branch} does not have {landed} yet"
             )));

@@ -1756,3 +1756,203 @@ fn a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits() {
     let log = git_in(&h, &remote, &["log", "--oneline", "fleet/alpha"]);
     assert!(log.contains("doc"), "{log}");
 }
+
+/// A run with `steps`, 1 task with `check`, claimed by a new worker that
+/// commits `file` in its worktree. Returns (worker, worktree path).
+fn claimed_with_commit(
+    h: &Harness,
+    steps: &str,
+    check: Option<&str>,
+    file: &str,
+) -> (String, PathBuf) {
+    ok(h, &["ledger", "run", "new", "alpha", "--steps", steps]);
+    let p = ticket(h, "01-a", "# 01: Feature\n");
+    let mut add = vec![
+        "ledger".to_string(),
+        "add".into(),
+        "--file".into(),
+        p.to_string_lossy().into_owned(),
+        "--primary".into(),
+        "opus".into(),
+    ];
+    if let Some(c) = check {
+        add.extend(["--check".into(), c.to_string()]);
+    }
+    ok(h, &add.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+    let w = worker_new(h, "opus");
+    ok_as(h, &w, &["ledger", "claim"]);
+    let wt = ok_as(h, &w, &["ledger", "worktree", "new", "feat"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    commit_file(h, &path, file);
+    (w, path)
+}
+
+fn commit_file(h: &Harness, dir: &Path, file: &str) {
+    std::fs::write(dir.join(file), format!("{file}\n")).unwrap();
+    git_in(h, dir, &["add", file]);
+    git_in(h, dir, &["commit", "--quiet", "--no-gpg-sign", "-m", file]);
+}
+
+/// The (status, verdict) of step `name` in a finish report.
+fn step_of(r: &Value, name: &str) -> (String, String) {
+    let s = r["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == name)
+        .unwrap_or_else(|| panic!("no step {name}: {r}"));
+    (
+        s["status"].as_str().unwrap_or("").to_string(),
+        s["verdict"].as_str().unwrap_or("").to_string(),
+    )
+}
+
+fn lock_worktree(h: &Harness, path: &Path, on: bool) {
+    let project = h.project.clone();
+    let p = path.to_string_lossy();
+    let verb = if on { "lock" } else { "unlock" };
+    git_in(h, &project, &["worktree", verb, &p]);
+}
+
+fn reject_pushes(h: &Harness, on: bool) {
+    let hook = h.root.join("remote.git/hooks/pre-receive");
+    if on {
+        std::fs::write(&hook, "#!/bin/sh\necho rejected >&2\nexit 1\n").unwrap();
+        horch_core::runtime::process::make_executable(&hook).unwrap();
+    } else {
+        let _ = std::fs::remove_file(&hook);
+    }
+}
+
+#[test]
+fn a_failed_push_after_a_land_is_retried_by_the_next_finish() {
+    let h = finish_world("tl-push-retry");
+    let (w, _) = claimed_with_commit(&h, "land,cleanup", None, "a.txt");
+    reject_pushes(&h, true);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        step_of(&r, "land"),
+        ("failed".into(), "landed, not pushed".into()),
+        "{r}"
+    );
+    // A 2nd failure keeps the step failed.
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        step_of(&r, "land"),
+        ("failed".into(), "landed, not pushed".into()),
+        "{r}"
+    );
+    reject_pushes(&h, false);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    let project = h.project.clone();
+    let remote = h.root.join("remote.git");
+    assert_eq!(
+        git_in(&h, &remote, &["rev-parse", "fleet/alpha"]),
+        git_in(&h, &project, &["rev-parse", "fleet/alpha"])
+    );
+    assert_eq!(step_of(&r, "cleanup").0, "passed");
+}
+
+#[test]
+fn a_replacement_commit_after_the_land_lands_and_is_pushed() {
+    let h = finish_world("tl-reland");
+    let (w1, path) = claimed_with_commit(&h, "land,cleanup", None, "a.txt");
+    // A locked worktree is not removed: cleanup fails after the land.
+    lock_worktree(&h, &path, true);
+    let (code, r) = finish_json(&h, &w1);
+    assert_eq!(code, Some(1));
+    assert_eq!(step_of(&r, "land").0, "passed", "{r}");
+    assert_eq!(step_of(&r, "cleanup").0, "failed", "{r}");
+    ok(&h, &["ledger", "stop", &w1, "reaped in the test"]);
+    let w2 = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "opus",
+            "--replaces",
+            &w1,
+        ],
+    )
+    .trim()
+    .to_string();
+    let claim = ok_as(&h, &w2, &["ledger", "claim"]);
+    assert!(claim.contains("already landed"), "{claim}");
+    assert!(claim.contains("cleanup"), "the steps left: {claim}");
+    lock_worktree(&h, &path, false);
+    commit_file(&h, &path, "b.txt");
+    let (code, r) = finish_json(&h, &w2);
+    assert_eq!(code, Some(0), "{r}");
+    let project = h.project.clone();
+    assert_eq!(
+        git_in(&h, &project, &["show", "fleet/alpha:b.txt"]),
+        "b.txt"
+    );
+    let remote = h.root.join("remote.git");
+    assert_eq!(git_in(&h, &remote, &["show", "fleet/alpha:b.txt"]), "b.txt");
+    assert!(!path.exists(), "cleanup removed the worktree");
+}
+
+#[test]
+fn a_commit_after_the_land_is_checked_and_reviewed_again() {
+    let h = finish_world("tl-reland-review");
+    let (w, path) = claimed_with_commit(&h, "check,code-sweep,land,cleanup", Some("true"), "a.txt");
+    let clean = "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n";
+    let (_, r) = finish_json(&h, &w);
+    review_all(&h, r["queued_reviews"].as_array().unwrap().len(), clean);
+    lock_worktree(&h, &path, true);
+    let (_, r) = finish_json(&h, &w);
+    assert_eq!(step_of(&r, "land").0, "passed", "{r}");
+    assert_eq!(r["stopped_at"], "cleanup", "{r}");
+    let check_rounds = r["steps"][0]["rounds"].as_i64().unwrap();
+
+    lock_worktree(&h, &path, false);
+    commit_file(&h, &path, "b.txt");
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(r["stopped_at"], "code-sweep", "a new round: {r}");
+    assert!(
+        r["steps"][0]["rounds"].as_i64().unwrap() > check_rounds,
+        "check ran again: {r}"
+    );
+    review_all(&h, r["queued_reviews"].as_array().unwrap().len(), clean);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    let remote = h.root.join("remote.git");
+    assert_eq!(git_in(&h, &remote, &["show", "fleet/alpha:b.txt"]), "b.txt");
+}
+
+#[test]
+fn a_landed_worktree_with_no_new_commit_passes_land_without_a_push() {
+    let h = finish_world("tl-landed-again");
+    let (w, path) = claimed_with_commit(&h, "land,cleanup", None, "a.txt");
+    lock_worktree(&h, &path, true);
+    let (_, r) = finish_json(&h, &w);
+    let (_, landed) = step_of(&r, "land");
+    // Any push now fails: a land that pushed again would fail.
+    reject_pushes(&h, true);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(step_of(&r, "land"), ("passed".into(), landed), "{r}");
+    assert_eq!(r["stopped_at"], "cleanup", "{r}");
+}
+
+#[test]
+fn a_landed_worktree_passes_land_at_once_in_a_run_with_no_remote() {
+    let h = world("tl-landed-local");
+    let (w, path) = claimed_with_commit(&h, "land,cleanup", None, "a.txt");
+    lock_worktree(&h, &path, true);
+    let (_, r) = finish_json(&h, &w);
+    let (_, landed) = step_of(&r, "land");
+    assert_eq!(r["stopped_at"], "cleanup", "{r}");
+    let (_, r) = finish_json(&h, &w);
+    assert_eq!(step_of(&r, "land"), ("passed".into(), landed), "{r}");
+    lock_worktree(&h, &path, false);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+}

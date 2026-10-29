@@ -175,7 +175,7 @@ pub fn step(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
             "PR head behind",
             None,
             &format!(
-                "PR #{n} head {} does not contain {landed} yet; run finish again after the push",
+                "PR #{n} head {} does not contain {landed}: the run branch is not pushed; run horch ledger finish to retry the push",
                 view.head
             ),
         ));
