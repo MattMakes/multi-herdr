@@ -49,9 +49,9 @@ pub fn wake(ctx: &RuntimeContext, store: &Store, run: &Run, text: &str) {
             format!("Wake delivered to {target}: {line}")
         }
         Ok(horch_core::execution::lifecycle::ReportStatus::Queued(reason)) => {
-            format!("Wake queued for {target}, not yet acknowledged ({reason}): {line}")
+            format!("Wake queued, not yet acknowledged ({reason}), for {target}: {line}")
         }
-        Err(e) => format!("Wake for {target} not delivered ({e:#}): {line}"),
+        Err(e) => format!("Wake not delivered ({e:#}), for {target}: {line}"),
     };
     if let Err(e) = &sent {
         eprintln!("horch ledger: the orchestrator was not woken: {e:#}");

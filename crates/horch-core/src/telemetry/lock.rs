@@ -10,7 +10,7 @@
 //! existed), or a platform without start times (Windows), falls back to
 //! "the pid exists". The lock is also removed on every normal exit.
 //!
-//! The holder also records its binary ([`ExeIdentity`]: path, size and
+//! The holder also records its binary ([`crate::exeid::ExeIdentity`]: path, size and
 //! modification time). A collector keeps running the binary it started
 //! with, so after `just install` replaces that file it runs old code: old
 //! prices, old readers. [`runs_other_binary`] finds it, and [`stop`] ends
@@ -44,7 +44,7 @@ pub struct LockInfo {
     pub exe: Option<ExeIdentity>,
 }
 
-pub use crate::exeid::{exe_identity, ExeIdentity};
+use crate::exeid::{exe_identity, ExeIdentity};
 
 /// Whether the live holder `info` runs another binary than `current`, the
 /// binary that should collect now. A holder that recorded no binary was
