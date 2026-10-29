@@ -724,24 +724,7 @@ fn coordinate(
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let store = ExecutionStore::open_in(ctx)?;
     let roster = load_roster(ctx)?;
-    let artifacts = paths
-        .artifacts_dir(r.experiment, r.round)?
-        .join("validation");
-    observe::ensure_dirs(paths, &artifacts)?;
-    let gates = r
-        .config
-        .gates
-        .iter()
-        .map(|g| GateSpec {
-            name: g.name.clone(),
-            command: g.command.clone(),
-            timeout: Duration::from_secs(g.timeout_s),
-            required: g.required,
-        })
-        .collect();
-    // `fail-gate:<name>` reaches the gates from `run` (and from promotion's
-    // revalidation, which uses this validator too).
-    let validator = CommandValidator::new(gates, artifacts, ctx.settings.faults.points().clone());
+    let validator = round_validator(ctx, paths, r)?;
     let usage = TelemetryUsage {
         locations: Locations::from_context(ctx),
     };
@@ -749,26 +732,10 @@ fn coordinate(
         estimates: r.estimates.clone(),
         ..UsageMeter::default()
     };
-    let worktree_root = r
-        .config
-        .worktree_root
-        .clone()
-        .context("the config has no worktree root")?;
-    let disk_dir = existing_ancestor(&worktree_root);
-    let machine_file = ctx.settings.machine_file.clone();
-    let disk_free = move || match machine::probe(
-        &disk_dir,
-        &machine::ProbeBins::default(),
-        machine_file.as_deref(),
-    )
-    .disk_free_bytes
-    {
-        Known::Known(free) => Some(free),
-        Known::Unknown => None,
-    };
+    let spec = round_spec(ctx, r, project)?;
+    let disk_free = disk_probe(ctx, &spec.worktree_root);
     let clock = monotonic(clock::now);
     let sleep = |d: Duration| std::thread::sleep(d);
-    let watch_command = watch_command(ctx, &project, r.experiment)?;
     let coordinator = Coordinator {
         ctx: &spawn_ctx,
         recorder: &recorder,
@@ -786,45 +753,129 @@ fn coordinate(
         faults: &ctx.settings.faults,
         launcher: &DetachedLauncher(ctx),
     };
-    let spec = RoundSpec {
+    drive_round(&coordinator, &spec, r, &herdr, plan)
+}
+
+/// Start the planned round, or drive the one that has events. A coordinator
+/// that stops on an error reports it; one that ends the round finishes it.
+fn drive_round(
+    coordinator: &Coordinator<'_, GitCli>,
+    spec: &RoundSpec,
+    r: &Round,
+    herdr: &Herdr,
+    plan: Option<&RoundPlan>,
+) -> Result<u8> {
+    let outcome = match plan {
+        Some(plan) => coordinator.start(spec, plan),
+        None => coordinator.drive(spec),
+    };
+    match outcome {
+        Ok(outcome) => finish_round(coordinator, spec, r, herdr, &outcome),
+        Err(e) => Err(report_stopped(herdr, r, e)),
+    }
+}
+
+/// The round the coordinator runs, in `project`.
+fn round_spec(ctx: &RuntimeContext, r: &Round, project: PathBuf) -> Result<RoundSpec> {
+    let worktree_root = r
+        .config
+        .worktree_root
+        .clone()
+        .context("the config has no worktree root")?;
+    Ok(RoundSpec {
         experiment: r.experiment.clone(),
         round: r.round.clone(),
         index: 0,
         config: r.config.clone(),
         task: r.task.to_string(),
+        watch_command: watch_command(ctx, &project, r.experiment)?,
         repo: project,
         worktree_root,
         safe_n: r.safe_n,
         tick: TICK,
-        watch_command,
-    };
-    let outcome = match plan {
-        Some(plan) => coordinator.start(&spec, plan),
-        None => coordinator.drive(&spec),
-    };
-    let outcome = match outcome {
-        Ok(o) => o,
-        Err(e) => {
-            abort_on_fault(&e);
-            if let Some(pane) = r.report_to {
-                let stopped = RoundReport::stopped(r.experiment, r.round, &format!("{e:#}"));
-                report::deliver(&herdr, pane, &stopped);
-            }
-            return Err(e);
+    })
+}
+
+/// The validator of the round: the config's gates, logging under the
+/// round's artifacts. `fail-gate:<name>` reaches the gates from `run` (and
+/// from promotion's revalidation, which uses this validator too).
+fn round_validator(
+    ctx: &RuntimeContext,
+    paths: &DatasetPaths,
+    r: &Round,
+) -> Result<CommandValidator> {
+    let artifacts = paths
+        .artifacts_dir(r.experiment, r.round)?
+        .join("validation");
+    observe::ensure_dirs(paths, &artifacts)?;
+    let gates = r
+        .config
+        .gates
+        .iter()
+        .map(|g| GateSpec {
+            name: g.name.clone(),
+            command: g.command.clone(),
+            timeout: Duration::from_secs(g.timeout_s),
+            required: g.required,
+        })
+        .collect();
+    Ok(CommandValidator::new(
+        gates,
+        artifacts,
+        ctx.settings.faults.points().clone(),
+    ))
+}
+
+/// Free bytes on the disk that the worktree root lands on; `None` when the
+/// probe does not know.
+fn disk_probe(ctx: &RuntimeContext, worktree_root: &Path) -> impl Fn() -> Option<u64> {
+    let disk_dir = existing_ancestor(worktree_root);
+    let machine_file = ctx.settings.machine_file.clone();
+    move || {
+        let probe = machine::probe(
+            &disk_dir,
+            &machine::ProbeBins::default(),
+            machine_file.as_deref(),
+        );
+        match probe.disk_free_bytes {
+            Known::Known(free) => Some(free),
+            Known::Unknown => None,
         }
-    };
-    let view = coordinator.view(&spec)?;
-    let events = store::read_all(paths)?.events;
+    }
+}
+
+/// The coordinator stopped on an error: abort the process on a fault point,
+/// else report to the pane that waits. Gives the error back.
+fn report_stopped(herdr: &Herdr, r: &Round, e: anyhow::Error) -> anyhow::Error {
+    abort_on_fault(&e);
+    if let Some(pane) = r.report_to {
+        let stopped = RoundReport::stopped(r.experiment, r.round, &format!("{e:#}"));
+        report::deliver(herdr, pane, &stopped);
+    }
+    e
+}
+
+/// The round ended: report it, close its workspace, print its line. Gives
+/// the exit code.
+fn finish_round(
+    coordinator: &Coordinator<'_, GitCli>,
+    spec: &RoundSpec,
+    r: &Round,
+    herdr: &Herdr,
+    outcome: &RoundOutcome,
+) -> Result<u8> {
+    let view = coordinator.view(spec)?;
+    let events = store::read_all(coordinator.paths)?.events;
     let reason = latest_intervention(&events, r.round);
     // The report goes before the workspace closes: a detached coordinator
     // runs in a pane of that workspace.
     if let Some(pane) = r.report_to {
         let report =
-            RoundReport::from_view(r.experiment, r.round, &outcome, &view, reason.as_deref());
-        report::deliver(&herdr, pane, &report);
+            RoundReport::from_view(r.experiment, r.round, outcome, &view, reason.as_deref());
+        report::deliver(herdr, pane, &report);
     }
-    coordinator.close_workspace(&spec);
-    let (line, code) = outcome_line(&outcome, &view, reason.as_deref());
+    coordinator.close_workspace(spec);
+    let (line, code) = outcome_line(outcome, &view, reason.as_deref());
     println!("round {} {line}", r.round);
     Ok(code)
 }
