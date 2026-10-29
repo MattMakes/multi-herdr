@@ -29,7 +29,7 @@ pub(crate) mod run;
 pub mod status;
 pub(crate) mod watch;
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, OperatorCommand};
 
 /// The exit codes of `multi-herdr-dataset` (B2).
 pub mod exit {
@@ -54,45 +54,8 @@ pub mod exit {
 /// Every command except `judge-job` first resolves its project (see
 /// [`resolve_project`]). The operator commands print the target repo first.
 pub fn dispatch(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, cli: Cli) -> Result<u8> {
-    let command = cli.command;
-    // The judge job runs in its sealed bundle; the coordinator passes its
-    // project in `HORCH_PROJECT_DIR`.
-    if !matches!(command, Command::JudgeJob(_)) {
-        let git = GitCli::new(ctx.bins.harness.git.clone());
-        let ambient = ctx.paths.project_dir.clone();
-        ctx.paths.project_dir = resolve_project(
-            cli.project.as_deref(),
-            ctx.paths.cwd.as_deref(),
-            ambient.as_deref(),
-            |dir| {
-                let top = git.toplevel(dir).ok()?;
-                // `HORCH_PROJECT_DIR` first: the cwd is already resolved.
-                Some(match ambient.as_deref() {
-                    Some(a) if spelled_as(&top, a) != top => spelled_as(&top, a),
-                    _ => spelled_as(&top, dir),
-                })
-            },
-        );
-        // `run --detach` prints 1 line on a pass (FDS-10).
-        let detached = matches!(&command, Command::Run(args) if args.detach);
-        if !detached
-            && matches!(
-                command,
-                Command::Run(_)
-                    | Command::Resume { .. }
-                    | Command::Status { .. }
-                    | Command::Promote(_)
-                    | Command::Rollback(_)
-                    | Command::Cleanup(_)
-            )
-        {
-            if let Some(project) = &ctx.paths.project_dir {
-                let head = git.head(project).ok();
-                println!("{}", target_line(project, head.as_deref()));
-            }
-        }
-    }
-    match command {
+    prepare_target(ctx, &cli.command, cli.project.as_deref());
+    match cli.command {
         Command::Run(args) => run::run(ctx, env, &args),
         Command::Resume {
             experiment,
@@ -105,7 +68,19 @@ pub fn dispatch(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, cli: C
             label_policy,
         } => readiness::readiness(ctx, policy.as_deref(), label_policy.as_deref()),
         Command::Fleet(cli::FleetCommand::Sync { all_projects }) => fleet::sync(ctx, all_projects),
-        Command::Outcome {
+        Command::Operator(command) => dispatch_operator(ctx, env, command),
+        Command::JudgeJob(args) => judge_job::judge_job(ctx, &args),
+    }
+}
+
+/// Route the commands that record or move the result of a round.
+fn dispatch_operator(
+    ctx: &mut RuntimeContext,
+    env: &BTreeMap<String, String>,
+    command: OperatorCommand,
+) -> Result<u8> {
+    match command {
+        OperatorCommand::Outcome {
             round,
             kind,
             score,
@@ -117,13 +92,46 @@ pub fn dispatch(ctx: &mut RuntimeContext, env: &BTreeMap<String, String>, cli: C
             score.unwrap_or(kind.default_score()),
             note,
         ),
-        Command::Rebuild { experiment } => rebuild::rebuild(ctx, &experiment),
-        Command::JudgeJob(args) => judge_job::judge_job(ctx, &args),
-        Command::Promote(args) => promote::promote(ctx, env, &args),
-        Command::Rollback(args) => rollback::rollback(ctx, &args),
-        Command::Cleanup(args) => cleanup::cleanup(ctx, &args),
-        Command::Watch(args) => watch::watch(ctx, &args),
+        OperatorCommand::Rebuild { experiment } => rebuild::rebuild(ctx, &experiment),
+        OperatorCommand::Promote(args) => promote::promote(ctx, env, &args),
+        OperatorCommand::Rollback(args) => rollback::rollback(ctx, &args),
+        OperatorCommand::Cleanup(args) => cleanup::cleanup(ctx, &args),
+        OperatorCommand::Watch(args) => watch::watch(ctx, &args),
     }
+}
+
+/// Resolve the project of `command` and print the target line, when the
+/// command prints it. The judge job runs in its sealed bundle; the
+/// coordinator passes its project in `HORCH_PROJECT_DIR`.
+fn prepare_target(ctx: &mut RuntimeContext, command: &Command, cli_project: Option<&Path>) {
+    if matches!(command, Command::JudgeJob(_)) {
+        return;
+    }
+    let git = GitCli::new(ctx.bins.harness.git.clone());
+    let ambient = ctx.paths.project_dir.clone();
+    ctx.paths.project_dir = resolve_project(
+        cli_project,
+        ctx.paths.cwd.as_deref(),
+        ambient.as_deref(),
+        |dir| repo_top(&git, ambient.as_deref(), dir),
+    );
+    if command.prints_target() {
+        if let Some(project) = &ctx.paths.project_dir {
+            let head = git.head(project).ok();
+            println!("{}", target_line(project, head.as_deref()));
+        }
+    }
+}
+
+/// The git top level of `dir`, in the spelling of `ambient` when that
+/// names the same repo (`HORCH_PROJECT_DIR` first: the cwd is already
+/// resolved), else in the spelling of `dir`.
+fn repo_top(git: &GitCli, ambient: Option<&Path>, dir: &Path) -> Option<PathBuf> {
+    let top = git.toplevel(dir).ok()?;
+    Some(match ambient {
+        Some(a) if spelled_as(&top, a) != top => spelled_as(&top, a),
+        _ => spelled_as(&top, dir),
+    })
 }
 
 /// The project a dataset command works on (dataset design §2.1), first match:
