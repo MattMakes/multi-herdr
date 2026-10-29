@@ -2281,3 +2281,24 @@ fn a_missing_reviewer_prompt_queues_no_review() {
     );
     assert!(reviews(&h).is_empty(), "{:?}", reviews(&h));
 }
+
+#[test]
+fn a_rust_only_change_is_not_sent_to_the_complexity_analyser() {
+    let mut h = finish_world("tl-complexity-rs");
+    let called = h.root.join("analyser-called");
+    let cli = h.write_bin(
+        "marking-complexity",
+        format!(
+            "#!/bin/sh\n/usr/bin/touch {}\necho '{{\"files\":[],\"violations\":[]}}'\n",
+            called.display()
+        )
+        .as_bytes(),
+    );
+    h.set("HORCH_COMPLEXITY_CLI", cli.to_string_lossy());
+    let (w, path) = claimed_with_commit(&h, "complexity-sweep", None, "lib.rs");
+    commit_file(&h, &path, "node.gd");
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    assert_eq!(step_of(&r, "complexity-sweep").0, "not_applicable", "{r}");
+    assert!(!called.exists(), "the analyser parses TypeScript only");
+}

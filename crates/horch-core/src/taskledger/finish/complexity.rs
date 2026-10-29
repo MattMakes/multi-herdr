@@ -12,11 +12,11 @@ use serde::Deserialize;
 
 use super::{Ctx, Outcome};
 
-/// The extensions the analyser reads (TypeScript/JavaScript, Python, Rust,
-/// GDScript), as the skill documents them.
-pub const EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "rs", "gd",
-];
+/// The extensions the analyser parses: TypeScript and JavaScript (its core
+/// is `ts-morph`), and Python. It has no Rust or GDScript parser: it reads
+/// those files as TypeScript and reports functions that do not exist, so
+/// they are not sent to it (#204).
+pub const EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py"];
 
 #[derive(Debug, Deserialize)]
 struct Analysis {
@@ -229,13 +229,13 @@ mod tests {
 
     #[test]
     fn only_violations_in_changed_functions_count() {
-        let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -10,0 +11,3 @@ fn x\n+a\n+b\n+c\n";
+        let diff = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -10,0 +11,3 @@ fn x\n+a\n+b\n+c\n";
         let changed = changed_lines(diff);
-        assert_eq!(changed["src/a.rs"], vec![(11, 13)]);
-        let json = r#"{"files":[{"filePath":"src/a.rs","language":"rust","functions":[{"name":"f","line":1},{"name":"g","line":9},{"name":"h","line":30}]}],
+        assert_eq!(changed["src/a.ts"], vec![(11, 13)]);
+        let json = r#"{"files":[{"filePath":"src/a.ts","functions":[{"name":"f","line":1},{"name":"g","line":9},{"name":"h","line":30}]}],
           "violations":[
-            {"functionName":"g","filePath":"src/a.rs","line":9,"metric":"cyclomaticComplexity","value":12,"threshold":10,"severity":"warn"},
-            {"functionName":"h","filePath":"src/a.rs","line":30,"metric":"abcScore","value":40,"threshold":30,"severity":"warn"}]}"#;
+            {"functionName":"g","filePath":"src/a.ts","line":9,"metric":"cyclomaticComplexity","value":12,"threshold":10,"severity":"warn"},
+            {"functionName":"h","filePath":"src/a.ts","line":30,"metric":"abcScore","value":40,"threshold":30,"severity":"warn"}]}"#;
         let v = in_changed_functions(json, &changed, Path::new("/repo")).unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].function_name, "g");
