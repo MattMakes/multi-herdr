@@ -253,7 +253,11 @@ fn continue_round(
         .clone()
         .context("the experiment has no preflight report")?;
     let config = manifest_config(paths, experiment)?;
-    let (round, plan, mut planned_models) = round_and_plan(ctx, &config, projection, x)?;
+    let ResumedRound {
+        round,
+        plan,
+        mut planned_models,
+    } = round_and_plan(ctx, &config, projection, x)?;
     if let Some(p) = &plan {
         planned_models.extend(
             p.candidates
@@ -278,20 +282,30 @@ fn continue_round(
     )
 }
 
+/// The round that `resume` drives, its plan when it is still planned or
+/// new, and the model planned for each label of the round so far.
+struct ResumedRound {
+    round: RoundId,
+    plan: Option<RoundPlan>,
+    planned_models: Vec<(String, String)>,
+}
+
 /// The round that `resume` drives: the latest round of `x`, or a new one.
-/// Gives its plan when it is still planned or new, and the model planned
-/// for each label of the round so far.
 fn round_and_plan(
     ctx: &RuntimeContext,
     config: &DatasetConfig,
     projection: &Projection,
     x: &ExperimentView,
-) -> Result<(RoundId, Option<RoundPlan>, Vec<(String, String)>)> {
+) -> Result<ResumedRound> {
     let base_sha = &x.created.base_sha;
     let Some(round) = x.rounds.last() else {
         let round = RoundId::mint(clock::now());
         let plan = plan_for(ctx, config, &round, base_sha)?;
-        return Ok((round, Some(plan), Vec::new()));
+        return Ok(ResumedRound {
+            round,
+            plan: Some(plan),
+            planned_models: Vec::new(),
+        });
     };
     let view = &projection.rounds[round];
     let plan = (view.state == RoundState::Planned)
@@ -302,7 +316,11 @@ fn round_and_plan(
         .iter()
         .filter_map(|(l, c)| Some((l.clone(), c.planned.as_ref()?.model.to_string())))
         .collect();
-    Ok((round.clone(), plan, models))
+    Ok(ResumedRound {
+        round: round.clone(),
+        plan,
+        planned_models: models,
+    })
 }
 
 /// Preflight, then the round. `run` calls it for a new experiment, and
