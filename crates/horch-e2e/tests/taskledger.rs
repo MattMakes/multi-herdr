@@ -690,8 +690,12 @@ fn a_task_finishes_through_review_land_pr_and_cleanup() {
     std::fs::write(path.join(".gitignore"), "target/\n").unwrap();
     std::fs::create_dir_all(path.join("target")).unwrap();
     std::fs::write(path.join("target/big.bin"), vec![0u8; 50 * 1024 * 1024]).unwrap();
-    std::fs::write(path.join("lib.rs"), "fn feature() -> u8 {\n    1\n}\n").unwrap();
-    git_in(&h, &path, &["add", "worker.txt", ".gitignore", "lib.rs"]);
+    std::fs::write(
+        path.join("lib.ts"),
+        "export function feature(): number {\n  return 1;\n}\n",
+    )
+    .unwrap();
+    git_in(&h, &path, &["add", "worker.txt", ".gitignore", "lib.ts"]);
     git_in(
         &h,
         &path,
