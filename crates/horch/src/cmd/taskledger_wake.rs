@@ -280,12 +280,11 @@ pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
             ctx,
             store,
             run,
-            &format!(
+            format!(
                 "NOTE: These workers ended before they claimed a task: {}. {advice}",
                 ended.join(", ")
             )
-            .trim_end()
-            .to_string(),
+            .trim_end(),
         );
     }
 }
