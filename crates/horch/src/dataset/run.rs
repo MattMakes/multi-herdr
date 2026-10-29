@@ -26,7 +26,6 @@ use horch_core::competition::planner::{plan_round, PlanInput, RoundPlan};
 use horch_core::competition::preflight::{
     evaluate, recorded_estimates, PreflightCandidate, PreflightReport, TokenEstimate,
 };
-use horch_core::competition::promotion::FaultFired;
 use horch_core::competition::report::{self, RoundReport};
 use horch_core::evaluation::validator::{CommandValidator, GateSpec};
 use horch_core::execution::store::ExecutionStore;
@@ -43,7 +42,6 @@ use horch_core::routing::eligible::EligibilityFilter;
 use horch_core::routing::policy::Policy;
 use horch_core::routing::quota::QuotaView;
 use horch_core::routing::snapshot::{obtain, QuotaEnv};
-use horch_core::runtime::fault::ABORT_EXIT_CODE;
 use horch_core::runtime::machine::{self, Known};
 use horch_core::runtime::RuntimeContext;
 use horch_core::usage::Locations;
@@ -56,7 +54,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cli::{plan_task, RunArgs};
 use super::preflight::{self, ExperimentFacts, GatherInput};
-use super::{dataset_paths, exit};
+use super::{abort_on_fault, dataset_paths, exit};
 use crate::project::project_facts;
 
 pub(crate) fn run(
@@ -665,10 +663,7 @@ fn coordinate(
     let outcome = match outcome {
         Ok(o) => o,
         Err(e) => {
-            if let Some(f) = e.downcast_ref::<FaultFired>() {
-                eprintln!("multi-herdr-dataset: {f}: aborting");
-                std::process::exit(ABORT_EXIT_CODE);
-            }
+            abort_on_fault(&e);
             if let Some(pane) = r.report_to {
                 let stopped = RoundReport::stopped(r.experiment, r.round, &format!("{e:#}"));
                 report::deliver(&herdr, pane, &stopped);

@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use horch_core::competition::promotion::FaultFired;
 use horch_core::measure::paths::DatasetPaths;
+use horch_core::runtime::fault::ABORT_EXIT_CODE;
 use horch_core::runtime::RuntimeContext;
 use horch_core::vcs::git::{GitCli, GitClient};
 
@@ -173,4 +175,13 @@ pub(crate) fn dataset_paths(ctx: &RuntimeContext) -> Result<DatasetPaths> {
         &ctx.paths.state_root,
         &ctx.paths.project()?,
     ))
+}
+
+/// Abort the process when `e` is an injected fault point that fired
+/// ([`FaultFired`]). Any other error returns to the caller.
+pub(crate) fn abort_on_fault(e: &anyhow::Error) {
+    if let Some(f) = e.downcast_ref::<FaultFired>() {
+        eprintln!("multi-herdr-dataset: {f}: aborting");
+        std::process::exit(ABORT_EXIT_CODE);
+    }
 }
