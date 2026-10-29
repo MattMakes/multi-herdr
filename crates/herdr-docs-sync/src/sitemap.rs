@@ -10,7 +10,7 @@
 //! and scanning attributes would pull in every `/ja/` and `/zh-cn/` page plus
 //! malformed fragments.
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
@@ -35,21 +35,24 @@ pub fn parse(xml: &str) -> Result<Sitemap> {
     let mut buf = Vec::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Eof) => break,
-            Ok(Event::Start(e)) => scan.start(e.name().as_ref()),
-            Ok(Event::End(e)) => scan.end(e.name().as_ref()),
-            Ok(Event::Text(text)) if scan.in_loc => scan.text(text.unescape()?.into_owned()),
-            Ok(_) => {}
-            Err(e) => bail!(
-                "malformed sitemap XML at byte {}: {e}",
-                reader.buffer_position()
-            ),
+        let event = next_event(&mut reader, &mut buf)?;
+        if matches!(event, Event::Eof) {
+            break;
         }
+        scan.event(event)?;
         buf.clear();
     }
 
     scan.finish()
+}
+
+fn next_event<'b>(reader: &mut Reader<&[u8]>, buf: &'b mut Vec<u8>) -> Result<Event<'b>> {
+    reader.read_event_into(buf).map_err(|e| {
+        anyhow!(
+            "malformed sitemap XML at byte {}: {e}",
+            reader.buffer_position()
+        )
+    })
 }
 
 /// What the XML events seen so far add up to.
@@ -62,6 +65,16 @@ struct SitemapScan {
 }
 
 impl SitemapScan {
+    fn event(&mut self, event: Event<'_>) -> Result<()> {
+        match event {
+            Event::Start(e) => self.start(e.name().as_ref()),
+            Event::End(e) => self.end(e.name().as_ref()),
+            Event::Text(text) if self.in_loc => self.text(text.unescape()?.into_owned()),
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn start(&mut self, name: &[u8]) {
         self.depth += 1;
         match local_name(name) {
