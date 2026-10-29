@@ -1,13 +1,45 @@
 //! Worker worktree creation, landing, and inspection.
 
+use std::path::PathBuf;
+
 use anyhow::{anyhow, Result};
 use horch_core::runtime::RuntimeContext;
-use horch_core::vcs::landing::{ClaimState, Landing};
+use horch_core::vcs::landing::{ClaimState, Landing, Skipped};
 
 use super::messaging;
 
 fn landing(ctx: &RuntimeContext) -> Landing {
     Landing::new(ctx.bins.harness.git.clone(), ctx.paths.state_root.clone())
+        .with_recorded_worktrees(recorded_worktrees(ctx))
+}
+
+/// The paths the task ledger records as worktrees. A machine with no ledger
+/// file records none, and is not given one by a scan.
+pub fn recorded_worktrees(ctx: &RuntimeContext) -> Vec<PathBuf> {
+    if !ctx.paths.ledger_db.exists() {
+        return Vec::new();
+    }
+    let paths = horch_core::taskledger::open(ctx)
+        .and_then(|store| horch_core::taskledger::status::worktree_paths(store.conn()));
+    match paths {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!("horch: could not read the task ledger's worktrees ({error:#})");
+            Vec::new()
+        }
+    }
+}
+
+/// Say so when the scan had to leave a worktree out. A path it cannot read
+/// is the operator's to fix, and `done` must not go quiet about it.
+pub fn note_skipped(command: &str, skipped: &[Skipped]) {
+    for entry in skipped {
+        eprintln!(
+            "horch {command}: skipped worktree {} ({})",
+            entry.path.display(),
+            entry.reason
+        );
+    }
 }
 
 fn role(ctx: &RuntimeContext) -> &str {
@@ -78,12 +110,13 @@ pub fn list(ctx: &RuntimeContext) -> Result<()> {
             status.contained
         );
     }
-    let unregistered = landing.unregistered(&dir)?;
-    if unregistered.is_empty() {
+    let scan = landing.unregistered(&dir)?;
+    note_skipped("worktree list", &scan.skipped);
+    if scan.is_empty() {
         println!("unregistered: none");
     } else {
         println!("unregistered:");
-        for entry in unregistered {
+        for entry in scan.entries {
             println!(
                 "{} branch={} ahead={} dirty={}",
                 entry.path.display(),

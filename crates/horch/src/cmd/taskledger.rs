@@ -1174,7 +1174,7 @@ fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitC
     let wid = worker_id(ctx)?;
     let mut outcome = store.immediate(|tx| tasks::claim(tx, &wid))?;
     if let ClaimOutcome::Claimed(c) = &mut outcome {
-        absolute_ticket_if_missing(ctx, &store, c);
+        absolute_ticket_if_missing(ctx, store, c);
     }
     if as_json {
         json(&outcome)?;
