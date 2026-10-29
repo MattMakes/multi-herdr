@@ -324,7 +324,13 @@ pub fn validate(config: &DatasetConfig) -> Result<()> {
     if config.candidates < 1 {
         bail!("candidates must be at least 1");
     }
-    let b = &config.budget;
+    validate_budget(&config.budget)?;
+    validate_expected_tokens(&config.budget.expected_tokens)?;
+    validate_gates(&config.gates)?;
+    validate_caps(&config.caps)
+}
+
+fn validate_budget(b: &BudgetConfig) -> Result<()> {
     if b.hard_usd_micro < 0 || b.soft_usd_micro < 0 || b.judge_reserve_usd_micro < 0 {
         bail!("budgets must not be negative");
     }
@@ -335,26 +341,35 @@ pub fn validate(config: &DatasetConfig) -> Result<()> {
         if b.soft_usd_micro != 0 || b.judge_reserve_usd_micro != 0 {
             bail!("budget sets a soft limit or judge reserve but no hard ceiling");
         }
+        Ok(())
     } else {
-        if b.soft_usd_micro == 0 {
-            bail!("budget soft limit must be greater than 0");
-        }
-        if b.hard_usd_micro < b.soft_usd_micro {
-            bail!(
-                "budget hard ceiling ({}) is below the soft limit ({})",
-                Usd(b.hard_usd_micro),
-                Usd(b.soft_usd_micro)
-            );
-        }
-        if b.judge_reserve_usd_micro >= b.hard_usd_micro {
-            bail!(
-                "judge reserve ({}) must be below the hard ceiling ({})",
-                Usd(b.judge_reserve_usd_micro),
-                Usd(b.hard_usd_micro)
-            );
-        }
+        validate_ceiling(b)
     }
-    let expected = &b.expected_tokens;
+}
+
+/// A configured hard ceiling is above the soft limit and the judge reserve.
+fn validate_ceiling(b: &BudgetConfig) -> Result<()> {
+    if b.soft_usd_micro == 0 {
+        bail!("budget soft limit must be greater than 0");
+    }
+    if b.hard_usd_micro < b.soft_usd_micro {
+        bail!(
+            "budget hard ceiling ({}) is below the soft limit ({})",
+            Usd(b.hard_usd_micro),
+            Usd(b.soft_usd_micro)
+        );
+    }
+    if b.judge_reserve_usd_micro >= b.hard_usd_micro {
+        bail!(
+            "judge reserve ({}) must be below the hard ceiling ({})",
+            Usd(b.judge_reserve_usd_micro),
+            Usd(b.hard_usd_micro)
+        );
+    }
+    Ok(())
+}
+
+fn validate_expected_tokens(expected: &ExpectedTokens) -> Result<()> {
     if expected.all.is_some_and(|e| e.is_zero()) {
         bail!("budget.expected_tokens.all must give at least 1 token");
     }
@@ -366,7 +381,11 @@ pub fn validate(config: &DatasetConfig) -> Result<()> {
             bail!("budget.expected_tokens.models.{model} must give at least 1 token");
         }
     }
-    for gate in &config.gates {
+    Ok(())
+}
+
+fn validate_gates(gates: &[GateConfig]) -> Result<()> {
+    for gate in gates {
         if gate.command.trim().is_empty() {
             bail!("gate {:?} has an empty command", gate.name);
         }
@@ -374,10 +393,14 @@ pub fn validate(config: &DatasetConfig) -> Result<()> {
             bail!("gate {:?} needs a timeout_s greater than 0", gate.name);
         }
     }
-    if config.caps.max_parallel == Some(0) {
+    Ok(())
+}
+
+fn validate_caps(caps: &Caps) -> Result<()> {
+    if caps.max_parallel == Some(0) {
         bail!("caps.max_parallel must be at least 1");
     }
-    if config.caps.idle_nudge_after_s > 0 && config.caps.idle_end_after_s == 0 {
+    if caps.idle_nudge_after_s > 0 && caps.idle_end_after_s == 0 {
         bail!("caps.idle_end_after_s must be at least 1 while caps.idle_nudge_after_s is set");
     }
     Ok(())
