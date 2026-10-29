@@ -72,12 +72,7 @@ pub fn parse_judgment(
     labels: &[String],
     cap_bytes: usize,
 ) -> Result<Judgment, ParseError> {
-    check_size(raw, cap_bytes)?;
-    let text =
-        std::str::from_utf8(raw).map_err(|e| ParseError::NotJson(format!("not UTF-8: {e}")))?;
-    // `from_str` rejects anything but whitespace after the value.
-    let node: Node = serde_json::from_str(text).map_err(|e| ParseError::NotJson(e.to_string()))?;
-    check_no_duplicate(&node)?;
+    let node = read_node(raw, cap_bytes)?;
     let value = node.into_value();
     check_shape(&value)?;
     // The shape walk has ruled out unknown fields, missing fields and unknown
@@ -87,6 +82,17 @@ pub fn parse_judgment(
     check_numbers(&judgment)?;
     check_labels(&judgment, labels)?;
     Ok(judgment)
+}
+
+/// The size, UTF-8 and single-value checks, and the repeated-key check.
+fn read_node(raw: &[u8], cap_bytes: usize) -> Result<Node, ParseError> {
+    check_size(raw, cap_bytes)?;
+    let text =
+        std::str::from_utf8(raw).map_err(|e| ParseError::NotJson(format!("not UTF-8: {e}")))?;
+    // `from_str` rejects anything but whitespace after the value.
+    let node: Node = serde_json::from_str(text).map_err(|e| ParseError::NotJson(e.to_string()))?;
+    check_no_duplicate(&node)?;
+    Ok(node)
 }
 
 fn check_no_duplicate(node: &Node) -> Result<(), ParseError> {
