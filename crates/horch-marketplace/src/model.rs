@@ -129,19 +129,23 @@ pub(crate) fn is_full_sha(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
+const BAD_REF_PREFIXES: [&str; 2] = ["-", "/"];
+const BAD_REF_SUFFIXES: [&str; 2] = ["/", ".lock"];
+const BAD_REF_PARTS: [&str; 3] = ["..", "//", "@{"];
+const BAD_REF_BYTES: [u8; 7] = *b"~^:?*[\\";
+
 /// A ref name git accepts and that cannot be read as an option or a range.
 pub(crate) fn is_safe_ref_name(s: &str) -> bool {
     !s.is_empty()
-        && !s.starts_with('-')
-        && !s.starts_with('/')
-        && !s.ends_with('/')
-        && !s.ends_with(".lock")
-        && !s.contains("..")
-        && !s.contains("//")
-        && !s.contains("@{")
-        && s.bytes().all(|c| {
-            c.is_ascii_graphic() && !matches!(c, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
-        })
+        && !has_bad_shape(s)
+        && s.bytes()
+            .all(|c| c.is_ascii_graphic() && !BAD_REF_BYTES.contains(&c))
+}
+
+fn has_bad_shape(s: &str) -> bool {
+    BAD_REF_PREFIXES.iter().any(|p| s.starts_with(p))
+        || BAD_REF_SUFFIXES.iter().any(|p| s.ends_with(p))
+        || BAD_REF_PARTS.iter().any(|p| s.contains(p))
 }
 
 impl SkillSource {
@@ -166,38 +170,52 @@ impl SkillSource {
 pub fn parse_source(spec: &str) -> Result<SkillSource> {
     let spec = spec.trim();
     if let Some(name) = spec.strip_prefix("bundled:") {
-        SkillId::parse(name)?;
-        return Ok(SkillSource::Bundled {
-            name: name.to_owned(),
-        });
-    }
-    if spec.starts_with('/') {
-        return Ok(SkillSource::Local {
+        parse_bundled(name)
+    } else if spec.starts_with('/') {
+        Ok(SkillSource::Local {
             path: PathBuf::from(spec),
-        });
+        })
+    } else {
+        let (spec, subdir) = split_off(spec, spec.split_once('#'));
+        let subdir = subdir.map(str::to_owned);
+        match spec.split_once("://") {
+            Some((scheme, rest)) => parse_git_url(spec, scheme, rest, subdir),
+            None => parse_github(spec, subdir),
+        }
     }
-    let (spec, subdir) = match spec.split_once('#') {
-        Some((s, d)) => (s, Some(d.to_owned())),
-        None => (spec, None),
-    };
-    if let Some((scheme, rest)) = spec.split_once("://") {
-        let scheme = scheme.to_ascii_lowercase();
-        check_url(spec)?;
-        let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-        let (path, rev) = match path.rsplit_once('@') {
-            Some((p, r)) => (p, Some(r)),
-            None => (path, None),
-        };
-        return Ok(SkillSource::Git {
-            url: format!("{scheme}://{authority}{path}"),
-            revision: GitRevision::from_spec(rev)?,
-            subdir,
-        });
-    }
-    let (repo, rev) = match spec.split_once('@') {
-        Some((p, r)) => (p, Some(r)),
-        None => (spec, None),
-    };
+}
+
+/// `head` and the optional suffix of a split of `s`; `s` whole when there
+/// is no split.
+fn split_off<'a>(s: &'a str, parts: Option<(&'a str, &'a str)>) -> (&'a str, Option<&'a str>) {
+    parts.map_or((s, None), |(head, tail)| (head, Some(tail)))
+}
+
+fn parse_bundled(name: &str) -> Result<SkillSource> {
+    SkillId::parse(name)?;
+    Ok(SkillSource::Bundled {
+        name: name.to_owned(),
+    })
+}
+
+fn parse_git_url(
+    spec: &str,
+    scheme: &str,
+    rest: &str,
+    subdir: Option<String>,
+) -> Result<SkillSource> {
+    check_url(spec)?;
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let (path, rev) = split_off(path, path.rsplit_once('@'));
+    Ok(SkillSource::Git {
+        url: format!("{}://{authority}{path}", scheme.to_ascii_lowercase()),
+        revision: GitRevision::from_spec(rev)?,
+        subdir,
+    })
+}
+
+fn parse_github(spec: &str, subdir: Option<String>) -> Result<SkillSource> {
+    let (repo, rev) = split_off(spec, spec.split_once('@'));
     let mut parts = repo.split('/');
     match (parts.next(), parts.next(), parts.next()) {
         (Some(owner), Some(name), None) if is_github_name(owner) && is_github_name(name) => {
@@ -225,27 +243,33 @@ fn is_github_name(s: &str) -> bool {
 /// Reject a URL that git must not see: a scheme other than https or file,
 /// userinfo (`user:pass@host`, `token@host`), or a query with `token=`.
 pub fn check_url(url: &str) -> Result<()> {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return Err(MarketplaceError::BadSource(
-            "a git URL needs https:// or file://".to_owned(),
-        ));
-    };
+    let (scheme, rest) = url.split_once("://").ok_or_else(|| {
+        MarketplaceError::BadSource("a git URL needs https:// or file://".to_owned())
+    })?;
     let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    if authority.contains('@') {
-        return Err(MarketplaceError::Credentials(
-            "userinfo in the URL authority".to_owned(),
-        ));
+    match credential_in(url, authority) {
+        Some(why) => Err(MarketplaceError::Credentials(why.to_owned())),
+        None => check_scheme(scheme, authority),
     }
-    if let Some((_, query)) = url.split_once('?') {
-        if query
+}
+
+/// Why the URL carries a credential, or `None`.
+fn credential_in(url: &str, authority: &str) -> Option<&'static str> {
+    let token_in_query = url.split_once('?').is_some_and(|(_, query)| {
+        query
             .split(['&', ';', '#'])
             .any(|kv| kv.to_ascii_lowercase().contains("token="))
-        {
-            return Err(MarketplaceError::Credentials(
-                "a token in the URL query".to_owned(),
-            ));
-        }
+    });
+    if authority.contains('@') {
+        Some("userinfo in the URL authority")
+    } else if token_in_query {
+        Some("a token in the URL query")
+    } else {
+        None
     }
+}
+
+fn check_scheme(scheme: &str, authority: &str) -> Result<()> {
     match scheme.to_ascii_lowercase().as_str() {
         "https" if !authority.is_empty() => Ok(()),
         "file" if authority.is_empty() => Ok(()),
