@@ -180,3 +180,153 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_the_cap_then_one_suspect_wake_th
         "{w:?}"
     );
 }
+
+/// A project with 1 active run `zeta`, its own ledger, and the watchdog
+/// restart on. Returns the run id.
+fn watchdog_world(name: &str) -> (Harness, String) {
+    let mut h = Harness::new(name).with_git();
+    let db = h.root.join("ledger.sqlite3");
+    h.set("HORCH_LEDGER_DB", db.to_string_lossy());
+    h.set("HORCH_NO_WAKE", "1");
+    h.unset("HORCH_NO_WATCHDOG");
+    let o = h.run(&["ledger", "run", "new", "zeta"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let store = Store::open(&db).unwrap();
+    let id: String = store
+        .conn()
+        .query_row("SELECT run_id FROM runs WHERE slug = 'zeta'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    (h, id)
+}
+
+fn locks(h: &Harness) -> std::path::PathBuf {
+    h.root.join("locks")
+}
+
+/// A running `horch ledger watch` of the run; ends when the receiver hears.
+struct Watchdog {
+    pid: u32,
+    started: u64,
+    ended: std::sync::mpsc::Receiver<()>,
+}
+
+fn start_watchdog(h: &Harness, run_id: &str) -> Watchdog {
+    let mut child = h
+        .horch(&["ledger", "watch", "--run", run_id])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let (tx, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let _ = tx.send(());
+    });
+    let started = horch_e2e::harness::wait_for("the watchdog's identity", || {
+        horch_core::procid::start_time(pid)
+    });
+    horch_e2e::harness::wait_for("the watchdog's lock and binary record", || {
+        watchdog::holder(&locks(h), run_id).filter(|w| w.pid == pid && w.exe.is_some())
+    });
+    Watchdog {
+        pid,
+        started,
+        ended,
+    }
+}
+
+/// End the live watchdog of the run, whoever started it.
+fn stop_watchdog(h: &Harness, run_id: &str) {
+    if let Some(w) = watchdog::holder(&locks(h), run_id) {
+        horch_core::procid::signal_same(w.pid, w.started.unwrap(), 9);
+    }
+}
+
+use horch_core::taskledger::watchdog;
+
+#[test]
+fn a_watchdog_of_another_build_is_stopped_by_pid_and_replaced() {
+    let (h, run_id) = watchdog_world("wd216-other-build");
+    let old = start_watchdog(&h, &run_id);
+    // Simulate an older build: the lock names another binary.
+    let other = horch_core::exeid::ExeIdentity {
+        path: "/old/bin/horch".into(),
+        len: 1,
+        mtime_ns: 1,
+    };
+    std::fs::write(
+        locks(&h).join(format!("watchdog-{run_id}.lock/exe")),
+        serde_json::to_vec(&other).unwrap(),
+    )
+    .unwrap();
+    let o = h.run(&["ledger", "status"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("restarted the watchdog of run zeta")
+            && err.contains(&format!("PID {} ran another build", old.pid)),
+        "{err}"
+    );
+    old.ended
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the old watchdog was stopped");
+    let new = horch_e2e::harness::wait_for("the new watchdog", || {
+        watchdog::holder(&locks(&h), &run_id).filter(|w| w.pid != old.pid && w.exe.is_some())
+    });
+    assert_eq!(
+        new.exe,
+        horch_core::exeid::exe_identity(&Harness::horch_bin()),
+        "the new watchdog runs this build"
+    );
+    stop_watchdog(&h, &run_id);
+}
+
+#[test]
+fn a_watchdog_of_this_build_is_left_alone() {
+    let (h, run_id) = watchdog_world("wd216-same-build");
+    let w = start_watchdog(&h, &run_id);
+    let o = h.run(&["ledger", "status"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("restarted the watchdog"), "{err}");
+    assert!(w
+        .ended
+        .recv_timeout(std::time::Duration::from_millis(500))
+        .is_err());
+    assert!(horch_core::procid::alive(w.pid, Some(w.started)));
+    assert_eq!(watchdog::holder(&locks(&h), &run_id).unwrap().pid, w.pid);
+    stop_watchdog(&h, &run_id);
+}
+
+#[test]
+fn install_restarts_the_watchdog_of_an_active_run_on_the_installed_binary() {
+    let (h, run_id) = watchdog_world("wd216-install");
+    let old = start_watchdog(&h, &run_id);
+    let dir = h.root.join("installed-bin");
+    let o = h.run(&["install", "--dir", &dir.to_string_lossy()]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        o.status.success(),
+        "{out}\n{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let installed = dir.join(Harness::horch_bin().file_name().unwrap());
+    assert!(
+        out.contains(&format!(
+            "restarted the watchdog of run zeta on {}: PID {} ran another build of horch",
+            installed.display(),
+            old.pid
+        )),
+        "{out}"
+    );
+    old.ended
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the old watchdog was stopped");
+    let new = horch_e2e::harness::wait_for("the new watchdog", || {
+        watchdog::holder(&locks(&h), &run_id).filter(|w| w.pid != old.pid && w.exe.is_some())
+    });
+    assert_eq!(new.exe, horch_core::exeid::exe_identity(&installed));
+    stop_watchdog(&h, &run_id);
+}

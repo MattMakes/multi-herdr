@@ -33,6 +33,7 @@ use super::store::{optional, Store};
 use super::timer;
 use super::util;
 use super::workers::{self, Worker};
+use crate::exeid::ExeIdentity;
 
 /// What the watchdog sees of 1 worker now.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -428,6 +429,93 @@ pub fn lock(dir: &std::path::Path, run_id: &str) -> Result<Option<crate::fsx::Di
     }
 }
 
+/// The file in a watchdog's lock dir that names the binary it runs (#216).
+const EXE_FILE: &str = "exe";
+
+/// Record in the held lock the binary this watchdog runs.
+pub fn record_exe(guard: &crate::fsx::DirLockGuard, exe: Option<&ExeIdentity>) -> Result<()> {
+    if let Some(exe) = exe {
+        std::fs::write(guard.path().join(EXE_FILE), serde_json::to_vec(exe)?)?;
+    }
+    Ok(())
+}
+
+/// The live process that holds a run's watchdog lock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LockHolder {
+    pub pid: u32,
+    /// Its start time; `None` on a platform without start times.
+    pub started: Option<u64>,
+    /// The binary it runs; `None` for a watchdog older than this record.
+    pub exe: Option<ExeIdentity>,
+}
+
+impl LockHolder {
+    /// Whether it runs another binary than `current`. A holder that recorded
+    /// no binary is older than this check, so it is not current either.
+    /// With `current` unknown nothing can be told: `false`.
+    pub fn runs_other_binary(&self, current: Option<&ExeIdentity>) -> bool {
+        current.is_some_and(|want| self.exe.as_ref() != Some(want))
+    }
+
+    /// Stop it with SIGTERM, then wait up to `wait` for it to end. The
+    /// signal goes only to the PID that still has the recorded start time,
+    /// never to a process found by name.
+    #[cfg(unix)]
+    pub fn stop(&self, wait: std::time::Duration) -> Result<()> {
+        let Some(started) = self.started else {
+            anyhow::bail!(
+                "watchdog PID {} recorded no start time, so horch cannot prove it is the watchdog",
+                self.pid
+            );
+        };
+        if !crate::procid::signal_same(self.pid, started, libc::SIGTERM) {
+            anyhow::bail!(
+                "watchdog PID {} no longer runs with its recorded start time; nothing was signalled",
+                self.pid
+            );
+        }
+        let until = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < until {
+            if !crate::procid::alive(self.pid, Some(started)) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        anyhow::bail!(
+            "watchdog PID {} did not stop within {}s of SIGTERM",
+            self.pid,
+            wait.as_secs()
+        )
+    }
+
+    /// No signals here: a watchdog of another binary is reported, not stopped.
+    #[cfg(not(unix))]
+    pub fn stop(&self, _wait: std::time::Duration) -> Result<()> {
+        anyhow::bail!(
+            "watchdog PID {} runs another binary; stop it by hand on this platform",
+            self.pid
+        )
+    }
+}
+
+/// The live holder of the watchdog lock of `run_id` in `dir`, or `None` when
+/// no live process holds it.
+pub fn holder(dir: &std::path::Path, run_id: &str) -> Option<LockHolder> {
+    let lock = dir.join(format!("watchdog-{run_id}.lock"));
+    let v: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(lock.join("owner")).ok()?).ok()?;
+    let pid = u32::try_from(v["pid"].as_u64()?).ok()?;
+    let started = v["started"].as_u64();
+    if !crate::procid::alive(pid, started) {
+        return None;
+    }
+    let exe = std::fs::read(lock.join(EXE_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    Some(LockHolder { pid, started, exe })
+}
+
 /// Record the watchdog's own heartbeat on the run.
 pub fn checkin(conn: &Connection, run_id: &str, pid: u32, started: Option<u64>) -> Result<()> {
     conn.execute(
@@ -436,6 +524,16 @@ pub fn checkin(conn: &Connection, run_id: &str, pid: u32, started: Option<u64>) 
         params![run_id, pid as i64, started.map(|s| s as i64), util::now()],
     )?;
     Ok(())
+}
+
+/// Every active run of the ledger, of any project: `horch install` checks
+/// the watchdog of each (#216).
+pub fn active_runs(conn: &Connection) -> Result<Vec<Run>> {
+    let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE status = 'active'")?;
+    let ids = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.iter().map(|id| super::runs::get(conn, id)).collect()
 }
 
 /// Whether the run's watchdog has gone quiet while a task runs: no checkin
@@ -699,6 +797,73 @@ mod tests {
             "{}",
             r[0].note
         );
+    }
+
+    #[test]
+    fn the_lock_holder_names_the_binary_it_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(holder(dir.path(), "r1"), None, "no lock: no holder");
+        let guard = lock(dir.path(), "r1").unwrap().unwrap();
+        let me = std::process::id();
+        let old = holder(dir.path(), "r1").unwrap();
+        assert_eq!(old.pid, me);
+        assert_eq!(old.exe, None);
+        let current = crate::exeid::exe_identity(&std::env::current_exe().unwrap()).unwrap();
+        // A holder that recorded no binary is older than the record.
+        assert!(old.runs_other_binary(Some(&current)));
+        assert!(!old.runs_other_binary(None));
+        record_exe(&guard, Some(&current)).unwrap();
+        let now = holder(dir.path(), "r1").unwrap();
+        assert_eq!(now.exe.as_ref(), Some(&current));
+        assert!(!now.runs_other_binary(Some(&current)));
+        let rebuilt = ExeIdentity {
+            len: current.len + 1,
+            ..current.clone()
+        };
+        assert!(now.runs_other_binary(Some(&rebuilt)));
+        drop(guard);
+        assert_eq!(
+            holder(dir.path(), "r1"),
+            None,
+            "a released lock has no holder"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_ends_only_the_process_with_the_recorded_start_time() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let Some(started) = crate::procid::start_time(pid) else {
+            let _ = child.kill();
+            return; // No start times on this platform.
+        };
+        let reaper = std::thread::spawn(move || child.wait().unwrap());
+        let wrong = LockHolder {
+            pid,
+            started: Some(started + 1),
+            exe: None,
+        };
+        let e = wrong.stop(std::time::Duration::from_secs(1)).unwrap_err();
+        assert!(format!("{e:#}").contains("nothing was signalled"), "{e:#}");
+        assert!(crate::procid::alive(pid, Some(started)));
+        let unknown = LockHolder {
+            pid,
+            started: None,
+            exe: None,
+        };
+        assert!(unknown.stop(std::time::Duration::from_secs(1)).is_err());
+        assert!(crate::procid::alive(pid, Some(started)));
+        let right = LockHolder {
+            pid,
+            started: Some(started),
+            exe: None,
+        };
+        right.stop(std::time::Duration::from_secs(5)).unwrap();
+        assert!(!reaper.join().unwrap().success(), "ended by SIGTERM");
     }
 
     #[test]

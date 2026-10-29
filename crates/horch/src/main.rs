@@ -707,9 +707,12 @@ fn run() -> Result<std::process::ExitCode> {
             | Command::Balance { .. }
             | Command::Inbox { roles: false, .. }
     );
+    // `install` restarts a watchdog on the binary it installed; `ensure`
+    // would move it back onto the binary that ran `install` (#216).
     let watched = !matches!(
         &cli.command,
         Command::Worker { .. }
+            | Command::Install { .. }
             | Command::Ledger {
                 command: cmd::taskledger::LedgerCommand::Watch { .. }
             }

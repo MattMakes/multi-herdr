@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
+use horch_core::exeid::exe_identity;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::land;
 use horch_core::taskledger::git::Git;
@@ -68,13 +69,7 @@ fn lock_dir(ctx: &RuntimeContext) -> PathBuf {
 }
 
 fn lock_held(ctx: &RuntimeContext, run: &Run) -> Option<u32> {
-    let owner = lock_dir(ctx)
-        .join(format!("watchdog-{}.lock", run.run_id))
-        .join("owner");
-    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(owner).ok()?).ok()?;
-    let pid = v["pid"].as_u64()? as u32;
-    let started = v["started"].as_u64();
-    horch_core::procid::alive(pid, started).then_some(pid)
+    watchdog::holder(&lock_dir(ctx), &run.run_id).map(|h| h.pid)
 }
 
 /// 1 pass: check, reap the dead, wake on changes, retry cleanups.
@@ -160,9 +155,12 @@ pub fn watch(
         }
     }
     let guard = watchdog::lock(&lock_dir(ctx), &run.run_id)?;
-    let Some(_guard) = guard else {
+    let Some(guard) = guard else {
         bail!("the watchdog of run {} already runs", run.slug);
     };
+    // The starter compares this with the binary it would start (#216).
+    let exe = std::env::current_exe().ok().and_then(|p| exe_identity(&p));
+    watchdog::record_exe(&guard, exe.as_ref())?;
     if once {
         let checked = pass(ctx, &mut store, run, force)?;
         if as_json {
@@ -216,14 +214,20 @@ pub fn ensure(ctx: &RuntimeContext) {
     let Ok(all) = runs::of_project(store.conn(), &root) else {
         return;
     };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
     for run in all.into_iter().filter(|r| r.status == "active") {
-        if lock_held(ctx, &run).is_some() {
+        if let Some(h) = watchdog::holder(&lock_dir(ctx), &run.run_id) {
+            if h.runs_other_binary(exe_identity(&exe).as_ref()) {
+                replace(ctx, &run, &root, &h, &exe, true);
+            }
             continue;
         }
         if !watchdog::needs_restart(store.conn(), &run).unwrap_or(false) {
             continue;
         }
-        match start_detached(ctx, &run, &root) {
+        match start_detached(ctx, &run, &root, &exe) {
             Ok(pid) => eprintln!(
                 "horch: warning: the watchdog of run {} was not running; started it (PID {pid})",
                 run.slug
@@ -236,10 +240,74 @@ pub fn ensure(ctx: &RuntimeContext) {
     }
 }
 
-/// `horch ledger watch --run <id>`, detached in its own session so a pane
-/// close does not end it. Its output goes to `<ledger dir>/watchdog-<run>.log`.
-fn start_detached(ctx: &RuntimeContext, run: &Run, root: &Path) -> Result<u32> {
-    let exe = std::env::current_exe()?;
+/// After `horch install`: restart the watchdog of every active run that
+/// runs another binary than the one just installed at `installed` (#216).
+/// Prints 1 line per restarted watchdog. Starts none that is not live.
+pub fn restart_if_stale(ctx: &RuntimeContext, installed: &Path) {
+    if !ctx.paths.ledger_db.exists() {
+        return;
+    }
+    let Ok(store) = taskledger::open(ctx) else {
+        return;
+    };
+    let Ok(all) = watchdog::active_runs(store.conn()) else {
+        return;
+    };
+    let want = exe_identity(installed);
+    for run in all {
+        if let Some(h) = watchdog::holder(&lock_dir(ctx), &run.run_id) {
+            if h.runs_other_binary(want.as_ref()) {
+                let root = PathBuf::from(&run.project_root);
+                replace(ctx, &run, &root, &h, installed, false);
+            }
+        }
+    }
+}
+
+/// Stop the live watchdog `h` of `run`, which runs another binary, by its
+/// exact PID and start time, then start one on `exe`. A watchdog keeps no
+/// state between passes, so the restart loses nothing.
+fn replace(
+    ctx: &RuntimeContext,
+    run: &Run,
+    root: &Path,
+    h: &watchdog::LockHolder,
+    exe: &Path,
+    as_warning: bool,
+) {
+    if let Err(e) = h.stop(Duration::from_secs(5)) {
+        eprintln!(
+            "horch: warning: the watchdog of run {} (PID {}) runs another build of horch, but horch did not stop it: {e:#}",
+            run.slug, h.pid
+        );
+        return;
+    }
+    let line = match start_detached(ctx, run, root, exe) {
+        Ok(pid) => format!(
+            "restarted the watchdog of run {} on {}: PID {} ran another build of horch, PID {pid} runs this one",
+            run.slug,
+            exe.display(),
+            h.pid
+        ),
+        Err(e) => {
+            eprintln!(
+                "horch: warning: stopped the old watchdog of run {}, but could not start a new one: {e:#}",
+                run.slug
+            );
+            return;
+        }
+    };
+    if as_warning {
+        eprintln!("horch: warning: {line}");
+    } else {
+        output::println(&line);
+    }
+}
+
+/// `horch ledger watch --run <id>` of `exe`, detached in its own session so
+/// a pane close does not end it. Its output goes to
+/// `<ledger dir>/watchdog-<run>.log`.
+fn start_detached(ctx: &RuntimeContext, run: &Run, root: &Path, exe: &Path) -> Result<u32> {
     let log_path = ctx
         .paths
         .ledger_db
