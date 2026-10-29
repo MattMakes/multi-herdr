@@ -11,7 +11,7 @@
 //! come through [`ExecutionFactsSource`], which the CLI adapts to the store.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -19,13 +19,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::competition::model::RoundState;
-use crate::evaluation::judgment::JudgmentRecord;
+use crate::evaluation::judgment::{Judgment, JudgmentRecord};
 use crate::fsx;
-use crate::ids::{ExecutionId, ExperimentId, RoundId, TaskId};
+use crate::ids::{ExecutionId, ExperimentId, JudgmentId, RoundId, TaskId};
 use crate::measure::digest::{canonical_json, Digest};
 use crate::measure::event::{EventEnvelope, OutcomeRecorded};
 use crate::measure::paths::DatasetPaths;
-use crate::measure::projection::{Projection, RoundView};
+use crate::measure::projection::{CandidateView, Projection, RoundView};
 use crate::measure::store;
 use crate::measure::worker_run::{ExecutionFacts, WorkerRun};
 use crate::routing::eligible::EligibleEntry;
@@ -142,45 +142,66 @@ pub fn export(
     label_policy_version: &str,
 ) -> Result<Vec<ExportRow>> {
     let events = store::read_all(paths)?.events;
-
-    // Fold one event at a time to see when each round was decided.
-    let mut projection = Projection::default();
-    let mut created_at = BTreeMap::new();
-    let mut decided_at = BTreeMap::new();
-    for env in &events {
-        projection.apply(env);
-        let Some(round) = &env.round_id else { continue };
-        let Some(r) = projection.rounds.get(round) else {
-            continue;
-        };
-        if env.kind == "round.created" && !created_at.contains_key(round) {
-            created_at.insert(round.clone(), occurred_at(env)?);
-        }
-        if is_decided(r.state) && !decided_at.contains_key(round) {
-            decided_at.insert(round.clone(), occurred_at(env)?);
-        }
-    }
-
-    let mut rows = Vec::new();
-    for (round_id, r) in &projection.rounds {
-        if r.created.label_policy_version != label_policy_version || !is_decided(r.state) {
-            continue;
-        }
-        let latency = decided_at[round_id] - created_at[round_id];
-        let row = build_row(
-            paths,
-            facts,
-            &projection,
-            &events,
-            round_id,
-            r,
-            u64::try_from(latency.num_milliseconds()).unwrap_or(0),
-        )
-        .with_context(|| format!("exporting round {round_id}"))?;
-        rows.push(row);
-    }
+    let Replay {
+        projection,
+        created_at,
+        decided_at,
+    } = replay(&events)?;
+    let mut rows = projection
+        .rounds
+        .iter()
+        .filter(|(_, r)| {
+            r.created.label_policy_version == label_policy_version && is_decided(r.state)
+        })
+        .map(|(round_id, r)| {
+            let latency = decided_at[round_id] - created_at[round_id];
+            build_row(
+                paths,
+                facts,
+                &projection,
+                &events,
+                round_id,
+                r,
+                u64::try_from(latency.num_milliseconds()).unwrap_or(0),
+            )
+            .with_context(|| format!("exporting round {round_id}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     rows.sort_by(|a, b| (&a.experiment_id, &a.round_id).cmp(&(&b.experiment_id, &b.round_id)));
     Ok(rows)
+}
+
+/// The projection after every event, and when each round was created and
+/// decided.
+struct Replay {
+    projection: Projection,
+    created_at: BTreeMap<RoundId, DateTime<Utc>>,
+    decided_at: BTreeMap<RoundId, DateTime<Utc>>,
+}
+
+/// Fold one event at a time to see when each round was decided.
+fn replay(events: &[EventEnvelope]) -> Result<Replay> {
+    let mut out = Replay {
+        projection: Projection::default(),
+        created_at: BTreeMap::new(),
+        decided_at: BTreeMap::new(),
+    };
+    for env in events {
+        out.projection.apply(env);
+        let known = env
+            .round_id
+            .as_ref()
+            .and_then(|id| out.projection.rounds.get(id).map(|r| (id, r.state)));
+        if let Some((round, state)) = known {
+            if env.kind == "round.created" && !out.created_at.contains_key(round) {
+                out.created_at.insert(round.clone(), occurred_at(env)?);
+            }
+            if is_decided(state) && !out.decided_at.contains_key(round) {
+                out.decided_at.insert(round.clone(), occurred_at(env)?);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The rows as JSONL: one canonical JSON object (sorted keys, no
@@ -256,6 +277,136 @@ fn check_path_component(what: &str, s: &str) -> Result<()> {
     Ok(())
 }
 
+/// The judgment of `round_id`, read from its file when the log names one.
+fn read_judgment(
+    paths: &DatasetPaths,
+    round_id: &RoundId,
+    id: Option<&JudgmentId>,
+) -> Result<Option<Judgment>> {
+    let Some(id) = id else { return Ok(None) };
+    let file = paths.judgement(round_id)?;
+    let text =
+        std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
+    let record: JudgmentRecord =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
+    if &record.judgment_id != id || &record.round_id != round_id {
+        bail!(
+            "{} holds judgment {} of round {}; the log names judgment {id}",
+            file.display(),
+            record.judgment_id,
+            record.round_id
+        );
+    }
+    Ok(Some(record.judgment))
+}
+
+/// What the candidates of one round add up to.
+#[derive(Default)]
+struct RowParts {
+    questions: BTreeMap<String, Question>,
+    answers: BTreeMap<String, Option<Answer>>,
+    worker_runs: Vec<WorkerRun>,
+    component_quality: BTreeMap<String, BTreeMap<String, f64>>,
+    options: Vec<String>,
+    cost: NanoUsd,
+}
+
+impl RowParts {
+    fn add_candidate(
+        &mut self,
+        label: &str,
+        c: &CandidateView,
+        facts: &dyn ExecutionFactsSource,
+        judgment: Option<&Judgment>,
+        round_events: &[EventEnvelope],
+    ) -> Result<()> {
+        let planned = c
+            .planned
+            .as_ref()
+            .with_context(|| format!("candidate {label} was never planned"))?;
+        let config_id = &planned.config_id;
+        let execution_id = c
+            .execution_id
+            .as_ref()
+            .with_context(|| format!("candidate {label} has no execution id"))?;
+        let run_facts = facts
+            .facts(execution_id)
+            .with_context(|| format!("no execution facts for {execution_id}"))?;
+        let components = judgment
+            .and_then(|j| j.candidates.get(label))
+            .map(|a| a.scores.clone());
+        let run = WorkerRun::project(&run_facts, round_events, components.clone())?;
+        self.cost += NanoUsd(i128::from(run.facts.cost_microusd.0) * 1000);
+        self.worker_runs.push(run);
+
+        let key = format!("{QUALITY_PREFIX}{config_id}");
+        if self.questions.contains_key(&key) {
+            bail!("config {config_id} appears twice in the round");
+        }
+        self.questions.insert(
+            key.clone(),
+            Question {
+                kind: QuestionKind::Score,
+                instructions: format!("How good is the result of {config_id} on this task?"),
+                options: Vec::new(),
+                criteria: None,
+            },
+        );
+        // The sum exists only in this answer; the components stay separate.
+        let answer = components.as_ref().map(|scores| Answer {
+            choice: None,
+            probabilities: BTreeMap::from([(SCORE_KEY.to_string(), scores.values().sum())]),
+            confidence: None,
+        });
+        self.answers.insert(key, answer);
+        if let Some(scores) = components {
+            self.component_quality.insert(config_id.clone(), scores);
+        }
+        if c.is_eligible() {
+            self.options.push(config_id.clone());
+        }
+        Ok(())
+    }
+
+    fn add_best_worker(&mut self, winner: &Option<String>) {
+        self.options.sort();
+        self.questions.insert(
+            BEST_WORKER.to_string(),
+            Question {
+                kind: QuestionKind::Choice,
+                instructions: "Which worker configuration gives the best result for this task?"
+                    .to_string(),
+                options: std::mem::take(&mut self.options),
+                criteria: None,
+            },
+        );
+        self.answers.insert(
+            BEST_WORKER.to_string(),
+            winner.as_ref().map(|w| Answer {
+                choice: Some(w.clone()),
+                probabilities: BTreeMap::from([(w.clone(), 1.0)]),
+                confidence: None,
+            }),
+        );
+    }
+}
+
+/// The winner's config id. A later rejection (stale judgment, failed
+/// revalidation) voids the winner.
+fn winner_config(r: &RoundView) -> Result<Option<String>> {
+    match (&r.winner, &r.rejected) {
+        (Some(w), None) => Ok(Some(
+            r.candidates[&w.label]
+                .planned
+                .as_ref()
+                .with_context(|| format!("winner {} was never planned", w.label))?
+                .config_id
+                .clone(),
+        )),
+        _ => Ok(None),
+    }
+}
+
 fn build_row(
     paths: &DatasetPaths,
     facts: &dyn ExecutionFactsSource,
@@ -271,25 +422,7 @@ fn build_row(
         .get(&r.experiment_id)
         .with_context(|| format!("unknown experiment {}", r.experiment_id))?
         .created;
-    let judgment = match &r.judge.judgment_id {
-        Some(id) => {
-            let file = paths.judgement(round_id)?;
-            let text = std::fs::read_to_string(&file)
-                .with_context(|| format!("reading {}", file.display()))?;
-            let record: JudgmentRecord = serde_json::from_str(&text)
-                .with_context(|| format!("parsing {}", file.display()))?;
-            if &record.judgment_id != id || &record.round_id != round_id {
-                bail!(
-                    "{} holds judgment {} of round {}; the log names judgment {id}",
-                    file.display(),
-                    record.judgment_id,
-                    record.round_id
-                );
-            }
-            Some(record.judgment)
-        }
-        None => None,
-    };
+    let judgment = read_judgment(paths, round_id, r.judge.judgment_id.as_ref())?;
 
     // WorkerRun::project folds what it is given: only this round's events.
     let round_events: Vec<EventEnvelope> = events
@@ -301,92 +434,12 @@ fn build_row(
         .cloned()
         .collect();
 
-    let mut questions = BTreeMap::new();
-    let mut answers = BTreeMap::new();
-    let mut worker_runs = Vec::new();
-    let mut component_quality = BTreeMap::new();
-    let mut options = Vec::new();
-    let mut cost = NanoUsd::default();
+    let mut parts = RowParts::default();
     for (label, c) in &r.candidates {
-        let planned = c
-            .planned
-            .as_ref()
-            .with_context(|| format!("candidate {label} was never planned"))?;
-        let config_id = &planned.config_id;
-        let execution_id = c
-            .execution_id
-            .as_ref()
-            .with_context(|| format!("candidate {label} has no execution id"))?;
-        let run_facts = facts
-            .facts(execution_id)
-            .with_context(|| format!("no execution facts for {execution_id}"))?;
-        let components = judgment
-            .as_ref()
-            .and_then(|j| j.candidates.get(label))
-            .map(|a| a.scores.clone());
-        let run = WorkerRun::project(&run_facts, &round_events, components.clone())?;
-        cost += NanoUsd(i128::from(run.facts.cost_microusd.0) * 1000);
-        worker_runs.push(run);
-
-        let key = format!("{QUALITY_PREFIX}{config_id}");
-        if questions.contains_key(&key) {
-            bail!("config {config_id} appears twice in the round");
-        }
-        questions.insert(
-            key.clone(),
-            Question {
-                kind: QuestionKind::Score,
-                instructions: format!("How good is the result of {config_id} on this task?"),
-                options: Vec::new(),
-                criteria: None,
-            },
-        );
-        // The sum exists only in this answer; the components stay separate.
-        let answer = components.as_ref().map(|scores| Answer {
-            choice: None,
-            probabilities: BTreeMap::from([(SCORE_KEY.to_string(), scores.values().sum())]),
-            confidence: None,
-        });
-        answers.insert(key, answer);
-        if let Some(scores) = components {
-            component_quality.insert(config_id.clone(), scores);
-        }
-        if c.is_eligible() {
-            options.push(config_id.clone());
-        }
+        parts.add_candidate(label, c, facts, judgment.as_ref(), &round_events)?;
     }
-    options.sort();
-
-    // A later rejection (stale judgment, failed revalidation) voids the winner.
-    let winner = match (&r.winner, &r.rejected) {
-        (Some(w), None) => Some(
-            r.candidates[&w.label]
-                .planned
-                .as_ref()
-                .with_context(|| format!("winner {} was never planned", w.label))?
-                .config_id
-                .clone(),
-        ),
-        _ => None,
-    };
-    questions.insert(
-        BEST_WORKER.to_string(),
-        Question {
-            kind: QuestionKind::Choice,
-            instructions: "Which worker configuration gives the best result for this task?"
-                .to_string(),
-            options,
-            criteria: None,
-        },
-    );
-    answers.insert(
-        BEST_WORKER.to_string(),
-        winner.as_ref().map(|w| Answer {
-            choice: Some(w.clone()),
-            probabilities: BTreeMap::from([(w.clone(), 1.0)]),
-            confidence: None,
-        }),
-    );
+    let winner = winner_config(r)?;
+    parts.add_best_worker(&winner);
 
     Ok(ExportRow {
         schema: EXPORT_SCHEMA.to_string(),
@@ -410,15 +463,15 @@ fn build_row(
             environment_digest: experiment.environment_digest,
             base_sha: r.created.base_sha.clone(),
         },
-        questions,
-        answers,
+        questions: parts.questions,
+        answers: parts.answers,
         eligible_set: r.created.eligible_set.clone(),
         planner_propensities: r.created.propensities.clone(),
         teacher: TeacherRef::none(),
-        worker_runs,
+        worker_runs: parts.worker_runs,
         winner,
-        component_quality,
-        cost_microusd: cost.to_micro_half_even(),
+        component_quality: parts.component_quality,
+        cost_microusd: parts.cost.to_micro_half_even(),
         latency_ms,
         outcomes: r.outcomes.clone(),
         promotion: read_promotion(paths, round_id)?,
@@ -428,18 +481,21 @@ fn build_row(
 /// `dest_after` of `promotions/<round>.json`, when the file exists.
 fn read_promotion(paths: &DatasetPaths, round_id: &RoundId) -> Result<Option<ExportPromotion>> {
     let file = paths.promotion(round_id)?;
-    let text = match std::fs::read_to_string(&file) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
-    };
+    match std::fs::read_to_string(&file) {
+        Ok(text) => parse_promotion(&file, &text).map(Some),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", file.display())),
+    }
+}
+
+fn parse_promotion(file: &Path, text: &str) -> Result<ExportPromotion> {
     let receipt: Value =
-        serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
+        serde_json::from_str(text).with_context(|| format!("parsing {}", file.display()))?;
     let dest_after = receipt
         .get("dest_after")
         .and_then(Value::as_str)
         .with_context(|| format!("{} has no dest_after", file.display()))?;
-    Ok(Some(ExportPromotion {
+    Ok(ExportPromotion {
         dest_after: dest_after.to_string(),
-    }))
+    })
 }
