@@ -2308,6 +2308,53 @@ fn a_rust_only_change_is_not_sent_to_the_complexity_analyser() {
 }
 
 #[test]
+fn finish_finds_the_complexity_analyser_in_a_local_marketplace_of_the_store() {
+    let mut h = finish_world("tl-complexity-store");
+    // The store installed code-sweep from a local marketplace checkout. The
+    // analyser sits in the same checkout, outside the store.
+    let market = h.root.join("skill-marketplace/plugins");
+    let dist = market.join("code/skills/complexity-sweep/code/cli/dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    let called = h.root.join("analyser-called");
+    std::fs::write(
+        dist.join("index.js"),
+        format!(
+            "/usr/bin/touch {}\necho '{{\"files\":[],\"violations\":[]}}'\n",
+            called.display()
+        ),
+    )
+    .unwrap();
+    let data = h.root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join("marketplace.lock"),
+        serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "skills": [{
+                "id": "code-sweep",
+                "source": market.join("dev/skills/code-sweep").to_string_lossy(),
+                "requested_revision": null,
+                "resolved_commit": null,
+                "version": "local+b9691d7496c9",
+                "digest": "sha256:b9691d7496c98131e15b6c8c8ac80e3f97871d43fcda10d994f59915b2a831cc",
+                "installed_at": "2026-10-28T09:45:37Z"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    h.set("HORCH_DATA_DIR", data.to_string_lossy());
+    h.set("HORCH_COMPLEXITY_CLI", "");
+    // index.js is a shell script here: run it with sh as the node binary.
+    h.set("HORCH_NODE_BIN", "/bin/sh");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "a.ts");
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    assert_eq!(step_of(&r, "complexity-sweep").0, "passed", "{r}");
+    assert!(called.exists(), "the marketplace analyser ran");
+}
+
+#[test]
 fn a_complexity_report_past_64_kib_is_read_whole() {
     let mut h = finish_world("tl-complexity-big");
     // Node exits before a piped stdout drains: a pipe gets the first 64 KiB.

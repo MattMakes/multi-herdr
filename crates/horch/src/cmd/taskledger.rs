@@ -1408,10 +1408,11 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     };
-    let roots = [
+    let mut roots = vec![
         ctx.paths.home.join(".claude").join("plugins"),
         ctx.paths.data_root.clone(),
     ];
+    roots.extend(local_marketplaces(&ctx.paths.data_root));
     // A plugin holds `<skill>/`; the skill store holds
     // `skills/<skill>/<source>+<hash>/`.
     let skill_dir = |p: &Path, skill: &str| {
@@ -1447,6 +1448,32 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
         reviewers_down: Vec::new(),
     }
+}
+
+/// The `plugins/` folder of each local marketplace checkout that the skill
+/// store installed a skill from. The store cannot hold complexity-sweep (its
+/// npm links are symlinks), but its checkout sits next to code-sweep's.
+fn local_marketplaces(data_root: &Path) -> Vec<PathBuf> {
+    let lock = horch_core::skills::catalog::marketplace::Store::new(data_root).lock_path();
+    let Ok(lock) = horch_core::skills::catalog::marketplace::Lockfile::read(&lock) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for e in &lock.skills {
+        let source = Path::new(&e.source);
+        if !source.is_absolute() {
+            continue;
+        }
+        if let Some(p) = source
+            .ancestors()
+            .find(|a| a.file_name().is_some_and(|n| n == "plugins"))
+        {
+            if !out.iter().any(|o| o == p) {
+                out.push(p.to_path_buf());
+            }
+        }
+    }
+    out
 }
 
 /// The first directory under `roots` (at most 10 levels down) that `want`
