@@ -14,6 +14,9 @@
   now reads "N messages are not acknowledged", without "worker". If herdr
   does not answer for 5 seconds, `inbox` stops that herdr call, marks the
   pane states unknown, and still prints mail.
+
+## v0.3.1 - 2026-10-28
+
 - `horch fleet` and `horch orchestration` install a newer multi-herdr
   release before the fleet starts, then restart on it. `--no-update` or
   `HORCH_NO_UPDATE=1` skips it; a failed update starts the fleet on the
