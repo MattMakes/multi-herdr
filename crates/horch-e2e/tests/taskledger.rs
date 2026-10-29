@@ -2065,3 +2065,219 @@ fn a_land_checks_outside_the_lock_and_lands_after_a_faster_task() {
     let order: Vec<&str> = log.lines().take(2).collect();
     assert_eq!(order, vec!["a.txt", "b.txt"], "A lands after B: {log}");
 }
+
+/// A run with only the code-sweep step and 1 claimed task with 1 commit.
+fn sweep_world(h: &Harness) -> (String, PathBuf) {
+    claimed_with_commit(h, "code-sweep", None, "a.txt")
+}
+
+/// (task short, status, claimable_by) of every review task, in seq order.
+fn reviews(h: &Harness) -> Vec<(String, String, String)> {
+    let st = json_of(h, &["ledger", "status", "--json"]);
+    st["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| &t["task"])
+        .filter(|t| t["kind"] == "review")
+        .map(|t| {
+            (
+                format!("T-{}", t["seq"]),
+                t["status"].as_str().unwrap().to_string(),
+                t["claimable_by"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+const CLEAN: &str = "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n";
+
+#[test]
+fn a_reviewer_that_cannot_run_hands_the_round_to_its_fallback() {
+    let mut h = finish_world("tl-sweep-down");
+    h.set("HORCH_CODEX_BIN", h.root.join("no-codex").to_string_lossy());
+    let (w, _) = sweep_world(&h);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    let msg = r["message"].as_str().unwrap();
+    assert!(msg.contains("codex-reviewer cannot run here"), "{msg}");
+    assert!(
+        msg.contains("the reviews go to architect-reviewer"),
+        "{msg}"
+    );
+    let all = reviews(&h);
+    assert!(!all.is_empty());
+    assert!(
+        all.iter().all(|(_, _, p)| p == "architect-reviewer"),
+        "{all:?}"
+    );
+}
+
+#[test]
+fn a_queued_review_moves_to_its_fallback_persona() {
+    let h = finish_world("tl-sweep-fallback");
+    let (w, _) = sweep_world(&h);
+    finish_json(&h, &w);
+    let (first, _, persona) = reviews(&h)[0].clone();
+    assert_eq!(persona, "codex-reviewer");
+    ok(&h, &["ledger", "fallback", &first, "codex quota spent"]);
+    let after = reviews(&h);
+    assert_eq!(after[0].2, "architect-reviewer", "{after:?}");
+}
+
+#[test]
+fn a_cancelled_review_is_queued_again_and_the_sweep_then_passes() {
+    let h = finish_world("tl-sweep-cancel");
+    let (w, _) = sweep_world(&h);
+    let (_, r) = finish_json(&h, &w);
+    let n = r["queued_reviews"].as_array().unwrap().len();
+    let (first, _, _) = reviews(&h)[0].clone();
+    ok(
+        &h,
+        &["ledger", "cancel", &first, "the reviewer cannot start"],
+    );
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        step_of(&r, "code-sweep").0,
+        "running",
+        "the step waits: {r}"
+    );
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .contains("1 cancelled reviews are queued again"),
+        "{r}"
+    );
+    let all = reviews(&h);
+    assert_eq!(all.len(), n + 1, "1 new review task: {all:?}");
+    assert_eq!(all.iter().filter(|r| r.1 == "queued").count(), n, "{all:?}");
+    review_all(&h, n, CLEAN);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    assert_eq!(step_of(&r, "code-sweep"), ("passed".into(), "PASS".into()));
+}
+
+#[test]
+fn only_the_orchestrator_waives_a_critical_finding() {
+    let h = finish_world("tl-sweep-waive");
+    let (w, _) = sweep_world(&h);
+    let (_, r) = finish_json(&h, &w);
+    let n = r["queued_reviews"].as_array().unwrap().len();
+    review_all(&h, 1, "## Critical\n- a.txt:1 SQL injection. Fix: bind it\n## Important\n- none\n## Minor\n- none\n");
+    review_all(&h, n - 1, CLEAN);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .contains("1 Critical findings (F1)"),
+        "{r}"
+    );
+
+    let o = as_worker(&h, &w, &["ledger", "waive", "T-1", "F1", "it is mine"]);
+    assert!(
+        !o.status.success(),
+        "the author may not waive: {}",
+        text(&o)
+    );
+    assert!(text(&o).contains("only the orchestrator"), "{}", text(&o));
+    ok(
+        &h,
+        &[
+            "ledger",
+            "waive",
+            "T-1",
+            "F1",
+            "the query binds its parameters",
+        ],
+    );
+
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    let steps = &r["steps"].as_array().unwrap();
+    let ev = steps[0]["evidence_path"].as_str().unwrap();
+    let report = std::fs::read_to_string(ev).unwrap();
+    assert!(
+        report.contains("F1 [")
+            && report.contains("waived by the orchestrator: the query binds its parameters"),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_new_tree_supersedes_the_open_reviews_of_the_old_round() {
+    let h = finish_world("tl-sweep-supersede");
+    let (w, path) = sweep_world(&h);
+    let (_, r) = finish_json(&h, &w);
+    let n = r["queued_reviews"].as_array().unwrap().len();
+    // 1 reviewer holds a round-1 review when the tree changes.
+    let rw = worker_new(&h, "codex-reviewer");
+    ok_as(&h, &rw, &["ledger", "claim"]);
+    commit_file(&h, &path, "b.txt");
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert!(r["message"].as_str().unwrap().contains("round 2"), "{r}");
+    assert_eq!(
+        worker_json(&h, &rw)["status"],
+        "stopped",
+        "its review is superseded"
+    );
+    let all = reviews(&h);
+    let (old, new) = all.split_at(n);
+    assert!(
+        old.iter().all(|r| r.1 == "cancelled"),
+        "round 1 is cancelled: {all:?}"
+    );
+    assert!(
+        new.iter().all(|r| r.1 == "queued"),
+        "round 2 is queued: {all:?}"
+    );
+    // A superseded review is never queued again.
+    finish_json(&h, &w);
+    assert_eq!(reviews(&h).len(), all.len(), "{:?}", reviews(&h));
+}
+
+#[test]
+fn a_replacement_with_the_same_tree_reuses_the_finished_round() {
+    let h = finish_world("tl-sweep-replace");
+    let (w1, _) = sweep_world(&h);
+    let (_, r) = finish_json(&h, &w1);
+    let n = r["queued_reviews"].as_array().unwrap().len();
+    review_all(&h, n, CLEAN);
+    ok(&h, &["ledger", "stop", &w1, "reaped in the test"]);
+    let w2 = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "opus",
+            "--replaces",
+            &w1,
+        ],
+    )
+    .trim()
+    .to_string();
+    ok_as(&h, &w2, &["ledger", "claim"]);
+    let (code, r) = finish_json(&h, &w2);
+    assert_eq!(code, Some(0), "{r}");
+    assert_eq!(reviews(&h).len(), n, "no new review task");
+}
+
+#[test]
+fn a_missing_reviewer_prompt_queues_no_review() {
+    let h = finish_world("tl-sweep-noprompt");
+    std::fs::remove_file(h.root.join("code-sweep/reviewers/clarity-checker.md")).unwrap();
+    let (w, _) = sweep_world(&h);
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1));
+    assert!(
+        r["message"].as_str().unwrap().contains("clarity-checker"),
+        "{r}"
+    );
+    assert!(reviews(&h).is_empty(), "{:?}", reviews(&h));
+}

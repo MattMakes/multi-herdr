@@ -85,6 +85,16 @@ pub enum LedgerCommand {
         #[command(flatten)]
         run: RunArg,
     },
+    /// (orchestrator) Rule that 1 code-sweep finding of a task's current
+    /// round does not block. Never the author.
+    Waive {
+        task: String,
+        /// The finding id in the code-sweep report, e.g. F1.
+        finding: String,
+        reason: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
     /// (worker) Take the next task meant for this worker's persona.
     Claim {
         #[arg(long)]
@@ -101,6 +111,9 @@ pub enum LedgerCommand {
     Finish {
         #[arg(long)]
         json: bool,
+        /// Start a new code-sweep round for the same tree.
+        #[arg(long)]
+        rereview: bool,
     },
     /// The finish steps of a task (default: this worker's) with evidence.
     Steps {
@@ -474,6 +487,31 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        LedgerCommand::Waive {
+            task,
+            finding,
+            reason,
+            run,
+        } => {
+            let r = resolve_run(ctx, &store, &run)?;
+            if let Some(w) = worker_id_opt(ctx) {
+                let w = workers::get(store.conn(), &w)?;
+                if w.kind != WorkerKind::Orchestrator.as_str() {
+                    bail!("only the orchestrator waives a code-sweep finding; fix it, or answer an Important finding in the answers file");
+                }
+            }
+            let t = tasks::resolve(store.conn(), &r.run_id, &task)?;
+            let w =
+                finish::codesweep::waive(&store, &tools(ctx).evidence_root, &t, &finding, &reason)?;
+            output::println(&format!(
+                "{} round {}: {} waived. The next horch ledger finish of {} reads it.",
+                t.short(),
+                w.round,
+                w.id,
+                t.short()
+            ));
+            Ok(ExitCode::SUCCESS)
+        }
         LedgerCommand::Claim { json: as_json } => claim(ctx, &mut store, as_json),
         LedgerCommand::Worktree {
             command: WorktreeCommand::New { name, from },
@@ -531,10 +569,34 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
             output::println(&format!("abandoned: {} ({reason})", wt.path));
             Ok(ExitCode::SUCCESS)
         }
-        LedgerCommand::Finish { json: as_json } => {
+        LedgerCommand::Finish {
+            json: as_json,
+            rereview,
+        } => {
             let wid = worker_id(ctx)?;
-            let tools = tools(ctx);
+            let mut tools = tools(ctx);
+            tools.reviewers_down = reviewers_down(ctx);
+            if rereview {
+                finish::rereview(&mut store, &tools, &wid)?;
+            }
             let report = finish::finish(&mut store, &tools, &wid)?;
+            for w in &report.superseded_workers {
+                let stopped = stop::stop_worker(
+                    &mut store,
+                    w,
+                    StopRequester::Watchdog,
+                    "its review was superseded by a new code-sweep round",
+                    &HerdrPanes::new(ctx),
+                    &stop::Os,
+                    &stop::StopOptions {
+                        grace: stop_grace(),
+                        ..Default::default()
+                    },
+                );
+                if let Err(e) = stopped {
+                    eprintln!("horch ledger: could not stop reviewer {w}: {e:#}");
+                }
+            }
             if !report.queued_reviews.is_empty() {
                 let w = workers::get(store.conn(), &wid)?;
                 if let Some(r) = &w.run_id {
@@ -1307,6 +1369,38 @@ fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claim
     }
 }
 
+/// The code-sweep reviewer personas that cannot run here: not in the roster,
+/// or their harness CLI is not installed.
+fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
+    let roster = super::load_roster_unwarned(ctx, None).ok();
+    ["codex-reviewer", "architect-reviewer"]
+        .into_iter()
+        .filter_map(|p| {
+            let why = match roster.as_ref().and_then(|r| r.get(p)) {
+                None => "not in the roster".to_string(),
+                Some(t) => {
+                    let bin = t.agent.binary(&ctx.bins.harness)?;
+                    let found = if bin.is_absolute() {
+                        bin.is_file()
+                    } else {
+                        horch_core::runtime::process::which(
+                            ctx.inherited.path.as_deref(),
+                            ctx.inherited.pathext.as_deref(),
+                            &bin.to_string_lossy(),
+                        )
+                        .is_some()
+                    };
+                    if found {
+                        return None;
+                    }
+                    format!("{} is not installed", bin.display())
+                }
+            };
+            Some((p.to_string(), why))
+        })
+        .collect()
+}
+
 /// The finish steps' tools: git, gh, node, the sweep skills.
 pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
     let env = |k: &str| {
@@ -1344,6 +1438,7 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             .unwrap_or_else(|| PathBuf::from("evidence")),
         // An absolute shell: a pane's PATH may not reach one.
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
+        reviewers_down: Vec::new(),
     }
 }
 

@@ -43,6 +43,9 @@ pub struct Tools {
     pub evidence_root: PathBuf,
     /// The shell that runs a check command.
     pub shell: PathBuf,
+    /// Reviewer personas that cannot run on this host, with why (not in the
+    /// roster, harness not installed). Code-sweep queues their fallback.
+    pub reviewers_down: Vec<(String, String)>,
 }
 
 /// 1 step row.
@@ -71,6 +74,8 @@ pub struct Outcome {
     /// The tree this result judged; a change re-runs the step.
     pub judged_rev: Option<String>,
     pub review_task_ids: Option<Vec<String>>,
+    /// Reviewer workers whose review a new round superseded: stop them.
+    pub stop_workers: Vec<String>,
 }
 
 impl Outcome {
@@ -82,6 +87,7 @@ impl Outcome {
             note: note.into(),
             judged_rev: None,
             review_task_ids: None,
+            stop_workers: Vec::new(),
         }
     }
 
@@ -419,6 +425,9 @@ pub struct FinishReport {
     pub message: String,
     /// Reviewer tasks queued by code-sweep that no worker holds yet.
     pub queued_reviews: Vec<String>,
+    /// Reviewer workers whose review a new round superseded: the caller
+    /// stops them.
+    pub superseded_workers: Vec<String>,
 }
 
 /// The tree the branch holds now: what a step judges.
@@ -489,6 +498,7 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
     let mut stopped_at = None;
     let mut message = String::new();
     let mut queued_reviews = Vec::new();
+    let mut superseded_workers = Vec::new();
     for (i, name) in names.iter().enumerate() {
         let seq = i as i64 + 1;
         let rows = steps_of(store.conn(), &task.task_id, &w.worker_id)?;
@@ -543,6 +553,7 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         if let Some(ids) = &outcome.review_task_ids {
             queued_reviews = ids.clone();
         }
+        superseded_workers.extend(outcome.stop_workers.iter().cloned());
         if !outcome.status.is_through() {
             stopped_at = Some(name.as_str().to_string());
             message = format!("{}: {}", about(name.as_str()), outcome.note);
@@ -567,6 +578,22 @@ pub fn finish(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<Finis
         stopped_at,
         message,
         queued_reviews,
+        superseded_workers,
+    })
+}
+
+/// `horch ledger finish --rereview`: the next finish queues a new
+/// code-sweep round for the same tree; the open reviews of the current one
+/// are cancelled as superseded.
+pub fn rereview(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<()> {
+    let (w, task) = held_task(store.conn(), worker_id)?;
+    codesweep::forget_tree(&tools.evidence_root, &task.task_id)?;
+    store.immediate(|tx| {
+        tx.execute(
+            "UPDATE task_steps SET status = 'pending' WHERE task_id = ?1 AND worker_id = ?2 AND name = 'code-sweep'",
+            params![task.task_id, w.worker_id],
+        )?;
+        Ok(())
     })
 }
 

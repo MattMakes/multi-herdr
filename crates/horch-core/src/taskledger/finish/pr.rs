@@ -217,6 +217,12 @@ fn section_text(store: &Store, cx: &Ctx<'_>, landed: &str) -> Result<String> {
         verdict("complexity-sweep"),
         verdict("recheck")
     ));
+    for w in super::codesweep::waivers(&cx.tools.evidence_root, &cx.task.task_id) {
+        s.push_str(&format!(
+            "- code-sweep {} waived by the orchestrator: {}\n",
+            w.id, w.reason
+        ));
+    }
     if let Some(url) = &cx.task.issue_url {
         if let Some(n) = url
             .rsplit('/')
