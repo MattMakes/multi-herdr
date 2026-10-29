@@ -293,3 +293,87 @@ fn nano_cost(p: &Price, t: &Tokens) -> Option<NanoUsd> {
     }
     Some(n)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokens(input: u64) -> TokenEstimate {
+        TokenEstimate {
+            input,
+            ..TokenEstimate::default()
+        }
+    }
+
+    fn measured(model: &str, runs: u32, input: u64) -> BTreeMap<String, MeasuredTokens> {
+        BTreeMap::from([(
+            model.to_string(),
+            MeasuredTokens {
+                runs,
+                estimate: tokens(input),
+            },
+        )])
+    }
+
+    fn configured(all: Option<u64>, models: &[(&str, u64)]) -> ExpectedTokens {
+        ExpectedTokens {
+            all: all.map(tokens),
+            models: models
+                .iter()
+                .map(|(m, n)| (m.to_string(), tokens(*n)))
+                .collect(),
+        }
+    }
+
+    /// Each source wins over every later one, in the order of the doc
+    /// comment: plan, config model, config all, measured, default.
+    #[test]
+    fn the_estimate_comes_from_the_first_source_that_has_one() {
+        let everything = configured(Some(20), &[("sonnet", 10)]);
+        let runs = measured("sonnet", MEASURED_MIN_RUNS, 30);
+        assert_eq!(
+            resolve_estimate("sonnet", Some(tokens(5)), &everything, &runs),
+            (tokens(5), EstimateSource::Plan)
+        );
+        assert_eq!(
+            resolve_estimate("sonnet", None, &everything, &runs),
+            (tokens(10), EstimateSource::ConfigModel)
+        );
+        // Another model has no entry of its own: `all` applies.
+        assert_eq!(
+            resolve_estimate("opus", None, &everything, &runs),
+            (tokens(20), EstimateSource::ConfigAll)
+        );
+        let none = configured(None, &[]);
+        assert_eq!(
+            resolve_estimate("sonnet", None, &none, &runs),
+            (
+                tokens(30),
+                EstimateSource::Measured {
+                    runs: MEASURED_MIN_RUNS
+                }
+            )
+        );
+        assert_eq!(
+            resolve_estimate("sonnet", None, &none, &BTreeMap::new()),
+            (DEFAULT_TOKEN_ESTIMATE, EstimateSource::Default)
+        );
+    }
+
+    /// A measured model with fewer than `MEASURED_MIN_RUNS` runs, or another
+    /// model's runs, fall through to the default.
+    #[test]
+    fn too_few_measured_runs_fall_to_the_default() {
+        let none = configured(None, &[]);
+        let few = measured("sonnet", MEASURED_MIN_RUNS - 1, 30);
+        assert_eq!(
+            resolve_estimate("sonnet", None, &none, &few),
+            (DEFAULT_TOKEN_ESTIMATE, EstimateSource::Default)
+        );
+        let other = measured("opus", 10, 30);
+        assert_eq!(
+            resolve_estimate("sonnet", None, &none, &other),
+            (DEFAULT_TOKEN_ESTIMATE, EstimateSource::Default)
+        );
+    }
+}
