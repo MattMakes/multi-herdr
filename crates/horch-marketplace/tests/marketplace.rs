@@ -924,6 +924,30 @@ fn mkt_11_store_lock_timeout_stale_and_release() {
     assert!(installer.store().lock().is_ok(), "a fault kept the lock");
 }
 
+/// The lock fails at once, without waiting, on an I/O error other than
+/// "the guard exists".
+#[cfg(unix)]
+#[test]
+fn mkt_11_store_lock_io_error_is_not_retried() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("store");
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+    let started = Instant::now();
+    let result = Store::new(&root).lock_within(Duration::from_secs(30), Duration::from_secs(30));
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+    let Err(err) = result else {
+        return; // running as a user that ignores directory modes
+    };
+    assert!(
+        matches!(&err, MarketplaceError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
+        "{err:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
 /// U-10: a reinstall that rebuilds a missing version directory waits while
 /// another process holds the store lock, as an install does.
 #[test]

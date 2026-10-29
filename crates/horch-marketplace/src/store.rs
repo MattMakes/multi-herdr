@@ -76,28 +76,31 @@ impl Store {
         let dir = self.guard_path();
         let deadline = Instant::now() + wait;
         loop {
-            match fs::create_dir(&dir) {
-                Ok(()) => return Ok(StoreLock { dir }),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(MarketplaceError::io(dir.display().to_string(), e)),
+            if try_take(&dir)? {
+                break Ok(StoreLock { dir });
             }
-            if guard_age(&dir).is_some_and(|age| age > stale_after) {
-                // Rename first: of several waiters only one rename succeeds.
-                let aside = self.root.join(format!(".lock-stale-{}", fsx::random_hex()));
-                if fs::rename(&dir, &aside).is_ok() {
-                    let _ = fsx::remove_dir_if_exists(&aside);
-                }
+            if self.clear_stale(&dir, stale_after) {
                 continue;
             }
             if Instant::now() >= deadline {
-                let timed_out = std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "another install holds the store lock; remove the directory if no install runs",
-                );
-                return Err(MarketplaceError::io(dir.display().to_string(), timed_out));
+                break Err(timed_out(&dir));
             }
             thread::sleep(LOCK_POLL);
         }
+    }
+
+    /// Break a guard directory older than `stale_after`. Returns whether it
+    /// tried, so the caller retries at once.
+    fn clear_stale(&self, dir: &Path, stale_after: Duration) -> bool {
+        let stale = guard_age(dir).is_some_and(|age| age > stale_after);
+        if stale {
+            // Rename first: of several waiters only one rename succeeds.
+            let aside = self.root.join(format!(".lock-stale-{}", fsx::random_hex()));
+            if fs::rename(dir, &aside).is_ok() {
+                let _ = fsx::remove_dir_if_exists(&aside);
+            }
+        }
+        stale
     }
 
     pub fn version_dir(&self, id: &SkillId, version: &SkillVersion) -> PathBuf {
@@ -140,6 +143,23 @@ impl Store {
         fsx::sync_dir(parent).map_err(|e| MarketplaceError::io(parent.display().to_string(), e))?;
         Ok(target)
     }
+}
+
+/// Make the guard directory. `Ok(false)` means another install holds it.
+fn try_take(dir: &Path) -> Result<bool> {
+    match fs::create_dir(dir) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(MarketplaceError::io(dir.display().to_string(), e)),
+    }
+}
+
+fn timed_out(dir: &Path) -> MarketplaceError {
+    let timed_out = std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "another install holds the store lock; remove the directory if no install runs",
+    );
+    MarketplaceError::io(dir.display().to_string(), timed_out)
 }
 
 /// How long ago the guard directory changed, or `None` when it is gone.
