@@ -486,4 +486,154 @@ mod tests {
         .unwrap();
         assert!(validate(&bad).is_err());
     }
+
+    fn valid() -> DatasetConfig {
+        let flags = RunFlags {
+            budget_usd: Some("10".into()),
+            ..RunFlags::default()
+        };
+        let mut config = merge(parse_file("").unwrap(), &flags).unwrap();
+        config.budget.soft_usd_micro = 5_000_000;
+        config.budget.judge_reserve_usd_micro = 1_000_000;
+        validate(&config).unwrap();
+        config
+    }
+
+    fn refused(edit: impl FnOnce(&mut DatasetConfig)) -> String {
+        let mut config = valid();
+        edit(&mut config);
+        validate(&config).unwrap_err().to_string()
+    }
+
+    /// Each rule of `validate` refuses with its own message, and the first
+    /// rule that fails speaks.
+    #[test]
+    fn validate_refuses_each_rule_with_its_message() {
+        let est = |input| TokenEstimate {
+            input,
+            ..TokenEstimate::default()
+        };
+        assert_eq!(
+            refused(|c| c.candidates = 0),
+            "candidates must be at least 1"
+        );
+        assert_eq!(
+            refused(|c| {
+                c.candidates = 0;
+                c.budget.hard_usd_micro = -1;
+            }),
+            "candidates must be at least 1"
+        );
+        assert_eq!(
+            refused(|c| c.budget.hard_usd_micro = -1),
+            "budgets must not be negative"
+        );
+        assert_eq!(
+            refused(|c| c.budget.soft_usd_micro = -1),
+            "budgets must not be negative"
+        );
+        assert_eq!(
+            refused(|c| c.budget.judge_reserve_usd_micro = -1),
+            "budgets must not be negative"
+        );
+        let no_hard = "budget sets a soft limit or judge reserve but no hard ceiling";
+        assert_eq!(
+            refused(|c| {
+                c.budget.hard_usd_micro = 0;
+                c.budget.judge_reserve_usd_micro = 0;
+            }),
+            no_hard
+        );
+        assert_eq!(
+            refused(|c| {
+                c.budget.hard_usd_micro = 0;
+                c.budget.soft_usd_micro = 0;
+            }),
+            no_hard
+        );
+        assert_eq!(
+            refused(|c| c.budget.soft_usd_micro = 0),
+            "budget soft limit must be greater than 0"
+        );
+        assert_eq!(
+            refused(|c| {
+                c.budget.hard_usd_micro = 1_000_000;
+                c.budget.soft_usd_micro = 2_000_000;
+            }),
+            "budget hard ceiling ($1.000000) is below the soft limit ($2.000000)"
+        );
+        assert_eq!(
+            refused(|c| c.budget.judge_reserve_usd_micro = 10_000_000),
+            "judge reserve ($10.000000) must be below the hard ceiling ($10.000000)"
+        );
+        assert_eq!(
+            refused(|c| c.budget.expected_tokens.all = Some(TokenEstimate::default())),
+            "budget.expected_tokens.all must give at least 1 token"
+        );
+        assert_eq!(
+            refused(|c| {
+                c.budget.expected_tokens.models.insert(" ".into(), est(1));
+            }),
+            "budget.expected_tokens.models has an empty model name"
+        );
+        assert_eq!(
+            refused(|c| {
+                c.budget
+                    .expected_tokens
+                    .models
+                    .insert("sonnet".into(), TokenEstimate::default());
+            }),
+            "budget.expected_tokens.models.sonnet must give at least 1 token"
+        );
+        let gate = |command: &str, timeout_s| GateConfig {
+            name: "g".into(),
+            command: command.into(),
+            timeout_s,
+            required: true,
+        };
+        assert_eq!(
+            refused(|c| c.gates = vec![gate(" ", 5)]),
+            "gate \"g\" has an empty command"
+        );
+        assert_eq!(
+            refused(|c| c.gates = vec![gate("make", 0)]),
+            "gate \"g\" needs a timeout_s greater than 0"
+        );
+        assert_eq!(
+            refused(|c| c.caps.max_parallel = Some(0)),
+            "caps.max_parallel must be at least 1"
+        );
+        assert_eq!(
+            refused(|c| {
+                c.caps.idle_nudge_after_s = 30;
+                c.caps.idle_end_after_s = 0;
+            }),
+            "caps.idle_end_after_s must be at least 1 while caps.idle_nudge_after_s is set"
+        );
+    }
+
+    /// A zero hard ceiling means "not configured": the run is refused by
+    /// PRE-09, not by the load.
+    #[test]
+    fn validate_accepts_an_unconfigured_budget_and_good_settings() {
+        let mut c = valid();
+        c.budget.hard_usd_micro = 0;
+        c.budget.soft_usd_micro = 0;
+        c.budget.judge_reserve_usd_micro = 0;
+        validate(&c).unwrap();
+
+        let mut c = valid();
+        c.gates = vec![GateConfig {
+            name: "g".into(),
+            command: "make".into(),
+            timeout_s: 5,
+            required: false,
+        }];
+        c.caps.max_parallel = Some(2);
+        c.budget.expected_tokens.all = Some(TokenEstimate {
+            input: 1,
+            ..TokenEstimate::default()
+        });
+        validate(&c).unwrap();
+    }
 }
