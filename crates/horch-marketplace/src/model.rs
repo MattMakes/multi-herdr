@@ -329,4 +329,101 @@ mod tests {
             assert!(SkillId::parse(bad).is_err(), "{bad}");
         }
     }
+
+    #[test]
+    fn url_scheme_is_lowercased_and_last_at_is_the_revision() {
+        assert_eq!(
+            SkillSource::parse("HTTPS://example.com/a@b/r@v2#sk/x").unwrap(),
+            SkillSource::Git {
+                url: "https://example.com/a@b/r".into(),
+                revision: GitRevision::Tag("v2".into()),
+                subdir: Some("sk/x".into()),
+            }
+        );
+        // `@` in the authority is userinfo and is refused.
+        assert!(matches!(
+            SkillSource::parse("https://tok@example.com/r"),
+            Err(MarketplaceError::Credentials(_))
+        ));
+    }
+
+    #[test]
+    fn github_form_rules() {
+        assert_eq!(
+            SkillSource::parse(" o/r.git@v1 ").unwrap(),
+            SkillSource::Git {
+                url: "https://github.com/o/r.git".into(),
+                revision: GitRevision::Tag("v1".into()),
+                subdir: None,
+            }
+        );
+        for bad in ["o", "o/r/x", "-o/r", "o/.r", "o/", "o/r@"] {
+            assert!(
+                matches!(SkillSource::parse(bad), Err(MarketplaceError::BadSource(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_and_local_forms() {
+        let err = SkillSource::parse("bundled:a-b#x").unwrap_err();
+        assert!(err.to_string().contains("invalid skill id"), "{err}");
+        assert_eq!(
+            SkillSource::parse("/a/b#c").unwrap(),
+            SkillSource::Local {
+                path: "/a/b#c".into()
+            }
+        );
+    }
+
+    #[test]
+    fn check_url_rules() {
+        for ok in [
+            "https://example.com/r",
+            "HTTPS://example.com",
+            "file:///tmp/r.git",
+            "https://example.com/r?ref=main",
+        ] {
+            assert!(check_url(ok).is_ok(), "{ok}");
+        }
+        for (bad, kind) in [
+            ("example.com/r", "source"),
+            ("https://user:pw@example.com/r", "credentials"),
+            ("https://token@example.com/r", "credentials"),
+            ("https://example.com/r?Token=abc", "credentials"),
+            ("https://example.com/r?a=1&token=abc", "credentials"),
+            ("https://example.com/r?x=1#a;token=z", "credentials"),
+            ("http://example.com/r", "source"),
+            ("ssh://example.com/r", "source"),
+            ("https:///r", "source"),
+            ("file://host/r", "source"),
+        ] {
+            let err = check_url(bad).unwrap_err();
+            let got = match err {
+                MarketplaceError::Credentials(_) => "credentials",
+                MarketplaceError::BadSource(_) => "source",
+                other => panic!("{bad}: {other:?}"),
+            };
+            assert_eq!(got, kind, "{bad}");
+        }
+        // The text never holds the URL, so a secret cannot reach a log.
+        let msg = check_url("https://sekret@example.com/r")
+            .unwrap_err()
+            .to_string();
+        assert!(!msg.contains("sekret"), "{msg}");
+    }
+
+    #[test]
+    fn safe_ref_names() {
+        for ok in ["main", "v1.2.3", "feat/x", "a@b", "x.lockfile", "a.b"] {
+            assert!(is_safe_ref_name(ok), "{ok}");
+        }
+        for bad in [
+            "", "-x", "/x", "x/", "x.lock", "a..b", "a//b", "a@{1}", "a b", "a~1", "a^", "a:b",
+            "a?", "a*", "a[", "a\\b", "a\u{7f}", "é",
+        ] {
+            assert!(!is_safe_ref_name(bad), "{bad:?}");
+        }
+    }
 }
