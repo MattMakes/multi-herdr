@@ -57,6 +57,22 @@ enum Outcome {
     Failed,
 }
 
+impl Outcome {
+    /// The word printed beside a file name; a dry run says what would happen.
+    fn label(self, dry_run: bool) -> &'static str {
+        match (self, dry_run) {
+            (Outcome::Added, false) => "added",
+            (Outcome::Added, true) => "would add",
+            (Outcome::Updated, false) => "updated",
+            (Outcome::Updated, true) => "would update",
+            (Outcome::Removed, false) => "removed",
+            (Outcome::Removed, true) => "would remove",
+            (Outcome::Unchanged, _) => "unchanged",
+            (Outcome::Failed, _) => "FAILED",
+        }
+    }
+}
+
 fn main() -> std::process::ExitCode {
     match run() {
         Ok(true) => std::process::ExitCode::SUCCESS,
@@ -92,50 +108,61 @@ fn run() -> Result<bool> {
         counts[sync_page(doc, &cli.out, cli.dry_run) as usize] += 1;
     }
 
+    prune_stale(&cli, &pages, &mut counts)?;
+    Ok(print_summary(&counts, cli.dry_run) == 0)
+}
+
+/// Remove local files whose pages are gone, and count them.
+fn prune_stale(cli: &Cli, pages: &[DocPage], counts: &mut [usize; 5]) -> Result<()> {
     // Pruning deletes local documentation, so only do it from a complete picture.
     // If a page could not be fetched or converted, the run does not know what the
     // site really contains, and deleting on that basis could destroy good docs.
-    let prune = !cli.keep_stale && counts[Outcome::Failed as usize] == 0;
-    if !cli.keep_stale && !prune {
+    if cli.keep_stale {
+        Ok(())
+    } else if counts[Outcome::Failed as usize] > 0 {
         eprintln!("\n  skipping cleanup of stale files: some pages failed this run");
+        Ok(())
+    } else {
+        remove_stale(cli, pages, counts)
     }
-    if prune {
-        for removed in stale_files(&cli.out, &pages)? {
-            let verb = if cli.dry_run {
-                "would remove"
-            } else {
-                "removed"
-            };
-            println!(
-                "  {verb:<14} {}",
-                removed.file_name().unwrap_or_default().to_string_lossy()
-            );
-            if !cli.dry_run {
-                std::fs::remove_file(&removed)
-                    .with_context(|| format!("removing {}", removed.display()))?;
-            }
-            counts[Outcome::Removed as usize] += 1;
-        }
-    }
+}
 
+fn remove_stale(cli: &Cli, pages: &[DocPage], counts: &mut [usize; 5]) -> Result<()> {
+    for removed in stale_files(&cli.out, pages)? {
+        println!(
+            "  {:<14} {}",
+            Outcome::Removed.label(cli.dry_run),
+            removed.file_name().unwrap_or_default().to_string_lossy()
+        );
+        if !cli.dry_run {
+            std::fs::remove_file(&removed)
+                .with_context(|| format!("removing {}", removed.display()))?;
+        }
+        counts[Outcome::Removed as usize] += 1;
+    }
+    Ok(())
+}
+
+/// Print the totals and return how many pages failed.
+fn print_summary(counts: &[usize; 5], dry_run: bool) -> usize {
     let failed = counts[Outcome::Failed as usize];
+    let suffix = if dry_run {
+        "  (dry run: nothing written)"
+    } else {
+        ""
+    };
     println!(
-        "\n{} added, {} updated, {} unchanged, {} removed, {} failed{}",
+        "\n{} added, {} updated, {} unchanged, {} removed, {} failed{suffix}",
         counts[Outcome::Added as usize],
         counts[Outcome::Updated as usize],
         counts[Outcome::Unchanged as usize],
         counts[Outcome::Removed as usize],
         failed,
-        if cli.dry_run {
-            "  (dry run: nothing written)"
-        } else {
-            ""
-        }
     );
     if failed > 0 {
         eprintln!("\n{failed} page(s) failed; everything else was written.");
     }
-    Ok(failed == 0)
+    failed
 }
 
 /// Resolve the sitemap, following a `<sitemapindex>` to the `<urlset>`s it names.
@@ -143,54 +170,58 @@ fn discover(sitemap_url: &str) -> Result<Vec<DocPage>> {
     let mut urls = Vec::new();
     match sitemap::parse(&fetch(sitemap_url)?)? {
         Sitemap::Urls(found) => urls.extend(found),
-        Sitemap::Index(children) => {
-            for child in children {
-                match sitemap::parse(&fetch(&child)?)? {
-                    Sitemap::Urls(found) => urls.extend(found),
-                    // One level of indirection is all the spec allows.
-                    Sitemap::Index(_) => {
-                        eprintln!("  note: skipping nested sitemap index at {child}")
-                    }
-                }
-            }
-        }
+        Sitemap::Index(children) => child_urls(children, &mut urls)?,
     }
     Ok(sitemap::doc_pages(&urls))
 }
 
-fn sync_page(doc: &DocPage, out_dir: &Path, dry_run: bool) -> Outcome {
-    let target = out_dir.join(&doc.file_name);
-    let markdown = match fetch(&doc.url).and_then(|html| page::to_markdown(&html)) {
-        Ok(markdown) => markdown,
-        Err(e) => {
-            eprintln!("  {:<14} {} - {e:#}", "FAILED", doc.file_name);
-            return Outcome::Failed;
+/// Collect the page URLs of each child sitemap.
+fn child_urls(children: Vec<String>, urls: &mut Vec<String>) -> Result<()> {
+    for child in children {
+        match sitemap::parse(&fetch(&child)?)? {
+            Sitemap::Urls(found) => urls.extend(found),
+            // One level of indirection is all the spec allows.
+            Sitemap::Index(_) => {
+                eprintln!("  note: skipping nested sitemap index at {child}")
+            }
         }
-    };
+    }
+    Ok(())
+}
 
-    let existing = std::fs::read_to_string(&target).ok();
-    let outcome = match &existing {
-        Some(current) if *current == markdown => Outcome::Unchanged,
+fn sync_page(doc: &DocPage, out_dir: &Path, dry_run: bool) -> Outcome {
+    match fetch_and_write(doc, &out_dir.join(&doc.file_name), dry_run) {
+        Ok(outcome) => {
+            println!("  {:<14} {}", outcome.label(dry_run), doc.file_name);
+            outcome
+        }
+        Err(e) => {
+            eprintln!(
+                "  {:<14} {} - {e:#}",
+                Outcome::Failed.label(dry_run),
+                doc.file_name
+            );
+            Outcome::Failed
+        }
+    }
+}
+
+fn fetch_and_write(doc: &DocPage, target: &Path, dry_run: bool) -> Result<Outcome> {
+    let markdown = page::to_markdown(&fetch(&doc.url)?)?;
+    write_page(target, &markdown, dry_run)
+}
+
+/// Compare `markdown` with what is on disk and write it when it differs.
+fn write_page(target: &Path, markdown: &str, dry_run: bool) -> Result<Outcome> {
+    let outcome = match std::fs::read_to_string(target).ok() {
+        Some(current) if current == markdown => Outcome::Unchanged,
         Some(_) => Outcome::Updated,
         None => Outcome::Added,
     };
-
     if outcome != Outcome::Unchanged && !dry_run {
-        if let Err(e) = std::fs::write(&target, &markdown) {
-            eprintln!("  {:<14} {} - writing failed: {e}", "FAILED", doc.file_name);
-            return Outcome::Failed;
-        }
+        std::fs::write(target, markdown).context("writing failed")?;
     }
-
-    let label = match (outcome, dry_run) {
-        (Outcome::Added, false) => "added",
-        (Outcome::Added, true) => "would add",
-        (Outcome::Updated, false) => "updated",
-        (Outcome::Updated, true) => "would update",
-        _ => "unchanged",
-    };
-    println!("  {label:<14} {}", doc.file_name);
-    outcome
+    Ok(outcome)
 }
 
 /// Markdown files in `out_dir` that no page maps to any more.
@@ -284,5 +315,106 @@ mod tests {
         assert!(stale_files(tmp.path(), &pages(&["install"]))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn labels_say_what_would_happen_in_a_dry_run() {
+        assert_eq!(Outcome::Added.label(false), "added");
+        assert_eq!(Outcome::Added.label(true), "would add");
+        assert_eq!(Outcome::Updated.label(false), "updated");
+        assert_eq!(Outcome::Updated.label(true), "would update");
+        assert_eq!(Outcome::Removed.label(false), "removed");
+        assert_eq!(Outcome::Removed.label(true), "would remove");
+        assert_eq!(Outcome::Unchanged.label(true), "unchanged");
+    }
+
+    #[test]
+    fn write_page_adds_updates_and_leaves_unchanged_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("install.md");
+
+        assert_eq!(write_page(&target, "v1", false).unwrap(), Outcome::Added);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "v1");
+        assert_eq!(
+            write_page(&target, "v1", false).unwrap(),
+            Outcome::Unchanged
+        );
+        assert_eq!(write_page(&target, "v2", false).unwrap(), Outcome::Updated);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "v2");
+    }
+
+    #[test]
+    fn write_page_writes_nothing_in_a_dry_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("install.md");
+        assert_eq!(write_page(&target, "v1", true).unwrap(), Outcome::Added);
+        assert!(!target.exists());
+
+        std::fs::write(&target, "old").unwrap();
+        assert_eq!(write_page(&target, "new", true).unwrap(), Outcome::Updated);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
+    }
+
+    #[test]
+    fn write_page_reports_a_write_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("missing-dir").join("install.md");
+        let err = format!("{:#}", write_page(&target, "x", false).unwrap_err());
+        assert!(err.starts_with("writing failed: "), "{err}");
+    }
+
+    fn stale_fixture(args: &[&str]) -> (tempfile::TempDir, Cli) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("install.md"), "keep").unwrap();
+        std::fs::write(tmp.path().join("old.md"), "stale").unwrap();
+        let out = tmp.path().to_str().unwrap().to_string();
+        let mut argv = vec!["herdr-docs-sync", "--out", out.as_str()];
+        argv.extend_from_slice(args);
+        let cli = Cli::try_parse_from(argv).unwrap();
+        (tmp, cli)
+    }
+
+    #[test]
+    fn prune_stale_removes_files_whose_pages_are_gone() {
+        let (tmp, cli) = stale_fixture(&[]);
+        let mut counts = [0usize; 5];
+        prune_stale(&cli, &pages(&["install"]), &mut counts).unwrap();
+        assert!(!tmp.path().join("old.md").exists());
+        assert!(tmp.path().join("install.md").exists());
+        assert_eq!(counts[Outcome::Removed as usize], 1);
+    }
+
+    #[test]
+    fn prune_stale_deletes_nothing_when_a_page_failed() {
+        let (tmp, cli) = stale_fixture(&[]);
+        let mut counts = [0usize; 5];
+        counts[Outcome::Failed as usize] = 1;
+        prune_stale(&cli, &pages(&["install"]), &mut counts).unwrap();
+        assert!(tmp.path().join("old.md").exists());
+        assert_eq!(counts[Outcome::Removed as usize], 0);
+    }
+
+    #[test]
+    fn prune_stale_honours_keep_stale_and_dry_run() {
+        let (tmp, keep) = stale_fixture(&["--keep-stale"]);
+        let mut counts = [0usize; 5];
+        prune_stale(&keep, &pages(&["install"]), &mut counts).unwrap();
+        assert!(tmp.path().join("old.md").exists());
+        assert_eq!(counts[Outcome::Removed as usize], 0);
+
+        let (tmp, dry) = stale_fixture(&["--dry-run"]);
+        let mut counts = [0usize; 5];
+        prune_stale(&dry, &pages(&["install"]), &mut counts).unwrap();
+        assert!(
+            tmp.path().join("old.md").exists(),
+            "dry run must not delete"
+        );
+        assert_eq!(counts[Outcome::Removed as usize], 1, "but it still counts");
+    }
+
+    #[test]
+    fn print_summary_returns_the_failure_count() {
+        assert_eq!(print_summary(&[1, 2, 3, 4, 0], false), 0);
+        assert_eq!(print_summary(&[0, 0, 0, 0, 3], true), 3);
     }
 }
