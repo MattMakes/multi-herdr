@@ -293,8 +293,10 @@ fn arc_33_a_failed_updater_gives_one_note_and_the_fleet_starts() {
     assert!(workspace_created(&h));
 }
 
+/// #205: an updater that passes the time limit is not killed, so a package
+/// manager can finish its own install. The fleet does not wait for it.
 #[test]
-fn arc_33_a_hung_updater_is_killed_at_the_timeout() {
+fn arc_33_a_hung_updater_is_left_running_at_the_timeout() {
     let mut h = harness("arc33-hang");
     h.set("HORCH_FAKE_SCENARIO", "update_hang:opencode");
     h.set("HORCH_UPDATE_TIMEOUT_MS", "5000");
@@ -304,7 +306,7 @@ fn arc_33_a_hung_updater_is_killed_at_the_timeout() {
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
     assert_eq!(
         notes(&out),
-        ["horch: NOTE: update: opencode: timed out after 5 s"],
+        ["horch: NOTE: update: opencode: still running after 5 s, not waited for"],
         "{}",
         stderr(&out)
     );
@@ -312,7 +314,7 @@ fn arc_33_a_hung_updater_is_killed_at_the_timeout() {
     assert!(took < Duration::from_secs(50), "the fleet took {took:?}");
     assert!(workspace_created(&h));
 
-    // The killed updater is gone.
+    // The updater outlived the fleet start: horch did not kill it.
     #[cfg(unix)]
     {
         let call = update_calls(&h, "opencode", &["upgrade"]);
@@ -321,7 +323,9 @@ fn arc_33_a_hung_updater_is_killed_at_the_timeout() {
             .args(["-0", &pid])
             .output()
             .is_ok_and(|o| o.status.success());
-        assert!(!alive, "updater {pid} outlived its timeout");
+        assert!(alive, "updater {pid} was killed at its timeout");
+        // The test stops it, so it does not outlive the test.
+        let _ = Command::new("kill").args(["-9", &pid]).output();
     }
 }
 
