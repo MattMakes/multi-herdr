@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use horch_core::competition::budget::UsageMeter;
 use horch_core::competition::observe::TelemetryUsage;
-use horch_core::execution::lifecycle::{await_worker, WorkerStart};
+use horch_core::execution::lifecycle::{await_worker, StartupKey, WorkerStart};
 use horch_core::execution::plan::{self, GateInputs, MintedIds, PlanInputs};
 use horch_core::execution::service::{ExecutionService, SpawnError};
 use horch_core::execution::store::ExecutionStore;
@@ -256,14 +256,13 @@ pub fn spawn(ctx: &RuntimeContext, mut args: SpawnArgs) -> Result<String> {
     if !wait.is_zero() {
         let data_root = &ctx.paths.data_root;
         let mut registered = || mailbox.pane_for(role.as_str()).as_deref() == Some(pane.as_str());
-        match await_worker(
-            data_root,
-            role.as_str(),
-            started,
-            wait,
-            SPAWN_POLL,
-            &mut registered,
-        ) {
+        // The worker keys its error by this record, or by its pane when it
+        // could not read its brief (#192).
+        let keys = [
+            StartupKey::Record(out.plan.execution.id.as_str()),
+            StartupKey::Pane(pane.as_str()),
+        ];
+        match await_worker(data_root, &keys, started, wait, SPAWN_POLL, &mut registered) {
             WorkerStart::Registered => {}
             WorkerStart::Failed(error) => {
                 let id = out.plan.execution.id.as_str();

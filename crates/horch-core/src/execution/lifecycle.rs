@@ -12,7 +12,6 @@ use crate::execution::legacy::HistoryEntry;
 use crate::execution::store::ExecutionStore;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use crate::harness::HarnessKind;
-use crate::ids::RoleName;
 use crate::messaging::brief::Brief;
 use crate::messaging::mailbox::Mailbox;
 use crate::messaging::message::strip_done_prefix;
@@ -338,9 +337,10 @@ pub trait WorkerSteps {
         Ok(())
     }
     /// Leave the startup error text for `horch spawn`
-    /// ([`write_startup_error`]). The pane closes when this process ends and
-    /// takes its stderr with it. The default leaves nothing.
-    fn leave_startup_error(&mut self, _error: &str) -> Result<()> {
+    /// ([`write_startup_error`]), keyed by the brief's record, or `None`
+    /// when the brief did not load. The pane closes when this process ends
+    /// and takes its stderr with it. The default leaves nothing.
+    fn leave_startup_error(&mut self, _error: &str, _brief: Option<&Brief>) -> Result<()> {
         Ok(())
     }
 }
@@ -376,7 +376,7 @@ pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
     let brief = match steps.load_brief() {
         Ok(brief) => brief,
         Err(e) => {
-            if let Err(leave) = steps.leave_startup_error(&format!("{e:#}")) {
+            if let Err(leave) = steps.leave_startup_error(&format!("{e:#}"), None) {
                 eprintln!("horch worker: could not leave the startup error: {leave:#}");
             }
             return Err(e);
@@ -398,7 +398,7 @@ pub fn run_worker(steps: &mut dyn WorkerSteps) -> Result<i32> {
         // The close ends this process, so the error is printed and left
         // for the spawner first.
         eprintln!("horch worker[{}]: startup failed: {e:#}", brief.role);
-        if let Err(leave) = steps.leave_startup_error(&format!("{e:#}")) {
+        if let Err(leave) = steps.leave_startup_error(&format!("{e:#}"), Some(&brief)) {
             eprintln!(
                 "horch worker[{}]: could not leave the startup error: {leave:#}",
                 brief.role
@@ -479,20 +479,50 @@ pub fn record_early_exit(store: &ExecutionStore, key: &str, code: Option<i32>) -
     })
 }
 
+/// Whose startup error a file holds (#192). Roles repeat across
+/// workspaces, so the role alone does not name one worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupKey<'a> {
+    /// The record the spawner minted, which the brief carries.
+    Record(&'a str),
+    /// A worker that could not read its brief: its public pane id, which
+    /// herdr gives no other pane. Its workspace can be the wrong one: that
+    /// is a common reason for a missing brief.
+    Pane(&'a str),
+}
+
+impl StartupKey<'_> {
+    /// The file name, or `None` when a part could name a path.
+    fn file_name(&self) -> Option<String> {
+        let plain = |s: &str| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        };
+        match *self {
+            StartupKey::Record(id) => plain(id).then(|| format!("record-{id}.txt")),
+            StartupKey::Pane(pane) => {
+                // A public pane id is `<workspace>:<pane>`.
+                let name = pane.replace(':', "_");
+                plain(&name).then(|| format!("pane-{name}.txt"))
+            }
+        }
+    }
+}
+
 /// Where a worker's startup error waits for `horch spawn`: under the data
 /// root, which the pane command sets (`HORCH_DATA_DIR`), so the worker and
-/// its spawner agree on it before the brief is read. The file is named by
-/// role, because herdr gives the worker an internal pane id and the spawner
-/// the public one. `None` when `role` is not a role name.
-pub fn startup_error_path(data_root: &Path, role: &str) -> Option<PathBuf> {
-    RoleName::new(role).ok()?;
-    Some(data_root.join("startup-errors").join(format!("{role}.txt")))
+/// its spawner agree on it before the brief is read. The data root is
+/// shared by every workspace of this user, so the file is named by
+/// [`StartupKey`], not by role. `None` when the key could name a path.
+pub fn startup_error_path(data_root: &Path, key: StartupKey<'_>) -> Option<PathBuf> {
+    Some(data_root.join("startup-errors").join(key.file_name()?))
 }
 
 /// Write `error` to [`startup_error_path`], so `horch spawn` can show it.
-pub fn write_startup_error(data_root: &Path, role: &str, error: &str) -> Result<()> {
-    let path = startup_error_path(data_root, role)
-        .with_context(|| format!("'{role}' is not a role name"))?;
+pub fn write_startup_error(data_root: &Path, key: StartupKey<'_>, error: &str) -> Result<()> {
+    let path = startup_error_path(data_root, key)
+        .with_context(|| format!("{key:?} does not name a startup error file"))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -500,13 +530,17 @@ pub fn write_startup_error(data_root: &Path, role: &str, error: &str) -> Result<
         .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Read and delete the startup error of the worker in `role`. A file
-/// written before `since` belongs to an earlier worker in that role: it is
-/// deleted and not returned. `since` is compared at whole seconds, the
-/// coarsest mtime a file system keeps, so a file written in the same second
-/// as `since` counts even when its mtime reads earlier.
-pub fn take_startup_error(data_root: &Path, role: &str, since: SystemTime) -> Option<String> {
-    let path = startup_error_path(data_root, role)?;
+/// Read and delete the startup error under `key`. A file written before
+/// `since` belongs to an earlier worker: it is deleted and not returned.
+/// `since` is compared at whole seconds, the coarsest mtime a file system
+/// keeps, so a file written in the same second as `since` counts even when
+/// its mtime reads earlier.
+pub fn take_startup_error(
+    data_root: &Path,
+    key: StartupKey<'_>,
+    since: SystemTime,
+) -> Option<String> {
+    let path = startup_error_path(data_root, key)?;
     let written = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
     let since = since
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -530,12 +564,12 @@ pub enum WorkerStart {
     Waiting,
 }
 
-/// Wait up to `limit` for the worker in `role`, started at `since`, to
-/// register (`registered`) or to leave its startup error, whichever comes
-/// first. Polls every `poll`; an error found is deleted.
+/// Wait up to `limit` for the worker started at `since` to register
+/// (`registered`) or to leave its startup error under one of `keys`,
+/// whichever comes first. Polls every `poll`; an error found is deleted.
 pub fn await_worker(
     data_root: &Path,
-    role: &str,
+    keys: &[StartupKey<'_>],
     since: SystemTime,
     limit: Duration,
     poll: Duration,
@@ -543,7 +577,10 @@ pub fn await_worker(
 ) -> WorkerStart {
     let until = Instant::now() + limit;
     loop {
-        if let Some(error) = take_startup_error(data_root, role, since) {
+        if let Some(error) = keys
+            .iter()
+            .find_map(|key| take_startup_error(data_root, *key, since))
+        {
             return WorkerStart::Failed(error);
         }
         if registered() {
@@ -811,8 +848,21 @@ impl WorkerSteps for PaneWorker<'_> {
         record_startup_failure(&self.store()?, &brief.record_id, error)
     }
 
-    fn leave_startup_error(&mut self, error: &str) -> Result<()> {
-        write_startup_error(&self.ctx.paths.data_root, self.role, error)
+    fn leave_startup_error(&mut self, error: &str, brief: Option<&Brief>) -> Result<()> {
+        let data_root = self.ctx.paths.data_root.clone();
+        if let Some(brief) = brief {
+            return write_startup_error(&data_root, StartupKey::Record(&brief.record_id), error);
+        }
+        // herdr gives this pane its internal id; the spawner knows the
+        // public one.
+        let pane = self
+            .ctx
+            .herdr
+            .pane
+            .as_ref()
+            .context("HERDR_PANE_ID is not set, so horch spawn cannot be told")?;
+        let public = self.herdr().pane_get(pane.as_ref())?.pane_id;
+        write_startup_error(&data_root, StartupKey::Pane(&public), error)
     }
 
     fn close_pane(&mut self) -> Result<()> {
@@ -1757,7 +1807,7 @@ mod tests {
                 self.calls.push("close_pane");
                 self.ws.pane_close(&self.pane)
             }
-            fn leave_startup_error(&mut self, error: &str) -> Result<()> {
+            fn leave_startup_error(&mut self, error: &str, _brief: Option<&Brief>) -> Result<()> {
                 self.calls.push("leave_startup_error");
                 self.left_error = Some(error.to_string());
                 Ok(())
@@ -1808,36 +1858,38 @@ mod tests {
             assert!(steps.left_error.unwrap().starts_with("no brief at "));
         }
 
+        const KEY: StartupKey<'static> = StartupKey::Record("e1");
+
         #[test]
         fn a_startup_error_is_read_once_then_deleted() {
             let tmp = tempfile::tempdir().unwrap();
             let since = std::time::SystemTime::now() - Duration::from_secs(1);
-            write_startup_error(tmp.path(), "sonnet-1", "no brief\n").unwrap();
-            let path = startup_error_path(tmp.path(), "sonnet-1").unwrap();
+            write_startup_error(tmp.path(), KEY, "no brief\n").unwrap();
+            let path = startup_error_path(tmp.path(), KEY).unwrap();
             assert!(path.is_file());
             assert_eq!(
-                take_startup_error(tmp.path(), "sonnet-1", since).as_deref(),
+                take_startup_error(tmp.path(), KEY, since).as_deref(),
                 Some("no brief")
             );
             assert!(!path.exists(), "the file is deleted after it is read");
-            assert_eq!(take_startup_error(tmp.path(), "sonnet-1", since), None);
+            assert_eq!(take_startup_error(tmp.path(), KEY, since), None);
         }
 
-        /// A file an earlier worker in the same role left is not this
-        /// worker's error: it is deleted, and nothing is returned.
+        /// A file an earlier worker left is not this worker's error: it is
+        /// deleted, and nothing is returned.
         #[test]
         fn a_stale_startup_error_is_deleted_and_ignored() {
             let tmp = tempfile::tempdir().unwrap();
-            write_startup_error(tmp.path(), "sonnet-1", "old").unwrap();
+            write_startup_error(tmp.path(), KEY, "old").unwrap();
             let later = std::time::SystemTime::now() + Duration::from_secs(60);
-            assert_eq!(take_startup_error(tmp.path(), "sonnet-1", later), None);
-            assert!(!startup_error_path(tmp.path(), "sonnet-1").unwrap().exists());
+            assert_eq!(take_startup_error(tmp.path(), KEY, later), None);
+            assert!(!startup_error_path(tmp.path(), KEY).unwrap().exists());
         }
 
-        /// Write the startup error of `sonnet-1` with its mtime set to `at`.
+        /// Write the startup error of [`KEY`] with its mtime set to `at`.
         fn write_startup_error_at(dir: &Path, at: SystemTime) {
-            write_startup_error(dir, "sonnet-1", "boom").unwrap();
-            let path = startup_error_path(dir, "sonnet-1").unwrap();
+            write_startup_error(dir, KEY, "boom").unwrap();
+            let path = startup_error_path(dir, KEY).unwrap();
             let file = std::fs::File::options().write(true).open(path).unwrap();
             file.set_modified(at).unwrap();
         }
@@ -1851,7 +1903,7 @@ mod tests {
             write_startup_error_at(tmp.path(), second);
             let since = second + Duration::from_millis(900);
             assert_eq!(
-                take_startup_error(tmp.path(), "sonnet-1", since).as_deref(),
+                take_startup_error(tmp.path(), KEY, since).as_deref(),
                 Some("boom")
             );
         }
@@ -1863,16 +1915,58 @@ mod tests {
             let second = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
             write_startup_error_at(tmp.path(), second - Duration::from_millis(1));
             let since = second + Duration::from_millis(900);
-            assert_eq!(take_startup_error(tmp.path(), "sonnet-1", since), None);
-            assert!(!startup_error_path(tmp.path(), "sonnet-1").unwrap().exists());
+            assert_eq!(take_startup_error(tmp.path(), KEY, since), None);
+            assert!(!startup_error_path(tmp.path(), KEY).unwrap().exists());
         }
 
         #[test]
-        fn a_role_that_is_a_path_writes_no_startup_error() {
+        fn a_key_that_is_a_path_writes_no_startup_error() {
             let tmp = tempfile::tempdir().unwrap();
-            assert!(startup_error_path(tmp.path(), "../x").is_none());
-            assert!(write_startup_error(tmp.path(), "../x", "e").is_err());
+            for key in [
+                StartupKey::Record("../x"),
+                StartupKey::Record(""),
+                StartupKey::Pane("w1:../x"),
+                StartupKey::Pane(""),
+            ] {
+                assert!(startup_error_path(tmp.path(), key).is_none(), "{key:?}");
+                assert!(write_startup_error(tmp.path(), key, "e").is_err());
+            }
             assert!(!tmp.path().join("x.txt").exists());
+        }
+
+        /// #192: 2 spawns of the same role in 2 workspaces wait at the same
+        /// time. The error of 1 worker reaches only the wait of its record,
+        /// or of its pane when it had no brief.
+        #[test]
+        fn an_error_reaches_only_the_wait_of_its_record() {
+            let tmp = tempfile::tempdir().unwrap();
+            let since = std::time::SystemTime::now() - Duration::from_secs(1);
+            let poll = Duration::from_millis(5);
+            let short = Duration::from_millis(30);
+            let a = [StartupKey::Record("rec-a"), StartupKey::Pane("wA:p2")];
+            let b = [StartupKey::Record("rec-b"), StartupKey::Pane("wB:p2")];
+            write_startup_error(tmp.path(), StartupKey::Record("rec-b"), "B failed").unwrap();
+            assert_eq!(
+                await_worker(tmp.path(), &a, since, short, poll, &mut || false),
+                WorkerStart::Waiting,
+                "A does not take B's error"
+            );
+            assert_eq!(
+                await_worker(tmp.path(), &b, since, short, poll, &mut || false),
+                WorkerStart::Failed("B failed".into())
+            );
+
+            // A worker with no brief keys its error by its public pane id.
+            let no_brief = StartupKey::Pane("wA:p2");
+            write_startup_error(tmp.path(), no_brief, "A has no brief").unwrap();
+            assert_eq!(
+                await_worker(tmp.path(), &b, since, short, poll, &mut || false),
+                WorkerStart::Waiting
+            );
+            assert_eq!(
+                await_worker(tmp.path(), &a, since, short, poll, &mut || false),
+                WorkerStart::Failed("A has no brief".into())
+            );
         }
 
         #[test]
@@ -1882,13 +1976,13 @@ mod tests {
             let poll = Duration::from_millis(5);
             let long = Duration::from_secs(30);
             assert_eq!(
-                await_worker(tmp.path(), "sonnet-1", since, long, poll, &mut || true),
+                await_worker(tmp.path(), &[KEY], since, long, poll, &mut || true),
                 WorkerStart::Registered
             );
             assert_eq!(
                 await_worker(
                     tmp.path(),
-                    "sonnet-1",
+                    &[KEY],
                     since,
                     Duration::from_millis(30),
                     poll,
@@ -1898,15 +1992,15 @@ mod tests {
             );
             // The error appears while the spawner waits.
             let mut polls = 0;
-            let start = await_worker(tmp.path(), "sonnet-1", since, long, poll, &mut || {
+            let start = await_worker(tmp.path(), &[KEY], since, long, poll, &mut || {
                 polls += 1;
                 if polls == 3 {
-                    write_startup_error(tmp.path(), "sonnet-1", "boom").unwrap();
+                    write_startup_error(tmp.path(), KEY, "boom").unwrap();
                 }
                 false
             });
             assert_eq!(start, WorkerStart::Failed("boom".into()));
-            assert!(!startup_error_path(tmp.path(), "sonnet-1").unwrap().exists());
+            assert!(!startup_error_path(tmp.path(), KEY).unwrap().exists());
         }
 
         #[test]
