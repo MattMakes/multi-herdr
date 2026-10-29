@@ -972,6 +972,21 @@ fn launch_sandbox(
     })
 }
 
+/// Whether a codex launch of `teammate` has the network, judged from the
+/// teammate file alone (the operator's `config.toml` is not read). The fleet
+/// write profile and full access have it. A workspace-write sandbox has it
+/// when the teammate's args turn `sandbox_workspace_write.network_access` on.
+pub(crate) fn launch_has_network(teammate: &Teammate) -> bool {
+    match launch_sandbox(teammate, || None).as_deref() {
+        Some(FLEET_WRITE_PROFILE | "danger-full-access") => true,
+        Some(WORKSPACE_WRITE) => {
+            config_pair_value(&teammate.args, "sandbox_workspace_write.network_access")
+                == Some("true")
+        }
+        _ => false,
+    }
+}
+
 /// The sandbox of a `default_permissions` profile: the built-in ones by
 /// name; a named profile as itself (no `--add-dir`: its roots are its own).
 fn profile_sandbox(profile: &str) -> String {
@@ -1938,6 +1953,177 @@ mod tests {
         );
     }
 
+    /// The decision codex takes for `argv` under the `prefix_rule` blocks in
+    /// `rules`: the strictest decision of every rule whose pattern is a
+    /// prefix of `argv`, or `None` (the command runs in the sandbox).
+    fn rule_decision(rules: &str, argv: &[&str]) -> Option<String> {
+        let rank = |d: &str| {
+            ["allow", "prompt", "forbidden"]
+                .iter()
+                .position(|x| *x == d)
+        };
+        rules
+            .split("prefix_rule(")
+            .skip(1)
+            .filter_map(|block| {
+                let field = |name: &str| {
+                    let line = block.lines().find(|l| l.trim().starts_with(name))?;
+                    let value = line.split_once('=')?.1.trim().trim_end_matches(',');
+                    Some(value.to_string())
+                };
+                let pattern: Vec<String> = serde_json::from_str(&field("pattern")?).ok()?;
+                let decision: String = serde_json::from_str(&field("decision")?).ok()?;
+                let matches =
+                    pattern.len() <= argv.len() && pattern.iter().zip(argv).all(|(p, a)| p == a);
+                matches.then_some(decision)
+            })
+            .max_by_key(|d| rank(d))
+    }
+
+    /// #181: a codex worker reaches the task ledger outside its sandbox only
+    /// through the subcommands a worker runs. `finish` lifts the sandbox;
+    /// `add` and `reopen`, which take any `--check` command, are refused; a
+    /// subcommand no rule names runs in the sandbox.
+    #[cfg(unix)]
+    #[test]
+    fn a_worker_launch_allows_ledger_finish_and_forbids_ledger_add() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roster = Roster::builtin().unwrap();
+        let teammate = roster.require("codex-sol").unwrap();
+        let (_, prepared) = prepare_with_rules(tmp.path(), teammate, roster.exec_rules());
+        let home = &prepared
+            .env
+            .iter()
+            .find(|(k, _)| k == "CODEX_HOME")
+            .expect("a private codex home")
+            .1;
+        let rules = std::fs::read_to_string(Path::new(home).join("rules/horch.rules")).unwrap();
+        let allow = Some("allow".to_string());
+        let forbidden = Some("forbidden".to_string());
+        for (argv, want) in [
+            (&["horch", "ledger", "finish"][..], &allow),
+            (&["horch", "ledger", "claim"], &allow),
+            (&["horch", "ledger", "progress", "step 1 done"], &allow),
+            (&["horch", "ledger", "worktree", "new", "x"], &allow),
+            (&["horch", "ledger", "done", "summary"], &allow),
+            (&["horch", "ledger", "status"], &allow),
+            (&["horch", "ledger", "show", "T-1"], &allow),
+            (&["horch", "ledger", "steps"], &allow),
+            (
+                &["horch", "ledger", "add", "t.md", "--check", "sh x"],
+                &forbidden,
+            ),
+            (&["horch", "ledger", "add-map", "MAP.md"], &forbidden),
+            (
+                &["horch", "ledger", "reopen", "1", "--check", "sh x"],
+                &forbidden,
+            ),
+            (&["horch", "ledger", "cancel", "T-1"], &None),
+            (&["horch", "ledger"], &None),
+            (&["horch", "done", "summary"], &allow),
+        ] {
+            assert_eq!(&rule_decision(&rules, argv), want, "{argv:?} in\n{rules}");
+        }
+    }
+
+    /// Whether the codex argv of a launch of `teammate` turns the network on:
+    /// the `-c` pairs of the built command and of `prepare`, read for the
+    /// permissions profile the launch selects.
+    #[cfg(unix)]
+    fn argv_has_network(teammate: &Teammate) -> bool {
+        use crate::harness::launch::{command_in, LaunchEnv, Session};
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, prepared) = prepare_in(tmp.path(), teammate);
+        let cmd = command_in(
+            &LaunchEnv::for_test(),
+            teammate,
+            Session::Unmanaged,
+            "p",
+            None,
+        )
+        .unwrap();
+        let mut argv = command_args(&cmd);
+        argv.extend(prepared.extra_args.iter().cloned());
+        match config_pair_value(&argv, "default_permissions") {
+            Some("\"fleet_write\"") => {
+                config_pair_value(&argv, "permissions.fleet_write.network.enabled") == Some("true")
+            }
+            Some("\":read-only\"") => false,
+            other => panic!(
+                "{}: unexpected profile {other:?} in {argv:?}",
+                teammate.name
+            ),
+        }
+    }
+
+    /// #151: the orchestrator routes work by `brief_description`, so each
+    /// codex teammate's description names the network setting its launch
+    /// really has. Every bundled codex teammate launches in the fleet write
+    /// profile, which has the network; a plan pane has none.
+    #[cfg(unix)]
+    #[test]
+    fn each_codex_teammate_states_the_network_its_launch_has() {
+        let roster = Roster::builtin().unwrap();
+        let expected = [
+            ("astra-creative", true),
+            ("codex-luna", true),
+            ("codex-network", true),
+            ("codex-reviewer", true),
+            ("codex-sol", true),
+            ("codex-swift-reviewer", true),
+            ("codex-terra", true),
+            ("orchestrator-codex", true),
+            ("visual-prototyper", true),
+        ];
+        let codex: Vec<&str> = roster
+            .names()
+            .into_iter()
+            .filter(|n| roster.require(n).unwrap().agent == HarnessKind::Codex)
+            .collect();
+        assert_eq!(
+            codex,
+            expected.map(|(n, _)| n),
+            "a new codex teammate needs a row"
+        );
+        for (name, network) in expected {
+            let t = roster.require(name).unwrap();
+            assert_eq!(argv_has_network(t), network, "{name}: argv");
+            assert_eq!(launch_has_network(t), network, "{name}: launch_has_network");
+            let said = if network { "+ network" } else { "no network" };
+            assert!(
+                t.brief_description.contains(said),
+                "{name}: {:?} does not say {said:?}",
+                t.brief_description
+            );
+        }
+        let plan = Teammate {
+            permission_mode: Some(PermissionMode::Plan),
+            ..roster.require("codex-sol").unwrap().clone()
+        };
+        assert!(!argv_has_network(&plan));
+        assert!(!launch_has_network(&plan));
+    }
+
+    /// A teammate whose own args choose the sandbox: workspace-write has the
+    /// network only with `network_access` on; full access always has it.
+    #[test]
+    fn a_teammates_own_sandbox_decides_its_network() {
+        let with = |args: &[&str]| Teammate {
+            permission_mode: Some(PermissionMode::Auto),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        assert!(!launch_has_network(&with(&["-s", "workspace-write"])));
+        assert!(launch_has_network(&with(&[
+            "-s",
+            "workspace-write",
+            "-c",
+            "sandbox_workspace_write.network_access=true"
+        ])));
+        assert!(launch_has_network(&with(&["-s", "danger-full-access"])));
+        assert!(!launch_has_network(&with(&["-s", "read-only"])));
+    }
+
     /// The load-bearing safety property: cleanup removes the LINKS, never what
     /// they point at. If this regressed it would delete the operator's real
     /// codex home - auth, sessions and all - when a codex pane exited.
@@ -1993,6 +2179,16 @@ mod tests {
     /// Prepare one codex pane under a state root in `tmp`, for `teammate`.
     #[cfg(unix)]
     fn prepare_in(tmp: &Path, teammate: &Teammate) -> (RuntimeContext, Prepared) {
+        prepare_with_rules(tmp, teammate, &[])
+    }
+
+    /// [`prepare_in`], with `exec_rules` installed in the pane's rules file.
+    #[cfg(unix)]
+    fn prepare_with_rules(
+        tmp: &Path,
+        teammate: &Teammate,
+        exec_rules: &[ExecRule],
+    ) -> (RuntimeContext, Prepared) {
         let home = tmp.join("home");
         std::fs::create_dir_all(home.join(".codex")).unwrap();
         let env = crate::runtime::MapEnv::new(tmp)
@@ -2004,7 +2200,7 @@ mod tests {
                 &ctx,
                 &PrepareRequest {
                     role: "codex-1",
-                    exec_rules: &[],
+                    exec_rules,
                     skills: None,
                     compact_window: None,
                     teammate,
