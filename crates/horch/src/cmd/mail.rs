@@ -21,8 +21,7 @@ pub fn start_courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
 
 pub fn courier(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     let mail = Mail::under(&ctx.paths.state_root, workspace);
-    std::fs::create_dir_all(mail.dir())
-        .with_context(|| format!("creating {}", mail.dir().display()))?;
+    mail.ensure_dir()?;
     let lock_path = mail.dir().join("courier.lock");
     let lock = OpenOptions::new()
         .read(true)

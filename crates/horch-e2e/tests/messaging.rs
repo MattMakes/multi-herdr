@@ -801,17 +801,25 @@ fn p09_registry_lives_in_the_state_folder() {
     assert!(tell.status.success(), "{}", text(&tell));
 }
 
-/// P09: a registry that exists only in the old temp location is still found
-/// by `inbox`, `tell` and `done`, and nothing is written back to it.
+/// P09, #77: a registry that exists only in the old temp location, owned
+/// by this user and mode 0700, is copied once into the state folder, then
+/// found by `inbox`, `tell` and `done`. Nothing is written back to it.
+#[cfg(unix)]
 #[test]
 fn p09_registry_in_the_old_temp_location_still_resolves() {
+    use std::os::unix::fs::PermissionsExt;
     let h = fleet("p09-legacy", "exec,stay");
     let (pane, role, id) = running_worker(&h);
     let state_mailbox = h.state.join("herdr-orchestration-w1");
     let legacy_mailbox = h.tmp.join("herdr-orchestration-w1");
     std::fs::rename(&state_mailbox, &legacy_mailbox).unwrap();
+    std::fs::set_permissions(&legacy_mailbox, std::fs::Permissions::from_mode(0o700)).unwrap();
 
     let inbox = h.run(&["inbox"]);
+    assert!(
+        state_mailbox.join(format!("{role}.id")).is_file(),
+        "the first command copies the registry"
+    );
     assert!(inbox.status.success(), "{}", text(&inbox));
     assert!(
         String::from_utf8_lossy(&inbox.stdout)
@@ -827,6 +835,40 @@ fn p09_registry_in_the_old_temp_location_still_resolves() {
     assert_eq!(record(&h, &id)["status"], "done");
     assert!(!legacy_mailbox.join(format!("{role}.id")).exists());
     assert!(!state_mailbox.join(format!("{role}.id")).exists());
+}
+
+/// #77: the same old registry with mode 0777 is not copied, and the
+/// command says why.
+#[cfg(unix)]
+#[test]
+fn an_old_registry_others_can_write_is_not_copied_and_inbox_says_why() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = fleet("p09-legacy-open", "exec,stay");
+    let (_pane, role, _id) = running_worker(&h);
+    let state_mailbox = h.state.join("herdr-orchestration-w1");
+    let legacy_mailbox = h.tmp.join("herdr-orchestration-w1");
+    std::fs::rename(&state_mailbox, &legacy_mailbox).unwrap();
+    std::fs::set_permissions(&legacy_mailbox, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+    let inbox = h.run(&["inbox"]);
+    assert!(inbox.status.success(), "{}", text(&inbox));
+    let stderr = String::from_utf8_lossy(&inbox.stderr);
+    assert!(
+        stderr.contains(&legacy_mailbox.display().to_string())
+            && stderr.contains("writable by other users"),
+        "{}",
+        text(&inbox)
+    );
+    assert!(
+        !String::from_utf8_lossy(&inbox.stdout)
+            .lines()
+            .any(|l| l.starts_with(&role)),
+        "{}",
+        text(&inbox)
+    );
+    assert!(!state_mailbox.exists(), "nothing was copied");
+    let tell = h.run(&["tell", &role, "NOTE: old registry"]);
+    assert!(!tell.status.success(), "{}", text(&tell));
 }
 
 /// A fleet with a custom `HORCH_STATE_DIR`: the orchestrator pane does not

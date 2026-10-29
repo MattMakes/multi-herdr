@@ -1,7 +1,7 @@
 //! Durable mail: worker-to-orchestrator, and horch's own notices to a
 //! worker role (`roles/<role>/` under the workspace's mail dir).
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,6 +9,8 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::messaging::private;
 
 const ACK_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -51,6 +53,11 @@ impl Mail {
         &self.dir
     }
 
+    /// Create this mail dir mode 0700, or check the existing one (#77).
+    pub fn ensure_dir(&self) -> Result<()> {
+        private::ensure_dir(&self.dir)
+    }
+
     /// The worker roles that have a mail dir under this workspace mail.
     pub fn roles(&self) -> Result<Vec<(String, Mail)>> {
         let dir = self.dir.join("roles");
@@ -89,8 +96,8 @@ impl Mail {
     /// Keep question lines from the original body before transport truncation.
     pub fn enqueue_with_questions(&self, from: &str, text: &str, original: &str) -> Result<Id> {
         let pending = self.dir.join("pending");
-        std::fs::create_dir_all(&pending)
-            .with_context(|| format!("creating {}", pending.display()))?;
+        self.ensure_dir()?;
+        private::ensure_dir(&pending)?;
         // Cleanup is best effort: a prune error must never block a send.
         if let Err(error) = self.prune_acked() {
             eprintln!("horch: pruning acked mail: {error:#}");
@@ -106,10 +113,7 @@ impl Mail {
         };
         let final_path = pending.join(format!("{}.json", id.0));
         let temp_path = pending.join(format!(".{}.json.tmp", id.0));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
+        let mut file = private::create_new(&temp_path)
             .with_context(|| format!("creating {}", temp_path.display()))?;
         let bytes = serde_json::to_vec(&message).context("serializing mail")?;
         if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
@@ -132,7 +136,7 @@ impl Mail {
             None
         } else {
             let dir = self.dir.join("questions");
-            std::fs::create_dir_all(&dir)?;
+            private::ensure_dir(&dir)?;
             let path = dir.join(format!("{}.json", id.0));
             let temporary = dir.join(format!(".{}.tmp", id.0));
             let question = Message {
@@ -140,10 +144,7 @@ impl Mail {
                 ..message
             };
             let bytes = serde_json::to_vec(&question)?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
+            let mut file = private::create_new(&temporary)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
             std::fs::rename(&temporary, &path)?;
@@ -215,7 +216,8 @@ impl Mail {
     /// An orchestrator reply closes questions created before this tell.
     pub fn answer(&self, role: &str) -> Result<()> {
         let path = self.answer_path(role);
-        std::fs::create_dir_all(path.parent().expect("answer parent"))?;
+        self.ensure_dir()?;
+        private::ensure_dir(path.parent().expect("answer parent"))?;
         let now: SystemTime = crate::clock::now().into();
         let _guard = crate::fsx::DirLock::acquire(
             path.parent().expect("answer parent"),
@@ -231,18 +233,15 @@ impl Mail {
         if existing.is_some_and(|at| at >= now) {
             return Ok(());
         }
-        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        std::fs::write(&temporary, serde_json::to_vec(&now)?)?;
-        std::fs::rename(temporary, path)?;
-        Ok(())
+        private::write(&path, &serde_json::to_vec(&now)?)
     }
 
     /// Shared persisted login state. Returns true only for the first observer.
     pub fn set_login_required(&self, required: bool) -> Result<bool> {
-        std::fs::create_dir_all(&self.dir)?;
+        self.ensure_dir()?;
         let path = self.dir.join("login-required");
         if required {
-            return match OpenOptions::new().write(true).create_new(true).open(path) {
+            return match private::create_new(&path) {
                 Ok(_) => Ok(true),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
                 Err(e) => Err(e.into()),
@@ -259,7 +258,10 @@ impl Mail {
         self.dir.join("login-required").exists()
     }
 
+    /// Mail in a dir that another user owns or can write is refused: it
+    /// could hold lines planted for the orchestrator to read.
     pub fn pending(&self) -> Result<Vec<Message>> {
+        private::check(&self.dir)?;
         let dir = self.dir.join("pending");
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -297,8 +299,7 @@ impl Mail {
         }
         let pending = self.dir.join("pending").join(format!("{}.json", id.0));
         let acked_dir = self.dir.join("acked");
-        std::fs::create_dir_all(&acked_dir)
-            .with_context(|| format!("creating {}", acked_dir.display()))?;
+        private::ensure_dir(&acked_dir)?;
         let acked = acked_dir.join(format!("{}.json", id.0));
         match std::fs::rename(&pending, &acked) {
             Ok(()) => Ok(()),
@@ -637,6 +638,31 @@ mod tests {
             .pending()
             .unwrap();
         assert_eq!(worker[0].text, "[horch] NOTE: y");
+    }
+
+    /// #77: a new mail dir is 0700 and a mail file 0600. Mail in a dir
+    /// that others can write is refused by name.
+    #[cfg(unix)]
+    #[test]
+    fn mail_dirs_are_0700_files_0600_and_an_open_dir_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let id = mail.enqueue("worker", "QUESTION: which?").unwrap();
+        mail.answer("worker").unwrap();
+        assert_eq!(mode(&mail.dir), 0o700);
+        assert_eq!(mode(&mail.dir.join("pending")), 0o700);
+        let file = mail.dir.join("pending").join(format!("{}.json", id.0));
+        assert_eq!(mode(&file), 0o600);
+        let question = mail.dir.join("questions").join(format!("{}.json", id.0));
+        assert_eq!(mode(&question), 0o600);
+        assert_eq!(mode(&mail.dir.join("answers/worker.json")), 0o600);
+
+        std::fs::set_permissions(&mail.dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let err = format!("{:#}", mail.pending().unwrap_err());
+        assert!(err.contains(&mail.dir.display().to_string()), "{err}");
+        assert!(mail.enqueue("worker", "more").is_err());
     }
 
     #[test]
