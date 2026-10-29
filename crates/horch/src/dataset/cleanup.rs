@@ -61,10 +61,7 @@ pub(crate) fn cleanup(ctx: &RuntimeContext, args: &CleanupArgs) -> Result<u8> {
 /// needs `--force`.
 fn refusal(round: &RoundId, state: RoundState, force: bool) -> Option<(String, u8)> {
     match state {
-        RoundState::Complete => Some((
-            format!("round {round} is already COMPLETE"),
-            exit::SUCCESS,
-        )),
+        RoundState::Complete => Some((format!("round {round} is already COMPLETE"), exit::SUCCESS)),
         RoundState::NeedsIntervention if !force => Some((
             format!(
                 "REFUSED: round {round} needs intervention; `cleanup --force` removes its worktrees"

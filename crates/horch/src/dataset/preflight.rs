@@ -411,13 +411,9 @@ fn tree_bytes(dir: &Path, skip: &[&str]) -> u64 {
     let mut total = 0;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(meta) = entry.path().symlink_metadata() else {
-                continue;
-            };
+        let entries = std::fs::read_dir(&d).into_iter().flatten().flatten();
+        let metas = entries.filter_map(|e| Some((e.path().symlink_metadata().ok()?, e)));
+        for (meta, entry) in metas {
             if meta.is_dir() {
                 if !skip.iter().any(|s| entry.file_name() == *s) {
                     stack.push(entry.path());
@@ -495,6 +491,13 @@ fn task_id_of(task: &str) -> Result<TaskId> {
     Ok(TaskId::new(format!("task-{}", digest.short12()))?)
 }
 
+/// The 3 digests that `experiment.created` and the manifest repeat.
+struct Digests {
+    task: Digest,
+    config: Digest,
+    repo: Digest,
+}
+
 /// Record `experiment.created` and `preflight.completed`, write the
 /// manifest, and on any Fail record `experiment.aborted`. Returns the
 /// failed check ids.
@@ -504,13 +507,15 @@ pub(crate) fn record(
     f: &ExperimentFacts<'_>,
     faults: &Faults,
 ) -> Result<Vec<String>> {
-    let task_digest = sha256_bytes(f.task.as_bytes());
     let task_id = task_id_of(f.task)?;
-    let config_digest = digest_json(&f.plan.config);
-    let repo_digest = digest_json(&serde_json::json!({
-        "toplevel": f.plan.git.toplevel,
-        "base_sha": f.plan.git.base_sha,
-    }));
+    let digests = Digests {
+        task: sha256_bytes(f.task.as_bytes()),
+        config: digest_json(&f.plan.config),
+        repo: digest_json(&serde_json::json!({
+            "toplevel": f.plan.git.toplevel,
+            "base_sha": f.plan.git.base_sha,
+        })),
+    };
     let exp = f.experiment;
     let event = |kind: EventKind, key: &str| NewEvent {
         kind,
@@ -525,10 +530,10 @@ pub(crate) fn record(
     recorder.append(event(
         EventKind::ExperimentCreated(ExperimentCreated {
             task_id: task_id.clone(),
-            task_digest,
-            config_digest,
+            task_digest: digests.task,
+            config_digest: digests.config,
             base_sha: f.plan.git.base_sha.clone().unwrap_or_default(),
-            repo_digest,
+            repo_digest: digests.repo,
             environment_digest: f.report.environment_digest,
             candidates: f.plan.candidates.len() as u32,
             strategy: "diverse".to_string(),
@@ -544,16 +549,27 @@ pub(crate) fn record(
         }),
         "preflight.completed",
     ))?;
+    write_manifest(paths, f, &task_id, &digests)?;
+    record_abort(recorder, f.report, event)
+}
 
+/// Write `experiments/<id>/manifest.json`, which is immutable.
+fn write_manifest(
+    paths: &DatasetPaths,
+    f: &ExperimentFacts<'_>,
+    task_id: &TaskId,
+    digests: &Digests,
+) -> Result<()> {
+    let exp = f.experiment;
     let manifest = Manifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         experiment_id: exp,
-        task_id: &task_id,
-        task_digest: &task_digest,
+        task_id,
+        task_digest: &digests.task,
         task: redact(f.task).into_owned(),
         config: &f.plan.config,
-        config_digest: &config_digest,
-        repo_digest: &repo_digest,
+        config_digest: &digests.config,
+        repo_digest: &digests.repo,
         environment_digest: &f.report.environment_digest,
         harness_versions: &f.plan.harness_versions,
         env_snapshot: env_snapshot(&f.env),
@@ -565,9 +581,17 @@ pub(crate) fn record(
     let file = paths.manifest(exp)?;
     fsx::create_immutable(&file, &json, 0o600)
         .with_context(|| format!("writing {}", file.display()))?;
+    Ok(())
+}
 
-    let failed: Vec<String> = f
-        .report
+/// Record `experiment.aborted` when a check failed. Gives the failed check
+/// ids.
+fn record_abort(
+    recorder: &dyn Recorder,
+    report: &PreflightReport,
+    event: impl Fn(EventKind, &str) -> NewEvent,
+) -> Result<Vec<String>> {
+    let failed: Vec<String> = report
         .checks
         .iter()
         .filter(|c| c.status == CheckStatus::Fail)
@@ -918,5 +942,132 @@ mod tests {
         assert_eq!(tree_bytes(root, &NOT_CHECKED_OUT), 13);
         assert_eq!(tree_bytes(&root.join("target"), &[]), 4096);
         assert_eq!(tree_bytes(&root.join("no-such-target"), &[]), 0);
+    }
+
+    /// A symlink to a big file adds nothing: `tree_bytes` does not follow links.
+    #[cfg(unix)]
+    #[test]
+    fn tree_bytes_does_not_follow_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("tree");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = tmp.path().join("big");
+        std::fs::write(&outside, vec![0u8; 4096]).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        std::fs::write(root.join("small"), b"abc").unwrap();
+        assert_eq!(tree_bytes(&root, &[]), 3);
+    }
+
+    /// The facts of an experiment whose report has the checks `statuses`.
+    fn record_with(
+        statuses: &[&str],
+    ) -> (tempfile::TempDir, DatasetPaths, Vec<String>, Vec<String>) {
+        use horch_core::competition::config::{self, RunFlags};
+        use horch_core::competition::preflight::{GitFacts, StorageProbe};
+        use horch_core::measure::recorder::JsonlRecorder;
+        use horch_core::measure::store::StoreOptions;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DatasetPaths::from_slug(tmp.path(), "fixture");
+        let config = config::load(
+            tmp.path(),
+            &RunFlags {
+                task: "fix the bug".into(),
+                ..RunFlags::default()
+            },
+        )
+        .unwrap();
+        let plan = PreflightPlan {
+            config,
+            candidates: Vec::new(),
+            harness_versions: BTreeMap::new(),
+            judge_harness: HarnessKind::Claude,
+            git: GitFacts {
+                toplevel: Some(PathBuf::from("/repo")),
+                base_sha: Some("a".repeat(40)),
+                dirty: false,
+                worktree_supported: true,
+                namespace_taken: Vec::new(),
+                promote_target_problem: None,
+                git_version: None,
+            },
+            storage_probe: StorageProbe {
+                writable: true,
+                lock_ok: true,
+                fsync_ok: true,
+                rename_ok: true,
+            },
+            herdr_reachable: true,
+            horch_exe: None,
+            pools: Vec::new(),
+            checkout_bytes: 0,
+            build_bytes: 0,
+            artifacts_bytes: 0,
+            local_model_bytes: 0,
+            expected_tokens: BTreeMap::new(),
+            measured_tokens: BTreeMap::new(),
+            trust_root: None,
+            trust: Vec::new(),
+        };
+        let checks: Vec<_> = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, st)| serde_json::json!({"id": format!("PRE-{i:02}"), "status": st, "detail": "d", "measured": null}))
+            .collect();
+        let report: PreflightReport = serde_json::from_value(serde_json::json!({
+            "schema_version": "1.0.0", "checks": checks, "safe_n": 1, "waves": 1,
+            "projected_cost_microusd": 0,
+            "machine": {"os": "macos", "arch": "aarch64", "cpus": 10,
+                        "mem_total_bytes": null, "mem_available_bytes": null,
+                        "disk_free_bytes": null, "disk_total_bytes": null,
+                        "gpu": "apple_silicon", "max_open_files": null, "max_processes": null},
+            "environment_digest": sha256_bytes(b"e").to_string(),
+            "passed": !statuses.contains(&"fail"),
+        }))
+        .unwrap();
+        let exp = ExperimentId::new("0199a5b0-0000-7000-8000-000000000e01").unwrap();
+        let rec = JsonlRecorder::open(&paths, StoreOptions::default()).unwrap();
+        let facts = ExperimentFacts {
+            experiment: &exp,
+            task: "fix the bug",
+            plan: &plan,
+            report: &report,
+            env: BTreeMap::new(),
+            at: Utc::now(),
+        };
+        let failed = record(&rec, &paths, &facts, &Faults::default()).unwrap();
+        let kinds = store::read_all(&paths)
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| e.kind.to_string())
+            .collect();
+        (tmp, paths, failed, kinds)
+    }
+
+    #[test]
+    fn a_passed_preflight_records_two_events_and_the_manifest() {
+        let (_tmp, paths, failed, kinds) = record_with(&["pass", "warn"]);
+        assert!(failed.is_empty());
+        assert_eq!(kinds, ["experiment.created", "preflight.completed"]);
+        let exp = ExperimentId::new("0199a5b0-0000-7000-8000-000000000e01").unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.manifest(&exp).unwrap()).unwrap()).unwrap();
+        assert_eq!(manifest["task"], "fix the bug");
+        assert_eq!(manifest["experiment_id"], exp.as_str());
+    }
+
+    #[test]
+    fn a_failed_check_records_the_abort_with_the_failed_ids() {
+        let (_tmp, _paths, failed, kinds) = record_with(&["pass", "fail", "fail"]);
+        assert_eq!(failed, ["PRE-01", "PRE-02"]);
+        assert_eq!(
+            kinds,
+            [
+                "experiment.created",
+                "preflight.completed",
+                "experiment.aborted"
+            ]
+        );
     }
 }
