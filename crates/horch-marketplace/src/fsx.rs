@@ -4,11 +4,12 @@ use std::collections::hash_map::RandomState;
 use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{MarketplaceError, Result};
+use crate::integrity::{classify, read_entries, Kind};
 
 /// 32 random hex characters. `RandomState` is seeded from the OS; the time,
 /// pid and a counter keep two calls in one process distinct.
@@ -78,31 +79,26 @@ pub fn copy_tree(from: &Path, to: &Path) -> Result<()> {
 }
 
 fn copy_tree_at(from: &Path, to: &Path, rel: &str) -> Result<()> {
-    fs::create_dir_all(to).map_err(|e| MarketplaceError::io(to.display().to_string(), e))?;
-    let entries =
-        fs::read_dir(from).map_err(|e| MarketplaceError::io(from.display().to_string(), e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| MarketplaceError::io(from.display().to_string(), e))?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            return Err(MarketplaceError::Traversal(PathBuf::from(rel).join(name)));
-        };
-        let child_rel = format!("{rel}{name}");
-        let meta = fs::symlink_metadata(entry.path())
-            .map_err(|e| MarketplaceError::io(child_rel.clone(), e))?;
-        let target = to.join(name);
-        if meta.file_type().is_symlink() {
-            return Err(MarketplaceError::Symlink(PathBuf::from(child_rel)));
-        } else if meta.is_dir() {
-            copy_tree_at(&entry.path(), &target, &format!("{child_rel}/"))?;
-        } else if meta.is_file() {
-            fs::copy(entry.path(), &target)
-                .map_err(|e| MarketplaceError::io(format!("copy {child_rel}"), e))?;
-        } else {
-            return Err(MarketplaceError::NotRegularFile(PathBuf::from(child_rel)));
+    make_dir(to)?;
+    for entry in read_entries(from)? {
+        let (child_rel, kind, _) = classify(&entry, rel)?;
+        let target = to.join(entry.file_name());
+        match kind {
+            Kind::Dir => copy_tree_at(&entry.path(), &target, &format!("{child_rel}/"))?,
+            Kind::File => copy_file(&entry.path(), &target, &child_rel)?,
         }
     }
     Ok(())
+}
+
+fn make_dir(dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir).map_err(|e| MarketplaceError::io(dir.display().to_string(), e))
+}
+
+fn copy_file(from: &Path, to: &Path, child_rel: &str) -> Result<()> {
+    fs::copy(from, to)
+        .map(drop)
+        .map_err(|e| MarketplaceError::io(format!("copy {child_rel}"), e))
 }
 
 /// The current UTC time as RFC 3339 with second precision.
@@ -150,5 +146,45 @@ mod tests {
     fn random_names_differ() {
         assert_ne!(random_hex(), random_hex());
         assert_eq!(random_hex().len(), 32);
+    }
+
+    #[test]
+    fn copy_tree_copies_nested_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("from");
+        fs::create_dir_all(from.join("a/b")).unwrap();
+        fs::write(from.join("top"), "1").unwrap();
+        fs::write(from.join("a/b/deep"), "2").unwrap();
+        let to = tmp.path().join("to");
+        copy_tree(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(to.join("top")).unwrap(), "1");
+        assert_eq!(fs::read_to_string(to.join("a/b/deep")).unwrap(), "2");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_refuses_links_special_files_and_odd_names() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("from");
+        fs::create_dir_all(from.join("d")).unwrap();
+        let to = tmp.path().join("to");
+
+        std::os::unix::fs::symlink("/etc", from.join("d/link")).unwrap();
+        let err = copy_tree(&from, &to).unwrap_err();
+        assert!(matches!(err, MarketplaceError::Symlink(p) if p == Path::new("d/link")));
+        fs::remove_file(from.join("d/link")).unwrap();
+
+        let socket = std::os::unix::net::UnixListener::bind(from.join("sock")).unwrap();
+        let err = copy_tree(&from, &to).unwrap_err();
+        assert!(matches!(err, MarketplaceError::NotRegularFile(p) if p == Path::new("sock")));
+        drop(socket);
+        fs::remove_file(from.join("sock")).unwrap();
+
+        let bad = std::ffi::OsStr::from_bytes(b"bad\xff");
+        if fs::write(from.join(bad), "x").is_ok() {
+            let err = copy_tree(&from, &to).unwrap_err();
+            assert!(matches!(err, MarketplaceError::Traversal(_)), "{err:?}");
+        }
     }
 }
