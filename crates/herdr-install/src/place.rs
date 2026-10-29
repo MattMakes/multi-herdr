@@ -126,21 +126,31 @@ pub fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
                 entry.name()
             );
         };
-        let out_path = dest.join(relative);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out_path)?;
-            continue;
-        }
-        if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut buf = Vec::with_capacity(entry.size() as usize);
-        entry.read_to_end(&mut buf)?;
-        std::fs::write(&out_path, &buf)
-            .with_context(|| format!("writing {}", out_path.display()))?;
-        if out_path.extension().is_some_and(|e| e == "exe") {
-            make_executable(&out_path)?;
-        }
+        write_entry(&mut entry, &dest.join(relative))?;
+    }
+    Ok(())
+}
+
+/// Write one archive entry to `out_path`: a directory is created, a file is
+/// written, and an `.exe` is marked executable.
+fn write_entry(entry: &mut zip::read::ZipFile<'_>, out_path: &Path) -> Result<()> {
+    if entry.is_dir() {
+        std::fs::create_dir_all(out_path)?;
+    } else {
+        write_file(entry, out_path)?;
+    }
+    Ok(())
+}
+
+fn write_file(entry: &mut impl Read, out_path: &Path) -> Result<()> {
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut buf = Vec::new();
+    entry.read_to_end(&mut buf)?;
+    std::fs::write(out_path, &buf).with_context(|| format!("writing {}", out_path.display()))?;
+    if out_path.extension().is_some_and(|e| e == "exe") {
+        make_executable(out_path)?;
     }
     Ok(())
 }
@@ -150,34 +160,48 @@ pub fn promote_release(staging: &Path, release_dir: &Path) -> Result<()> {
     if let Some(parent) = release_dir.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let backup = release_dir.with_file_name(format!(
-        ".backup.{}",
-        release_dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-    ));
+    let backup = backup_path(release_dir);
     let had_previous = release_dir.exists();
     if had_previous {
         let _ = std::fs::remove_dir_all(&backup);
         std::fs::rename(release_dir, &backup)
             .with_context(|| format!("moving aside {}", release_dir.display()))?;
     }
-    match std::fs::rename(staging, release_dir) {
-        Ok(()) => {
-            if had_previous {
-                let _ = std::fs::remove_dir_all(&backup);
-            }
-            Ok(())
+    let result = std::fs::rename(staging, release_dir);
+    finish_swap(
+        result,
+        release_dir,
+        had_previous.then_some(backup.as_path()),
+    )
+}
+
+fn backup_path(release_dir: &Path) -> PathBuf {
+    release_dir.with_file_name(format!(
+        ".backup.{}",
+        release_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+    ))
+}
+
+/// Drop the backup after a good swap; after a failed one, put the previous release
+/// back rather than leaving nothing installed.
+fn finish_swap(
+    result: std::io::Result<()>,
+    release_dir: &Path,
+    backup: Option<&Path>,
+) -> Result<()> {
+    if let Err(e) = result {
+        if let Some(backup) = backup.filter(|_| !release_dir.exists()) {
+            let _ = std::fs::rename(backup, release_dir);
         }
-        Err(e) => {
-            // Put the previous release back rather than leaving nothing installed.
-            if had_previous && !release_dir.exists() {
-                let _ = std::fs::rename(&backup, release_dir);
-            }
-            Err(e).with_context(|| format!("installing {}", release_dir.display()))
-        }
+        return Err(e).with_context(|| format!("installing {}", release_dir.display()));
     }
+    if let Some(backup) = backup {
+        let _ = std::fs::remove_dir_all(backup);
+    }
+    Ok(())
 }
 
 /// Delete release directories other than the one just installed, keeping `keep`
@@ -397,6 +421,34 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".backup"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn promote_release_installs_when_nothing_was_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let release = tmp.path().join("releases").join("v1");
+        let staging = tmp.path().join(".staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("herdr.exe"), b"new").unwrap();
+
+        promote_release(&staging, &release).unwrap();
+        assert_eq!(std::fs::read(release.join("herdr.exe")).unwrap(), b"new");
+        assert!(!staging.exists());
+    }
+
+    /// If the new release cannot be moved in, the previous one must come back.
+    #[test]
+    fn promote_release_restores_the_previous_release_when_the_swap_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let release = tmp.path().join("releases").join("v1");
+        std::fs::create_dir_all(&release).unwrap();
+        std::fs::write(release.join("herdr.exe"), b"old").unwrap();
+        let missing_staging = tmp.path().join("no-such-staging");
+
+        let err = promote_release(&missing_staging, &release).unwrap_err();
+        assert!(format!("{err:#}").contains("installing"), "{err:#}");
+        assert_eq!(std::fs::read(release.join("herdr.exe")).unwrap(), b"old");
+        assert!(!backup_path(&release).exists(), "backup was renamed back");
     }
 
     #[test]
