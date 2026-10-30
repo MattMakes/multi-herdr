@@ -1774,8 +1774,15 @@ pub fn done_cmd(
             }
         }
         if c.unlanded {
-            let waiting = tasks::dependents(store.conn(), &c.task_id)?;
-            super::taskledger_wake::cancelled_dependents(ctx, &store, &run, &c.task, &waiting);
+            match tasks::dependents(store.conn(), &c.task_id) {
+                Ok(waiting) => super::taskledger_wake::cancelled_dependents(
+                    ctx, &store, &run, &c.task, &waiting,
+                ),
+                Err(e) => eprintln!(
+                    "horch ledger: could not list the dependents of {}: {e:#}",
+                    c.task
+                ),
+            }
         }
         super::taskledger_wake::after_done(ctx, &store, &run);
     };
