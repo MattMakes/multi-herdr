@@ -12,7 +12,6 @@ use horch_core::messaging::mail::{redelivery_due, redelivery_offset, Id, Mail, M
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
-use horch_core::workspace::model::Pane;
 
 const POLL: Duration = Duration::from_secs(5);
 const NO_ORCHESTRATOR_LIMIT: Duration = Duration::from_secs(10 * 60);
@@ -31,7 +30,7 @@ enum Step {
     Wait,
     /// Redeliver the due orchestrator mail to `pane` or the relay.
     Deliver {
-        pane: Option<(String, Pane)>,
+        pane: Option<(String, bool)>,
         relay_live: bool,
     },
 }
@@ -140,16 +139,18 @@ impl<'a> Courier<'a> {
     }
 
     /// The orchestrator's pane, else whether its relay socket is live.
-    fn orchestrator_target(&self, pending: &[Message]) -> (Option<(String, Pane)>, bool) {
+    fn orchestrator_target(&self, pending: &[Message]) -> (Option<(String, bool)>, bool) {
         if pending.is_empty() {
             return (None, false);
         }
         // A pane id file can outlive its pane: a pane herdr does not answer
         // for is no target.
-        let pane = self
-            .mailbox
-            .pane_for("orchestrator")
-            .and_then(|id| self.herdr.pane_get(&id).ok().map(|state| (id, state)));
+        let pane = self.mailbox.pane_for("orchestrator").and_then(|id| {
+            self.herdr
+                .pane_get(&id)
+                .ok()
+                .map(|state| (id, state.at_prompt()))
+        });
         let relay_live = pane.is_none() && channel::is_live(&self.socket);
         (pane, relay_live)
     }
@@ -221,14 +222,13 @@ impl<'a> Courier<'a> {
         true
     }
 
-    fn deliver_due(&mut self, pending: &[Message], pane: Option<(String, Pane)>, relay_live: bool) {
-        let idle = pane.as_ref().is_some_and(|(_, state)| state.at_prompt());
+    fn deliver_due(&mut self, pending: &[Message], pane: Option<(String, bool)>, relay_live: bool) {
         redeliver_due(
             self.ctx,
             &mut self.attempts,
             pending,
             |message, line| match &pane {
-                Some((id, _)) => send_if_idle(&self.herdr, id, idle, line),
+                Some((id, idle)) => send_if_idle(&self.herdr, id, *idle, line),
                 None if relay_live => {
                     let _ = channel::send(&self.socket, &message.from, line, channel::SEND_TIMEOUT);
                     true
