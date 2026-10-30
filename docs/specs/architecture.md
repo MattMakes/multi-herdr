@@ -48,7 +48,7 @@ phase 8 (training Laya).
 | OD3 | Dataset storage is `$HORCH_STATE_DIR/multi-herdr/<project-slug>/`. It must be a subdirectory, because `telemetry::collect::read_ledgers` parses every `state_root/*.json`. The marketplace store is `${XDG_DATA_HOME:-~/.local/share}/horch/` (Spec A §10). |
 | OD4 | Clef and Laya are **inert** in this branch. Both speak the System One API: `POST /v1/systemone` with typed `choice`/`score`/`noul` questions, returning a probability per option. Clef is Cloudflare's 27B/9B decision model; Laya is Convai's 421M local model, fine-tuned on `{state, questions, answers}`. We ship the seam, record eligible sets, planner propensities and `teacher: none`, export System-One/Laya-shaped rows, and add a **data-readiness report**. There is no HTTP client and no API keys. Clef is enabled only once readiness says the local data justifies it, and Laya later still. |
 | OD5 | **No promotion by default.** A round ends at DECIDED with a winner, NEEDS_INTERVENTION, or REJECTED. `--promote-to <branch>` or `multi-herdr-dataset promote <round>` runs the full deterministic PromotionEngine. |
-| OD6 | `sha2 0.10.9` is allowlisted for horch-core and horch-marketplace (NFR-06). It is already in Cargo.lock through herdr-install, so nothing new is downloaded. |
+| OD6 | `sha2 0.10.9` is allowlisted for horch-core and horch-marketplace, and `thiserror 2` for horch-marketplace (NFR-06; operator decision for #239, 2026-10-30). It is already in Cargo.lock through herdr-install, so nothing new is downloaded. |
 | OD7 | UUIDv7 is minted by hand from v4 bytes (48-bit ms prefix, version nibble 7). The uuid feature set does not change. `ExecutionId` accepts legacy non-UUID ids (`rec-o1`, `perf-3`). |
 
 ### 1.3 Hard constraints
