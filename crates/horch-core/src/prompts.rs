@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 
 use crate::execution::SessionMode;
 use crate::roster::{Base, ExecRule, Roster, Teammate};
@@ -161,9 +161,7 @@ fn append_required_block(
     vars: &BTreeMap<&str, &str>,
     missing: String,
 ) -> Result<()> {
-    if block.trim().is_empty() {
-        bail!(missing);
-    }
+    ensure!(!block.trim().is_empty(), missing);
     out.push_str("\n\n");
     out.push_str(&render(block, vars)?);
     Ok(())
