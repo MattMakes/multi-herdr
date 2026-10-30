@@ -1801,6 +1801,48 @@ pub(crate) fn names_tool(text: &str, tool: &str) -> bool {
 
 #[cfg(test)]
 mod spawnable_tests {
+    const EXPECTED_ENTRY: &str = "settings is only for harness claude\n\
+config is only for harness opencode\n\
+agent_settings is only for harness prime\n\
+force must give the reason and the decision that allowed it\n\
+args: -c needs a <key>=<value> after it\n\
+args: 'bare' is neither a -c <key>=<value> pair nor a flag\n\
+args: -c needs a <key>=<value> after it\n\
+env ANTHROPIC_FOO is forbidden in a fleet launch\n\
+env W3_NOT_YIELDED: add it to runtime::context::DEFAULT_ENV_YIELD\n\
+model_auto_compact_token_limit sets a compaction window; windows belong in _base/context-windows.md";
+    const EXPECTED_REPEATED: &str =
+        "opus: env W3_A repeats the claude harness default; delete the line\n\
+opus: args --f repeats the claude harness default; delete it\n\
+opus: args -c k=v repeats the claude harness default; delete the pair\n\
+opus: settings a.b repeats the claude harness default; delete it\n\
+opus: settings d repeats the claude harness default; delete it";
+    const EXPECTED_FALLBACK: &str = "w3-host: fallback 'nope' does not exist\n\
+w3-host: fallback 'opus' draws from the same pool (claude), so it cannot help\n\
+w3-host: fallback 'sonnet' draws from the same pool (claude), so it cannot help";
+    const EXPECTED_FALLBACK_WARN: &str = "godot-csharp-engineer: the persona names the Task tool, which codex (fallback codex-sol) lacks\n\
+w3-host: the persona names the Task tool, which codex (fallback codex-sol) lacks\n\
+w3-host: the persona names the WebFetch tool, which codex (fallback codex-sol) lacks";
+    const EXPECTED_BASES: &str = "_base/context-messages.md is missing\n\
+_base/w3-stray.md: windows belongs in _base/context-windows.md; delete it here\n\
+_base/w3-stray.md: in_place belongs in _base/context-windows.md; delete it here\n\
+_base/context-windows.md: in_place entry nonsense is not a harness name";
+    const EXPECTED_WINDOWS: &str = "_base/context-windows.md: windows key bogus is not <harness>/<teammate or model> with a harness name\n\
+_base/context-windows.md: windows key claude/ has no teammate or model name\n\
+_base/context-windows.md: windows codex/w3-tiny 10 leaves headroom 2 tokens, below the 20000 floor (native trigger 10, threshold 8)";
+    const EXPECTED_POLICY: &str = "_base/context-windows.md: windows key claude/w3-nobody names no teammate and no model of a teammate on claude\n\
+_base/context-windows.md: windows key codex/w3-tiny names no teammate and no model of a teammate on codex\n\
+_base/context-windows.md: windows key pi/w3-nobody names no teammate and no model of a teammate on pi";
+    const EXPECTED_MESSAGES: &str = "_base/context-messages.md: message request is missing\n\
+_base/context-messages.md: message resume has a newline; a newline submits the line early\n\
+_base/context-messages.md: message resume: unknown placeholder '{nope}' (known: handoff, log, post, pre, reason, role, step, threshold, tokens)\n\
+_base/context-messages.md: message warning is empty";
+    const EXPECTED_SKILLS_WHEN: &str = "w3-sw: skills_when '***' names unknown skill 'planning'\n\
+w3-sw: 'planning' is both in skills and in skills_when '***'\n\
+w3-sw: skills_when '*.rs' names unknown skill 'nosuch'\n\
+w3-sw: 'debug' is both in skills_when '*.rs' and in disabled_skills\n\
+w3-sw: skill 'skill-creator' belongs to the orchestrator only\n\
+w3-sw: skills_when 'empty' names no skill";
     const EXPECTED_W3_PROBE: &str = "teammate 'w3-probe': unknown bundled skill 'planning'\n\
 teammate 'w3-probe': unknown bundled skill 'planning'\n\
 w3-probe: 'planning' is both in skills and in available_skills\n\
@@ -1893,6 +1935,134 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
         let got = r.check_teammate(&codex);
         let expected: Vec<&str> = EXPECTED_W3_CODEX.lines().collect();
         assert_eq!(got, expected, "{got:#?}");
+    }
+
+    /// The text and order of the problems of the rule families the other
+    /// tests do not reach. The expected lists were taken from the code before
+    /// it was split into helpers.
+    #[test]
+    fn w3_rule_families_keep_their_text_and_order() {
+        let pin = |name: &str, got: Vec<String>, expected: &str| {
+            let expected: Vec<&str> = expected.lines().collect();
+            assert_eq!(got, expected, "{name}: {got:#?}");
+        };
+        let r = Roster::builtin().unwrap();
+
+        // Harness default entries: owner, force, args, env, window key.
+        let entry = HarnessDefault {
+            harness: HarnessKind::Codex,
+            base: None,
+            env: [
+                ("ANTHROPIC_FOO".to_string(), "1".to_string()),
+                ("W3_NOT_YIELDED".to_string(), "1".to_string()),
+            ]
+            .into(),
+            args: [
+                "-c",
+                "nokey",
+                "bare",
+                "--flag",
+                "-c",
+                "model_auto_compact_token_limit=5",
+                "-c",
+            ]
+            .map(String::from)
+            .to_vec(),
+            settings: Some(serde_json::Map::new()),
+            config: Some(serde_json::Map::new()),
+            agent_settings: Some(serde_json::Map::new()),
+            force: Some(" ".into()),
+        };
+        pin(
+            "ENTRY",
+            harness_default_entry_problems(&entry),
+            EXPECTED_ENTRY,
+        );
+
+        // A teammate that repeats its harness defaults.
+        let default = HarnessDefault {
+            harness: HarnessKind::Claude,
+            base: None,
+            env: [("W3_A".to_string(), "1".to_string())].into(),
+            args: ["-c", "k=v", "--f"].map(String::from).to_vec(),
+            settings: serde_json::from_str(r#"{"a":{"b":1},"c":2,"d":{}}"#).ok(),
+            config: None,
+            agent_settings: None,
+            force: None,
+        };
+        let mut t = r.require("opus").unwrap().clone();
+        t.harness_defaults = vec![default];
+        t.env.insert("W3_A".into(), "1".into());
+        t.env.insert("W3_B".into(), "2".into());
+        t.args = ["--f", "-c", "k=v", "-c", "other=1", "-c"]
+            .map(String::from)
+            .to_vec();
+        t.settings = Some(r#"{"a":{"b":1},"c":3,"d":{}}"#.into());
+        pin("REPEATED", repeated_defaults(&t), EXPECTED_REPEATED);
+
+        // Fallbacks: missing, hidden, same pool; persona names a Claude tool.
+        let mut r2 = r.clone();
+        let mut host = r2.require("opus").unwrap().clone();
+        host.name = "w3-host".into();
+        host.persona = "Use the Task tool and the WebFetch tool.".into();
+        host.fallbacks = ["nope", "opus", "sonnet", "codex-sol"]
+            .map(String::from)
+            .to_vec();
+        r2.teammates.insert("w3-host".into(), host);
+        pin("FALLBACK", fallback_problems(&r2), EXPECTED_FALLBACK);
+        pin(
+            "FALLBACK_WARN",
+            fallback_warnings(&r2),
+            EXPECTED_FALLBACK_WARN,
+        );
+
+        // Context bases and windows keys.
+        let mut r3 = r.clone();
+        r3.bases.remove(CONTEXT_MESSAGES_BASE);
+        let windows = r3.bases.get_mut(CONTEXT_WINDOWS_BASE).unwrap();
+        windows.in_place = Some(vec!["nonsense".into(), "pi".into()]);
+        windows.windows.as_mut().unwrap().extend([
+            ("bogus".to_string(), 1),
+            ("claude/".to_string(), 1),
+            ("claude/w3-nobody".to_string(), 500_000),
+            ("pi/w3-nobody".to_string(), 500_000),
+            ("codex/w3-tiny".to_string(), 10),
+        ]);
+        let mut stray = r3.bases.get(CONTEXT_WINDOWS_BASE).unwrap().clone();
+        stray.name = "w3-stray".into();
+        r3.bases.insert("w3-stray".into(), stray);
+        pin("BASES", r3.context_base_problems(), EXPECTED_BASES);
+        pin("WINDOWS", r3.windows_key_problems(), EXPECTED_WINDOWS);
+        pin("POLICY", context_policy_warnings(&r3), EXPECTED_POLICY);
+
+        let mut r4 = r.clone();
+        let messages = r4.bases.get_mut(CONTEXT_MESSAGES_BASE).unwrap();
+        messages.messages.remove("request");
+        messages.messages.insert("warning".into(), " ".into());
+        messages
+            .messages
+            .insert("resume".into(), "two\nlines {nope}".into());
+        pin("MESSAGES", r4.context_base_problems(), EXPECTED_MESSAGES);
+
+        // skills_when: bad pattern, empty list, unknown, kept, disabled, orchestrator-only.
+        let mut t = r.require("opus").unwrap().clone();
+        t.name = "w3-sw".into();
+        t.skills = vec!["planning".into()];
+        t.disabled_skills = vec!["horch:debug".into()];
+        t.skills_when = [
+            ("***".to_string(), vec!["planning".to_string()]),
+            ("empty".to_string(), vec![]),
+            (
+                "*.rs".to_string(),
+                vec!["nosuch".into(), "debug".into(), "skill-creator".into()],
+            ),
+        ]
+        .into();
+        pin(
+            "SKILLS_WHEN",
+            r.skills_when_problems(&t),
+            EXPECTED_SKILLS_WHEN,
+        );
     }
 
     #[test]
