@@ -847,4 +847,74 @@ mod tests {
             Some(created_at + Duration::from_secs(1350))
         );
     }
+
+    #[test]
+    fn enqueue_keeps_only_question_and_blocked_lines_of_the_original() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let original =
+            "progress note\n[worker] QUESTION: which?\n  BLOCKED: no key\nQUESTIONS: no\ndone";
+        let id = mail
+            .enqueue_with_questions("worker", "short", original)
+            .unwrap();
+
+        let open = mail.open_questions().unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, id);
+        assert_eq!(open[0].text, "[worker] QUESTION: which?\n  BLOCKED: no key");
+        assert_eq!(mail.pending().unwrap()[0].text, "short");
+    }
+
+    #[test]
+    fn enqueue_without_question_lines_writes_no_question_file() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.enqueue("worker", "plain status").unwrap();
+
+        assert!(mail.open_questions().unwrap().is_empty());
+        assert!(!mail.dir.join("questions").exists());
+    }
+
+    #[test]
+    fn pending_refuses_a_file_whose_name_is_not_its_id() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        let id = mail.enqueue("worker", "hello").unwrap();
+        let dir = mail.dir.join("pending");
+        std::fs::rename(dir.join(format!("{}.json", id.0)), dir.join("other.json")).unwrap();
+
+        let err = format!("{:#}", mail.pending().unwrap_err());
+        assert!(err.contains("mail id does not match"), "{err}");
+        assert!(err.contains("other.json"), "{err}");
+    }
+
+    #[test]
+    fn pending_names_a_file_that_is_not_json() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.enqueue("worker", "hello").unwrap();
+        std::fs::write(mail.dir.join("pending").join("bad.json"), "{").unwrap();
+
+        let err = format!("{:#}", mail.pending().unwrap_err());
+        assert!(err.contains("parsing"), "{err}");
+        assert!(err.contains("bad.json"), "{err}");
+    }
+
+    #[test]
+    fn pending_and_roles_of_a_missing_dir_are_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.ensure_dir().unwrap();
+        assert!(mail.pending().unwrap().is_empty());
+        assert!(mail.roles().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pending_ignores_files_without_a_json_extension() {
+        let root = tempfile::tempdir().unwrap();
+        let mail = Mail::under(root.path(), "w1");
+        mail.enqueue("worker", "hello").unwrap();
+        std::fs::write(mail.dir.join("pending").join("note.txt"), "x").unwrap();
+        assert_eq!(mail.pending().unwrap().len(), 1);
+    }
 }
