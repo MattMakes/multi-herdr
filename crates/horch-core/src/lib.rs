@@ -75,6 +75,9 @@ pub fn mint_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+#[cfg(all(test, unix))]
+pub(crate) mod test_support;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -193,11 +193,11 @@ fn wait_gate(child: &mut Child, timeout: Duration) -> anyhow::Result<GateStatus>
             // Stragglers the gate left in the background go too. The
             // leader is not reaped yet, so its pid, and with it the
             // group id, cannot be given to another program.
-            kill_group(child);
+            crate::runtime::process::kill_group(child);
             break exit_status(child.wait()?);
         }
         if Instant::now() >= deadline {
-            kill_group(child);
+            crate::runtime::process::kill_group(child);
             child.wait()?;
             break GateStatus::TimedOut;
         }
@@ -277,23 +277,8 @@ fn private_file(path: &Path) -> anyhow::Result<File> {
         .with_context(|| format!("creating {}", path.display()))
 }
 
-#[cfg(unix)]
-fn kill_group(child: &mut Child) {
-    // The group id is the child's pid (`process_group(0)`). The child is
-    // not reaped yet, so its pid and group id are still its own. A group
-    // that is already gone gives ESRCH, which is fine.
-    unsafe {
-        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_group(child: &mut Child) {
-    let _ = child.kill();
-}
-
 /// Whether the gate leader has exited, without reaping it: `waitid` with
-/// `WNOWAIT` leaves the zombie, so [`kill_group`] still names the gate's
+/// `WNOWAIT` leaves the zombie, so [`process::kill_group`](crate::runtime::process::kill_group) still names the gate's
 /// own group.
 #[cfg(unix)]
 fn leader_exited(child: &mut Child) -> std::io::Result<bool> {

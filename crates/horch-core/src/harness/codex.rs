@@ -1912,16 +1912,6 @@ mod tests {
             .expect("the read blocked")
     }
 
-    #[cfg(unix)]
-    fn mkfifo(path: &Path) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let made = std::process::Command::new("mkfifo")
-            .arg(path)
-            .status()
-            .unwrap();
-        assert!(made.success());
-    }
-
     /// A FIFO at `config.toml` neither blocks the operator-window read nor
     /// counts as a value (u9b step 10).
     #[cfg(unix)]
@@ -1929,7 +1919,7 @@ mod tests {
     fn codex_config_fifo_does_not_block() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("codex/config.toml");
-        mkfifo(&path);
+        crate::test_support::mkfifo(&path);
         let read = path.clone();
         assert_eq!(within_1s(move || read_config(&read)), None);
         drop(tmp);
