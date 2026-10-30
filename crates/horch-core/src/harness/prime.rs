@@ -1532,4 +1532,255 @@ mod tests {
             "s-1.jsonl"
         );
     }
+    // ---- Pins for the build_agent_dir and helper split (#186) ----
+
+    fn prime_default(agent_settings: Value, force: bool) -> HarnessDefault {
+        HarnessDefault {
+            harness: HarnessKind::Prime,
+            base: None,
+            env: Default::default(),
+            args: Vec::new(),
+            settings: None,
+            config: None,
+            agent_settings: agent_settings.as_object().cloned(),
+            force: force.then(|| "test".to_string()),
+        }
+    }
+
+    fn with_defaults(defaults: Vec<HarnessDefault>) -> Teammate {
+        Teammate {
+            agent: HarnessKind::Prime,
+            harness_defaults: defaults,
+            ..Teammate::default()
+        }
+    }
+
+    #[test]
+    fn may_stop_names_the_first_rule_that_fails() {
+        use std::time::Duration;
+        let installed = SystemTime::now();
+        let after = Some(installed + Duration::from_secs(3));
+        let ok = (7, Some(100));
+        assert_eq!(
+            may_stop(ok, None, after, installed),
+            Err("a second status call does not name it")
+        );
+        assert_eq!(
+            may_stop(ok, Some((8, Some(100))), after, installed),
+            Err("a second status call names another pid")
+        );
+        if cfg!(windows) {
+            assert_eq!(may_stop(ok, Some((7, None)), None, installed), Ok(()));
+            return;
+        }
+        let start_changed = "its start time is unknown or changed between 2 status calls";
+        assert_eq!(
+            may_stop(ok, Some((7, Some(101))), after, installed),
+            Err(start_changed)
+        );
+        assert_eq!(
+            may_stop((7, None), Some((7, None)), after, installed),
+            Err(start_changed)
+        );
+        let early = "it started before this launch, so this launch did not start it";
+        let before = Some(installed - Duration::from_secs(60));
+        assert_eq!(may_stop(ok, Some(ok), before, installed), Err(early));
+        assert_eq!(may_stop(ok, Some(ok), None, installed), Err(early));
+        // One second of slack before the install time still counts.
+        let slack = Some(installed - Duration::from_millis(900));
+        assert_eq!(may_stop(ok, Some(ok), slack, installed), Ok(()));
+    }
+
+    #[test]
+    fn fleet_settings_adds_defaults_the_operator_and_project_do_not_set() {
+        let t = with_defaults(vec![
+            prime_default(json!({"a": 1, "b": {"c": 2, "d": 3}, "e": 5}), false),
+            prime_default(json!({"b": {"c": 9}, "f": {"g": true}}), true),
+        ]);
+        let operator = r#"{"apiKeys":{"x":"secret"},"a":0,"b":{"d":4},"e":{"k":1}}"#;
+        let project = r#"{"f":{"other":1}}"#;
+        let got = fleet_settings(Some(operator), Some(project), &t).unwrap();
+        assert_eq!(
+            Value::Object(got),
+            json!({
+                "a": 0,
+                "b": {"c": 9, "d": 4},
+                "e": {"k": 1},
+                "f": {"g": true}
+            })
+        );
+
+        // The project's key blocks a non-forced default.
+        let t = with_defaults(vec![prime_default(json!({"p": 1}), false)]);
+        assert_eq!(
+            fleet_settings(None, Some(r#"{"p":0}"#), &t),
+            None,
+            "the project sets it"
+        );
+        let got = fleet_settings(None, Some("not json"), &t).unwrap();
+        assert_eq!(Value::Object(got), json!({"p": 1}));
+        let got = fleet_settings(None, None, &t).unwrap();
+        assert_eq!(Value::Object(got), json!({"p": 1}));
+    }
+
+    #[test]
+    fn fleet_settings_leaves_the_operators_file_alone_when_it_adds_nothing() {
+        let t = with_defaults(vec![prime_default(json!({"a": 1}), false)]);
+        // Nothing to add: no copy, so `apiKeys` is not stripped either.
+        assert_eq!(
+            fleet_settings(Some(r#"{"a":0,"apiKeys":{"x":"y"}}"#), None, &t),
+            None
+        );
+        // Not an object: linked as it is.
+        for text in ["[]", "not json", "3"] {
+            assert_eq!(fleet_settings(Some(text), None, &t), None, "{text}");
+        }
+        // No defaults at all.
+        assert_eq!(
+            fleet_settings(Some("{}"), None, &with_defaults(vec![])),
+            None
+        );
+        // A parent that is not an object blocks the key, forced or not.
+        for force in [false, true] {
+            let t = with_defaults(vec![prime_default(json!({"a": {"b": 1}}), force)]);
+            assert_eq!(
+                fleet_settings(Some(r#"{"a":3}"#), None, &t),
+                None,
+                "{force}"
+            );
+        }
+        // A default for another harness is ignored.
+        let mut other = prime_default(json!({"z": 1}), true);
+        other.harness = HarnessKind::Pi;
+        assert_eq!(
+            fleet_settings(None, None, &with_defaults(vec![other])),
+            None
+        );
+    }
+
+    #[test]
+    fn insert_at_sets_nested_keys_and_refuses_a_non_object_parent() {
+        let mut obj = serde_json::Map::new();
+        assert!(insert_at(&mut obj, "a.b.c", json!(1)));
+        assert_eq!(Value::Object(obj.clone()), json!({"a": {"b": {"c": 1}}}));
+        assert!(insert_at(&mut obj, "a.b.d", json!(2)));
+        assert_eq!(obj["a"]["b"], json!({"c": 1, "d": 2}));
+        assert!(insert_at(&mut obj, "top", json!(true)));
+        let mut blocked = serde_json::Map::new();
+        blocked.insert("a".into(), json!(3));
+        assert!(!insert_at(&mut blocked, "a.b", json!(1)));
+        assert_eq!(Value::Object(blocked), json!({"a": 3}));
+    }
+
+    #[test]
+    fn the_operator_window_comes_from_models_then_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let models = dir.path().join("models.json");
+        let user = dir.path().join("settings.json");
+        let project = dir.path().join("project.json");
+        let window =
+            |model: &str| prime_operator_window(&models, &[user.clone(), project.clone()], model);
+
+        assert_eq!(window("p/m"), None, "no files");
+
+        std::fs::write(
+            &models,
+            r#"{"providers":{"p":{"modelOverrides":{"m":{"contextWindow":1000}},"models":[{"id":"x","contextWindow":2000}]}}}"#,
+        )
+        .unwrap();
+        let w = window("p/m").unwrap();
+        assert_eq!(w.tokens, Some(1000));
+        assert_eq!(
+            w.detail,
+            format!("{} (provider p defined)", models.display())
+        );
+        assert_eq!(window("p/x").unwrap().tokens, Some(2000));
+        assert_eq!(window("p/none").unwrap().tokens, None);
+        assert_eq!(window("other/m"), None, "provider not defined");
+        assert_eq!(window("no-slash"), None);
+
+        std::fs::write(&models, "{oops").unwrap();
+        let w = window("p/m").unwrap();
+        assert_eq!(
+            (w.tokens, w.detail),
+            (None, format!("{} (not valid JSON)", models.display()))
+        );
+
+        std::fs::remove_file(&models).unwrap();
+        std::fs::write(&user, r#"{"theme":"x","compaction":{"keepRecent":1}}"#).unwrap();
+        assert_eq!(window("p/m"), None, "compaction without the trigger keys");
+        std::fs::write(&project, r#"{"compaction":{"enabled":false}}"#).unwrap();
+        let w = window("p/m").unwrap();
+        assert_eq!(w.tokens, None);
+        assert_eq!(
+            w.detail,
+            format!("{} (compaction set; trigger unknown)", project.display())
+        );
+        std::fs::write(&user, r#"{"compaction":{"reserveTokens":5}}"#).unwrap();
+        assert!(window("p/m")
+            .unwrap()
+            .detail
+            .starts_with(&user.display().to_string()));
+    }
+
+    #[test]
+    fn find_session_picks_the_newest_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = |name: &str, secs: u64| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, "{}").unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+                .unwrap();
+        };
+        at("old.jsonl", 1000);
+        at("new.jsonl", 3000);
+        at("mid.jsonl", 2000);
+        at("newest.txt", 9000);
+        assert_eq!(
+            find_session(dir.path()).unwrap().file_name().unwrap(),
+            "new.jsonl"
+        );
+        assert!(find_session(&dir.path().join("missing")).is_none());
+    }
+
+    #[test]
+    fn the_launcher_file_names_a_live_horch_or_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = dir.path();
+        assert!(!launcher_alive(launch), "no file");
+        std::fs::write(launch.join(LAUNCHER), "not-a-pid 1\n").unwrap();
+        assert!(!launcher_alive(launch), "garbage");
+        std::fs::write(launch.join(LAUNCHER), "").unwrap();
+        assert!(!launcher_alive(launch), "empty");
+
+        let pid = std::process::id();
+        let started = crate::procid::start_time(pid)
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        std::fs::write(launch.join(LAUNCHER), format!("{pid} {started}\n")).unwrap();
+        assert!(launcher_alive(launch), "this process");
+        if !started.is_empty() {
+            std::fs::write(launch.join(LAUNCHER), format!("{pid} 1\n")).unwrap();
+            assert!(!launcher_alive(launch), "same pid, another start time");
+        }
+    }
+
+    #[test]
+    fn finish_pane_does_nothing_for_a_pane_that_ran_no_launch() {
+        let state = tempfile::tempdir().unwrap();
+        // No prime dir at all.
+        finish_pane(state.path(), Path::new("prime-agent"), "p1");
+        // A launch of another pane, with a socket file: it stays.
+        let launch = state.path().join("prime/aaaaaaaaaaaa");
+        std::fs::create_dir_all(launch.join(scan_dir_name())).unwrap();
+        std::fs::write(launch.join(PANE), "other\n").unwrap();
+        std::fs::write(launch.join(scan_dir_name()).join(SOCKET), "").unwrap();
+        finish_pane(state.path(), Path::new("prime-agent"), "p1");
+        assert!(launch.join(scan_dir_name()).join(SOCKET).exists());
+        // This pane's launch, with no launcher file: its daemon is kept.
+        std::fs::write(launch.join(PANE), "p1\n").unwrap();
+        finish_pane(state.path(), Path::new("prime-agent"), "p1");
+        assert!(launch.join(scan_dir_name()).join(SOCKET).exists());
+    }
 }
