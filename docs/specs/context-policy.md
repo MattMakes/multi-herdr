@@ -519,7 +519,7 @@ those of the text table.
    (`spawn_detached`: a new session, stdin null, stdout and stderr appended
    to `job.log`, the forbidden env keys scrubbed) and writes `spawned`.
 6. Start handshake: the parent polls every 50 ms for up to `START_TIMEOUT`
-   (5 s). The wait ends as soon as `job.json` shows a step past `start`, so
+   (30 s). The wait ends as soon as `job.json` shows a step past `start`, so
    only a failed start waits the full time.
    - `job.json` past `start`: prints `compaction of <role> scheduled; log <path>`, exit 0.
    - The child exits 0 first (a second job for the role): the `already running` line, exit 0.
@@ -528,7 +528,7 @@ those of the text table.
      `[horch] BLOCKED:` line of `job.log`, exit 1.
    - Any other exit, or no job file at the timeout: the parent kills the
      unreaped child (SIGKILL), clears the job dir, records `compact-failed`
-     `step start: <reason>` (for example `the job did not start in 5 s`),
+     `step start: <reason>` (for example `the job did not start in 30 s`),
      prints the rendered `failed` line to stdout, exit 1.
 
 `--foreground` (the child): it creates `job.json` at step `start` first,

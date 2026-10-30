@@ -52,9 +52,14 @@ use super::mode;
 
 /// The start handshake: the child must write `job.json` at step
 /// `wait-idle` within this (design §6.8a). The wait ends as soon as the job
-/// file appears, so only a failed start waits this long. 5 s, not the
-/// design's 1.5 s: at load 211 a child once needed more than 1.5 s.
-pub const START_TIMEOUT: Duration = Duration::from_secs(5);
+/// file appears, so only a failed start waits this long. 30 s, not the
+/// design's 1.5 s or the later 5 s: the child boots a process, opens the
+/// ledger and runs the checks, and that grows with host load. Measured on a
+/// 18-CPU host: 0.05 to 0.4 s with 16 parallel runs, 1.4 to 2.5 s with 250
+/// busy loops added; a fleet gate run slowed other tests 15 times. A child
+/// that dies is seen at once (`try_wait`), so only a live child that never
+/// writes the file waits the full time.
+pub const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The poll of the start handshake.
 const START_POLL: Duration = Duration::from_millis(50);
@@ -1524,6 +1529,46 @@ mod tests {
             JobLiveness::None,
             "the dir does not block a retry"
         );
+    }
+
+    /// A child that needs 6 s to reach `wait-idle` (a loaded host) is
+    /// scheduled under the default start timeout. With the old 5 s limit it
+    /// was stopped and recorded as `compact-failed`.
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_child_within_the_default_start_timeout_is_scheduled() {
+        let mut f = Fleet::new();
+        let dir = f.env().job_dir("sonnet-1");
+        let bin = f.w.tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("slow-starter");
+        std::fs::write(
+            &exe,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\nsleep 6\nprintf '%s' '{{\"v\":1,\"role\":\"sonnet-1\",\"record_id\":\"r-1\",\"started_at\":\"x\",\"step\":\"wait-idle\"}}' > '{}/job.json'\n",
+                dir.display()
+            ),
+        )
+        .unwrap();
+        horch_core::runtime::process::make_executable(&exe).unwrap();
+        assert!(std::process::Command::new(&exe)
+            .arg("warm")
+            .status()
+            .unwrap()
+            .success());
+        f.exe = exe;
+        // `f.start_timeout` stays at START_TIMEOUT.
+        f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        f.handoff(&f.w.project(), "sonnet-1");
+
+        let o = f.run("sonnet-1", |_| {});
+        assert_eq!(o.code, 0, "{o:?}");
+        assert!(
+            o.out[0].starts_with("compaction of sonnet-1 scheduled"),
+            "{o:?}"
+        );
+        assert!(f.w.events("r-1", EVENT_FAILED).is_empty());
     }
 
     /// CTX-15: a child that writes `job.json` at `wait-idle` in time is
