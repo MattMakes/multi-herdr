@@ -385,3 +385,39 @@ fn an_agent_that_exits_on_its_last_attempt_holds_the_task() {
     let third = worker(&mut store, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut store, &third)), None);
 }
+
+#[test]
+fn a_schema_2_ledger_migrates_to_3_and_keeps_its_rows() {
+    let (dir, mut store, run) = ledger();
+    let t = add(&mut store, &run, "a", "opus", |_| {});
+    let w = worker(&mut store, &run, "opus");
+    assert_eq!(claimed_seq(&claim(&mut store, &w)), Some(1));
+    drop(store);
+    // Take the file back to schema 2: v3 only added these 3 columns.
+    let path = dir.path().join("ledger.sqlite3");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE runs DROP COLUMN max_attempts;
+         ALTER TABLE tasks DROP COLUMN held_reason;
+         ALTER TABLE tasks DROP COLUMN attempt_floor;
+         PRAGMA user_version = 2;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let store = Store::open(&path).unwrap();
+    let v: i64 = store
+        .conn()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 3);
+    let migrated = runs::get(store.conn(), &run.run_id).unwrap();
+    assert_eq!(migrated.slug, "r1");
+    assert_eq!(migrated.max_attempts, 3);
+    let task = tasks::get(store.conn(), &t.task_id).unwrap();
+    assert_eq!(task.status, "running");
+    assert_eq!(task.attempts, 1);
+    assert_eq!(task.current_worker_id.as_deref(), Some(w.as_str()));
+    assert_eq!(task.held_reason, None);
+    assert_eq!(task.attempt_floor, 0);
+}

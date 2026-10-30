@@ -1867,6 +1867,26 @@ fn a_spawn_with_task_text_runs_outside_the_run() {
     assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
 }
 
+#[test]
+fn assign_refuses_only_in_the_workspace_that_owns_the_run() {
+    let mut h = fleet("tl-assign-ws", "default");
+    h.set("HORCH_NO_WATCHDOG", "1");
+    second_workspace(&h);
+    ok(&h, &["ledger", "run", "new", "a"]);
+    // W2 owns no run: assign passes the ledger guard to the role lookup.
+    let o = run_env(
+        &h,
+        &[("HORCH_WORKSPACE_ID", "w2")],
+        &["assign", "opus-1", "do it"],
+    );
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("no working session for role 'opus-1'"),
+        "{}",
+        text(&o)
+    );
+}
+
 // ─── #190: no pre-claim row outlives its process ─────────────────────────────
 
 fn worker_status(h: &Harness, id: &str) -> (String, String) {
