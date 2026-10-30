@@ -181,6 +181,111 @@ pub fn render(report: &Report, ledger: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::cost::{NotPriced, PartlyPriced, Window};
+
+    fn report(window: Window) -> Report {
+        Report {
+            window,
+            prices_as_of: "2026-09-24",
+            reprice: None,
+            rows: Vec::new(),
+            not_priced: Vec::new(),
+            by_teammate: Default::default(),
+            by_harness: Default::default(),
+            by_family: Default::default(),
+            total: Default::default(),
+            tables: Default::default(),
+            skill_use: Vec::new(),
+            partly_priced: Vec::new(),
+        }
+    }
+
+    fn window(start: Option<&str>, end: Option<&str>) -> Window {
+        Window {
+            name: "custom".into(),
+            start: start.map(str::to_string),
+            end: end.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_window_line_names_each_range() {
+        for (start, end, want) in [
+            (Some("A"), Some("B"), "Window: calls from A to B (each"),
+            (Some("A"), None, "Window: calls from A (each"),
+            (None, Some("B"), "Window: calls before B (each"),
+            (None, None, "Window: every call (each"),
+        ] {
+            let text = render(&report(window(start, end)), "l.json");
+            assert!(text.contains(want), "{want}: {text}");
+        }
+    }
+
+    #[test]
+    fn the_notes_and_totals_render_exactly() {
+        let mut r = report(window(None, None));
+        r.reprice = Some("opus".into());
+        r.total.cost = 12.5;
+        r.total.reprice_cost = Some(30.0);
+        r.total.sessions = 2;
+        r.total.calls = 1234;
+        r.partly_priced = vec![
+            PartlyPriced {
+                record_id: "r1".into(),
+                teammate: "a".into(),
+                agent: "x".into(),
+                models: vec!["m1".into(), "m2".into()],
+            },
+            PartlyPriced {
+                record_id: "r2".into(),
+                teammate: "b".into(),
+                agent: "x".into(),
+                models: vec!["m3".into()],
+            },
+        ];
+        r.not_priced = [
+            Missing::NoSessionId,
+            Missing::NoTranscript,
+            Missing::NotRead,
+            Missing::Failed("bad".into()),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, reason)| NotPriced {
+            record_id: format!("r{i}"),
+            teammate: format!("t{i}"),
+            agent: "claude".into(),
+            reason,
+        })
+        .collect();
+        let text = render(&r, "l.json");
+        let tail = text.split("\n**Total").nth(1).unwrap();
+        let (total, rest) = tail.split_once("\n\n").unwrap();
+        assert_eq!(
+            total,
+            ": $12.50** ($30.00 on opus) across 2 priced session(s), 1,234 calls."
+        );
+        assert!(
+            rest.starts_with(
+                "\\* partly unpriced: no price for a (m1, m2); b (m3). Add them with --pricing.\n\n\
+                 ## Not priced\n\n\
+                 - t0 (claude, r0): the ledger never learned its session id\n\
+                 - t1 (claude, r1): no transcript found for its session id\n\
+                 - t2 (claude, r2): this harness's usage is not read here (agent none, or no sqlite3)\n\
+                 - t3 (claude, r3): could not be read: bad\n\
+                 \n## Skill use\n"
+            ),
+            "{rest}"
+        );
+        let plain = render(&report(window(None, None)), "l.json");
+        assert!(
+            plain.contains(
+                "\n**Total: $0.00** across 0 priced session(s), 0 calls.\n\n## Skill use"
+            ),
+            "{plain}"
+        );
+        assert!(!plain.contains("partly unpriced") && !plain.contains("Not priced"));
+    }
 
     #[test]
     fn numbers_get_thousands_separators() {
