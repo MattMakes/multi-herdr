@@ -201,7 +201,7 @@ fn render_line(
 /// `take_back`: `done` then fails with nothing queued, and its retry queues
 /// the line once. Without `take_back`, the line stays queued: a wake that
 /// is neither queued nor pushed is lost (#67).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // one mail line: each argument is a distinct input of the same step
 fn enqueue_durable(
     ctx: &RuntimeContext,
     workspace: &str,
