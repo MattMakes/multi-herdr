@@ -117,25 +117,24 @@ impl Bundle {
         let resolution = SkillResolution::read(catalog, Some(teammate), home, harness_support)?;
         let plan = resolution.plan(teammate)?;
         let catalog = resolution.into_catalog();
-        let Some(files) =
-            MaterializedSkills::materialize(&plan, &catalog, state_root, execution_id)?
-        else {
-            if catalog.skipped_operator().is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(Self {
+        let files = MaterializedSkills::materialize(&plan, &catalog, state_root, execution_id)?;
+        if let Some(files) = files {
+            Ok(Some(Self {
+                root: files.root.clone(),
+                catalog,
+                plan,
+                _files: Some(files),
+            }))
+        } else if catalog.skipped_operator().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Self {
                 root: state_root.join("skill-bundles").join(execution_id),
                 catalog,
                 plan,
                 _files: None,
-            }));
-        };
-        Ok(Some(Self {
-            root: files.root.clone(),
-            catalog,
-            plan,
-            _files: Some(files),
-        }))
+            }))
+        }
     }
 
     /// The activation plan this bundle materialized.
