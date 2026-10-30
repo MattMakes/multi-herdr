@@ -110,10 +110,7 @@ pub fn classify(i: &RowInputs) -> RowState {
         return RowState::CompactLost;
     }
     let reading = match i.reading {
-        Err(Unreadable::NoSessionId) => return RowState::NoSession,
-        Err(Unreadable::NotRead(_)) => return RowState::NotRead,
-        Err(Unreadable::NoTranscript(_)) => return RowState::NoTranscript,
-        Err(Unreadable::Failed(_)) => return RowState::Unknown,
+        Err(why) => return unreadable_state(why),
         Ok(r) => r,
     };
     if reading.tokens.is_none() && !reading.pending {
@@ -125,21 +122,39 @@ pub fn classify(i: &RowInputs) -> RowState {
     if reading.pending {
         return RowState::Pending;
     }
-    let last = reading.last_compaction.as_ref();
-    if failed_after_ask(i.history, last).is_some() {
-        return RowState::CompactFailed;
-    }
-    if already_asked(i.history, last) {
-        return if ask_is_stale(i.history, last, i.now) {
-            RowState::RequestStale
-        } else {
-            RowState::Requested
-        };
+    if let Some(state) = ask_state(i, reading.last_compaction.as_ref()) {
+        return state;
     }
     match reading.tokens {
         Some(t) if t >= i.threshold => RowState::Over,
         _ => RowState::Ok,
     }
+}
+
+/// The state of a row whose transcript does not read.
+fn unreadable_state(why: &Unreadable) -> RowState {
+    match why {
+        Unreadable::NoSessionId => RowState::NoSession,
+        Unreadable::NotRead(_) => RowState::NotRead,
+        Unreadable::NoTranscript(_) => RowState::NoTranscript,
+        Unreadable::Failed(_) => RowState::Unknown,
+    }
+}
+
+/// `compact-failed`, `request-stale` or `requested` when the cycle holds an
+/// ask (#75); None when it holds none.
+fn ask_state(i: &RowInputs, last: Option<&CompactionMark>) -> Option<RowState> {
+    if failed_after_ask(i.history, last).is_some() {
+        return Some(RowState::CompactFailed);
+    }
+    if !already_asked(i.history, last) {
+        return None;
+    }
+    Some(if ask_is_stale(i.history, last, i.now) {
+        RowState::RequestStale
+    } else {
+        RowState::Requested
+    })
 }
 
 /// The `horch note` warning rule (CTX-10), in core so it cannot drift from
