@@ -17,6 +17,7 @@ pub mod store;
 pub mod supervisor;
 pub mod tasks;
 pub mod timer;
+pub mod triage;
 pub mod util;
 pub mod watchdog;
 pub mod workers;

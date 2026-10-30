@@ -184,6 +184,22 @@ ledger_enum!(
         Cleaned = "cleaned",
         Unlanded = "unlanded",
         Abandoned = "abandoned",
+        // A triage decision freed the folder; a ref holds the work (#308).
+        Archived = "archived",
+        Trashed = "trashed",
+    }
+);
+
+ledger_enum!(
+    /// `worktrees.decision`: what the operator decided at a worktree triage
+    /// (#308).
+    TriageDecision {
+        Land = "LAND",
+        Pr = "PR",
+        Finish = "FINISH",
+        Archive = "ARCHIVE",
+        Keep = "KEEP",
+        Delete = "DELETE",
     }
 );
 
