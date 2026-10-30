@@ -1055,16 +1055,6 @@ mod tests {
             .expect("the read blocked")
     }
 
-    #[cfg(unix)]
-    fn mkfifo(path: &Path) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let made = std::process::Command::new("mkfifo")
-            .arg(path)
-            .status()
-            .unwrap();
-        assert!(made.success());
-    }
-
     /// A FIFO at the repository's `.claude/settings.json` neither blocks the
     /// operator chain read nor counts as a file (u9b step 10).
     #[cfg(unix)]
@@ -1072,7 +1062,7 @@ mod tests {
     fn claude_project_settings_fifo_does_not_block() {
         let tmp = tempfile::tempdir().unwrap();
         let workdir = tmp.path().join("project");
-        mkfifo(&workdir.join(".claude/settings.json"));
+        crate::test_support::mkfifo(&workdir.join(".claude/settings.json"));
         std::fs::write(workdir.join(".claude/settings.local.json"), "{}").unwrap();
         let texts = within_1s(move || read_claude_settings(None, None, None, Some(&workdir)));
         assert_eq!(texts.project, None);

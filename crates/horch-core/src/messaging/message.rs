@@ -48,7 +48,7 @@ pub(crate) fn strip_done_prefix<'a>(summary: &'a str, role: &str) -> &'a str {
 /// holds the messages of one workspace delivered by reference. A fleet never
 /// lists another fleet's messages: role names repeat across fleets.
 pub fn spool_dir(state_root: &Path, workspace: &str) -> PathBuf {
-    state_root.join("messages").join(file_safe(workspace))
+    state_root.join("messages").join(super::file_safe(workspace))
 }
 
 /// Write `message` to a new file under `dir` and return its path. The file
@@ -60,8 +60,8 @@ pub fn spool(dir: &Path, workspace: &str, from: &str, to: &str, message: &str) -
     let id = uuid::Uuid::new_v4().simple().to_string();
     let path = dir.join(format!(
         "{stamp}-{}-to-{}-{}.md",
-        file_safe(from),
-        file_safe(to),
+        super::file_safe(from),
+        super::file_safe(to),
         &id[..8]
     ));
     let contents = format!("<!-- horch workspace={workspace} from={from} to={to} -->\n{message}");
@@ -95,18 +95,6 @@ fn cut(s: &str, max: usize) -> &str {
         Some(space) if space > max / 2 => head[..space].trim_end(),
         _ => head,
     }
-}
-
-fn file_safe(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
