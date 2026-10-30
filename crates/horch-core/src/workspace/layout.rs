@@ -730,4 +730,86 @@ mod tests {
         let out = render(&analyze(&l, Some("orch")), &HashMap::new());
         assert!(out.contains("next split: VERTICAL (down) from w1"), "{out}");
     }
+
+    /// The whole render of a ragged-bottom tab, byte for byte: the header, the
+    /// cell table with its span mark, the state line and the advice.
+    #[test]
+    fn render_prints_the_whole_report_of_a_ragged_bottom_tab() {
+        let l = layout(&[
+            ("orch", 0, 0, 60, 50),
+            ("tl", 60, 0, 70, 25),
+            ("tr", 130, 0, 70, 25),
+            ("wide", 60, 25, 140, 25),
+        ]);
+        let roles = HashMap::from([("tl".to_string(), "sonnet-1".to_string())]);
+        assert_eq!(
+            render(&analyze(&l, Some("orch")), &roles),
+            "workspace w1  tab t1  area 200x50\n\
+             orchestrator: orch (excluded from the grid)\n\
+             \n\
+             \x20         60-130        130-200  \n\
+             \x20 top     sonnet-1(tl)  tr       \n\
+             \x20 bottom  wide*         wide*    \n\
+             \x20 (* pane spans more than one column)\n\
+             \n\
+             grid: 2 column(s), top row 2, bottom row 1  ->  ragged-bottom\n\
+             \x20       one row is subdivided further than the other.\n\
+             \n\
+             next split: HORIZONTAL (right) from wide\n\
+             \x20 why: bottom pane spans a boundary the top row already has; RIGHT subdivides it\n\
+             \n\
+             \x20 horch spawn <teammate> --from-pane wide --direction right\n"
+        );
+    }
+
+    #[test]
+    fn rows_of_unequal_length_with_no_spanning_pane_are_ragged_without_advice() {
+        // Top holds 2 panes, bottom 1 pane that spans nothing the top has: the
+        // bottom pane starts at the first edge and ends at the last.
+        let l = layout(&[
+            ("orch", 0, 0, 60, 50),
+            ("t1", 60, 0, 70, 25),
+            ("t2", 130, 0, 70, 25),
+            ("b1", 60, 25, 70, 25),
+        ]);
+        let a = analyze(&l, Some("orch"));
+        assert_eq!(a.state, GridState::Ragged);
+        assert!(a.next.is_none());
+        let out = render(&a, &HashMap::new());
+        assert!(out.contains("->  ragged\n"), "{out}");
+        assert!(out.ends_with("no suggestion for this shape.\n"), "{out}");
+    }
+
+    #[test]
+    fn a_tab_with_no_orchestrator_and_no_panes_is_empty_without_advice() {
+        let a = analyze_with(&layout(&[]), Orchestrator::Absent);
+        assert_eq!(a.state, GridState::Empty);
+        assert!(a.orchestrator.is_none());
+        assert!(a.next.is_none());
+        let out = render(&a, &HashMap::new());
+        assert!(out.contains("orchestrator: none detected\n"), "{out}");
+        assert!(out.contains("        no worker panes yet.\n"), "{out}");
+        assert!(
+            !out.contains("  top     "),
+            "no cell table without cells: {out}"
+        );
+    }
+
+    #[test]
+    fn the_offgrid_explanation_asks_to_close_the_extra_panes() {
+        let l = layout(&[
+            ("orch", 0, 0, 60, 50),
+            ("a", 60, 0, 140, 17),
+            ("b", 60, 17, 140, 17),
+            ("c", 60, 34, 140, 16),
+        ]);
+        let out = render(&analyze(&l, Some("orch")), &HashMap::new());
+        assert!(
+            out.contains(
+                "        a column has 3+ panes stacked in it, so this tab is not a 2-row grid. \
+                 Close the extra pane(s) or start a fresh workspace.\n"
+            ),
+            "{out}"
+        );
+    }
 }
