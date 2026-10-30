@@ -25,48 +25,60 @@ pub fn model_takes_effort(agent: HarnessKind, model: &str) -> bool {
 }
 
 /// Why `effort` cannot be used with this agent and model, or `None` if it can.
+///
+/// The order of the three rules is the contract: the first message wins.
 pub(crate) fn effort_problem(
     agent: HarnessKind,
     model: Option<&str>,
     effort: &str,
 ) -> Option<String> {
     let model = model.unwrap_or_default();
-    if !model.is_empty() && !model_takes_effort(agent, model) {
-        return Some(format!(
+    model_effort_problem(agent, model)
+        .or_else(|| {
+            (agent == HarnessKind::Codex)
+                .then(|| codex_effort_trap(model, effort))
+                .flatten()
+        })
+        .or_else(|| level_problem(agent, effort))
+}
+
+/// Rule 1: the model has no effort setting on this agent.
+fn model_effort_problem(agent: HarnessKind, model: &str) -> Option<String> {
+    (!model.is_empty() && !model_takes_effort(agent, model)).then(|| {
+        format!(
             "{model} has no effort setting on {agent}; remove effort (it would be \
              ignored, or refused)"
-        ));
-    }
-    if agent == HarnessKind::Codex {
-        // Both are accepted by some codex clients and both are traps.
-        match effort {
-            "minimal" => {
-                return Some(
-                    "codex effort 'minimal' is an API error on the gpt-5.6 models; use low".into(),
-                )
-            }
-            "ultra" => {
-                return Some(
-                    "codex effort 'ultra' fans out to parallel client-side agents and \
-                     multiplies spend; use max"
-                        .into(),
-                )
-            }
-            "none" if reserved_tier(model).is_some() => {
-                return Some(format!("{model} does not accept effort 'none'; use low"))
-            }
-            _ => {}
+        )
+    })
+}
+
+/// Rule 2: codex levels that some clients accept and that are traps.
+fn codex_effort_trap(model: &str, effort: &str) -> Option<String> {
+    match effort {
+        "minimal" => {
+            Some("codex effort 'minimal' is an API error on the gpt-5.6 models; use low".into())
         }
+        "ultra" => Some(
+            "codex effort 'ultra' fans out to parallel client-side agents and \
+             multiplies spend; use max"
+                .into(),
+        ),
+        "none" if reserved_tier(model).is_some() => {
+            Some(format!("{model} does not accept effort 'none'; use low"))
+        }
+        _ => None,
     }
+}
+
+/// Rule 3: the level is not one this agent's CLI takes.
+fn level_problem(agent: HarnessKind, effort: &str) -> Option<String> {
     let valid = valid_efforts(agent);
-    if valid.contains(&effort) {
-        None
-    } else {
-        Some(format!(
+    (!valid.contains(&effort)).then(|| {
+        format!(
             "effort '{effort}' is not a {agent} level (expected one of: {})",
             valid.join(", ")
-        ))
-    }
+        )
+    })
 }
 
 #[cfg(test)]
