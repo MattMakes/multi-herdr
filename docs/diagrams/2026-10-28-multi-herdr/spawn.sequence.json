@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "horch spawn: from a command to a working agent",
+    "locale": "en",
+    "viewBox": [
+      1240,
+      630
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "visual_preset": "signal-flow",
+    "animation": "trace",
+    "views": [
+      {
+        "id": "decide",
+        "label": "1. Decide who runs",
+        "focus": [
+          "orch",
+          "horch",
+          "routing"
+        ],
+        "note": "The roster and the claude quota pool decide that sonnet-feature runs as itself, not as its codex-terra fallback."
+      },
+      {
+        "id": "open",
+        "label": "2. Record and open a pane",
+        "focus": [
+          "horch",
+          "ledger",
+          "herdr",
+          "worker"
+        ],
+        "note": "The record exists before the pane, and the brief exists before the worker reads it."
+      },
+      {
+        "id": "launch",
+        "label": "3. Launch the agent",
+        "focus": [
+          "worker",
+          "ledger",
+          "agent",
+          "horch",
+          "orch"
+        ],
+        "note": "The briefing and the task reach claude as its first prompt. horch spawn returns once the role registers."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "orch",
+      "type": "frontend",
+      "label": "Orchestrator"
+    },
+    {
+      "id": "horch",
+      "type": "backend",
+      "label": "horch spawn"
+    },
+    {
+      "id": "routing",
+      "type": "security",
+      "label": "Routing"
+    },
+    {
+      "id": "ledger",
+      "type": "database",
+      "label": "Session ledger"
+    },
+    {
+      "id": "herdr",
+      "type": "cloud",
+      "label": "herdr server"
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "horch worker"
+    },
+    {
+      "id": "agent",
+      "type": "external",
+      "label": "claude"
+    }
+  ],
+  "messages": [
+    {
+      "id": "spawn",
+      "from": "orch",
+      "to": "horch",
+      "y": 165,
+      "label": "spawn sonnet-feature + task",
+      "variant": "emphasis"
+    },
+    {
+      "id": "route",
+      "from": "horch",
+      "to": "routing",
+      "y": 207,
+      "label": "route + claude pool"
+    },
+    {
+      "id": "decision",
+      "from": "routing",
+      "to": "horch",
+      "y": 249,
+      "label": "run as sonnet-feature",
+      "variant": "return"
+    },
+    {
+      "id": "planned",
+      "from": "horch",
+      "to": "ledger",
+      "y": 291,
+      "label": "record: Planned"
+    },
+    {
+      "id": "split",
+      "from": "horch",
+      "to": "herdr",
+      "y": 333,
+      "label": "brief + split pane"
+    },
+    {
+      "id": "run",
+      "from": "herdr",
+      "to": "worker",
+      "y": 375,
+      "label": "run horch worker"
+    },
+    {
+      "id": "registered",
+      "from": "worker",
+      "to": "horch",
+      "y": 417,
+      "label": "role registered",
+      "variant": "dashed"
+    },
+    {
+      "id": "paneid",
+      "from": "horch",
+      "to": "orch",
+      "y": 459,
+      "label": "pane id (wait ≤ 15 s)",
+      "variant": "return"
+    },
+    {
+      "id": "running",
+      "from": "worker",
+      "to": "ledger",
+      "y": 501,
+      "label": "Running + session id"
+    },
+    {
+      "id": "launch",
+      "from": "worker",
+      "to": "agent",
+      "y": 543,
+      "label": "briefing + task",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Read top to bottom",
+      "items": [
+        "Planning reads no files and writes nothing",
+        "The record is never live before its pane runs the worker"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Toy run",
+      "items": [
+        "Task: Read and follow ai_docs/plans/rate-limit.md exactly",
+        "Role sonnet-feature-1 is the address for horch tell"
+      ]
+    }
+  ]
+}

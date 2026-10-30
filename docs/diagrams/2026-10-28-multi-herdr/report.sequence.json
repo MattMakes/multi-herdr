@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "A worker report: relay first, typing as the fallback",
+    "locale": "en",
+    "viewBox": [
+      1240,
+      620
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "visual_preset": "signal-flow",
+    "animation": "trace",
+    "views": [
+      {
+        "id": "durable",
+        "label": "1. Write it down first",
+        "focus": [
+          "agent",
+          "tell",
+          "mail"
+        ],
+        "note": "horch done writes the report to pending mail before it tries to deliver it."
+      },
+      {
+        "id": "push",
+        "label": "2. Push it",
+        "focus": [
+          "tell",
+          "relay",
+          "herdr",
+          "orch"
+        ],
+        "note": "The channel relay is tried first. If it does not take the line, horch types it into the orchestrator pane."
+      },
+      {
+        "id": "retry",
+        "label": "3. Retry until acknowledged",
+        "focus": [
+          "tell",
+          "courier",
+          "orch",
+          "mail"
+        ],
+        "note": "The courier redelivers until horch inbox acknowledges the report."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "agent",
+      "type": "external",
+      "label": "Worker agent"
+    },
+    {
+      "id": "tell",
+      "type": "backend",
+      "label": "horch done"
+    },
+    {
+      "id": "mail",
+      "type": "database",
+      "label": "Durable mail"
+    },
+    {
+      "id": "relay",
+      "type": "messagebus",
+      "label": "Channel relay"
+    },
+    {
+      "id": "herdr",
+      "type": "cloud",
+      "label": "Pane input"
+    },
+    {
+      "id": "courier",
+      "type": "backend",
+      "label": "Courier"
+    },
+    {
+      "id": "orch",
+      "type": "frontend",
+      "label": "Orchestrator"
+    }
+  ],
+  "messages": [
+    {
+      "id": "done",
+      "from": "agent",
+      "to": "tell",
+      "y": 170,
+      "label": "DONE: summary",
+      "variant": "emphasis"
+    },
+    {
+      "id": "enqueue",
+      "from": "tell",
+      "to": "mail",
+      "y": 215,
+      "label": "enqueue report"
+    },
+    {
+      "id": "send",
+      "from": "tell",
+      "to": "relay",
+      "y": 260,
+      "label": "send (≤ 12 s)"
+    },
+    {
+      "id": "notify",
+      "from": "relay",
+      "to": "orch",
+      "y": 305,
+      "label": "channel event",
+      "variant": "emphasis"
+    },
+    {
+      "id": "type",
+      "from": "tell",
+      "to": "herdr",
+      "y": 350,
+      "label": "fallback: type line",
+      "variant": "dashed"
+    },
+    {
+      "id": "prompt",
+      "from": "herdr",
+      "to": "orch",
+      "y": 395,
+      "label": "text + Enter",
+      "variant": "dashed"
+    },
+    {
+      "id": "start",
+      "from": "tell",
+      "to": "courier",
+      "y": 440,
+      "label": "start courier",
+      "variant": "dashed"
+    },
+    {
+      "id": "redeliver",
+      "from": "courier",
+      "to": "orch",
+      "y": 485,
+      "label": "redelivery n"
+    },
+    {
+      "id": "ack",
+      "from": "orch",
+      "to": "mail",
+      "y": 530,
+      "label": "horch inbox: ack",
+      "variant": "return"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Order matters",
+      "items": [
+        "Mail first, so a failed push loses nothing",
+        "The relay is tried first; typing is the fallback"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Retry schedule",
+      "items": [
+        "Waits 30 s, 1, 2, 4, then 5 min",
+        "Stops pushing after 6 redeliveries; the mail stays pending"
+      ]
+    }
+  ]
+}
