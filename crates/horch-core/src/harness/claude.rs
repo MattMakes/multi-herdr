@@ -765,22 +765,10 @@ pub(crate) fn overlay_sandbox(
 /// each: a value against a [`SANDBOX_FORCED`] key, `excludedCommands` (runs
 /// a command outside the sandbox) or `filesystem.disabled`.
 pub(crate) fn sandbox_problems(block: &serde_json::Map<String, Value>) -> Vec<String> {
-    let mut problems = Vec::new();
-    for (path, forced) in SANDBOX_FORCED {
-        let mut node = Some(block);
-        let (key, parents) = path.split_last().expect("a non-empty key path");
-        for parent in parents {
-            node = node.and_then(|n| n.get(*parent)).and_then(Value::as_object);
-        }
-        if let Some(value) = node.and_then(|n| n.get(*key)) {
-            if value != &Value::Bool(forced) {
-                problems.push(format!(
-                    "sandbox.{} must be {forced} or left out (horch sets it)",
-                    path.join(".")
-                ));
-            }
-        }
-    }
+    let mut problems: Vec<String> = SANDBOX_FORCED
+        .iter()
+        .filter_map(|&(path, forced)| forced_value_problem(block, path, forced))
+        .collect();
     let excluded = block.get("excludedCommands");
     if excluded.is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty())) {
         problems.push(
@@ -792,6 +780,28 @@ pub(crate) fn sandbox_problems(block: &serde_json::Map<String, Value>) -> Vec<St
         problems.push("sandbox.filesystem.disabled turns the filesystem layer off".into());
     }
     problems
+}
+
+/// The line for the [`SANDBOX_FORCED`] key at `path`, when the block sets it
+/// to anything but `forced`. A key the block leaves out, or whose parent is
+/// not an object, is no problem.
+fn forced_value_problem(
+    block: &serde_json::Map<String, Value>,
+    path: &[&str],
+    forced: bool,
+) -> Option<String> {
+    let mut node = Some(block);
+    let (key, parents) = path.split_last().expect("a non-empty key path");
+    for parent in parents {
+        node = node.and_then(|n| n.get(*parent)).and_then(Value::as_object);
+    }
+    let value = node.and_then(|n| n.get(*key))?;
+    (value != &Value::Bool(forced)).then(|| {
+        format!(
+            "sandbox.{} must be {forced} or left out (horch sets it)",
+            path.join(".")
+        )
+    })
 }
 
 /// Why this host cannot run Claude Code's sandbox, or `None` when it can.
