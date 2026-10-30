@@ -14,8 +14,8 @@ use serde_json::Value;
 
 use crate::clock;
 use crate::routing::quota::{
-    parse_agy_usage, parse_claude_usage, parse_codex_limits, HarnessHealth, Probed, QuotaFile,
-    Window, POOL_CLAUDE, POOL_CODEX, POOL_GOOGLE, POOL_LOCAL, POOL_ZEN,
+    parse_agy_usage, parse_claude_usage, parse_codex_limits, HarnessHealth, PoolReading, Probed,
+    QuotaFile, Window, POOL_CLAUDE, POOL_CODEX, POOL_GOOGLE, POOL_LOCAL, POOL_ZEN,
 };
 
 /// A child process whose stdout is read line by line with a deadline.
@@ -177,12 +177,7 @@ pub(crate) fn probe_google(
         cmd.env_remove(key);
     }
     let name = format!("{} -p /usage", bin.display());
-    let out = match run_with_deadline(cmd, timeout) {
-        Err(e) => return Err(format!("{name} could not start: {e}")),
-        Ok(None) => return Err(format!("{name} timed out after {}s", timeout.as_secs())),
-        Ok(Some((status, out, _))) if status.success() => out,
-        Ok(Some((status, out, err))) => return Err(failure(&name, status, &err, &out)),
-    };
+    let out = run_output(&name, cmd, timeout)?;
     let reply: Value =
         serde_json::from_str(out.trim()).map_err(|e| format!("{name}: not JSON: {e}"))?;
     parse_agy_usage(&reply)
@@ -199,11 +194,17 @@ fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, 
     );
     let mut cmd = Command::new(bin);
     cmd.args(args);
+    run_output(&name, cmd, timeout)
+}
+
+/// Run `cmd` with a deadline; its stdout, or why it failed. `name` leads the
+/// error text.
+fn run_output(name: &str, cmd: Command, timeout: StdDuration) -> Result<String, String> {
     match run_with_deadline(cmd, timeout) {
         Err(e) => Err(format!("{name} could not start: {e}")),
         Ok(None) => Err(format!("{name} timed out after {}s", timeout.as_secs())),
         Ok(Some((status, out, _))) if status.success() => Ok(out),
-        Ok(Some((status, out, err))) => Err(failure(&name, status, &err, &out)),
+        Ok(Some((status, out, err))) => Err(failure(name, status, &err, &out)),
     }
 }
 
@@ -226,12 +227,9 @@ fn run_with_deadline(
     let out = read_on_thread(child.stdout.take());
     let err = read_on_thread(child.stderr.take());
     let deadline = Instant::now() + timeout;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let text = |r: std::thread::JoinHandle<String>| r.join().unwrap_or_default();
-                return Ok(Some((status, text(out), text(err))));
-            }
+            Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(StdDuration::from_millis(20))
             }
@@ -240,10 +238,12 @@ fn run_with_deadline(
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Ok(None);
+                break None;
             }
         }
-    }
+    };
+    let text = |r: std::thread::JoinHandle<String>| r.join().unwrap_or_default();
+    Ok(status.map(|status| (status, text(out), text(err))))
 }
 
 /// The local pool's health (QUO-06): `pi --version`, then `ollama list`.
@@ -307,23 +307,24 @@ fn probe_version_within(bin: &Path, timeout: StdDuration) -> VersionProbe {
     let Ok(Some((status, out, err))) = run_with_deadline(cmd, timeout) else {
         return VersionProbe::NoAnswer;
     };
-    if !status.success() {
+    if status.success() {
+        // Some harnesses (Prime) print their version on stderr.
+        [out, err]
+            .iter()
+            .find_map(|t| {
+                t.lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .map(str::to_string)
+            })
+            .map_or(VersionProbe::NoAnswer, VersionProbe::Version)
+    } else {
         let name = bin
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        return VersionProbe::Broken(failure(&format!("{name} --version"), status, &err, &out));
+        VersionProbe::Broken(failure(&format!("{name} --version"), status, &err, &out))
     }
-    // Some harnesses (Prime) print their version on stderr.
-    [out, err]
-        .iter()
-        .find_map(|t| {
-            t.lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .map(str::to_string)
-        })
-        .map_or(VersionProbe::NoAnswer, VersionProbe::Version)
 }
 
 /// Read `pipe` to its end on a new thread. No pipe reads as empty text.
@@ -383,13 +384,20 @@ pub(crate) fn newest_rollout_snapshot(sessions: &Path) -> Option<(String, Vec<Wi
     let mut files = Vec::new();
     collect_rollouts(sessions, &mut files);
     files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
-    for (_, path) in files.into_iter().take(20) {
-        // An unreadable file, or a cut multi-byte tail, skips that file only.
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        let text = String::from_utf8_lossy(&bytes);
-        let found = text.lines().rev().find_map(|line| {
+    // An unreadable file, or a cut multi-byte tail, skips that file only.
+    files
+        .into_iter()
+        .take(20)
+        .find_map(|(_, path)| snapshot_in(&std::fs::read(&path).ok()?))
+}
+
+/// The newest line of a rollout that holds a `rate_limits` snapshot, with
+/// the time it was written.
+fn snapshot_in(bytes: &[u8]) -> Option<(String, Vec<Window>)> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .rev()
+        .find_map(|line| {
             let v: Value = serde_json::from_str(line).ok()?;
             let rl = v
                 .pointer("/payload/rate_limits")
@@ -400,12 +408,7 @@ pub(crate) fn newest_rollout_snapshot(sessions: &Path) -> Option<(String, Vec<Wi
                 .and_then(Value::as_str)
                 .and_then(clock::parse)?;
             (!windows.is_empty()).then(|| (clock::stamp(at), windows))
-        });
-        if found.is_some() {
-            return found;
-        }
-    }
-    None
+        })
 }
 
 fn collect_rollouts(dir: &Path, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
@@ -495,43 +498,17 @@ pub(crate) fn probe_all(
     let antigravity_version = version_of("antigravity");
 
     let claude = file.pools.entry(POOL_CLAUDE.into()).or_default();
-    claude.probed_at = Some(stamp.clone());
-    claude.harness_version = claude_version.or(claude.harness_version.take());
-    match probe_claude(&bins.claude, timeout, temp_root) {
-        Ok(p) => {
-            claude.windows = p.windows;
-            claude.observed_at = Some(stamp.clone());
-            claude.source = Some("get_usage".into());
-            claude.error = None;
-        }
-        Err(e) => claude.error = Some(e),
-    }
+    let found = probe_claude(&bins.claude, timeout, temp_root);
+    record(claude, &stamp, claude_version, "get_usage", found);
 
     let codex = file.pools.entry(POOL_CODEX.into()).or_default();
-    codex.probed_at = Some(stamp.clone());
-    codex.harness_version = codex_version.or(codex.harness_version.take());
+    stamp_probe(codex, &stamp, codex_version);
     match probe_codex(&bins.codex, timeout) {
         Ok(p) => {
-            codex.windows = p.windows;
             codex.ordinary_usage_allowed = p.ordinary_usage_allowed;
-            codex.observed_at = Some(stamp.clone());
-            codex.source = Some("app-server".into());
-            codex.error = None;
+            record_windows(codex, &stamp, "app-server", p.windows);
         }
-        Err(e) => {
-            codex.error = Some(e);
-            if let Some((at, windows)) = newest_rollout_snapshot(&bins.codex_sessions) {
-                if codex
-                    .observed_at
-                    .as_deref()
-                    .is_none_or(|prev| at.as_str() > prev)
-                {
-                    codex.windows = windows;
-                    codex.observed_at = Some(at);
-                    codex.source = Some("rollout".into());
-                }
-            }
-        }
+        Err(e) => codex_rollout_fallback(codex, e, &bins.codex_sessions),
     }
 
     let zen = file.pools.entry(POOL_ZEN.into()).or_default();
@@ -544,23 +521,66 @@ pub(crate) fn probe_all(
     // Without agy the probe records a start failure, the pool assesses
     // `unknown`, and routing substitutes an Antigravity teammate's fallback.
     let google = file.pools.entry(POOL_GOOGLE.into()).or_default();
-    google.probed_at = Some(stamp.clone());
-    google.harness_version = antigravity_version.or(google.harness_version.take());
-    match probe_google(&bins.antigravity, timeout, temp_root) {
-        Ok(p) => {
-            google.windows = p.windows;
-            google.observed_at = Some(stamp.clone());
-            google.source = Some("usage".into());
-            google.error = None;
-        }
-        Err(e) => google.error = Some(e),
-    }
+    let found = probe_google(&bins.antigravity, timeout, temp_root);
+    record(google, &stamp, antigravity_version, "usage", found);
 
     let local = file.pools.entry(POOL_LOCAL.into()).or_default();
-    local.probed_at = Some(stamp.clone());
-    local.observed_at = Some(stamp);
+    record_local(local, &stamp, probe_local(&bins.pi, &bins.ollama));
+}
+
+/// Mark `reading` as probed now, and take the harness's version when known.
+fn stamp_probe(reading: &mut PoolReading, stamp: &str, version: Option<String>) {
+    reading.probed_at = Some(stamp.to_string());
+    reading.harness_version = version.or(reading.harness_version.take());
+}
+
+/// Keep a probe's windows, read now from `source`, and clear the error.
+fn record_windows(reading: &mut PoolReading, stamp: &str, source: &str, windows: Vec<Window>) {
+    reading.windows = windows;
+    reading.observed_at = Some(stamp.to_string());
+    reading.source = Some(source.into());
+    reading.error = None;
+}
+
+/// Fold one probe into `reading`: its windows, or the error with the last
+/// windows kept.
+fn record(
+    reading: &mut PoolReading,
+    stamp: &str,
+    version: Option<String>,
+    source: &str,
+    found: Result<Probed, String>,
+) {
+    stamp_probe(reading, stamp, version);
+    match found {
+        Ok(p) => record_windows(reading, stamp, source, p.windows),
+        Err(e) => reading.error = Some(e),
+    }
+}
+
+/// A failed Codex probe: record the error, and take the newest rollout
+/// snapshot when it is newer than the reading.
+fn codex_rollout_fallback(codex: &mut PoolReading, error: String, sessions: &Path) {
+    codex.error = Some(error);
+    let newer = newest_rollout_snapshot(sessions).filter(|(at, _)| {
+        codex
+            .observed_at
+            .as_deref()
+            .is_none_or(|prev| at.as_str() > prev)
+    });
+    if let Some((at, windows)) = newer {
+        codex.windows = windows;
+        codex.observed_at = Some(at);
+        codex.source = Some("rollout".into());
+    }
+}
+
+/// Fold the local pool's health check into `local`.
+fn record_local(local: &mut PoolReading, stamp: &str, found: Result<Vec<String>, String>) {
+    local.probed_at = Some(stamp.to_string());
+    local.observed_at = Some(stamp.to_string());
     local.source = Some("health".into());
-    match probe_local(&bins.pi, &bins.ollama) {
+    match found {
         Ok(models) => {
             local.models = Some(models);
             local.error = None;

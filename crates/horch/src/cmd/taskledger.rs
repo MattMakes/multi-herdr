@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use horch_core::execution::lifecycle::ReportStatus;
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, land};
@@ -421,6 +422,7 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         LedgerCommand::AddMap { map: path, run } => add_map(ctx, &mut store, &path, &run),
         LedgerCommand::PlanWorkers { run, json: as_json } => {
             let r = resolve_run(ctx, &store, &run)?;
+            adopt_workspace(ctx, &store, &r)?;
             let plan = tasks::plan_workers(store.conn(), &r.run_id)?;
             if as_json {
                 json(&plan)?;
@@ -530,6 +532,16 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
         }
         LedgerCommand::Finish { json: as_json } => {
             let wid = worker_id(ctx)?;
+            // finish answers a reviews-in notice: its mail and wait end.
+            if workers::waiting(store.conn(), &wid)?
+                .iter()
+                .any(workers::holds_for_finish)
+            {
+                workers::clear_wait(store.conn(), &wid, workers::REVIEWS_WAIT)?;
+            }
+            if let Some(role) = workers::get(store.conn(), &wid)?.role {
+                super::messaging::ack_role_mail(ctx, &role);
+            }
             let tools = tools(ctx);
             let report = finish::finish(&mut store, &tools, &wid)?;
             if !report.queued_reviews.is_empty() {
@@ -804,6 +816,32 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     }
 }
 
+/// A run created outside herdr has no workspace (#218). The first
+/// `status` or `plan-workers` from a herdr pane that is not a worker's
+/// records that pane's workspace on the run, so wakes find its orchestrator.
+fn adopt_workspace(ctx: &RuntimeContext, store: &Store, run: &Run) -> Result<()> {
+    let (None, Some(ws), Some(_pane)) = (&run.workspace_id, &ctx.herdr.workspace, &ctx.herdr.pane)
+    else {
+        return Ok(());
+    };
+    let role = ctx.worker.as_ref().and_then(|w| w.role.as_deref());
+    if role.is_some_and(|r| r != "orchestrator") {
+        return Ok(());
+    }
+    let changed = store.conn().execute(
+        "UPDATE runs SET workspace_id = ?2 WHERE run_id = ?1 AND workspace_id IS NULL",
+        [&run.run_id, ws.as_str()],
+    )?;
+    if changed == 1 {
+        eprintln!(
+            "NOTE: run {} had no workspace. It now has workspace {}, so wakes go to the orchestrator of this workspace.",
+            run.slug,
+            ws.as_str()
+        );
+    }
+    Ok(())
+}
+
 fn status_cmd(
     ctx: &RuntimeContext,
     store: &Store,
@@ -822,6 +860,7 @@ fn status_cmd(
         return Ok(ExitCode::SUCCESS);
     }
     let run = resolve_run(ctx, store, arg)?;
+    adopt_workspace(ctx, store, &run)?;
     let report = status::report(store.conn(), &run)?;
     if as_json {
         json(&report)?;
@@ -1117,6 +1156,12 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
                 r.run_branch.as_deref().unwrap_or("(no git repository)"),
                 r.finish_steps.join(", ")
             ));
+            if r.workspace_id.is_none() {
+                eprintln!(
+                    "horch ledger: warning: run {} has no workspace, because this command ran outside a herdr pane. Wakes go only to an orchestrator that runs a ledger command from its pane. Run horch ledger plan-workers in the orchestrator pane to record its workspace.",
+                    r.slug
+                );
+            }
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -1393,10 +1438,21 @@ pub fn done_cmd(
         if let Some((parent, Some(role))) = &c.reviews_in_for {
             let line =
                 format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
-            if let Err(e) = super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
+            // The author waits for this line until it runs finish (#177).
+            if let Err(e) = hold_for_finish(&store, &c.task_id) {
+                eprintln!("horch ledger: could not record the wait of {role}: {e:#}");
+            }
+            let told = match super::messaging::tell_as(ctx, Some("horch".into()), role, &line) {
+                Ok(ReportStatus::Delivered) => Ok(()),
+                Ok(ReportStatus::Queued(cause)) => Err(anyhow::anyhow!(
+                    "{cause}; the courier types it when the pane is idle"
+                )),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = told {
                 eprintln!("horch ledger: could not tell {role}: {e:#}");
-                // A tell to a worker is not durable, and a retried done skips
-                // it, so the orchestrator gets it as durable mail instead.
+                // A retried done skips the tell, so the orchestrator gets it
+                // as durable mail too.
                 super::taskledger_wake::wake(
                     ctx,
                     &store,
@@ -1427,6 +1483,18 @@ pub fn done_cmd(
     // A `done` that stopped before the record, or a retry, ran no wake.
     wake();
     done
+}
+
+/// After the last review of a task: the author holds its reviewers wait
+/// until it runs `horch ledger finish` ([`workers::hold_for_finish`]).
+fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
+    let Some(parent) = tasks::get(store.conn(), review_task_id)?.parent_task_id else {
+        return Ok(());
+    };
+    let Some(author) = tasks::get(store.conn(), &parent)?.current_worker_id else {
+        return Ok(());
+    };
+    workers::hold_for_finish(store.conn(), &author)
 }
 
 /// The slug of this project's active task-ledger run, if it has one. Never

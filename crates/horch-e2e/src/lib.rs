@@ -330,12 +330,20 @@ pub fn run_candidate(call: &mut Call, label: &str, spec: &Value, usage: impl Fn(
         }
         _ => {
             // `horch done` closes this pane, which ends this process.
-            let ok = std::process::Command::new("horch")
+            let done = std::process::Command::new("horch")
                 .args(["done", &format!("candidate {label} finished")])
-                .status()
-                .is_ok_and(|s| s.success());
-            if !ok {
-                call.violate("horch done failed");
+                .output();
+            let failure = match done {
+                Ok(out) if out.status.success() => None,
+                Ok(out) => Some(format!(
+                    "{}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )),
+                Err(e) => Some(format!("not started: {e}")),
+            };
+            if let Some(failure) = failure {
+                call.violate(format!("horch done failed: {failure}"));
                 call.flush();
                 std::process::exit(1);
             }
