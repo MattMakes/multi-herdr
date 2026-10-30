@@ -287,24 +287,24 @@ mod sys {
         (total, available, gpu)
     }
 
-    fn disk(path: &Path) -> (Option<u64>, Option<u64>) {
-        let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
-            return (None, None);
-        };
+    fn statvfs(path: &Path) -> Option<libc::statvfs> {
+        let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
         // SAFETY: `c_path` is a valid NUL-terminated string and `stat` is a
         // zeroed out-parameter that `statvfs` fills in.
-        let stat = unsafe {
+        unsafe {
             let mut stat: libc::statvfs = std::mem::zeroed();
-            if libc::statvfs(c_path.as_ptr(), &mut stat) != 0 {
-                return (None, None);
-            }
-            stat
-        };
-        let unit = stat.f_frsize as u64;
-        (
-            Some((stat.f_bavail as u64).saturating_mul(unit)),
-            Some((stat.f_blocks as u64).saturating_mul(unit)),
-        )
+            (libc::statvfs(c_path.as_ptr(), &mut stat) == 0).then_some(stat)
+        }
+    }
+
+    fn disk(path: &Path) -> (Option<u64>, Option<u64>) {
+        statvfs(path).map_or((None, None), |stat| {
+            let unit = stat.f_frsize as u64;
+            (
+                Some((stat.f_bavail as u64).saturating_mul(unit)),
+                Some((stat.f_blocks as u64).saturating_mul(unit)),
+            )
+        })
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -381,18 +381,21 @@ fn parse_meminfo(text: &str, key: &str) -> Option<u64> {
 /// else `COMPUTERNAME` or `HOSTNAME`, else `localhost`. The task ledger
 /// records it beside every PID: a PID names a process only on its host.
 pub fn host_name() -> String {
-    if let Some(h) = std::env::var_os("HORCH_HOSTNAME").filter(|v| !v.is_empty()) {
-        return h.to_string_lossy().into_owned();
-    }
-    if let Some(name) = sys::host_name() {
-        return name;
-    }
-    for key in ["COMPUTERNAME", "HOSTNAME"] {
-        if let Some(v) = std::env::var_os(key).filter(|v| !v.is_empty()) {
-            return v.to_string_lossy().into_owned();
-        }
-    }
-    "localhost".to_string()
+    env_nonempty("HORCH_HOSTNAME")
+        .or_else(sys::host_name)
+        .or_else(|| {
+            ["COMPUTERNAME", "HOSTNAME"]
+                .into_iter()
+                .find_map(env_nonempty)
+        })
+        .unwrap_or(String::from("localhost"))
+}
+
+/// The value of an environment variable, or `None` when it is unset or empty.
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var_os(key)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
