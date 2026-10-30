@@ -14,14 +14,12 @@ pub(crate) fn md_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
         .flatten()
     {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
+        if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+            if stem != "README" {
+                out.push((stem, path));
+            }
         }
-        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
-        if stem == "README" {
-            continue;
-        }
-        out.push((stem, path));
     }
     out.sort();
     Ok(out)

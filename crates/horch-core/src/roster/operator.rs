@@ -104,19 +104,19 @@ pub(crate) fn effort_override_warnings(
 /// A line scan rather than a TOML parser: only the root table counts, so the
 /// scan stops at the first `[section]`.
 fn codex_default_effort(toml: &str) -> Option<String> {
-    for line in toml.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            return None;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            if key.trim() == "model_reasoning_effort" {
-                let value = value.split('#').next().unwrap_or_default().trim();
-                return Some(value.trim_matches(|c| c == '"' || c == '\'').to_string());
-            }
-        }
-    }
-    None
+    toml.lines()
+        .map(str::trim)
+        .take_while(|line| !line.starts_with('['))
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "model_reasoning_effort").then(|| unquote(value))
+        })
+}
+
+/// A config value without its `#` comment, its blanks and its quotes.
+fn unquote(value: &str) -> String {
+    let value = value.split('#').next().unwrap_or_default().trim();
+    value.trim_matches(|c| c == '"' || c == '\'').to_string()
 }
 
 fn operator_settings(home: Option<&Path>) -> Option<serde_json::Value> {
