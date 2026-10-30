@@ -664,7 +664,11 @@ fn foreground(env: &Env, args: &CompactArgs) -> Outcome {
         started_at: horch_core::clock::stamp(Utc::now()),
         step: Step::Start.as_str().into(),
     };
-    let created = horch_core::fsx::ensure_private_dir(&dir)
+    // The compact root first: `ensure_private_dir` sets the mode of its
+    // last dir only, and a foreground job can be the first to make the root.
+    let root = jobfile::compact_root(&env.src.ctx.paths.state_root);
+    let created = horch_core::fsx::ensure_private_dir(&root)
+        .and_then(|()| horch_core::fsx::ensure_private_dir(&dir))
         .map_err(|e| format!("{e:#}"))
         .and_then(|_| {
             jobfile::create_job(&dir, &job).map_err(|e| {
@@ -1570,6 +1574,29 @@ mod tests {
         assert_eq!(reported.len(), 1, "{reported:?}");
         assert!(reported[0].starts_with("[horch] BLOCKED: Compaction of sonnet-1 failed"));
         assert!(!mail.dir().join("pending").exists(), "nothing was queued");
+    }
+
+    /// #77: a new compact dir and job dir are mode 0700, and the job log
+    /// is mode 0600: the log holds the lines reported for the worker.
+    #[cfg(unix)]
+    #[test]
+    fn compact_dirs_are_0700_and_the_job_log_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let f = Fleet::new();
+        f.pane("orchestrator");
+        f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        let path = f.handoff(&f.w.project(), "sonnet-1");
+        set_mtime(&path, Duration::from_secs(90 * 60));
+
+        let o = f.run("sonnet-1", |a| a.foreground = true);
+
+        assert_eq!(o.code, EXIT_REPORTED, "{o:?}");
+        let dir = f.env().job_dir("sonnet-1");
+        assert_eq!(mode(dir.parent().unwrap()), 0o700);
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join(LOG_FILE)), 0o600);
     }
 
     /// CTX-16: a harness that is not in `in_place` takes the fresh route,

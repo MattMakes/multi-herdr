@@ -715,6 +715,134 @@ fn g60_ledger_done_and_wake_queue_without_registration_then_courier_delivers() {
     assert!(String::from_utf8_lossy(&inbox.stdout).contains("All tasks are done"));
 }
 
+/// #77: a registry that exists only in the old temp location, owned by
+/// this user and mode 0700, is copied once into the state folder. A ledger
+/// worker's `horch ledger done` then finds the orchestrator through the
+/// copy, types its report there, and frees its role in both places.
+#[cfg(unix)]
+#[test]
+fn ledger_done_finds_the_orchestrator_in_a_copied_old_registry() {
+    use horch_core::{
+        execution::{legacy::Record, records::Ledger},
+        taskledger::{
+            model::{Actor, TaskKind},
+            runs::{self, NewRun},
+            tasks::{self, NewTask},
+            workers::{self, NewWorker},
+            Store,
+        },
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let mut h = world("p09-ledger-done").with_git();
+    h.set("HORCH_NO_WATCHDOG", "1");
+    h.set("HORCH_NO_WAKE", "1");
+    let db = h.root.join("ledger.sqlite3");
+    h.set("HORCH_LEDGER_DB", db.to_string_lossy());
+    fake(&h, &["workspace", "create", "--label", "legacy"]);
+    fake(&h, &["pane", "split", "w1:p1", "--direction", "right"]);
+    fake(
+        &h,
+        &[
+            "pane",
+            "test-state",
+            "w1:p1",
+            "--text",
+            "Ready",
+            "--status",
+            "idle",
+            "--agent",
+            "claude",
+        ],
+    );
+    let legacy = h.tmp.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(legacy.join("orchestrator.id"), "w1:p1").unwrap();
+    std::fs::write(legacy.join("worker-1.id"), "w1:p2").unwrap();
+    std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut store = Store::open(&db).unwrap();
+    let worker = store
+        .immediate(|tx| {
+            let run = runs::create(
+                tx,
+                &h.project,
+                &NewRun {
+                    slug: "legacy".into(),
+                    workspace_id: Some("w1".into()),
+                    ..Default::default()
+                },
+            )?;
+            let mut t = NewTask::work("review", "review.md", "codex-terra");
+            t.kind = TaskKind::Review;
+            let findings = h.root.join("findings.md");
+            std::fs::write(
+                &findings,
+                "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
+            )?;
+            t.spec_ref = Some(findings.to_string_lossy().into_owned());
+            tasks::add(tx, &run, &t, Actor::Orchestrator)?;
+            let w = workers::insert(
+                tx,
+                &NewWorker {
+                    run_id: run.run_id,
+                    persona: "codex-terra".into(),
+                    role: Some("worker-1".into()),
+                    workspace_id: Some("w1".into()),
+                    ..Default::default()
+                },
+            )?;
+            workers::supervisor_started(tx, &w, 1, Some(1))?;
+            workers::agent_started(tx, &w, 2, Some(2))?;
+            tasks::claim(tx, &w)?;
+            Ok(w)
+        })
+        .unwrap();
+    drop(store);
+    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+        .insert(Record {
+            record_id: "r-p09".into(),
+            agent: "claude".into(),
+            tier: "sonnet".into(),
+            model: "sonnet".into(),
+            role: "worker-1".into(),
+            task: "review".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let done = h
+        .horch(&["ledger", "done", "review complete"])
+        .env("HORCH_WORKER_ID", &worker)
+        .env("HORCH_ROLE", "worker-1")
+        .env("HORCH_RECORD_ID", "r-p09")
+        .env("HERDR_PANE_ID", "w1:p2")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(done.status.success(), "{stderr}");
+    assert!(!stderr.contains("not used"), "{stderr}");
+    let state = h.state.join("herdr-orchestration-w1");
+    assert_eq!(
+        std::fs::read_to_string(state.join("orchestrator.id")).unwrap(),
+        "w1:p1",
+        "the first command copies the registry"
+    );
+    let reported = h.calls_of("herdr").iter().any(|c| {
+        c["argv"][0] == "agent"
+            && c["argv"][1] == "prompt"
+            && c["argv"][2] == "w1:p1"
+            && c["argv"][3]
+                .as_str()
+                .is_some_and(|t| t.contains("DONE: review complete"))
+    });
+    assert!(
+        reported,
+        "the report is typed into the copied orchestrator pane"
+    );
+    assert!(!state.join("worker-1.id").exists());
+    assert!(!legacy.join("worker-1.id").exists());
+}
+
 struct Agent(std::process::Child);
 impl Drop for Agent {
     fn drop(&mut self) {
@@ -1777,6 +1905,9 @@ fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
     let mb = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mb).unwrap();
     std::fs::write(mb.join("orchestrator.id"), "w1:p1").unwrap();
+    // macOS scans a new executable at its first exec: keep that out of the
+    // timed pass.
+    assert!(h.run(&["--version"]).status.success());
 
     let began = std::time::Instant::now();
     let c = pinned_check(&h, &run, "2030-01-01T00:10:00Z");
