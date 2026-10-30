@@ -38,6 +38,8 @@
 //!   typing into the pane succeeds, so a retry gets through.
 //! - `mail_drop`: the first non-redelivery agent prompt succeeds but is
 //!   dropped, then the pane reports an idle agent for the courier.
+//! - `hang_split`: `pane split` never answers. The calling process sleeps
+//!   until the caller kills it (60 s at most), and records nothing.
 //!
 //! `pane read` prints the pane text: the output of its commands, then the
 //! line typed and not yet entered. `pane wait-output` searches that text
@@ -84,6 +86,15 @@ const MUTATING: [&str; 7] = ["focus", "tile", "split", "move", "close", "swap", 
 const DETACHED: &str = "HORCH_FAKE_HERDR_DETACHED";
 
 fn main() {
+    // A hung call stays in the calling process, so a kill of the call's
+    // process group ends it and nothing is left behind.
+    if scenario_has("hang_split")
+        && std::env::args().nth(1).as_deref() == Some("pane")
+        && std::env::args().nth(2).as_deref() == Some("split")
+    {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        std::process::exit(1);
+    }
     // A real herdr call is a request to a server, which finishes it even
     // when the client is killed. Here the state lock is held by the calling
     // process, and `pane close` kills a pane's whole process group, which

@@ -528,6 +528,10 @@ repeated unless a later fix changed the files they judged.
    landing lock. A check runs at most its timeout
    (`horch ledger add --check-timeout`, default 20 minutes). A red gate fails the step; the branch,
    the worktree and `run_branch` stay unchanged.
+   The check of a Codex worker (its recorded harness, or a Codex persona)
+   runs inside `codex sandbox` with the `fleet_write` profile of its pane:
+   it can write only the worktree and the state root, and its TMPDIR is the
+   pane's (#181). This holds for check, recheck and land.
 6. **pr** - makes sure the run's PR exists (creates it from `run_branch`
    into `base_branch` if `runs.pr_number` is empty) and updates its
    description: 1 section per task between markers

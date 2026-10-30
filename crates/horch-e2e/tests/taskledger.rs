@@ -2212,6 +2212,122 @@ fn a_check_past_its_timeout_is_killed_with_its_children() {
     });
 }
 
+/// A run with only the check step, 1 task with `check` (and `timeout` s),
+/// claimed by a new `persona` worker that commits 1 file in its worktree.
+/// Returns (worker, worktree path).
+fn claimed_check(
+    h: &Harness,
+    persona: &str,
+    check: &str,
+    timeout: Option<&str>,
+) -> (String, PathBuf) {
+    ok(h, &["ledger", "run", "new", "alpha", "--steps", "check"]);
+    let p = ticket(h, "01-a", "# 01: Feature\n");
+    let p = p.to_string_lossy();
+    let mut add = vec![
+        "ledger",
+        "add",
+        "--file",
+        &p,
+        "--primary",
+        persona,
+        "--check",
+        check,
+    ];
+    if let Some(t) = timeout {
+        add.extend(["--check-timeout", t]);
+    }
+    ok(h, &add);
+    let w = worker_new(h, persona);
+    ok_as(h, &w, &["ledger", "claim"]);
+    let wt = ok_as(h, &w, &["ledger", "worktree", "new", "feat"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    commit_file(h, &path, "a.txt");
+    (w, path)
+}
+
+/// #181: `finish` runs outside a Codex worker's sandbox, so it runs the
+/// worker's check inside `codex sandbox`, writable only in the worktree and
+/// the state dir. A check that writes outside fails, and the file is never
+/// made. The same check of a Claude worker writes it: the host allows it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_codex_workers_check_cannot_write_outside_its_worktree() {
+    for (persona, sandboxed) in [("codex-sol", true), ("opus", false)] {
+        let h = finish_world(&format!("tl-codex-check-{persona}"));
+        let outside = h.root.join("outside.txt");
+        let check = format!("echo in > inside.txt && echo out > {}", outside.display());
+        let (w, path) = claimed_check(&h, persona, &check, None);
+        let (code, r) = finish_json(&h, &w);
+        let codex = h.calls_of("codex");
+        if !sandboxed {
+            assert_eq!(code, Some(0), "{r}");
+            assert!(outside.is_file(), "the host allows the write");
+            assert!(codex.is_empty(), "{codex:?}");
+            continue;
+        }
+        assert_eq!(code, Some(1), "{r}");
+        assert_eq!(step_of(&r, "check").0, "failed", "{r}");
+        assert!(
+            r["message"].as_str().unwrap().contains("codex sandbox"),
+            "{r}"
+        );
+        assert!(!outside.exists(), "the check wrote outside its worktree");
+        assert!(
+            path.join("inside.txt").is_file(),
+            "the worktree is writable"
+        );
+        assert_eq!(codex.len(), 1, "{codex:?}");
+        assert_eq!(codex[0]["argv"][0], "sandbox", "{codex:?}");
+        let writable: Vec<PathBuf> =
+            serde_json::from_value(codex[0]["sandbox_writable"].clone()).unwrap();
+        assert_eq!(writable, [h.state.clone(), path.clone()], "{codex:?}");
+    }
+}
+
+/// #181 with #160: a Codex worker's check in its sandbox still has the
+/// task's timeout. `finish` fails the check with the timeout, and neither
+/// the check's sleep nor `codex sandbox` outlives it.
+#[cfg(unix)]
+#[test]
+fn a_codex_workers_sandboxed_check_past_its_timeout_leaves_no_process() {
+    let h = finish_world("tl-codex-check-timeout");
+    // The check never ends by itself, so only the timeout ends it. Its
+    // parent is `codex sandbox`.
+    let check = "echo $PPID > codex.pid; /bin/sleep 3600 & echo $! > sleep.pid; wait";
+    let (w, path) = claimed_check(&h, "codex-sol", check, Some("2"));
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    assert_eq!(
+        step_of(&r, "check"),
+        ("failed".into(), "timed out".into()),
+        "{r}"
+    );
+    assert!(
+        r["message"]
+            .as_str()
+            .unwrap()
+            .contains("timed out after 2 s"),
+        "{r}"
+    );
+    assert_eq!(h.calls_of("codex")[0]["argv"][0], "sandbox");
+    for file in ["sleep.pid", "codex.pid"] {
+        let pid = std::fs::read_to_string(path.join(file))
+            .unwrap()
+            .trim()
+            .to_string();
+        // A killed process is reaped by init, not by finish: wait for that.
+        wait_for(&format!("the process in {file} to be gone"), || {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()
+                .unwrap()
+                .success();
+            (!alive).then_some(())
+        });
+    }
+}
+
 #[test]
 fn a_land_checks_outside_the_lock_and_lands_after_a_faster_task() {
     let h = finish_world("tl-land-race");
@@ -2689,4 +2805,758 @@ fn finish_finds_the_code_sweep_skill_in_the_skill_store() {
         ticket.contains("You are bug-hunter."),
         "the store prompt: {ticket}"
     );
+}
+
+// ─── #89: closing a run, and which run a command means ──────────────────────
+
+/// `horch <args>` with extra environment variables.
+fn run_env(h: &Harness, env: &[(&str, &str)], args: &[&str]) -> Output {
+    let mut cmd = h.horch(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.output().unwrap()
+}
+
+fn queue(h: &Harness, name: &str, persona: &str, extra: &[&str]) {
+    let p = ticket(h, name, &format!("# {name}\n"));
+    let p = p.to_string_lossy().into_owned();
+    let mut args = vec!["ledger", "add", "--file", &p, "--primary", persona];
+    args.extend_from_slice(extra);
+    ok(h, &args);
+}
+
+#[test]
+fn a_closed_run_frees_the_project_for_the_next_run() {
+    let h = world("tl-close");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus", &[]);
+
+    // A queued task holds the run open, and the refusal names it.
+    let o = h.run(&["ledger", "run", "close"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("T-1 (queued)"), "{}", text(&o));
+
+    ok(&h, &["ledger", "cancel", "T-1", "not needed"]);
+    let closed = ok(&h, &["ledger", "run", "close"]);
+    assert!(closed.contains("Run a closed as done."), "{closed}");
+    ok(&h, &["ledger", "run", "new", "b"]);
+    let o = h.run(&["ledger", "status"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    assert!(out(&o).starts_with("Run b (active)."), "{}", text(&o));
+
+    // The slug of a closed run can be used again.
+    ok(&h, &["ledger", "run", "close", "--run", "b"]);
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let runs = json_of(&h, &["ledger", "run", "list", "--json"]);
+    let status: Vec<(&str, &str)> = runs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["slug"].as_str().unwrap(), r["status"].as_str().unwrap()))
+        .collect();
+    assert_eq!(status, [("a", "active"), ("b", "done"), ("a", "done")]);
+}
+
+#[test]
+fn close_abandon_cancels_the_open_tasks() {
+    let h = world("tl-abandon");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus", &[]);
+    let o = ok(
+        &h,
+        &["ledger", "run", "close", "--abandon", "operator dropped it"],
+    );
+    assert!(o.contains("T-1 cancelled."), "{o}");
+    assert!(o.contains("Run a closed as abandoned."), "{o}");
+    let t = json_of(&h, &["ledger", "show", "T-1", "--run", "a", "--json"]);
+    assert_eq!(t["task"]["status"], "cancelled", "{t}");
+}
+
+#[test]
+fn run_new_refuses_an_old_run_branch_behind_the_main_branch() {
+    let h = world("tl-oldbranch");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    ok(&h, &["ledger", "run", "close"]);
+    project_file(&h, "new.txt", "x");
+    git_commit_all(&h, "main moves on");
+    let o = h.run(&["ledger", "run", "new", "a"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("branch fleet/a exists"), "{}", text(&o));
+}
+
+#[test]
+fn the_watchdog_of_a_closed_run_exits() {
+    let h = world("tl-close-watch");
+    ok(&h, &["ledger", "run", "new", "a", "--check-every", "10"]);
+    let mut child = h
+        .horch(&["ledger", "watch", "--run", "a"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // It runs while the run is active.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(child.try_wait().unwrap().is_none(), "the watchdog runs");
+    ok(&h, &["ledger", "run", "close"]);
+    // 1 tick is 1 s at a 10 s check interval.
+    let until = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() > until {
+            let _ = child.kill();
+            panic!("the watchdog of a closed run still runs");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(status.success());
+}
+
+/// The run a ledger worker row of `persona` belongs to.
+fn run_of_worker(h: &Harness, run: &str, persona: &str) -> usize {
+    json_of(h, &["ledger", "status", "--run", run, "--json"])["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["worker"]["persona"] == persona)
+        .count()
+}
+
+fn second_workspace(h: &Harness) {
+    let mut create = std::process::Command::new(h.bin.join("herdr"));
+    h.seal(&mut create);
+    let o = create
+        .args(["workspace", "create", "--label", "second"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+}
+
+fn spawn_args<'a>(pane: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut v = vec!["spawn"];
+    v.extend_from_slice(extra);
+    v.extend_from_slice(&["--from-pane", pane, "--no-tile", "--force"]);
+    v
+}
+
+#[test]
+fn spawn_run_names_the_run_the_worker_joins() {
+    let h = fleet("tl-spawn-run", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    ok(&h, &["ledger", "run", "new", "b"]);
+    // Without --run, 2 active runs in no workspace of theirs: the error names
+    // a flag spawn accepts.
+    let o = run_env(
+        &h,
+        &[("HORCH_WORKSPACE_ID", "w9")],
+        &spawn_args("w1:p1", &["codex-terra"]),
+    );
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("--run <slug>"), "{}", text(&o));
+    let o = h.run(&spawn_args("w1:p1", &["codex-terra", "--run", "b"]));
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(run_of_worker(&h, "b", "codex-terra"), 1);
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+}
+
+#[test]
+fn a_spawn_joins_the_run_of_its_own_workspace() {
+    let h = fleet("tl-spawn-ws", "default");
+    second_workspace(&h);
+    ok(&h, &["ledger", "run", "new", "a"]);
+    // Only W1 owns a run: a spawn from W2 joins it, with a NOTE that names it.
+    let w2 = [("HORCH_WORKSPACE_ID", "w2")];
+    let o = run_env(&h, &w2, &spawn_args("w2:p1", &["codex-terra"]));
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("NOTE: this command uses run a of workspace w1"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 1);
+
+    // W2 owns a run of its own now: the spawn goes there.
+    let o = run_env(&h, &w2, &["ledger", "run", "new", "b"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let o = run_env(&h, &w2, &spawn_args("w2:p1", &["opus"]));
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(run_of_worker(&h, "b", "opus"), 1);
+    assert_eq!(run_of_worker(&h, "a", "opus"), 0);
+}
+
+#[test]
+fn a_spawn_with_task_text_runs_outside_the_run() {
+    let h = fleet("tl-spawn-text", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let o = h.run(&spawn_args("w1:p1", &["codex-terra", "Review src/x.rs"]));
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("NOTE: this spawn has task text, so it runs outside task-ledger run a"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(run_of_worker(&h, "a", "codex-terra"), 0);
+}
+
+#[test]
+fn assign_refuses_only_in_the_workspace_that_owns_the_run() {
+    let mut h = fleet("tl-assign-ws", "default");
+    h.set("HORCH_NO_WATCHDOG", "1");
+    second_workspace(&h);
+    ok(&h, &["ledger", "run", "new", "a"]);
+    // W2 owns no run: assign passes the ledger guard to the role lookup.
+    let o = run_env(
+        &h,
+        &[("HORCH_WORKSPACE_ID", "w2")],
+        &["assign", "opus-1", "do it"],
+    );
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("no working session for role 'opus-1'"),
+        "{}",
+        text(&o)
+    );
+}
+
+// ─── #190: no pre-claim row outlives its process ─────────────────────────────
+
+fn worker_status(h: &Harness, id: &str) -> (String, String) {
+    let w = worker_json(h, id);
+    (
+        w["status"].as_str().unwrap_or_default().to_string(),
+        w["end_reason"].as_str().unwrap_or_default().to_string(),
+    )
+}
+
+/// The wakes recorded for the run, oldest first.
+fn wakes(h: &Harness) -> Vec<String> {
+    json_of(h, &["ledger", "events", "--json"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "woke")
+        .map(|e| e["text"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn later(seconds: u64) -> String {
+    horch_core::clock::stamp(horch_core::clock::now() + Duration::from_secs(seconds))
+}
+
+/// A process that stands in for a live supervisor and agent; killed on drop.
+struct Stand(std::process::Child);
+
+impl Stand {
+    fn new() -> Stand {
+        Stand(
+            std::process::Command::new("sleep")
+                .arg("300")
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    fn pid(&self) -> String {
+        self.0.id().to_string()
+    }
+}
+
+impl Drop for Stand {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn plan_line(h: &Harness) -> String {
+    ok(h, &["ledger", "plan-workers"]).trim().to_string()
+}
+
+#[test]
+fn a_refused_spawn_ends_its_worker_row() {
+    let mut h = fleet("tl-refused", "default");
+    h.set(
+        "HORCH_QUOTA_FILE",
+        fixtures()
+            .join("quota/all-exhausted.json")
+            .to_string_lossy(),
+    );
+    // The fixture's 7-day window is exhausted at its own time.
+    h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus", &[]);
+    let o = h.run(&["spawn", "opus", "--from-pane", "w1:p1", "--no-tile"]);
+    assert_eq!(o.status.code(), Some(3), "{}", text(&o));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    let rows: Vec<&Value> = st["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["worker"]["kind"] == "worker")
+        .collect();
+    assert_eq!(rows.len(), 1, "{st}");
+    assert_eq!(rows[0]["worker"]["status"], "launch_failed", "{st}");
+    let reason = rows[0]["worker"]["end_reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("REFUSED: opus cannot start."),
+        "{reason}"
+    );
+    assert_eq!(plan_line(&h), "opus: spawn 1 (1 can start, 0 on the way).");
+}
+
+#[test]
+fn a_spawn_of_an_unknown_teammate_leaves_no_live_row() {
+    let h = fleet("tl-unknown", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let o = h.run(&[
+        "spawn",
+        "no-such-teammate",
+        "--from-pane",
+        "w1:p1",
+        "--no-tile",
+    ]);
+    assert!(!o.status.success(), "{}", text(&o));
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    for w in st["workers"].as_array().unwrap() {
+        if w["worker"]["kind"] == "worker" {
+            assert_eq!(w["worker"]["status"], "launch_failed", "{st}");
+        }
+    }
+}
+
+#[test]
+fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
+    let h = world("tl-ghosts");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "sonnet-x", &[]);
+    let ghost = worker_new(&h, "sonnet-x");
+    let ghost2 = worker_new(&h, "sonnet-x");
+    // PIDs far above any pid_max: never a live process.
+    ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "pid",
+            &ghost2,
+            "--supervisor",
+            "99999991",
+        ],
+    );
+    ok(
+        &h,
+        &["ledger", "worker", "pid", &ghost2, "--agent", "99999992"],
+    );
+    assert_eq!(
+        plan_line(&h),
+        "sonnet-x: spawn 0 (1 can start, 2 on the way)."
+    );
+
+    // 1 pass now: ghost2's supervisor is gone; ghost is in its launch grace.
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    let (st, why) = worker_status(&h, &ghost2);
+    assert_eq!(st, "no_task", "{why}");
+    assert!(why.contains("supervisor is gone"), "{why}");
+    assert_eq!(worker_status(&h, &ghost).0, "spawning");
+    assert_eq!(
+        plan_line(&h),
+        "sonnet-x: spawn 0 (1 can start, 1 on the way)."
+    );
+
+    // Past the grace, ghost never had a supervisor: status marks it STALE,
+    // and 1 watchdog pass ends it launch_failed with 1 wake.
+    let o = run_env(&h, &[("HORCH_NOW", &later(200))], &["ledger", "status"]);
+    let line = out(&o)
+        .lines()
+        .find(|l| l.contains("spawning"))
+        .unwrap_or_default()
+        .to_string();
+    assert!(line.ends_with("STALE"), "{}", text(&o));
+    let before = wakes(&h).len();
+    let o = run_env(
+        &h,
+        &[("HORCH_NOW", &later(200))],
+        &["ledger", "watch", "--once", "--force"],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(worker_status(&h, &ghost).0, "launch_failed");
+    let new: Vec<String> = wakes(&h).split_off(before);
+    assert_eq!(new.len(), 1, "{new:?}");
+    assert!(
+        new[0].contains("ended before they claimed a task"),
+        "{new:?}"
+    );
+    assert!(new[0].contains("Spawn: sonnet-x x1"), "{new:?}");
+    assert_eq!(
+        plan_line(&h),
+        "sonnet-x: spawn 1 (1 can start, 0 on the way)."
+    );
+}
+
+#[test]
+fn a_live_worker_that_does_not_claim_is_reported_once() {
+    let h = world("tl-noclaim");
+    ok(
+        &h,
+        &["ledger", "run", "new", "a", "--heartbeat-stale", "100000"],
+    );
+    queue(&h, "01-a", "sonnet-x", &[]);
+    let id = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "sonnet-x",
+            "--pane",
+            "w1:p7",
+        ],
+    )
+    .trim()
+    .to_string();
+    let stand = Stand::new();
+    let me = stand.pid();
+    ok(&h, &["ledger", "worker", "pid", &id, "--supervisor", &me]);
+    ok(&h, &["ledger", "worker", "pid", &id, "--agent", &me]);
+    let watch = |at: Option<String>| {
+        let env: Vec<(&str, &str)> = at.iter().map(|t| ("HORCH_NOW", t.as_str())).collect();
+        let o = run_env(&h, &env, &["ledger", "watch", "--once", "--force"]);
+        assert!(o.status.success(), "{}", text(&o));
+    };
+    // Within the claim grace the worker is never touched.
+    watch(Some(later(300)));
+    assert_eq!(worker_status(&h, &id).0, "claiming");
+    assert!(wakes(&h).is_empty(), "{:?}", wakes(&h));
+    // Past it: 1 wake that names the pane, and only 1.
+    watch(Some(later(700)));
+    watch(Some(later(800)));
+    let w = wakes(&h);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("has not claimed a task"), "{w:?}");
+    assert!(w[0].contains("pane w1:p7"), "{w:?}");
+    assert_eq!(worker_status(&h, &id).0, "claiming");
+}
+
+#[test]
+fn replacing_a_live_worker_names_the_stop_command() {
+    let h = fleet("tl-replaces-live", "default");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    let live = worker_new(&h, "codex-terra");
+    let o = h.run(&spawn_args("w1:p1", &["codex-terra", "--replaces", &live]));
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains(&format!("Run horch ledger stop {live}")),
+        "{}",
+        text(&o)
+    );
+}
+
+// ─── #168: a task that kills every worker is held, not retried forever ──────
+
+fn claim_and_reap(h: &Harness, persona: &str, why: &str) -> String {
+    let w = worker_new(h, persona);
+    let claim = ok_as(h, &w, &["ledger", "claim"]);
+    assert!(claim.contains("Claimed T-1"), "{claim}");
+    ok(h, &["ledger", "reap", &w, why]);
+    w
+}
+
+#[test]
+fn a_task_reaped_max_attempts_times_is_held_for_the_operator() {
+    let h = world("tl-held");
+    ok(&h, &["ledger", "run", "new", "a", "--max-attempts", "2"]);
+    queue(&h, "01-a", "sonnet-x", &[]);
+
+    // Reaped once: queued again, as before.
+    claim_and_reap(&h, "sonnet-x", "hung in check");
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["status"], "queued", "{t}");
+    assert!(t["task"]["held_reason"].is_null(), "{t}");
+    assert!(
+        plan_line(&h).starts_with("sonnet-x: spawn 1"),
+        "{}",
+        plan_line(&h)
+    );
+    let before = wakes(&h).len();
+
+    // Reaped twice: held. No worker is asked for, and 1 QUESTION names both ends.
+    claim_and_reap(&h, "sonnet-x", "overflowed at claim");
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["held_reason"], "2 attempts failed", "{t}");
+    assert_eq!(plan_line(&h), "No task can start now. Spawn no worker.");
+    let new = wakes(&h).split_off(before);
+    let questions: Vec<&String> = new.iter().filter(|w| w.contains("QUESTION:")).collect();
+    assert_eq!(questions.len(), 1, "{new:?}");
+    assert!(questions[0].contains("dead: hung in check"), "{new:?}");
+    assert!(
+        questions[0].contains("dead: overflowed at claim"),
+        "{new:?}"
+    );
+    assert!(!new.iter().any(|w| w.contains("--replaces")), "{new:?}");
+    let st = out(&h.run(&["ledger", "status"]));
+    assert!(st.contains("held: 2 attempts failed"), "{st}");
+    assert!(
+        st.contains("[2 attempts; ends: dead: hung in check; dead: overflowed at claim]"),
+        "{st}"
+    );
+    // A held task is open work: the run does not close.
+    let o = h.run(&["ledger", "run", "close"]);
+    assert!(
+        text(&o).contains("T-1 (held: 2 attempts failed)"),
+        "{}",
+        text(&o)
+    );
+
+    // The operator requeues it: claimable again, its history kept.
+    ok(&h, &["ledger", "requeue", "T-1", "ticket fixed"]);
+    let w = worker_new(&h, "sonnet-x");
+    let claim = ok_as(&h, &w, &["ledger", "claim"]);
+    assert!(claim.contains("Claimed T-1 (attempt 3)"), "{claim}");
+    // The limit counts attempts since the requeue: 1 reap queues it again.
+    ok(&h, &["ledger", "reap", &w, "once more"]);
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert!(t["task"]["held_reason"].is_null(), "{t}");
+    assert_eq!(t["task"]["attempts"], 3, "{t}");
+}
+
+#[test]
+fn requeue_refuses_a_task_that_is_neither_held_nor_cancelled() {
+    let h = world("tl-requeue-queued");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus", &[]);
+    let o = h.run(&["ledger", "requeue", "T-1", "why"]);
+    assert!(!o.status.success());
+    assert!(
+        text(&o).contains("only a held or cancelled task is requeued"),
+        "{}",
+        text(&o)
+    );
+}
+
+// ─── #119: dependents of a cancelled task are named, and can be freed ───────
+
+#[test]
+fn a_cancel_names_the_tasks_that_wait_for_it() {
+    let h = world("tl-cancel-deps");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus-a", &[]);
+    queue(&h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
+    queue(&h, "03-c", "opus-b", &["--blocked-by", "T-2"]);
+    let o = ok(&h, &["ledger", "cancel", "T-1", "dropped"]);
+    assert!(o.contains("Waiting for T-1: T-2, T-3."), "{o}");
+    let st = out(&h.run(&["ledger", "status"]));
+    assert!(
+        st.contains("[T-1 was cancelled: requeue it, or drop the dependency]"),
+        "{st}"
+    );
+    let w = wakes(&h);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(
+        w[0].contains("NOTE: T-1 was cancelled. T-2, T-3 wait for it. Run horch ledger unblock T-2 --from T-1"),
+        "{w:?}"
+    );
+
+    assert_eq!(plan_line(&h), "No task can start now. Spawn no worker.");
+    ok(&h, &["ledger", "unblock", "T-2", "--from", "T-1"]);
+    assert_eq!(
+        plan_line(&h),
+        "opus-b: spawn 1 (1 can start, 0 on the way)."
+    );
+    // A dependency that does not exist is refused.
+    let o = h.run(&["ledger", "unblock", "T-2", "--from", "T-1"]);
+    assert!(
+        text(&o).contains("T-2 does not wait for T-1"),
+        "{}",
+        text(&o)
+    );
+}
+
+#[test]
+fn an_unlanded_done_names_its_dependents_and_a_stuck_run_wakes_once() {
+    let h = world("tl-unlanded-deps");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus-a", &[]);
+    queue(&h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
+    let w = worker_new(&h, "opus-a");
+    ok_as(&h, &w, &["ledger", "claim"]);
+    ok_as(
+        &h,
+        &w,
+        &["ledger", "done", "--unlanded", "a red check", "parked"],
+    );
+    let all = wakes(&h);
+    assert!(
+        all.iter()
+            .any(|w| w.contains("NOTE: T-1 was cancelled. T-2 wait for it.")),
+        "{all:?}"
+    );
+    // No worker is live, nothing can start, T-2 is open: the run is stuck.
+    let stuck = |h: &Harness| {
+        wakes(h)
+            .into_iter()
+            .filter(|w| w.contains("the run is stuck:"))
+            .collect::<Vec<_>>()
+    };
+    let s = stuck(&h);
+    assert_eq!(s.len(), 1, "{all:?}");
+    assert!(s[0].contains("T-2: T-1 was cancelled"), "{s:?}");
+    // The watchdog sees the same stuck run: no second wake.
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    assert_eq!(stuck(&h).len(), 1, "{:?}", wakes(&h));
+}
+
+#[test]
+fn a_stuck_run_wakes_from_the_watchdog_when_no_task_finishes() {
+    let h = world("tl-stuck-watch");
+    ok(&h, &["ledger", "run", "new", "a"]);
+    queue(&h, "01-a", "opus-a", &[]);
+    queue(&h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
+    // A live worker holds T-1: the run is not stuck.
+    let w = worker_new(&h, "opus-a");
+    let stand = Stand::new();
+    let me = stand.pid();
+    ok(&h, &["ledger", "worker", "pid", &w, "--supervisor", &me]);
+    ok(&h, &["ledger", "worker", "pid", &w, "--agent", &me]);
+    ok_as(&h, &w, &["ledger", "claim"]);
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    assert!(
+        !wakes(&h).iter().any(|w| w.contains("stuck")),
+        "{:?}",
+        wakes(&h)
+    );
+    // Its worker is stopped and T-1 cancelled: nothing will start.
+    ok(&h, &["ledger", "cancel", "T-1", "dropped"]);
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    let stuck: Vec<String> = wakes(&h)
+        .into_iter()
+        .filter(|w| w.contains("the run is stuck:"))
+        .collect();
+    assert_eq!(stuck.len(), 1, "{:?}", wakes(&h));
+}
+
+// ─── #136: a cancelled task never lands or turns done ───────────────────────
+
+/// Claim the next task as a new `persona` worker, make worktree `name` and
+/// commit `file` in it. Returns the worker and the worktree path.
+fn claim_and_commit(h: &Harness, persona: &str, name: &str, file: &str) -> (String, PathBuf) {
+    let w = worker_new(h, persona);
+    ok_as(h, &w, &["ledger", "claim"]);
+    let wt = ok_as(h, &w, &["ledger", "worktree", "new", name]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(path.join(file), "x\n").unwrap();
+    git_in(h, &path, &["add", file]);
+    git_in(
+        h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", file],
+    );
+    (w, path)
+}
+
+fn rev(h: &Harness, what: &str) -> String {
+    git_in(h, &h.project.clone(), &["rev-parse", what])
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn a_cancelled_task_does_not_land_or_turn_done() {
+    let h = finish_world("tl-cancel-land");
+    ok(
+        &h,
+        &["ledger", "run", "new", "r2", "--steps", "land,cleanup"],
+    );
+    queue(&h, "01-a", "opus", &[]);
+    let (w, path) = claim_and_commit(&h, "opus", "canc", "c.txt");
+    let before = (rev(&h, "fleet/r2"), rev(&h, "origin/fleet/r2"));
+
+    let o = ok(&h, &["ledger", "cancel", "T-1", "operator dropped it"]);
+    assert!(o.contains("T-1 cancelled."), "{o}");
+    assert_eq!(worker_status(&h, &w).0, "stopped");
+
+    let mut cmd = h.horch(&["ledger", "finish"]);
+    cmd.env("HORCH_WORKER_ID", &w);
+    let o = cmd.output().unwrap();
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("T-1 was cancelled"), "{}", text(&o));
+    let mut cmd = h.horch(&["ledger", "done", "finished anyway"]);
+    cmd.env("HORCH_WORKER_ID", &w);
+    let o = cmd.output().unwrap();
+    assert!(!o.status.success(), "{}", text(&o));
+    git_in(&h, &h.project.clone(), &["fetch", "--quiet", "origin"]);
+    assert_eq!((rev(&h, "fleet/r2"), rev(&h, "origin/fleet/r2")), before);
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["status"], "cancelled", "{t}");
+
+    // The worktree is abandoned, kept on disk, and listed as unfinished.
+    let st = out(&h.run(&["ledger", "status"]));
+    assert!(st.contains("T-1   abandoned"), "{st}");
+    assert!(path.join("c.txt").exists());
+    let unf = ok(&h, &["ledger", "unfinished"]);
+    assert!(unf.contains("T-1 was cancelled with its worktree"), "{unf}");
+
+    // A requeue reopens the kept worktree for the next claim.
+    ok(&h, &["ledger", "requeue", "T-1", "wanted after all"]);
+    let w2 = worker_new(&h, "opus");
+    let claim = ok_as(&h, &w2, &["ledger", "claim"]);
+    assert!(
+        claim.contains(&path.to_string_lossy().into_owned()),
+        "{claim}"
+    );
+    assert_eq!(
+        ok(&h, &["ledger", "unfinished"]).trim(),
+        "No unfinished work."
+    );
+}
+
+#[test]
+fn a_cancel_during_the_land_lands_nothing() {
+    let h = finish_world("tl-cancel-lock");
+    ok(
+        &h,
+        &["ledger", "run", "new", "r2", "--steps", "land,cleanup"],
+    );
+    let go = h.root.join("go");
+    // T-1's land check runs until the test says go. The land takes the lock
+    // after the check, so the cancel arrives before the fast-forward.
+    let hold = format!("while [ ! -f '{}' ]; do /bin/sleep 0.1; done", go.display());
+    queue(&h, "01-a", "opus", &["--check", &hold]);
+    let (w, _) = claim_and_commit(&h, "opus", "a", "a.txt");
+    let before = rev(&h, "fleet/r2");
+    let worktree_of = |seq: &str| -> String {
+        let st = json_of(&h, &["ledger", "status", "--json"]);
+        st["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["task"] == seq)
+            .map(|w| w["status"].as_str().unwrap().to_string())
+            .unwrap_or_default()
+    };
+    let mut cmd = h.horch(&["ledger", "finish"]);
+    cmd.env("HORCH_WORKER_ID", &w)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let finish = cmd.spawn().unwrap();
+    wait_for("T-1 to start its land", || {
+        (worktree_of("T-1") == "landing").then_some(())
+    });
+    ok(&h, &["ledger", "cancel", "T-1", "dropped during the land"]);
+    std::fs::write(&go, "").unwrap();
+    let o = finish.wait_with_output().unwrap();
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("T-1 is cancelled: nothing landed"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(rev(&h, "fleet/r2"), before);
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["status"], "cancelled", "{t}");
+    assert_eq!(worktree_of("T-1"), "abandoned");
 }

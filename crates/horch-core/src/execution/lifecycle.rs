@@ -82,6 +82,10 @@ pub trait DoneSteps {
     fn push_report(&self) -> ReportStatus {
         ReportStatus::Delivered
     }
+    /// Run after the record is done and before the report push: `horch
+    /// ledger done` pushes its wake lines here, inside the same push budget,
+    /// so a kill during them leaves the work done. The default does nothing.
+    fn after_mark_done(&self) {}
     /// Whether an earlier `done` of this record reported and recorded its
     /// summary, so a retry only closes the pane. The default says no.
     fn recorded(&self, _record_id: &str) -> Result<bool> {
@@ -117,12 +121,12 @@ pub trait DoneSteps {
 /// while waiting on a question).
 ///
 /// The order is fixed: queue the report to the orchestrator, mark the claims
-/// unlanded, mark done in the ledger, push the report (best effort, within
-/// the push budget), record a session id still undiscovered,
-/// unregister the mailbox entry, settle the grid, write the fleet run row,
-/// close the pane. Everything happens BEFORE the pane close, because closing
-/// the pane kills this very process tree. The underlying agent session stays
-/// on disk and resumable.
+/// unlanded, mark done in the ledger, run [`DoneSteps::after_mark_done`],
+/// push the report (best effort, within the push budget), record a session
+/// id still undiscovered, unregister the mailbox entry, settle the grid,
+/// write the fleet run row, close the pane. Everything happens BEFORE the
+/// pane close, because closing the pane kills this very process tree. The
+/// underlying agent session stays on disk and resumable.
 ///
 /// A failed report stops `done` before any change: the record is not done,
 /// the claims stay open, the role stays registered and the pane stays open.
@@ -212,6 +216,7 @@ fn report_and_record(steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
         steps.mark_unlanded(req.record_id, reason)?;
     }
     steps.mark_done(req.record_id, &summary)?;
+    steps.after_mark_done();
     if report {
         note_queued(steps, req, steps.push_report());
     }
@@ -811,6 +816,11 @@ impl WorkerSteps for PaneWorker<'_> {
                          horch spawn {persona} --replaces {id}"
                     ))
                 }
+                Ok(crate::taskledger::supervisor::Ended::Held { task }) => Some(format!(
+                    " QUESTION: {task} used up its attempts and is held. Ask the operator: \
+                     requeue it (horch ledger requeue {task} \"<reason>\"), change the ticket, \
+                     or cancel it. Spawn no replacement."
+                )),
                 Ok(_) => None,
                 Err(e) => {
                     eprintln!(
@@ -1019,7 +1029,8 @@ mod tests {
         /// `Some(cause)`: the push does not land.
         push_misses: Option<String>,
         queued: RefCell<Vec<String>>,
-        /// `mark_done`, `push` and `unregister`, in the order they ran.
+        /// `mark_done`, `after_mark_done`, `push` and `unregister`, in the
+        /// order they ran.
         order: RefCell<Vec<&'static str>>,
         fail_mark_done: bool,
     }
@@ -1098,6 +1109,10 @@ mod tests {
 
         fn report_failed(&self, _: &str, error: &str) {
             self.report_failures.borrow_mut().push(error.into());
+        }
+
+        fn after_mark_done(&self) {
+            self.order.borrow_mut().push("after_mark_done");
         }
 
         fn push_report(&self) -> ReportStatus {
@@ -1214,7 +1229,10 @@ mod tests {
             ..ClaimSteps::default()
         };
         done(&ws, &steps, &claim_request(&pane, None)).unwrap();
-        assert_eq!(&*steps.order.borrow(), &["mark_done", "push", "unregister"]);
+        assert_eq!(
+            &*steps.order.borrow(),
+            &["mark_done", "after_mark_done", "push", "unregister"]
+        );
         assert_eq!(&*steps.queued.borrow(), &["the push budget ran out"]);
         assert!(ws.pane_ids().is_empty(), "the pane is closed");
     }
@@ -1227,7 +1245,10 @@ mod tests {
         let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
         let steps = ClaimSteps::default();
         done(&ws, &steps, &claim_request(&pane, None)).unwrap();
-        assert_eq!(&*steps.order.borrow(), &["mark_done", "push", "unregister"]);
+        assert_eq!(
+            &*steps.order.borrow(),
+            &["mark_done", "after_mark_done", "push", "unregister"]
+        );
 
         let pane = ws.workspace_create("w", None, false).unwrap().root_pane_id;
         let silent = ClaimSteps::default();
@@ -1236,7 +1257,10 @@ mod tests {
             ..claim_request(&pane, None)
         };
         done(&ws, &silent, &req).unwrap();
-        assert_eq!(&*silent.order.borrow(), &["mark_done", "unregister"]);
+        assert_eq!(
+            &*silent.order.borrow(),
+            &["mark_done", "after_mark_done", "unregister"]
+        );
     }
 
     /// #67: a ledger write that fails after the report is queued stops
