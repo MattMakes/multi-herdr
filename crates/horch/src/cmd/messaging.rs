@@ -482,10 +482,47 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
         let mail = Mail::to_role(&ctx.paths.state_root, mailbox.workspace_id(), role);
         return print_mail(&mail, peek);
     }
+    print_orchestrator_mail(ctx, &herdr, &mailbox, peek)
+}
+
+/// Print the orchestrator's mail. Only the orchestrator's pane acknowledges
+/// it; any other pane gets a peek and one line that says so.
+fn print_orchestrator_mail(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    mailbox: &Mailbox,
+    peek: bool,
+) -> Result<()> {
+    let seat = may_acknowledge(
+        ctx.herdr.pane.as_ref().map(|p| p.as_str()),
+        |pane| herdr.pane_get(pane).ok().map(|p| p.pane_id),
+        mailbox.pane_for("orchestrator").as_deref(),
+    );
+    if !peek && !seat {
+        eprintln!(
+            "horch inbox: this pane is not the orchestrator's, so the mail is shown, not acknowledged"
+        );
+    }
     print_mail(
         &Mail::under(&ctx.paths.state_root, mailbox.workspace_id()),
-        peek,
+        peek || !seat,
     )
+}
+
+/// Whether the caller may acknowledge the orchestrator's mail: a pane
+/// outside the fleet (`caller` unset) or a fleet with no registered
+/// orchestrator may; a pane that is not the registered orchestrator's may
+/// not (a resumed worker, #125). `caller` is herdr's internal pane id and
+/// `orchestrator` the public one, so both forms are compared.
+fn may_acknowledge(
+    caller: Option<&str>,
+    public_id: impl FnOnce(&str) -> Option<String>,
+    orchestrator: Option<&str>,
+) -> bool {
+    let (Some(caller), Some(orchestrator)) = (caller, orchestrator) else {
+        return true;
+    };
+    caller == orchestrator || public_id(caller).is_some_and(|id| id == orchestrator)
 }
 
 /// Acknowledge the notices horch queued for `role` (`horch ledger finish`
@@ -1275,6 +1312,22 @@ mod tests {
         );
         let operator = tell("orchestrator", None);
         assert!(!operator.contains("no orchestrator runs"), "{operator}");
+    }
+
+    /// #125: a resumed worker pane runs `horch inbox` and must not
+    /// acknowledge the orchestrator's mail.
+    #[test]
+    fn only_the_orchestrator_pane_acknowledges_the_inbox() {
+        let public = |pane: &str| Some(format!("w1:{pane}"));
+        // The orchestrator's pane, in the internal or the public form.
+        assert!(may_acknowledge(Some("p1"), public, Some("w1:p1")));
+        assert!(may_acknowledge(Some("w1:p1"), |_| None, Some("w1:p1")));
+        // A worker pane.
+        assert!(!may_acknowledge(Some("p2"), public, Some("w1:p1")));
+        assert!(!may_acknowledge(Some("w1:p2"), |_| None, Some("w1:p1")));
+        // No pane (an operator shell) and no registered orchestrator.
+        assert!(may_acknowledge(None, public, Some("w1:p1")));
+        assert!(may_acknowledge(Some("p2"), public, None));
     }
 
     #[test]
