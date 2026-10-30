@@ -1359,4 +1359,149 @@ mod tests {
         assert_eq!(r.result.root_pane.pane_id, "w7:p1");
         assert_eq!(r.result.root_pane.tab_id.as_deref(), Some("w7:t1"));
     }
+
+    /// A fake herdr for [`Herdr::pane_focus_walk`]: tab `w1:t1` holds `panes`
+    /// (id, x) side by side, `focus` is the focused pane, and `moves` maps
+    /// the origin of each `pane focus` call to the pane herdr then focuses.
+    /// An origin with no move is `no_neighbor`. Each focus call appends a
+    /// line to `calls`.
+    #[cfg(unix)]
+    fn walk_herdr(
+        panes: &[(&str, i64)],
+        focus: Option<&str>,
+        moves: &[(&str, &str)],
+    ) -> (tempfile::TempDir, PathBuf) {
+        let panes = panes
+            .iter()
+            .map(|(id, x)| {
+                format!(r#"{{"pane_id":"{id}","rect":{{"x":{x},"y":0,"width":10,"height":10}}}}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let moves = moves
+            .iter()
+            .map(|(from, to)| format!("  {from}) to={to};;\n"))
+            .collect::<String>();
+        let body = format!(
+            r#"d=$(dirname "$0")
+f=$(cat "$d/focus")
+if [ "$f" = none ]; then fj=null; else fj="\"$f\""; fi
+layout() {{
+  printf '{{"workspace_id":"w1","tab_id":"w1:t1","area":{{"x":0,"y":0,"width":100,"height":10}},"panes":[{panes}],"focused_pane_id":%s}}' "$1"
+}}
+case "$1 $2" in
+"pane layout")
+  printf '{{"result":{{"layout":%s}}}}\n' "$(layout "$fj")";;
+"pane focus")
+  echo "$6 $4" >> "$d/calls"
+  to=
+  case "$6" in
+{moves}  esac
+  if [ -z "$to" ]; then
+    printf '{{"result":{{"focus":{{"changed":false,"reason":"no_neighbor","focused_pane_id":%s,"layout":%s}}}}}}\n' "$fj" "$(layout "$fj")"
+  else
+    echo "$to" > "$d/focus"
+    printf '{{"result":{{"focus":{{"changed":true,"focused_pane_id":"%s","layout":%s}}}}}}\n' "$to" "$(layout "\"$to\"")"
+  fi;;
+*) exit 1;;
+esac"#
+        );
+        let (dir, script) = script_in(&body);
+        std::fs::write(dir.path().join("focus"), focus.unwrap_or("none")).unwrap();
+        (dir, script)
+    }
+
+    #[cfg(unix)]
+    fn focus_calls(dir: &tempfile::TempDir) -> Vec<String> {
+        std::fs::read_to_string(dir.path().join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pane_focus_walk_steps_to_the_target() {
+        let panes = [("p1", 0), ("p2", 10), ("p3", 20)];
+        let (dir, script) = walk_herdr(&panes, Some("p1"), &[("p1", "p2"), ("p2", "p3")]);
+        let herdr = Herdr::with_bin(&script);
+        assert!(herdr.pane_focus_walk("w1:t1", "p3").unwrap());
+        assert_eq!(focus_calls(&dir), ["p1 right", "p2 right"]);
+        assert!(
+            herdr.pane_focus_walk("w1:t1", "p3").unwrap(),
+            "already there"
+        );
+        assert_eq!(focus_calls(&dir).len(), 2, "no step when already there");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pane_focus_walk_stops_without_a_step() {
+        let panes = [("p1", 0), ("p2", 10)];
+        let (dir, script) = walk_herdr(&panes, Some("p1"), &[("p1", "p2")]);
+        let herdr = Herdr::with_bin(&script);
+        assert!(
+            !herdr.pane_focus_walk("w1:t9", "p2").unwrap(),
+            "another tab"
+        );
+        let (none, script) = walk_herdr(&panes, None, &[("p1", "p2")]);
+        assert!(
+            !Herdr::with_bin(&script)
+                .pane_focus_walk("w1:t1", "p2")
+                .unwrap(),
+            "no focus"
+        );
+        let (ghost, script) = walk_herdr(&panes, Some("p9"), &[("p9", "p2")]);
+        assert!(
+            !Herdr::with_bin(&script)
+                .pane_focus_walk("w1:t1", "p2")
+                .unwrap(),
+            "focus off the layout"
+        );
+        let same = [("p1", 0), ("p2", 0)];
+        let (overlap, script) = walk_herdr(&same, Some("p1"), &[("p1", "p2")]);
+        assert!(
+            !Herdr::with_bin(&script)
+                .pane_focus_walk("w1:t1", "p2")
+                .unwrap(),
+            "no direction"
+        );
+        for d in [&dir, &none, &ghost, &overlap] {
+            assert!(focus_calls(d).is_empty(), "no focus call");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pane_focus_walk_stops_when_herdr_does_not_converge() {
+        let panes = [("p1", 0), ("p2", 10), ("p3", 20)];
+        let (stuck, script) = walk_herdr(&panes, Some("p1"), &[]);
+        assert!(!Herdr::with_bin(&script)
+            .pane_focus_walk("w1:t1", "p3")
+            .unwrap());
+        assert_eq!(
+            focus_calls(&stuck),
+            ["p1 right"],
+            "no_neighbor stops the walk"
+        );
+        let (back, script) = walk_herdr(&panes, Some("p1"), &[("p1", "p1")]);
+        assert!(!Herdr::with_bin(&script)
+            .pane_focus_walk("w1:t1", "p3")
+            .unwrap());
+        assert_eq!(
+            focus_calls(&back),
+            ["p1 right"],
+            "a step back to the origin stops it"
+        );
+        let (ping, script) = walk_herdr(&panes, Some("p1"), &[("p1", "p2"), ("p2", "p1")]);
+        assert!(!Herdr::with_bin(&script)
+            .pane_focus_walk("w1:t1", "p3")
+            .unwrap());
+        assert_eq!(
+            focus_calls(&ping),
+            ["p1 right", "p2 right", "p1 right"],
+            "the pane count bounds an oscillating walk"
+        );
+    }
 }
