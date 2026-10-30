@@ -826,15 +826,7 @@ struct TempStore(Option<PathBuf>);
 
 impl TempStore {
     fn write(store: &Path, text: &str) -> anyhow::Result<TempStore> {
-        use std::io::Write as _;
-        let mut name = store.as_os_str().to_os_string();
-        let random = uuid::Uuid::new_v4().simple().to_string();
-        name.push(format!(
-            ".{TEMP_TAG}.{}.{}",
-            std::process::id(),
-            &random[..12]
-        ));
-        let path = PathBuf::from(name);
+        let path = temp_path(store);
         let mut open = std::fs::OpenOptions::new();
         open.write(true).create_new(true);
         #[cfg(unix)]
@@ -858,16 +850,11 @@ impl TempStore {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
                     .with_context(|| format!("setting the mode of {}", path.display()))?;
             }
-            f.write_all(text.as_bytes())
-                .and_then(|()| f.sync_all())
-                .with_context(|| format!("writing {}", path.display()))
+            write_synced(&mut f, &path, text)
         };
         let filled = fill();
         drop(f);
-        match filled {
-            Ok(()) => Ok(temp),
-            Err(e) => Err(temp.discard_with(e)),
-        }
+        temp.keep_if(filled)
     }
 
     fn rename_over(mut self, store: &Path) -> anyhow::Result<()> {
@@ -912,6 +899,36 @@ impl TempStore {
             Err(left) => anyhow::anyhow!("{err:#}; also {left:#}"),
         }
     }
+
+    /// `self` when `filled` is Ok; else the file is removed and the error
+    /// says so ([`TempStore::discard_with`]).
+    fn keep_if(self, filled: anyhow::Result<()>) -> anyhow::Result<TempStore> {
+        match filled {
+            Ok(()) => Ok(self),
+            Err(e) => Err(self.discard_with(e)),
+        }
+    }
+}
+
+/// `<store>.horch-tmp.<pid>.<12 hex>`: the name of a temporary copy of the
+/// store, next to it. [`remove_dead_temps`] reads this form.
+fn temp_path(store: &Path) -> PathBuf {
+    let mut name = store.as_os_str().to_os_string();
+    let random = uuid::Uuid::new_v4().simple().to_string();
+    name.push(format!(
+        ".{TEMP_TAG}.{}.{}",
+        std::process::id(),
+        &random[..12]
+    ));
+    PathBuf::from(name)
+}
+
+/// `text` written to `f` and flushed to disk.
+fn write_synced(f: &mut std::fs::File, path: &Path, text: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    f.write_all(text.as_bytes())
+        .and_then(|()| f.sync_all())
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// Remove the temporary files that a dead horch writer left next to
