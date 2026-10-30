@@ -310,58 +310,69 @@ fn grid_ops(panes: &[&str], tab: TabRef, total_columns: usize, first: FirstPane)
     for (i, pane) in panes.iter().enumerate() {
         let column = i / ROWS + 1;
         let row = if i % ROWS == 0 { Row::Top } else { Row::Bottom };
-        match (column, row) {
-            (1, Row::Top) => match &first {
-                FirstPane::RightOf {
-                    target,
-                    ratio,
-                    tab: tab1,
-                } => ops.push(Op::Move {
-                    pane: (*pane).to_string(),
-                    tab: tab1.clone(),
-                    split: Direction::Right,
-                    target: target.clone(),
-                    ratio: *ratio,
-                }),
-                FirstPane::OwnTab { label, creates } => ops.push(Op::NewTab {
-                    pane: (*pane).to_string(),
-                    label: label.clone(),
-                    creates: *creates,
-                }),
-            },
-            // Column 1's pane is full height, so DOWN pairs it without touching
-            // anything else.
-            (1, Row::Bottom) => ops.push(Op::Move {
-                pane: (*pane).to_string(),
-                tab: tab.clone(),
-                split: Direction::Down,
-                target: tops[0].to_string(),
-                ratio: Some(1.0 / ROWS as f64),
-            }),
-            // A right split subdivides only the pane it targets, so a new column
-            // is opened once per row: against column c-1's top, then against its
-            // bottom. Never DOWN from the new top pane, which would quarter it.
-            (c, Row::Top) => ops.push(Op::Move {
-                pane: (*pane).to_string(),
-                tab: tab.clone(),
-                split: Direction::Right,
-                target: tops[c - 2].to_string(),
-                ratio: Some(column_ratio(c, total_columns)),
-            }),
-            (c, Row::Bottom) => ops.push(Op::Move {
-                pane: (*pane).to_string(),
-                tab: tab.clone(),
-                split: Direction::Right,
-                target: bottoms[c - 2].to_string(),
-                ratio: Some(column_ratio(c, total_columns)),
-            }),
-        }
+        ops.push(match (column, row) {
+            (1, Row::Top) => first_op(pane, &first),
+            _ => grid_op(pane, &tab, (column, row), (&tops, &bottoms), total_columns),
+        });
         match row {
             Row::Top => tops.push(pane),
             Row::Bottom => bottoms.push(pane),
         }
     }
     ops
+}
+
+/// The op that places the first pane of a grid.
+fn first_op(pane: &str, first: &FirstPane) -> Op {
+    match first {
+        FirstPane::RightOf { target, ratio, tab } => Op::Move {
+            pane: pane.to_string(),
+            tab: tab.clone(),
+            split: Direction::Right,
+            target: target.clone(),
+            ratio: *ratio,
+        },
+        FirstPane::OwnTab { label, creates } => Op::NewTab {
+            pane: pane.to_string(),
+            label: label.clone(),
+            creates: *creates,
+        },
+    }
+}
+
+/// The op that places a later pane of a grid, against panes already placed.
+fn grid_op(
+    pane: &str,
+    tab: &TabRef,
+    (column, row): (usize, Row),
+    (tops, bottoms): (&[&str], &[&str]),
+    total_columns: usize,
+) -> Op {
+    let (split, target, ratio) = match (column, row) {
+        // Column 1's pane is full height, so DOWN pairs it without touching
+        // anything else.
+        (1, _) => (Direction::Down, tops[0], 1.0 / ROWS as f64),
+        // A right split subdivides only the pane it targets, so a new column
+        // is opened once per row: against column c-1's top, then against its
+        // bottom. Never DOWN from the new top pane, which would quarter it.
+        (c, Row::Top) => (
+            Direction::Right,
+            tops[c - 2],
+            column_ratio(c, total_columns),
+        ),
+        (c, Row::Bottom) => (
+            Direction::Right,
+            bottoms[c - 2],
+            column_ratio(c, total_columns),
+        ),
+    };
+    Op::Move {
+        pane: pane.to_string(),
+        tab: tab.clone(),
+        split,
+        target: target.to_string(),
+        ratio: Some(ratio),
+    }
 }
 
 /// How the first pane of a grid arrives.
@@ -406,37 +417,18 @@ pub fn plan(fleet: &Fleet) -> Plan {
     let slots = slots_for(n);
     let mut place = Vec::new();
     let mut created_tabs = 1; // the scratch tab
-    for tab_index in 1..=tab_count(n) {
+    let tabs = (1..=tab_count(n)).map(|tab_index| {
         let on_tab: Vec<&str> = panes
             .iter()
             .zip(&slots)
             .filter(|(_, s)| s.tab_index == tab_index)
             .map(|(p, _)| *p)
             .collect();
-        if on_tab.is_empty() {
-            continue;
-        }
+        (tab_index, on_tab)
+    });
+    for (tab_index, on_tab) in tabs.filter(|(_, on_tab)| !on_tab.is_empty()) {
         let used = columns_used(on_tab.len());
-        let (tab, first) = if tab_index == 1 {
-            (
-                TabRef::Existing(fleet.orchestrator_tab.clone()),
-                FirstPane::RightOf {
-                    tab: TabRef::Existing(fleet.orchestrator_tab.clone()),
-                    target: fleet.orchestrator.clone(),
-                    ratio: Some(orchestrator_share(used)),
-                },
-            )
-        } else {
-            let creates = created_tabs;
-            created_tabs += 1;
-            (
-                TabRef::Created(creates),
-                FirstPane::OwnTab {
-                    label: format!("workers {tab_index}"),
-                    creates,
-                },
-            )
-        };
+        let (tab, first) = tab_start(fleet, tab_index, used, &mut created_tabs);
         place.extend(grid_ops(&on_tab, tab, used, first));
     }
 
@@ -450,6 +442,35 @@ pub fn plan(fleet: &Fleet) -> Plan {
             .collect(),
         created_tabs,
     }
+}
+
+/// The tab a grid goes in, and how its first pane arrives: right of the
+/// orchestrator on tab 1, in a tab of its own on every overflow tab.
+fn tab_start(
+    fleet: &Fleet,
+    tab_index: usize,
+    used: usize,
+    created_tabs: &mut usize,
+) -> (TabRef, FirstPane) {
+    if tab_index == 1 {
+        return (
+            TabRef::Existing(fleet.orchestrator_tab.clone()),
+            FirstPane::RightOf {
+                tab: TabRef::Existing(fleet.orchestrator_tab.clone()),
+                target: fleet.orchestrator.clone(),
+                ratio: Some(orchestrator_share(used)),
+            },
+        );
+    }
+    let creates = *created_tabs;
+    *created_tabs += 1;
+    (
+        TabRef::Created(creates),
+        FirstPane::OwnTab {
+            label: format!("workers {tab_index}"),
+            creates,
+        },
+    )
 }
 
 impl TabRef {
@@ -499,75 +520,89 @@ pub(crate) fn render_target(
     orchestrator: &str,
     roles: &HashMap<String, String>,
 ) -> String {
-    let label = |id: &str| match roles.get(id) {
-        Some(role) => format!("{role}({id})"),
-        None => id.to_string(),
-    };
     let n = plan.placement.len();
     if n == 0 {
         return format!(
             "after: tab 1 holds {} alone; no workers to place\n",
-            label(orchestrator)
+            target_label(roles, orchestrator)
         );
     }
-
-    let mut out = String::new();
-    for tab_index in 1..=tab_count(n) {
-        let on_tab: Vec<&(String, Slot)> = plan
-            .placement
-            .iter()
-            .filter(|(_, s)| s.tab_index == tab_index)
-            .collect();
-        if on_tab.is_empty() {
-            continue;
-        }
-        let used = columns_used(on_tab.len());
-        let at = |column: usize, row: Row| -> String {
-            on_tab
+    (1..=tab_count(n))
+        .map(|tab_index| {
+            let on_tab: Vec<&(String, Slot)> = plan
+                .placement
                 .iter()
-                .find(|(_, s)| s.column == column && s.row == row)
-                .map(|(p, _)| label(p))
-                .unwrap_or_else(|| "-".to_string())
-        };
-        if tab_index == 1 {
-            out.push_str(&format!(
-                "after: tab 1  orchestrator {} (1/{} of the tab)  {} worker(s), {} column(s)\n",
-                label(orchestrator),
-                used + 1,
-                on_tab.len(),
-                used
-            ));
-        } else {
-            out.push_str(&format!(
-                "       tab {tab_index}  {} worker(s), {used} column(s)\n",
-                on_tab.len()
-            ));
-        }
-        let cells: Vec<(String, String, String)> = (1..=used)
-            .map(|c| (format!("c{c}"), at(c, Row::Top), at(c, Row::Bottom)))
-            .collect();
-        let widths: Vec<usize> = cells
+                .filter(|(_, s)| s.tab_index == tab_index)
+                .collect();
+            render_tab(tab_index, &on_tab, orchestrator, roles)
+        })
+        .collect()
+}
+
+/// A pane as the target grid names it: `role(id)` when the mailbox knows its role.
+fn target_label(roles: &HashMap<String, String>, id: &str) -> String {
+    match roles.get(id) {
+        Some(role) => format!("{role}({id})"),
+        None => id.to_string(),
+    }
+}
+
+/// One tab's header and its 3-line grid; nothing for a tab with no workers.
+fn render_tab(
+    tab_index: usize,
+    on_tab: &[&(String, Slot)],
+    orchestrator: &str,
+    roles: &HashMap<String, String>,
+) -> String {
+    if on_tab.is_empty() {
+        return String::new();
+    }
+    let used = columns_used(on_tab.len());
+    let at = |column: usize, row: Row| -> String {
+        on_tab
             .iter()
-            .map(|(h, t, b)| {
-                h.chars()
-                    .count()
-                    .max(t.chars().count())
-                    .max(b.chars().count())
-            })
-            .collect();
-        for (prefix, pick) in [("         ", 0usize), ("  top    ", 1), ("  bottom ", 2)] {
-            out.push_str(prefix);
-            for (i, cell) in cells.iter().enumerate() {
-                let text = match pick {
-                    0 => &cell.0,
-                    1 => &cell.1,
-                    _ => &cell.2,
-                };
-                let w = widths[i];
-                out.push_str(&format!("{text:<w$}  "));
-            }
-            out.push('\n');
+            .find(|(_, s)| s.column == column && s.row == row)
+            .map_or_else(|| "-".to_string(), |(p, _)| target_label(roles, p))
+    };
+    let header = if tab_index == 1 {
+        format!(
+            "after: tab 1  orchestrator {} (1/{} of the tab)  {} worker(s), {} column(s)\n",
+            target_label(roles, orchestrator),
+            used + 1,
+            on_tab.len(),
+            used
+        )
+    } else {
+        format!(
+            "       tab {tab_index}  {} worker(s), {used} column(s)\n",
+            on_tab.len()
+        )
+    };
+    let cells: Vec<(String, String, String)> = (1..=used)
+        .map(|c| (format!("c{c}"), at(c, Row::Top), at(c, Row::Bottom)))
+        .collect();
+    header + &grid_lines(&cells)
+}
+
+/// The 3 lines of a tab's grid: column heads, top row, bottom row.
+fn grid_lines(cells: &[(String, String, String)]) -> String {
+    let widths: Vec<usize> = cells
+        .iter()
+        .map(|(h, t, b)| {
+            h.chars()
+                .count()
+                .max(t.chars().count())
+                .max(b.chars().count())
+        })
+        .collect();
+    let mut out = String::new();
+    for (prefix, pick) in [("         ", 0usize), ("  top    ", 1), ("  bottom ", 2)] {
+        out.push_str(prefix);
+        for (cell, w) in cells.iter().zip(&widths) {
+            let text = [&cell.0, &cell.1, &cell.2][pick];
+            out.push_str(&format!("{text:<w$}  "));
         }
+        out.push('\n');
     }
     out
 }
@@ -698,37 +733,47 @@ pub(crate) fn focus_target(
 /// `None` for two rects that overlap on both axes, which means they are the same
 /// pane: no direction leads anywhere.
 pub(crate) fn step_toward(from: &Rect, to: &Rect) -> Option<FocusDir> {
-    let spans = |a0: i64, a1: i64, b0: i64, b1: i64| a0 < b1 && b0 < a1;
     let overlaps_x = spans(from.x, from.x + from.width, to.x, to.x + to.width);
     let overlaps_y = spans(from.y, from.y + from.height, to.y, to.y + to.height);
     // Twice the centre, so an odd width needs no rounding rule.
     let dx = (to.x * 2 + to.width) - (from.x * 2 + from.width);
     let dy = (to.y * 2 + to.height) - (from.y * 2 + from.height);
-    let horizontal = |dx: i64| match dx {
-        0 => None,
-        d if d > 0 => Some(FocusDir::Right),
-        _ => Some(FocusDir::Left),
-    };
-    let vertical = |dy: i64| match dy {
-        0 => None,
-        d if d > 0 => Some(FocusDir::Down),
-        _ => Some(FocusDir::Up),
-    };
+    let horizontal = toward(dx, FocusDir::Right, FocusDir::Left);
+    let vertical = toward(dy, FocusDir::Down, FocusDir::Up);
     match (overlaps_x, overlaps_y) {
         (true, true) => None,
         // Side by side in one row, or stacked in one column: only one axis
         // separates them, and that is the way to step.
-        (false, true) => horizontal(dx),
-        (true, false) => vertical(dy),
+        (false, true) => horizontal,
+        (true, false) => vertical,
         // Diagonal. Close the wider gap first; the next step closes the other.
         (false, false) => {
-            if dx.abs() >= dy.abs() {
-                horizontal(dx)
+            if wider_axis(dx, dy) {
+                horizontal
             } else {
-                vertical(dy)
+                vertical
             }
         }
     }
+}
+
+/// Whether the ranges `a0..a1` and `b0..b1` overlap.
+fn spans(a0: i64, a1: i64, b0: i64, b1: i64) -> bool {
+    a0 < b1 && b0 < a1
+}
+
+/// The step along an axis for a centre distance `d`, `None` when it is 0.
+fn toward(d: i64, positive: FocusDir, negative: FocusDir) -> Option<FocusDir> {
+    match d.signum() {
+        0 => None,
+        1 => Some(positive),
+        _ => Some(negative),
+    }
+}
+
+/// Whether the horizontal gap is at least the vertical one.
+fn wider_axis(dx: i64, dy: i64) -> bool {
+    dx.abs() >= dy.abs()
 }
 
 /// One tab's live geometry, reduced to what the checks and the balance need.
@@ -772,79 +817,86 @@ pub(crate) fn tab_is_canonical(
     workers: usize,
 ) -> bool {
     let area = shape.area;
-    let mut x0 = area.x;
-    let x1 = area.x + area.width;
-
     let mut rest: Vec<&(String, Rect)> = shape.panes.iter().collect();
-    if let Some(orch) = orchestrator {
-        let Some(pos) = rest.iter().position(|(id, _)| id == orch) else {
-            return false;
-        };
-        let (_, rect) = rest.remove(pos);
-        // Leftmost and full height, and nothing to its left.
-        if !near(rect.height, area.height) || !near(rect.x, area.x) {
-            return false;
-        }
-        if rest
-            .iter()
-            .any(|(_, r)| r.x < rect.x + rect.width - TOLERANCE)
-        {
-            return false;
-        }
-        x0 = rect.x + rect.width;
-    }
-    if rest.len() != workers {
-        return false;
-    }
-    if workers == 0 {
-        return true;
-    }
-    if workers == 1 {
-        let (_, r) = rest[0];
-        return near(r.height, area.height) && near(r.x, x0) && near(r.x + r.width, x1);
-    }
-
-    let used = columns_used(workers);
-    let mut tops: Vec<Rect> = rest
-        .iter()
-        .map(|(_, r)| *r)
-        .filter(|r| near(r.y, area.y))
-        .collect();
-    let mut bottoms: Vec<Rect> = rest
-        .iter()
-        .map(|(_, r)| *r)
-        .filter(|r| !near(r.y, area.y))
-        .collect();
-    if tops.len() != used || bottoms.len() != workers - used {
-        return false;
-    }
-    tops.sort_by_key(|r| r.x);
-    bottoms.sort_by_key(|r| r.x);
-
-    // Both rows tile the worker area exactly once, left to right.
-    let tiles = |row: &[Rect]| -> bool {
-        row.first().is_some_and(|r| near(r.x, x0))
-            && row.last().is_some_and(|r| near(r.x + r.width, x1))
-            && row
-                .windows(2)
-                .all(|w| near(w[0].x + w[0].width, w[1].x) && w[0].y == w[1].y)
+    let x0 = match orchestrator {
+        Some(orch) => orchestrator_edge(&mut rest, orch, area),
+        None => Some(area.x),
     };
-    if !tiles(&tops) || !tiles(&bottoms) {
+    let Some(x0) = x0 else {
         return false;
-    }
-    // Two rows, no third: the bottom row starts where the top row ends and they
-    // fill the height between them.
-    if !near(bottoms[0].y, area.y + tops[0].height)
-        || !near(tops[0].height + bottoms[0].height, area.height)
-    {
-        return false;
-    }
-    // Every column is filled top before bottom, so the bottom panes line up with
-    // the leftmost columns and only the last of them may span the rest.
-    bottoms
-        .iter()
-        .enumerate()
-        .all(|(i, b)| near(b.x, tops[i].x))
+    };
+    let x1 = area.x + area.width;
+    rest.len() == workers
+        && match workers {
+            0 => true,
+            1 => single_fills(rest[0], area, x0, x1),
+            _ => grid_fills(&rest, area, x0, x1, workers),
+        }
+}
+
+/// Take the orchestrator out of `rest`. Returns where the worker area starts,
+/// or `None` when it is missing, not leftmost and full height, or has a pane
+/// to its left.
+fn orchestrator_edge(rest: &mut Vec<&(String, Rect)>, orch: &str, area: Rect) -> Option<i64> {
+    let pos = rest.iter().position(|(id, _)| id == orch)?;
+    let (_, rect) = *rest.remove(pos);
+    let leftmost_and_full = near(rect.height, area.height)
+        && near(rect.x, area.x)
+        && !rest
+            .iter()
+            .any(|(_, r)| r.x < rect.x + rect.width - TOLERANCE);
+    leftmost_and_full.then_some(rect.x + rect.width)
+}
+
+/// One worker fills the whole worker area.
+fn single_fills((_, r): &(String, Rect), area: Rect, x0: i64, x1: i64) -> bool {
+    near(r.height, area.height) && near(r.x, x0) && near(r.x + r.width, x1)
+}
+
+/// 2 workers or more: the rows have the right counts, tile the worker area,
+/// stack to the full height and line up column by column.
+fn grid_fills(rest: &[&(String, Rect)], area: Rect, x0: i64, x1: i64, workers: usize) -> bool {
+    let used = columns_used(workers);
+    let (tops, bottoms) = split_rows(rest, area);
+    tops.len() == used
+        && bottoms.len() == workers - used
+        && row_tiles(&tops, x0, x1)
+        && row_tiles(&bottoms, x0, x1)
+        && rows_stack(&tops, &bottoms, area)
+        // Every column is filled top before bottom, so the bottom panes line up
+        // with the leftmost columns and only the last of them may span the rest.
+        && bottoms.iter().zip(&tops).all(|(b, t)| near(b.x, t.x))
+}
+
+/// The worker rects above and below the top edge of the area, each row left
+/// to right.
+fn split_rows(rest: &[&(String, Rect)], area: Rect) -> (Vec<Rect>, Vec<Rect>) {
+    let row = |top: bool| {
+        let mut row: Vec<Rect> = rest
+            .iter()
+            .map(|(_, r)| *r)
+            .filter(|r| near(r.y, area.y) == top)
+            .collect();
+        row.sort_by_key(|r| r.x);
+        row
+    };
+    (row(true), row(false))
+}
+
+/// A row tiles the worker area exactly once, left to right.
+fn row_tiles(row: &[Rect], x0: i64, x1: i64) -> bool {
+    row.first().is_some_and(|r| near(r.x, x0))
+        && row.last().is_some_and(|r| near(r.x + r.width, x1))
+        && row
+            .windows(2)
+            .all(|w| near(w[0].x + w[0].width, w[1].x) && w[0].y == w[1].y)
+}
+
+/// Two rows, no third: the bottom row starts where the top row ends and they
+/// fill the height between them.
+fn rows_stack(tops: &[Rect], bottoms: &[Rect], area: Rect) -> bool {
+    near(bottoms[0].y, area.y + tops[0].height)
+        && near(tops[0].height + bottoms[0].height, area.height)
 }
 
 /// True when the whole workspace is already the canonical grid for `workers`
@@ -877,79 +929,81 @@ pub(crate) fn is_canonical(tabs: &[TabShape], orchestrator: &str, workers: usize
 /// with a spanning bottom pane still lines up with the row above it.
 pub(crate) fn balance_op(shape: &TabShape, orchestrator: Option<&str>) -> Option<ResizeOp> {
     let area = shape.area;
-    let x1 = area.x + area.width;
     let mut rest: Vec<&(String, Rect)> = shape.panes.iter().collect();
-    let mut x0 = area.x;
+    let (x0, divider) = match orchestrator {
+        Some(orch) => orchestrator_op(&mut rest, orch, area)?,
+        None => (area.x, None),
+    };
+    divider.or_else(|| worker_op(&rest, area, x0))
+}
 
-    if let Some(orch) = orchestrator {
-        let pos = rest.iter().position(|(id, _)| id == orch)?;
-        let (_, orch_rect) = *rest.remove(pos);
-        x0 = orch_rect.x + orch_rect.width;
-        let used = columns_used(rest.len());
-        if used > 0 {
-            let target = area.x + (area.width as f64 * orchestrator_share(used)).round() as i64;
-            if (target - x0).abs() > TOLERANCE {
-                // The orchestrator divider is the root split, so its container is
-                // the whole tab.
-                let leftmost = rest.iter().min_by_key(|(_, r)| r.x)?;
-                let (pane, direction) = if target > x0 {
-                    (orch.to_string(), ResizeDir::Right)
-                } else {
-                    (leftmost.0.clone(), ResizeDir::Left)
-                };
-                return Some(ResizeOp {
-                    pane,
-                    direction,
-                    amount: (target - x0).abs() as f64 / area.width as f64,
-                    from_x: x0,
-                    to_x: target,
-                });
-            }
-        }
+/// Take the orchestrator out of `rest`. Returns where the worker area starts
+/// and the resize that moves its divider to the orchestrator's share, `None`
+/// when the divider is within [`TOLERANCE`] of it. The outer `None` is for a
+/// missing orchestrator.
+fn orchestrator_op(
+    rest: &mut Vec<&(String, Rect)>,
+    orch: &str,
+    area: Rect,
+) -> Option<(i64, Option<ResizeOp>)> {
+    let pos = rest.iter().position(|(id, _)| id == orch)?;
+    let (_, orch_rect) = *rest.remove(pos);
+    let x0 = orch_rect.x + orch_rect.width;
+    let used = columns_used(rest.len());
+    let target = area.x + (area.width as f64 * orchestrator_share(used)).round() as i64;
+    if used == 0 || (target - x0).abs() <= TOLERANCE {
+        return Some((x0, None));
     }
+    // The orchestrator divider is the root split, so its container is the whole
+    // tab.
+    let leftmost = rest.iter().min_by_key(|(_, r)| r.x)?;
+    let op = resize_toward((orch, &leftmost.0), x0, target, area.width);
+    Some((x0, Some(op)))
+}
 
-    let workers = rest.len();
-    if workers < 2 {
-        return None;
+/// The resize that moves a divider from `current` to `target`. The pane on the
+/// side the divider should grow into is asked to grow: `grow` holds the pane
+/// left of the divider, then the pane right of it. `container` is the split
+/// that owns the divider, which `--amount` is a fraction of.
+fn resize_toward(grow: (&str, &str), current: i64, target: i64, container: i64) -> ResizeOp {
+    let (pane, direction) = if target > current {
+        (grow.0, ResizeDir::Right)
+    } else {
+        (grow.1, ResizeDir::Left)
+    };
+    ResizeOp {
+        pane: pane.to_string(),
+        direction,
+        amount: (target - current).abs() as f64 / container as f64,
+        from_x: current,
+        to_x: target,
     }
-    let used = columns_used(workers);
+}
+
+/// The first divider of the worker rows, top row first, that is off its
+/// target. `None` when fewer than 2 workers or no width.
+fn worker_op(rest: &[&(String, Rect)], area: Rect, x0: i64) -> Option<ResizeOp> {
+    let x1 = area.x + area.width;
     let width = x1 - x0;
-    if width <= 0 {
+    if rest.len() < 2 || width <= 0 {
         return None;
     }
-
-    for row_top in [true, false] {
+    let used = columns_used(rest.len());
+    [true, false].into_iter().find_map(|row_top| {
         let mut row: Vec<&(String, Rect)> = rest
             .iter()
             .copied()
             .filter(|(_, r)| near(r.y, area.y) == row_top)
             .collect();
         row.sort_by_key(|(_, r)| r.x);
-        for k in 1..row.len() {
+        (1..row.len()).find_map(|k| {
             let target = x0 + ((k as f64) * (width as f64) / (used as f64)).round() as i64;
             let current = row[k].1.x;
-            if (target - current).abs() <= TOLERANCE {
-                continue;
-            }
             let container = x1 - row[k - 1].1.x;
-            if container <= 0 {
-                continue;
-            }
-            let (pane, direction) = if target > current {
-                (row[k - 1].0.clone(), ResizeDir::Right)
-            } else {
-                (row[k].0.clone(), ResizeDir::Left)
-            };
-            return Some(ResizeOp {
-                pane,
-                direction,
-                amount: (target - current).abs() as f64 / container as f64,
-                from_x: current,
-                to_x: target,
-            });
-        }
-    }
-    None
+            ((target - current).abs() > TOLERANCE && container > 0)
+                .then(|| resize_toward((&row[k - 1].0, &row[k].0), current, target, container))
+        })
+    })
 }
 
 #[cfg(test)]
@@ -1738,7 +1792,8 @@ mod tests {
     /// Each rule of the canonical grid, broken alone.
     #[test]
     fn every_broken_grid_rule_is_not_canonical() {
-        let broken: Vec<(&str, Box<dyn Fn(&mut TabShape)>)> = vec![
+        type Break = Box<dyn Fn(&mut TabShape)>;
+        let broken: Vec<(&str, Break)> = vec![
             (
                 "orchestrator pane missing",
                 Box::new(|s| s.panes[0].0 = "gone".into()),
