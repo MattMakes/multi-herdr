@@ -664,7 +664,11 @@ fn foreground(env: &Env, args: &CompactArgs) -> Outcome {
         started_at: horch_core::clock::stamp(Utc::now()),
         step: Step::Start.as_str().into(),
     };
-    let created = horch_core::fsx::ensure_private_dir(&dir)
+    // The compact root first: `ensure_private_dir` sets the mode of its
+    // last dir only, and a foreground job can be the first to make the root.
+    let root = jobfile::compact_root(&env.src.ctx.paths.state_root);
+    let created = horch_core::fsx::ensure_private_dir(&root)
+        .and_then(|()| horch_core::fsx::ensure_private_dir(&dir))
         .map_err(|e| format!("{e:#}"))
         .and_then(|_| {
             jobfile::create_job(&dir, &job).map_err(|e| {
@@ -751,11 +755,23 @@ fn refuse_child(
 
 /// Send 1 untagged line to the mailbox's `orchestrator` pane. Not
 /// `messaging::tell`: that would add a `[<role>]` tag.
+///
+/// Queue `line` as durable orchestrator mail first (#177): the courier
+/// delivers it when no orchestrator pane is registered yet or the push
+/// fails. A queue that fails is printed, and the line is still typed.
 fn report(env: &Env, line: &str) -> Result<()> {
+    if let Err(error) = horch_core::messaging::mail::queue_notice(
+        env.src.ctx,
+        env.workspace(),
+        "orchestrator",
+        line,
+    ) {
+        eprintln!("horch: queueing the line as mail failed: {error:#}");
+    }
     let pane = env
         .mailbox
         .pane_for("orchestrator")
-        .context("no orchestrator is registered in this workspace")?;
+        .context("no orchestrator is registered in this workspace; the line is queued as mail")?;
     delivery::send_line_when_ready(
         env.ws,
         &pane,
@@ -1507,6 +1523,80 @@ mod tests {
         assert_eq!(second, Outcome::code(0));
         assert_eq!(f.w.events("r-1", EVENT_FAILED).len(), 1);
         assert_eq!(f.typed(&orch).len(), 1);
+    }
+
+    /// #177: a job that fails with no orchestrator pane registered leaves
+    /// its `failed` line as pending orchestrator mail.
+    #[test]
+    fn a_failed_job_with_no_orchestrator_leaves_the_failed_line_as_mail() {
+        let f = Fleet::new();
+        f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        let path = f.handoff(&f.w.project(), "sonnet-1");
+        set_mtime(&path, Duration::from_secs(90 * 60));
+
+        let o = f.run("sonnet-1", |a| a.foreground = true);
+        assert_eq!(o.code, EXIT_REPORTED, "{o:?}");
+
+        let pending = horch_core::messaging::mail::Mail::under(&f.w.ctx.paths.state_root, "w1")
+            .pending()
+            .unwrap();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(pending[0].from, "horch");
+        assert!(
+            pending[0].text.starts_with(
+                "[horch] BLOCKED: Compaction of sonnet-1 failed at step start: refused: handoff "
+            ),
+            "{pending:?}"
+        );
+    }
+
+    /// A mail dir that the trust check refuses does not stop the report:
+    /// the line is still typed into the orchestrator pane.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_mail_dir_does_not_stop_the_typed_report() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fleet::new();
+        let orch = f.pane("orchestrator");
+        f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        let path = f.handoff(&f.w.project(), "sonnet-1");
+        set_mtime(&path, Duration::from_secs(90 * 60));
+        let mail = horch_core::messaging::mail::Mail::under(&f.w.ctx.paths.state_root, "w1");
+        std::fs::create_dir_all(mail.dir()).unwrap();
+        std::fs::set_permissions(mail.dir(), std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        let o = f.run("sonnet-1", |a| a.foreground = true);
+
+        assert_eq!(o.code, EXIT_REPORTED, "{o:?}");
+        let reported = f.typed(&orch);
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert!(reported[0].starts_with("[horch] BLOCKED: Compaction of sonnet-1 failed"));
+        assert!(!mail.dir().join("pending").exists(), "nothing was queued");
+    }
+
+    /// #77: a new compact dir and job dir are mode 0700, and the job log
+    /// is mode 0600: the log holds the lines reported for the worker.
+    #[cfg(unix)]
+    #[test]
+    fn compact_dirs_are_0700_and_the_job_log_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let f = Fleet::new();
+        f.pane("orchestrator");
+        f.pane("sonnet-1");
+        f.w.worker("r-1", "sonnet-1", "claude", "sonnet", Some(SMALL));
+        let path = f.handoff(&f.w.project(), "sonnet-1");
+        set_mtime(&path, Duration::from_secs(90 * 60));
+
+        let o = f.run("sonnet-1", |a| a.foreground = true);
+
+        assert_eq!(o.code, EXIT_REPORTED, "{o:?}");
+        let dir = f.env().job_dir("sonnet-1");
+        assert_eq!(mode(dir.parent().unwrap()), 0o700);
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join(LOG_FILE)), 0o600);
     }
 
     /// CTX-16: a harness that is not in `in_place` takes the fresh route,

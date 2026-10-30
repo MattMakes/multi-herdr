@@ -929,6 +929,141 @@ fn a_failed_reviews_in_tell_wakes_the_orchestrator_once() {
     assert_eq!(fallbacks(), 1, "a retry does not send it again");
 }
 
+/// #177: the reviews-in line is durable mail to the author. A first push
+/// that fails is redelivered by the courier, the author waits until it
+/// runs finish, and finish acknowledges the mail, so the courier stops.
+#[test]
+fn a_failed_reviews_in_push_is_redelivered_until_the_author_runs_finish() {
+    use horch_core::messaging::mail::Mail;
+    use horch_core::taskledger::{workers, Store};
+    let mut h = finish_world("tl-reviews-courier");
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    h.set("HORCH_FAKE_SCENARIO", "fail_first_typing");
+    h.set("HORCH_TEST_MAIL_REDELIVERY_MS", "50");
+    h.set("HORCH_TEST_MAIL_POLL_MS", "10");
+    let herdr = |args: &[&str]| {
+        let mut cmd = std::process::Command::new(h.bin.join("herdr"));
+        h.seal(&mut cmd);
+        let o = cmd.args(args).output().unwrap();
+        assert!(o.status.success(), "{}", text(&o));
+    };
+    herdr(&["workspace", "create", "--label", "author"]);
+    herdr(&[
+        "pane",
+        "test-state",
+        "w1:p1",
+        "--status",
+        "idle",
+        "--agent",
+        "claude",
+    ]);
+    let mailbox = h.state.join("herdr-orchestration-w1");
+    std::fs::create_dir_all(&mailbox).unwrap();
+    std::fs::write(mailbox.join("opus-1.id"), "w1:p1").unwrap();
+
+    ok(
+        &h,
+        &["ledger", "run", "new", "alpha", "--steps", "code-sweep"],
+    );
+    let p = ticket(&h, "01-a", "# 01: Feature\n");
+    ok(
+        &h,
+        &[
+            "ledger",
+            "add",
+            "--file",
+            &p.to_string_lossy(),
+            "--primary",
+            "opus",
+        ],
+    );
+    let w = ok(
+        &h,
+        &[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "opus",
+            "--role",
+            "opus-1",
+        ],
+    )
+    .trim()
+    .to_string();
+    ok_as(&h, &w, &["ledger", "claim"]);
+    let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
+    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    std::fs::write(path.join("a.txt"), "1\n").unwrap();
+    git_in(&h, &path, &["add", "a.txt"]);
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "a"],
+    );
+    let (_, r) = finish_json(&h, &w);
+    let n = r["queued_reviews"].as_array().unwrap().len();
+    review_all(
+        &h,
+        n,
+        "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n",
+    );
+
+    let mail = Mail::to_role(&h.state, "w1", "opus-1");
+    let pending = mail.pending().unwrap();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(
+        pending[0].text,
+        "[horch] NOTE: The reviews of T-1 are in. Run horch ledger finish."
+    );
+    let store = Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    // The reviews are done, and the author still waits: for finish.
+    let waits = workers::waiting(store.conn(), &w).unwrap();
+    assert!(
+        waits
+            .iter()
+            .any(|wait| wait.kind == "reviewers" && wait.task_ids.is_empty()),
+        "the author waits for finish: {waits:?}"
+    );
+
+    let reviews_in_prompts = || {
+        h.calls_of("herdr")
+            .iter()
+            .filter(|c| {
+                c["argv"][0] == "agent"
+                    && c["argv"][1] == "prompt"
+                    && c["argv"][2] == "w1:p1"
+                    && c["argv"][3]
+                        .as_str()
+                        .is_some_and(|t| t.contains("The reviews of T-1 are in"))
+            })
+            .count()
+    };
+    // The first prompt failed; the courier's redelivery is the next one.
+    wait_for("the courier's redelivery", || {
+        (reviews_in_prompts() >= 2).then_some(())
+    });
+
+    finish_json(&h, &w);
+    assert!(mail.pending().unwrap().is_empty(), "finish acknowledges");
+    assert!(
+        !workers::waiting(store.conn(), &w)
+            .unwrap()
+            .iter()
+            .any(|wait| wait.kind == "reviewers"),
+        "finish ends the wait"
+    );
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .open(h.state.join("mail/w1/courier.lock"))
+        .unwrap();
+    wait_for("the courier to exit", || lock.try_lock().ok());
+    let after = reviews_in_prompts();
+    let _ = lock.unlock();
+    finish_json(&h, &w);
+    assert_eq!(reviews_in_prompts(), after, "the line stops after finish");
+}
+
 #[test]
 fn stopping_one_of_three_workers_leaves_the_others_running() {
     let mut h = fleet("tl-stop", "exec,stay");

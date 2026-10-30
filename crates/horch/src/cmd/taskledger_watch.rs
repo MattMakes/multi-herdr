@@ -102,6 +102,12 @@ fn pass(
         )?;
     }
     let checked = watchdog::check_run(store, run, &live, force)?;
+    // 1 push budget for every wake of this pass (#67, #177): an orchestrator
+    // pane that is not ready holds the pass no longer, and the courier
+    // delivers the queued wakes.
+    let _budget = horch_core::messaging::delivery::start_push_budget(
+        horch_core::messaging::delivery::DONE_PUSH_BUDGET,
+    );
     for c in &checked {
         let who = c.role.as_deref().unwrap_or(&c.worker_id);
         let on = c.task.as_deref().unwrap_or("its task");
