@@ -100,6 +100,86 @@ fn pi_tail_takes_the_newest_assistant_response_that_did_not_fail() {
     }
 }
 
+/// What the tail scan takes from a file that holds only `lines` of `agent`:
+/// the tokens, the model and the offset of its usable line, if it has one.
+fn usable_in(agent: &str, lines: &[String]) -> Option<(u64, Option<String>, u64)> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "u.jsonl", lines);
+    let usable = scan_tail(&path, agent).unwrap().usable;
+    usable.map(|u| (u.tokens, u.model, u.offset))
+}
+
+/// A pi line of type `kind` whose `message` is `message`.
+fn pi_line(kind: &str, message: &str) -> String {
+    format!(r#"{{"type":"{kind}","message":{message}}}"#)
+}
+
+#[test]
+fn pi_tail_takes_only_assistant_message_lines_with_tokens() {
+    let assistant = |usage: &str| format!(r#"{{"role":"assistant","usage":{usage}}}"#);
+    for agent in ["pi", "prime"] {
+        for line in [
+            // Not a `message` line, or no type at all.
+            pi_line("custom", &assistant(r#"{"totalTokens":5}"#)),
+            format!(r#"{{"message":{}}}"#, assistant(r#"{"totalTokens":5}"#)),
+            // No message, no role, no usage, no tokens.
+            r#"{"type":"message"}"#.to_string(),
+            pi_line("message", r#"{"usage":{"totalTokens":5}}"#),
+            pi_line("message", r#"{"role":"assistant"}"#),
+            pi_line("message", &assistant(r#"{"totalTokens":0}"#)),
+            pi_line("message", &assistant(r#"{}"#)),
+        ] {
+            assert_eq!(usable_in(agent, &[line.clone()]), None, "{agent}: {line}");
+        }
+    }
+}
+
+#[test]
+fn pi_tail_counts_total_tokens_else_the_four_token_classes() {
+    let line = |usage: &str| {
+        pi_line(
+            "message",
+            &format!(r#"{{"role":"assistant","model":"m2","usage":{usage}}}"#),
+        )
+    };
+    for (usage, tokens) in [
+        (r#"{"totalTokens":7,"input":100,"output":200}"#, 7),
+        (
+            r#"{"totalTokens":0,"input":1,"output":2,"cacheRead":4,"cacheWrite":8}"#,
+            15,
+        ),
+        (r#"{"input":1,"output":2,"cacheRead":4,"cacheWrite":8}"#, 15),
+        (r#"{"totalTokens":0,"output":3}"#, 3),
+    ] {
+        let want = Some((tokens, Some("m2".to_string()), 0));
+        assert_eq!(usable_in("pi", &[line(usage)]), want, "{usage}");
+    }
+}
+
+#[test]
+fn pi_tail_passes_over_a_response_without_tokens_and_takes_a_missing_model_as_none() {
+    let older = pi_message("assistant", None, 40);
+    let empty = pi_message("assistant", Some("stop"), 0);
+    let got = usable_in("pi", &[older.clone(), empty]);
+    assert_eq!(got, Some((40, Some("m1".to_string()), 0)));
+
+    let nameless = pi_line(
+        "message",
+        r#"{"role":"assistant","usage":{"totalTokens":9}}"#,
+    );
+    let got = usable_in("pi", &[older.clone(), nameless]);
+    assert_eq!(got, Some((9, None, older.len() as u64 + 1)));
+}
+
+#[test]
+fn pi_tail_takes_a_response_with_any_stop_reason_but_aborted_and_error() {
+    for reason in ["stop", "length", "toolUse"] {
+        let line = pi_message("assistant", Some(reason), 12);
+        let got = usable_in("pi", &[line]);
+        assert_eq!(got, Some((12, Some("m1".to_string()), 0)), "{reason}");
+    }
+}
+
 fn read_marks(loc: &Locations, agent: &str, sid: &str) -> horch_core::telemetry::context::Reading {
     let cache = tempfile::tempdir().unwrap();
     read_current(loc, cache.path(), agent, Some(sid)).unwrap()
