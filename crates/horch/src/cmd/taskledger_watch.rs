@@ -471,3 +471,171 @@ fn start_detached(
     }
     Ok(pid)
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::Live;
+    use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::watchdog::{Observation, Observer};
+    use horch_core::taskledger::workers::{self, NewWorker, Worker};
+    use horch_core::taskledger::Store;
+    use horch_core::workspace::herdr::Herdr;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    /// A worker row of a new run in `dir`. The tests set the fields `observe`
+    /// reads and leave the others as the ledger made them.
+    fn worker(dir: &Path) -> Worker {
+        let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let new_run = NewRun {
+            slug: "r1".into(),
+            ..Default::default()
+        };
+        let run = store
+            .immediate(|tx| runs::create(tx, dir, &new_run))
+            .unwrap();
+        let new_worker = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        let id = store
+            .immediate(|tx| workers::insert(tx, &new_worker))
+            .unwrap();
+        workers::find(store.conn(), &id).unwrap().unwrap()
+    }
+
+    /// A herdr that answers by pane: `p1` has a status, a change count and a
+    /// screen; `p2` has a screen but no status; `p3` has a status but no
+    /// screen; any other pane fails both.
+    fn herdr(dir: &Path) -> Herdr {
+        let bin = dir.join("herdr");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             'pane get p1') echo '{\"result\":{\"pane\":{\"pane_id\":\"p1\",\"agent_status\":\"working\",\"state_change_seq\":7}}}' ;;\n\
+             'pane read p1 --source visible') echo 'the visible text' ;;\n\
+             'pane read p2 --source visible') echo 'only the screen' ;;\n\
+             'pane get p3') echo '{\"result\":{\"pane\":{\"pane_id\":\"p3\",\"agent_status\":\"idle\",\"state_change_seq\":9}}}' ;;\n\
+             warm*) ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS scans a new executable at its first exec: warm it.
+        assert!(std::process::Command::new(&bin)
+            .arg("warm")
+            .status()
+            .unwrap()
+            .success());
+        Herdr::with_bin(bin)
+    }
+
+    #[test]
+    fn the_agent_is_alive_when_its_pid_runs_with_the_recorded_start_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = Live {
+            herdr: herdr(dir.path()),
+        };
+        let mut w = worker(dir.path());
+        let me = std::process::id();
+        let start = horch_core::procid::start_time(me).unwrap() as i64;
+        let alive = |w: &Worker| live.observe(w).agent_alive;
+
+        (w.agent_pid, w.agent_started) = (Some(me as i64), Some(start));
+        assert!(alive(&w), "the pid and its start time match");
+        w.agent_started = Some(start + 1);
+        assert!(!alive(&w), "the pid runs, but it started at another time");
+        // An old record has no start time: the pid alone counts.
+        w.agent_started = None;
+        assert!(alive(&w), "the pid runs");
+        w.agent_pid = Some(2_000_000_000);
+        assert!(!alive(&w), "no process has this pid");
+        (w.agent_pid, w.agent_started) = (None, Some(start));
+        assert!(!alive(&w), "a start time without a pid");
+        w.agent_started = None;
+        assert!(!alive(&w), "no pid");
+    }
+
+    #[test]
+    fn the_pane_and_the_screen_are_read_apart_and_only_for_a_worker_with_a_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = Live {
+            herdr: herdr(dir.path()),
+        };
+        let mut w = worker(dir.path());
+        let on = |w: &mut Worker, pane: Option<&str>| {
+            w.pane_id = pane.map(str::to_string);
+            live.observe(w)
+        };
+
+        assert_eq!(
+            on(&mut w, Some("p1")),
+            Observation {
+                herdr_status: Some("working".into()),
+                herdr_seq: Some(7),
+                screen: Some("the visible text\n".into()),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            on(&mut w, Some("p2")),
+            Observation {
+                screen: Some("only the screen\n".into()),
+                ..Default::default()
+            },
+            "a pane that cannot be read as a pane still has its screen"
+        );
+        assert_eq!(
+            on(&mut w, Some("p3")),
+            Observation {
+                herdr_status: Some("idle".into()),
+                herdr_seq: Some(9),
+                ..Default::default()
+            },
+            "a pane whose screen cannot be read still has its status"
+        );
+        assert_eq!(on(&mut w, Some("p4")), Observation::default());
+        assert_eq!(on(&mut w, None), Observation::default());
+    }
+
+    #[test]
+    fn the_transcript_gives_its_size_and_the_time_it_was_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = Live {
+            herdr: herdr(dir.path()),
+        };
+        let mut w = worker(dir.path());
+        let transcript = dir.path().join("transcript.jsonl");
+        std::fs::write(&transcript, "12345").unwrap();
+        let written = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&transcript)
+            .unwrap()
+            .set_modified(written)
+            .unwrap();
+
+        w.transcript_path = Some(transcript.to_string_lossy().into_owned());
+        assert_eq!(
+            live.observe(&w),
+            Observation {
+                transcript_bytes: Some(5),
+                transcript_mtime: Some("2023-11-14T22:13:20Z".into()),
+                ..Default::default()
+            }
+        );
+        w.transcript_path = Some(
+            dir.path()
+                .join("missing.jsonl")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        assert_eq!(live.observe(&w), Observation::default());
+        w.transcript_path = None;
+        assert_eq!(live.observe(&w), Observation::default());
+    }
+}
