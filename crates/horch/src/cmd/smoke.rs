@@ -882,4 +882,148 @@ mod tests {
         ledger.done("r1", "finished").unwrap();
         assert!(!smoke_session_done(&ledger));
     }
+
+    fn rect(x: i64, y: i64, width: i64, height: i64) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// A 100x40 tab "t1" holding the given panes.
+    fn tab(panes: &[(&str, Rect)]) -> Layout {
+        Layout {
+            workspace_id: "w".into(),
+            tab_id: "t1".into(),
+            area: rect(0, 0, 100, 40),
+            panes: panes
+                .iter()
+                .map(|(id, rect)| horch_core::workspace::model::LayoutPane {
+                    pane_id: id.to_string(),
+                    rect: *rect,
+                })
+                .collect(),
+            focused_pane_id: None,
+            zoomed: false,
+        }
+    }
+
+    /// The orchestrator full height on the left, 2x2 workers beside it.
+    fn canonical() -> Vec<(&'static str, Rect)> {
+        vec![
+            ("o", rect(0, 0, 30, 40)),
+            ("a", rect(30, 0, 35, 20)),
+            ("b", rect(65, 0, 35, 20)),
+            ("c", rect(30, 20, 35, 20)),
+            ("d", rect(65, 20, 35, 20)),
+        ]
+    }
+
+    fn replace(panes: &mut [(&'static str, Rect)], id: &str, to: Rect) {
+        panes.iter_mut().find(|(p, _)| *p == id).unwrap().1 = to;
+    }
+
+    #[test]
+    fn a_canonical_tab_has_no_complaints() {
+        let layout = tab(&canonical());
+        assert!(tab_complaints(&layout, Some("o"), 4).is_empty());
+    }
+
+    #[test]
+    fn an_odd_overflow_tab_lets_the_last_bottom_span_the_free_slot() {
+        let layout = tab(&[
+            ("a", rect(0, 0, 50, 20)),
+            ("b", rect(50, 0, 50, 20)),
+            ("c", rect(0, 20, 100, 20)),
+        ]);
+        assert!(tab_complaints(&layout, None, 3).is_empty());
+    }
+
+    #[test]
+    fn rows_split_the_workers_into_sorted_top_and_bottom_rows() {
+        let layout = tab(&canonical());
+        let (orch, top, bottom) = rows(&layout, Some("o"));
+        assert_eq!(orch.unwrap().width, 30);
+        assert_eq!(top.iter().map(|r| r.x).collect::<Vec<_>>(), [30, 65]);
+        assert_eq!(bottom.iter().map(|r| r.x).collect::<Vec<_>>(), [30, 65]);
+        let (none, _, _) = rows(&layout, Some("missing"));
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn a_missing_orchestrator_is_a_complaint() {
+        let layout = tab(&canonical()[1..]);
+        let bad = tab_complaints(&layout, Some("o"), 4);
+        assert_eq!(bad[0], "t1: the orchestrator pane is not on this tab");
+        assert_eq!(bad.len(), 3, "the rows are still checked: {bad:?}");
+    }
+
+    #[test]
+    fn a_short_or_misplaced_orchestrator_is_a_complaint() {
+        let mut panes = canonical();
+        replace(&mut panes, "o", rect(2, 0, 28, 30));
+        let bad = tab_complaints(&tab(&panes), Some("o"), 4);
+        assert_eq!(
+            bad[..2],
+            [
+                "t1: the orchestrator is 30 rows tall, not the full 40",
+                "t1: the orchestrator is not leftmost (x 2)",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_wrong_worker_count_stops_the_check() {
+        let layout = tab(&canonical()[..4]);
+        assert_eq!(
+            tab_complaints(&layout, Some("o"), 4),
+            ["t1: 3 worker pane(s), expected 4"]
+        );
+    }
+
+    #[test]
+    fn a_wrong_row_split_stops_the_check() {
+        let mut panes = canonical();
+        replace(&mut panes, "b", rect(65, 20, 35, 20));
+        replace(&mut panes, "d", rect(65, 20, 35, 20));
+        assert_eq!(
+            tab_complaints(&tab(&panes), Some("o"), 4),
+            ["t1: 1 top and 3 bottom, expected 2 top and 2 bottom"]
+        );
+    }
+
+    #[test]
+    fn a_row_that_misses_either_edge_or_has_a_gap_is_a_complaint() {
+        let mut panes = canonical();
+        replace(&mut panes, "a", rect(34, 0, 31, 20));
+        replace(&mut panes, "b", rect(70, 0, 25, 20));
+        assert_eq!(
+            tab_complaints(&tab(&panes), Some("o"), 4),
+            [
+                "t1: the top row starts at 34, not 30",
+                "t1: the top row ends at 95, not 100",
+                "t1: a gap or overlap in the top row at x 70",
+                "t1: bottom pane at x 30 is not under the column at x 34",
+                "t1: bottom pane at x 65 is not under the column at x 70",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bottom_row_must_sit_under_the_top_row_in_the_same_columns() {
+        let mut panes = canonical();
+        replace(&mut panes, "c", rect(30, 25, 35, 10));
+        replace(&mut panes, "d", rect(70, 25, 30, 10));
+        assert_eq!(
+            tab_complaints(&tab(&panes), Some("o"), 4),
+            [
+                "t1: a gap or overlap in the bottom row at x 70",
+                "t1: the bottom row starts at y 25, not under the top row at 20",
+                "t1: the two rows are 30 rows, not the tab's 40",
+                "t1: bottom pane at x 70 is not under the column at x 65",
+            ]
+        );
+    }
 }
