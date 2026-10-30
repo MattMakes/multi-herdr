@@ -607,10 +607,7 @@ fn load_operator_skill(
     }
     let (bytes, meta) = read_operator_skill_md(who, operator, name, &skill_dir)?;
     bail_if_subagent(who, name, &bytes)?;
-    let digest: Digest = horch_marketplace::integrity::tree_digest(&skill_dir)
-        .map_err(|e| anyhow!("{who}: operator skill '{name}': {e}"))?
-        .parse()
-        .with_context(|| format!("{who}: operator skill '{name}' digest"))?;
+    let digest = operator_skill_digest(who, name, &skill_dir)?;
     Ok(Some(CatalogEntry {
         id,
         version: SkillVersion(format!("operator+{}", digest.short12())),
@@ -624,6 +621,15 @@ fn load_operator_skill(
         files: Vec::new(),
         executable: Vec::new(),
     }))
+}
+
+/// The digest of the tree of operator skill `name`, which the digest rules
+/// may refuse.
+fn operator_skill_digest(who: &str, name: &str, skill_dir: &Path) -> Result<Digest> {
+    horch_marketplace::integrity::tree_digest(skill_dir)
+        .map_err(|e| anyhow!("{who}: operator skill '{name}': {e}"))?
+        .parse()
+        .with_context(|| format!("{who}: operator skill '{name}' digest"))
 }
 
 /// The bytes and the metadata of `<skill_dir>/SKILL.md`.
