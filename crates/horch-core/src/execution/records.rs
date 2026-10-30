@@ -35,9 +35,9 @@ pub const EVENT_REPORT_QUEUED: &str = "report-queued";
 
 /// A project's ledger file.
 #[derive(Debug, Clone)]
-pub struct Ledger {
+pub struct SessionLedger {
     store: ExecutionStore,
-    /// What [`Ledger::insert`] fills into a record that leaves them empty.
+    /// What [`SessionLedger::insert`] fills into a record that leaves them empty.
     project: Option<String>,
     workspace_id: Option<String>,
 }
@@ -61,7 +61,7 @@ pub struct NewRecord<'a> {
     pub phase: Option<Phase>,
 }
 
-impl Ledger {
+impl SessionLedger {
     /// The ledger for the context's project, under its state root. Records
     /// inserted here default to that project and the context's workspace.
     pub fn open_in(ctx: &crate::runtime::RuntimeContext) -> Result<Self> {
@@ -71,13 +71,13 @@ impl Ledger {
             .with_workspace(ctx.herdr.workspace.as_ref().map(|w| w.to_string())))
     }
 
-    /// The project [`Ledger::insert`] fills into a record without one.
+    /// The project [`SessionLedger::insert`] fills into a record without one.
     pub(crate) fn with_project(mut self, project: Option<String>) -> Self {
         self.project = project;
         self
     }
 
-    /// The workspace [`Ledger::insert`] fills into a record without one.
+    /// The workspace [`SessionLedger::insert`] fills into a record without one.
     pub fn with_workspace(mut self, workspace_id: Option<String>) -> Self {
         self.workspace_id = workspace_id;
         self
@@ -247,7 +247,7 @@ impl Ledger {
     /// The live (starting or running) record of `role` with the newest
     /// `updated_at`. With `Some(ws)`, only records whose `workspace_id` is
     /// `ws` or absent count (review finding 13): 2 fleets of 1 project can
-    /// both have a `sonnet-1`. The 1 selection rule of [`Ledger::assign_in`],
+    /// both have a `sonnet-1`. The 1 selection rule of [`SessionLedger::assign_in`],
     /// `horch compact` and the note check.
     pub fn live_for_role(&self, role: &str, workspace: Option<&str>) -> Result<Option<Record>> {
         Ok(pick_live(&self.read()?, role, workspace).cloned())
@@ -262,7 +262,7 @@ impl Ledger {
         self.assign_in(role, None, task)
     }
 
-    /// [`Ledger::assign`] to the record [`Ledger::live_for_role`] selects in
+    /// [`SessionLedger::assign`] to the record [`SessionLedger::live_for_role`] selects in
     /// `workspace`.
     pub fn assign_in(&self, role: &str, workspace: Option<&str>, task: &str) -> Result<()> {
         let at = now();
@@ -351,7 +351,7 @@ impl Ledger {
     }
 }
 
-/// The selection of [`Ledger::live_for_role`].
+/// The selection of [`SessionLedger::live_for_role`].
 fn pick_live<'a>(records: &'a [Record], role: &str, workspace: Option<&str>) -> Option<&'a Record> {
     records
         .iter()
@@ -369,9 +369,9 @@ mod tests {
     use crate::execution::legacy::KIND_ORCHESTRATOR;
     use crate::execution::store::slug;
 
-    fn ledger() -> (tempfile::TempDir, Ledger) {
+    fn ledger() -> (tempfile::TempDir, SessionLedger) {
         let tmp = tempfile::tempdir().unwrap();
-        let l = Ledger::for_project(tmp.path(), "/Users/a/proj");
+        let l = SessionLedger::for_project(tmp.path(), "/Users/a/proj");
         (tmp, l)
     }
 

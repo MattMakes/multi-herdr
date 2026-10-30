@@ -9,7 +9,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use horch_core::execution::legacy::Record;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::messaging::channel;
 use horch_e2e::harness::Harness;
 use serde_json::Value;
@@ -224,7 +224,7 @@ fn install_codex_queue(h: &mut Harness, exit: i32) -> PathBuf {
 }
 
 fn install_thread_record(h: &Harness) {
-    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "record-e2e".into(),
             session_id: Some(THREAD_ID.into()),
@@ -368,7 +368,7 @@ fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
     )
     .unwrap();
     let worker_pane = create_target_pane(&h);
-    Ledger::for_project(&h.state, &h.project.to_string_lossy())
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "worker-e2e".into(),
             agent: "claude".into(),

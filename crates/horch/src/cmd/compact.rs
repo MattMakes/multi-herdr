@@ -33,7 +33,7 @@ use horch_core::compaction::policy::{
     self, HandoffProblem, JobLiveness, RowState, EVENT_FAILED, EVENT_REQUESTED, EVENT_WARNED,
 };
 use horch_core::execution::legacy::Record;
-use horch_core::execution::records::Ledger;
+use horch_core::execution::records::SessionLedger;
 use horch_core::harness::codex::PaneMode;
 use horch_core::harness::HarnessKind;
 use horch_core::messaging::delivery::{self, Readiness, Timing};
@@ -179,7 +179,7 @@ pub fn compact(ctx: &RuntimeContext, args: &CompactArgs) -> Result<ExitCode> {
         Ok(m) => m,
         Err(e) => return Ok(print(Outcome::refused(format!("{e:#}")))),
     };
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     let roster = match super::load_roster_unwarned(ctx, None) {
         Ok(r) => r,
         Err(_) => horch_core::roster::Roster::builtin()?,
@@ -209,7 +209,7 @@ pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<()> {
     let Some(record_id) = ctx.worker.as_ref().and_then(|w| w.record_id.as_deref()) else {
         return Ok(());
     };
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     let record = ledger.get(record_id)?;
     let roster = super::load_roster_unwarned(ctx, None)
         .or_else(|_| horch_core::roster::Roster::builtin())?;

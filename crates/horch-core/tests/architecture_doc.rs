@@ -1,5 +1,8 @@
 //! `docs/architecture.md` is the "what lives where" map. These tests fail
-//! when a module or a command file has no row in it (#213).
+//! when a module or a command file has no row in it (#213), and when a type
+//! in horch-core is named plain `Ledger` (#215): horch has 2 ledgers, the
+//! JSON session ledger and the SQLite task ledger, and a plain name hides
+//! which one a reader holds.
 
 use std::path::{Path, PathBuf};
 
@@ -68,5 +71,43 @@ fn every_cli_file_has_a_row_in_the_architecture_doc() {
     assert!(
         missing.is_empty(),
         "docs/architecture.md has no CLI row for {missing:?}"
+    );
+}
+
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn no_core_type_is_named_plain_ledger() {
+    let mut files = Vec::new();
+    rust_files(&repo().join("crates/horch-core/src"), &mut files);
+    let mut found = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            let words: Vec<&str> = line
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .filter(|w| !w.is_empty())
+                .collect();
+            let declares = words
+                .windows(2)
+                .any(|w| matches!(w[0], "struct" | "enum" | "type" | "trait") && w[1] == "Ledger");
+            if declares {
+                found.push(format!("{}:{}", file.display(), n + 1));
+            }
+        }
+    }
+    assert!(files.len() > 100, "scanned {} files", files.len());
+    assert!(
+        found.is_empty(),
+        "name the store (SessionLedger, taskledger::store::Store): {found:?}"
     );
 }

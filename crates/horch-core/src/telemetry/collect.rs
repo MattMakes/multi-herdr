@@ -174,7 +174,7 @@ pub struct Collector {
     pub quota_env: QuotaEnv,
     pub info: CollectorInfo,
     /// Each ledger's last good records, read again only when it changes.
-    last_good: BTreeMap<PathBuf, Ledger>,
+    last_good: BTreeMap<PathBuf, LedgerSnapshot>,
     /// Where each session's inputs are, kept across ticks.
     places: HashMap<(String, String), Place>,
     /// Each session's inputs as they were when last polled.
@@ -354,7 +354,8 @@ impl Collector {
                 continue;
             }
             if let Some(records) = execution_store::read_ledger_file(&path) {
-                self.last_good.insert(path, Ledger { stamp, records });
+                self.last_good
+                    .insert(path, LedgerSnapshot { stamp, records });
             }
         }
     }
@@ -840,7 +841,7 @@ fn file_hash(path: &Path) -> Option<u64> {
 
 /// One ledger file's last good records, and the file's stamp when they
 /// were read.
-struct Ledger {
+struct LedgerSnapshot {
     stamp: Option<Stamp>,
     records: Vec<Record>,
 }

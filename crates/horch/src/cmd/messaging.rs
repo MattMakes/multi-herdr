@@ -16,7 +16,7 @@ use horch_core::competition::observe::TelemetryUsage;
 use horch_core::execution::lifecycle::{
     self, ClaimLine, DoneRequest, DoneSteps, ReportStatus, ReportTarget,
 };
-use horch_core::execution::records::{Ledger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
+use horch_core::execution::records::{SessionLedger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
 use horch_core::execution::store::to_execution;
 use horch_core::execution::ExecutionKind;
 use horch_core::fleet_runs::facts::{record_run, RunSources};
@@ -628,7 +628,7 @@ fn inbox_listing(roles: &[RoleEntry], channel_live: bool) -> String {
 /// worker that does not exist yet, use `horch spawn`.
 ///
 /// The record is the role's live record in the mailbox's workspace
-/// ([`Ledger::live_for_role`], review finding 13): 2 fleets of 1 project can
+/// ([`SessionLedger::live_for_role`], review finding 13): 2 fleets of 1 project can
 /// both have the role.
 pub fn assign(ctx: &RuntimeContext, role: &str, task: &str) -> Result<()> {
     if let Some(run) = super::taskledger::active_run_slug(ctx) {
@@ -641,7 +641,7 @@ pub fn assign(ctx: &RuntimeContext, role: &str, task: &str) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)
         .context("horch assign must run inside a herdr pane, or with HORCH_WORKSPACE_ID set")?;
-    Ledger::open_in(ctx)?.assign_in(role, Some(mailbox.workspace_id()), task)?;
+    SessionLedger::open_in(ctx)?.assign_in(role, Some(mailbox.workspace_id()), task)?;
     tell(ctx, role, task)
 }
 
@@ -655,7 +655,7 @@ pub fn assign(ctx: &RuntimeContext, role: &str, task: &str) -> Result<()> {
 /// errors are visible on stderr; a panic is silenced.
 pub fn note(ctx: &RuntimeContext, text: &str) -> Result<()> {
     let record_id = require_env("HORCH_RECORD_ID", worker_var(ctx, |w| &w.record_id))?;
-    Ledger::open_in(ctx)?.note(&record_id, text)?;
+    SessionLedger::open_in(ctx)?.note(&record_id, text)?;
     super::taskledger::note_from_worker(ctx, text);
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
@@ -676,7 +676,7 @@ fn quiet_note_check(ctx: &RuntimeContext, record_id: &str) -> Option<String> {
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ledger = Ledger::open_in(ctx).ok()?;
+        let ledger = SessionLedger::open_in(ctx).ok()?;
         let roster = super::load_roster_unwarned(ctx, None).ok()?;
         let loc = Locations::from_context(ctx);
         let cache = context::cache_dir(ctx);
@@ -774,7 +774,7 @@ pub fn done_then(
     }
 
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let ledger = Ledger::open_in(ctx)?;
+    let ledger = SessionLedger::open_in(ctx)?;
     let closed = lifecycle::done(
         &herdr,
         &CliDone {
@@ -822,7 +822,7 @@ fn report_target(ctx: &RuntimeContext, workspace: Option<&str>, role: &str) -> R
 /// out itself (its `watch` root pane and its candidate panes), and spawns
 /// with tiling off. A judge has no pane. Neither settles the grid on `done`.
 /// A record that cannot be read or typed settles, as every worker did.
-fn coordinator_owns_layout(ledger: &Ledger, record_id: &str) -> bool {
+fn coordinator_owns_layout(ledger: &SessionLedger, record_id: &str) -> bool {
     ledger
         .get(record_id)
         .ok()
@@ -955,15 +955,15 @@ impl DoneSteps for CliDone<'_> {
     }
 
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()> {
-        Ledger::open_in(self.ctx)?.done(record_id, summary)
+        SessionLedger::open_in(self.ctx)?.done(record_id, summary)
     }
 
     fn recorded(&self, record_id: &str) -> Result<bool> {
-        Ledger::open_in(self.ctx)?.done_recorded(record_id)
+        SessionLedger::open_in(self.ctx)?.done_recorded(record_id)
     }
 
     fn report_failed(&self, record_id: &str, error: &str) {
-        let noted = Ledger::open_in(self.ctx)
+        let noted = SessionLedger::open_in(self.ctx)
             .and_then(|l| l.record_event(record_id, EVENT_REPORT_FAILED, error));
         if let Err(e) = noted {
             eprintln!("horch done: could not record the failed report ({e:#})");
@@ -971,7 +971,7 @@ impl DoneSteps for CliDone<'_> {
     }
 
     fn report_queued(&self, record_id: &str, error: &str) {
-        let noted = Ledger::open_in(self.ctx)
+        let noted = SessionLedger::open_in(self.ctx)
             .and_then(|ledger| ledger.record_event(record_id, EVENT_REPORT_QUEUED, error));
         if let Err(event_error) = noted {
             eprintln!("horch done: could not record the queued report ({event_error:#})");
@@ -1029,7 +1029,7 @@ impl DoneSteps for CliDone<'_> {
     }
 
     fn record_run(&self, record_id: &str) -> Result<()> {
-        let record = Ledger::open_in(self.ctx)?.get(record_id)?;
+        let record = SessionLedger::open_in(self.ctx)?.get(record_id)?;
         let project = self.ctx.paths.project()?;
         let paths = DatasetPaths::new(&self.ctx.paths.state_root, &project);
         let usage = TelemetryUsage {
@@ -1367,7 +1367,7 @@ mod tests {
     #[test]
     fn done_settles_only_outside_the_coordinator_layout() {
         let tmp = tempfile::tempdir().unwrap();
-        let ledger = Ledger::for_project(tmp.path(), "/work/alpha");
+        let ledger = SessionLedger::for_project(tmp.path(), "/work/alpha");
         ledger.insert(record("worker", None, None, None)).unwrap();
         ledger
             .insert(record("candidate", Some("e1"), Some("r1"), Some("A")))
