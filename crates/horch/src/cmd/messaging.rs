@@ -245,11 +245,13 @@ impl Outgoing<'_> {
             Err(anyhow::anyhow!("the orchestrator needs /login"))
         } else {
             push_line(
-                self.ctx,
-                &herdr,
-                &self.mailbox,
-                &self.role,
-                self.sender.as_deref(),
+                &Tell {
+                    ctx: self.ctx,
+                    herdr: &herdr,
+                    mailbox: &self.mailbox,
+                    role: &self.role,
+                    sender: self.sender.as_deref(),
+                },
                 self.target,
                 self.line,
                 true,
@@ -286,82 +288,107 @@ impl Outgoing<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn push_line(
-    ctx: &RuntimeContext,
-    herdr: &Herdr,
-    mailbox: &Mailbox,
-    role: &str,
-    sender: Option<&str>,
-    target: Option<String>,
-    mut line: String,
-    relay: bool,
-) -> Result<()> {
-    // `horch done` caps all its pushes at one budget; a spent budget skips
-    // the relay and waits no more, so only an idle agent still gets the line.
-    let spent = delivery::push_time_left().is_some_and(|left| left.is_zero());
-    if role == "orchestrator" && relay && !spent {
-        let socket = channel::socket_path(&ctx.paths.state_root, mailbox.workspace_id());
-        let from = sender.unwrap_or("orchestrator");
-        let send_timeout = if cfg!(debug_assertions) {
-            std::env::var("HORCH_TEST_CHANNEL_SEND_TIMEOUT_MS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .map(std::time::Duration::from_millis)
-                .unwrap_or(channel::SEND_TIMEOUT)
-        } else {
-            channel::SEND_TIMEOUT
-        };
-        let send_timeout = delivery::capped(send_timeout);
-        match channel::send(&socket, from, &line, send_timeout) {
-            Ok(()) => return Ok(()),
-            Err(channel::SendError::NotDelivered(error)) if socket.exists() => eprintln!(
-                "horch tell: the channel relay did not take the message ({error}); typing it instead"
-            ),
-            Err(channel::SendError::Unconfirmed(error)) => {
-                eprintln!(
-                    "horch tell: the channel relay did not confirm the message ({error}); typing it again with a duplicate warning"
-                );
-                line.push_str(" (sent again: the channel relay did not confirm)");
-            }
-            Err(_) => {}
-        }
-    }
+/// Who a pushed line is from and where it goes.
+struct Tell<'a> {
+    ctx: &'a RuntimeContext,
+    herdr: &'a Herdr,
+    mailbox: &'a Mailbox,
+    role: &'a str,
+    sender: Option<&'a str>,
+}
+
+fn push_line(tell: &Tell, target: Option<String>, line: String, relay: bool) -> Result<()> {
+    let Some(line) = (if relay {
+        try_relay(tell, line)
+    } else {
+        Some(line)
+    }) else {
+        return Ok(());
+    };
     let Some(target) = target else {
-        let known: Vec<String> = mailbox.roles().into_iter().map(|(r, _)| r).collect();
-        let known = if known.is_empty() {
-            "none yet".to_string()
-        } else {
-            known.join(" ")
-        };
-        // A relay that answers is an orchestrator that refused this one
-        // message: `horch done` would not get through either.
-        let relay_live = role == "orchestrator"
-            && channel::is_live(&channel::socket_path(
-                &ctx.paths.state_root,
-                mailbox.workspace_id(),
-            ));
-        let hint = if relay_live {
-            ""
-        } else {
-            no_orchestrator_hint(role, sender)
-        };
-        bail!(
-            "role '{role}' is not registered in {}\n       known roles: {known}{hint}",
-            mailbox.dir().display(),
-        );
+        return Err(not_registered(tell));
     };
     // An agent that is still starting drops typed text, so wait it out. A
     // role that registered just now may not show its agent yet.
-    let grace = ctx.settings.tell_grace.unwrap_or(delivery::TELL_GRACE);
-    let age = mailbox.registered_at(role).and_then(|at| at.elapsed().ok());
+    let grace = tell.ctx.settings.tell_grace.unwrap_or(delivery::TELL_GRACE);
+    let age = tell
+        .mailbox
+        .registered_at(tell.role)
+        .and_then(|at| at.elapsed().ok());
     delivery::send_line_when_ready(
-        herdr,
+        tell.herdr,
         &target,
         &line,
         grace_left(age, grace),
         &delivery::Readiness::DEFAULT,
         &delivery::Timing::DEFAULT,
+    )
+}
+
+/// Offer `line` to the orchestrator's channel relay. `None`: the relay took
+/// it. `Some(line)`: the caller types it, with a duplicate warning when the
+/// relay did not confirm.
+fn try_relay(tell: &Tell, mut line: String) -> Option<String> {
+    // `horch done` caps all its pushes at one budget; a spent budget skips
+    // the relay and waits no more, so only an idle agent still gets the line.
+    let spent = delivery::push_time_left().is_some_and(|left| left.is_zero());
+    if tell.role != "orchestrator" || spent {
+        return Some(line);
+    }
+    let socket = channel::socket_path(&tell.ctx.paths.state_root, tell.mailbox.workspace_id());
+    let from = tell.sender.unwrap_or("orchestrator");
+    match channel::send(&socket, from, &line, delivery::capped(send_timeout())) {
+        Ok(()) => return None,
+        Err(channel::SendError::NotDelivered(error)) if socket.exists() => eprintln!(
+            "horch tell: the channel relay did not take the message ({error}); typing it instead"
+        ),
+        Err(channel::SendError::Unconfirmed(error)) => {
+            eprintln!(
+                "horch tell: the channel relay did not confirm the message ({error}); typing it again with a duplicate warning"
+            );
+            line.push_str(" (sent again: the channel relay did not confirm)");
+        }
+        Err(_) => {}
+    }
+    Some(line)
+}
+
+/// The relay send timeout; a debug build lets a test shorten it.
+fn send_timeout() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("HORCH_TEST_CHANNEL_SEND_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        return std::time::Duration::from_millis(ms);
+    }
+    channel::SEND_TIMEOUT
+}
+
+/// The error of a line to a role that is not registered.
+fn not_registered(tell: &Tell) -> anyhow::Error {
+    let known: Vec<String> = tell.mailbox.roles().into_iter().map(|(r, _)| r).collect();
+    let known = if known.is_empty() {
+        "none yet".to_string()
+    } else {
+        known.join(" ")
+    };
+    // A relay that answers is an orchestrator that refused this one
+    // message: `horch done` would not get through either.
+    let relay_live = tell.role == "orchestrator"
+        && channel::is_live(&channel::socket_path(
+            &tell.ctx.paths.state_root,
+            tell.mailbox.workspace_id(),
+        ));
+    let hint = if relay_live {
+        ""
+    } else {
+        no_orchestrator_hint(tell.role, tell.sender)
+    };
+    anyhow::anyhow!(
+        "role '{}' is not registered in {}\n       known roles: {known}{hint}",
+        tell.role,
+        tell.mailbox.dir().display(),
     )
 }
 
@@ -455,10 +482,47 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
         let mail = Mail::to_role(&ctx.paths.state_root, mailbox.workspace_id(), role);
         return print_mail(&mail, peek);
     }
+    print_orchestrator_mail(ctx, &herdr, &mailbox, peek)
+}
+
+/// Print the orchestrator's mail. Only the orchestrator's pane acknowledges
+/// it; any other pane gets a peek and one line that says so.
+fn print_orchestrator_mail(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    mailbox: &Mailbox,
+    peek: bool,
+) -> Result<()> {
+    let seat = may_acknowledge(
+        ctx.herdr.pane.as_ref().map(|p| p.as_str()),
+        |pane| herdr.pane_get(pane).ok().map(|p| p.pane_id),
+        mailbox.pane_for("orchestrator").as_deref(),
+    );
+    if !peek && !seat {
+        eprintln!(
+            "horch inbox: this pane is not the orchestrator's, so the mail is shown, not acknowledged"
+        );
+    }
     print_mail(
         &Mail::under(&ctx.paths.state_root, mailbox.workspace_id()),
-        peek,
+        peek || !seat,
     )
+}
+
+/// Whether the caller may acknowledge the orchestrator's mail: a pane
+/// outside the fleet (`caller` unset) or a fleet with no registered
+/// orchestrator may; a pane that is not the registered orchestrator's may
+/// not (a resumed worker, #125). `caller` is herdr's internal pane id and
+/// `orchestrator` the public one, so both forms are compared.
+fn may_acknowledge(
+    caller: Option<&str>,
+    public_id: impl FnOnce(&str) -> Option<String>,
+    orchestrator: Option<&str>,
+) -> bool {
+    let (Some(caller), Some(orchestrator)) = (caller, orchestrator) else {
+        return true;
+    };
+    caller == orchestrator || public_id(caller).is_some_and(|id| id == orchestrator)
 }
 
 /// Acknowledge the notices horch queued for `role` (`horch ledger finish`
@@ -636,15 +700,7 @@ fn quiet_note_check(ctx: &RuntimeContext, record_id: &str) -> Option<String> {
 /// `warning-orchestrator` for an orchestrator record.
 pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String>> {
     let record = src.ledger.get(record_id)?;
-    if !record.execution_status().is_live() {
-        return Ok(None);
-    }
-    let workspace = src.ctx.herdr.workspace.as_ref().map(|w| w.to_string());
-    let row = context::build_row(src, record, workspace.as_deref());
-    if !policy::should_warn(&row.inputs()) {
-        return Ok(None);
-    }
-    let Some(tokens) = row.tokens() else {
+    let Some((row, tokens)) = warn_row(src, record) else {
         return Ok(None);
     };
     let key = if row.record.is_orchestrator() {
@@ -668,6 +724,23 @@ pub(crate) fn note_check(src: &Sources, record_id: &str) -> Result<Option<String
         &format!("tokens {tokens} threshold {threshold}"),
     );
     Ok(Some(line))
+}
+
+/// The context row of a live `record` and its tokens, when the rule warns.
+fn warn_row(
+    src: &Sources,
+    record: horch_core::execution::legacy::Record,
+) -> Option<(context::Row, u64)> {
+    if !record.execution_status().is_live() {
+        return None;
+    }
+    let workspace = src.ctx.herdr.workspace.as_ref().map(|w| w.to_string());
+    let row = context::build_row(src, record, workspace.as_deref());
+    if !policy::should_warn(&row.inputs()) {
+        return None;
+    }
+    let tokens = row.tokens()?;
+    Some((row, tokens))
 }
 
 /// Worker-facing self-shutdown, run only when the work is truly complete (not
@@ -762,6 +835,22 @@ fn coordinator_owns_layout(ledger: &Ledger, record_id: &str) -> bool {
         })
 }
 
+/// Whether a failed `git rev-parse --show-toplevel` means there is no git
+/// or no work tree here, so nothing can be unregistered.
+fn outside_repo(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let git_not_found = cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound);
+        let not_work_tree = matches!(
+            cause.downcast_ref::<GitError>(),
+            Some(GitError::Failed { args, status: 128, .. })
+                if args == &["rev-parse", "--show-toplevel"]
+        );
+        git_not_found || not_work_tree
+    })
+}
+
 /// The first line `horch done` prints, so the worker sees progress at once.
 /// On stderr: stdout stays data.
 pub const CLOSING: &str = "closing: reporting to the orchestrator";
@@ -780,6 +869,31 @@ struct CliDone<'a> {
 }
 
 impl CliDone<'_> {
+    /// The lines of the worktrees under `dir` that nobody registered.
+    fn scan_unregistered(&self, dir: &std::path::Path) -> Result<Vec<String>> {
+        Landing::new(
+            self.ctx.bins.harness.git.clone(),
+            self.ctx.paths.state_root.clone(),
+        )
+        .with_recorded_worktrees(super::worktree::recorded_worktrees(self.ctx))
+        .unregistered(dir)
+        .map(|scan| {
+            super::worktree::note_skipped("done", &scan.skipped);
+            scan.entries
+                .into_iter()
+                .map(|entry| {
+                    format!(
+                        "{} branch {} ahead {} dirty {}",
+                        entry.path.display(),
+                        entry.branch.as_deref().unwrap_or("detached"),
+                        entry.ahead,
+                        entry.dirty
+                    )
+                })
+                .collect()
+        })
+    }
+
     /// The role name can start again: its old notices must not reach the
     /// next worker that takes it. Best effort.
     fn drop_role_mail(&self, workspace: &str, role: &str) {
@@ -830,45 +944,14 @@ impl DoneSteps for CliDone<'_> {
     fn unregistered(&self) -> Result<Vec<String>> {
         let dir = self.ctx.paths.project()?;
         let git = GitCli::new(self.ctx.bins.harness.git.clone());
-        if let Err(error) = git.toplevel(&dir) {
-            let git_not_found = error.chain().any(|cause| {
-                cause
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound)
-            });
-            let not_work_tree = error.chain().any(|cause| {
-                matches!(
-                    cause.downcast_ref::<GitError>(),
-                    Some(GitError::Failed { args, status: 128, .. })
-                        if args == &["rev-parse", "--show-toplevel"]
-                )
-            });
-            if git_not_found || not_work_tree {
-                return Ok(Vec::new());
-            }
-            return Err(error);
+        let Err(error) = git.toplevel(&dir) else {
+            return self.scan_unregistered(&dir);
+        };
+        if outside_repo(&error) {
+            Ok(Vec::new())
+        } else {
+            Err(error)
         }
-        Landing::new(
-            self.ctx.bins.harness.git.clone(),
-            self.ctx.paths.state_root.clone(),
-        )
-        .with_recorded_worktrees(super::worktree::recorded_worktrees(self.ctx))
-        .unregistered(&dir)
-        .map(|scan| {
-            super::worktree::note_skipped("done", &scan.skipped);
-            scan.entries
-                .into_iter()
-                .map(|entry| {
-                    format!(
-                        "{} branch {} ahead {} dirty {}",
-                        entry.path.display(),
-                        entry.branch.as_deref().unwrap_or("detached"),
-                        entry.ahead,
-                        entry.dirty
-                    )
-                })
-                .collect()
-        })
     }
 
     fn mark_done(&self, record_id: &str, summary: &str) -> Result<()> {
@@ -1168,6 +1251,83 @@ mod tests {
         assert!(text.starts_with("HORCH_RECORD_ID is unset"), "{text}");
         assert!(text.contains("Do not set it yourself"), "{text}");
         assert_eq!(require_env("HORCH_ROLE", Some("r".into())).unwrap(), "r");
+    }
+
+    fn failed(status: i32, args: &[&str]) -> anyhow::Error {
+        GitError::Failed {
+            args: args.iter().map(|a| a.to_string()).collect(),
+            status,
+            stderr: String::new(),
+        }
+        .into()
+    }
+
+    /// `horch done` reads "no git" and "not a work tree" as nothing to
+    /// register, and every other git failure as a failure.
+    #[test]
+    fn outside_repo_means_no_git_or_no_work_tree() {
+        let toplevel = ["rev-parse", "--show-toplevel"];
+        assert!(outside_repo(&failed(128, &toplevel)));
+        assert!(!outside_repo(&failed(1, &toplevel)));
+        assert!(!outside_repo(&failed(128, &["status"])));
+        let missing = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(outside_repo(&missing.context("running git")));
+        let denied = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(!outside_repo(&denied));
+    }
+
+    /// The error of a line to a role nobody registered: it names the
+    /// registry and the known roles, and a worker's line to a missing
+    /// orchestrator gets the `horch done` hint.
+    #[test]
+    fn a_line_to_an_unregistered_role_names_the_known_roles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with("HORCH_STATE_DIR", &tmp.path().to_string_lossy())
+                .with_exe("/nonexistent/horch"),
+        )
+        .unwrap();
+        let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+        let mailbox = Mailbox::under(&ctx.paths.state_root, "w1");
+        let tell = |role, sender| {
+            not_registered(&Tell {
+                ctx: &ctx,
+                herdr: &herdr,
+                mailbox: &mailbox,
+                role,
+                sender,
+            })
+            .to_string()
+        };
+        let dir = mailbox.dir().display().to_string();
+        assert_eq!(
+            tell("sonnet-9", Some("sonnet-1")),
+            format!("role 'sonnet-9' is not registered in {dir}\n       known roles: none yet")
+        );
+        let hinted = tell("orchestrator", Some("sonnet-1"));
+        assert!(
+            hinted.contains("no orchestrator runs in this workspace"),
+            "{hinted}"
+        );
+        let operator = tell("orchestrator", None);
+        assert!(!operator.contains("no orchestrator runs"), "{operator}");
+    }
+
+    /// #125: a resumed worker pane runs `horch inbox` and must not
+    /// acknowledge the orchestrator's mail.
+    #[test]
+    fn only_the_orchestrator_pane_acknowledges_the_inbox() {
+        let public = |pane: &str| Some(format!("w1:{pane}"));
+        // The orchestrator's pane, in the internal or the public form.
+        assert!(may_acknowledge(Some("p1"), public, Some("w1:p1")));
+        assert!(may_acknowledge(Some("w1:p1"), |_| None, Some("w1:p1")));
+        // A worker pane.
+        assert!(!may_acknowledge(Some("p2"), public, Some("w1:p1")));
+        assert!(!may_acknowledge(Some("w1:p2"), |_| None, Some("w1:p1")));
+        // No pane (an operator shell) and no registered orchestrator.
+        assert!(may_acknowledge(None, public, Some("w1:p1")));
+        assert!(may_acknowledge(Some("p2"), public, None));
     }
 
     #[test]

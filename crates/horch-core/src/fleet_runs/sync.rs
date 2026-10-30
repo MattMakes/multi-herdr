@@ -9,7 +9,7 @@
 //! of transcripts (240 took 31 s in a debug build), and `horch spawn` must
 //! stay quick. The oldest records go first: their transcripts expire first.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -17,9 +17,9 @@ use chrono::{DateTime, Utc};
 
 use crate::execution::legacy::LedgerRecordV1;
 use crate::fleet_runs::facts::{
-    build_run_row, latest_starts, run_ids, run_key, skip_reason, RunSources,
+    build_run_row, latest_starts, run_ids, run_key, skip_reason, RunKey, RunSources,
 };
-use crate::fleet_runs::rows::WrittenBy;
+use crate::fleet_runs::rows::{RunRow, WrittenBy};
 use crate::fleet_runs::store::{self, FleetFile};
 use crate::measure::paths::DatasetPaths;
 
@@ -60,16 +60,7 @@ pub fn sync_project(
 ) -> Result<SyncReport> {
     let mut report = SyncReport::default();
     let have = run_ids(paths)?;
-    let mut pending = Vec::new();
-    for record in records {
-        if let Some(reason) = skip_reason(record) {
-            *report.skipped.entry(reason).or_default() += 1;
-        } else if have.contains(&run_key(record)) {
-            report.already += 1;
-        } else {
-            pending.push(record);
-        }
-    }
+    let mut pending = pending_records(records, &have, &mut report);
     pending.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     report.deferred = pending.len().saturating_sub(max_new);
     pending.truncate(max_new);
@@ -85,17 +76,99 @@ pub fn sync_project(
             build_run_row(r, start, sources, project, now, WrittenBy::Sync)
         })
         .collect();
+    append_new_rows(paths, rows, &mut report).map(|()| report)
+}
+
+/// The records that need a row. A record that gets none, or has one, is
+/// counted in `report`.
+fn pending_records<'a>(
+    records: &'a [LedgerRecordV1],
+    have: &BTreeSet<RunKey>,
+    report: &mut SyncReport,
+) -> Vec<&'a LedgerRecordV1> {
+    let mut pending = Vec::new();
+    for record in records {
+        if let Some(reason) = skip_reason(record) {
+            *report.skipped.entry(reason).or_default() += 1;
+        } else if have.contains(&run_key(record)) {
+            report.already += 1;
+        } else {
+            pending.push(record);
+        }
+    }
+    pending
+}
+
+/// Append `rows` under the fleet lock. The keys are read again under the
+/// lock: another writer can add a row after the first read.
+fn append_new_rows(paths: &DatasetPaths, rows: Vec<RunRow>, report: &mut SyncReport) -> Result<()> {
     let _guard = store::lock(paths)?;
     let mut have = run_ids(paths)?;
     for row in rows {
-        if !have.insert((row.record_id.clone(), row.segment)) {
+        if have.insert((row.record_id.clone(), row.segment)) {
+            store::append_locked(paths, FleetFile::Runs, &row)?;
+            report.written += 1;
+            report.with_tokens += usize::from(row.tokens.is_some());
+            report.unpriced += usize::from(row.cost_source == "unpriced");
+        } else {
             report.already += 1;
-            continue;
         }
-        store::append_locked(paths, FleetFile::Runs, &row)?;
-        report.written += 1;
-        report.with_tokens += usize::from(row.tokens.is_some());
-        report.unpriced += usize::from(row.cost_source == "unpriced");
     }
-    Ok(report)
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fleet_runs::facts::tests::run_row;
+
+    fn paths() -> (tempfile::TempDir, DatasetPaths) {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = DatasetPaths::new(&tmp.path().join("state"), &tmp.path().join("proj"));
+        (tmp, paths)
+    }
+
+    /// A row added by another writer after the first read counts as
+    /// already recorded, and a repeated key in `rows` is written once.
+    #[test]
+    fn append_new_rows_counts_rows_found_under_the_lock() {
+        let (_tmp, paths) = paths();
+        store::append(&paths, FleetFile::Runs, &run_row("r-old", 1)).unwrap();
+        let mut report = SyncReport::default();
+        let rows = vec![
+            run_row("r-old", 1),
+            run_row("r-new", 1),
+            run_row("r-new", 1),
+        ];
+        append_new_rows(&paths, rows, &mut report).unwrap();
+        assert_eq!((report.written, report.already), (1, 2));
+        assert_eq!((report.with_tokens, report.unpriced), (0, 1));
+        let ids: Vec<_> = run_ids(&paths).unwrap().into_iter().collect();
+        assert_eq!(ids, [("r-new".to_string(), 1), ("r-old".to_string(), 1)]);
+    }
+
+    #[test]
+    fn pending_records_triages_each_record_once() {
+        let rec = |id: &str, state: &str| -> LedgerRecordV1 {
+            serde_json::from_value(serde_json::json!({
+                "record_id": id, "agent": "claude", "tier": "t", "model": "m",
+                "effort": "high", "phase": "implementation", "role": "w", "status": "done",
+                "task": "t", "history": [], "created_at": "2026-10-07T10:00:00Z",
+                "updated_at": "2026-10-07T10:00:00Z", "state": {"state": state}
+            }))
+            .unwrap()
+        };
+        let records = [
+            rec("r-new", "done"),
+            rec("r-have", "done"),
+            rec("r-run", "running"),
+        ];
+        let have = BTreeSet::from([("r-have".to_string(), 1)]);
+        let mut report = SyncReport::default();
+        let pending = pending_records(&records, &have, &mut report);
+        let ids: Vec<_> = pending.iter().map(|r| r.record_id.as_str()).collect();
+        assert_eq!(ids, ["r-new"]);
+        assert_eq!(report.already, 1);
+        assert_eq!(report.skipped.get("not finished"), Some(&1));
+    }
 }
