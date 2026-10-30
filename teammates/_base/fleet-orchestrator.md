@@ -84,6 +84,9 @@ The task ledger holds the work. You queue tasks. Workers claim them.
   worker stalls or dies, when tasks can start, and when all tasks are done.
   Do not poll.
 - horch ledger status - the board. It exits 0 only when all work is done.
+- When all tasks are done and verified, close the run: horch ledger run
+  close. To drop its open tasks, run: horch ledger run close --abandon
+  "<reason>". A closed run stops its watchdog and frees its slug.
 - horch ledger fallback T-<n> "<reason>" - let the fallback persona claim.
 - A usage limit is a warning to the operator, not a stop. Tell the operator
   and go on, unless the operator redirects you.
