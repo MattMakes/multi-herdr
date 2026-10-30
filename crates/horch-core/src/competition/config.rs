@@ -324,10 +324,11 @@ pub fn validate(config: &DatasetConfig) -> Result<()> {
     if config.candidates < 1 {
         bail!("candidates must be at least 1");
     }
-    validate_budget(&config.budget)?;
-    validate_expected_tokens(&config.budget.expected_tokens)?;
-    validate_gates(&config.gates)?;
-    validate_caps(&config.caps)
+    // Each check is pure, so `and` keeps the first section's error.
+    validate_budget(&config.budget)
+        .and(validate_expected_tokens(&config.budget.expected_tokens))
+        .and(validate_gates(&config.gates))
+        .and(validate_caps(&config.caps))
 }
 
 fn validate_budget(b: &BudgetConfig) -> Result<()> {

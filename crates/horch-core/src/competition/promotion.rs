@@ -35,7 +35,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::SecondsFormat;
 use serde::{Deserialize, Serialize};
 
@@ -251,13 +251,12 @@ impl<G: GitClient, V: Validator, R: Recorder> PromotionEngine for GitPromotionEn
 impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
     fn ensure_unpromoted(&self, plan: &PromotionPlan) -> Result<()> {
         let receipt_path = self.paths.promotion(&plan.round)?;
-        if receipt_path.exists() {
-            bail!(
-                "round {} is already promoted: {} exists",
-                plan.round,
-                receipt_path.display()
-            );
-        }
+        ensure!(
+            !receipt_path.exists(),
+            "round {} is already promoted: {} exists",
+            plan.round,
+            receipt_path.display()
+        );
         Ok(())
     }
 
@@ -296,24 +295,23 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
             || self
                 .git
                 .is_ancestor(repo, &dest_before, &candidate.base_sha)?;
-        let (strategy, start) = if fast_forward {
-            (PromotionStrategy::FastForward, candidate.head_sha.as_str())
+        let start = if fast_forward {
+            candidate.head_sha.as_str()
         } else {
-            (PromotionStrategy::CherryPick, dest_before.as_str())
+            dest_before.as_str()
         };
         temp.discard(self.git)?;
         self.git
             .worktree_add(repo, &temp.path, &temp.branch, start)
             .context("creating the promotion integration worktree")?;
-        match strategy {
-            PromotionStrategy::FastForward => Ok(Integrated::Ready(Landing {
-                strategy,
+        if fast_forward {
+            Ok(Integrated::Ready(Landing {
+                strategy: PromotionStrategy::FastForward,
                 planned_after: candidate.head_sha.clone(),
                 dest_before,
-            })),
-            PromotionStrategy::CherryPick => {
-                self.cherry_pick_onto(candidate, target, plan, dest_before, temp)
-            }
+            }))
+        } else {
+            self.cherry_pick_onto(candidate, target, plan, dest_before, temp)
         }
     }
 
@@ -366,11 +364,12 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         temp: &TempIntegration,
         landing: Landing,
     ) -> Result<PromotionResult> {
-        match self.revalidate(candidate, temp, &landing.planned_after)? {
-            None => self.abandon(temp, || {
+        if let Some(report) = self.revalidate(candidate, temp, &landing.planned_after)? {
+            self.promote_validated(candidate, target, plan, temp, landing, report)
+        } else {
+            self.abandon(temp, || {
                 self.reject(candidate, plan, RejectReason::RevalidationFailed)
-            }),
-            Some(report) => self.promote_validated(candidate, target, plan, temp, landing, report),
+            })
         }
     }
 
@@ -501,9 +500,10 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         started: &PromotionStarted,
         temp: &TempIntegration,
     ) -> Result<PromotionResult> {
-        match self.settle_checkout(target, started)? {
-            Some(reason) => self.abandon(temp, || self.needs_intervention(candidate, plan, reason)),
-            None => self.finish(candidate, target, plan, started, &started.publish, temp),
+        if let Some(reason) = self.settle_checkout(target, started)? {
+            self.abandon(temp, || self.needs_intervention(candidate, plan, reason))
+        } else {
+            self.finish(candidate, target, plan, started, &started.publish, temp)
         }
     }
 
@@ -576,12 +576,12 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
             restored: receipt.dest_before.clone(),
         };
         // A restart after the swap records it and moves nothing.
-        if held == receipt.dest_before {
-            self.record_rollback(experiment, round, &receipt)?;
-            Ok(restored)
-        } else if let Some(reason) =
+        let blocker = if held == receipt.dest_before {
+            None
+        } else {
             self.rollback_blocker(target, &receipt, &held, current.as_deref())?
-        {
+        };
+        if let Some(reason) = blocker {
             Ok(RollbackResult::NeedsIntervention { reason })
         } else {
             self.record_rollback(experiment, round, &receipt)?;
@@ -647,19 +647,20 @@ impl<G: GitClient, V: Validator, R: Recorder> GitPromotionEngine<'_, G, V, R> {
         round: &RoundId,
         receipt: &PromotionReceipt,
     ) -> Result<()> {
-        self.recorder.append(NewEvent {
-            kind: EventKind::PromotionRolledBack(PromotionRolledBack {
-                target: receipt.dest_ref.clone(),
-                restored: receipt.dest_before.clone(),
-            }),
-            actor: Actor::Operator,
-            experiment_id: experiment.clone(),
-            round_id: Some(round.clone()),
-            execution_id: None,
-            idempotency_key: format!("promotion.rolled_back:{round}"),
-            occurred_at: clock::now(),
-        })?;
-        Ok(())
+        self.recorder
+            .append(NewEvent {
+                kind: EventKind::PromotionRolledBack(PromotionRolledBack {
+                    target: receipt.dest_ref.clone(),
+                    restored: receipt.dest_before.clone(),
+                }),
+                actor: Actor::Operator,
+                experiment_id: experiment.clone(),
+                round_id: Some(round.clone()),
+                execution_id: None,
+                idempotency_key: format!("promotion.rolled_back:{round}"),
+                occurred_at: clock::now(),
+            })
+            .map(drop)
     }
 
     /// The worktree (when it is still there) and the branch both hold the

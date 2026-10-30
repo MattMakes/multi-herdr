@@ -498,8 +498,8 @@ impl<G: GitClient> Coordinator<'_, G> {
             }),
             format!("needs_intervention:{}", spec.round),
             None,
-        )?;
-        Ok(())
+        )
+        .map(drop)
     }
 
     // ── the dataset workspace ───────────────────────────────────────────
@@ -707,17 +707,14 @@ impl<G: GitClient> Coordinator<'_, G> {
     /// A record that a killed coordinator started but did not announce. True
     /// when the candidate needs no further look.
     fn observe_unspawned(&self, spec: &RoundSpec, label: &str, e: &Execution) -> Result<bool> {
-        match &e.pane {
-            Some(pane) if e.status != ExecutionStatus::Planned => {
-                self.announce_spawn(spec, label, e, pane)?;
-                Ok(false)
-            }
-            _ if e.status == ExecutionStatus::Planned => {
-                self.abandon_launch(spec, label, e)?;
-                Ok(true)
-            }
-            _ => Ok(false),
+        if e.status == ExecutionStatus::Planned {
+            self.abandon_launch(spec, label, e)?;
+            return Ok(true);
         }
+        if let Some(pane) = &e.pane {
+            self.announce_spawn(spec, label, e, pane)?;
+        }
+        Ok(false)
     }
 
     /// The spawner died before the pane: the candidate never ran.
@@ -957,7 +954,7 @@ impl<G: GitClient> Coordinator<'_, G> {
         let total = view
             .candidates
             .iter()
-            .filter(|(label, c)| !c.is_terminal() && records.contains_key(&self.key(spec, label)))
+            .filter(|(label, c)| self.live(spec, label, c, records))
             .filter_map(|(label, c)| c.planned.as_ref().map(|planned| (label, planned)))
             .fold(0i64, |total, (label, planned)| {
                 let projected = self.meter.projected(planned.model.as_str()).0;
@@ -990,6 +987,17 @@ impl<G: GitClient> Coordinator<'_, G> {
         Ok(())
     }
 
+    /// A candidate that is not terminal and has a record.
+    fn live(
+        &self,
+        spec: &RoundSpec,
+        label: &str,
+        c: &CandidateView,
+        records: &BTreeMap<String, Execution>,
+    ) -> bool {
+        !c.is_terminal() && records.contains_key(&self.key(spec, label))
+    }
+
     /// A candidate that has no record yet and was not announced: it has not
     /// started.
     fn unlaunched(
@@ -1011,7 +1019,7 @@ impl<G: GitClient> Coordinator<'_, G> {
     ) -> u32 {
         view.candidates
             .iter()
-            .filter(|(l, c)| !c.is_terminal() && records.contains_key(&self.key(spec, l)))
+            .filter(|(l, c)| self.live(spec, l, c, records))
             .count() as u32
     }
 

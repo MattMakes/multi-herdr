@@ -464,7 +464,7 @@ fn round_cfg(
         watch_command: "watch".into(),
     };
     if agent == Agent::Abandoned {
-        plant_planned_record(&w, roster, &recorder, &store, &spec, &plan);
+        plant_planned_record(w, roster, &recorder, &store, &spec, &plan);
     }
     let outcome = coordinator.start(&spec, &plan).unwrap();
     let calls = fake.calls();

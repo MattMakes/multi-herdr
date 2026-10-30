@@ -207,13 +207,10 @@ impl BaselineRoute {
 /// The baseline: the gate's decision, and the slot it launches, if any.
 /// The requested name is returned too, so the other slots skip it.
 fn route_baseline(input: &PlanInput, prices: &BTreeMap<String, Price>) -> BaselineRoute {
-    match input
-        .baseline
-        .clone()
-        .or_else(|| input.config.baseline.clone())
-    {
-        None => BaselineRoute::not_requested(),
-        Some(name) => route_requested(input, prices, name.as_str()),
+    if let Some(name) = input.baseline.as_ref().or(input.config.baseline.as_ref()) {
+        route_requested(input, prices, name.as_str())
+    } else {
+        BaselineRoute::not_requested()
     }
 }
 
@@ -222,13 +219,14 @@ fn route_requested(
     prices: &BTreeMap<String, Price>,
     name: &str,
 ) -> BaselineRoute {
-    match input.roster.get(name) {
-        None => BaselineRoute::unusable(
+    if let Some(req) = input.roster.get(name) {
+        route_known(input, prices, req, name)
+    } else {
+        BaselineRoute::unusable(
             name,
             "not in the roster".to_string(),
             vec![name.to_string()],
-        ),
-        Some(req) => route_known(input, prices, req, name),
+        )
     }
 }
 
@@ -247,9 +245,10 @@ fn route_known(
         GateFlags::default(),
     );
     let routed = RoutingDecision::from(&decision);
-    match resolve(req, input.roster, &decision) {
-        None => BaselineRoute::routed(routed, None, vec![requested.to_string()]),
-        Some(launch) => route_resolved(prices, routed, &launch, requested),
+    if let Some(launch) = resolve(req, input.roster, &decision) {
+        route_resolved(prices, routed, &launch, requested)
+    } else {
+        BaselineRoute::routed(routed, None, vec![requested.to_string()])
     }
 }
 
@@ -261,17 +260,13 @@ fn route_resolved(
     launch: &Teammate,
     requested: &str,
 ) -> BaselineRoute {
-    let resolved = match &routed {
-        RoutingDecision::Substitute { resolved, .. } => resolved.clone(),
-        _ => requested.to_string(),
+    let resolved = if let RoutingDecision::Substitute { resolved, .. } = &routed {
+        resolved.clone()
+    } else {
+        requested.to_string()
     };
     let taken = vec![requested.to_string(), resolved.clone()];
-    match baseline_pick(launch, &resolved) {
-        Ok(pick) if !priced(prices, pick.model.as_str()) => BaselineRoute::unusable(
-            requested,
-            format!("model {} has no price", pick.model),
-            taken,
-        ),
+    match baseline_pick(launch, &resolved, prices) {
         Ok(pick) => BaselineRoute::routed(routed, Some(pick), taken),
         Err(reason) => BaselineRoute::unusable(requested, reason, taken),
     }
@@ -279,18 +274,27 @@ fn route_resolved(
 
 /// The slot a resolved baseline launches: `resolved`'s name with the merged
 /// teammate's harness, model and effort.
-fn baseline_pick(launch: &Teammate, resolved: &str) -> Result<Pick, String> {
+fn baseline_pick(
+    launch: &Teammate,
+    resolved: &str,
+    prices: &BTreeMap<String, Price>,
+) -> Result<Pick, String> {
     Roster::is_routable(launch).map_err(|e| e.to_string())?;
     let model = ModelId::new(launch.model.as_deref().unwrap_or_default())
         .map_err(|_| "has no model of its own".to_string())?;
-    Ok(Pick {
+    let pick = Pick {
         slot: SlotKind::Baseline,
         teammate: TeammateName::new(resolved).map_err(|e| e.to_string())?,
         harness: launch.agent,
         model,
         effort: launch.effort.clone(),
         propensity: 1.0,
-    })
+    };
+    if priced(prices, pick.model.as_str()) {
+        Ok(pick)
+    } else {
+        Err(format!("model {} has no price", pick.model))
+    }
 }
 
 /// An eligible entry whose model the budget cannot price is excluded.
@@ -443,7 +447,7 @@ mod tests {
         seat.name = "fable-creative".into();
         seat.model = Some("fable".into());
         seat.fallbacks.clear();
-        assert!(baseline_pick(&seat, "fable-creative").is_err());
+        assert!(baseline_pick(&seat, "fable-creative", &builtin_prices()).is_err());
         roster.insert_for_test(seat);
         let view = QuotaView::new(
             QuotaFile::default(),

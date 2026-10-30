@@ -157,8 +157,7 @@ pub fn poll(env: &JudgeEnv, round_id: &RoundId, now: DateTime<Utc>) -> Result<Ju
         // A restart after `judge.completed`: finish the decision.
         decide(env, round_id, &round, attempt, judgment_id)
     } else if attempt == 0 {
-        start(env, round_id)?;
-        Ok(JudgingStatus::Waiting)
+        start(env, round_id).and(Ok(JudgingStatus::Waiting))
     } else if round.judge.failures >= attempt {
         // A restart after `judge.failed`, before the retry was scheduled.
         retry_or_stop(env, round_id, attempt)
@@ -179,8 +178,7 @@ fn poll_job(
     match discover(&job_dir, now, env.stale_after) {
         JobState::NotStarted => {
             // A restart between `judge.scheduled` and the spawn.
-            schedule_attempt(env, round_id, round, attempt)?;
-            Ok(JudgingStatus::Waiting)
+            schedule_attempt(env, round_id, round, attempt).and(Ok(JudgingStatus::Waiting))
         }
         JobState::Running { pid } => poll_running(env, round_id, round, &job_dir, pid, now),
         JobState::Exited(exit) => fail(
@@ -708,8 +706,10 @@ fn decide(
                 Some(&execution),
                 format!("winner:{round_id}"),
                 kind,
-            )?;
-            Ok(JudgingStatus::Decided(WinnerOutcome::Rejected { reason }))
+            )
+            .and(Ok(JudgingStatus::Decided(WinnerOutcome::Rejected {
+                reason,
+            })))
         }
         WinnerOutcome::NeedsIntervention { reason } => {
             let kind = EventKind::RoundNeedsIntervention(RoundNeedsIntervention {
@@ -723,8 +723,8 @@ fn decide(
                 Some(&execution),
                 format!("needs_intervention:{round_id}"),
                 kind,
-            )?;
-            Ok(JudgingStatus::NeedsIntervention)
+            )
+            .and(Ok(JudgingStatus::NeedsIntervention))
         }
     }
 }
@@ -763,12 +763,7 @@ fn store_judgment(
         execution_id: execution.clone(),
         judgment: judgment.clone(),
     };
-    write_record(env, round_id, &record)?;
-    env.ctx
-        .settings
-        .faults
-        .abort_if(ABORT_AFTER_JUDGMENT_WRITTEN);
-    Ok((judgment, execution))
+    write_record(env, round_id, &record).and(Ok((judgment, execution)))
 }
 
 /// `judgements/<round>.json`, once: the same bytes again are accepted.
@@ -777,6 +772,10 @@ fn write_record(env: &JudgeEnv, round_id: &RoundId, record: &JudgmentRecord) -> 
     bytes.push(b'\n');
     fsx::ensure_private_dir(&env.paths.judgements_dir())?;
     fsx::create_immutable(&env.paths.judgement(round_id)?, &bytes, fsx::PRIVATE_FILE)?;
+    env.ctx
+        .settings
+        .faults
+        .abort_if(ABORT_AFTER_JUDGMENT_WRITTEN);
     Ok(())
 }
 
