@@ -75,8 +75,8 @@ impl Fixture {
         stmt.query_map([], |r| {
             (0..n)
                 .map(|i| {
-                    Ok(r.get::<_, Option<String>>(i)
-                        .map(|v| v.unwrap_or("~".into()))?)
+                    r.get::<_, Option<String>>(i)
+                        .map(|v| v.unwrap_or("~".into()))
                 })
                 .collect()
         })

@@ -89,20 +89,24 @@ pub fn worktrees(conn: &Connection, run_id: &str) -> Result<Vec<WorktreeLine>> {
     Ok(rows)
 }
 
+/// The columns of the `worktrees` SELECT.
+type WorktreeRow = (
+    String,
+    Option<i64>,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<String>,
+    String,
+    i64,
+);
+
 impl WorktreeLine {
     /// The 9 columns of the `worktrees` SELECT, in order.
     fn from_row(r: &Row<'_>) -> rusqlite::Result<WorktreeLine> {
-        let (worktree_id, seq, path, branch, status, bytes_on_disk, reason, base, scratch): (
-            String,
-            Option<i64>,
-            String,
-            String,
-            String,
-            Option<i64>,
-            Option<String>,
-            String,
-            i64,
-        ) = r.try_into()?;
+        let (worktree_id, seq, path, branch, status, bytes_on_disk, reason, base, scratch): WorktreeRow =
+            r.try_into()?;
         Ok(WorktreeLine {
             worktree_id,
             task: seq.map(|s| format!("T-{s}")),
@@ -468,20 +472,24 @@ pub struct StopLine {
     pub result: String,
 }
 
+/// The columns of the `stops` SELECT.
+type StopRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
 impl StopLine {
     /// The 9 columns of the `stops` SELECT, in order.
     fn from_row(r: &Row<'_>) -> rusqlite::Result<StopLine> {
-        let (at, requested_by, reason, target, pid, pid_started, signal, pane_id, result): (
-            String,
-            String,
-            String,
-            String,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            String,
-        ) = r.try_into()?;
+        let (at, requested_by, reason, target, pid, pid_started, signal, pane_id, result): StopRow =
+            r.try_into()?;
         Ok(StopLine {
             at,
             requested_by,
