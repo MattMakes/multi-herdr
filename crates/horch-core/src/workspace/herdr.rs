@@ -970,17 +970,24 @@ mod tests {
         assert!(gone, "descendant {pid} is still running");
     }
 
+    /// A herdr that prints past the cap on either stream fails the call with
+    /// InvalidData. The script runs once first: macOS scans a new executable
+    /// at its first exec for seconds, which would race the call's timeout.
     #[cfg(unix)]
     #[test]
     fn a_herdr_that_prints_more_than_the_cap_fails_the_call() {
         for stream in ["", ">&2"] {
             let (_dir, script) = script_in(&format!("head -c 3000000 /dev/zero {stream}"));
-            let started = Instant::now();
+            let warm = Command::new(&script)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(warm.success(), "{stream}");
             let error =
                 output_within(Command::new(&script), Duration::from_secs(5), None).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{stream}");
             assert!(error.to_string().contains("more than"), "{error}");
-            assert!(started.elapsed() < Duration::from_secs(10));
         }
     }
 
