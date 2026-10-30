@@ -744,6 +744,80 @@ fn teardown_stops_the_mail_courier_of_its_state() {
     assert!(stopped, "teardown stops the courier {pid}");
 }
 
+/// A process can start after teardown's first SIGTERM: a pane command
+/// that starts the mail courier on its way out. Teardown stops it too, and
+/// the test does not fail for it.
+#[cfg(unix)]
+#[test]
+fn teardown_stops_a_process_that_starts_after_its_first_signal() {
+    let h = Harness::new("teardown-late");
+    let warm = "if [ \"$1\" = warm ]; then\n  exit 0\nfi\n";
+    let late = h.write_bin(
+        "late",
+        format!("#!/bin/sh\n{warm}while :; do /bin/sleep 1; done\n").as_bytes(),
+    );
+    let starter = h.write_bin(
+        "starter",
+        format!(
+            "#!/bin/sh\n{warm}trap ': > \"$3\"; \"$2\" & exit 0' TERM\n: > \"$1\"\nwhile :; do /bin/sleep 1; done\n"
+        )
+        .as_bytes(),
+    );
+    // macOS scans a new executable at its first exec, for seconds.
+    for script in [&late, &starter] {
+        assert!(Command::new(script).arg("warm").status().unwrap().success());
+    }
+    let ready = h.tmp.join("starter.ready");
+    // Outside the harness root: teardown removes the root.
+    let outside = tempfile::tempdir().unwrap();
+    let late_started = outside.path().join("late.started");
+    // Not this test's child: the outer shell exits.
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "\"$0\" \"$1\" \"$2\" \"$3\" </dev/null >/dev/null 2>&1 &",
+    ])
+    .arg(&starter)
+    .arg(&ready)
+    .arg(&late)
+    .arg(&late_started);
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    assert!(cmd.status().unwrap().success());
+    let started = std::time::Instant::now();
+    while !ready.exists() {
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "the starter did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let root = h.root.clone();
+
+    let teardown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(h)));
+    // The late process can be stopped before it runs a line, so it is
+    // found by its path, which names this harness.
+    let still: Vec<String> = horch_e2e::process::processes()
+        .into_iter()
+        .filter(|p| p.command.contains(&*late.to_string_lossy()))
+        .map(|p| p.pid.to_string())
+        .collect();
+    for pid in &still {
+        // SIGKILL, so this test never leaks the process itself.
+        let _ = Command::new("/bin/kill").args(["-9", pid]).status();
+    }
+    let was_started = late_started.exists();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(was_started, "the late process started during teardown");
+    assert!(
+        still.is_empty(),
+        "teardown stops the late process {still:?}"
+    );
+    if let Err(panic) = teardown {
+        let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+        panic!("a late process that teardown stopped is no leak: {message}");
+    }
+}
+
 /// A process that outlives teardown's SIGTERM fails the test, and teardown
 /// kills it.
 #[cfg(unix)]

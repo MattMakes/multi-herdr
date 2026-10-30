@@ -523,19 +523,42 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
     signal_groups(&groups, "TERM");
     // A group id stays ours while the group has members: no other process
     // can be given it.
-    let left = || -> std::io::Result<Vec<Process>> {
+    let left = |signalled: &[u32]| -> std::io::Result<Vec<Process>> {
         let environments = commands_with_environment();
         Ok(listed(try_processes, REAP_GRACE)?
             .into_iter()
-            .filter(|p| p.pid != me && (groups.contains(&p.pgid) || names_root(p, &environments)))
+            .filter(|p| {
+                p.pid != me && (signalled.contains(&p.pgid) || names_root(p, &environments))
+            })
             .collect())
     };
     let until = std::time::Instant::now() + REAP_GRACE;
+    // The pids that ran when the first SIGTERM went out, and every pid
+    // that has had one since.
+    let first: Vec<u32> = all.iter().map(|p| p.pid).collect();
+    let mut signalled = first.clone();
     loop {
-        let left = left()?;
+        let left = left(&groups)?;
         if left.is_empty() {
             return Ok(Vec::new());
         }
+        // A process can start after a SIGTERM went out, even in a group
+        // that got it: a pane command that starts the mail courier on its
+        // way out. Its group gets SIGTERM too.
+        let late: Vec<&Process> = left
+            .iter()
+            .filter(|p| !signalled.contains(&p.pid))
+            .collect();
+        let mut late_groups: Vec<u32> = late
+            .iter()
+            .map(|p| p.pgid)
+            .filter(|g| *g > 1 && Some(*g) != own_group)
+            .collect();
+        late_groups.sort_unstable();
+        late_groups.dedup();
+        signal_groups(&late_groups, "TERM");
+        signalled.extend(late.iter().map(|p| p.pid));
+        groups.extend(late_groups);
         if std::time::Instant::now() >= until {
             let mut kill: Vec<u32> = left
                 .iter()
@@ -547,7 +570,14 @@ fn reap(root: &Path, log: &Path) -> std::io::Result<Vec<String>> {
             signal_groups(&kill, "KILL");
             return Ok(left
                 .into_iter()
-                .map(|p| format!("{} {}", p.pid, p.command))
+                .map(|p| {
+                    let when = if first.contains(&p.pid) {
+                        "ran at the first SIGTERM"
+                    } else {
+                        "started after the first SIGTERM"
+                    };
+                    format!("{} {} ({when})", p.pid, p.command)
+                })
                 .collect());
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
