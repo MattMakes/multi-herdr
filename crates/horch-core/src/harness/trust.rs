@@ -1730,4 +1730,713 @@ mod tests {
             ));
         }
     }
+    // ---- Pins for the trust writer and scanner split (#198) ----
+
+    fn keys(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    fn roots(paths: &[&str]) -> Vec<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn toml_lines_skips_the_inside_of_multi_line_strings() {
+        let text = "a = 1\nb = \"\"\"\n[projects.\"/in\"]\n\"\"\"\n[projects.\"/out\"]\n\
+                    c = 'x#y'  # \"\"\" is a comment\nd = \"q\\\"\"\n\
+                    l = '''\\'''\n[t]\ne = '''\n[hidden]\n'''\n[last]";
+        assert_eq!(
+            toml_lines(text),
+            [
+                "a = 1",
+                "b = \"\"\"",
+                "[projects.\"/out\"]",
+                "c = 'x#y'  # \"\"\" is a comment",
+                "d = \"q\\\"\"",
+                "l = '''\\'''",
+                "[t]",
+                "e = '''",
+                "[last]"
+            ]
+        );
+        // Up to 2 quotes before the closing delimiter are content.
+        assert_eq!(
+            toml_lines("v = \"\"\"a\"\"\"\"\n[h]"),
+            ["v = \"\"\"a\"\"\"\"", "[h]"]
+        );
+        assert!(toml_lines("").is_empty());
+    }
+
+    #[test]
+    fn toml_quoted_decodes_only_the_escapes_it_knows() {
+        assert_eq!(
+            toml_quoted(r#""a\\b\"c" rest"#),
+            Some((r#"a\b"c"#.to_string(), " rest"))
+        );
+        assert_eq!(toml_quoted(r"'a\b' x"), Some((r"a\b".to_string(), " x")));
+        assert_eq!(toml_quoted(r#""" tail"#), Some((String::new(), " tail")));
+        assert_eq!(toml_quoted(r#""a\nb""#), None, "other escapes");
+        assert_eq!(toml_quoted(r#""open"#), None, "unterminated");
+        assert_eq!(toml_quoted("'open"), None);
+        assert_eq!(toml_quoted("bare"), None);
+        assert_eq!(toml_quoted(""), None);
+        assert_eq!(toml_quoted(r#""é€" ok"#), Some(("é€".to_string(), " ok")));
+    }
+
+    #[test]
+    fn toml_headers_and_values_are_read_strictly() {
+        let header = |l: &str| toml_project_header(l);
+        assert_eq!(header(r#"[projects."/a b"]"#).as_deref(), Some("/a b"));
+        assert_eq!(header(r"[ projects . '/x' ]  # c").as_deref(), Some("/x"));
+        assert_eq!(header("[\tprojects\t.\t\"/t\"\t]").as_deref(), Some("/t"));
+        for no in [
+            r#"[projects."/a"] x"#,
+            r#"[projects./a]"#,
+            r#"[projects."\u0041"]"#,
+            r#"[other."/a"]"#,
+            r#"projects."/a""#,
+            r#"[projects."/a""#,
+        ] {
+            assert_eq!(header(no), None, "{no}");
+        }
+        assert_eq!(
+            toml_string_value(r#"trust_level = "trusted""#, "trust_level").as_deref(),
+            Some("trusted")
+        );
+        assert_eq!(
+            toml_string_value("trust_level='x'", "trust_level").as_deref(),
+            Some("x")
+        );
+        assert_eq!(toml_string_value("trust_level = 3", "trust_level"), None);
+        assert_eq!(toml_string_value("other = 'x'", "trust_level"), None);
+        assert_eq!(toml_string_value("trust_level 'x'", "trust_level"), None);
+    }
+
+    #[test]
+    fn codex_trust_reads_the_last_level_of_a_root_table() {
+        let r = roots(&["/p", "/real/p"]);
+        let state = |text: &str| codex_trust(Some(text), &r).state;
+        assert_eq!(
+            state("[projects.\"/p\"]\ntrust_level = \"trusted\"\n"),
+            TrustState::Trusted
+        );
+        assert_eq!(
+            state("[projects.\"/real/p\"]\ntrust_level = 'trusted'\n"),
+            TrustState::Trusted
+        );
+        assert_eq!(
+            state("[projects.\"/p\"]\ntrust_level = \"trusted\"\ntrust_level = \"untrusted\"\n"),
+            TrustState::Untrusted
+        );
+        assert_eq!(
+            state("[projects.\"/other\"]\ntrust_level = \"trusted\"\n"),
+            TrustState::Untrusted
+        );
+        assert_eq!(
+            state("[projects.\"/p\"]\n[other]\ntrust_level = \"trusted\"\n"),
+            TrustState::Untrusted,
+            "a later table ends the root's table"
+        );
+        assert_eq!(
+            state("note = \"\"\"\n[projects.\"/p\"]\ntrust_level = \"trusted\"\n\"\"\"\n"),
+            TrustState::Untrusted,
+            "inside a string"
+        );
+        let none = codex_trust(None, &r);
+        assert_eq!(
+            (none.state, none.reason.as_str()),
+            (
+                TrustState::Untrusted,
+                "$CODEX_HOME/config.toml does not exist"
+            )
+        );
+    }
+
+    #[test]
+    fn claude_and_agy_trust_name_the_store_in_their_reasons() {
+        let r = roots(&["/p", "/real/p"]);
+        let c = |t: Option<&str>| {
+            let v = claude_trust(t, &r);
+            (v.state, v.reason)
+        };
+        assert_eq!(
+            c(None),
+            (
+                TrustState::Untrusted,
+                "$CLAUDE_CONFIG_DIR/.claude.json does not exist".into()
+            )
+        );
+        assert_eq!(
+            c(Some("{oops")),
+            (
+                TrustState::Unknown,
+                "$CLAUDE_CONFIG_DIR/.claude.json is not valid JSON".into()
+            )
+        );
+        assert_eq!(
+            c(Some(
+                r#"{"projects":{"/real/p":{"hasTrustDialogAccepted":true}}}"#
+            ))
+            .0,
+            TrustState::Trusted
+        );
+        assert_eq!(
+            c(Some(
+                r#"{"projects":{"/p":{"hasTrustDialogAccepted":false}}}"#
+            ))
+            .0,
+            TrustState::Untrusted
+        );
+        assert_eq!(
+            c(Some(
+                r#"{"projects":{"/":{"hasTrustDialogAccepted":true}}}"#
+            ))
+            .0,
+            TrustState::Untrusted,
+            "a parent does not count"
+        );
+        let a = |t: Option<&str>| {
+            let v = antigravity_trust(t, &r);
+            (v.state, v.reason)
+        };
+        assert_eq!(
+            a(None),
+            (
+                TrustState::Untrusted,
+                "~/.gemini/antigravity-cli/settings.json does not exist".into()
+            )
+        );
+        assert_eq!(a(Some("[")).0, TrustState::Unknown);
+        assert_eq!(
+            a(Some(r#"{"trustedWorkspaces":["/x","/p"]}"#)).0,
+            TrustState::Trusted
+        );
+        assert_eq!(
+            a(Some(r#"{"trustedWorkspaces":["/p/sub"]}"#)).0,
+            TrustState::Untrusted
+        );
+        assert_eq!(
+            a(Some(r#"{"trustedWorkspaces":"/p"}"#)).0,
+            TrustState::Untrusted
+        );
+    }
+
+    #[test]
+    fn read_trust_covers_each_harness_and_an_unreadable_store() {
+        let f = Fake::new();
+        let r = std::slice::from_ref(&f.project);
+        let all = [
+            HarnessKind::Claude,
+            HarnessKind::Codex,
+            HarnessKind::Antigravity,
+            HarnessKind::Pi,
+        ];
+        let got = read_trust(&all, &f.home, None, None, r);
+        let states: Vec<(&str, TrustState)> =
+            got.iter().map(|t| (t.harness.as_str(), t.state)).collect();
+        assert_eq!(
+            states,
+            [
+                ("claude", TrustState::Untrusted),
+                ("codex", TrustState::Untrusted),
+                ("antigravity", TrustState::Untrusted),
+                ("pi", TrustState::Unknown)
+            ]
+        );
+        assert_eq!(got[3].reason, "horch cannot read where pi keeps its trust");
+
+        // A directory where the store should be cannot be read.
+        std::fs::create_dir_all(f.claude_file()).unwrap();
+        std::fs::create_dir_all(f.codex_file()).unwrap();
+        std::fs::create_dir_all(f.home.join(".gemini/antigravity-cli/settings.json")).unwrap();
+        let got = read_trust(&all[..3], &f.home, None, None, r);
+        let reasons: Vec<&str> = got.iter().map(|t| t.reason.as_str()).collect();
+        assert!(
+            got.iter().all(|t| t.state == TrustState::Unknown),
+            "{got:?}"
+        );
+        assert_eq!(
+            reasons,
+            [
+                "$CLAUDE_CONFIG_DIR/.claude.json cannot be read",
+                "$CODEX_HOME/config.toml cannot be read",
+                "~/.gemini/antigravity-cli/settings.json cannot be read"
+            ]
+        );
+
+        // CLAUDE_CONFIG_DIR moves the Claude store.
+        let cfg = f.home.join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(
+            cfg.join(".claude.json"),
+            serde_json::json!({"projects": {f.project.to_string_lossy(): {"hasTrustDialogAccepted": true}}})
+                .to_string(),
+        )
+        .unwrap();
+        let got = read_trust(&[HarnessKind::Claude], &f.home, Some(&cfg), None, r);
+        assert_eq!(got[0].state, TrustState::Trusted);
+    }
+
+    #[test]
+    fn trust_roots_names_the_first_refusal() {
+        let f = Fake::new();
+        let why = |w: &Path, h: &Path| trust_roots(w, h).unwrap_err();
+        assert_eq!(
+            why(Path::new("rel/dir"), &f.home),
+            "rel/dir is not an absolute path"
+        );
+        let missing = f.home.join("nope");
+        assert_eq!(
+            why(&missing, &f.home),
+            format!("{} is not an existing directory", missing.display())
+        );
+        assert!(
+            why(&f.project, Path::new("relhome")).starts_with("the home directory is not known")
+        );
+        assert!(why(&f.home, &f.home).ends_with("horch never trusts those"));
+        assert!(why(Path::new("/"), &f.home).ends_with("horch never trusts those"));
+        assert_eq!(
+            trust_roots(&f.project, &f.home).unwrap(),
+            vec![f.project.clone()]
+        );
+    }
+
+    #[test]
+    fn claude_edits_change_only_the_bytes_they_add() {
+        let k = keys(&["/p"]);
+        let edit = |t: &str| claude_add_trust(t, &k, "L");
+        let accepted = r#""hasTrustDialogAccepted":true"#;
+        assert_eq!(
+            edit("{}").unwrap(),
+            format!(r#"{{"projects":{{"/p":{{{accepted}}}}}}}"#)
+        );
+        assert_eq!(
+            edit(r#"{"a":1}"#).unwrap(),
+            format!(r#"{{"projects":{{"/p":{{{accepted}}}}},"a":1}}"#)
+        );
+        assert_eq!(
+            edit(r#"{"projects":{"/q":{}}}"#).unwrap(),
+            format!(r#"{{"projects":{{"/p":{{{accepted}}},"/q":{{}}}}}}"#)
+        );
+        assert_eq!(
+            edit(r#"{"projects":{"/p":{"x":1}}}"#).unwrap(),
+            format!(r#"{{"projects":{{"/p":{{{accepted},"x":1}}}}}}"#)
+        );
+        assert_eq!(
+            edit(r#"{"projects": {"/p": {"hasTrustDialogAccepted" : false, "x": 1.50}}}"#).unwrap(),
+            r#"{"projects": {"/p": {"hasTrustDialogAccepted" : true, "x": 1.50}}}"#
+        );
+        let two = keys(&["/p", "/real/p"]);
+        let both = claude_add_trust("{}", &two, "L").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&both).unwrap();
+        assert_eq!(v["projects"]["/p"]["hasTrustDialogAccepted"], true);
+        assert_eq!(v["projects"]["/real/p"]["hasTrustDialogAccepted"], true);
+
+        assert_eq!(edit("{oops").unwrap_err(), "L is not valid JSON");
+        for odd in [
+            "[]",
+            r#"{"projects":3}"#,
+            r#"{"projects":{"/p":3}}"#,
+            r#"{"projects":[]}"#,
+        ] {
+            assert_eq!(
+                edit(odd).unwrap_err(),
+                "L has a shape horch does not edit",
+                "{odd}"
+            );
+        }
+    }
+
+    #[test]
+    fn agy_edits_put_the_new_workspaces_first() {
+        let k = keys(&["/p", "/real/p"]);
+        let edit = |t: &str| antigravity_add_trust(t, &k, "L");
+        let list = |t: &str| -> serde_json::Value {
+            serde_json::from_str::<serde_json::Value>(&edit(t).unwrap()).unwrap()
+                ["trustedWorkspaces"]
+                .clone()
+        };
+        assert_eq!(list("{}"), serde_json::json!(["/p", "/real/p"]));
+        assert_eq!(
+            edit("{}").unwrap(),
+            r#"{"trustedWorkspaces":["/p","/real/p"]}"#
+        );
+        assert_eq!(
+            list(r#"{"trustedWorkspaces":[]}"#),
+            serde_json::json!(["/p", "/real/p"])
+        );
+        assert_eq!(
+            list(r#"{"trustedWorkspaces": [ ]}"#),
+            serde_json::json!(["/p", "/real/p"])
+        );
+        assert_eq!(
+            edit(r#"{"keep":1,"trustedWorkspaces":["/q"]}"#).unwrap(),
+            r#"{"keep":1,"trustedWorkspaces":["/p","/real/p","/q"]}"#
+        );
+        assert_eq!(edit("{oops").unwrap_err(), "L is not valid JSON");
+        for odd in [
+            "[]",
+            r#"{"trustedWorkspaces":3}"#,
+            r#"{"trustedWorkspaces":{}}"#,
+        ] {
+            assert_eq!(
+                edit(odd).unwrap_err(),
+                "L has a shape horch does not edit",
+                "{odd}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_object_spans_cover_every_member_value() {
+        let text = r#"  {"a" : 1, "b":[1,{"c":"}"}] ,"d":"x\"y","e":true, "n":null,"f":-2.5e3}"#;
+        let obj = json_object_at(text, 0).unwrap();
+        assert_eq!(obj.open, 2);
+        let spans: Vec<(&str, &str)> = obj
+            .members
+            .iter()
+            .map(|(k, s, e)| (k.as_str(), &text[*s..*e]))
+            .collect();
+        assert_eq!(
+            spans,
+            [
+                ("a", "1"),
+                ("b", r#"[1,{"c":"}"}]"#),
+                ("d", r#""x\"y""#),
+                ("e", "true"),
+                ("n", "null"),
+                ("f", "-2.5e3")
+            ]
+        );
+        let at = text.find("true").unwrap();
+        assert_eq!(json_member(&obj, "e"), Some((at, at + 4)));
+        assert_eq!(json_member(&obj, "zz"), None);
+        let dup_text = r#"{"k":1,"k":22}"#;
+        let dup = json_object_at(dup_text, 0).unwrap();
+        let (s, e) = json_member(&dup, "k").unwrap();
+        assert_eq!(&dup_text[s..e], "22", "the last one wins");
+        assert!(json_object_at("{}", 0).unwrap().members.is_empty());
+        assert!(json_object_at(" { } ", 0).unwrap().members.is_empty());
+        // From an offset.
+        let nested = r#"{"o":{"i":1}}"#;
+        let inner_at = nested.find("{\"i").unwrap();
+        assert_eq!(json_object_at(nested, inner_at).unwrap().members.len(), 1);
+        for bad in [
+            "[]",
+            "",
+            "{",
+            r#"{"a""#,
+            r#"{"a" 1}"#,
+            r#"{"a":}"#,
+            r#"{1:2}"#,
+            r#"{"a":1 "b":2}"#,
+            r#"{"a":1,}"#,
+            r#"{"a":1"#,
+            r#"{"a":"open}"#,
+            r#"{"a":[1,2}"#,
+        ] {
+            assert!(json_object_at(bad, 0).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn json_value_ends_stop_at_the_value() {
+        let end = |t: &str| json_value_end(t.as_bytes(), 0);
+        assert_eq!(end(r#""a\"b" ,"#), Some(6));
+        assert_eq!(end("[1,[2,\"]\"]] x"), Some(11));
+        assert_eq!(end(r#"{"a":{"b":[]}},"#), Some(14));
+        assert_eq!(end("123,"), Some(3));
+        assert_eq!(end("true}"), Some(4));
+        assert_eq!(end("null"), Some(4));
+        assert_eq!(end(""), None);
+        assert_eq!(end(","), None, "no value");
+        assert_eq!(end("[1,2"), None);
+        assert_eq!(end("\"open"), None);
+        assert_eq!(end("{\"a\":\"x"), None);
+    }
+
+    #[test]
+    fn codex_edits_append_tables_or_refuse() {
+        let k = keys(&["/p", "/real/p"]);
+        let edit = |t: &str| codex_add_trust(t, &k, "L");
+        let tables = "[projects.\"/p\"]\ntrust_level = \"trusted\"\n[projects.\"/real/p\"]\ntrust_level = \"trusted\"\n";
+        assert_eq!(edit("").unwrap(), tables);
+        assert_eq!(edit("a = 1").unwrap(), format!("a = 1\n\n{tables}"));
+        assert_eq!(edit("a = 1\n").unwrap(), format!("a = 1\n\n{tables}"));
+        assert_eq!(
+            edit("[projects.\"/other\"]\ntrust_level = \"trusted\"\n").unwrap(),
+            format!("[projects.\"/other\"]\ntrust_level = \"trusted\"\n\n{tables}")
+        );
+        assert!(edit("s = \"\"\"x\"\"\"")
+            .unwrap_err()
+            .starts_with("L has a multi-line string"));
+        assert!(edit("s = '''x'''")
+            .unwrap_err()
+            .starts_with("L has a multi-line string"));
+        for odd in [
+            "projects.x = 1",
+            "[projects]",
+            "[\"projects\".\"/p\"]",
+            "[pro\\u006aects.\"/q\"]",
+            "projects = {}",
+        ] {
+            assert!(
+                edit(odd)
+                    .unwrap_err()
+                    .starts_with("L keeps projects in a form horch does not edit"),
+                "{odd}"
+            );
+        }
+        assert_eq!(
+            edit("[projects.\"/p\"]\ntrust_level = \"untrusted\"\n").unwrap_err(),
+            "L sets trust_level = \"untrusted\" for /p; horch keeps the operator's choice"
+        );
+        assert_eq!(
+            edit("[projects.\"/real/p\"]\nother = 1\n").unwrap_err(),
+            "L has a [projects.\"/real/p\"] table without trust_level = \"trusted\"; horch does not edit it"
+        );
+        assert_eq!(
+            codex_add_trust("", &keys(&["/p\n"]), "L").unwrap_err(),
+            "L: the path \"/p\\n\" has a control character"
+        );
+        let quoted = codex_add_trust("", &keys(&["/a\"b\\c"]), "L").unwrap();
+        assert_eq!(
+            quoted,
+            "[projects.\"/a\\\"b\\\\c\"]\ntrust_level = \"trusted\"\n"
+        );
+        assert_eq!(
+            codex_trust(Some(&quoted), &roots(&["/a\"b\\c"])).state,
+            TrustState::Trusted
+        );
+        // Two copies of a key would make 2 tables.
+        let dup = codex_add_trust("", &keys(&["/p", "/p"]), "L").unwrap_err();
+        assert_eq!(dup, "L would have 2 tables for \"/p\"; horch wrote nothing");
+    }
+
+    #[test]
+    fn projects_lines_are_detected_in_every_spelling() {
+        for yes in [
+            "[projects]",
+            "[projects.\"/a\"]",
+            "[a.\\u0070]",
+            "projects = 1",
+            "projects.x = 1",
+            "\"projects\" = 1",
+            "'projects' . x = 1",
+            "\"pro\\u006aects\" = 1",
+            "projects\t= 2",
+        ] {
+            assert!(toml_projects_line(yes), "{yes}");
+        }
+        for no in [
+            "[other]",
+            "a = 1",
+            "projectsx = 1",
+            "\"other\" = 1",
+            "# projects = 1",
+            "name = \"projects\"",
+        ] {
+            assert!(!toml_projects_line(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn ensure_skips_for_a_missing_directory_or_store() {
+        let f = Fake::new();
+        // No directory for the store.
+        let cfg = f.home.join("no-cfg");
+        let got =
+            ensure_trusted(HarnessKind::Claude, &f.project, &f.home, Some(&cfg), None).unwrap();
+        assert_eq!(
+            got,
+            TrustWrite::Skipped(format!(
+                "the directory of $CLAUDE_CONFIG_DIR/.claude.json ({}) does not exist",
+                cfg.join(".claude.json").display()
+            ))
+        );
+        // Claude and Antigravity never create a store.
+        assert_eq!(
+            f.ensure(HarnessKind::Claude, &f.project),
+            TrustWrite::Skipped(
+                "$CLAUDE_CONFIG_DIR/.claude.json does not exist: claude has never run with this store"
+                    .into()
+            )
+        );
+        std::fs::create_dir_all(f.home.join(".gemini/antigravity-cli")).unwrap();
+        assert_eq!(
+            f.ensure(HarnessKind::Antigravity, &f.project),
+            TrustWrite::Skipped(
+                "~/.gemini/antigravity-cli/settings.json does not exist: antigravity has never run with this store"
+                    .into()
+            )
+        );
+        // A store that is not JSON is the store's problem.
+        std::fs::write(f.claude_file(), "{oops").unwrap();
+        assert_eq!(
+            f.ensure(HarnessKind::Claude, &f.project),
+            TrustWrite::Skipped("$CLAUDE_CONFIG_DIR/.claude.json is not valid JSON".into())
+        );
+        // Codex creates its config.toml when its directory exists.
+        std::fs::create_dir_all(f.codex_file().parent().unwrap()).unwrap();
+        assert_eq!(
+            f.ensure(HarnessKind::Codex, &f.project),
+            TrustWrite::Written(f.codex_file())
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.codex_file()).unwrap(),
+            format!(
+                "[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
+                f.project.display()
+            )
+        );
+        assert_eq!(
+            f.ensure(HarnessKind::Codex, &f.project),
+            TrustWrite::AlreadyTrusted
+        );
+    }
+
+    #[test]
+    fn ensure_fails_loudly_on_an_unreadable_store_or_a_store_that_keeps_changing() {
+        let f = Fake::new();
+        std::fs::create_dir_all(f.claude_file()).unwrap();
+        let err = ensure_trusted(HarnessKind::Claude, &f.project, &f.home, None, None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "$CLAUDE_CONFIG_DIR/.claude.json ({}) cannot be read",
+                f.claude_file().display()
+            )
+        );
+        std::fs::remove_dir(f.claude_file()).unwrap();
+
+        std::fs::write(f.claude_file(), "{}").unwrap();
+        let mut calls = 0;
+        let err = ensure_trusted_with(
+            HarnessKind::Claude,
+            &f.project,
+            &f.home,
+            None,
+            None,
+            &mut || {
+                calls += 1;
+                std::fs::write(f.claude_file(), format!("{{\"n\":{calls}}}")).unwrap();
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(calls, WRITE_TRIES);
+        assert_eq!(
+            err,
+            format!(
+                "$CLAUDE_CONFIG_DIR/.claude.json ({}) changed during each of 3 tries; horch wrote nothing",
+                f.claude_file().display()
+            )
+        );
+        let mut left: Vec<String> = std::fs::read_dir(&f.home)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [".claude.json", "projects"],
+            "no temp file or lock stays"
+        );
+    }
+
+    #[test]
+    fn the_store_lock_and_temp_file_report_their_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = StoreLock::take(&tmp.path().join("no-dir/store"))
+            .err()
+            .expect("a missing directory is an error")
+            .to_string();
+        assert!(err.starts_with("creating the lock "), "{err}");
+
+        let store = tmp.path().join("store.json");
+        std::fs::write(&store, "{}").unwrap();
+        let temp = TempStore::write(&store, "new").unwrap();
+        let path = temp.0.clone().unwrap();
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("store.json.horch-tmp."));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let gone = tmp.path().join("no-dir/store.json");
+        let err = temp.rename_over(&gone).unwrap_err().to_string();
+        assert!(err.starts_with("renaming "), "{err}");
+        assert!(!path.exists(), "the failed rename removes its temp file");
+
+        let temp = TempStore::write(&store, "again").unwrap();
+        let path = temp.0.clone().unwrap();
+        temp.rename_over(&store).unwrap();
+        assert_eq!(std::fs::read_to_string(&store).unwrap(), "again");
+        assert!(!path.exists());
+
+        // Discarding a file that is already gone is not an error.
+        let temp = TempStore::write(&store, "x").unwrap();
+        std::fs::remove_file(temp.0.as_ref().unwrap()).unwrap();
+        temp.discard().unwrap();
+        // A dropped temp store removes its file.
+        let temp = TempStore::write(&store, "y").unwrap();
+        let path = temp.0.clone().unwrap();
+        drop(temp);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn temp_names_carry_a_pid_and_12_lowercase_hex() {
+        assert_eq!(temp_pid("123.0123456789ab"), Some(123));
+        for bad in [
+            "",
+            "123",
+            "x.0123456789ab",
+            "123.0123456789AB",
+            "123.0123456789a",
+            "123.0123456789abc",
+            ".0123456789ab",
+            "-1.0123456789ab",
+        ] {
+            assert_eq!(temp_pid(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_trust_note_and_fix_name_the_store_never_its_content() {
+        let w = Path::new("/w");
+        assert_eq!(
+            trust_note(HarnessKind::Claude, w, &Ok(TrustWrite::AlreadyTrusted)),
+            None
+        );
+        assert_eq!(
+            trust_note(
+                HarnessKind::Claude,
+                w,
+                &Ok(TrustWrite::Written("/s".into()))
+            )
+            .unwrap(),
+            "horch: trusted /w for claude (/s)"
+        );
+        assert_eq!(
+            trust_note(
+                HarnessKind::Codex,
+                w,
+                &Ok(TrustWrite::Skipped("why".into()))
+            )
+            .unwrap(),
+            "horch: NOTE: horch did not trust /w for codex: why"
+        );
+        assert_eq!(
+            trust_note(HarnessKind::Codex, w, &Err(anyhow::anyhow!("boom"))).unwrap(),
+            "horch: NOTE: horch could not trust /w for codex: boom"
+        );
+        assert_eq!(
+            trust_fix(HarnessKind::Codex, Path::new("/a b/it's")),
+            "cd '/a b/it'\\''s' && codex  (choose \"Trust and continue\", then exit)"
+        );
+        assert!(trust_fix(HarnessKind::Pi, w).contains("&& pi  (accept"));
+    }
 }
