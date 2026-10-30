@@ -28,10 +28,46 @@ pub struct BriefingContext<'a> {
 /// them. The rest of the phase catalog stays available by name only, which
 /// keeps the context cost of a broad phase small.
 pub fn render(plan: &SkillActivationPlan, catalog: &SkillCatalog, ctx: &BriefingContext) -> String {
-    let qualified = |s: &str| match ctx.namespace {
-        Some(ns) => format!("{ns}:{s}"),
-        None => s.to_string(),
-    };
+    let expected = expected_lines(plan, catalog, ctx);
+    let others = other_names(plan, ctx.namespace);
+    let mut out = format!("\n\nFleet skill phase: {}.", phase_label(ctx.phase));
+    out.push_str(&skill_lines(&expected, &others));
+    // An operator skill this host lacks is skipped, not fatal; say so, so
+    // the worker reports it instead of looking for the skill.
+    for skipped in catalog.skipped_operator() {
+        out.push_str(&format!(" Skipped: {}.", skipped.note()));
+    }
+    // A plan that activates nothing has no fleet copy to point at.
+    if !plan.activated.is_empty() {
+        out.push_str(&format!(
+            " If a same-named ambient skill exists, use the fleet copy under {}. Skills do not change tool permissions.",
+            ctx.skills_dir.display()
+        ));
+    }
+    // The skill texts name skills the bundle does not hold; say how to read
+    // one instead of putting them all in the bundle.
+    let activated: Vec<&str> = plan.activated.iter().map(|r| r.id.as_str()).collect();
+    out.push_str(&outside_note(catalog, &activated));
+    out.push_str(" Report unresolved dependencies through horch tell orchestrator.\n");
+    out
+}
+
+/// `name` under the namespace of the briefing, when it has one.
+fn qualified(namespace: Option<&str>, name: &str) -> String {
+    match namespace {
+        Some(ns) => format!("{ns}:{name}"),
+        None => name.to_string(),
+    }
+}
+
+/// The lines of the skills the worker is expected to use: each declared
+/// skill the plan holds as `Explicit`, in declared order, with its
+/// description, then the plugin lines.
+fn expected_lines(
+    plan: &SkillActivationPlan,
+    catalog: &SkillCatalog,
+    ctx: &BriefingContext,
+) -> Vec<String> {
     let explicit = |s: &str| {
         plan.activated
             .iter()
@@ -51,22 +87,34 @@ pub fn render(plan: &SkillActivationPlan, catalog: &SkillCatalog, ctx: &Briefing
                         .join(" ")
                 })
                 .unwrap_or_default();
-            format!("- {}: {description}", qualified(s))
+            format!("- {}: {description}", qualified(ctx.namespace, s))
         })
         .collect();
     expected.extend(ctx.plugin_lines.iter().cloned());
-    let others: Vec<String> = plan
-        .activated
+    expected
+}
+
+/// The names of the activated skills that are not expected of the worker.
+fn other_names(plan: &SkillActivationPlan, namespace: Option<&str>) -> Vec<String> {
+    plan.activated
         .iter()
         .filter(|r| r.policy != InvocationPolicy::Explicit)
-        .map(|r| qualified(r.id.as_str()))
-        .collect();
+        .map(|r| qualified(namespace, r.id.as_str()))
+        .collect()
+}
 
-    let phase = ctx
-        .phase
+/// The name of the phase, or `custom` when the teammate has none.
+fn phase_label(phase: Option<Phase>) -> String {
+    phase
         .map(|p| p.to_string())
-        .unwrap_or_else(|| "custom".into());
-    let mut out = format!("\n\nFleet skill phase: {phase}.");
+        .unwrap_or_else(|| "custom".into())
+}
+
+/// What the paragraph says of the skills in the plan: the expected ones with
+/// their descriptions, then the others by name, or the others alone. Empty
+/// when there are none.
+fn skill_lines(expected: &[String], others: &[String]) -> String {
+    let mut out = String::new();
     if !expected.is_empty() {
         out.push_str(
             " Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:\n",
@@ -85,37 +133,28 @@ pub fn render(plan: &SkillActivationPlan, catalog: &SkillCatalog, ctx: &Briefing
             others.join(", ")
         ));
     }
-    // An operator skill this host lacks is skipped, not fatal; say so, so
-    // the worker reports it instead of looking for the skill.
-    for skipped in catalog.skipped_operator() {
-        out.push_str(&format!(" Skipped: {}.", skipped.note()));
-    }
-    // A plan that activates nothing has no fleet copy to point at.
-    if !plan.activated.is_empty() {
-        out.push_str(&format!(
-            " If a same-named ambient skill exists, use the fleet copy under {}. Skills do not change tool permissions.",
-            ctx.skills_dir.display()
-        ));
-    }
-    // The skill texts name skills the bundle does not hold; say how to read
-    // one instead of putting them all in the bundle.
-    let activated: Vec<&str> = plan.activated.iter().map(|r| r.id.as_str()).collect();
-    let outside = super::reading::outside_bundle(catalog, &activated);
-    if !outside.is_empty() {
+    out
+}
+
+/// The note on the skills that the activated skills name and the bundle does
+/// not hold, with up to 3 examples. Empty when there are none.
+fn outside_note(catalog: &SkillCatalog, activated: &[&str]) -> String {
+    let outside = super::reading::outside_bundle(catalog, activated);
+    if outside.is_empty() {
+        String::new()
+    } else {
         let examples: Vec<&str> = outside.iter().take(3).map(|(id, _)| id.as_str()).collect();
         let (noun, verb) = if outside.len() == 1 {
             ("skill", "is")
         } else {
             ("skills", "are")
         };
-        out.push_str(&format!(
+        format!(
             " Your skills name {} {noun} that {verb} not in this bundle, for example {}. Read one with horch skills read <id> only when your step needs it.",
             outside.len(),
             examples.join(", ")
-        ));
+        )
     }
-    out.push_str(" Report unresolved dependencies through horch tell orchestrator.\n");
-    out
 }
 
 #[cfg(test)]
